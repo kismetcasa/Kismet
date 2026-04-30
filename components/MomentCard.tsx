@@ -145,15 +145,13 @@ export function MomentCard({ moment }: MomentCardProps) {
 
         <div className="flex items-center justify-between">
           <div className="flex flex-col gap-0.5">
-            <a
-              href={`https://inprocess.world/collect/base:${moment.address}/${moment.token_id}`}
-              target="_blank"
-              rel="noopener noreferrer"
+            <Link
+              href={`/profile/${moment.creator.address}`}
               className="text-xs text-[#555] font-mono hover:text-[#888] transition-colors"
               title={moment.creator.address}
             >
               by {creatorName}
-            </a>
+            </Link>
             {price !== null && (
               <span className="text-xs font-mono accent-grad">{price}</span>
             )}

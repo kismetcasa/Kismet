@@ -7,7 +7,7 @@ import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ListButton } from './ListButton'
@@ -353,15 +353,6 @@ export function MomentDetailView({ address, tokenId }: Props) {
             {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
             {linkCopied ? 'copied' : 'share'}
           </button>
-          <a
-            href={`https://inprocess.world/collect/base:${address}/${tokenId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors px-3 py-2"
-          >
-            <ExternalLink size={11} />
-            in•process
-          </a>
         </div>
 
         {/* Admin / creator tools */}
