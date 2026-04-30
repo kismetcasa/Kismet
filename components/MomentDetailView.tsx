@@ -264,9 +264,9 @@ export function MomentDetailView({ address, tokenId }: Props) {
         </div>
 
         {/* Right: details */}
-        <div className="divide-y divide-[#2a2a2a] border-b border-[#2a2a2a]">
+        <div className="border-b border-[#2a2a2a]">
 
-          {/* Title + creator + description (one section) */}
+          {/* Title + creator + description */}
           <div className="px-5 py-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-sm font-mono text-[#efefef] leading-snug">
@@ -292,23 +292,8 @@ export function MomentDetailView({ address, tokenId }: Props) {
             )}
           </div>
 
-          {/* Collect button */}
-          <div className="px-5 py-4">
-            <button
-              onClick={handleCollect}
-              disabled={collecting || alreadyOwned || collected}
-              className={`w-full py-2.5 text-xs font-mono tracking-widest uppercase border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                collected || alreadyOwned
-                  ? 'border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10'
-                  : 'border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'
-              }`}
-            >
-              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
-            </button>
-          </div>
-
-          {/* Comments + comment textarea (one section) */}
-          <div className="px-5 py-4 flex flex-col gap-2.5">
+          {/* Comments + textarea + collect */}
+          <div className="px-5 py-4 flex flex-col gap-2.5 border-t border-[#2a2a2a]">
             {!commentsLoading && comments.length > 0 && (
               <>
                 <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider mb-1">comments</p>
@@ -343,12 +328,23 @@ export function MomentDetailView({ address, tokenId }: Props) {
               placeholder="leave a comment… (optional)"
               rows={2}
               disabled={collecting}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none disabled:opacity-50 mt-1"
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none disabled:opacity-50"
             />
+            <button
+              onClick={handleCollect}
+              disabled={collecting || alreadyOwned || collected}
+              className={`w-full py-2.5 text-xs font-mono tracking-widest uppercase border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                collected || alreadyOwned
+                  ? 'border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10'
+                  : 'border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
+            </button>
           </div>
 
           {/* Actions */}
-          <div className="px-5 py-4">
+          <div className="px-5 py-4 border-t border-[#2a2a2a]">
             <ListButton
               collectionAddress={address}
               tokenId={tokenId}
@@ -360,7 +356,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
 
           {/* Admin / creator tools */}
           {(isAdmin || isAdminOfMoment) && (
-            <div className="px-5 py-4 flex flex-col gap-3">
+            <div className="px-5 py-4 flex flex-col gap-3 border-t border-[#2a2a2a]">
               <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">creator</p>
               {isAdmin && (
                 <button
