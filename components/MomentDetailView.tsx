@@ -220,7 +220,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
       </div>
 
       {/* Two-column on desktop, stacked on mobile */}
-      <div className="md:grid md:grid-cols-2 md:items-start">
+      <div className="md:grid md:grid-cols-2 border-b border-[#2a2a2a]">
 
         {/* Left: media — sticky on desktop */}
         <div className="border-b border-[#2a2a2a] md:border-b-0 md:border-r md:border-r-[#2a2a2a] md:sticky md:top-14">
@@ -264,10 +264,10 @@ export function MomentDetailView({ address, tokenId }: Props) {
         </div>
 
         {/* Right: details */}
-        <div className="border-b border-[#2a2a2a]">
+        <div>
 
           {/* Title + creator + description */}
-          <div className="px-5 py-4 flex flex-col gap-3">
+          <div className="px-5 py-4 flex flex-col gap-3 border-t border-[#2a2a2a]">
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-sm font-mono text-[#efefef] leading-snug">
                 {meta.name ?? `#${tokenId}`}
@@ -343,16 +343,18 @@ export function MomentDetailView({ address, tokenId }: Props) {
             </button>
           </div>
 
-          {/* Actions */}
-          <div className="px-5 py-4 border-t border-[#2a2a2a]">
-            <ListButton
-              collectionAddress={address}
-              tokenId={tokenId}
-              name={meta.name}
-              image={meta.image ? resolveUri(meta.image) : undefined}
-              creatorAddress={creatorAddress}
-            />
-          </div>
+          {/* Actions — only shown when user holds the token */}
+          {alreadyOwned && (
+            <div className="px-5 py-4 border-t border-[#2a2a2a]">
+              <ListButton
+                collectionAddress={address}
+                tokenId={tokenId}
+                name={meta.name}
+                image={meta.image ? resolveUri(meta.image) : undefined}
+                creatorAddress={creatorAddress}
+              />
+            </div>
+          )}
 
           {/* Admin / creator tools */}
           {(isAdmin || isAdminOfMoment) && (
