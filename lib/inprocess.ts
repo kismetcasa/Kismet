@@ -94,7 +94,7 @@ export interface CollectResponse {
 export interface MomentComment {
   sender: string
   comment: string
-  timestamp: number // unix seconds
+  timestamp: number // may be ms or seconds — normalize before use
 }
 
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */
