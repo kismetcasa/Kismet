@@ -261,9 +261,9 @@ export function MomentDetailView({ address, tokenId }: Props) {
         </div>
 
         {/* Right: details */}
-        <div>
+        <div className="flex flex-col">
 
-          {/* Title + creator + description */}
+          {/* Info: title, creator, description, comments, textarea — all one flowing section */}
           <div className="px-5 py-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-sm font-mono text-[#efefef] leading-snug">
@@ -287,13 +287,9 @@ export function MomentDetailView({ address, tokenId }: Props) {
             {meta.description && (
               <p className="text-xs text-[#888] leading-relaxed">{meta.description}</p>
             )}
-          </div>
-
-          {/* Comments + textarea + collect */}
-          <div className="px-5 py-4 flex flex-col gap-2.5 border-t border-[#2a2a2a]">
             {!commentsLoading && comments.length > 0 && (
-              <>
-                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider mb-1">comments</p>
+              <div className="flex flex-col gap-2">
+                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">comments</p>
                 {visibleComments.map((c, i) => (
                   <div key={i} className="flex gap-2 items-baseline">
                     <span className="text-[11px] font-mono text-[#555] flex-shrink-0">
@@ -310,14 +306,14 @@ export function MomentDetailView({ address, tokenId }: Props) {
                 {hiddenCount > 0 && (
                   <button
                     onClick={() => setShowAllComments((v) => !v)}
-                    className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors mt-0.5 w-fit"
+                    className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
                   >
                     {showAllComments
                       ? <><ChevronUp size={10} /> show less</>
                       : <><ChevronDown size={10} /> {hiddenCount} more</>}
                   </button>
                 )}
-              </>
+              </div>
             )}
             <textarea
               value={commentText}
@@ -327,35 +323,14 @@ export function MomentDetailView({ address, tokenId }: Props) {
               disabled={collecting}
               className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none disabled:opacity-50"
             />
-            <button
-              onClick={handleCollect}
-              disabled={collecting || alreadyOwned || collected}
-              className={`w-full py-2.5 text-xs font-mono tracking-widest uppercase border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                collected || alreadyOwned
-                  ? 'border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10'
-                  : 'border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'
-              }`}
-            >
-              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
-            </button>
           </div>
 
-          {/* Actions — only shown when user holds the token */}
-          {alreadyOwned && (
-            <div className="px-5 py-4 border-t border-[#2a2a2a]">
-              <ListButton
-                collectionAddress={address}
-                tokenId={tokenId}
-                name={meta.name}
-                image={meta.image ? resolveUri(meta.image) : undefined}
-                creatorAddress={creatorAddress}
-              />
-            </div>
-          )}
+          {/* Spacer — expands on desktop when image is taller than content */}
+          <div className="flex-1 min-h-6" />
 
-          {/* Distribute earnings — creator with splits only */}
+          {/* Distribute earnings — floats in the space above collect */}
           {isCreator && hasSplits && (
-            <div className="px-5 py-4 flex flex-col gap-2.5 border-t border-[#2a2a2a]">
+            <div className="px-5 pb-4 flex flex-col gap-2">
               <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">distribute earnings</p>
               <div className="flex gap-2">
                 <input
@@ -386,9 +361,37 @@ export function MomentDetailView({ address, tokenId }: Props) {
             </div>
           )}
 
+          {/* List for sale — floats above collect when user holds the token */}
+          {alreadyOwned && (
+            <div className="px-5 pb-4">
+              <ListButton
+                collectionAddress={address}
+                tokenId={tokenId}
+                name={meta.name}
+                image={meta.image ? resolveUri(meta.image) : undefined}
+                creatorAddress={creatorAddress}
+              />
+            </div>
+          )}
+
+          {/* Collect — hugs the bottom */}
+          <div className="px-5 py-4 border-t border-[#2a2a2a]">
+            <button
+              onClick={handleCollect}
+              disabled={collecting || alreadyOwned || collected}
+              className={`w-full py-2.5 text-xs font-mono tracking-widest uppercase border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                collected || alreadyOwned
+                  ? 'border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10'
+                  : 'border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
+            </button>
+          </div>
+
           {/* Site admin — feature/unfeature */}
           {isAdmin && (
-            <div className="px-5 py-4 border-t border-[#2a2a2a]">
+            <div className="px-5 py-3 border-t border-[#2a2a2a]">
               <button
                 onClick={() => toggleFeatured(address, tokenId)}
                 className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
