@@ -201,8 +201,8 @@ export function MomentDetailView({ address, tokenId }: Props) {
   return (
     <div className="max-w-4xl mx-auto pb-16">
 
-      {/* Back nav */}
-      <div className="px-4 py-3 border-b border-[#2a2a2a]">
+      {/* Back nav + share */}
+      <div className="px-4 py-3 border-b border-[#2a2a2a] flex items-center justify-between">
         <Link
           href="/"
           className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
@@ -210,6 +210,13 @@ export function MomentDetailView({ address, tokenId }: Props) {
           <ArrowLeft size={12} />
           back
         </Link>
+        <button
+          onClick={handleCopyLink}
+          className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+        >
+          {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
+          {linkCopied ? 'copied' : 'share'}
+        </button>
       </div>
 
       {/* Two-column on desktop, stacked on mobile */}
@@ -259,18 +266,16 @@ export function MomentDetailView({ address, tokenId }: Props) {
         {/* Right: details */}
         <div className="divide-y divide-[#2a2a2a] border-b border-[#2a2a2a]">
 
-          {/* Title + price */}
-          <div className="px-5 py-4 flex items-start justify-between gap-4">
-            <h1 className="text-sm font-mono text-[#efefef] leading-snug">
-              {meta.name ?? `#${tokenId}`}
-            </h1>
-            {price && (
-              <span className="text-xs font-mono accent-grad flex-shrink-0">{price}</span>
-            )}
-          </div>
-
-          {/* by avatar + username */}
-          <div className="px-5 py-4">
+          {/* Title + creator + description (one section) */}
+          <div className="px-5 py-4 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <h1 className="text-sm font-mono text-[#efefef] leading-snug">
+                {meta.name ?? `#${tokenId}`}
+              </h1>
+              {price && (
+                <span className="text-xs font-mono accent-grad flex-shrink-0">{price}</span>
+              )}
+            </div>
             <Link
               href={creatorAddress ? `/profile/${creatorAddress}` : '#'}
               className="flex items-center gap-2 group w-fit"
@@ -282,25 +287,13 @@ export function MomentDetailView({ address, tokenId }: Props) {
                 by {creatorName || shortAddress(creatorAddress)}
               </span>
             </Link>
+            {meta.description && (
+              <p className="text-xs text-[#888] leading-relaxed">{meta.description}</p>
+            )}
           </div>
 
-          {/* Description */}
-          {meta.description && (
-            <div className="px-5 py-4">
-              <p className="text-xs text-[#888] leading-relaxed">{meta.description}</p>
-            </div>
-          )}
-
-          {/* Collect + comment */}
-          <div className="px-5 py-4 flex flex-col gap-3">
-            <textarea
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-              placeholder="leave a comment… (optional)"
-              rows={2}
-              disabled={collecting}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none disabled:opacity-50"
-            />
+          {/* Collect button */}
+          <div className="px-5 py-4">
             <button
               onClick={handleCollect}
               disabled={collecting || alreadyOwned || collected}
@@ -314,38 +307,48 @@ export function MomentDetailView({ address, tokenId }: Props) {
             </button>
           </div>
 
-          {/* Comments */}
-          {!commentsLoading && comments.length > 0 && (
-            <div className="px-5 py-4 flex flex-col gap-2.5">
-              <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider mb-1">comments</p>
-              {visibleComments.map((c, i) => (
-                <div key={i} className="flex gap-2 items-baseline">
-                  <span className="text-[11px] font-mono text-[#555] flex-shrink-0">
-                    {shortAddress(c.sender)}
-                  </span>
-                  <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
-                    {c.comment}
-                  </span>
-                  <span className="text-[10px] font-mono text-[#333] flex-shrink-0">
-                    {formatRelativeTime(c.timestamp)}
-                  </span>
-                </div>
-              ))}
-              {hiddenCount > 0 && (
-                <button
-                  onClick={() => setShowAllComments((v) => !v)}
-                  className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors mt-0.5 w-fit"
-                >
-                  {showAllComments
-                    ? <><ChevronUp size={10} /> show less</>
-                    : <><ChevronDown size={10} /> {hiddenCount} more</>}
-                </button>
-              )}
-            </div>
-          )}
+          {/* Comments + comment textarea (one section) */}
+          <div className="px-5 py-4 flex flex-col gap-2.5">
+            {!commentsLoading && comments.length > 0 && (
+              <>
+                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider mb-1">comments</p>
+                {visibleComments.map((c, i) => (
+                  <div key={i} className="flex gap-2 items-baseline">
+                    <span className="text-[11px] font-mono text-[#555] flex-shrink-0">
+                      {shortAddress(c.sender)}
+                    </span>
+                    <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
+                      {c.comment}
+                    </span>
+                    <span className="text-[10px] font-mono text-[#333] flex-shrink-0">
+                      {formatRelativeTime(c.timestamp)}
+                    </span>
+                  </div>
+                ))}
+                {hiddenCount > 0 && (
+                  <button
+                    onClick={() => setShowAllComments((v) => !v)}
+                    className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors mt-0.5 w-fit"
+                  >
+                    {showAllComments
+                      ? <><ChevronUp size={10} /> show less</>
+                      : <><ChevronDown size={10} /> {hiddenCount} more</>}
+                  </button>
+                )}
+              </>
+            )}
+            <textarea
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder="leave a comment… (optional)"
+              rows={2}
+              disabled={collecting}
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none disabled:opacity-50 mt-1"
+            />
+          </div>
 
           {/* Actions */}
-          <div className="px-5 py-4 flex items-center gap-2 flex-wrap">
+          <div className="px-5 py-4">
             <ListButton
               collectionAddress={address}
               tokenId={tokenId}
@@ -353,13 +356,6 @@ export function MomentDetailView({ address, tokenId }: Props) {
               image={meta.image ? resolveUri(meta.image) : undefined}
               creatorAddress={creatorAddress}
             />
-            <button
-              onClick={handleCopyLink}
-              className="flex items-center gap-1.5 text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors"
-            >
-              {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
-              {linkCopied ? 'copied' : 'share'}
-            </button>
           </div>
 
           {/* Admin / creator tools */}
