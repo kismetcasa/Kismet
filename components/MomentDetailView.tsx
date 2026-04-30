@@ -260,10 +260,10 @@ export function MomentDetailView({ address, tokenId }: Props) {
           )}
         </div>
 
-        {/* Right: details */}
-        <div className="flex flex-col">
+        {/* Right: details — scrolls within grid cell on desktop */}
+        <div className="flex flex-col md:min-h-0 md:overflow-y-auto">
 
-          {/* Info: title, creator, description, comments, textarea — all one flowing section */}
+          {/* Info: title, creator, description, comments, textarea */}
           <div className="px-5 py-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-sm font-mono text-[#efefef] leading-snug">
@@ -285,7 +285,10 @@ export function MomentDetailView({ address, tokenId }: Props) {
               </span>
             </Link>
             {meta.description && (
-              <p className="text-xs text-[#888] leading-relaxed">{meta.description}</p>
+              <div className="flex flex-col gap-1.5">
+                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">description</p>
+                <p className="text-xs text-[#888] leading-relaxed">{meta.description}</p>
+              </div>
             )}
             {!commentsLoading && comments.length > 0 && (
               <div className="flex flex-col gap-2">
@@ -325,10 +328,10 @@ export function MomentDetailView({ address, tokenId }: Props) {
             />
           </div>
 
-          {/* Spacer — expands on desktop when image is taller than content */}
+          {/* Spacer — pushes bottom group down when content is short */}
           <div className="flex-1 min-h-6" />
 
-          {/* Distribute earnings — floats in the space above collect */}
+          {/* Distribute earnings (floats above collect) */}
           {isCreator && hasSplits && (
             <div className="px-5 pb-4 flex flex-col gap-2">
               <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">distribute earnings</p>
@@ -361,7 +364,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
             </div>
           )}
 
-          {/* List for sale — floats above collect when user holds the token */}
+          {/* List for sale (floats above collect) */}
           {alreadyOwned && (
             <div className="px-5 pb-4">
               <ListButton
@@ -375,7 +378,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
           )}
 
           {/* Collect — hugs the bottom */}
-          <div className="px-5 py-4 border-t border-[#2a2a2a]">
+          <div className="px-5 py-4">
             <button
               onClick={handleCollect}
               disabled={collecting || alreadyOwned || collected}
@@ -391,7 +394,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
 
           {/* Site admin — feature/unfeature */}
           {isAdmin && (
-            <div className="px-5 py-3 border-t border-[#2a2a2a]">
+            <div className="px-5 pb-4">
               <button
                 onClick={() => toggleFeatured(address, tokenId)}
                 className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
