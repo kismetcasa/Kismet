@@ -198,6 +198,10 @@ export async function unmuteActor(address: string, actor: string): Promise<void>
   await redis.srem(keyMuted(address), actor.toLowerCase())
 }
 
+export async function getMutedActors(address: string): Promise<string[]> {
+  return (await redis.smembers(keyMuted(address))) as string[]
+}
+
 export async function getMomentMeta(
   contractAddress: string,
   tokenId: string,

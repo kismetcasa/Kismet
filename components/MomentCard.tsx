@@ -226,7 +226,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
               <>
                 <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                   <span className="text-[11px] font-mono text-[#444]">
-                    {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? '∞' : maxSupply.toLocaleString())}
+                    {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
                   </span>
                 </div>
                 <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">

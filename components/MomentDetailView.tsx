@@ -413,7 +413,7 @@ export function MomentDetailView({ address, tokenId, initialDetail }: Props) {
               </button>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
-                  {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? '∞' : detail.maxSupply.toLocaleString())}
+                  {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? 'open' : detail.maxSupply.toLocaleString())}
                 </span>
               </div>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
