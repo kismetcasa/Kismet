@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { Bell } from 'lucide-react'
 import { NotificationModal } from './NotificationModal'
 
@@ -11,8 +12,14 @@ interface NotificationBellProps {
 const POLL_INTERVAL_MS = 30_000
 
 export function NotificationBell({ address }: NotificationBellProps) {
+  const pathname = usePathname()
   const [count, setCount] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
+
+  // Close modal when navigating to a new page
+  useEffect(() => {
+    setModalOpen(false)
+  }, [pathname])
 
   const fetchCount = useCallback(async () => {
     if (!address) return
