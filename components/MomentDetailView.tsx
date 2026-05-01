@@ -8,7 +8,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X } from 'lucide-react'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ListButton } from './ListButton'
@@ -145,8 +145,9 @@ export function MomentDetailView({ address, tokenId, initialDetail }: Props) {
         body: JSON.stringify({
           moment: { collectionAddress: address, tokenId, chainId: 8453 },
           amount: 1,
-          comment: commentText.trim() || 'collected via Kismet Art',
+          comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
           account: connectedAddress,
+          pricePerToken: detail?.saleConfig.pricePerToken,
         }),
       })
       const data = await res.json()
@@ -412,7 +413,7 @@ export function MomentDetailView({ address, tokenId, initialDetail }: Props) {
               </button>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
-                  {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? 'open' : detail.maxSupply.toLocaleString())}
+                  {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? '∞' : detail.maxSupply.toLocaleString())}
                 </span>
               </div>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">

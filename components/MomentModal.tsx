@@ -373,7 +373,7 @@ export function MomentModal({
                   {displayMaxSupply === undefined
                     ? '…'
                     : displayMaxSupply === null || displayMaxSupply === 0
-                      ? 'open'
+                      ? '∞'
                       : displayMaxSupply.toLocaleString()}
                 </span>
               </div>

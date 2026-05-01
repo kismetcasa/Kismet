@@ -39,6 +39,16 @@ export function NotificationPreview({ address, visible, onRowClick }: Notificati
     }
   }, [visible, address])
 
+  function handleMute(actor: string) {
+    const lower = actor.toLowerCase()
+    setItems((prev) => (prev ?? []).filter((n) => n.actor?.toLowerCase() !== lower))
+    fetch('/api/notifications/mute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, actor }),
+    }).catch(() => {})
+  }
+
   if (!visible) return null
 
   return (
@@ -61,6 +71,7 @@ export function NotificationPreview({ address, visible, onRowClick }: Notificati
             notification={n}
             compact
             onClick={() => onRowClick?.(n.id)}
+            onMute={handleMute}
           />
         ))}
       </div>

@@ -3,7 +3,7 @@ import { isAddress } from 'viem'
 import { getNotifications, type NotificationType } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
-const VALID_TYPES: NotificationType[] = ['collect', 'sale', 'follow', 'mint']
+const VALID_TYPES: NotificationType[] = ['collect', 'sale', 'follow', 'mint', 'listing_expired']
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)

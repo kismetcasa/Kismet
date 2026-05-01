@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { NotificationRow } from './NotificationRow'
 import type { Notification, NotificationType } from '@/lib/notifications'
@@ -20,6 +20,7 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
   { value: 'sale', label: 'sales' },
   { value: 'follow', label: 'follows' },
   { value: 'mint', label: 'mints' },
+  { value: 'listing_expired', label: 'expired' },
 ]
 
 export function NotificationFeed({ address }: NotificationFeedProps) {
@@ -29,10 +30,24 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
   const [items, setItems] = useState<Notification[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
+  const hasMore = items.length < total
+
+  // Reset list when tab or filter changes
+  useEffect(() => {
+    setPage(1)
+    setItems([])
+    setTotal(0)
+  }, [tab, typeFilter])
+
+  // Fetch page — replaces on page 1, appends on page > 1
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    if (page === 1) setLoading(true)
+    else setLoadingMore(true)
+
     const params = new URLSearchParams({
       address,
       tab,
@@ -45,21 +60,31 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
       .then((r) => r.json())
       .then((data) => {
         if (cancelled) return
-        setItems(data.notifications ?? [])
+        const newItems: Notification[] = data.notifications ?? []
+        setItems((prev) => (page === 1 ? newItems : [...prev, ...newItems]))
         setTotal(data.total ?? 0)
       })
       .catch(() => {
-        if (!cancelled) { setItems([]); setTotal(0) }
+        if (!cancelled && page === 1) { setItems([]); setTotal(0) }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) { setLoading(false); setLoadingMore(false) }
       })
 
     return () => { cancelled = true }
   }, [address, tab, typeFilter, page])
 
-  // Reset page when tab or filter changes
-  useEffect(() => { setPage(1) }, [tab, typeFilter])
+  // Infinite scroll sentinel
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || !hasMore || loading || loadingMore) return
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) setPage((p) => p + 1) },
+      { threshold: 0.1 },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, loading, loadingMore])
 
   async function handleMarkAllRead() {
     try {
@@ -69,6 +94,8 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
         body: JSON.stringify({ address, all: true }),
       })
       setItems((prev) => prev.map((n) => ({ ...n, read: true })))
+      // Signal bell to clear badge immediately
+      window.dispatchEvent(new CustomEvent('kismetart:notif-read'))
     } catch {
       // Silent
     }
@@ -80,10 +107,24 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, id }),
-    }).catch(() => {})
+    })
+      .then(() => window.dispatchEvent(new CustomEvent('kismetart:notif-refetch')))
+      .catch(() => {})
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_LIMIT))
+  function handleMute(actor: string) {
+    const lower = actor.toLowerCase()
+    setItems((prev) => {
+      const removed = prev.filter((n) => n.actor?.toLowerCase() === lower).length
+      if (removed > 0) setTotal((t) => Math.max(0, t - removed))
+      return prev.filter((n) => n.actor?.toLowerCase() !== lower)
+    })
+    fetch('/api/notifications/mute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, actor }),
+    }).catch(() => {})
+  }
 
   return (
     <div className="flex flex-col">
@@ -144,32 +185,15 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
             key={n.id}
             notification={n}
             onClick={() => handleRowClick(n.id)}
+            onMute={handleMute}
           />
         ))}
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between border-t border-[#2a2a2a] mt-4 pt-3 px-1">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] disabled:opacity-30 transition-colors"
-          >
-            ← prev
-          </button>
-          <span className="text-[10px] font-mono text-[#555]">
-            page {page} / {totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page >= totalPages}
-            className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] disabled:opacity-30 transition-colors"
-          >
-            next →
-          </button>
-        </div>
-      )}
+      {/* Infinite scroll sentinel */}
+      <div ref={sentinelRef} className="flex justify-center py-4">
+        {loadingMore && <Loader2 size={14} className="animate-spin text-[#555]" />}
+      </div>
     </div>
   )
 }

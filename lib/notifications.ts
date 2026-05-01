@@ -2,7 +2,7 @@ import { redis } from './redis'
 import { isFollowing } from './follows'
 import { randomUUID } from 'crypto'
 
-export type NotificationType = 'collect' | 'sale' | 'follow' | 'mint'
+export type NotificationType = 'collect' | 'sale' | 'follow' | 'mint' | 'listing_expired'
 
 export interface Notification {
   id: string
@@ -19,12 +19,15 @@ export interface Notification {
   amount?: number
   price?: string
   listingId?: string
+  comment?: string
 }
 
 export type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'>
 
 const MAX_PER_USER = 200
 const FOLLOW_DEDUP_WINDOW_SECS = 7 * 24 * 60 * 60
+const READ_IDS_TTL_SECS = 30 * 24 * 60 * 60  // 30 days
+const MUTED_TTL_SECS = 365 * 24 * 60 * 60     // 1 year
 
 const keyNotif = (a: string) => `kismetart:notif:${a.toLowerCase()}`
 const keyLastRead = (a: string) => `kismetart:notif-last-read:${a.toLowerCase()}`
@@ -48,6 +51,7 @@ async function isPriority(
 ): Promise<boolean> {
   if (type === 'sale') return true
   if (type === 'mint') return true
+  if (type === 'listing_expired') return true
   if (type === 'collect' && price && price !== '0') return true
   if (!actor) return false
 
@@ -182,10 +186,12 @@ export async function markAllRead(address: string): Promise<void> {
 
 export async function markOneRead(address: string, id: string): Promise<void> {
   await redis.sadd(keyReadIds(address), id)
+  void redis.expire(keyReadIds(address), READ_IDS_TTL_SECS).catch(() => {})
 }
 
 export async function muteActor(address: string, actor: string): Promise<void> {
   await redis.sadd(keyMuted(address), actor.toLowerCase())
+  void redis.expire(keyMuted(address), MUTED_TTL_SECS).catch(() => {})
 }
 
 export async function unmuteActor(address: string, actor: string): Promise<void> {

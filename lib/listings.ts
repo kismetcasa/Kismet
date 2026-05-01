@@ -1,6 +1,7 @@
 import { redis } from './redis'
 import { randomUUID } from 'crypto'
 import type { SerializedOrderComponents } from './seaport'
+import { writeNotification } from './notifications'
 
 export interface Listing {
   id: string
@@ -15,7 +16,7 @@ export interface Listing {
   signature: string
   createdAt: number       // ms
   expiresAt: number       // ms
-  status: 'active' | 'filled' | 'cancelled'
+  status: 'active' | 'filled' | 'cancelled' | 'expired'
   // Display metadata (denormalized for fast rendering)
   name?: string
   image?: string
@@ -29,6 +30,8 @@ const keyByOwned = (collection: string, tokenId: string, seller: string) =>
   `kismetart:listings:owned:${collection.toLowerCase()}:${tokenId}:${seller.toLowerCase()}`
 const keyBySeller = (seller: string) =>
   `kismetart:listings:seller:${seller.toLowerCase()}`
+// Claim key prevents duplicate expiry notifications across concurrent requests
+const keyExpiredNotif = (id: string) => `kismetart:listing-notified:${id}`
 
 export async function createListing(
   data: Omit<Listing, 'id' | 'createdAt' | 'status'>
@@ -82,6 +85,36 @@ export async function getListingForToken(
   return listing
 }
 
+// Mark expired listings as expired in Redis and fire a notification for each.
+// A claim key (NX) ensures exactly one notification per listing even under concurrency.
+async function handleExpiredListings(listings: Listing[]): Promise<void> {
+  await Promise.all(listings.map(async (listing) => {
+    const claimed = await redis.set(keyExpiredNotif(listing.id), '1', {
+      nx: true,
+      ex: 7 * 24 * 60 * 60,
+    })
+    if (!claimed) return
+
+    const updated: Listing = { ...listing, status: 'expired' }
+    await Promise.all([
+      redis.set(keyById(listing.id), JSON.stringify(updated)),
+      redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
+      redis.zrem(KEY_ALL, listing.id),
+    ])
+
+    void writeNotification({
+      type: 'listing_expired',
+      recipient: listing.seller,
+      tokenAddress: listing.collectionAddress,
+      tokenId: listing.tokenId,
+      tokenName: listing.name,
+      tokenImage: listing.image,
+      price: listing.price,
+      listingId: listing.id,
+    })
+  }))
+}
+
 const MAX_LISTINGS_SCAN = 500
 
 export async function getListings({
@@ -97,19 +130,30 @@ export async function getListings({
 
   const all = await Promise.all(ids.map((id) => getListing(id)))
   const now = Date.now()
-  const stale: string[] = []
+  const expired: Listing[] = []
+  const ghosts: string[] = [] // ZSET entries with no/non-active data — clean up
 
-  const active = all.filter((l): l is Listing => {
-    if (!l) return false
-    if (l.status !== 'active' || l.expiresAt <= now) {
-      stale.push(l.id)
+  const active = all.filter((l, idx): l is Listing => {
+    if (!l) {
+      ghosts.push(ids[idx])
+      return false
+    }
+    if (l.status === 'active' && l.expiresAt <= now) {
+      expired.push(l)
+      return false
+    }
+    if (l.status !== 'active') {
+      ghosts.push(l.id)
       return false
     }
     return !collection || l.collectionAddress.toLowerCase() === collection.toLowerCase()
   })
 
-  if (stale.length > 0) {
-    redis.zrem(KEY_ALL, ...stale).catch(() => {})
+  if (expired.length > 0) {
+    void handleExpiredListings(expired).catch(() => {})
+  }
+  if (ghosts.length > 0) {
+    redis.zrem(KEY_ALL, ...ghosts).catch(() => {})
   }
 
   const total = active.length
@@ -122,14 +166,27 @@ export async function getListingsBySeller(seller: string): Promise<Listing[]> {
   if (!ids.length) return []
   const all = await Promise.all(ids.map((id) => getListing(id)))
   const now = Date.now()
-  return all.filter(
-    (l): l is Listing => l !== null && l.status === 'active' && l.expiresAt > now
-  )
+  const expired: Listing[] = []
+
+  const active = all.filter((l): l is Listing => {
+    if (!l) return false
+    if (l.status === 'active' && l.expiresAt <= now) {
+      expired.push(l)
+      return false
+    }
+    return l.status === 'active' && l.expiresAt > now
+  })
+
+  if (expired.length > 0) {
+    void handleExpiredListings(expired).catch(() => {})
+  }
+
+  return active
 }
 
 export async function updateListingStatus(
   id: string,
-  status: 'filled' | 'cancelled'
+  status: 'filled' | 'cancelled' | 'expired'
 ): Promise<void> {
   const listing = await getListing(id)
   if (!listing) return
