@@ -324,7 +324,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
                   value={coverSupply}
                   onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
                   placeholder="∞"
-                  className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                  className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[14px] placeholder:leading-none focus:outline-none focus:border-[#555]"
                 />
               </>
             )}
