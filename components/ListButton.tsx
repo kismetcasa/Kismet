@@ -25,6 +25,7 @@ interface ListButtonProps {
   image?: string
   creatorAddress?: string
   onListed?: () => void
+  buttonClassName?: string
 }
 
 export function ListButton({
@@ -34,6 +35,7 @@ export function ListButton({
   image,
   creatorAddress,
   onListed,
+  buttonClassName,
 }: ListButtonProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -204,9 +206,9 @@ export function ListButton({
           if (!isConnected) { openConnectModal?.(); return }
           setShowForm(true)
         }}
-        className="w-full text-xs font-mono tracking-wider uppercase px-3 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6] transition-colors"
+        className={`w-full text-xs font-mono tracking-wider uppercase px-3 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6] transition-colors ${buttonClassName ?? ''}`}
       >
-        list for sale
+        list
       </button>
     )
   }
