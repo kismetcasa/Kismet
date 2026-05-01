@@ -11,13 +11,28 @@ import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
-import { shortAddress } from '@/lib/inprocess'
+import { shortAddress, formatPrice } from '@/lib/inprocess'
+
+interface Payment {
+  id: string
+  amount: string
+  hash: string
+  token: { contractAddress: string; tokenId?: string; createdAt?: string }
+  buyer: { address: string; username?: string }
+}
+
+interface ArtistCollection {
+  contractAddress: string
+  name: string
+  metadata?: { name?: string; image?: string; description?: string }
+  createdAt?: string
+}
 
 // ─── section ordering / collapse ─────────────────────────────────────────────
 
-type SectionId = 'mints' | 'collected' | 'listings'
+type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'collections'
 
-const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings']
+const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments', 'collections']
 const SECTIONS_KEY = 'kismetart:profile-sections'
 
 interface SectionsConfig {
@@ -97,10 +112,14 @@ export function ProfileView({ address }: ProfileViewProps) {
   const [moments, setMoments] = useState<Moment[]>([])
   const [collected, setCollected] = useState<Moment[]>([])
   const [listings, setListings] = useState<Listing[]>([])
+  const [payments, setPayments] = useState<Payment[]>([])
+  const [artistCollections, setArtistCollections] = useState<ArtistCollection[]>([])
   const [loadingProfile, setLoadingProfile] = useState(true)
   const [loadingMoments, setLoadingMoments] = useState(true)
   const [loadingCollected, setLoadingCollected] = useState(true)
   const [loadingListings, setLoadingListings] = useState(true)
+  const [loadingPayments, setLoadingPayments] = useState(true)
+  const [loadingCollections, setLoadingCollections] = useState(true)
   const [editing, setEditing] = useState(false)
   const [usernameInput, setUsernameInput] = useState('')
   const [avatarInput, setAvatarInput] = useState('')
@@ -201,6 +220,22 @@ export function ProfileView({ address }: ProfileViewProps) {
       .then((d) => setListings(Array.isArray(d.listings) ? d.listings.filter((l: Listing) => l.status === 'active') : []))
       .catch(() => setListings([]))
       .finally(() => setLoadingListings(false))
+  }, [address])
+
+  useEffect(() => {
+    fetch(`/api/payments?artist=${address}`)
+      .then((r) => r.json())
+      .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
+      .catch(() => setPayments([]))
+      .finally(() => setLoadingPayments(false))
+  }, [address])
+
+  useEffect(() => {
+    fetch(`/api/collections?artist=${address}`)
+      .then((r) => r.json())
+      .then((d) => setArtistCollections(Array.isArray(d.collections) ? d.collections : []))
+      .catch(() => setArtistCollections([]))
+      .finally(() => setLoadingCollections(false))
   }, [address])
 
   // ─── section drag / collapse ──────────────────────────────────────────────
@@ -332,11 +367,19 @@ export function ProfileView({ address }: ProfileViewProps) {
     </div>
   )
 
-  const sectionLabel: Record<SectionId, string> = { mints: 'Mints', collected: 'Collected', listings: 'Active Listings' }
+  const sectionLabel: Record<SectionId, string> = {
+    mints: 'Mints',
+    collected: 'Collected',
+    listings: 'Active Listings',
+    payments: 'Sales',
+    collections: 'Collections',
+  }
   const sectionCount: Record<SectionId, number | null> = {
     mints: loadingMoments ? null : moments.length,
     collected: loadingCollected ? null : collected.length,
     listings: loadingListings ? null : listings.length,
+    payments: loadingPayments ? null : payments.length,
+    collections: loadingCollections ? null : artistCollections.length,
   }
   const sectionContent: Record<SectionId, React.ReactNode> = {
     mints: loadingMoments ? skeleton(6) : moments.length === 0
@@ -348,6 +391,60 @@ export function ProfileView({ address }: ProfileViewProps) {
     listings: loadingListings ? skeleton(3) : listings.length === 0
       ? <p className="text-[#555] font-mono text-xs">no active listings</p>
       : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{listings.map((l) => <MarketCard key={l.id} listing={l} onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))} />)}</div>,
+    payments: loadingPayments ? (
+      <div className="flex flex-col gap-1">
+        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
+      </div>
+    ) : payments.length === 0 ? (
+      <p className="text-[#555] font-mono text-xs">no sales yet</p>
+    ) : (
+      <div className="flex flex-col divide-y divide-[#1a1a1a]">
+        {payments.map((p) => (
+          <div key={p.id} className="flex items-center justify-between py-2.5 gap-4">
+            <span className="text-xs font-mono text-[#555]">
+              {p.buyer.username || shortAddress(p.buyer.address)}
+            </span>
+            <span className="text-xs font-mono accent-grad flex-shrink-0">
+              {formatPrice(p.amount)}
+            </span>
+            <a
+              href={`https://basescan.org/tx/${p.hash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors flex-shrink-0"
+            >
+              {p.hash.slice(0, 8)}…
+            </a>
+          </div>
+        ))}
+      </div>
+    ),
+    collections: loadingCollections ? (
+      <div className="flex flex-col gap-1">
+        {[0,1,2].map((i) => <div key={i} className="h-12 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
+      </div>
+    ) : artistCollections.length === 0 ? (
+      <p className="text-[#555] font-mono text-xs">no collections yet</p>
+    ) : (
+      <div className="flex flex-col divide-y divide-[#1a1a1a]">
+        {artistCollections.map((c) => (
+          <a
+            key={c.contractAddress}
+            href={`https://inprocess.world/collect/base:${c.contractAddress}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between py-2.5 gap-4 group"
+          >
+            <span className="text-xs font-mono text-[#efefef] group-hover:accent-grad transition-colors truncate">
+              {c.metadata?.name || c.name}
+            </span>
+            <span className="text-[10px] font-mono text-[#444] group-hover:text-[#888] transition-colors flex-shrink-0">
+              {shortAddress(c.contractAddress)}
+            </span>
+          </a>
+        ))}
+      </div>
+    ),
   }
 
   // ─── render ───────────────────────────────────────────────────────────────

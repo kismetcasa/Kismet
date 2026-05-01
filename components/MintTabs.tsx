@@ -3,8 +3,9 @@
 import { useState } from 'react'
 import { MintForm } from '@/components/MintForm'
 import { CreateCollectionForm } from '@/components/CreateCollectionForm'
+import { AirdropForm } from '@/components/AirdropForm'
 
-type Tab = 'mint' | 'create'
+type Tab = 'mint' | 'create' | 'airdrop'
 
 export function MintTabs() {
   const [tab, setTab] = useState<Tab>('mint')
@@ -15,29 +16,28 @@ export function MintTabs() {
     setTab('mint')
   }
 
+  const tabs: { id: Tab; label: string }[] = [
+    { id: 'mint', label: 'Mint' },
+    { id: 'create', label: 'Create Collection' },
+    { id: 'airdrop', label: 'Airdrop' },
+  ]
+
   return (
     <div>
       <div className="flex gap-1 mb-8 border-b border-[#2a2a2a] pb-px">
-        <button
-          onClick={() => setTab('mint')}
-          className={`px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px ${
-            tab === 'mint'
-              ? 'border-[#efefef] text-[#efefef]'
-              : 'border-transparent text-[#888] hover:text-[#efefef]'
-          }`}
-        >
-          Mint
-        </button>
-        <button
-          onClick={() => setTab('create')}
-          className={`px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px ${
-            tab === 'create'
-              ? 'border-[#efefef] text-[#efefef]'
-              : 'border-transparent text-[#888] hover:text-[#efefef]'
-          }`}
-        >
-          Create Collection
-        </button>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px ${
+              tab === t.id
+                ? 'border-[#efefef] text-[#efefef]'
+                : 'border-transparent text-[#888] hover:text-[#efefef]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {tab === 'mint' && (
@@ -63,6 +63,11 @@ export function MintTabs() {
       {tab === 'create' && (
         <CreateCollectionForm onDeployed={handleDeployed} />
       )}
+
+      {tab === 'airdrop' && (
+        <AirdropForm />
+      )}
     </div>
   )
 }
+
