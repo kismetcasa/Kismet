@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyMessage, isAddress } from 'viem'
 import { follow, unfollow, isFollowing, getFollowing, getFollowers, getFollowerCount, getFollowingCount } from '@/lib/follows'
 import { consumeNonce } from '@/lib/profile'
-import { checkRateLimit } from '@/lib/ratelimit'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 type Params = { params: Promise<{ address: string }> }
 
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const { address } = await params
   if (!isAddress(address)) return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? 'unknown'
+  const ip = getClientIp(req)
   const allowed = await checkRateLimit(`follow:${ip}`, 20, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
@@ -83,7 +83,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   const { address } = await params
   if (!isAddress(address)) return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? 'unknown'
+  const ip = getClientIp(req)
   const allowed = await checkRateLimit(`follow:${ip}`, 20, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 

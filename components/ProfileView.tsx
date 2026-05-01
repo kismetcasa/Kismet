@@ -322,7 +322,6 @@ export function ProfileView({ address }: ProfileViewProps) {
     }
   }
 
-
   // ─── section content map ──────────────────────────────────────────────────
 
   const skeleton = (n: number) => (
@@ -353,8 +352,7 @@ export function ProfileView({ address }: ProfileViewProps) {
 
   // ─── render ───────────────────────────────────────────────────────────────
 
-  const shortAddr = `${address.slice(0, 6)}…${address.slice(-4)}`
-  const displayName = profile?.username || profile?.ensName || shortAddr
+  const displayName = profile?.username || profile?.ensName || shortAddress(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
@@ -519,7 +517,7 @@ export function ProfileView({ address }: ProfileViewProps) {
               type="text"
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
-              placeholder={shortAddr}
+              placeholder={shortAddress(address)}
               maxLength={30}
               className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
             />

@@ -15,7 +15,6 @@ import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
 
-
 interface Props {
   address: string
   tokenId: string

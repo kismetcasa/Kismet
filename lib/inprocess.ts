@@ -109,7 +109,6 @@ export function resolveUri(uri: string): string {
   return uri
 }
 
-
 export interface MomentDetail {
   uri: string
   owner: string

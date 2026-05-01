@@ -91,7 +91,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
     <button
       onClick={handleBuy}
       disabled={loading || bought}
-      className={`text-xs font-mono tracking-wider uppercase px-4 py-2.5 border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+      className={`text-xs font-mono tracking-wider uppercase px-4 py-2.5 border transition-colors disabled:opacity-50 ${loading ? 'cursor-not-allowed' : ''} ${
         bought
           ? 'border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10'
           : 'border-[#2a2a2a] text-[#888] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'

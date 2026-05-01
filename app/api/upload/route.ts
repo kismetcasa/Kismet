@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { TurboFactory } from '@ardrive/turbo-sdk'
-import { checkRateLimit } from '@/lib/ratelimit'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -13,11 +13,7 @@ function getTurbo() {
 }
 
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown'
-
+  const ip = getClientIp(req)
   const allowed = await checkRateLimit(`upload:${ip}`, 10, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
