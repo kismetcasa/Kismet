@@ -1,67 +1,76 @@
 'use client'
 
-import { ConnectButton } from '@rainbow-me/rainbowkit'
+import { useEffect, useState } from 'react'
+import { useAccount } from 'wagmi'
+import { useAccountModal, useConnectModal } from '@rainbow-me/rainbowkit'
 import { shortAddress } from '@/lib/inprocess'
 
-interface WalletButtonProps {
-  displayName?: string
-  nameLoaded?: boolean
+const connectStyle: React.CSSProperties = {
+  borderRadius: '9999px',
+  background: 'white',
+  fontFamily: 'var(--font-mono)',
+  fontSize: '13px',
+  fontWeight: 600,
+  color: 'black',
+  padding: '7px 18px',
+  border: 'none',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+  letterSpacing: '0.05em',
 }
 
-export function WalletButton({ displayName, nameLoaded = false }: WalletButtonProps) {
-  return (
-    <ConnectButton.Custom>
-      {({ account, chain, openAccountModal, openConnectModal, mounted }) => {
-        const ready = mounted
-        const connected = ready && account && chain
+const addressStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+  fontSize: '11px',
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+  letterSpacing: '0.05em',
+}
 
-        return (
-          <div
-            {...(!ready && {
-              'aria-hidden': true,
-              style: { opacity: 0, pointerEvents: 'none', userSelect: 'none' },
-            })}
-          >
-            {!connected ? (
-              <button
-                onClick={openConnectModal}
-                style={{
-                  borderRadius: '9999px',
-                  background: 'white',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  color: 'black',
-                  padding: '7px 18px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                  letterSpacing: '0.05em',
-                }}
-              >
-                connect
-              </button>
-            ) : (
-              <button
-                onClick={openAccountModal}
-                className={`transition-colors hover:text-[#efefef] ${nameLoaded ? 'text-[#888]' : 'text-[#444]'}`}
-                style={{
-                  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                  fontSize: '11px',
-                  padding: 0,
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                  letterSpacing: '0.05em',
-                }}
-              >
-                {nameLoaded ? (displayName ?? shortAddress(account.address)) : shortAddress(account.address)}
-              </button>
-            )}
-          </div>
-        )
-      }}
-    </ConnectButton.Custom>
+export function WalletButton() {
+  const [mounted, setMounted] = useState(false)
+  const { address, isConnected } = useAccount()
+  const { openAccountModal } = useAccountModal()
+  const { openConnectModal } = useConnectModal()
+  const [displayName, setDisplayName] = useState<string | null>(null)
+
+  useEffect(() => { setMounted(true) }, [])
+
+  useEffect(() => {
+    if (!address) { setDisplayName(null); return }
+    fetch(`/api/profile/${address}`)
+      .then((r) => r.json())
+      .then((d) => setDisplayName(d.profile?.username || d.profile?.ensName || null))
+      .catch(() => {})
+  }, [address])
+
+  // Hidden placeholder during SSR / before hydration to avoid layout shift
+  if (!mounted) {
+    return (
+      <div aria-hidden style={{ opacity: 0, pointerEvents: 'none', userSelect: 'none' }}>
+        <button style={connectStyle}>connect</button>
+      </div>
+    )
+  }
+
+  if (!isConnected || !address) {
+    return (
+      <button onClick={openConnectModal} style={connectStyle}>
+        connect
+      </button>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => openAccountModal?.()}
+      className="text-[#888] hover:text-[#efefef] transition-colors"
+      style={addressStyle}
+    >
+      {displayName ?? shortAddress(address)}
+    </button>
   )
 }
