@@ -2,7 +2,8 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useAccount } from 'wagmi'
+import { useAccount, useEnsName } from 'wagmi'
+import { mainnet } from 'wagmi/chains'
 import { useEffect, useState } from 'react'
 import { Search } from 'lucide-react'
 import { WalletButton } from './WalletButton'
@@ -14,20 +15,31 @@ export function Nav() {
   const pathname = usePathname()
   const { address, isConnected } = useAccount()
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
-  const [displayName, setDisplayName] = useState<string | undefined>(undefined)
+  const [profileUsername, setProfileUsername] = useState<string | undefined>(undefined)
   const [searchOpen, setSearchOpen] = useState(false)
   const [modalQuery, setModalQuery] = useState('')
 
+  // Resolve ENS client-side via wagmi — no server round-trip, uses wallet provider
+  const { data: ensName } = useEnsName({
+    address: address as `0x${string}`,
+    chainId: mainnet.id,
+    query: { enabled: !!address },
+  })
+
+  // Fetch profile for custom username and avatar only
   useEffect(() => {
-    if (!address) { setAvatarUrl(undefined); setDisplayName(undefined); return }
+    if (!address) { setProfileUsername(undefined); setAvatarUrl(undefined); return }
     fetch(`/api/profile/${address}`)
       .then((r) => r.json())
       .then((d) => {
+        setProfileUsername(d.profile?.username || undefined)
         setAvatarUrl(d.profile?.avatarUrl)
-        setDisplayName(d.profile?.username || d.profile?.ensName)
       })
       .catch(() => {})
   }, [address])
+
+  // Custom username takes priority; fall back to wagmi ENS (resolves without server wait)
+  const displayName = profileUsername || ensName || undefined
 
   return (
     <>

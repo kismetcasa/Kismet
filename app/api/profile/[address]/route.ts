@@ -4,21 +4,32 @@ import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
 import { getProfile, upsertProfile, consumeNonce } from '@/lib/profile'
 
-const mainnetClient = createPublicClient({ chain: mainnet, transport: http() })
+// Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on the public default
+const mainnetClient = createPublicClient({
+  chain: mainnet,
+  transport: http(process.env.MAINNET_RPC_URL),
+})
 
-async function resolveEns(address: string): Promise<string | null> {
+const ENS_TTL = 3600      // 1 hour for resolved names
+const ENS_FAIL_TTL = 300  // 5 minutes for failures / confirmed no-ENS
+
+async function getCachedEns(address: string): Promise<string | null | undefined> {
   const key = `kismetart:ens:${address.toLowerCase()}`
   try {
     const cached = await redis.get<string>(key)
-    if (cached !== null) return cached || null  // '' stored means no ENS
-  } catch {}
-  try {
-    const name = await mainnetClient.getEnsName({ address: address as `0x${string}` })
-    await redis.set(key, name ?? '', { ex: 3600 })
-    return name ?? null
+    if (cached === null) return undefined          // cache miss
+    return cached === '' ? null : cached           // '' = confirmed no ENS
   } catch {
-    return null
+    return undefined
   }
+}
+
+// Fire-and-forget: resolves ENS and caches the result (or failure) in the background
+function resolveEnsInBackground(address: string): void {
+  const key = `kismetart:ens:${address.toLowerCase()}`
+  mainnetClient.getEnsName({ address: address as `0x${string}` })
+    .then((name) => redis.set(key, name ?? '', { ex: ENS_TTL }).catch(() => {}))
+    .catch(() => redis.set(key, '', { ex: ENS_FAIL_TTL }).catch(() => {}))
 }
 
 export async function GET(
@@ -31,8 +42,13 @@ export async function GET(
   }
   const profile = await getProfile(address)
   if (!profile.username) {
-    const ensName = await resolveEns(address)
-    if (ensName) return NextResponse.json({ profile: { ...profile, ensName } })
+    const cached = await getCachedEns(address)
+    if (cached === undefined) {
+      // Cache miss — return immediately and resolve in the background
+      resolveEnsInBackground(address)
+    } else if (cached) {
+      return NextResponse.json({ profile: { ...profile, ensName: cached } })
+    }
   }
   return NextResponse.json({ profile })
 }

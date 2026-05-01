@@ -3,9 +3,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { parseEventLogs, isAddress } from 'viem'
+import { parseEventLogs, isAddress, parseEther } from 'viem'
 import { toast } from 'sonner'
-import { Upload, X, Plus, Trash2 } from 'lucide-react'
+import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
 import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission } from '@/lib/collections'
 import { CREATE_REFERRAL } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -27,7 +27,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [royaltyRecipient, setRoyaltyRecipient] = useState('')
   const [minters, setMinters] = useState<string[]>([])
   const [minterInput, setMinterInput] = useState('')
-  const [step, setStep] = useState<'idle' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'done'>('idle')
+  const [mintCover, setMintCover] = useState(false)
+  const [coverPrice, setCoverPrice] = useState('0')
+  const [coverSupply, setCoverSupply] = useState('')
+  const [step, setStep] = useState<'idle' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'minting-cover' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [collectionAddress, setCollectionAddress] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
@@ -67,8 +70,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     const found = logs[0]?.args?.newContract as string | undefined
     const deployedAddress = found ?? receipt.logs[0]?.address ?? null
     setCollectionAddress(deployedAddress)
-    setStep('done')
-    toast.success('Collection deployed!', { id: 'create-collection' })
+
     if (deployedAddress) {
       fetch('/api/collections', {
         method: 'POST',
@@ -82,6 +84,58 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       }).catch(() => {})
       onDeployed?.(deployedAddress, name)
     }
+
+    if (mintCover && deployedAddress && deployedImageUri) {
+      setStep('minting-cover')
+      toast.loading('Minting cover token…', { id: 'create-collection' })
+      ;(async () => {
+        try {
+          const tokenMetadataUri = await uploadJson({
+            name: name.trim(),
+            ...(description.trim() ? { description: description.trim() } : {}),
+            image: deployedImageUri,
+          })
+          const now = Math.floor(Date.now() / 1000)
+          const priceWei = parseEther(coverPrice || '0').toString()
+          const maxSupplyVal = coverSupply.trim() ? parseInt(coverSupply, 10) : undefined
+          const res = await fetch('/api/mint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contract: { address: deployedAddress },
+              token: {
+                tokenMetadataURI: tokenMetadataUri,
+                createReferral: CREATE_REFERRAL,
+                salesConfig: {
+                  type: 'fixedPrice',
+                  pricePerToken: priceWei,
+                  saleStart: String(now),
+                  saleEnd: '18446744073709551615',
+                },
+                mintToCreatorCount: 1,
+                payoutRecipient: address,
+                ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
+              },
+              account: address,
+            }),
+          })
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error ?? 'Mint failed')
+          toast.success('Collection deployed + cover minted!', { id: 'create-collection' })
+        } catch (err) {
+          toast.error('Cover mint failed', {
+            id: 'create-collection',
+            description: err instanceof Error ? err.message : 'Unknown error',
+          })
+        } finally {
+          setStep('done')
+        }
+      })()
+    } else {
+      setStep('done')
+      toast.success('Collection deployed!', { id: 'create-collection' })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [receipt, step])
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -227,6 +281,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             setRoyaltyRecipient('')
             setMinters([])
             setMinterInput('')
+            setMintCover(false)
+            setCoverPrice('0')
+            setCoverSupply('')
             setDeployedImageUri(undefined)
           }}
           className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
@@ -241,9 +298,48 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     <form onSubmit={handleCreate} className="flex flex-col gap-6">
       {/* Cover image */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Cover Image <span className="text-[#efefef]">*</span>
-        </label>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-mono text-[#888] uppercase tracking-wider">
+            Cover Image <span className="text-[#efefef]">*</span>
+          </span>
+          <div className="flex items-center gap-1.5">
+            {mintCover && (
+              <>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={coverPrice}
+                    onChange={(e) => setCoverPrice(e.target.value)}
+                    placeholder="0"
+                    min="0"
+                    step="0.001"
+                    className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                  />
+                  <span className="text-[10px] font-mono text-[#555]">eth</span>
+                </div>
+                <input
+                  type="number"
+                  value={coverSupply}
+                  onChange={(e) => setCoverSupply(e.target.value)}
+                  placeholder="∞"
+                  min="1"
+                  step="1"
+                  className="w-10 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setMintCover((v) => !v)}
+              title={mintCover ? 'cancel mint' : 'also mint as first token'}
+              className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors ${
+                mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/10' : 'border-[#2a2a2a] hover:border-[#555]'
+              }`}
+            >
+              {mintCover && <Check size={9} className="text-[#8B5CF6]" />}
+            </button>
+          </div>
+        </div>
         {coverPreview ? (
           <div className="relative aspect-video bg-[#111] border border-[#2a2a2a] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -418,6 +514,7 @@ function stepLabel(step: string, progress: number): string {
     case 'uploading-image': return progress > 0 ? `uploading image… ${progress}%` : 'uploading image…'
     case 'uploading-metadata': return 'uploading metadata…'
     case 'deploying': return 'deploying…'
+    case 'minting-cover': return 'minting cover…'
     default: return 'working…'
   }
 }

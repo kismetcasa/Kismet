@@ -14,18 +14,23 @@ import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
 
 // Module-level cache — deduplicates profile fetches across all mounted cards
-const profileCache = new Map<string, { name: string; ts: number }>()
-const CACHE_TTL = 5 * 60 * 1000
+const profileCache = new Map<string, { name: string; ts: number; resolved: boolean }>()
+const CACHE_TTL_RESOLVED = 5 * 60 * 1000  // 5 min for real username / ENS
+const CACHE_TTL_FALLBACK = 30 * 1000       // 30 s for shortAddress — retries quickly once ENS caches
 
 async function fetchCreatorName(address: string): Promise<string> {
   const cached = profileCache.get(address)
-  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.name
+  if (cached) {
+    const ttl = cached.resolved ? CACHE_TTL_RESOLVED : CACHE_TTL_FALLBACK
+    if (Date.now() - cached.ts < ttl) return cached.name
+  }
   try {
     const res = await fetch(`/api/profile/${address}`)
     const d = await res.json()
-    const name: string = d.profile?.username || d.profile?.ensName || shortAddress(address)
-    profileCache.set(address, { name, ts: Date.now() })
-    return name
+    const name: string = d.profile?.username || d.profile?.ensName || ''
+    const resolved = !!name
+    profileCache.set(address, { name: name || shortAddress(address), ts: Date.now(), resolved })
+    return name || shortAddress(address)
   } catch {
     return shortAddress(address)
   }
