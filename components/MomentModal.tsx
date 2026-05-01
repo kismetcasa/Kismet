@@ -266,22 +266,21 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
           {/* Spacer */}
           <div className="flex-1 min-h-4" />
 
-          {/* List (if owned) */}
-          {alreadyOwned && (
-            <div className="px-5 pb-2">
-              <ListButton
-                collectionAddress={moment.address}
-                tokenId={moment.token_id}
-                name={meta.name}
-                image={meta.image ? resolveUri(meta.image) : undefined}
-                creatorAddress={creatorAddress}
-              />
-            </div>
-          )}
-
-          {/* Collect row */}
-          <div className="px-5 pb-2">
-            <div className={`flex border transition-colors ${
+          {/* Collect row — list to the left when owned */}
+          <div className="px-5 pb-2 flex gap-2 items-stretch">
+            {alreadyOwned && (
+              <div className="min-w-[10rem] flex-shrink-0">
+                <ListButton
+                  collectionAddress={moment.address}
+                  tokenId={moment.token_id}
+                  name={meta.name}
+                  image={meta.image ? resolveUri(meta.image) : undefined}
+                  creatorAddress={creatorAddress}
+                  buttonClassName="h-full"
+                />
+              </div>
+            )}
+            <div className={`flex flex-1 border transition-colors ${
               collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
               <button
