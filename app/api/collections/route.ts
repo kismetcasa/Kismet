@@ -36,12 +36,13 @@ export async function POST(req: NextRequest) {
   const allowed = await checkRateLimit(`collections:${ip}`, 5, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
-  const body = await req.json() as {
-    address: string
-    name?: string
-    image?: string
-    description?: string
+  let body: { address: string; name?: string; image?: string; description?: string }
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
+
   if (!body.address || !isAddress(body.address)) {
     return NextResponse.json({ error: 'valid address required' }, { status: 400 })
   }

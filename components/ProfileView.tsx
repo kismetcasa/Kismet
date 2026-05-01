@@ -405,7 +405,7 @@ export function ProfileView({ address }: ProfileViewProps) {
               {p.buyer.username || shortAddress(p.buyer.address)}
             </span>
             <span className="text-xs font-mono accent-grad flex-shrink-0">
-              {formatPrice(p.amount)}
+              {(() => { try { return formatPrice(p.amount) } catch { return `${p.amount} wei` } })()}
             </span>
             <a
               href={`https://basescan.org/tx/${p.hash}`}

@@ -11,9 +11,11 @@ export async function POST(req: NextRequest) {
   const apiKey = process.env.INPROCESS_API_KEY
   if (!apiKey) return NextResponse.json({ error: 'INPROCESS_API_KEY not configured' }, { status: 500 })
 
-  const body = await req.json() as {
-    recipients?: { recipientAddress: string; tokenId: string }[]
-    collectionAddress?: string
+  let body: { recipients?: { recipientAddress: string; tokenId: string }[]; collectionAddress?: string }
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
 
   if (!body.collectionAddress || !isAddress(body.collectionAddress)) {
@@ -28,20 +30,23 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const res = await fetch(`${INPROCESS_API}/moment/airdrop`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ recipients: body.recipients, collectionAddress: body.collectionAddress }),
-  })
-
-  const text = await res.text()
   try {
-    return NextResponse.json(JSON.parse(text), { status: res.status })
+    const res = await fetch(`${INPROCESS_API}/moment/airdrop`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ recipients: body.recipients, collectionAddress: body.collectionAddress }),
+    })
+    const text = await res.text()
+    try {
+      return NextResponse.json(JSON.parse(text), { status: res.status })
+    } catch {
+      return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
+    }
   } catch {
-    return NextResponse.json({ error: 'upstream error' }, { status: 502 })
+    return NextResponse.json({ error: 'upstream unreachable' }, { status: 502 })
   }
 }

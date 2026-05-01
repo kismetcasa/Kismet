@@ -65,7 +65,7 @@ export function MintTabs() {
       )}
 
       {tab === 'airdrop' && (
-        <AirdropForm />
+        <AirdropForm collectionAddress={deployedCollection?.address ?? ''} />
       )}
     </div>
   )
