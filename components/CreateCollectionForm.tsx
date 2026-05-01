@@ -106,6 +106,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       openConnectModal?.()
       return
     }
+    if (!coverFile) {
+      toast.error('Please add a cover image')
+      return
+    }
     if (!name.trim()) {
       toast.error('Please enter a collection name')
       return
@@ -238,7 +242,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       {/* Cover image */}
       <div>
         <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Cover Image
+          Cover Image <span className="text-[#efefef]">*</span>
         </label>
         {coverPreview ? (
           <div className="relative aspect-video bg-[#111] border border-[#2a2a2a] overflow-hidden">
@@ -269,7 +273,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             <Upload size={24} className="text-[#555]" />
             <div className="text-center">
               <p className="text-xs font-mono text-[#555]">drop image or click to upload</p>
-              <p className="text-xs font-mono text-[#333] mt-1">optional cover image</p>
+              <p className="text-xs font-mono text-[#333] mt-1">image, gif</p>
             </div>
           </div>
         )}

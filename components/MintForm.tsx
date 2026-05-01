@@ -269,7 +269,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
       <div>
         <div className="flex items-center justify-between mb-2">
           <label className="block text-xs font-mono text-[#888] uppercase tracking-wider">
-            {mintMode === 'media' ? 'Media' : 'Content'}
+            {mintMode === 'media' ? 'Media' : 'Content'} <span className="text-[#efefef]">*</span>
           </label>
           <button
             type="button"

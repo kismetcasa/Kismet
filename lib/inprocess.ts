@@ -113,6 +113,7 @@ export function resolveUri(uri: string): string {
 export interface MomentDetail {
   uri: string
   owner: string
+  maxSupply?: number
   saleConfig: {
     pricePerToken: string
     saleStart: string
