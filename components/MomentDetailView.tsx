@@ -375,7 +375,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
               </div>
             )}
             <div className={`flex ${alreadyOwned ? 'flex-1 -ml-px' : 'w-full'} border transition-colors ${
-              collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
+              alreadyOwned ? 'border-[#8B5CF6] border-l-[#2a2a2a]' : collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
               <button
                 onClick={handleCollect}

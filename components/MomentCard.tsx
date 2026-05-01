@@ -228,7 +228,7 @@ export function MomentCard({ moment }: MomentCardProps) {
             </div>
           )}
           <div className={`flex ${owned > 0 ? 'flex-1 -ml-px' : 'w-full'} border transition-colors ${
-            collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
+            collected ? (owned > 0 ? 'border-[#8B5CF6] border-l-[#2a2a2a]' : 'border-[#8B5CF6]') : 'border-[#2a2a2a]'
           }`}>
             <button
               onClick={handleCollect}

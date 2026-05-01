@@ -281,7 +281,7 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
               </div>
             )}
             <div className={`flex flex-1 border transition-colors ${
-              collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
+              alreadyOwned ? 'border-[#8B5CF6] border-l-[#2a2a2a]' : collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
               <button
                 onClick={handleCollect}
