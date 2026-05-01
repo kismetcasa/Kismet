@@ -44,7 +44,9 @@ export function NotificationPreview({ address, visible, onRowClick, onSeeAll }: 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, actor }),
-    }).catch(() => {})
+    })
+      .then(() => window.dispatchEvent(new CustomEvent('kismetart:notif-refetch')))
+      .catch(() => {})
   }
 
   if (!visible) return null

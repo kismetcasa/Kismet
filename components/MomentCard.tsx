@@ -7,7 +7,7 @@ import { Star, Copy, Check, ExternalLink } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { resolveUri, formatPrice, shortAddress, type Moment, type MomentDetail } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, DEFAULT_COLLECT_COMMENT, type Moment, type MomentDetail } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useAdmin } from '@/contexts/AdminContext'
 import { ERC1155_ABI } from '@/lib/seaport'
@@ -86,7 +86,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
         body: JSON.stringify({
           moment: { collectionAddress: moment.address, tokenId: moment.token_id, chainId: 8453 },
           amount: 1,
-          comment: 'collected via Kismet Art',
+          comment: DEFAULT_COLLECT_COMMENT,
           account: connectedAddress,
         }),
       })
