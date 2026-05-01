@@ -362,7 +362,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
           )}
 
           {/* List + Collect — hugs the bottom */}
-          <div className="px-5 py-4 flex">
+          <div className="px-5 py-4 flex gap-2 items-stretch">
             {alreadyOwned && (
               <div className="w-2/5 flex-none">
                 <ListButton
@@ -374,8 +374,8 @@ export function MomentDetailView({ address, tokenId }: Props) {
                 />
               </div>
             )}
-            <div className={`flex ${alreadyOwned ? 'flex-1 -ml-px' : 'w-full'} border transition-colors ${
-              alreadyOwned ? 'border-[#8B5CF6] border-l-[#2a2a2a]' : collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
+            <div className={`flex ${alreadyOwned ? 'flex-1' : 'w-full'} border transition-colors ${
+              alreadyOwned || collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
               <button
                 onClick={handleCollect}
