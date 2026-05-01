@@ -5,9 +5,10 @@ import { shortAddress } from '@/lib/inprocess'
 
 interface WalletButtonProps {
   displayName?: string
+  nameLoaded?: boolean
 }
 
-export function WalletButton({ displayName }: WalletButtonProps) {
+export function WalletButton({ displayName, nameLoaded = false }: WalletButtonProps) {
   return (
     <ConnectButton.Custom>
       {({ account, chain, openAccountModal, openConnectModal, mounted }) => {
@@ -43,7 +44,7 @@ export function WalletButton({ displayName }: WalletButtonProps) {
             ) : (
               <button
                 onClick={openAccountModal}
-                className="text-[#888] hover:text-[#efefef] transition-colors"
+                className={`transition-colors hover:text-[#efefef] ${nameLoaded ? 'text-[#888]' : 'text-[#444]'}`}
                 style={{
                   fontFamily: 'var(--font-mono, ui-monospace, monospace)',
                   fontSize: '11px',
@@ -55,7 +56,7 @@ export function WalletButton({ displayName }: WalletButtonProps) {
                   letterSpacing: '0.05em',
                 }}
               >
-                {displayName ?? shortAddress(account.address)}
+                {nameLoaded ? (displayName ?? shortAddress(account.address)) : shortAddress(account.address)}
               </button>
             )}
           </div>

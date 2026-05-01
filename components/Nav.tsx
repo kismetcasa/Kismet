@@ -16,12 +16,14 @@ export function Nav() {
   const { address, isConnected } = useAccount()
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
   const [displayName, setDisplayName] = useState<string | undefined>(undefined)
+  const [nameLoaded, setNameLoaded] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [modalQuery, setModalQuery] = useState('')
 
   // Fetch profile for nav avatar + display name (username > ENS > shortAddress fallback)
   useEffect(() => {
-    if (!address) { setAvatarUrl(undefined); setDisplayName(undefined); return }
+    if (!address) { setAvatarUrl(undefined); setDisplayName(undefined); setNameLoaded(false); return }
+    setNameLoaded(false)
     fetch(`/api/profile/${address}`)
       .then((r) => r.json())
       .then((d) => {
@@ -29,6 +31,7 @@ export function Nav() {
         setDisplayName(d.profile?.username || d.profile?.ensName || undefined)
       })
       .catch(() => {})
+      .finally(() => setNameLoaded(true))
   }, [address])
 
   return (
@@ -72,7 +75,7 @@ export function Nav() {
               <Search size={18} />
             </button>
             {isConnected && address && <NotificationBell address={address} />}
-            <WalletButton displayName={displayName} />
+            <WalletButton displayName={displayName} nameLoaded={nameLoaded} />
             {isConnected && address && (
               <Link href={`/profile/${address}`} className="flex-shrink-0">
                 <ProfileAvatar address={address} avatarUrl={avatarUrl} size={32} clickable />
