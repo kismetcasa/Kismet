@@ -310,20 +310,20 @@ export function MomentModal({
           <div className="flex-1 min-h-4" />
 
           {/* Collect row — list to the left when owned */}
-          <div className="px-5 pb-2 flex gap-2 items-stretch">
+          <div className="px-5 pb-2 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
             {alreadyOwned && (
-              <div className="w-1/3 flex-shrink-0">
+              <div className="w-full sm:w-1/3 sm:flex-shrink-0">
                 <ListButton
                   collectionAddress={moment.address}
                   tokenId={moment.token_id}
                   name={meta.name}
                   image={meta.image ? resolveUri(meta.image) : undefined}
                   creatorAddress={creatorAddress}
-                  buttonClassName="h-full"
+                  buttonClassName="h-auto sm:h-full"
                 />
               </div>
             )}
-            <div className={`flex flex-1 border transition-colors ${
+            <div className={`flex ${alreadyOwned ? 'w-full sm:flex-1' : 'flex-1'} border transition-colors ${
               alreadyOwned || collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
               <button
