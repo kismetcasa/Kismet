@@ -218,7 +218,7 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
             >
               <ProfileAvatar address={creatorAddress} avatarUrl={creatorAvatar} size={20} />
               <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
-                by {creatorName}
+                {creatorName}
               </span>
             </Link>
 

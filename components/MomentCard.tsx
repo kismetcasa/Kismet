@@ -207,10 +207,15 @@ export function MomentCard({ moment }: MomentCardProps) {
               </Link>
             </div>
           </div>
-          <div className="flex items-center gap-1.5" title={moment.creator.address}>
+          <Link
+            href={`/profile/${moment.creator.address}`}
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-1.5 group w-fit"
+            title={moment.creator.address}
+          >
             <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={16} />
-            <span className="text-xs text-[#555] font-mono">{creatorName}</span>
-          </div>
+            <span className="text-xs text-[#555] font-mono group-hover:text-[#888] transition-colors">{creatorName}</span>
+          </Link>
         </div>
 
         {/* Actions — list (if owned) + collect + price */}
