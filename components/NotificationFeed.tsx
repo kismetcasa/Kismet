@@ -123,7 +123,9 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, actor }),
-    }).catch(() => {})
+    })
+      .then(() => window.dispatchEvent(new CustomEvent('kismetart:notif-refetch')))
+      .catch(() => {})
   }
 
   return (

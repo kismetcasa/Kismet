@@ -154,17 +154,20 @@ export async function getNotifications(
 }
 
 export async function getUnreadCount(address: string): Promise<number> {
-  const [raws, lastRead, readIdsArr] = await Promise.all([
+  const [raws, lastRead, readIdsArr, mutedArr] = await Promise.all([
     redis.zrange(keyNotif(address), 0, -1, { rev: true }) as Promise<string[]>,
     redis.get<string>(keyLastRead(address)),
     redis.smembers(keyReadIds(address)) as Promise<string[]>,
+    redis.smembers(keyMuted(address)) as Promise<string[]>,
   ])
   const lastReadTs = Number(lastRead ?? 0)
   const readIds = new Set(readIdsArr)
+  const muted = new Set(mutedArr.map((a) => a.toLowerCase()))
   let count = 0
   for (const raw of raws) {
     try {
       const n = typeof raw === 'string' ? (JSON.parse(raw) as Notification) : (raw as Notification)
+      if (n.actor && muted.has(n.actor.toLowerCase())) continue
       if (!n.priority) continue
       if (n.timestamp <= lastReadTs) continue
       if (readIds.has(n.id)) continue

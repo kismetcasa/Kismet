@@ -42,14 +42,16 @@ export function WalletButton({ displayName }: WalletButtonProps = {}) {
             ) : (
               <button
                 onClick={openAccountModal}
+                className="hover:opacity-80 transition-opacity"
                 style={{
-                  borderRadius: '9999px',
-                  background: 'linear-gradient(#0d0d0d, #0d0d0d) padding-box, linear-gradient(135deg, #8B5CF6, #C084FC) border-box',
-                  border: '1px solid transparent',
-                  color: '#efefef',
+                  background: 'linear-gradient(135deg, #8B5CF6, #C084FC)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
                   fontFamily: 'var(--font-mono, ui-monospace, monospace)',
                   fontSize: '11px',
-                  padding: '6px 14px',
+                  padding: 0,
+                  border: 'none',
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                   letterSpacing: '0.05em',
