@@ -362,16 +362,15 @@ export function MomentDetailView({ address, tokenId }: Props) {
           )}
 
           {/* List + Collect — hugs the bottom */}
-          <div className="px-5 py-4 flex items-stretch">
+          <div className="px-5 py-4 flex">
             {alreadyOwned && (
-              <div className="flex-1 flex flex-col">
+              <div className="flex-1">
                 <ListButton
                   collectionAddress={address}
                   tokenId={tokenId}
                   name={meta.name}
                   image={meta.image ? resolveUri(meta.image) : undefined}
                   creatorAddress={creatorAddress}
-                  buttonClassName="h-full"
                 />
               </div>
             )}
