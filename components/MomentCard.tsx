@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Star, Copy, Check, ExternalLink } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
@@ -21,6 +22,7 @@ interface MomentCardProps {
 }
 
 export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
+  const router = useRouter()
   const [imgError, setImgError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
   const [maxSupply, setMaxSupply] = useState<number | null | undefined>(undefined)
@@ -110,9 +112,9 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
   return (
     <>
       <article className="group flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
-        {/* Media — click opens modal */}
+        {/* Media — click opens modal on desktop, navigates to detail page on mobile */}
         <div
-          onClick={() => setModalOpen(true)}
+          onClick={() => window.innerWidth < 640 ? router.push(`/moment/${moment.address}/${moment.token_id}`) : setModalOpen(true)}
           className="cursor-pointer relative aspect-square bg-[#111] overflow-hidden"
         >
           {owned > 0 && (
