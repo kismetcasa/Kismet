@@ -216,19 +216,18 @@ export function ListButton({
   return (
     <div className="flex gap-1.5 items-center w-full">
       <input
-        type="number"
+        type="text"
+        inputMode="decimal"
         value={priceEth}
-        onChange={(e) => setPriceEth(e.target.value)}
-        placeholder="price in ETH"
-        min="0"
-        step="0.001"
+        onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceEth(v) }}
+        placeholder="ETH"
         disabled={isBusy}
         className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
       />
       <button
         onClick={handleList}
         disabled={isBusy}
-        className="flex-shrink-0 text-xs font-mono tracking-wider uppercase px-3 py-2.5 btn-accent"
+        className="flex-1 text-xs font-mono tracking-wider uppercase px-2 py-2.5 btn-accent"
       >
         {step === 'approving' ? 'approving…'
           : step === 'signing' ? 'signing…'

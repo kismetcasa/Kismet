@@ -269,7 +269,7 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
           {/* Collect row — list to the left when owned */}
           <div className="px-5 pb-2 flex gap-2 items-stretch">
             {alreadyOwned && (
-              <div className="w-1/4 flex-shrink-0">
+              <div className="w-1/3 flex-shrink-0">
                 <ListButton
                   collectionAddress={moment.address}
                   tokenId={moment.token_id}
