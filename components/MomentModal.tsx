@@ -279,16 +279,9 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
             </div>
           )}
 
-          {/* View page + Collect row */}
-          <div className="px-5 pb-5 flex">
-            <Link
-              href={`/moment/${moment.address}/${moment.token_id}`}
-              onClick={onClose}
-              className="flex-1 flex items-center justify-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors py-2.5"
-            >
-              view page →
-            </Link>
-            <div className={`flex flex-1 -ml-px border transition-colors ${
+          {/* Collect row */}
+          <div className="px-5 pb-2">
+            <div className={`flex border transition-colors ${
               collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
               <button
@@ -300,10 +293,26 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
               >
                 {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
               </button>
-              <div className="border-l border-[#2a2a2a] px-2 py-1.5 flex items-center justify-end min-w-[3.5rem]">
-                <span className="text-[9px] font-mono accent-grad">{price ?? '…'}</span>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-[#444]">
+                  {detail === null ? '…' : (detail.maxSupply ? detail.maxSupply.toLocaleString() : 'open')}
+                </span>
+              </div>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
             </div>
+          </div>
+
+          {/* View page — hugs bottom */}
+          <div className="px-5 pb-5">
+            <Link
+              href={`/moment/${moment.address}/${moment.token_id}`}
+              onClick={onClose}
+              className="w-full flex items-center justify-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors py-2.5"
+            >
+              view page →
+            </Link>
           </div>
 
         </div>
