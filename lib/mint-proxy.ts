@@ -27,6 +27,13 @@ export async function proxyMintRequest(
     }
   }
 
+  // body.name is our private hint for moment-meta; never forward to InProcess
+  const { name: bodyName, ...forwardBody } = body
+  const displayName =
+    (typeof bodyName === 'string' && bodyName) ||
+    (typeof tokenObj.name === 'string' && (tokenObj.name as string)) ||
+    undefined
+
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const apiKey = process.env.INPROCESS_API_KEY
   if (apiKey) headers['x-api-key'] = apiKey
@@ -34,7 +41,7 @@ export async function proxyMintRequest(
   const upstream = await fetch(`${INPROCESS_API}/${endpoint}`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify(forwardBody),
   })
 
   const text = await upstream.text()
@@ -54,18 +61,13 @@ export async function proxyMintRequest(
     const tokenId = r.tokenId
 
     if (contractAddress && tokenId && account) {
-      const name =
-        (typeof body?.name === 'string' && body.name) ||
-        (typeof tokenObj.name === 'string' && (tokenObj.name as string)) ||
-        undefined
-
-      void setMomentMeta(contractAddress, tokenId, { creator: account, name }).catch(() => {})
+      void setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {})
       void writeNotification({
         type: 'mint',
         recipient: account,
         tokenAddress: contractAddress,
         tokenId,
-        tokenName: name,
+        tokenName: displayName,
       })
 
       if (Array.isArray(body?.splits) && (body.splits as unknown[]).length >= 2) {

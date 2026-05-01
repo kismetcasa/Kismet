@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { Loader2 } from 'lucide-react'
 import { NotificationRow } from './NotificationRow'
 import type { Notification } from '@/lib/notifications'
@@ -64,12 +65,12 @@ export function NotificationPreview({ address, visible, onRowClick }: Notificati
         ))}
       </div>
 
-      <a
+      <Link
         href={`/profile/${address}?tab=notifications`}
         className="block border-t border-[#2a2a2a] px-3 py-2 text-[9px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] transition-colors text-center"
       >
         see all →
-      </a>
+      </Link>
     </div>
   )
 }

@@ -154,7 +154,7 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] disabled:opacity-30 transition-colors"
           >
             ← prev
           </button>
@@ -164,7 +164,7 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
           <button
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page >= totalPages}
-            className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] disabled:opacity-30 transition-colors"
           >
             next →
           </button>
