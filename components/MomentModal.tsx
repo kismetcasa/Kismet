@@ -11,12 +11,18 @@ import {
   resolveUri, formatPrice, shortAddress,
   type Moment, type MomentDetail, type MomentComment,
 } from '@/lib/inprocess'
+import { fetchCreatorProfile } from '@/lib/profileCache'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
 
 const TOP_COMMENTS = 3
+
+// Module-level comments cache — survives modal close/reopen
+type CommentsCacheEntry = { comments: MomentComment[]; ts: number }
+const commentsCache = new Map<string, CommentsCacheEntry>()
+const COMMENTS_CACHE_TTL = 60 * 1000
 
 function formatRelativeTime(timestamp: number): string {
   const secs = timestamp > 1e12 ? Math.floor(timestamp / 1000) : timestamp
@@ -30,14 +36,30 @@ function formatRelativeTime(timestamp: number): string {
 interface MomentModalProps {
   moment: Moment
   onClose: () => void
+  // Props pre-populated by MomentCard to avoid redundant fetches
+  initialPrice?: string
+  initialMaxSupply?: number | null
+  initialCreatorName?: string
+  initialCreatorAvatar?: string
+  initialOwnedBalance?: number
 }
 
-export function MomentModal({ moment, onClose }: MomentModalProps) {
+export function MomentModal({
+  moment,
+  onClose,
+  initialPrice,
+  initialMaxSupply,
+  initialCreatorName,
+  initialCreatorAvatar,
+  initialOwnedBalance,
+}: MomentModalProps) {
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [collecting, setCollecting] = useState(false)
   const [collected, setCollected] = useState(false)
-  const [creatorName, setCreatorName] = useState(() => shortAddress(moment.creator.address))
-  const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
+  const [creatorName, setCreatorName] = useState(
+    () => initialCreatorName ?? shortAddress(moment.creator.address),
+  )
+  const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(initialCreatorAvatar)
   const [comments, setComments] = useState<MomentComment[]>([])
   const [commentsLoading, setCommentsLoading] = useState(true)
   const [showAllComments, setShowAllComments] = useState(false)
@@ -55,17 +77,33 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
   const creatorAddress = moment.creator.address
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
+  // Only query on-chain balance when card didn't pass it in
   const { data: ownedBalance } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
     args: connectedAddress ? [connectedAddress, BigInt(moment.token_id)] : undefined,
-    query: { enabled: !!connectedAddress },
+    query: { enabled: !!connectedAddress && initialOwnedBalance === undefined },
   })
-  const alreadyOwned = ownedBalance ? Number(ownedBalance) > 0 : false
+  const alreadyOwned =
+    initialOwnedBalance !== undefined
+      ? initialOwnedBalance > 0
+      : ownedBalance
+        ? Number(ownedBalance) > 0
+        : false
 
-  // Fetch moment detail (price)
+  // Derived price and supply — prefer passed-in values, fall back to fetched detail
+  const price = initialPrice ?? (detail ? formatPrice(detail.saleConfig.pricePerToken) : null)
+  const displayMaxSupply: number | null | undefined =
+    initialMaxSupply !== undefined
+      ? initialMaxSupply
+      : detail
+        ? (detail.maxSupply ?? null)
+        : undefined
+
+  // Fetch moment detail only when card didn't pass price/supply
   useEffect(() => {
+    if (initialPrice !== undefined && initialMaxSupply !== undefined) return
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
@@ -75,21 +113,25 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setDetail(d))
       .catch(() => {})
-  }, [moment.address, moment.token_id])
+  }, [moment.address, moment.token_id, initialPrice, initialMaxSupply])
 
-  // Fetch creator profile
+  // Fetch creator profile via shared cache (cache hit if card already resolved it)
   useEffect(() => {
-    fetch(`/api/profile/${creatorAddress}`)
-      .then((r) => r.json())
-      .then((d) => {
-        setCreatorName(d.profile?.username || d.profile?.ensName || shortAddress(creatorAddress))
-        setCreatorAvatar(d.profile?.avatarUrl)
-      })
-      .catch(() => {})
+    fetchCreatorProfile(creatorAddress).then(({ name, avatarUrl }) => {
+      setCreatorName(name)
+      setCreatorAvatar(avatarUrl)
+    })
   }, [creatorAddress])
 
-  // Fetch comments
+  // Fetch comments with client-side cache to avoid re-fetch on reopen
   const fetchComments = useCallback(async () => {
+    const cacheKey = `${moment.address}:${moment.token_id}`
+    const cached = commentsCache.get(cacheKey)
+    if (cached && Date.now() - cached.ts < COMMENTS_CACHE_TTL) {
+      setComments(cached.comments)
+      setCommentsLoading(false)
+      return
+    }
     setCommentsLoading(true)
     try {
       const params = new URLSearchParams({
@@ -100,7 +142,9 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        setComments(data.comments ?? [])
+        const fetched = data.comments ?? []
+        commentsCache.set(cacheKey, { comments: fetched, ts: Date.now() })
+        setComments(fetched)
       }
     } catch {
       // non-critical
@@ -149,7 +193,6 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
     }
   }
 
-  const price = detail ? formatPrice(detail.saleConfig.pricePerToken) : null
   const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
   const hiddenCount = comments.length - TOP_COMMENTS
 
@@ -294,7 +337,11 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
               </button>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
-                  {detail === null ? '…' : (detail.maxSupply ? detail.maxSupply.toLocaleString() : 'open')}
+                  {displayMaxSupply === undefined
+                    ? '…'
+                    : displayMaxSupply === null || displayMaxSupply === 0
+                      ? 'open'
+                      : displayMaxSupply.toLocaleString()}
                 </span>
               </div>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
