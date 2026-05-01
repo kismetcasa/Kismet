@@ -364,7 +364,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
           {/* List + Collect — hugs the bottom */}
           <div className="px-5 py-4 flex">
             {alreadyOwned && (
-              <div className="w-1/4 flex-none">
+              <div className="w-2/5 flex-none">
                 <ListButton
                   collectionAddress={address}
                   tokenId={tokenId}
@@ -380,8 +380,8 @@ export function MomentDetailView({ address, tokenId }: Props) {
               <button
                 onClick={handleCollect}
                 disabled={collecting || alreadyOwned || collected}
-                className={`flex-1 py-2.5 text-xs font-mono tracking-widest uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:text-[#8B5CF6]'
+                className={`flex-1 py-2.5 text-xs font-mono tracking-widest uppercase transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
                 }`}
               >
                 {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
