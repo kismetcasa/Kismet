@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { Star } from 'lucide-react'
+import { Star, Copy, Check, ExternalLink } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -43,11 +43,11 @@ interface MomentCardProps {
 export function MomentCard({ moment }: MomentCardProps) {
   const [imgError, setImgError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
-  const [maxSupply, setMaxSupply] = useState<number | undefined>(undefined)
   const [creatorName, setCreatorName] = useState(() => shortAddress(moment.creator.address))
   const [modalOpen, setModalOpen] = useState(false)
   const [collecting, setCollecting] = useState(false)
   const [collected, setCollected] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -77,12 +77,15 @@ export function MomentCard({ moment }: MomentCardProps) {
     })
     fetch(`/api/moment?${params}`)
       .then((r) => r.ok ? r.json() as Promise<MomentDetail> : Promise.reject())
-      .then((detail) => {
-        setPrice(formatPrice(detail.saleConfig.pricePerToken))
-        setMaxSupply(detail.maxSupply)
-      })
+      .then((detail) => setPrice(formatPrice(detail.saleConfig.pricePerToken)))
       .catch(() => {})
   }, [moment.address, moment.token_id])
+
+  function handleCopyLink() {
+    navigator.clipboard.writeText(`${window.location.origin}/moment/${moment.address}/${moment.token_id}`).catch(() => {})
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 1500)
+  }
 
   async function handleCollect() {
     if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
@@ -115,8 +118,6 @@ export function MomentCard({ moment }: MomentCardProps) {
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
   const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
-  const supplyLabel = maxSupply === undefined ? '…' : (maxSupply === 0 ? 'open' : maxSupply.toLocaleString())
-
   return (
     <>
       <article className="group flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
@@ -169,28 +170,47 @@ export function MomentCard({ moment }: MomentCardProps) {
           )}
         </div>
 
-        {/* Info — click navigates to detail page */}
-        <Link
-          href={`/moment/${moment.address}/${moment.token_id}`}
-          className="px-4 pt-4 pb-3 flex flex-col gap-1.5"
-        >
-          <h3 className="text-sm text-[#efefef] font-mono truncate hover:text-[#bbb] transition-colors">
-            {meta.name ?? `#${moment.token_id}`}
-          </h3>
+        {/* Info */}
+        <div className="px-4 pt-4 pb-3 flex flex-col gap-1.5">
+          <div className="flex items-start gap-2">
+            <h3 className="text-sm text-[#efefef] font-mono truncate flex-1 min-w-0">
+              {meta.name ?? `#${moment.token_id}`}
+            </h3>
+            {/* Share + external link */}
+            <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5">
+              <button
+                onClick={handleCopyLink}
+                title="copy link"
+                className="text-[#444] hover:text-[#888] transition-colors"
+              >
+                {linkCopied
+                  ? <Check size={11} className="text-[#6ee7b7]" />
+                  : <Copy size={11} />}
+              </button>
+              <Link
+                href={`/moment/${moment.address}/${moment.token_id}`}
+                title="view page"
+                className="text-[#444] hover:text-[#888] transition-colors"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ExternalLink size={11} />
+              </Link>
+            </div>
+          </div>
           {meta.description && (
             <p className="text-xs font-mono text-[#888] line-clamp-2 leading-relaxed">
               {meta.description}
             </p>
           )}
           <span
-            className="text-xs text-[#555] font-mono hover:text-[#888] transition-colors w-fit"
+            className="text-xs text-[#555] font-mono w-fit"
             title={moment.creator.address}
           >
             by {creatorName}
           </span>
-        </Link>
+        </div>
 
-        {/* Actions — list (if owned) + collect + price/supply */}
+        {/* Actions — list (if owned) + collect + price */}
         <div className="px-4 pb-4 flex">
           {owned > 0 && (
             <div className="flex-1">
@@ -215,9 +235,8 @@ export function MomentCard({ moment }: MomentCardProps) {
             >
               {collecting ? 'collecting…' : collected ? 'collected' : 'collect'}
             </button>
-            <div className="border-l border-[#2a2a2a] px-2 py-1.5 flex flex-col items-end justify-between min-w-[3.5rem]">
+            <div className="border-l border-[#2a2a2a] px-2 py-1.5 flex items-center justify-end min-w-[3rem]">
               <span className="text-[9px] font-mono accent-grad">{price ?? '…'}</span>
-              <span className="text-[9px] font-mono text-[#444]">{supplyLabel}</span>
             </div>
           </div>
         </div>

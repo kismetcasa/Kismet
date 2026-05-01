@@ -198,8 +198,8 @@ export function MomentDetailView({ address, tokenId }: Props) {
   return (
     <div className="max-w-4xl mx-auto pb-16">
 
-      {/* Back nav + share */}
-      <div className="px-4 py-3 border-b border-[#2a2a2a] flex items-center justify-between">
+      {/* Back nav */}
+      <div className="px-4 py-3 border-b border-[#2a2a2a]">
         <Link
           href="/"
           className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
@@ -207,13 +207,6 @@ export function MomentDetailView({ address, tokenId }: Props) {
           <ArrowLeft size={12} />
           back
         </Link>
-        <button
-          onClick={handleCopyLink}
-          className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
-        >
-          {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
-          {linkCopied ? 'copied' : 'share'}
-        </button>
       </div>
 
       {/* Two-column on desktop, stacked on mobile */}
@@ -269,9 +262,13 @@ export function MomentDetailView({ address, tokenId }: Props) {
               <h1 className="text-sm font-mono text-[#efefef] leading-snug">
                 {meta.name ?? `#${tokenId}`}
               </h1>
-              {price && (
-                <span className="text-xs font-mono accent-grad flex-shrink-0">{price}</span>
-              )}
+              <button
+                onClick={handleCopyLink}
+                className="flex items-center gap-1 text-xs font-mono text-[#555] hover:text-[#888] transition-colors flex-shrink-0"
+              >
+                {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
+                {linkCopied ? 'copied' : 'share'}
+              </button>
             </div>
             <Link
               href={creatorAddress ? `/profile/${creatorAddress}` : '#'}

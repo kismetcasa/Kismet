@@ -1,16 +1,31 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { X, Star } from 'lucide-react'
+import { X, Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { resolveUri, formatPrice, shortAddress, type Moment, type MomentDetail } from '@/lib/inprocess'
+import {
+  resolveUri, formatPrice, shortAddress,
+  type Moment, type MomentDetail, type MomentComment,
+} from '@/lib/inprocess'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ListButton } from './ListButton'
+import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
+
+const TOP_COMMENTS = 3
+
+function formatRelativeTime(timestamp: number): string {
+  const secs = timestamp > 1e12 ? Math.floor(timestamp / 1000) : timestamp
+  const diff = Math.floor(Date.now() / 1000) - secs
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
+  return `${Math.floor(diff / 86400)}d`
+}
 
 interface MomentModalProps {
   moment: Moment
@@ -21,6 +36,11 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [collecting, setCollecting] = useState(false)
   const [collected, setCollected] = useState(false)
+  const [creatorName, setCreatorName] = useState(() => shortAddress(moment.creator.address))
+  const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
+  const [comments, setComments] = useState<MomentComment[]>([])
+  const [commentsLoading, setCommentsLoading] = useState(true)
+  const [showAllComments, setShowAllComments] = useState(false)
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
@@ -44,6 +64,7 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
   })
   const alreadyOwned = ownedBalance ? Number(ownedBalance) > 0 : false
 
+  // Fetch moment detail (price)
   useEffect(() => {
     const params = new URLSearchParams({
       collectionAddress: moment.address,
@@ -55,6 +76,40 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
       .then((d) => d && setDetail(d))
       .catch(() => {})
   }, [moment.address, moment.token_id])
+
+  // Fetch creator profile
+  useEffect(() => {
+    fetch(`/api/profile/${creatorAddress}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setCreatorName(d.profile?.username || d.profile?.ensName || shortAddress(creatorAddress))
+        setCreatorAvatar(d.profile?.avatarUrl)
+      })
+      .catch(() => {})
+  }, [creatorAddress])
+
+  // Fetch comments
+  const fetchComments = useCallback(async () => {
+    setCommentsLoading(true)
+    try {
+      const params = new URLSearchParams({
+        collectionAddress: moment.address,
+        tokenId: moment.token_id,
+        chainId: '8453',
+      })
+      const res = await fetch(`/api/moment/comments?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        setComments(data.comments ?? [])
+      }
+    } catch {
+      // non-critical
+    } finally {
+      setCommentsLoading(false)
+    }
+  }, [moment.address, moment.token_id])
+
+  useEffect(() => { fetchComments() }, [fetchComments])
 
   // Lock body scroll while open
   useEffect(() => {
@@ -95,8 +150,8 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
   }
 
   const price = detail ? formatPrice(detail.saleConfig.pricePerToken) : null
-  const maxSupply = detail?.maxSupply
-  const supplyLabel = detail === null ? '…' : (maxSupply ? maxSupply.toLocaleString() : 'open')
+  const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
+  const hiddenCount = comments.length - TOP_COMMENTS
 
   return (
     <div
@@ -128,14 +183,17 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
             <video
               src={mediaUrl}
               className="w-full h-full object-cover"
-              autoPlay
-              muted
-              loop
-              playsInline
+              autoPlay muted loop playsInline
               poster={imageUrl ?? undefined}
             />
           ) : imageUrl ? (
-            <Image src={imageUrl} alt={meta.name ?? 'moment'} fill className="object-cover" sizes="(max-width: 768px) 100vw, 50vw" />
+            <Image
+              src={imageUrl}
+              alt={meta.name ?? 'moment'}
+              fill
+              className="object-cover"
+              sizes="(max-width: 768px) 100vw, 50vw"
+            />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
@@ -143,69 +201,111 @@ export function MomentModal({ moment, onClose }: MomentModalProps) {
           )}
         </div>
 
-        {/* Right: info */}
+        {/* Right: info — scrolls within grid cell */}
         <div className="flex flex-col md:min-h-0 md:overflow-y-auto">
-          <div className="px-5 py-4 flex flex-col gap-3 flex-1">
+
+          <div className="px-5 py-4 flex flex-col gap-3">
+            {/* Title */}
             <h2 className="text-sm font-mono text-[#efefef] leading-snug pr-6">
               {meta.name ?? `#${moment.token_id}`}
             </h2>
+
+            {/* Creator */}
             <Link
               href={`/profile/${creatorAddress}`}
               onClick={onClose}
-              className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+              className="flex items-center gap-2 group w-fit"
             >
-              by {moment.creator.username || shortAddress(creatorAddress)}
+              <ProfileAvatar address={creatorAddress} avatarUrl={creatorAvatar} size={20} />
+              <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
+                by {creatorName}
+              </span>
             </Link>
+
+            {/* Description */}
             {meta.description && (
-              <p className="text-xs font-mono text-[#888] leading-relaxed line-clamp-4">
-                {meta.description}
-              </p>
+              <div className="flex flex-col gap-1">
+                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">description</p>
+                <p className="text-xs font-mono text-[#888] leading-relaxed line-clamp-4">
+                  {meta.description}
+                </p>
+              </div>
+            )}
+
+            {/* Comments */}
+            {!commentsLoading && comments.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">comments</p>
+                {visibleComments.map((c, i) => (
+                  <div key={i} className="flex gap-2 items-baseline">
+                    <span className="text-[11px] font-mono text-[#555] flex-shrink-0">
+                      {shortAddress(c.sender)}
+                    </span>
+                    <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
+                      {c.comment}
+                    </span>
+                    <span className="text-[10px] font-mono text-[#333] flex-shrink-0">
+                      {formatRelativeTime(c.timestamp)}
+                    </span>
+                  </div>
+                ))}
+                {hiddenCount > 0 && (
+                  <button
+                    onClick={() => setShowAllComments((v) => !v)}
+                    className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+                  >
+                    {showAllComments
+                      ? <><ChevronUp size={10} /> show less</>
+                      : <><ChevronDown size={10} /> {hiddenCount} more</>}
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
+          {/* Spacer */}
           <div className="flex-1 min-h-4" />
 
-          <div className="px-5 pb-5 flex flex-col gap-2">
+          {/* List (if owned) */}
+          {alreadyOwned && (
+            <div className="px-5 pb-2">
+              <ListButton
+                collectionAddress={moment.address}
+                tokenId={moment.token_id}
+                name={meta.name}
+                image={meta.image ? resolveUri(meta.image) : undefined}
+                creatorAddress={creatorAddress}
+              />
+            </div>
+          )}
+
+          {/* View page + Collect row */}
+          <div className="px-5 pb-5 flex">
             <Link
               href={`/moment/${moment.address}/${moment.token_id}`}
               onClick={onClose}
-              className="w-full text-center text-xs font-mono tracking-wider uppercase px-3 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors"
+              className="flex-1 flex items-center justify-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors py-2.5"
             >
               view page →
             </Link>
-
-            {/* List (if owned) + Collect row */}
-            <div className="flex">
-              {alreadyOwned && (
-                <div className="flex-1">
-                  <ListButton
-                    collectionAddress={moment.address}
-                    tokenId={moment.token_id}
-                    name={meta.name}
-                    image={meta.image ? resolveUri(meta.image) : undefined}
-                    creatorAddress={creatorAddress}
-                  />
-                </div>
-              )}
-              <div className={`flex ${alreadyOwned ? 'flex-1 -ml-px' : 'w-full'} border transition-colors ${
-                collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
-              }`}>
-                <button
-                  onClick={handleCollect}
-                  disabled={collecting || alreadyOwned || collected}
-                  className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                    collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:text-[#8B5CF6]'
-                  }`}
-                >
-                  {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
-                </button>
-                <div className="border-l border-[#2a2a2a] px-2 py-1.5 flex flex-col items-end justify-between min-w-[3.5rem]">
-                  <span className="text-[9px] font-mono accent-grad">{price ?? '…'}</span>
-                  <span className="text-[9px] font-mono text-[#444]">{supplyLabel}</span>
-                </div>
+            <div className={`flex flex-1 -ml-px border transition-colors ${
+              collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
+            }`}>
+              <button
+                onClick={handleCollect}
+                disabled={collecting || alreadyOwned || collected}
+                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:text-[#8B5CF6]'
+                }`}
+              >
+                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+              </button>
+              <div className="border-l border-[#2a2a2a] px-2 py-1.5 flex items-center justify-end min-w-[3.5rem]">
+                <span className="text-[9px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
             </div>
           </div>
+
         </div>
       </div>
     </div>
