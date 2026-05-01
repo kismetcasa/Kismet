@@ -3,6 +3,7 @@ import { verifyMessage, isAddress } from 'viem'
 import { getListing, updateListingStatus } from '@/lib/listings'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { writeNotification } from '@/lib/notifications'
 
 export async function PATCH(
   req: NextRequest,
@@ -18,6 +19,7 @@ export async function PATCH(
     signature?: string
     nonce?: string
     signer?: string
+    buyer?: string
   }
 
   if (body.status !== 'filled' && body.status !== 'cancelled') {
@@ -60,5 +62,20 @@ export async function PATCH(
   }
 
   await updateListingStatus(id, body.status as 'filled' | 'cancelled')
+
+  if (body.status === 'filled') {
+    void writeNotification({
+      type: 'sale',
+      recipient: listing.seller,
+      ...(body.buyer && isAddress(body.buyer) ? { actor: body.buyer } : {}),
+      tokenAddress: listing.collectionAddress,
+      tokenId: listing.tokenId,
+      tokenName: listing.name,
+      tokenImage: listing.image,
+      price: listing.price,
+      listingId: listing.id,
+    })
+  }
+
   return NextResponse.json({ ok: true })
 }

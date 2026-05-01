@@ -71,7 +71,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       await fetch(`/api/listings/${listing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'filled' }),
+        body: JSON.stringify({ status: 'filled', buyer: address }),
       })
 
       setBought(true)

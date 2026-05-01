@@ -3,6 +3,7 @@ import { verifyMessage, isAddress } from 'viem'
 import { follow, unfollow, isFollowing, getFollowing, getFollowers, getFollowerCount, getFollowingCount } from '@/lib/follows'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { writeNotification } from '@/lib/notifications'
 
 type Params = { params: Promise<{ address: string }> }
 
@@ -75,6 +76,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (err) return NextResponse.json({ error: err.error }, { status: err.status })
 
   await follow(body.follower!, address)
+  void writeNotification({ type: 'follow', recipient: address, actor: body.follower! })
   return NextResponse.json({ following: true })
 }
 
