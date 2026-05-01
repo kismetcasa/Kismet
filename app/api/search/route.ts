@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
 
-  const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
+  const q = new URL(req.url).searchParams.get('q')?.trim() ?? ''
   if (q.length < 2 || q.length > 100) {
     return NextResponse.json({ users: [], collections: [], mints: [] })
   }

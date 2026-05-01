@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Search, Loader2, ExternalLink } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
+import { shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -17,8 +18,6 @@ interface SearchResults {
 interface SearchBarProps {
   onOpenModal: (query: string) => void
 }
-
-function shortAddr(a: string) { return `${a.slice(0, 6)}…${a.slice(-4)}` }
 
 export function SearchBar({ onOpenModal }: SearchBarProps) {
   const [open, setOpen] = useState(false)
@@ -134,7 +133,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                 >
                   <ProfileAvatar address={user.address} avatarUrl={user.avatarUrl} size={22} />
                   <span className="text-xs text-[#efefef] font-mono truncate">
-                    {user.username || shortAddr(user.address)}
+                    {user.username || shortAddress(user.address)}
                   </span>
                 </Link>
               ))}

@@ -182,25 +182,21 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     setDeployedImageUri(undefined)
 
     try {
-      let imageUri: string | undefined
-
-      if (coverFile) {
-        setStep('uploading-image')
-        setUploadProgress(0)
-        toast.loading('Uploading cover image…', { id: 'create-collection' })
-        imageUri = await uploadToArweave(coverFile, (pct) => {
-          setUploadProgress(pct)
-          toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
-        })
-        setDeployedImageUri(imageUri)
-      }
+      setStep('uploading-image')
+      setUploadProgress(0)
+      toast.loading('Uploading cover image…', { id: 'create-collection' })
+      const imageUri = await uploadToArweave(coverFile, (pct) => {
+        setUploadProgress(pct)
+        toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
+      })
+      setDeployedImageUri(imageUri)
 
       setStep('uploading-metadata')
       toast.loading('Uploading collection metadata…', { id: 'create-collection' })
       const metadata: Record<string, unknown> = {
         name: name.trim(),
         description: description.trim(),
-        ...(imageUri ? { image: imageUri } : {}),
+        image: imageUri,
         createReferral: CREATE_REFERRAL,
       }
       const contractURI = await uploadJson(metadata)

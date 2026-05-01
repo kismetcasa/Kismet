@@ -38,7 +38,7 @@ export async function createListing(
     keyByOwned(data.collectionAddress, data.tokenId, data.seller)
   )
   if (ownedId) {
-    const existing = await getListing(typeof ownedId === 'string' ? ownedId : String(ownedId))
+    const existing = await getListing(ownedId)
     if (existing && existing.status === 'active') {
       throw new Error('Active listing already exists for this token')
     }
@@ -77,7 +77,7 @@ export async function getListingForToken(
     keyByOwned(collectionAddress.toLowerCase(), tokenId, seller.toLowerCase())
   )
   if (!id) return null
-  const listing = await getListing(typeof id === 'string' ? id : String(id))
+  const listing = await getListing(id)
   if (!listing || listing.status !== 'active' || listing.expiresAt <= Date.now()) return null
   return listing
 }

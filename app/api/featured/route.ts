@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyMessage, isAddress } from 'viem'
-import { redis } from '@/lib/redis'
+import { redis, FEATURED_KEY } from '@/lib/redis'
 
 const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
-const FEATURED_KEY = 'kismetart:featured'
 const SESSION_TTL = 4 * 60 * 60 * 1000 // 4 hours in ms
 
 async function verifyAdminSession(body: {

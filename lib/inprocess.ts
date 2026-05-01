@@ -145,3 +145,12 @@ export function shortAddress(address: string): string {
   if (!address) return ''
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
+
+export function formatRelativeTime(timestamp: number): string {
+  const secs = timestamp > 1e12 ? Math.floor(timestamp / 1000) : timestamp
+  const diff = Math.floor(Date.now() / 1000) - secs
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
+  return `${Math.floor(diff / 86400)}d`
+}

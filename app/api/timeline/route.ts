@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollections } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
-import { redis } from '@/lib/redis'
+import { redis, FEATURED_KEY } from '@/lib/redis'
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = new URL(`${INPROCESS_API}/timeline`)
@@ -17,8 +17,6 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
     return []
   }
 }
-
-const FEATURED_KEY = 'kismetart:featured'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)

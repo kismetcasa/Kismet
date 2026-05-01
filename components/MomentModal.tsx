@@ -8,7 +8,7 @@ import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import {
-  resolveUri, formatPrice, shortAddress,
+  resolveUri, formatPrice, shortAddress, formatRelativeTime,
   type Moment, type MomentDetail, type MomentComment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -23,15 +23,6 @@ const TOP_COMMENTS = 3
 type CommentsCacheEntry = { comments: MomentComment[]; ts: number }
 const commentsCache = new Map<string, CommentsCacheEntry>()
 const COMMENTS_CACHE_TTL = 60 * 1000
-
-function formatRelativeTime(timestamp: number): string {
-  const secs = timestamp > 1e12 ? Math.floor(timestamp / 1000) : timestamp
-  const diff = Math.floor(Date.now() / 1000) - secs
-  if (diff < 60) return 'just now'
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
-  return `${Math.floor(diff / 86400)}d`
-}
 
 interface MomentModalProps {
   moment: Moment

@@ -39,13 +39,12 @@ export async function POST(req: NextRequest) {
 
   // Fire-and-forget: increment trending score and record collector
   if (res.ok) {
-    const col = (body as { moment?: { collectionAddress?: string } }).moment?.collectionAddress?.toLowerCase()
-    const tok = (body as { moment?: { tokenId?: string } }).moment?.tokenId
     const account = (body as { account?: string }).account?.toLowerCase()
     if (col && tok) {
-      redis.zincrby('kismetart:trending', 1, `${col}:${tok}`).catch(() => {})
+      const colLower = col.toLowerCase()
+      redis.zincrby('kismetart:trending', 1, `${colLower}:${tok}`).catch(() => {})
       if (account) {
-        redis.zadd(`kismetart:collected:${account}`, { score: Date.now(), member: `${col}:${tok}` }).catch(() => {})
+        redis.zadd(`kismetart:collected:${account}`, { score: Date.now(), member: `${colLower}:${tok}` }).catch(() => {})
       }
     }
   }

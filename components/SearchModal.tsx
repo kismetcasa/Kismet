@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Search, X, Loader2, ExternalLink } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
+import { shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -17,10 +18,6 @@ interface SearchResults {
 interface SearchModalProps {
   onClose: () => void
   initialQuery?: string
-}
-
-function shortAddr(address: string) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
 export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
@@ -109,10 +106,10 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                   <ProfileAvatar address={user.address} avatarUrl={user.avatarUrl} size={28} />
                   <div className="min-w-0">
                     <p className="text-sm text-[#efefef] font-mono truncate">
-                      {user.username || shortAddr(user.address)}
+                      {user.username || shortAddress(user.address)}
                     </p>
                     {user.username && (
-                      <p className="text-xs text-[#555] font-mono">{shortAddr(user.address)}</p>
+                      <p className="text-xs text-[#555] font-mono">{shortAddress(user.address)}</p>
                     )}
                   </div>
                 </Link>
@@ -140,7 +137,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                   )}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-[#efefef] font-mono truncate">{col.name}</p>
-                    <p className="text-xs text-[#555] font-mono">{shortAddr(col.address)}</p>
+                    <p className="text-xs text-[#555] font-mono">{shortAddress(col.address)}</p>
                   </div>
                   <ExternalLink size={10} className="text-[#444] flex-shrink-0" />
                 </a>
@@ -169,7 +166,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-[#efefef] font-mono truncate">{mint.name}</p>
                     {mint.creatorAddress && (
-                      <p className="text-xs text-[#555] font-mono">{shortAddr(mint.creatorAddress)}</p>
+                      <p className="text-xs text-[#555] font-mono">{shortAddress(mint.creatorAddress)}</p>
                     )}
                   </div>
                   <ExternalLink size={10} className="text-[#444] flex-shrink-0" />

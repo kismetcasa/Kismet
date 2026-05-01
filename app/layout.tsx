@@ -2,7 +2,6 @@ import type { Metadata } from 'next'
 import { Toaster } from 'sonner'
 import { Providers } from '@/providers/WagmiProvider'
 import { Nav } from '@/components/Nav'
-import { MobileNav } from '@/components/MobileNav'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -20,7 +19,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <Providers>
           <Nav />
-          <MobileNav />
           <main className="pt-14 min-h-screen bg-[#0d0d0d]">
             {children}
           </main>
