@@ -287,7 +287,7 @@ export function MomentDetailView({ address, tokenId }: Props) {
             {meta.description && (
               <div className="flex flex-col gap-1.5">
                 <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">description</p>
-                <p className="text-xs text-[#888] leading-relaxed">{meta.description}</p>
+                <p className="text-xs font-mono text-[#888] leading-relaxed">{meta.description}</p>
               </div>
             )}
             {!commentsLoading && comments.length > 0 && (
@@ -364,32 +364,38 @@ export function MomentDetailView({ address, tokenId }: Props) {
             </div>
           )}
 
-          {/* List for sale (floats above collect) */}
-          {alreadyOwned && (
-            <div className="px-5 pb-4">
-              <ListButton
-                collectionAddress={address}
-                tokenId={tokenId}
-                name={meta.name}
-                image={meta.image ? resolveUri(meta.image) : undefined}
-                creatorAddress={creatorAddress}
-              />
+          {/* List + Collect — hugs the bottom */}
+          <div className="px-5 py-4 flex">
+            {alreadyOwned && (
+              <div className="flex-1">
+                <ListButton
+                  collectionAddress={address}
+                  tokenId={tokenId}
+                  name={meta.name}
+                  image={meta.image ? resolveUri(meta.image) : undefined}
+                  creatorAddress={creatorAddress}
+                />
+              </div>
+            )}
+            <div className={`flex ${alreadyOwned ? 'flex-1 -ml-px' : 'w-full'} border transition-colors ${
+              collected || alreadyOwned ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
+            }`}>
+              <button
+                onClick={handleCollect}
+                disabled={collecting || alreadyOwned || collected}
+                className={`flex-1 py-2.5 text-xs font-mono tracking-widest uppercase transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:text-[#8B5CF6]'
+                }`}
+              >
+                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
+              </button>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex flex-col items-end justify-between min-w-[4.5rem]">
+                {price && <span className="text-[10px] font-mono accent-grad">{price}</span>}
+                <span className="text-[10px] font-mono text-[#444]">
+                  {detail?.maxSupply ? detail.maxSupply.toLocaleString() : 'open'}
+                </span>
+              </div>
             </div>
-          )}
-
-          {/* Collect — hugs the bottom */}
-          <div className="px-5 py-4">
-            <button
-              onClick={handleCollect}
-              disabled={collecting || alreadyOwned || collected}
-              className={`w-full py-2.5 text-xs font-mono tracking-widest uppercase border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                collected || alreadyOwned
-                  ? 'border-[#8B5CF6] text-[#8B5CF6] bg-[#8B5CF6]/10'
-                  : 'border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'
-              }`}
-            >
-              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected ✓' : 'collect'}
-            </button>
           </div>
 
           {/* Site admin — feature/unfeature */}
