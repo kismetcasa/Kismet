@@ -200,7 +200,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
         {/* Actions — list (if owned) + collect + price */}
         <div className="px-4 pb-4 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
           {owned > 0 && (
-            <div className="w-full sm:w-1/3 sm:flex-none">
+            <div className={`w-full sm:flex-none ${hidePriceSupply ? 'sm:w-2/5' : 'sm:w-1/3'}`}>
               <ListButton
                 collectionAddress={moment.address}
                 tokenId={moment.token_id}

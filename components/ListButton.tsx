@@ -224,7 +224,7 @@ export function ListButton({
         onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceEth(v) }}
         placeholder="ETH"
         disabled={isBusy}
-        className={`min-w-0 bg-[#111] border border-[#2a2a2a] px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 ${narrowInput ? 'w-[40%] flex-none' : 'flex-1'}`}
+        className={`min-w-0 bg-[#111] border border-[#2a2a2a] px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 ${narrowInput ? 'w-[30%] flex-none' : 'flex-1'}`}
       />
       <button
         onClick={handleList}

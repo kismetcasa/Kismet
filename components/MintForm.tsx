@@ -402,6 +402,9 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
             placeholder="unlimited"
             className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
           />
+          {!maxSupply.trim() && (
+            <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
+          )}
         </div>
       </div>
 
