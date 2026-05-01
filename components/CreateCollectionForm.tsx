@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { parseEventLogs, isAddress } from 'viem'
+import { parseEventLogs, isAddress, parseEther } from 'viem'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
 import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission } from '@/lib/collections'
@@ -28,6 +28,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [minters, setMinters] = useState<string[]>([])
   const [minterInput, setMinterInput] = useState('')
   const [mintCover, setMintCover] = useState(false)
+  const [coverPrice, setCoverPrice] = useState('0')
+  const [coverSupply, setCoverSupply] = useState('')
   const [step, setStep] = useState<'idle' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'minting-cover' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [collectionAddress, setCollectionAddress] = useState<string | null>(null)
@@ -94,6 +96,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             image: deployedImageUri,
           })
           const now = Math.floor(Date.now() / 1000)
+          const priceWei = parseEther(coverPrice || '0').toString()
+          const maxSupplyVal = coverSupply.trim() ? parseInt(coverSupply, 10) : undefined
           const res = await fetch('/api/mint', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -104,12 +108,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
                 createReferral: CREATE_REFERRAL,
                 salesConfig: {
                   type: 'fixedPrice',
-                  pricePerToken: '0',
+                  pricePerToken: priceWei,
                   saleStart: String(now),
                   saleEnd: '18446744073709551615',
                 },
                 mintToCreatorCount: 1,
                 payoutRecipient: address,
+                ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
               },
               account: address,
             }),
@@ -276,6 +281,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             setRoyaltyRecipient('')
             setMinters([])
             setMinterInput('')
+            setMintCover(false)
+            setCoverPrice('0')
+            setCoverSupply('')
             setDeployedImageUri(undefined)
           }}
           className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
@@ -290,9 +298,48 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     <form onSubmit={handleCreate} className="flex flex-col gap-6">
       {/* Cover image */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Cover Image <span className="text-[#efefef]">*</span>
-        </label>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-mono text-[#888] uppercase tracking-wider">
+            Cover Image <span className="text-[#efefef]">*</span>
+          </span>
+          <div className="flex items-center gap-1.5">
+            {mintCover && (
+              <>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={coverPrice}
+                    onChange={(e) => setCoverPrice(e.target.value)}
+                    placeholder="0"
+                    min="0"
+                    step="0.001"
+                    className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                  />
+                  <span className="text-[10px] font-mono text-[#555]">eth</span>
+                </div>
+                <input
+                  type="number"
+                  value={coverSupply}
+                  onChange={(e) => setCoverSupply(e.target.value)}
+                  placeholder="∞"
+                  min="1"
+                  step="1"
+                  className="w-10 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setMintCover((v) => !v)}
+              title={mintCover ? 'cancel mint' : 'also mint as first token'}
+              className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors ${
+                mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/10' : 'border-[#2a2a2a] hover:border-[#555]'
+              }`}
+            >
+              {mintCover && <Check size={9} className="text-[#8B5CF6]" />}
+            </button>
+          </div>
+        </div>
         {coverPreview ? (
           <div className="relative aspect-video bg-[#111] border border-[#2a2a2a] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -333,22 +380,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           onChange={handleFileChange}
           className="hidden"
         />
-        <label className="flex items-center gap-2 mt-2 cursor-pointer group w-fit">
-          <input
-            type="checkbox"
-            checked={mintCover}
-            onChange={(e) => setMintCover(e.target.checked)}
-            className="sr-only"
-          />
-          <div className={`w-3.5 h-3.5 border flex items-center justify-center flex-shrink-0 transition-colors ${
-            mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/10' : 'border-[#2a2a2a] group-hover:border-[#555]'
-          }`}>
-            {mintCover && <Check size={9} className="text-[#8B5CF6]" />}
-          </div>
-          <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
-            also mint as first token
-          </span>
-        </label>
       </div>
 
       {/* Collection name */}
