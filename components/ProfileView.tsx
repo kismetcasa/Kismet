@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
@@ -39,6 +39,35 @@ function loadSectionsConfig(): SectionsConfig {
   } catch {
     return { order: DEFAULT_ORDER, collapsed: {} }
   }
+}
+
+// ─── follow row (lazy-loads display name) ────────────────────────────────────
+
+function FollowRow({ addr, onClose }: { addr: string; onClose: () => void }) {
+  const [name, setName] = useState(() => shortAddress(addr))
+  const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    fetch(`/api/profile/${addr}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const n = d.profile?.username || d.profile?.ensName
+        if (n) setName(n)
+        if (d.profile?.avatarUrl) setAvatarUrl(d.profile.avatarUrl)
+      })
+      .catch(() => {})
+  }, [addr])
+
+  return (
+    <Link
+      href={`/profile/${addr}`}
+      onClick={onClose}
+      className="flex items-center gap-3 px-5 py-3 border-b border-[#1a1a1a] hover:bg-[#1a1a1a] transition-colors last:border-b-0"
+    >
+      <ProfileAvatar address={addr} avatarUrl={avatarUrl} size={28} clickable />
+      <span className="text-xs font-mono text-[#888]">{name}</span>
+    </Link>
+  )
 }
 
 // ─── component ───────────────────────────────────────────────────────────────
@@ -97,11 +126,23 @@ export function ProfileView({ address }: ProfileViewProps) {
     setSectionCollapsed(config.collapsed)
   }, [])
 
-  // Reset list panel on profile navigation
+  // Reset list modal on profile navigation
   useEffect(() => {
     setActiveList(null)
     setListAddresses([])
   }, [address])
+
+  // ESC closes the follow modal; lock body scroll while open
+  useEffect(() => {
+    if (!activeList) return
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setActiveList(null) }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', handler)
+    return () => {
+      window.removeEventListener('keydown', handler)
+      document.body.style.overflow = ''
+    }
+  }, [activeList])
 
   useEffect(() => {
     if (!isOwner) setEditing(false)
@@ -377,33 +418,51 @@ export function ProfileView({ address }: ProfileViewProps) {
           </div>
         </div>
 
-        {/* Expandable following / followers list */}
-        {activeList && (
-          <div className="flex flex-col gap-2 pl-[calc(80px+24px)]">
-            {loadingList ? (
-              <div className="flex flex-col gap-2.5">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-full bg-[#1a1a1a] animate-pulse flex-shrink-0" />
-                    <div className="h-3 w-24 bg-[#1a1a1a] animate-pulse rounded" />
-                  </div>
-                ))}
-              </div>
-            ) : listAddresses.length === 0 ? (
-              <p className="text-[#555] font-mono text-xs">no {activeList} yet</p>
-            ) : (
-              <div className="flex flex-col">
-                {listAddresses.map((addr) => (
-                  <Link key={addr} href={`/profile/${addr}`} className="flex items-center gap-3 py-1.5 group">
-                    <ProfileAvatar address={addr} size={28} clickable />
-                    <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">{shortAddress(addr)}</span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
       </div>
+
+      {/* Following / Followers modal */}
+      {activeList && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setActiveList(null) }}
+        >
+          <div className="w-full max-w-sm bg-[#161616] border border-[#2a2a2a]">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a2a2a]">
+              <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
+                {activeList === 'following'
+                  ? `Following${followingCount !== null ? ` (${followingCount})` : ''}`
+                  : `Followers${followerCount !== null ? ` (${followerCount})` : ''}`}
+              </p>
+              <button
+                onClick={() => setActiveList(null)}
+                className="p-1 text-[#555] hover:text-[#888] transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="overflow-y-auto max-h-[280px]">
+              {loadingList ? (
+                <div className="flex flex-col">
+                  {[0, 1, 2, 3, 4].map((i) => (
+                    <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-[#1a1a1a]">
+                      <div className="w-7 h-7 rounded-full bg-[#1a1a1a] animate-pulse flex-shrink-0" />
+                      <div className="h-3 w-28 bg-[#1a1a1a] animate-pulse rounded" />
+                    </div>
+                  ))}
+                </div>
+              ) : listAddresses.length === 0 ? (
+                <p className="px-5 py-6 text-xs font-mono text-[#555]">no {activeList} yet</p>
+              ) : (
+                <div className="flex flex-col">
+                  {listAddresses.map((addr) => (
+                    <FollowRow key={addr} addr={addr} onClose={() => setActiveList(null)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit profile panel */}
       {editing && isOwner && (
