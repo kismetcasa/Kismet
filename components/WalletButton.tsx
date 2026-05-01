@@ -1,12 +1,9 @@
 'use client'
 
 import { ConnectButton } from '@rainbow-me/rainbowkit'
+import { shortAddress } from '@/lib/inprocess'
 
-interface WalletButtonProps {
-  displayName?: string
-}
-
-export function WalletButton({ displayName }: WalletButtonProps = {}) {
+export function WalletButton() {
   return (
     <ConnectButton.Custom>
       {({ account, chain, openAccountModal, openConnectModal, mounted }) => {
@@ -42,22 +39,19 @@ export function WalletButton({ displayName }: WalletButtonProps = {}) {
             ) : (
               <button
                 onClick={openAccountModal}
-                className="hover:opacity-80 transition-opacity"
+                className="text-[#888] hover:text-[#efefef] transition-colors"
                 style={{
-                  background: 'linear-gradient(135deg, #8B5CF6, #C084FC)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
                   fontFamily: 'var(--font-mono, ui-monospace, monospace)',
                   fontSize: '11px',
                   padding: 0,
                   border: 'none',
+                  background: 'transparent',
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                   letterSpacing: '0.05em',
                 }}
               >
-                {displayName ?? account.displayName}
+                {shortAddress(account.address)}
               </button>
             )}
           </div>

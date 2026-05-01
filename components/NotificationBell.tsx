@@ -1,22 +1,18 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Bell } from 'lucide-react'
 import { NotificationModal } from './NotificationModal'
-import { NotificationPreview } from './NotificationPreview'
 
 interface NotificationBellProps {
   address: string
 }
 
 const POLL_INTERVAL_MS = 30_000
-const HOVER_CLOSE_DELAY_MS = 150
 
 export function NotificationBell({ address }: NotificationBellProps) {
   const [count, setCount] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
-  const [hovered, setHovered] = useState(false)
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fetchCount = useCallback(async () => {
     if (!address) return
@@ -48,6 +44,8 @@ export function NotificationBell({ address }: NotificationBellProps) {
   }, [address, fetchCount])
 
   // Listen for read signals from notification feed
+  // - notif-read: mark-all-read fired → clear badge immediately
+  // - notif-refetch: single notification read or mute → re-verify count
   useEffect(() => {
     const onReadAll = () => setCount(0)
     const onRefetch = () => fetchCount()
@@ -59,49 +57,12 @@ export function NotificationBell({ address }: NotificationBellProps) {
     }
   }, [fetchCount])
 
-  function handleEnter() {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current)
-      closeTimer.current = null
-    }
-    setHovered(true)
-  }
-
-  function handleLeave() {
-    closeTimer.current = setTimeout(() => setHovered(false), HOVER_CLOSE_DELAY_MS)
-  }
-
-  function handleBellClick() {
-    setHovered(false)
-    setModalOpen((v) => !v)
-  }
-
-  function handlePreviewRowClick(id: string) {
-    setHovered(false)
-    fetch('/api/notifications/read', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, id }),
-    })
-      .then(() => fetchCount())
-      .catch(() => {})
-  }
-
-  function handleSeeAll() {
-    setHovered(false)
-    setModalOpen(true)
-  }
-
   const badge = count > 9 ? '9+' : String(count)
 
   return (
-    <div
-      className="relative h-14 flex items-center"
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
-    >
+    <div className="relative h-14 flex items-center">
       <button
-        onClick={handleBellClick}
+        onClick={() => setModalOpen((v) => !v)}
         className="relative text-[#888] hover:text-[#efefef] transition-colors p-1"
         aria-label="Notifications"
       >
@@ -112,13 +73,6 @@ export function NotificationBell({ address }: NotificationBellProps) {
           </span>
         )}
       </button>
-
-      <NotificationPreview
-        address={address}
-        visible={hovered && !modalOpen}
-        onRowClick={handlePreviewRowClick}
-        onSeeAll={handleSeeAll}
-      />
 
       {modalOpen && (
         <NotificationModal
