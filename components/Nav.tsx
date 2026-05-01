@@ -10,6 +10,7 @@ import { WalletButton } from './WalletButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { SearchBar } from './SearchBar'
 import { SearchModal } from './SearchModal'
+import { NotificationBell } from './NotificationBell'
 
 export function Nav() {
   const pathname = usePathname()
@@ -81,6 +82,7 @@ export function Nav() {
             >
               <Search size={18} />
             </button>
+            {isConnected && address && <NotificationBell address={address} />}
             <WalletButton displayName={displayName} />
             {isConnected && address && (
               <Link href={`/profile/${address}`} className="flex-shrink-0">

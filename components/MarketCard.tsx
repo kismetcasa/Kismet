@@ -130,7 +130,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
           <button
             onClick={handleCancel}
             disabled={cancelling}
-            className="w-full text-xs font-mono tracking-wider uppercase px-4 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-red-900 hover:text-red-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className={`w-full text-xs font-mono tracking-wider uppercase px-4 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-red-900 hover:text-red-400 transition-colors disabled:opacity-40 ${cancelling ? 'cursor-not-allowed' : ''}`}
           >
             {cancelling ? 'cancelling…' : 'cancel listing'}
           </button>

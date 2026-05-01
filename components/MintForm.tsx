@@ -133,6 +133,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
             ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
             ...(splits.length < 2 ? { payoutRecipient: address } : {}),
           },
+          name: name.trim(),
           account: address,
           ...(splits.length >= 2 ? { splits } : {}),
         }
@@ -177,7 +178,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
-        const payload: CreateMomentPayload = {
+        const payload: CreateMomentPayload & { name: string } = {
           contract: targetCollection
             ? { address: targetCollection }
             : { name: `${name.trim()} by ${address}`, uri: metadataUri },
@@ -189,6 +190,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
             ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
             ...(splits.length < 2 ? { payoutRecipient: address } : {}),
           },
+          name: name.trim(),
           account: address!,
           ...(splits.length >= 2 ? { splits } : {}),
         }

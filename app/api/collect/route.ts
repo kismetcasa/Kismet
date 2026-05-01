@@ -2,13 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from 'viem'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis } from '@/lib/redis'
-import { checkRateLimit } from '@/lib/ratelimit'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { getMomentMeta, writeNotification } from '@/lib/notifications'
 
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown'
+  const ip = getClientIp(req)
   const allowed = await checkRateLimit(`collect:${ip}`, 20, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
@@ -37,14 +35,30 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify(body),
   })
 
-  // Fire-and-forget: increment trending score and record collector
+  // Fire-and-forget: increment trending score, record collector, notify creator
   if (res.ok) {
     const account = (body as { account?: string }).account?.toLowerCase()
+    const amount = Number((body as { amount?: number }).amount ?? 1)
+    const price = (body as { pricePerToken?: string }).pricePerToken
     if (col && tok) {
       const colLower = col.toLowerCase()
       redis.zincrby('kismetart:trending', 1, `${colLower}:${tok}`).catch(() => {})
       if (account) {
         redis.zadd(`kismetart:collected:${account}`, { score: Date.now(), member: `${colLower}:${tok}` }).catch(() => {})
+        void (async () => {
+          const meta = await getMomentMeta(colLower, tok)
+          if (!meta) return
+          await writeNotification({
+            type: 'collect',
+            recipient: meta.creator,
+            actor: account,
+            tokenAddress: colLower,
+            tokenId: tok,
+            tokenName: meta.name,
+            amount: Number.isFinite(amount) && amount > 0 ? amount : 1,
+            ...(price ? { price } : {}),
+          })
+        })()
       }
     }
   }

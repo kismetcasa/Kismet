@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -9,6 +10,7 @@ import { Pencil, ChevronRight, Copy, Check, X, Search } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
+import { NotificationFeed } from './NotificationFeed'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
 import { shortAddress } from '@/lib/inprocess'
@@ -90,8 +92,15 @@ export function ProfileView({ address }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
+  const searchParams = useSearchParams()
+  const wantNotificationsTab = searchParams?.get('tab') === 'notifications'
 
   const isOwner = connectedAddress?.toLowerCase() === address.toLowerCase()
+  const [notificationsCollapsed, setNotificationsCollapsed] = useState(true)
+
+  useEffect(() => {
+    if (isOwner && wantNotificationsTab) setNotificationsCollapsed(false)
+  }, [isOwner, wantNotificationsTab])
 
   const [profile, setProfile] = useState<Profile | null>(null)
   const [moments, setMoments] = useState<Moment[]>([])
@@ -322,7 +331,6 @@ export function ProfileView({ address }: ProfileViewProps) {
     }
   }
 
-
   // ─── section content map ──────────────────────────────────────────────────
 
   const skeleton = (n: number) => (
@@ -353,8 +361,7 @@ export function ProfileView({ address }: ProfileViewProps) {
 
   // ─── render ───────────────────────────────────────────────────────────────
 
-  const shortAddr = `${address.slice(0, 6)}…${address.slice(-4)}`
-  const displayName = profile?.username || profile?.ensName || shortAddr
+  const displayName = profile?.username || profile?.ensName || shortAddress(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
@@ -519,7 +526,7 @@ export function ProfileView({ address }: ProfileViewProps) {
               type="text"
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
-              placeholder={shortAddr}
+              placeholder={shortAddress(address)}
               maxLength={30}
               className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
             />
@@ -549,6 +556,28 @@ export function ProfileView({ address }: ProfileViewProps) {
         </div>
       )}
 
+
+      {/* Notifications (owner only) */}
+      {isOwner && (
+        <div className="border-t border-[#2a2a2a]">
+          <button
+            type="button"
+            onClick={() => setNotificationsCollapsed((v) => !v)}
+            className="flex items-center gap-2 py-4 select-none w-full"
+          >
+            <ChevronRight
+              size={12}
+              className={`text-[#555] transition-transform duration-200 ${notificationsCollapsed ? '' : 'rotate-90'}`}
+            />
+            <h2 className="text-xs font-mono text-[#888] uppercase tracking-wider">Notifications</h2>
+          </button>
+          {!notificationsCollapsed && (
+            <div className="pb-8">
+              <NotificationFeed address={address} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Draggable / collapsible sections */}
       <div className="flex flex-col">
