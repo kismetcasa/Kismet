@@ -47,8 +47,12 @@ export function MomentModal({
     () => initialCreatorName ?? shortAddress(moment.creator.address),
   )
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(initialCreatorAvatar)
-  const [comments, setComments] = useState<MomentComment[]>([])
-  const [commentsLoading, setCommentsLoading] = useState(true)
+  const [comments, setComments] = useState<MomentComment[]>(
+    () => getCachedComments(moment.address, moment.token_id) ?? []
+  )
+  const [commentsLoading, setCommentsLoading] = useState(
+    () => getCachedComments(moment.address, moment.token_id) === undefined
+  )
   const [showAllComments, setShowAllComments] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const [showFullDesc, setShowFullDesc] = useState(false)
@@ -118,9 +122,9 @@ export function MomentModal({
 
   // Fetch comments with shared cache — survives modal close/reopen and seeds detail page
   const fetchComments = useCallback(async () => {
+    if (!commentsLoading) return
     const cached = getCachedComments(moment.address, moment.token_id)
     if (cached) { setComments(cached); setCommentsLoading(false); return }
-    setCommentsLoading(true)
     try {
       const params = new URLSearchParams({
         collectionAddress: moment.address,

@@ -496,11 +496,26 @@ export function ProfileView({ address }: ProfileViewProps) {
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2">
-              {loadingProfile ? (
-                <div className="h-4 w-28 bg-[#1a1a1a] animate-pulse rounded" />
-              ) : (
-                <p className="text-[#efefef] font-mono text-sm min-w-0 truncate flex-1">{displayName}</p>
-              )}
+              <div className="flex items-center gap-1 flex-1 min-w-0">
+                {loadingProfile ? (
+                  <div className="h-4 w-28 bg-[#1a1a1a] animate-pulse rounded" />
+                ) : (
+                  <>
+                    <p className="text-[#efefef] font-mono text-sm truncate">{displayName}</p>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(`${window.location.origin}/profile/${address}`).catch(() => {})
+                        setLinkCopied(true)
+                        setTimeout(() => setLinkCopied(false), 1500)
+                      }}
+                      className="flex-shrink-0 p-1 text-[#444] hover:text-[#888] transition-colors"
+                      title="Copy profile link"
+                    >
+                      {linkCopied ? <Check size={12} className="text-[#6ee7b7]" /> : <Copy size={12} />}
+                    </button>
+                  </>
+                )}
+              </div>
               {isOwner && !loadingProfile && (
                 <button onClick={openEdit} className="flex-shrink-0 p-1 text-[#555] hover:text-[#888] transition-colors" title="Edit profile">
                   <Pencil size={12} />
@@ -517,19 +532,6 @@ export function ProfileView({ address }: ProfileViewProps) {
                   }`}
                 >
                   {followLoading ? '…' : following ? 'following' : 'follow'}
-                </button>
-              )}
-              {!loadingProfile && (
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(`${window.location.origin}/profile/${address}`).catch(() => {})
-                    setLinkCopied(true)
-                    setTimeout(() => setLinkCopied(false), 1500)
-                  }}
-                  className="flex-shrink-0 p-1 text-[#444] hover:text-[#888] transition-colors"
-                  title="Copy profile link"
-                >
-                  {linkCopied ? <Check size={12} className="text-[#6ee7b7]" /> : <Copy size={12} />}
                 </button>
               )}
             </div>
