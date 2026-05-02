@@ -10,6 +10,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { resolveUri, formatPrice, shortAddress, DEFAULT_COLLECT_COMMENT, type Moment, type MomentDetail } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { useAdmin } from '@/contexts/AdminContext'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ListButton } from './ListButton'
@@ -72,6 +73,15 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
       .catch(() => {})
   }, [moment.address, moment.token_id, hidePriceSupply])
 
+  function prefetchComments() {
+    if (getCachedComments(moment.address, moment.token_id)) return
+    const params = new URLSearchParams({ collectionAddress: moment.address, tokenId: moment.token_id, chainId: '8453' })
+    fetch(`/api/moment/comments?${params}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data) setCachedComments(moment.address, moment.token_id, data.comments ?? []) })
+      .catch(() => {})
+  }
+
   function handleCopyLink() {
     navigator.clipboard.writeText(`${window.location.origin}/moment/${moment.address}/${moment.token_id}`).catch(() => {})
     setLinkCopied(true)
@@ -115,6 +125,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
         {/* Media — click opens modal on desktop, navigates to detail page on mobile */}
         <div
           onClick={() => window.innerWidth < 640 ? router.push(`/moment/${moment.address}/${moment.token_id}`) : setModalOpen(true)}
+          onMouseEnter={prefetchComments}
           className="cursor-pointer relative aspect-square bg-[#111] overflow-hidden"
         >
           {owned > 0 && (
