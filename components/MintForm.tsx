@@ -122,9 +122,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         toast.loading('Minting moment…', { id: 'mint' })
 
         const payload = {
-          contract: targetCollection
-            ? { address: targetCollection }
-            : { name: `${name.trim()} by ${address}` },
+          contract: { address: targetCollection },
           token: {
             name: name.trim(),
             ...(description.trim() ? { description: description.trim() } : {}),
@@ -183,9 +181,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         toast.loading('Minting moment…', { id: 'mint' })
 
         const payload: CreateMomentPayload & { name: string } = {
-          contract: targetCollection
-            ? { address: targetCollection }
-            : { name: `${name.trim()} by ${address}`, uri: metadataUri },
+          contract: { address: targetCollection },
           token: {
             tokenMetadataURI: metadataUri,
             createReferral: CREATE_REFERRAL,
@@ -483,12 +479,6 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           ? stepLabel(step, uploadProgress)
           : 'mint'}
       </button>
-
-      {!targetCollection && (
-        <p className="text-xs font-mono text-[#555] text-center">
-          No platform collection set — each mint creates a new collection
-        </p>
-      )}
     </form>
   )
 }
