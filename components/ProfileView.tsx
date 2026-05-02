@@ -540,9 +540,9 @@ export function ProfileView({ address }: ProfileViewProps) {
                 onClick={() => {
                   navigator.clipboard.writeText(address).catch(() => {})
                   setAddrCopied(true)
-                  setTimeout(() => setAddrCopied(false), 1500)
+                  setTimeout(() => setAddrCopied(false), 800)
                 }}
-                className={`font-mono text-xs text-left break-all transition-colors ${addrCopied ? 'text-[#6ee7b7]' : 'text-[#555] hover:text-[#888]'}`}
+                className={`font-mono text-xs text-left break-all transition-colors ${addrCopied ? 'text-[#8B5CF6]' : 'text-[#555] hover:text-[#888]'}`}
                 title="Copy address"
               >
                 {address}
