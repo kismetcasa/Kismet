@@ -499,10 +499,10 @@ export function ProfileView({ address }: ProfileViewProps) {
               {loadingProfile ? (
                 <div className="h-4 w-28 bg-[#1a1a1a] animate-pulse rounded" />
               ) : (
-                <p className="text-[#efefef] font-mono text-sm">{displayName}</p>
+                <p className="text-[#efefef] font-mono text-sm min-w-0 truncate flex-1">{displayName}</p>
               )}
               {isOwner && !loadingProfile && (
-                <button onClick={openEdit} className="text-[#555] hover:text-[#888] transition-colors" title="Edit profile">
+                <button onClick={openEdit} className="flex-shrink-0 p-1 text-[#555] hover:text-[#888] transition-colors" title="Edit profile">
                   <Pencil size={12} />
                 </button>
               )}
@@ -510,7 +510,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                 <button
                   onClick={handleFollow}
                   disabled={followLoading}
-                  className={`text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
+                  className={`flex-shrink-0 text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
                     following
                       ? 'border-[#555] text-[#888] hover:border-red-900/50 hover:text-red-400'
                       : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef]'
@@ -526,7 +526,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                     setLinkCopied(true)
                     setTimeout(() => setLinkCopied(false), 1500)
                   }}
-                  className="text-[#444] hover:text-[#888] transition-colors"
+                  className="flex-shrink-0 p-1 text-[#444] hover:text-[#888] transition-colors"
                   title="Copy profile link"
                 >
                   {linkCopied ? <Check size={12} className="text-[#6ee7b7]" /> : <Copy size={12} />}

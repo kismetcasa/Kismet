@@ -26,7 +26,7 @@ function AvatarRow({
   return (
     <Link
       href={`/profile/${addr}`}
-      className="flex items-center gap-2.5 border border-[#2a2a2a] hover:border-[#555] px-3 py-2 transition-colors"
+      className="flex items-center gap-2.5 border border-[#2a2a2a] hover:border-[#555] px-3 py-2 transition-colors w-full sm:w-auto"
     >
       <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
       <span className="text-xs font-mono text-[#888] truncate">
@@ -102,7 +102,7 @@ export function CollectionView({
               alt={displayName}
               fill
               className="object-cover"
-              sizes="128px"
+              sizes="(max-width: 640px) 96px, 128px"
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">

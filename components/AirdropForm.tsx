@@ -134,7 +134,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                           <span className="text-[#333] font-mono text-[10px]">#{m.token_id}</span>
                         </div>
                       )}
-                      <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         <p className="text-[9px] font-mono text-[#efefef] truncate">{meta.name ?? `#${m.token_id}`}</p>
                       </div>
                     </button>
