@@ -72,12 +72,6 @@ export async function PUT(
     return NextResponse.json({ error: 'avatarUrl must be an https URL' }, { status: 400 })
   }
 
-  // Verify the nonce was issued for this address and hasn't been used
-  const valid = await consumeNonce(address, body.nonce)
-  if (!valid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
-  }
-
   // Verify the signature proves ownership of the address
   const message = `Update Kismet Art profile\nAddress: ${address.toLowerCase()}\nNonce: ${body.nonce}`
   const verified = await verifyMessage({
@@ -88,6 +82,12 @@ export async function PUT(
 
   if (!verified) {
     return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+  }
+
+  // Consume the nonce only after signature is confirmed valid
+  const valid = await consumeNonce(address, body.nonce)
+  if (!valid) {
+    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
   const username = body.username?.trim().slice(0, 30) || undefined

@@ -49,9 +49,6 @@ async function verifyFollowSignature(
   if (!body.follower || !isAddress(body.follower) || !body.signature || !body.nonce) {
     return { error: 'follower, signature, and nonce required', status: 400 }
   }
-  const valid = await consumeNonce(body.follower, body.nonce)
-  if (!valid) return { error: 'Invalid or expired nonce', status: 401 }
-
   const message = `${action} ${target.toLowerCase()} on Kismet Art\nAddress: ${body.follower.toLowerCase()}\nNonce: ${body.nonce}`
   const verified = await verifyMessage({
     address: body.follower as `0x${string}`,
@@ -59,6 +56,9 @@ async function verifyFollowSignature(
     signature: body.signature as `0x${string}`,
   })
   if (!verified) return { error: 'Signature verification failed', status: 401 }
+
+  const valid = await consumeNonce(body.follower, body.nonce)
+  if (!valid) return { error: 'Invalid or expired nonce', status: 401 }
   return null
 }
 

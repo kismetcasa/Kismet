@@ -46,10 +46,6 @@ export async function PATCH(
     if (signer.toLowerCase() !== listing.seller.toLowerCase()) {
       return NextResponse.json({ error: 'Only the seller can cancel this listing' }, { status: 403 })
     }
-    const valid = await consumeNonce(signer, nonce)
-    if (!valid) {
-      return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
-    }
     const message = `Cancel Kismet Art listing\nListing: ${id}\nSeller: ${signer.toLowerCase()}\nNonce: ${nonce}`
     const verified = await verifyMessage({
       address: signer as `0x${string}`,
@@ -58,6 +54,10 @@ export async function PATCH(
     })
     if (!verified) {
       return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+    }
+    const valid = await consumeNonce(signer, nonce)
+    if (!valid) {
+      return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
     }
   }
 
