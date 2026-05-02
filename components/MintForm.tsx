@@ -10,7 +10,7 @@ import type { CreateMomentPayload, Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { PLATFORM_COLLECTION, CREATE_REFERRAL } from '@/lib/config'
+import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 
 type MintMode = 'media' | 'text'
 
@@ -34,6 +34,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
   const [maxSupply, setMaxSupply] = useState('')
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
+  const [residenciesEnabled, setResidenciesEnabled] = useState(false)
   const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
@@ -86,6 +87,25 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  // Builds the final splits array to send to the API.
+  // When residencies is off: pass creator splits as-is (or undefined for payoutRecipient).
+  // When residencies is on + no custom splits: [creator 95%, residencies 5%].
+  // When residencies is on + custom splits: scale each split by ×0.95, append residencies at 5%.
+  function buildFinalSplits(): Split[] | undefined {
+    if (!residenciesEnabled) return splits.length >= 2 ? splits : undefined
+    if (splits.length < 2) {
+      return [
+        { address: address!, percentAllocation: 95 },
+        { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
+      ]
+    }
+    const scaled = splits.map((s) => ({
+      address: s.address,
+      percentAllocation: parseFloat((s.percentAllocation * 0.95).toFixed(4)),
+    }))
+    return [...scaled, { address: RESIDENCIES_ADDRESS, percentAllocation: 5 }]
+  }
+
   async function handleMint(e: React.FormEvent) {
     e.preventDefault()
 
@@ -116,6 +136,8 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
     }
     const maxSupplyVal = supplyTrimmed ? parseInt(supplyTrimmed, 10) : undefined
 
+    const finalSplits = buildFinalSplits()
+
     try {
       if (mintMode === 'text') {
         setStep('minting')
@@ -131,11 +153,11 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
             salesConfig,
             mintToCreatorCount: 1,
             ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
-            ...(splits.length < 2 ? { payoutRecipient: address } : {}),
+            ...(finalSplits ? {} : { payoutRecipient: address }),
           },
           name: name.trim(),
           account: address,
-          ...(splits.length >= 2 ? { splits } : {}),
+          ...(finalSplits ? { splits: finalSplits } : {}),
         }
 
         const res = await fetch('/api/write', {
@@ -188,11 +210,11 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
             salesConfig,
             mintToCreatorCount: 1,
             ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
-            ...(splits.length < 2 ? { payoutRecipient: address } : {}),
+            ...(finalSplits ? {} : { payoutRecipient: address }),
           },
           name: name.trim(),
           account: address!,
-          ...(splits.length >= 2 ? { splits } : {}),
+          ...(finalSplits ? { splits: finalSplits } : {}),
         }
 
         const res = await fetch('/api/mint', {
@@ -478,6 +500,20 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           : isBusy
           ? stepLabel(step, uploadProgress)
           : 'mint'}
+      </button>
+
+      {/* Residencies toggle */}
+      <button
+        type="button"
+        onClick={() => setResidenciesEnabled((v) => !v)}
+        className="flex items-center gap-2.5 group w-fit mx-auto -mt-2"
+      >
+        <div className={`relative w-8 h-4 rounded-full transition-colors flex-shrink-0 ${residenciesEnabled ? 'bg-[#8B5CF6]' : 'bg-[#2a2a2a] border border-[#3a3a3a]'}`}>
+          <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${residenciesEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+        </div>
+        <span className={`text-[10px] font-mono transition-colors ${residenciesEnabled ? 'text-[#888]' : 'text-[#444] group-hover:text-[#555]'}`}>
+          {residenciesEnabled ? '5%' : '0%'} to kismet casa residencies
+        </span>
       </button>
     </form>
   )
