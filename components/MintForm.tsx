@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2 } from 'lucide-react'
@@ -21,6 +21,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
   const targetCollection = collectionAddress ?? PLATFORM_COLLECTION
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { signMessageAsync } = useSignMessage()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const [file, setFile] = useState<File | null>(null)
@@ -155,14 +156,19 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
 
       } else {
-        // media mode
+        // media mode — get wallet auth once before any Arweave upload
+        const { nonce } = await fetch(`/api/profile/${address}/nonce`).then((r) => r.json())
+        const uploadMessage = `Upload on Kismet Art\nAddress: ${address!.toLowerCase()}\nNonce: ${nonce}`
+        const uploadSignature = await signMessageAsync({ message: uploadMessage })
+        const uploadAuth = { callerAddress: address!, signature: uploadSignature, nonce }
+
         setStep('uploading-media')
         setUploadProgress(0)
         toast.loading('Uploading media to Arweave…', { id: 'mint' })
         const mediaUri = await uploadToArweave(file!, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
-        })
+        }, uploadAuth)
 
         setStep('uploading-metadata')
         setUploadProgress(0)
@@ -173,7 +179,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           image: mediaUri,
           ...(file!.type.startsWith('video/') ? { animation_url: mediaUri } : {}),
         }
-        const metadataUri = await uploadJson(metadata)
+        const metadataUri = await uploadJson(metadata, uploadAuth)
 
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })

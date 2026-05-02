@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther } from 'viem'
 import { toast } from 'sonner'
@@ -18,6 +18,7 @@ interface CreateCollectionFormProps {
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { signMessageAsync } = useSignMessage()
 
   const [coverFile, setCoverFile] = useState<File | null>(null)
   const [coverPreview, setCoverPreview] = useState<string | null>(null)
@@ -37,6 +38,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [deployedImageUri, setDeployedImageUri] = useState<string | undefined>(undefined)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const uploadAuthRef = useRef<{ callerAddress: string; signature: string; nonce: string } | null>(null)
 
   const { writeContractAsync } = useWriteContract()
 
@@ -90,11 +92,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       toast.loading('Minting cover token…', { id: 'create-collection' })
       ;(async () => {
         try {
+          if (!uploadAuthRef.current) throw new Error('Upload auth missing — please retry')
           const tokenMetadataUri = await uploadJson({
             name: name.trim(),
             ...(description.trim() ? { description: description.trim() } : {}),
             image: deployedImageUri,
-          })
+          }, uploadAuthRef.current)
           const now = Math.floor(Date.now() / 1000)
           const rawCoverPrice = coverPrice.trim()
           const normalizedCoverPrice = !rawCoverPrice || rawCoverPrice === '.' ? '0' : rawCoverPrice.startsWith('.') ? `0${rawCoverPrice}` : rawCoverPrice
@@ -182,13 +185,20 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     setDeployedImageUri(undefined)
 
     try {
+      // Get wallet auth once — reused for image, metadata, and cover-mint uploads
+      const { nonce } = await fetch(`/api/profile/${address}/nonce`).then((r) => r.json())
+      const uploadMessage = `Upload on Kismet Art\nAddress: ${address!.toLowerCase()}\nNonce: ${nonce}`
+      const uploadSignature = await signMessageAsync({ message: uploadMessage })
+      const uploadAuth = { callerAddress: address!, signature: uploadSignature, nonce }
+      uploadAuthRef.current = uploadAuth
+
       setStep('uploading-image')
       setUploadProgress(0)
       toast.loading('Uploading cover image…', { id: 'create-collection' })
       const imageUri = await uploadToArweave(coverFile, (pct) => {
         setUploadProgress(pct)
         toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
-      })
+      }, uploadAuth)
       setDeployedImageUri(imageUri)
 
       setStep('uploading-metadata')
@@ -199,7 +209,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         image: imageUri,
         createReferral: CREATE_REFERRAL,
       }
-      const contractURI = await uploadJson(metadata)
+      const contractURI = await uploadJson(metadata, uploadAuth)
 
       setStep('deploying')
       toast.loading('Deploying collection…', { id: 'create-collection' })
