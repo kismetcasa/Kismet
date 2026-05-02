@@ -502,6 +502,11 @@ export function ProfileView({ address }: ProfileViewProps) {
                 ) : (
                   <>
                     <p className="text-[#efefef] font-mono text-sm truncate">{displayName}</p>
+                    {isOwner && (
+                      <button onClick={openEdit} className="flex-shrink-0 p-1 text-[#555] hover:text-[#888] transition-colors" title="Edit profile">
+                        <Pencil size={12} />
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(`${window.location.origin}/profile/${address}`).catch(() => {})
@@ -516,11 +521,6 @@ export function ProfileView({ address }: ProfileViewProps) {
                   </>
                 )}
               </div>
-              {isOwner && !loadingProfile && (
-                <button onClick={openEdit} className="flex-shrink-0 p-1 text-[#555] hover:text-[#888] transition-colors" title="Edit profile">
-                  <Pencil size={12} />
-                </button>
-              )}
               {!isOwner && connectedAddress && !loadingProfile && (
                 <button
                   onClick={handleFollow}
