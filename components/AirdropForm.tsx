@@ -1,28 +1,37 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { Plus, X } from 'lucide-react'
-import { shortAddress } from '@/lib/inprocess'
+import Image from 'next/image'
+import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 
-interface AirdropFormProps {
-  collectionAddress?: string
-  tokenId?: string
-}
-
-export function AirdropForm({ collectionAddress: initialCollection = '', tokenId: initialTokenId = '' }: AirdropFormProps) {
+export function AirdropForm() {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
 
-  const [collection, setCollection] = useState(initialCollection)
-  const [tokenId, setTokenId] = useState(initialTokenId)
+  const [moments, setMoments] = useState<Moment[]>([])
+  const [loadingMoments, setLoadingMoments] = useState(false)
+  const [selected, setSelected] = useState<Moment | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [recipientInput, setRecipientInput] = useState('')
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
+
+  // Load creator's minted moments when wallet connects
+  useEffect(() => {
+    if (!address) { setMoments([]); setSelected(null); return }
+    setLoadingMoments(true)
+    fetch(`/api/timeline?creator=${address}&limit=100`)
+      .then((r) => r.json())
+      .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
+      .catch(() => setMoments([]))
+      .finally(() => setLoadingMoments(false))
+  }, [address])
 
   function addRecipient() {
     const addr = recipientInput.trim()
@@ -39,25 +48,25 @@ export function AirdropForm({ collectionAddress: initialCollection = '', tokenId
   async function handleAirdrop(e: React.FormEvent) {
     e.preventDefault()
     if (!isConnected || !address) { openConnectModal?.(); return }
-    if (!isAddress(collection)) { toast.error('Invalid collection address'); return }
-    if (!tokenId.trim() || !/^\d+$/.test(tokenId.trim())) { toast.error('Invalid token ID'); return }
+    if (!selected) { toast.error('Select a moment to airdrop'); return }
     if (recipients.length === 0) { toast.error('Add at least one recipient'); return }
 
     setSending(true)
+    setResultHash(null)
     try {
       const res = await fetch('/api/airdrop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          collectionAddress: collection,
-          recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: tokenId.trim() })),
+          collectionAddress: selected.address,
+          recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? data.detail ?? 'Airdrop failed')
       setResultHash(data.hash)
       setRecipients([])
-      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length > 1 ? 's' : ''}`)
+      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}`)
     } catch (err) {
       toast.error('Airdrop failed', { description: err instanceof Error ? err.message : 'Unknown error' })
     } finally {
@@ -65,35 +74,87 @@ export function AirdropForm({ collectionAddress: initialCollection = '', tokenId
     }
   }
 
+  const selectedMeta = selected?.metadata ?? {}
+  const selectedImage = selectedMeta.image ? resolveUri(selectedMeta.image) : null
+
   return (
     <form onSubmit={handleAirdrop} className="flex flex-col gap-6">
+
+      {/* Moment picker */}
       <div>
         <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Collection Address <span className="text-[#efefef]">*</span>
+          Moment <span className="text-[#efefef]">*</span>
         </label>
-        <input
-          type="text"
-          value={collection}
-          onChange={(e) => setCollection(e.target.value)}
-          placeholder="0x…"
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-        />
+
+        {/* Selected moment preview / trigger */}
+        <button
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+          className="w-full flex items-center gap-3 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 hover:border-[#555] transition-colors text-left"
+        >
+          {selected ? (
+            <>
+              {selectedImage ? (
+                <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+                  <Image src={selectedImage} alt="" fill className="object-cover" sizes="32px" />
+                </div>
+              ) : (
+                <div className="w-8 h-8 bg-[#1a1a1a] flex-shrink-0" />
+              )}
+              <span className="text-sm text-[#efefef] font-mono truncate flex-1">
+                {selectedMeta.name ?? `#${selected.token_id}`}
+              </span>
+            </>
+          ) : (
+            <span className="text-sm text-[#333] font-mono flex-1">
+              {loadingMoments ? 'loading your moments…' : 'select a moment'}
+            </span>
+          )}
+          <span className="text-[#555] text-xs font-mono flex-shrink-0">
+            {pickerOpen ? '▲' : '▼'}
+          </span>
+        </button>
+
+        {/* Picker grid */}
+        {pickerOpen && (
+          <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
+            {moments.length === 0 ? (
+              <p className="text-xs font-mono text-[#555] px-3 py-4">
+                {loadingMoments ? 'loading…' : 'no minted moments found'}
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
+                {moments.map((m) => {
+                  const meta = m.metadata ?? {}
+                  const img = meta.image ? resolveUri(meta.image) : null
+                  const isSelected = selected?.address === m.address && selected?.token_id === m.token_id
+                  return (
+                    <button
+                      key={`${m.address}:${m.token_id}`}
+                      type="button"
+                      onClick={() => { setSelected(m); setPickerOpen(false) }}
+                      className={`relative aspect-square bg-[#111] overflow-hidden group ${isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''}`}
+                    >
+                      {img ? (
+                        <Image src={img} alt={meta.name ?? ''} fill className="object-cover" sizes="120px" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <span className="text-[#333] font-mono text-[10px]">#{m.token_id}</span>
+                        </div>
+                      )}
+                      <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <p className="text-[9px] font-mono text-[#efefef] truncate">{meta.name ?? `#${m.token_id}`}</p>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Token ID <span className="text-[#efefef]">*</span>
-        </label>
-        <input
-          type="text"
-          inputMode="numeric"
-          value={tokenId}
-          onChange={(e) => { if (e.target.value === '' || /^\d+$/.test(e.target.value)) setTokenId(e.target.value) }}
-          placeholder="1"
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-        />
-      </div>
-
+      {/* Recipients */}
       <div>
         <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
           Recipients
@@ -104,7 +165,7 @@ export function AirdropForm({ collectionAddress: initialCollection = '', tokenId
             value={recipientInput}
             onChange={(e) => setRecipientInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRecipient() } }}
-            placeholder="0x… address"
+            placeholder="0x… wallet address"
             className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
           />
           <button
@@ -116,7 +177,7 @@ export function AirdropForm({ collectionAddress: initialCollection = '', tokenId
           </button>
         </div>
         {recipients.length > 0 && (
-          <ul className="flex flex-col gap-1">
+          <ul className="flex flex-col gap-1 mb-1.5">
             {recipients.map((r) => (
               <li key={r} className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2">
                 <span className="text-xs font-mono text-[#888]">{shortAddress(r)}</span>
@@ -128,7 +189,10 @@ export function AirdropForm({ collectionAddress: initialCollection = '', tokenId
           </ul>
         )}
         {recipients.length > 0 && (
-          <p className="text-xs font-mono text-[#555] mt-1.5">{recipients.length} recipient{recipients.length > 1 ? 's' : ''}</p>
+          <p className="text-xs font-mono text-[#555]">
+            {recipients.length} recipient{recipients.length !== 1 ? 's' : ''}
+            {' — '}each receives 1 fresh copy (minted, not transferred)
+          </p>
         )}
       </div>
 
@@ -145,11 +209,21 @@ export function AirdropForm({ collectionAddress: initialCollection = '', tokenId
 
       <button
         type="submit"
-        disabled={sending}
+        disabled={sending || !selected || recipients.length === 0}
         className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50"
       >
-        {!isConnected ? 'connect wallet to airdrop' : sending ? 'airdropping…' : 'airdrop'}
+        {!isConnected
+          ? 'connect wallet to airdrop'
+          : sending
+          ? 'airdropping…'
+          : selected && recipients.length > 0
+          ? `airdrop to ${recipients.length} wallet${recipients.length !== 1 ? 's' : ''}`
+          : 'airdrop'}
       </button>
+
+      <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
+        each recipient receives a freshly minted copy — your api key authorises the mint
+      </p>
     </form>
   )
 }

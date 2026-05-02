@@ -30,9 +30,9 @@ interface ArtistCollection {
 
 // ─── section ordering / collapse ─────────────────────────────────────────────
 
-type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'collections'
+type SectionId = 'mints' | 'collected' | 'listings' | 'payments'
 
-const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments', 'collections']
+const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments']
 const SECTIONS_KEY = 'kismetart:profile-sections'
 
 interface SectionsConfig {
@@ -124,6 +124,7 @@ export function ProfileView({ address }: ProfileViewProps) {
   const [usernameInput, setUsernameInput] = useState('')
   const [avatarInput, setAvatarInput] = useState('')
   const [saving, setSaving] = useState(false)
+  const [collectionsMode, setCollectionsMode] = useState(false)
   const [following, setFollowing] = useState(false)
   const [followLoading, setFollowLoading] = useState(false)
   const [addrCopied, setAddrCopied] = useState(false)
@@ -370,26 +371,59 @@ export function ProfileView({ address }: ProfileViewProps) {
   const sectionLabel: Record<SectionId, string> = {
     mints: 'Mints',
     collected: 'Collected',
-    listings: 'Active Listings',
+    listings: 'Listings',
     payments: 'Sales',
-    collections: 'Collections',
   }
   const sectionCount: Record<SectionId, number | null> = {
     mints: loadingMoments ? null : moments.length,
     collected: loadingCollected ? null : collected.length,
     listings: loadingListings ? null : listings.length,
     payments: loadingPayments ? null : payments.length,
-    collections: loadingCollections ? null : artistCollections.length,
   }
   const sectionContent: Record<SectionId, React.ReactNode> = {
-    mints: loadingMoments ? skeleton(6) : moments.length === 0
-      ? <p className="text-[#555] font-mono text-xs">no mints yet</p>
-      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>,
+    mints: collectionsMode ? (
+      loadingCollections ? (
+        <div className="flex flex-col gap-1">
+          {[0, 1, 2].map((i) => <div key={i} className="h-12 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
+        </div>
+      ) : artistCollections.length === 0 ? (
+        <p className="text-[#555] font-mono text-xs">no collections yet</p>
+      ) : (
+        <div className="flex flex-col divide-y divide-[#1a1a1a]">
+          {artistCollections.map((c) => (
+            <a
+              key={c.contractAddress}
+              href={`https://inprocess.world/collect/base:${c.contractAddress}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between py-2.5 gap-4 group"
+            >
+              <span className="text-xs font-mono text-[#efefef] group-hover:accent-grad transition-colors truncate">
+                {c.metadata?.name || c.name}
+              </span>
+              <span className="text-[10px] font-mono text-[#444] group-hover:text-[#888] transition-colors flex-shrink-0">
+                {shortAddress(c.contractAddress)}
+              </span>
+            </a>
+          ))}
+        </div>
+      )
+    ) : (
+      loadingMoments ? skeleton(6) : moments.length === 0
+        ? <p className="text-[#555] font-mono text-xs">no mints yet</p>
+        : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>
+    ),
     collected: loadingCollected ? skeleton(6) : collected.length === 0
       ? <p className="text-[#555] font-mono text-xs">none collected yet</p>
       : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{collected.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>,
     listings: loadingListings ? skeleton(3) : listings.length === 0
-      ? <p className="text-[#555] font-mono text-xs">no active listings</p>
+      ? (
+        <p className="text-[#555] font-mono text-xs">
+          collect a moment on discover then{' '}
+          <Link href={`/profile/${address}`} className="accent-grad hover:opacity-80 transition-opacity">list</Link>
+          {' '}it here
+        </p>
+      )
       : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{listings.map((l) => <MarketCard key={l.id} listing={l} onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))} />)}</div>,
     payments: loadingPayments ? (
       <div className="flex flex-col gap-1">
@@ -416,32 +450,6 @@ export function ProfileView({ address }: ProfileViewProps) {
               {p.hash.slice(0, 8)}…
             </a>
           </div>
-        ))}
-      </div>
-    ),
-    collections: loadingCollections ? (
-      <div className="flex flex-col gap-1">
-        {[0,1,2].map((i) => <div key={i} className="h-12 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
-      </div>
-    ) : artistCollections.length === 0 ? (
-      <p className="text-[#555] font-mono text-xs">no collections yet</p>
-    ) : (
-      <div className="flex flex-col divide-y divide-[#1a1a1a]">
-        {artistCollections.map((c) => (
-          <a
-            key={c.contractAddress}
-            href={`https://inprocess.world/collect/base:${c.contractAddress}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-between py-2.5 gap-4 group"
-          >
-            <span className="text-xs font-mono text-[#efefef] group-hover:accent-grad transition-colors truncate">
-              {c.metadata?.name || c.name}
-            </span>
-            <span className="text-[10px] font-mono text-[#444] group-hover:text-[#888] transition-colors flex-shrink-0">
-              {shortAddress(c.contractAddress)}
-            </span>
-          </a>
         ))}
       </div>
     ),
@@ -670,6 +678,18 @@ export function ProfileView({ address }: ProfileViewProps) {
                 <h2 className="text-xs font-mono text-[#888] uppercase tracking-wider">
                   {sectionLabel[section]}{count !== null ? ` (${count})` : ''}
                 </h2>
+                {section === 'mints' && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setCollectionsMode((v) => !v) }}
+                    className={`ml-auto text-xs font-mono px-2.5 py-1 border transition-colors ${
+                      collectionsMode
+                        ? 'border-[#555] text-[#888] hover:border-red-900/50 hover:text-red-400'
+                        : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef]'
+                    }`}
+                  >
+                    collections
+                  </button>
+                )}
               </div>
               {!isCollapsed && (
                 <div className="pb-8">
