@@ -681,7 +681,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                 {section === 'mints' && (
                   <button
                     onClick={(e) => { e.stopPropagation(); setCollectionsMode((v) => !v) }}
-                    className={`ml-auto text-xs font-mono px-2.5 py-1 border transition-colors ${
+                    className={`text-xs font-mono px-2.5 py-1 border transition-colors ${
                       collectionsMode
                         ? 'border-[#555] text-[#888] hover:border-red-900/50 hover:text-red-400'
                         : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef]'

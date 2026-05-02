@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw } from 'lucide-react'
+import Link from 'next/link'
+import { useAccount } from 'wagmi'
 import { MarketCard } from '@/components/MarketCard'
 import type { Listing } from '@/lib/listings'
 
@@ -12,6 +14,7 @@ export function MarketView() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [refreshing, setRefreshing] = useState(false)
+  const { address } = useAccount()
 
   const fetchListings = useCallback(async (p = 1, append = false) => {
     try {
@@ -92,7 +95,9 @@ export function MarketView() {
           <p className="text-xs font-mono text-[#333] mt-2">
             collect a moment on{' '}
             <a href="/" className="accent-grad hover:underline">discover</a>
-            {' '}then list it here
+            {' '}then{' '}
+            <Link href={address ? `/profile/${address}` : '/'} className="accent-grad hover:underline">list</Link>
+            {' '}it here
           </p>
         </div>
       )}
