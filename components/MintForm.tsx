@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2 } from 'lucide-react'
@@ -9,6 +9,7 @@ import { parseEther, isAddress } from 'viem'
 import type { CreateMomentPayload, Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
+import { useUploadSession } from '@/hooks/useUploadSession'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL } from '@/lib/config'
 
 type MintMode = 'media' | 'text'
@@ -21,7 +22,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
   const targetCollection = collectionAddress ?? PLATFORM_COLLECTION
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
-  const { signMessageAsync } = useSignMessage()
+  const { ensureSession } = useUploadSession()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const [file, setFile] = useState<File | null>(null)
@@ -156,11 +157,8 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
 
       } else {
-        // media mode — get wallet auth once before any Arweave upload
-        const { nonce } = await fetch(`/api/profile/${address}/nonce`).then((r) => r.json())
-        const uploadMessage = `Upload on Kismet Art\nAddress: ${address!.toLowerCase()}\nNonce: ${nonce}`
-        const uploadSignature = await signMessageAsync({ message: uploadMessage })
-        const uploadAuth = { callerAddress: address!, signature: uploadSignature, nonce }
+        // media mode — ensure session once (cached after first use, no re-prompt)
+        const sessionToken = await ensureSession()
 
         setStep('uploading-media')
         setUploadProgress(0)
@@ -168,7 +166,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         const mediaUri = await uploadToArweave(file!, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
-        }, uploadAuth)
+        }, sessionToken)
 
         setStep('uploading-metadata')
         setUploadProgress(0)
@@ -179,7 +177,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           image: mediaUri,
           ...(file!.type.startsWith('video/') ? { animation_url: mediaUri } : {}),
         }
-        const metadataUri = await uploadJson(metadata, uploadAuth)
+        const metadataUri = await uploadJson(metadata, sessionToken)
 
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })

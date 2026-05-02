@@ -1,16 +1,15 @@
 import { TurboFactory } from '@ardrive/turbo-sdk/web'
 import { makeProxySigner } from './client'
-import type { UploadAuth } from './uploadJson'
 import patchFetch from './patchFetch'
 
 export async function uploadFile(
   file: File,
   onProgress: (pct: number) => void = () => {},
-  auth: UploadAuth,
+  sessionToken: string,
 ): Promise<string> {
   const unpatch = patchFetch()
   try {
-    const signer = makeProxySigner(auth)
+    const signer = makeProxySigner(sessionToken)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const turbo = TurboFactory.authenticated({ signer: signer as any })
 

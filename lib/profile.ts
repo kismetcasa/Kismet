@@ -94,9 +94,3 @@ export async function consumeNonce(address: string, nonce: string): Promise<bool
   await redis.del(keyNonce(address))
   return true
 }
-
-// Check nonce without consuming — for operations that need multiple API calls per submit
-export async function verifyNonce(address: string, nonce: string): Promise<boolean> {
-  const stored = await redis.get<string>(keyNonce(address))
-  return stored === nonce
-}
