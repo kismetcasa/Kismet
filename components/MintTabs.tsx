@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useAccount } from 'wagmi'
 import { MintForm } from '@/components/MintForm'
 import { CreateCollectionForm } from '@/components/CreateCollectionForm'
 import { AirdropForm } from '@/components/AirdropForm'
+import type { Moment } from '@/lib/inprocess'
 
 type Tab = 'mint' | 'create' | 'airdrop'
 
@@ -13,10 +15,30 @@ interface MintTabsProps {
 }
 
 export function MintTabs({ initialCollection, initialCollectionName }: MintTabsProps = {}) {
+  const { address } = useAccount()
   const [tab, setTab] = useState<Tab>('mint')
   const [deployedCollection, setDeployedCollection] = useState<{ address: string; name: string } | null>(
     initialCollection ? { address: initialCollection, name: initialCollectionName || initialCollection } : null
   )
+  const [moments, setMoments] = useState<Moment[]>([])
+  const [loadingMoments, setLoadingMoments] = useState(false)
+  const [momentsFetched, setMomentsFetched] = useState(false)
+
+  // Reset when wallet changes
+  useEffect(() => {
+    setMoments([])
+    setMomentsFetched(false)
+  }, [address])
+
+  const fetchMoments = useCallback(() => {
+    if (!address || loadingMoments || momentsFetched) return
+    setLoadingMoments(true)
+    fetch(`/api/timeline?creator=${address}&limit=100`)
+      .then((r) => r.json())
+      .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
+      .catch(() => setMoments([]))
+      .finally(() => { setLoadingMoments(false); setMomentsFetched(true) })
+  }, [address, loadingMoments, momentsFetched])
 
   function handleDeployed(address: string, name: string) {
     setDeployedCollection({ address, name })
@@ -35,7 +57,8 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
         {tabs.map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => { if (t.id === 'airdrop') fetchMoments(); setTab(t.id) }}
+            onMouseEnter={() => { if (t.id === 'airdrop') fetchMoments() }}
             className={`px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px ${
               tab === t.id
                 ? 'border-[#efefef] text-[#efefef]'
@@ -72,7 +95,7 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
       )}
 
       {tab === 'airdrop' && (
-        <AirdropForm />
+        <AirdropForm moments={moments} loadingMoments={loadingMoments} />
       )}
     </div>
   )

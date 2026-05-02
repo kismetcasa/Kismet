@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -9,29 +9,21 @@ import { Plus, X } from 'lucide-react'
 import Image from 'next/image'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 
-export function AirdropForm() {
+interface AirdropFormProps {
+  moments: Moment[]
+  loadingMoments: boolean
+}
+
+export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
 
-  const [moments, setMoments] = useState<Moment[]>([])
-  const [loadingMoments, setLoadingMoments] = useState(false)
   const [selected, setSelected] = useState<Moment | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [recipientInput, setRecipientInput] = useState('')
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
-
-  // Load creator's minted moments when wallet connects
-  useEffect(() => {
-    if (!address) { setMoments([]); setSelected(null); return }
-    setLoadingMoments(true)
-    fetch(`/api/timeline?creator=${address}&limit=100`)
-      .then((r) => r.json())
-      .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
-      .catch(() => setMoments([]))
-      .finally(() => setLoadingMoments(false))
-  }, [address])
 
   function addRecipient() {
     const addr = recipientInput.trim()
@@ -124,7 +116,7 @@ export function AirdropForm() {
               </p>
             ) : (
               <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
-                {moments.map((m) => {
+                {moments.map((m, idx) => {
                   const meta = m.metadata ?? {}
                   const img = meta.image ? resolveUri(meta.image) : null
                   const isSelected = selected?.address === m.address && selected?.token_id === m.token_id
@@ -136,7 +128,7 @@ export function AirdropForm() {
                       className={`relative aspect-square bg-[#111] overflow-hidden group ${isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''}`}
                     >
                       {img ? (
-                        <Image src={img} alt={meta.name ?? ''} fill className="object-cover" sizes="120px" />
+                        <Image src={img} alt={meta.name ?? ''} fill className="object-cover" sizes="120px" priority={idx < 6} />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
                           <span className="text-[#333] font-mono text-[10px]">#{m.token_id}</span>
@@ -221,9 +213,6 @@ export function AirdropForm() {
           : 'airdrop'}
       </button>
 
-      <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
-        each recipient receives a freshly minted copy — your api key authorises the mint
-      </p>
     </form>
   )
 }

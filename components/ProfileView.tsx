@@ -383,11 +383,7 @@ export function ProfileView({ address }: ProfileViewProps) {
   }
   const sectionContent: Record<SectionId, React.ReactNode> = {
     mints: collectionsMode ? (
-      loadingCollections ? (
-        <div className="flex flex-col gap-1">
-          {[0, 1, 2].map((i) => <div key={i} className="h-12 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
-        </div>
-      ) : artistCollections.length === 0 ? (
+      loadingCollections ? skeleton(6) : artistCollections.length === 0 ? (
         <p className="text-[#555] font-mono text-xs">no collections yet</p>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">

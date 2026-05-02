@@ -10,6 +10,32 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { MomentCard } from './MomentCard'
 import { ProfileAvatar } from './ProfileAvatar'
 
+interface AvatarProfile {
+  name: string
+  avatarUrl?: string
+}
+
+function AvatarRow({
+  addr,
+  profiles,
+}: {
+  addr: string
+  profiles: Record<string, AvatarProfile>
+}) {
+  const p = profiles[addr.toLowerCase()]
+  return (
+    <Link
+      href={`/profile/${addr}`}
+      className="flex items-center gap-2.5 border border-[#2a2a2a] hover:border-[#555] px-3 py-2 transition-colors"
+    >
+      <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
+      <span className="text-xs font-mono text-[#888] truncate">
+        {p?.name || shortAddress(addr)}
+      </span>
+    </Link>
+  )
+}
+
 interface CollectionViewProps {
   address: string
   moments: Moment[]
@@ -17,11 +43,6 @@ interface CollectionViewProps {
   collectionImage?: string
   collectionDescription?: string
   admins?: MomentAdmin[]
-}
-
-interface AvatarProfile {
-  name: string
-  avatarUrl?: string
 }
 
 export function CollectionView({
@@ -61,26 +82,6 @@ export function CollectionView({
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address])
-
-  function AvatarRow({ addr, label }: { addr: string; label?: string }) {
-    const p = profiles[addr.toLowerCase()]
-    return (
-      <Link
-        href={`/profile/${addr}`}
-        className="flex items-center gap-2.5 border border-[#2a2a2a] hover:border-[#555] px-3 py-2 transition-colors"
-      >
-        <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
-        <div className="flex flex-col min-w-0">
-          <span className="text-xs font-mono text-[#888] truncate">
-            {p?.name || shortAddress(addr)}
-          </span>
-          {label && (
-            <span className="text-[10px] font-mono text-[#444]">{label}</span>
-          )}
-        </div>
-      </Link>
-    )
-  }
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -126,7 +127,7 @@ export function CollectionView({
           </h2>
           <div className="flex flex-wrap gap-2">
             {uniqueCreators.map((addr) => (
-              <AvatarRow key={addr} addr={addr} />
+              <AvatarRow key={addr} addr={addr} profiles={profiles} />
             ))}
           </div>
         </section>
@@ -138,7 +139,7 @@ export function CollectionView({
           <h2 className="text-xs font-mono text-[#555] uppercase tracking-widest mb-4">splits</h2>
           <div className="flex flex-wrap gap-2">
             {uniqueAdmins.map((admin) => (
-              <AvatarRow key={admin.address} addr={admin.address} />
+              <AvatarRow key={admin.address} addr={admin.address} profiles={profiles} />
             ))}
           </div>
         </section>
