@@ -129,6 +129,7 @@ export function ProfileView({ address }: ProfileViewProps) {
   const [following, setFollowing] = useState(false)
   const [followLoading, setFollowLoading] = useState(false)
   const [addrCopied, setAddrCopied] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
 
   const [followingCount, setFollowingCount] = useState<number | null>(null)
   const [followerCount, setFollowerCount] = useState<number | null>(null)
@@ -516,6 +517,19 @@ export function ProfileView({ address }: ProfileViewProps) {
                   }`}
                 >
                   {followLoading ? '…' : following ? 'following' : 'follow'}
+                </button>
+              )}
+              {!loadingProfile && (
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/profile/${address}`).catch(() => {})
+                    setLinkCopied(true)
+                    setTimeout(() => setLinkCopied(false), 1500)
+                  }}
+                  className="text-[#444] hover:text-[#888] transition-colors"
+                  title="Copy profile link"
+                >
+                  {linkCopied ? <Check size={12} className="text-[#6ee7b7]" /> : <Copy size={12} />}
                 </button>
               )}
             </div>
