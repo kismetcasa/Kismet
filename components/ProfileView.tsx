@@ -536,17 +536,16 @@ export function ProfileView({ address }: ProfileViewProps) {
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <p className="text-[#555] font-mono text-xs break-all">{address}</p>
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(address).catch(() => {})
                   setAddrCopied(true)
                   setTimeout(() => setAddrCopied(false), 1500)
                 }}
-                className="text-[#444] hover:text-[#888] transition-colors flex-shrink-0"
+                className={`font-mono text-xs text-left break-all transition-colors ${addrCopied ? 'text-[#6ee7b7]' : 'text-[#555] hover:text-[#888]'}`}
                 title="Copy address"
               >
-                {addrCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
+                {address}
               </button>
             </div>
             <div className="flex items-center gap-3 mt-0.5">
