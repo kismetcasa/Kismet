@@ -221,9 +221,6 @@ export function AirdropForm() {
           : 'airdrop'}
       </button>
 
-      <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
-        each recipient receives a freshly minted copy — your api key authorises the mint
-      </p>
     </form>
   )
 }
