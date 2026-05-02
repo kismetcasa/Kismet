@@ -45,11 +45,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'signature and nonce required' }, { status: 401 })
   }
 
-  const nonceValid = await consumeNonce(body.callerAddress, body.nonce)
-  if (!nonceValid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
-  }
-
   const tokenId = body.recipients[0].tokenId
   const message = `Airdrop moment on Kismet Art\nCollection: ${body.collectionAddress.toLowerCase()}\nToken: ${tokenId}\nAddress: ${body.callerAddress.toLowerCase()}\nNonce: ${body.nonce}`
 
@@ -64,6 +59,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
   if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+
+  // Consume nonce only after signature is verified — failed sig leaves nonce reusable
+  const nonceValid = await consumeNonce(body.callerAddress, body.nonce)
+  if (!nonceValid) {
+    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+  }
 
   // Confirm callerAddress is the moment creator on InProcess
   try {

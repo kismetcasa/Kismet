@@ -174,7 +174,7 @@ export async function getListingsBySeller(seller: string): Promise<Listing[]> {
       expired.push(l)
       return false
     }
-    return l.status === 'active' && l.expiresAt > now
+    return l.status === 'active'
   })
 
   if (expired.length > 0) {

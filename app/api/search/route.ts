@@ -2,14 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { searchProfiles } from '@/lib/profile'
 import { searchCollections } from '@/lib/kv'
 import { searchMoments } from '@/lib/search'
-import { checkRateLimit } from '@/lib/ratelimit'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 export async function GET(req: NextRequest) {
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown'
-
+  const ip = getClientIp(req)
   const allowed = await checkRateLimit(`search:${ip}`, 30, 60)
   if (!allowed) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })

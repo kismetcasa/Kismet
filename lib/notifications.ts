@@ -22,7 +22,7 @@ export interface Notification {
   comment?: string
 }
 
-export type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'>
+type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'>
 
 const MAX_PER_USER = 200
 const FOLLOW_DEDUP_WINDOW_SECS = 7 * 24 * 60 * 60
@@ -35,10 +35,10 @@ const keyReadIds = (a: string) => `kismetart:notif-read-ids:${a.toLowerCase()}`
 const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const KEY_PROFILES = 'kismetart:profiles'
 
-export const keyMomentMeta = (addr: string, tokenId: string) =>
+const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
 
-export interface MomentMeta {
+interface MomentMeta {
   creator: string
   name?: string
 }
@@ -105,14 +105,14 @@ export async function writeNotification(input: NotificationInput): Promise<void>
   }
 }
 
-export interface NotificationListOpts {
+interface NotificationListOpts {
   tab?: 'priority' | 'all'
   type?: NotificationType
   limit?: number
   page?: number
 }
 
-export interface NotificationListResult {
+interface NotificationListResult {
   notifications: Notification[]
   total: number
   page: number

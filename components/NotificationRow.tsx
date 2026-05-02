@@ -10,7 +10,6 @@ interface NotificationRowProps {
   notification: Notification
   onClick?: () => void
   onMute?: (actor: string) => void
-  compact?: boolean
 }
 
 function notificationHref(n: Notification): string {
@@ -123,8 +122,8 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   return <img src={resolveUri(n.tokenImage)} alt="" className="object-cover flex-shrink-0" style={{ width: size, height: size }} />
 }
 
-export function NotificationRow({ notification, onClick, onMute, compact }: NotificationRowProps) {
-  const size = compact ? 28 : 32
+export function NotificationRow({ notification, onClick, onMute }: NotificationRowProps) {
+  const size = 32
   const href = notificationHref(notification)
   const unread = !notification.read
 

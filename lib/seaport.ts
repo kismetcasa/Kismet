@@ -3,20 +3,20 @@ import type { Address, Hex } from 'viem'
 // Seaport 1.5 — deployed on Base mainnet
 export const SEAPORT_ADDRESS = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC' as const
 
-export const ItemType = {
+const ItemType = {
   NATIVE: 0,
   ERC20: 1,
   ERC721: 2,
   ERC1155: 3,
 } as const
 
-export const SeaportOrderType = {
+const SeaportOrderType = {
   FULL_OPEN: 0,
 } as const
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
-export interface OfferItem {
+interface OfferItem {
   itemType: number
   token: Address
   identifierOrCriteria: bigint
@@ -24,7 +24,7 @@ export interface OfferItem {
   endAmount: bigint
 }
 
-export interface ConsiderationItem {
+interface ConsiderationItem {
   itemType: number
   token: Address
   identifierOrCriteria: bigint
@@ -48,7 +48,7 @@ export interface OrderComponents {
 }
 
 // Serialized (BigInt → string) for JSON/Redis storage
-export interface SerializedOfferItem {
+interface SerializedOfferItem {
   itemType: number
   token: string
   identifierOrCriteria: string
@@ -56,7 +56,7 @@ export interface SerializedOfferItem {
   endAmount: string
 }
 
-export interface SerializedConsiderationItem {
+interface SerializedConsiderationItem {
   itemType: number
   token: string
   identifierOrCriteria: string
