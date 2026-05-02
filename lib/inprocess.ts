@@ -45,12 +45,6 @@ export interface Moment {
   metadata?: MomentMetadataInline
 }
 
-export interface TimelineResponse {
-  moments: Moment[]
-  pagination: { page: number; limit: number; total_pages: number }
-  status: string
-}
-
 export interface Split {
   address: string
   percentAllocation: number
@@ -74,13 +68,6 @@ export interface CreateMomentPayload {
   account: string
 }
 
-export interface CreateMomentResponse {
-  contractAddress: string
-  tokenId: string
-  hash: string
-  chainId: number
-}
-
 export interface CollectPayload {
   moment: {
     collectionAddress: string
@@ -89,11 +76,6 @@ export interface CollectPayload {
   }
   amount: number
   comment?: string
-}
-
-export interface CollectResponse {
-  hash: string
-  chainId: number
 }
 
 export interface MomentComment {
