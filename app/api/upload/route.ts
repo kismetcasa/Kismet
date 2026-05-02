@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { TurboFactory } from '@ardrive/turbo-sdk'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { verifySession } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -22,10 +23,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unsupported content type' }, { status: 415 })
   }
 
+  let body: { json?: object; sessionToken?: string }
   try {
-    const body = (await req.json()) as { json?: object }
-    if (!body.json) return NextResponse.json({ error: 'Missing json' }, { status: 400 })
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
 
+  if (!body.json) return NextResponse.json({ error: 'Missing json' }, { status: 400 })
+
+  if (!body.sessionToken) {
+    return NextResponse.json({ error: 'sessionToken required' }, { status: 401 })
+  }
+  const address = await verifySession(body.sessionToken)
+  if (!address) {
+    return NextResponse.json({ error: 'Invalid or expired session' }, { status: 401 })
+  }
+
+  try {
     const turbo = getTurbo()
     const { id } = await turbo.upload({
       data: JSON.stringify(body.json),

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { verifySession } from '@/lib/session'
 
 export const runtime = 'nodejs'
 
@@ -8,7 +9,7 @@ export async function POST(req: NextRequest) {
   const allowed = await checkRateLimit(`sign:${ip}`, 10, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
-  let body: { hash?: string }
+  let body: { hash?: string; sessionToken?: string }
   try {
     body = await req.json()
   } catch {
@@ -16,6 +17,14 @@ export async function POST(req: NextRequest) {
   }
 
   if (!body.hash) return NextResponse.json({ error: 'Missing hash' }, { status: 400 })
+
+  if (!body.sessionToken) {
+    return NextResponse.json({ error: 'sessionToken required' }, { status: 401 })
+  }
+  const address = await verifySession(body.sessionToken)
+  if (!address) {
+    return NextResponse.json({ error: 'Invalid or expired session' }, { status: 401 })
+  }
 
   const hashBytes = Buffer.from(body.hash, 'base64')
   // Arweave deep-hash chunks are exactly 48 bytes (SHA-384)

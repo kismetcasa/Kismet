@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
@@ -17,6 +17,7 @@ interface AirdropFormProps {
 export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { signMessageAsync } = useSignMessage()
 
   const [selected, setSelected] = useState<Moment | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -46,12 +47,19 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     setSending(true)
     setResultHash(null)
     try {
+      const { nonce } = await fetch(`/api/profile/${address}/nonce`).then((r) => r.json())
+      const message = `Airdrop moment on Kismet Art\nCollection: ${selected.address.toLowerCase()}\nToken: ${selected.token_id}\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
+      const signature = await signMessageAsync({ message })
+
       const res = await fetch('/api/airdrop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           collectionAddress: selected.address,
           recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
+          callerAddress: address,
+          signature,
+          nonce,
         }),
       })
       const data = await res.json()

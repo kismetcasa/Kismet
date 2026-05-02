@@ -10,6 +10,7 @@ import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission } from '@/lib/coll
 import { CREATE_REFERRAL } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
+import { useUploadSession } from '@/hooks/useUploadSession'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
@@ -18,6 +19,7 @@ interface CreateCollectionFormProps {
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { ensureSession } = useUploadSession()
 
   const [coverFile, setCoverFile] = useState<File | null>(null)
   const [coverPreview, setCoverPreview] = useState<string | null>(null)
@@ -90,11 +92,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       toast.loading('Minting cover token…', { id: 'create-collection' })
       ;(async () => {
         try {
+          const sessionToken = await ensureSession()
           const tokenMetadataUri = await uploadJson({
             name: name.trim(),
             ...(description.trim() ? { description: description.trim() } : {}),
             image: deployedImageUri,
-          })
+          }, sessionToken)
           const now = Math.floor(Date.now() / 1000)
           const rawCoverPrice = coverPrice.trim()
           const normalizedCoverPrice = !rawCoverPrice || rawCoverPrice === '.' ? '0' : rawCoverPrice.startsWith('.') ? `0${rawCoverPrice}` : rawCoverPrice
@@ -182,13 +185,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     setDeployedImageUri(undefined)
 
     try {
+      // Ensure session once — cached after first use, no re-prompt for 7 days
+      const sessionToken = await ensureSession()
+
       setStep('uploading-image')
       setUploadProgress(0)
       toast.loading('Uploading cover image…', { id: 'create-collection' })
       const imageUri = await uploadToArweave(coverFile, (pct) => {
         setUploadProgress(pct)
         toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
-      })
+      }, sessionToken)
       setDeployedImageUri(imageUri)
 
       setStep('uploading-metadata')
@@ -199,7 +205,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         image: imageUri,
         createReferral: CREATE_REFERRAL,
       }
-      const contractURI = await uploadJson(metadata)
+      const contractURI = await uploadJson(metadata, sessionToken)
 
       setStep('deploying')
       toast.loading('Deploying collection…', { id: 'create-collection' })
