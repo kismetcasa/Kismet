@@ -326,9 +326,9 @@ export function ProfileView({ address }: ProfileViewProps) {
       const { profile: updated } = await res.json()
       setProfile(updated)
       setEditing(false)
-      toast.success('Profile updated')
+      toast.success('Profile updated!')
     } catch (err) {
-      toast.error('Failed to update profile', { description: err instanceof Error ? err.message : 'Unknown error' })
+      toast.error('Update failed', { description: err instanceof Error ? err.message : 'Unknown error' })
     } finally {
       setSaving(false)
     }
@@ -352,9 +352,9 @@ export function ProfileView({ address }: ProfileViewProps) {
       const wasFollowing = following
       setFollowing(!wasFollowing)
       setFollowerCount((c) => c === null ? null : wasFollowing ? c - 1 : c + 1)
-      toast.success(wasFollowing ? 'Unfollowed' : 'Following')
+      toast.success(wasFollowing ? 'Unfollowed!' : 'Followed!')
     } catch (err) {
-      toast.error('Failed', { description: err instanceof Error ? err.message : 'Unknown error' })
+      toast.error(following ? 'Unfollow failed' : 'Follow failed', { description: err instanceof Error ? err.message : 'Unknown error' })
     } finally {
       setFollowLoading(false)
     }

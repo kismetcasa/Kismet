@@ -72,7 +72,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
         body: JSON.stringify({ status: 'cancelled', signature, nonce, signer: address }),
       })
 
-      toast.success('Listing cancelled', { id: 'cancel' })
+      toast.success('Listing cancelled!', { id: 'cancel' })
       onRemove?.()
     } catch (err) {
       toast.error('Cancel failed', {

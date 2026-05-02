@@ -58,7 +58,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       if (!res.ok) throw new Error(data.error ?? data.detail ?? 'Airdrop failed')
       setResultHash(data.hash)
       setRecipients([])
-      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}`)
+      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`)
     } catch (err) {
       toast.error('Airdrop failed', { description: err instanceof Error ? err.message : 'Unknown error' })
     } finally {
