@@ -222,7 +222,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       </button>
 
       <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
-        airdrops freshly minted moments recipients
+        airdrop freshly minted supply to recipients
       </p>
 
     </form>
