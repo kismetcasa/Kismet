@@ -7,9 +7,16 @@ import { AirdropForm } from '@/components/AirdropForm'
 
 type Tab = 'mint' | 'create' | 'airdrop'
 
-export function MintTabs() {
+interface MintTabsProps {
+  initialCollection?: string
+  initialCollectionName?: string
+}
+
+export function MintTabs({ initialCollection, initialCollectionName }: MintTabsProps = {}) {
   const [tab, setTab] = useState<Tab>('mint')
-  const [deployedCollection, setDeployedCollection] = useState<{ address: string; name: string } | null>(null)
+  const [deployedCollection, setDeployedCollection] = useState<{ address: string; name: string } | null>(
+    initialCollection ? { address: initialCollection, name: initialCollectionName || initialCollection } : null
+  )
 
   function handleDeployed(address: string, name: string) {
     setDeployedCollection({ address, name })

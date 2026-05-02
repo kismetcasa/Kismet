@@ -5,10 +5,15 @@ export const metadata = {
   description: 'mint moments and create collections on Kismet Art',
 }
 
-export default function MintPage() {
+interface Props {
+  searchParams: Promise<{ collection?: string; name?: string }>
+}
+
+export default async function MintPage({ searchParams }: Props) {
+  const { collection, name } = await searchParams
   return (
     <div className="max-w-lg mx-auto px-4 py-12">
-      <MintTabs />
+      <MintTabs initialCollection={collection} initialCollectionName={name} />
     </div>
   )
 }

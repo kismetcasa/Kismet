@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -11,7 +12,7 @@ import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
-import { shortAddress, formatPrice } from '@/lib/inprocess'
+import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
 
 interface Payment {
   id: string
@@ -389,23 +390,48 @@ export function ProfileView({ address }: ProfileViewProps) {
       ) : artistCollections.length === 0 ? (
         <p className="text-[#555] font-mono text-xs">no collections yet</p>
       ) : (
-        <div className="flex flex-col divide-y divide-[#1a1a1a]">
-          {artistCollections.map((c) => (
-            <a
-              key={c.contractAddress}
-              href={`https://inprocess.world/collect/base:${c.contractAddress}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-between py-2.5 gap-4 group"
-            >
-              <span className="text-xs font-mono text-[#efefef] group-hover:accent-grad transition-colors truncate">
-                {c.metadata?.name || c.name}
-              </span>
-              <span className="text-[10px] font-mono text-[#444] group-hover:text-[#888] transition-colors flex-shrink-0">
-                {shortAddress(c.contractAddress)}
-              </span>
-            </a>
-          ))}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+          {artistCollections.map((c) => {
+            const imgUrl = c.metadata?.image ? resolveUri(c.metadata.image) : null
+            const collectionName = c.metadata?.name || c.name
+            return (
+              <div key={c.contractAddress} className="flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
+                <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-[#111] block overflow-hidden group/img">
+                  {imgUrl ? (
+                    <Image
+                      src={imgUrl}
+                      alt={collectionName}
+                      fill
+                      className="object-cover transition-transform duration-500 group-hover/img:scale-105"
+                      sizes="(max-width: 640px) 50vw, 33vw"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+                    </div>
+                  )}
+                </Link>
+                <div className="px-3 pt-3 pb-2 flex flex-col gap-0.5">
+                  <h3 className="text-sm text-[#efefef] font-mono truncate">{collectionName}</h3>
+                  <span className="text-[10px] font-mono text-[#555]">{shortAddress(c.contractAddress)}</span>
+                </div>
+                <div className="px-3 pb-3 flex flex-col gap-1.5">
+                  <Link
+                    href={`/collection/${c.contractAddress}`}
+                    className="w-full py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+                  >
+                    view collection
+                  </Link>
+                  <Link
+                    href={`/mint?collection=${c.contractAddress}&name=${encodeURIComponent(collectionName)}`}
+                    className="w-full py-1.5 text-center text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors"
+                  >
+                    mint all
+                  </Link>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )
     ) : (
