@@ -4,7 +4,7 @@ import { useState, useRef } from 'react'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Upload, X, Plus, Trash2 } from 'lucide-react'
+import { Upload, X, Plus, Trash2, ExternalLink } from 'lucide-react'
 import { parseEther, isAddress } from 'viem'
 import type { CreateMomentPayload, Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -503,18 +503,29 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
       </button>
 
       {/* Residencies toggle */}
-      <button
-        type="button"
-        onClick={() => setResidenciesEnabled((v) => !v)}
-        className="flex items-center gap-2.5 group w-fit mx-auto -mt-2"
-      >
-        <div className={`relative w-8 h-4 rounded-full transition-colors flex-shrink-0 ${residenciesEnabled ? 'bg-[#8B5CF6]' : 'bg-[#2a2a2a] border border-[#3a3a3a]'}`}>
+      <div className="flex items-center gap-2.5 w-fit mx-auto -mt-2">
+        <button
+          type="button"
+          onClick={() => setResidenciesEnabled((v) => !v)}
+          aria-pressed={residenciesEnabled}
+          className={`relative w-8 h-4 rounded-full transition-colors flex-shrink-0 ${residenciesEnabled ? 'bg-[#8B5CF6]' : 'bg-[#2a2a2a] border border-[#3a3a3a]'}`}
+        >
           <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${residenciesEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
-        </div>
-        <span className={`text-[10px] font-mono transition-colors ${residenciesEnabled ? 'text-[#888]' : 'text-[#444] group-hover:text-[#555]'}`}>
-          {residenciesEnabled ? '5%' : '0%'} to kismet casa residencies
+        </button>
+        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-[#888]' : 'text-[#444]'}`}>
+          {residenciesEnabled ? '5%' : '0%'} to{' '}
+          <a
+            href="https://kismetcasa.xyz"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="kismetcasa.xyz (opens in new tab)"
+            className="underline inline-flex items-center gap-0.5 hover:text-[#efefef] transition-colors"
+          >
+            kismet casa residencies
+            <ExternalLink size={9} className="flex-shrink-0" />
+          </a>
         </span>
-      </button>
+      </div>
     </form>
   )
 }

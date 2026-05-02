@@ -37,6 +37,16 @@ body {
   border-radius: 0;
 }
 
+/* Hide number input spinner arrows */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
 /* Purple gradient utilities */
 .accent-grad {
   background: linear-gradient(to right, #8B5CF6, #C084FC);
