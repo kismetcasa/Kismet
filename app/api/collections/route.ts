@@ -16,12 +16,23 @@ export async function GET(req: NextRequest) {
     url.searchParams.set('artist', artist)
     url.searchParams.set('limit', '100')
     try {
-      const res = await fetch(url.toString(), {
-        headers: { Accept: 'application/json' },
-        next: { revalidate: 120 },
-      })
+      const [res, tracked] = await Promise.all([
+        fetch(url.toString(), {
+          headers: { Accept: 'application/json' },
+          next: { revalidate: 120 },
+        }),
+        getTrackedCollections(),
+      ])
       const text = await res.text()
-      return NextResponse.json(JSON.parse(text), { status: res.status })
+      const data = JSON.parse(text)
+      const trackedSet = new Set(tracked.map((a: string) => a.toLowerCase()))
+      if (Array.isArray(data.collections)) {
+        data.collections = data.collections.filter(
+          (c: { contractAddress?: string }) =>
+            c.contractAddress && trackedSet.has(c.contractAddress.toLowerCase())
+        )
+      }
+      return NextResponse.json(data, { status: res.status })
     } catch {
       return NextResponse.json({ error: 'upstream error' }, { status: 502 })
     }
