@@ -130,10 +130,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
                 payoutRecipient: address,
                 ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
               },
+              name: name.trim(),
               account: address,
             }),
           })
-          const data = await res.json()
+          const data = await res.json().catch(() => ({}))
           if (!res.ok) throw new Error(data.error ?? 'Mint failed')
           toast.success('Collection deployed + cover minted!', { id: 'create-collection' })
         } catch (err) {
