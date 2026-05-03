@@ -74,6 +74,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       // Don't mark filled until the tx actually confirms — a reverted fulfillOrder
       // would leave the order open on-chain but our backend would say "sold".
       if (!publicClient) throw new Error('No RPC client available')
+      toast.loading('Confirming purchase…', { id: 'buy' })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       if (receipt.status !== 'success') {
         throw new Error('Transaction reverted on-chain')

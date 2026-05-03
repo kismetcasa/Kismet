@@ -66,6 +66,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       // Don't update the backend until cancel actually confirms — a reverted
       // cancel would leave the order live on-chain but our UI would say cancelled.
       if (!publicClient) throw new Error('No RPC client available')
+      toast.loading('Confirming cancellation…', { id: 'cancel' })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       if (receipt.status !== 'success') {
         throw new Error('Cancel transaction reverted on-chain')
@@ -75,6 +76,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = await nonceRes.json()
       const message = `Cancel Kismet Art listing\nListing: ${listing.id}\nSeller: ${address.toLowerCase()}\nNonce: ${nonce}`
+      toast.loading('Sign cancellation in wallet…', { id: 'cancel' })
       const signature = await signMessageAsync({ message })
 
       await fetch(`/api/listings/${listing.id}`, {

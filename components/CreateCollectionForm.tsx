@@ -148,9 +148,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // typically wrong chain or a non-factory address. Don't lie to the user.
       setStep('idle')
       setTxHash(undefined)
-      toast.error('Deploy succeeded on-chain but no collection address was emitted', {
+      toast.error('Deploy incomplete', {
         id: 'create-collection',
-        description: 'The transaction may have hit the wrong contract or chain.',
+        description: 'Tx confirmed but no collection address was emitted — likely wrong chain or contract.',
       })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
