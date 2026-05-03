@@ -195,13 +195,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         const msg = data.detail ?? data.error ?? data.message ?? 'Collect failed'
-        // inprocess's smart wallet pays for collects on the user's behalf;
-        // surface a helpful pointer when the user's smart wallet is empty
-        // instead of leaving them staring at a one-line "Insufficient balance".
+        // "Insufficient balance" from inprocess on the x-api-key path means the
+        // platform's smart account (linked to our INPROCESS_API_KEY) is out of
+        // ETH on Base — NOT the user's wallet. Surface that distinction so we
+        // don't blame the collector for a platform-level operations issue.
         if (typeof msg === 'string' && /insufficient/i.test(msg)) {
-          throw new Error(
-            'Your inprocess smart wallet needs ETH on Base — top up at inprocess.world/topup',
-          )
+          throw new Error('Collects are paused — platform balance needs top-up. Try again shortly.')
         }
         throw new Error(msg)
       }

@@ -191,9 +191,7 @@ export function MomentModal({
       if (!res.ok) {
         const msg = data.detail ?? data.error ?? data.message ?? 'Collect failed'
         if (typeof msg === 'string' && /insufficient/i.test(msg)) {
-          throw new Error(
-            'Your inprocess smart wallet needs ETH on Base — top up at inprocess.world/topup',
-          )
+          throw new Error('Collects are paused — platform balance needs top-up. Try again shortly.')
         }
         throw new Error(msg)
       }
