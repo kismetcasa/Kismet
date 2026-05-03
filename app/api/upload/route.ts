@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { TurboFactory } from '@ardrive/turbo-sdk'
+import { getPaidBy } from '@/lib/arweave/paidBy'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifySession } from '@/lib/session'
 
@@ -42,10 +43,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const turbo = getTurbo()
+    const paidBy = getPaidBy()
     const { id } = await turbo.upload({
       data: JSON.stringify(body.json),
       dataItemOpts: {
         tags: [{ name: 'Content-Type', value: 'application/json' }],
+        ...(paidBy && { paidBy }),
       },
     })
 

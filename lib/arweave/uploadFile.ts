@@ -1,5 +1,6 @@
 import { TurboFactory } from '@ardrive/turbo-sdk/web'
 import { makeProxySigner } from './client'
+import { getPaidBy } from './paidBy'
 import patchFetch from './patchFetch'
 
 export async function uploadFile(
@@ -13,6 +14,7 @@ export async function uploadFile(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const turbo = TurboFactory.authenticated({ signer: signer as any })
 
+    const paidBy = getPaidBy()
     const { id } = await turbo.uploadFile({
       fileStreamFactory: () => file.stream() as unknown as ReadableStream<Uint8Array>,
       fileSizeFactory: () => file.size,
@@ -21,6 +23,7 @@ export async function uploadFile(
           { name: 'Content-Type', value: file.type || 'application/octet-stream' },
           { name: 'File-Name', value: file.name },
         ],
+        ...(paidBy && { paidBy }),
       },
       events: {
         onProgress: ({ processedBytes, totalBytes }) => {
