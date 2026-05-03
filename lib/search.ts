@@ -1,5 +1,5 @@
 import { getTrackedCollections } from './kv'
-import { INPROCESS_API, resolveUri, type Moment } from './inprocess'
+import { resolveUri, fetchCollectionMoments } from './inprocess'
 
 export interface MomentSearchResult {
   id: string
@@ -10,29 +10,16 @@ export interface MomentSearchResult {
   creatorAddress?: string
 }
 
-async function fetchCollectionMoments(collection: string): Promise<Moment[]> {
-  try {
-    const url = new URL(`${INPROCESS_API}/timeline`)
-    url.searchParams.set('collection', collection)
-    url.searchParams.set('limit', '50')
-    url.searchParams.set('chain_id', '8453')
-    const res = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 30 },
-    })
-    const data = await res.json()
-    return Array.isArray(data.moments) ? data.moments : []
-  } catch {
-    return []
-  }
-}
-
 const MAX_SEARCH_COLLECTIONS = 25
 
 export async function searchMoments(query: string): Promise<MomentSearchResult[]> {
   const allCollections = await getTrackedCollections()
   const collections = allCollections.slice(0, MAX_SEARCH_COLLECTIONS)
-  const all = await Promise.all(collections.map(fetchCollectionMoments))
+  // Search hits a fresher cache (30s) than the collection page's full render
+  // (60s default) since search results should reflect new mints quickly.
+  const all = await Promise.all(
+    collections.map((c) => fetchCollectionMoments(c, { revalidate: 30 })),
+  )
   const q = query.toLowerCase()
   const seen = new Set<string>()
   const results: MomentSearchResult[] = []

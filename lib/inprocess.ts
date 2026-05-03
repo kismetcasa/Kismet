@@ -140,3 +140,30 @@ export function formatRelativeTime(timestamp: number): string {
   if (diff < 86400) return `${Math.floor(diff / 3600)}h`
   return `${Math.floor(diff / 86400)}d`
 }
+
+/**
+ * Fetch the moments inside a single collection from inprocess's timeline API.
+ * Returns [] on any error (network, non-2xx, malformed JSON) so callers can
+ * render an empty state cleanly. `revalidate` controls Next.js fetch caching.
+ */
+export async function fetchCollectionMoments(
+  collectionAddress: string,
+  options: { revalidate?: number; limit?: number } = {},
+): Promise<Moment[]> {
+  const { revalidate = 60, limit = 50 } = options
+  try {
+    const url = new URL(`${INPROCESS_API}/timeline`)
+    url.searchParams.set('collection', collectionAddress)
+    url.searchParams.set('limit', String(limit))
+    url.searchParams.set('chain_id', '8453')
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate },
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    return Array.isArray(data.moments) ? data.moments : []
+  } catch {
+    return []
+  }
+}

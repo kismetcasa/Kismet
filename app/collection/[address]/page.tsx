@@ -1,30 +1,12 @@
 import type { Metadata } from 'next'
 import { isAddress } from 'viem'
 import { notFound } from 'next/navigation'
-import { INPROCESS_API, resolveUri, shortAddress, type Moment, type MomentAdmin } from '@/lib/inprocess'
+import { INPROCESS_API, resolveUri, shortAddress, fetchCollectionMoments, type MomentAdmin } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 
 interface Props {
   params: Promise<{ address: string }>
-}
-
-async function fetchCollectionMoments(address: string): Promise<Moment[]> {
-  try {
-    const url = new URL(`${INPROCESS_API}/timeline`)
-    url.searchParams.set('collection', address)
-    url.searchParams.set('limit', '50')
-    url.searchParams.set('chain_id', '8453')
-    const res = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 60 },
-    })
-    if (!res.ok) return []
-    const data = await res.json()
-    return Array.isArray(data.moments) ? data.moments : []
-  } catch {
-    return []
-  }
 }
 
 async function fetchCollectionMeta(
