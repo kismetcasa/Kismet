@@ -23,11 +23,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'signature and nonce required' }, { status: 400 })
   }
 
-  const nonceValid = await consumeNonce(body.address, body.nonce)
-  if (!nonceValid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
-  }
-
   const message = `Sign in to Kismet Art\nAddress: ${body.address.toLowerCase()}\nNonce: ${body.nonce}`
   let sigValid = false
   try {
@@ -40,6 +35,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
   if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+
+  // Consume nonce only after signature verifies — a failed sig leaves the
+  // nonce reusable, otherwise an attacker who knows a victim's address could
+  // burn nonces with bogus signatures and DoS them out of signing in.
+  // (Same pattern as /api/airdrop, /api/profile, /api/follow, /api/listings.)
+  const nonceValid = await consumeNonce(body.address, body.nonce)
+  if (!nonceValid) {
+    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+  }
 
   const sessionToken = await createSession(body.address)
   return NextResponse.json({ sessionToken })
