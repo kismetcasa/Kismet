@@ -77,9 +77,10 @@ export default async function CollectionPage({ params }: Props) {
 
   if (!isAddress(address)) notFound()
 
-  const [moments, meta] = await Promise.all([
+  const [moments, meta, kvMeta] = await Promise.all([
     fetchCollectionMoments(address),
     fetchCollectionMeta(address),
+    getKvCollectionMeta(address),
   ])
 
   // Collect unique admins from all moments (excluding the creator)
@@ -93,6 +94,10 @@ export default async function CollectionPage({ params }: Props) {
   }
   const admins = Array.from(adminMap.values())
 
+  // If we know about this collection locally but the indexer has nothing yet,
+  // surface that explicitly instead of an empty grid that looks like a bug.
+  const indexing = !!kvMeta && moments.length === 0
+
   return (
     <CollectionView
       address={address}
@@ -101,6 +106,7 @@ export default async function CollectionPage({ params }: Props) {
       collectionImage={meta?.image}
       collectionDescription={meta?.description}
       admins={admins}
+      indexing={indexing}
     />
   )
 }

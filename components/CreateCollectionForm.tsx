@@ -86,6 +86,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           name: name.trim(),
           description: description.trim() || undefined,
           image: deployedImageUri,
+          artist: address,
         }),
       }).catch(() => {})
       onDeployed?.(deployedAddress, name)
