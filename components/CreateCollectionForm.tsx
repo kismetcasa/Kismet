@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther } from 'viem'
@@ -18,6 +19,7 @@ interface CreateCollectionFormProps {
 }
 
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
+  const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
@@ -84,6 +86,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           name: name.trim(),
           description: description.trim() || undefined,
           image: deployedImageUri,
+          artist: address,
         }),
       }).catch(() => {})
       onDeployed?.(deployedAddress, name)
@@ -138,12 +141,27 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           setStep('done')
         }
       })()
-    } else {
+    } else if (deployedAddress) {
       setStep('done')
       toast.success('Collection deployed!', { id: 'create-collection' })
+    } else {
+      // Tx confirmed but no SetupNewContract event was emitted —
+      // typically wrong chain or a non-factory address. Don't lie to the user.
+      setStep('idle')
+      setTxHash(undefined)
+      toast.error('Deploy incomplete', {
+        id: 'create-collection',
+        description: 'Tx confirmed but no collection address was emitted — likely wrong chain or contract.',
+      })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [receipt, step])
+
+  // Once everything (deploy + optional cover mint) finishes, route to the new collection.
+  useEffect(() => {
+    if (step !== 'done' || !collectionAddress) return
+    router.push(`/collection/${collectionAddress}`)
+  }, [step, collectionAddress, router])
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]

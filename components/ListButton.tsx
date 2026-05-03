@@ -95,12 +95,18 @@ export function ListButton({
       if (!isApproved) {
         setStep('approving')
         toast.loading('Approving Seaport…', { id: 'list' })
-        await writeContractAsync({
+        const hash = await writeContractAsync({
           address: collectionAddress as Address,
           abi: ERC1155_ABI,
           functionName: 'setApprovalForAll',
           args: [SEAPORT_ADDRESS, true],
         })
+        // Wait for the approval to actually land before signing the order —
+        // otherwise refetchApproval() can race and the listing would be unfillable.
+        const receipt = await publicClient.waitForTransactionReceipt({ hash })
+        if (receipt.status !== 'success') {
+          throw new Error('Approval transaction reverted on-chain')
+        }
         await refetchApproval()
       }
 

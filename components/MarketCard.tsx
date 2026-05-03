@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAccount, useWriteContract, useSignMessage } from 'wagmi'
+import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { formatEther } from 'viem'
@@ -21,6 +21,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
   const { signMessageAsync } = useSignMessage()
+  const publicClient = usePublicClient()
   const ensureBase = useEnsureBase()
   const [cancelling, setCancelling] = useState(false)
 
@@ -43,7 +44,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       const order = deserializeOrder(listing.orderComponents)
 
       // On-chain cancel so the signed order can never be filled
-      await writeContractAsync({
+      const hash = await writeContractAsync({
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'cancel',
@@ -62,10 +63,20 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
         }]],
       })
 
-      // Fetch nonce, sign cancel message, then update listing status
+      // Don't update the backend until cancel actually confirms — a reverted
+      // cancel would leave the order live on-chain but our UI would say cancelled.
+      if (!publicClient) throw new Error('No RPC client available')
+      toast.loading('Confirming cancellation…', { id: 'cancel' })
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') {
+        throw new Error('Cancel transaction reverted on-chain')
+      }
+
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
+      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = await nonceRes.json()
       const message = `Cancel Kismet Art listing\nListing: ${listing.id}\nSeller: ${address.toLowerCase()}\nNonce: ${nonce}`
+      toast.loading('Sign cancellation in wallet…', { id: 'cancel' })
       const signature = await signMessageAsync({ message })
 
       await fetch(`/api/listings/${listing.id}`, {

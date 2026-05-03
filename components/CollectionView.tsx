@@ -43,6 +43,7 @@ interface CollectionViewProps {
   collectionImage?: string
   collectionDescription?: string
   admins?: MomentAdmin[]
+  indexing?: boolean
 }
 
 export function CollectionView({
@@ -52,6 +53,7 @@ export function CollectionView({
   collectionImage,
   collectionDescription,
   admins = [],
+  indexing = false,
 }: CollectionViewProps) {
   const router = useRouter()
   const [profiles, setProfiles] = useState<Record<string, AvatarProfile>>({})
@@ -151,7 +153,13 @@ export function CollectionView({
           moments{moments.length > 0 ? ` (${moments.length})` : ''}
         </h2>
         {moments.length === 0 ? (
-          <p className="text-xs font-mono text-[#555]">no moments in this collection yet</p>
+          indexing ? (
+            <p className="text-xs font-mono text-[#888]">
+              indexing your first mint… can take a few minutes. refresh to check.
+            </p>
+          ) : (
+            <p className="text-xs font-mono text-[#555]">no moments in this collection yet</p>
+          )
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {moments.map((m) => (

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAccount, useWriteContract } from 'wagmi'
+import { useAccount, useWriteContract, usePublicClient } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { formatEther } from 'viem'
@@ -20,6 +20,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
+  const publicClient = usePublicClient()
   const ensureBase = useEnsureBase()
   const [loading, setLoading] = useState(false)
   const [bought, setBought] = useState(false)
@@ -44,7 +45,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       await ensureBase()
       const order = deserializeOrder(listing.orderComponents)
 
-      await writeContractAsync({
+      const hash = await writeContractAsync({
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'fulfillOrder',
@@ -70,7 +71,15 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
         ],
       })
 
-      // Mark filled in our order book
+      // Don't mark filled until the tx actually confirms — a reverted fulfillOrder
+      // would leave the order open on-chain but our backend would say "sold".
+      if (!publicClient) throw new Error('No RPC client available')
+      toast.loading('Confirming purchase…', { id: 'buy' })
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') {
+        throw new Error('Transaction reverted on-chain')
+      }
+
       await fetch(`/api/listings/${listing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
