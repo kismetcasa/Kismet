@@ -23,7 +23,15 @@ interface Props {
   // Optional name/image/description we already have locally (from KV at deploy
   // time for cover tokens). Renders instantly while inprocess catches up; gets
   // overwritten as soon as the client poll lands the real MomentDetail.
-  fallbackMeta?: { name?: string; image?: string; description?: string }
+  // Shape matches MomentDetail.metadata so callers can substitute without
+  // narrowing — animation_url + content are always undefined from KV.
+  fallbackMeta?: {
+    name?: string
+    image?: string
+    description?: string
+    animation_url?: string
+    content?: { mime?: string; uri?: string }
+  }
 }
 
 const TOP_COMMENTS = 3
