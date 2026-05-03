@@ -11,6 +11,7 @@ import { CREATE_REFERRAL } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
@@ -41,6 +42,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { writeContractAsync } = useWriteContract()
+  const ensureBase = useEnsureBase()
 
   function addMinter() {
     const addr = minterInput.trim()
@@ -209,6 +211,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       setStep('deploying')
       toast.loading('Deploying collection…', { id: 'create-collection' })
+
+      await ensureBase()
 
       const bps = Math.max(0, Math.min(10000, parseInt(royaltyBps, 10) || 0))
       const recipient = (royaltyRecipient.trim() || address) as `0x${string}`

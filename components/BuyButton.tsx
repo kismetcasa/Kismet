@@ -8,6 +8,7 @@ import { formatEther } from 'viem'
 import type { Hex } from 'viem'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import type { Listing } from '@/lib/listings'
+import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface BuyButtonProps {
   listing: Listing
@@ -19,6 +20,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
+  const ensureBase = useEnsureBase()
   const [loading, setLoading] = useState(false)
   const [bought, setBought] = useState(false)
 
@@ -39,6 +41,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
     toast.loading('Confirm purchase in wallet…', { id: 'buy' })
 
     try {
+      await ensureBase()
       const order = deserializeOrder(listing.orderComponents)
 
       await writeContractAsync({

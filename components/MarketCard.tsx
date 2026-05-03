@@ -9,6 +9,7 @@ import { shortAddress } from '@/lib/inprocess'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import { BuyButton } from './BuyButton'
 import type { Listing } from '@/lib/listings'
+import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface MarketCardProps {
   listing: Listing
@@ -20,6 +21,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
   const { signMessageAsync } = useSignMessage()
+  const ensureBase = useEnsureBase()
   const [cancelling, setCancelling] = useState(false)
 
   const isSeller = address?.toLowerCase() === listing.seller.toLowerCase()
@@ -37,6 +39,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
     toast.loading('Cancel listing in wallet…', { id: 'cancel' })
 
     try {
+      await ensureBase()
       const order = deserializeOrder(listing.orderComponents)
 
       // On-chain cancel so the signed order can never be filled

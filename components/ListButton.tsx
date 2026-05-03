@@ -17,6 +17,7 @@ import {
   buildSellOrder,
   serializeOrder,
 } from '@/lib/seaport'
+import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface ListButtonProps {
   collectionAddress: string
@@ -43,6 +44,7 @@ export function ListButton({
   const { openConnectModal } = useConnectModal()
   const { signTypedDataAsync } = useSignTypedData()
   const { writeContractAsync } = useWriteContract()
+  const ensureBase = useEnsureBase()
   const publicClient = usePublicClient()
 
   const [showForm, setShowForm] = useState(false)
@@ -87,6 +89,8 @@ export function ListButton({
     const priceWei = parseEther(priceEth)
 
     try {
+      await ensureBase()
+
       // 1. Approve Seaport to transfer tokens if needed
       if (!isApproved) {
         setStep('approving')
