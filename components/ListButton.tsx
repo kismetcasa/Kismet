@@ -78,7 +78,7 @@ export function ListButton({
       openConnectModal?.()
       return
     }
-    if (!publicClient) return
+    if (!publicClient) { toast.error('No RPC client available'); return }
 
     const parsedPrice = parseFloat(priceEth)
     if (!priceEth || isNaN(parsedPrice) || parsedPrice <= 0) {
