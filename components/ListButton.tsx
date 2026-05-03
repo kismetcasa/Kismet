@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useAccount, useReadContract, useWriteContract, usePublicClient } from 'wagmi'
+import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useSignTypedData } from 'wagmi'
 import { parseEther } from 'viem'
@@ -78,7 +79,7 @@ export function ListButton({
       openConnectModal?.()
       return
     }
-    if (!publicClient) return
+    if (!publicClient) { toast.error('No RPC client available'); return }
 
     const parsedPrice = parseFloat(priceEth)
     if (!priceEth || isNaN(parsedPrice) || parsedPrice <= 0) {
@@ -96,6 +97,7 @@ export function ListButton({
         setStep('approving')
         toast.loading('Approving Seaport…', { id: 'list' })
         const hash = await writeContractAsync({
+          chainId: base.id,
           address: collectionAddress as Address,
           abi: ERC1155_ABI,
           functionName: 'setApprovalForAll',

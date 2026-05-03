@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useAccount, useWriteContract, usePublicClient } from 'wagmi'
+import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { formatEther } from 'viem'
@@ -46,6 +47,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       const order = deserializeOrder(listing.orderComponents)
 
       const hash = await writeContractAsync({
+        chainId: base.id,
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'fulfillOrder',

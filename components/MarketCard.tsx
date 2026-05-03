@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'wagmi'
+import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { formatEther } from 'viem'
@@ -45,6 +46,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
 
       // On-chain cancel so the signed order can never be filled
       const hash = await writeContractAsync({
+        chainId: base.id,
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'cancel',

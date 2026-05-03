@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther } from 'viem'
 import { toast } from 'sonner'
@@ -73,8 +74,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       eventName: 'SetupNewContract',
       logs: receipt.logs,
     })
-    const found = logs[0]?.args?.newContract as string | undefined
-    const deployedAddress = found ?? receipt.logs[0]?.address ?? null
+    // Only trust the parsed factory event. The previous fallback to
+    // receipt.logs[0]?.address could resolve to any unrelated contract that
+    // happened to emit a log (e.g. proxy event on the wrong chain, ABI drift)
+    // — better to surface "Deploy incomplete" than redirect to a wrong address.
+    const deployedAddress = (logs[0]?.args?.newContract as string | undefined) ?? null
     setCollectionAddress(deployedAddress)
 
     if (deployedAddress) {
@@ -240,6 +244,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         .map((m) => encodeMinterPermission(m as `0x${string}`))
 
       const hash = await writeContractAsync({
+        chainId: base.id,
         address: FACTORY_ADDRESS,
         abi: FACTORY_ABI,
         functionName: 'createContract',
