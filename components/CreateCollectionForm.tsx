@@ -47,6 +47,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
 
+  // Recovery + timeout for in-flight deploys (industry-standard pattern).
+  // Persisted to localStorage so a refresh, tab close, or wallet disconnect
+  // mid-deploy doesn't lose the tx — we resume the receipt watch on next
+  // mount, register KV when it confirms, and redirect to the collection.
+  const PENDING_KEY = address ? `kismetart:pending-deploy:${address.toLowerCase()}` : ''
+  const PENDING_MAX_AGE_MS = 30 * 60 * 1000 // 30 min — older entries are abandoned
+  const TX_TIMEOUT_MS = 90 * 1000 // 90s before we surface a "still pending" message
+
   function addMinter() {
     const addr = minterInput.trim()
     if (!isAddress(addr)) { toast.error('Invalid address'); return }
@@ -60,9 +68,86 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     query: { enabled: !!txHash && step === 'deploying' },
   })
 
+  // 1. Recovery on mount: if a deploy was in flight when the user left the
+  //    page, restore the txHash + form state and resume the receipt watch.
+  useEffect(() => {
+    if (!address || !PENDING_KEY) return
+    try {
+      const raw = localStorage.getItem(PENDING_KEY)
+      if (!raw) return
+      const pending = JSON.parse(raw) as {
+        txHash: `0x${string}`
+        name: string
+        description: string
+        deployedImageUri: string
+        mintCover: boolean
+        startedAt: number
+      }
+      if (Date.now() - pending.startedAt > PENDING_MAX_AGE_MS) {
+        localStorage.removeItem(PENDING_KEY)
+        return
+      }
+      setName(pending.name)
+      setDescription(pending.description)
+      setDeployedImageUri(pending.deployedImageUri || undefined)
+      setMintCover(pending.mintCover)
+      setTxHash(pending.txHash)
+      setStep('deploying')
+      toast.loading('Resuming deploy…', { id: 'create-collection' })
+    } catch {}
+    // We only want this on initial mount per address; intentionally narrow deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address])
+
+  // 2. Persist the in-flight tx so a refresh can resume it. Triggered as soon
+  //    as we have a txHash and we're in the deploying state.
+  useEffect(() => {
+    if (!PENDING_KEY || step !== 'deploying' || !txHash) return
+    try {
+      localStorage.setItem(
+        PENDING_KEY,
+        JSON.stringify({
+          txHash,
+          name: name.trim(),
+          description: description.trim(),
+          deployedImageUri: deployedImageUri ?? '',
+          mintCover,
+          startedAt: Date.now(),
+        }),
+      )
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txHash, step])
+
+  // 3. Stuck-tx warning: if we're still waiting for the receipt after 90s,
+  //    surface a clearer message with a link to basescan so the user has
+  //    options instead of staring at "Deploying…" indefinitely.
+  useEffect(() => {
+    if (step !== 'deploying' || !txHash) return
+    const timer = setTimeout(() => {
+      toast.loading(
+        'Tx still pending — refresh later to resume, or check status on basescan',
+        {
+          id: 'create-collection',
+          description: `https://basescan.org/tx/${txHash}`,
+        },
+      )
+    }, TX_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, txHash])
+
   useEffect(() => {
     if (!receipt || step !== 'deploying') return
+
+    const clearPending = () => {
+      if (PENDING_KEY) {
+        try { localStorage.removeItem(PENDING_KEY) } catch {}
+      }
+    }
+
     if (receipt.status === 'reverted') {
+      clearPending()
       setStep('idle')
       setTxHash(undefined)
       setUploadProgress(0)
@@ -80,6 +165,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
     if (!deployedAddress) {
       // Tx confirmed but no SetupNewContract event — wrong chain / contract.
+      clearPending()
       setStep('idle')
       setTxHash(undefined)
       toast.error('Deploy incomplete', {
@@ -104,6 +190,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     }).catch(() => {})
     onDeployed?.(deployedAddress, name)
 
+    clearPending()
     setStep('done')
     toast.success(
       mintCover ? 'Collection deployed + cover minted!' : 'Collection deployed!',
@@ -250,6 +337,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       setTxHash(hash)
     } catch (err) {
+      // Clear any half-written pending state so a refresh doesn't try to
+      // resume a deploy that never broadcast.
+      if (PENDING_KEY) {
+        try { localStorage.removeItem(PENDING_KEY) } catch {}
+      }
       setStep('idle')
       setUploadProgress(0)
       toast.error('Deploy failed', {
