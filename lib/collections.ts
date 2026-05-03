@@ -1,6 +1,11 @@
 import { encodeFunctionData, type Address } from 'viem'
 
-export const FACTORY_ADDRESS = '0x6832A997D8616707C7b68721D6E9332E77da7F6C' as const
+// Zora's canonical 1155 Factory Proxy — same address on every chain Zora supports
+// (deterministic CREATE2 deploy with the 0x777777 vanity prefix).
+// inprocess's docs reference 0x6832A997… inside a Coinbase CDP smart-account /
+// paymaster user-operation flow, which is not the EOA path used by this app —
+// that address has no code on Base mainnet (verified via eth_getCode).
+export const FACTORY_ADDRESS = '0x777777C338d93e2C7adf08D102d45CA7CC4Ed021' as const
 
 // Minimal ABI fragment for the Zora 1155 collection contract's permission function.
 // tokenId=0 means collection-wide; permissionBits=2 is PERMISSION_BIT_MINTER.
