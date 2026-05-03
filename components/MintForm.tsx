@@ -165,13 +165,14 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
-        const data = await res.json()
+        const data = await res.json().catch(() => ({}))
         if (!res.ok) {
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
           throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
         }
+        if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
@@ -222,13 +223,14 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
-        const data = await res.json()
+        const data = await res.json().catch(() => ({}))
         if (!res.ok) {
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
           throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
         }
+        if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })

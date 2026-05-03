@@ -102,7 +102,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
           account: connectedAddress,
         }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? 'Collect failed')
       setCollected(true)
       toast.success('Collected!')

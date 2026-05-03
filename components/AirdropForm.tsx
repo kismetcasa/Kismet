@@ -47,7 +47,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     setSending(true)
     setResultHash(null)
     try {
-      const { nonce } = await fetch(`/api/profile/${address}/nonce`).then((r) => r.json())
+      const nonceRes = await fetch(`/api/profile/${address}/nonce`)
+      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      const { nonce } = await nonceRes.json().catch(() => ({}))
+      if (!nonce) throw new Error('Could not fetch nonce')
       const message = `Airdrop moment on Kismet Art\nCollection: ${selected.address.toLowerCase()}\nToken: ${selected.token_id}\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
 
@@ -62,8 +65,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           nonce,
         }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? data.detail ?? 'Airdrop failed')
+      if (!data.hash) throw new Error('Airdrop submitted but no tx hash returned')
       setResultHash(data.hash)
       setRecipients([])
       toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`)

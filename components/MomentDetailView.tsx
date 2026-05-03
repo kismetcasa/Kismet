@@ -161,7 +161,7 @@ export function MomentDetailView({ address, tokenId, initialDetail }: Props) {
           pricePerToken: detail?.saleConfig.pricePerToken,
         }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? 'Collect failed')
       setCollected(true)
       setCommentText('')
@@ -184,8 +184,9 @@ export function MomentDetailView({ address, tokenId, initialDetail }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ splitAddress: addr, chainId: 8453 }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
+      if (!data.hash) throw new Error('Distribute submitted but no tx hash returned')
       setDistributeHash(data.hash)
       toast.success('Distributed!')
     } catch (err) {
