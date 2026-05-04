@@ -5,8 +5,7 @@ import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'w
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { formatEther } from 'viem'
-import { shortAddress } from '@/lib/inprocess'
+import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import { BuyButton } from './BuyButton'
 import type { Listing } from '@/lib/listings'
@@ -27,9 +26,10 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   const [cancelling, setCancelling] = useState(false)
 
   const isSeller = address?.toLowerCase() === listing.seller.toLowerCase()
-  const priceEth = formatEther(BigInt(listing.price))
-    .replace(/(\.\d*?)0+$/, '$1')
-    .replace(/\.$/, '')
+  // formatPrice handles both ETH (wei, 18dp) and USDC (base units, 6dp) and
+  // renders the right suffix. Royalty pct is a ratio of two same-currency
+  // amounts so it's currency-agnostic.
+  const priceLabel = formatPrice(listing.price, listing.currency ?? 'eth')
   const royaltyPct = listing.price !== '0'
     ? ((Number(listing.royaltyAmount) / Number(listing.price)) * 100).toFixed(1)
     : '0'
@@ -132,7 +132,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
             </p>
           </div>
           <div className="text-right shrink-0">
-            <p className="text-xs font-mono accent-grad">{priceEth} ETH</p>
+            <p className="text-xs font-mono accent-grad">{priceLabel}</p>
             {Number(listing.royaltyAmount) > 0 && (
               <p className="text-xs font-mono text-[#333] mt-0.5">
                 {royaltyPct}% royalty

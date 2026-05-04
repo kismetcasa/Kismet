@@ -5,7 +5,7 @@ import { useAccount, useReadContract, useWriteContract, usePublicClient } from '
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useSignTypedData } from 'wagmi'
-import { parseEther } from 'viem'
+import { parseEther, parseUnits } from 'viem'
 import type { Address } from 'viem'
 import { toast } from 'sonner'
 import {
@@ -19,6 +19,8 @@ import {
   serializeOrder,
 } from '@/lib/seaport'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+
+type ListCurrency = 'eth' | 'usdc'
 
 interface ListButtonProps {
   collectionAddress: string
@@ -49,7 +51,8 @@ export function ListButton({
   const publicClient = usePublicClient()
 
   const [showForm, setShowForm] = useState(false)
-  const [priceEth, setPriceEth] = useState('')
+  const [priceInput, setPriceInput] = useState('')
+  const [currency, setCurrency] = useState<ListCurrency>('eth')
   const [step, setStep] = useState<'idle' | 'approving' | 'signing' | 'submitting'>('idle')
 
   const { data: balance } = useReadContract({
@@ -81,13 +84,16 @@ export function ListButton({
     }
     if (!publicClient) { toast.error('No RPC client available'); return }
 
-    const parsedPrice = parseFloat(priceEth)
-    if (!priceEth || isNaN(parsedPrice) || parsedPrice <= 0) {
+    const parsedPrice = parseFloat(priceInput)
+    if (!priceInput || isNaN(parsedPrice) || parsedPrice <= 0) {
       toast.error('Enter a valid price greater than 0')
       return
     }
 
-    const priceWei = parseEther(priceEth)
+    // priceTotal is in the listing currency's base units: wei (18dp) for ETH,
+    // USDC base units (6dp) for USDC. The Listing.price field carries this
+    // directly, and Seaport's consideration items expect the same base units.
+    const priceTotal = currency === 'usdc' ? parseUnits(priceInput, 6) : parseEther(priceInput)
 
     try {
       await ensureBase()
@@ -112,7 +118,9 @@ export function ListButton({
         await refetchApproval()
       }
 
-      // 2. Fetch royalty info via EIP-2981
+      // 2. Fetch royalty info via EIP-2981. royaltyInfo returns absolute
+      // amounts in the same units as `salePrice` — pass USDC base units in,
+      // get USDC base units out. So this is currency-agnostic.
       let royaltyReceiver = address as Address
       let royaltyAmount = 0n
       try {
@@ -120,7 +128,7 @@ export function ListButton({
           address: collectionAddress as Address,
           abi: EIP2981_ABI,
           functionName: 'royaltyInfo',
-          args: [BigInt(tokenId), priceWei],
+          args: [BigInt(tokenId), priceTotal],
         }) as [Address, bigint]
         royaltyReceiver = royalty[0]
         royaltyAmount = royalty[1]
@@ -128,7 +136,7 @@ export function ListButton({
         // Collection doesn't implement EIP-2981 — no royalty
       }
 
-      const sellerProceeds = priceWei - royaltyAmount
+      const sellerProceeds = priceTotal - royaltyAmount
 
       // 3. Fetch current Seaport counter for the offerer
       const counter = await publicClient.readContract({
@@ -138,7 +146,9 @@ export function ListButton({
         args: [address as Address],
       }) as bigint
 
-      // 4. Build the order
+      // 4. Build the order. `currency` flips consideration items between
+      // NATIVE (ETH) and ERC20 (USDC) — the signed message hash differs, so
+      // an ETH order can never be filled with USDC and vice versa.
       const order = buildSellOrder({
         offerer: address as Address,
         collectionAddress: collectionAddress as Address,
@@ -147,6 +157,7 @@ export function ListButton({
         royaltyReceiver,
         royaltyAmount,
         counter,
+        currency,
       })
 
       // 5. Sign with EIP-712
@@ -181,10 +192,11 @@ export function ListButton({
           collectionAddress,
           tokenId,
           seller: address,
-          price: priceWei.toString(),
+          price: priceTotal.toString(),
           sellerProceeds: sellerProceeds.toString(),
           royaltyReceiver,
           royaltyAmount: royaltyAmount.toString(),
+          currency,
           orderComponents: serializeOrder(order),
           signature,
           expiresAt: Number(order.endTime) * 1000,
@@ -201,7 +213,7 @@ export function ListButton({
 
       toast.success('Listed for sale!', { id: 'list' })
       setShowForm(false)
-      setPriceEth('')
+      setPriceInput('')
       onListed?.()
     } catch (err) {
       toast.error('Listing failed', {
@@ -229,15 +241,26 @@ export function ListButton({
 
   return (
     <div className="flex gap-1.5 items-center w-full">
-      <input
-        type="text"
-        inputMode="decimal"
-        value={priceEth}
-        onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceEth(v) }}
-        placeholder="ETH"
-        disabled={isBusy}
-        className={`min-w-0 bg-[#111] border border-[#2a2a2a] px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 ${narrowInput ? 'w-[30%] flex-none' : 'flex-1'}`}
-      />
+      <div className={`relative ${narrowInput ? 'w-[40%] flex-none' : 'flex-1'} min-w-0`}>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={priceInput}
+          onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceInput(v) }}
+          placeholder={currency === 'usdc' ? '$' : 'ETH'}
+          disabled={isBusy}
+          className="w-full bg-[#111] border border-[#2a2a2a] pl-2 pr-12 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={() => setCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+          disabled={isBusy}
+          title="toggle currency"
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-mono text-[#888] hover:text-[#efefef] transition-colors px-1 py-0.5 disabled:opacity-40"
+        >
+          {currency === 'eth' ? 'ETH' : 'USDC'}
+        </button>
+      </div>
       <button
         onClick={handleList}
         disabled={isBusy}
@@ -250,7 +273,7 @@ export function ListButton({
       </button>
       <button
         type="button"
-        onClick={() => { setShowForm(false); setPriceEth('') }}
+        onClick={() => { setShowForm(false); setPriceInput('') }}
         disabled={isBusy}
         className="flex-shrink-0 text-xs font-mono text-[#555] hover:text-[#888] disabled:opacity-40"
       >

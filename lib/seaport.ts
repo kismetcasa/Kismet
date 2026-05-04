@@ -1,4 +1,5 @@
 import type { Address, Hex } from 'viem'
+import { USDC_BASE } from './zoraMint'
 
 // Seaport 1.5 — deployed on Base mainnet
 export const SEAPORT_ADDRESS = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC' as const
@@ -294,6 +295,7 @@ export function buildSellOrder({
   royaltyReceiver,
   royaltyAmount,
   counter,
+  currency = 'eth',
 }: {
   offerer: Address
   collectionAddress: Address
@@ -302,13 +304,23 @@ export function buildSellOrder({
   royaltyReceiver: Address
   royaltyAmount: bigint
   counter: bigint
+  currency?: 'eth' | 'usdc'
 }): OrderComponents {
   const now = BigInt(Math.floor(Date.now() / 1000))
 
+  // Consideration items declare WHAT the buyer pays. ETH listings use NATIVE
+  // (token = 0x0, value sent with fulfillOrder). USDC listings use ERC20
+  // (token = USDC_BASE, no value; Seaport pulls USDC via transferFrom after
+  // the buyer approves it). The signed order hash includes these items, so
+  // an ETH order can never be filled with USDC and vice versa.
+  const isUsdc = currency === 'usdc'
+  const considerationItemType = isUsdc ? ItemType.ERC20 : ItemType.NATIVE
+  const considerationToken: Address = isUsdc ? USDC_BASE : ZERO_ADDRESS
+
   const consideration: ConsiderationItem[] = [
     {
-      itemType: ItemType.NATIVE,
-      token: ZERO_ADDRESS,
+      itemType: considerationItemType,
+      token: considerationToken,
       identifierOrCriteria: 0n,
       startAmount: sellerProceeds,
       endAmount: sellerProceeds,
@@ -318,8 +330,8 @@ export function buildSellOrder({
 
   if (royaltyAmount > 0n) {
     consideration.push({
-      itemType: ItemType.NATIVE,
-      token: ZERO_ADDRESS,
+      itemType: considerationItemType,
+      token: considerationToken,
       identifierOrCriteria: 0n,
       startAmount: royaltyAmount,
       endAmount: royaltyAmount,
