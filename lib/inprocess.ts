@@ -1,4 +1,5 @@
 import { formatEther, formatUnits } from 'viem'
+import { USDC_BASE } from './zoraMint'
 
 export const INPROCESS_API = 'https://api.inprocess.world/api'
 
@@ -68,16 +69,6 @@ export interface CreateMomentPayload {
   account: string
 }
 
-export interface CollectPayload {
-  moment: {
-    collectionAddress: string
-    tokenId: string
-    chainId?: number
-  }
-  amount: number
-  comment?: string
-}
-
 export interface MomentComment {
   sender: string
   comment: string
@@ -130,8 +121,7 @@ export function inferCollectCurrency(saleConfig: {
   if (saleConfig.type === 'erc20Mint') return 'usdc'
   if (saleConfig.type === 'fixedPrice') return 'eth'
   // Fallback: only USDC is currently supported as an ERC20 currency.
-  const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
-  if (saleConfig.currency && saleConfig.currency.toLowerCase() === USDC_BASE) return 'usdc'
+  if (saleConfig.currency && saleConfig.currency.toLowerCase() === USDC_BASE.toLowerCase()) return 'usdc'
   return 'eth'
 }
 

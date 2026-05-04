@@ -17,7 +17,7 @@ import {
   encodeFixedPriceMinterArgs,
 } from '@/lib/zoraMint'
 
-export type CollectStatus =
+type CollectStatus =
   | 'idle'
   | 'preparing'
   | 'approving'
@@ -41,8 +41,6 @@ export interface CollectArgs {
 interface UseDirectCollectReturn {
   collect: (args: CollectArgs) => Promise<{ hash: Hash } | null>
   status: CollectStatus
-  error: Error | null
-  reset: () => void
 }
 
 const TOAST_ID = 'direct-collect'
@@ -68,12 +66,6 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
   const [status, setStatus] = useState<CollectStatus>('idle')
-  const [error, setError] = useState<Error | null>(null)
-
-  const reset = useCallback(() => {
-    setStatus('idle')
-    setError(null)
-  }, [])
 
   const collect = useCallback(
     async (args: CollectArgs): Promise<{ hash: Hash } | null> => {
@@ -95,7 +87,6 @@ export function useDirectCollect(): UseDirectCollectReturn {
         return null
       }
 
-      setError(null)
       setStatus('preparing')
       toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
 
@@ -218,19 +209,15 @@ export function useDirectCollect(): UseDirectCollectReturn {
         toast.success('Collected!', { id: TOAST_ID })
         return { hash }
       } catch (err) {
-        const e = err instanceof Error ? err : new Error('Collect failed')
-        setError(e)
         setStatus('error')
-        // Common cancellations have noisy raw messages — clean them up.
-        const msg = /user rejected|user denied|rejected the request/i.test(e.message)
-          ? 'Cancelled'
-          : e.message
-        toast.error('Collect failed', { id: TOAST_ID, description: msg })
+        const message = err instanceof Error ? err.message : 'Collect failed'
+        const description = /user rejected|user denied|rejected the request/i.test(message) ? 'Cancelled' : message
+        toast.error('Collect failed', { id: TOAST_ID, description })
         return null
       }
     },
     [address, publicClient, writeContractAsync, ensureBase],
   )
 
-  return { collect, status, error, reset }
+  return { collect, status }
 }
