@@ -17,6 +17,12 @@ import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
 interface Payment {
   id: string
   amount: string
+  // Inprocess doesn't currently return a currency hint on payment rows
+  // (https://docs.inprocess.world/payments). Default to ETH; if they add it
+  // later, we'll thread it through formatPrice. The amount field is
+  // human-formatted ("0.1", "5") not base units, so formatPrice handles
+  // both shapes correctly.
+  currency?: 'eth' | 'usdc'
   hash: string
   token: { contractAddress: string; tokenId?: string; createdAt?: string }
   buyer: { address: string; username?: string }
@@ -464,7 +470,7 @@ export function ProfileView({ address }: ProfileViewProps) {
               {p.buyer.username || shortAddress(p.buyer.address)}
             </span>
             <span className="text-xs font-mono accent-grad flex-shrink-0">
-              {(() => { try { return formatPrice(p.amount) } catch { return `${p.amount} wei` } })()}
+              {formatPrice(p.amount, p.currency ?? 'eth')}
             </span>
             <a
               href={`https://basescan.org/tx/${p.hash}`}

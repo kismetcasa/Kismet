@@ -8,10 +8,16 @@ export interface Listing {
   collectionAddress: string
   tokenId: string
   seller: string
-  price: string           // total buyer pays, in wei as string
-  sellerProceeds: string  // seller receives after royalty, in wei as string
+  // price/sellerProceeds/royaltyAmount are denominated in the currency's base
+  // units: wei for ETH (18 dp), USDC base units (6 dp) for USDC. The currency
+  // field disambiguates which.
+  price: string
+  sellerProceeds: string
   royaltyReceiver: string
-  royaltyAmount: string   // in wei as string
+  royaltyAmount: string
+  // 'eth' for native; 'usdc' for ERC20 USDC consideration. Older rows minted
+  // before USDC support are read with a default of 'eth' (see getListing).
+  currency: 'eth' | 'usdc'
   orderComponents: SerializedOrderComponents
   signature: string
   createdAt: number       // ms
@@ -67,7 +73,12 @@ export async function createListing(
 export async function getListing(id: string): Promise<Listing | null> {
   const raw = await redis.get<string | Listing>(keyById(id))
   if (!raw) return null
-  return typeof raw === 'string' ? JSON.parse(raw) : raw
+  const listing: Listing = typeof raw === 'string' ? JSON.parse(raw) : raw
+  // Legacy rows minted before USDC support don't carry a currency field —
+  // default to ETH so MarketCard / BuyButton don't accidentally enter the
+  // USDC code path.
+  if (!listing.currency) listing.currency = 'eth'
+  return listing
 }
 
 // Look up a specific seller's active listing for a token
@@ -110,6 +121,9 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
       tokenName: listing.name,
       tokenImage: listing.image,
       price: listing.price,
+      // Pair the price with its currency so NotificationRow renders USDC
+      // listings correctly (defaults to ETH otherwise).
+      currency: listing.currency,
       listingId: listing.id,
     })
   }))

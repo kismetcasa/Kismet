@@ -91,6 +91,10 @@ export async function PATCH(
       tokenName: listing.name,
       tokenImage: listing.image,
       price: listing.price,
+      // Without currency, NotificationRow defaults to ETH formatting and
+      // would render a USDC sale's price (in 6dp base units) as a tiny ETH
+      // amount. Pass it through so $5 stays $5.
+      currency: listing.currency,
       listingId: listing.id,
     })
   }

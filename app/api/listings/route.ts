@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
       sellerProceeds: string
       royaltyReceiver: string
       royaltyAmount: string
+      currency?: 'eth' | 'usdc'
       orderComponents: SerializedOrderComponents
       signature: string
       expiresAt: number
@@ -70,6 +71,7 @@ export async function POST(req: NextRequest) {
       sellerProceeds, royaltyReceiver, royaltyAmount,
       orderComponents, signature, expiresAt,
     } = body
+    const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
 
     if (!isAddress(collectionAddress)) {
       return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
@@ -131,6 +133,7 @@ export async function POST(req: NextRequest) {
       sellerProceeds,
       royaltyReceiver,
       royaltyAmount,
+      currency,
       orderComponents,
       signature,
       expiresAt,

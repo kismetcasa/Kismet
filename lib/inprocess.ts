@@ -126,15 +126,35 @@ export function inferCollectCurrency(saleConfig: {
 }
 
 /**
- * Format an on-chain price (base units) for display. ETH renders as "X ETH"
- * (18 decimals); USDC renders as "$X" (6 decimals). Currency defaults to ETH
- * for legacy callers.
+ * Format a price for display. Accepts two input formats:
+ * - **Base units** (e.g. `"100000000000000000"` for 0.1 ETH, or `"5000000"`
+ *   for 5 USDC) — what we get back from on-chain reads and inprocess
+ *   `saleConfig.pricePerToken`. ETH = 18 decimals, USDC = 6.
+ * - **Human-formatted decimal** (e.g. `"0.1"`, `"5"`) — what inprocess
+ *   `/api/payments` returns in `amount`. We render as-is with the right suffix.
+ *
+ * Returns `"free"` when the value is zero. Currency defaults to ETH for
+ * legacy callers that don't pass it.
  */
 export function formatPrice(
   pricePerToken: string,
   currency: 'eth' | 'usdc' = 'eth',
 ): string {
-  const value = BigInt(pricePerToken)
+  if (!pricePerToken) return ''
+  // Decimal-string path: inprocess `amount` like "0.1" or "5".
+  if (pricePerToken.includes('.')) {
+    const trimmed = pricePerToken.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+    if (trimmed === '0') return 'free'
+    return currency === 'usdc' ? `$${trimmed}` : `${trimmed} ETH`
+  }
+  // Base-units path: integer string like "100000000000000000".
+  let value: bigint
+  try {
+    value = BigInt(pricePerToken)
+  } catch {
+    // Garbage input — render verbatim rather than crash.
+    return pricePerToken
+  }
   if (value === 0n) return 'free'
   if (currency === 'usdc') {
     const usd = formatUnits(value, 6)

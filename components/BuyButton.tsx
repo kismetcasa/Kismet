@@ -5,9 +5,10 @@ import { useAccount, useSignMessage, useWriteContract, usePublicClient } from 'w
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { formatEther } from 'viem'
 import type { Hex } from 'viem'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
+import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
+import { formatPrice } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 
@@ -16,6 +17,8 @@ interface BuyButtonProps {
   onBought?: () => void
   className?: string
 }
+
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as Hex
 
 export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps) {
   const { address, isConnected } = useAccount()
@@ -27,8 +30,9 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
   const [loading, setLoading] = useState(false)
   const [bought, setBought] = useState(false)
 
-  const priceWei = BigInt(listing.price)
-  const eth = formatEther(priceWei).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+  const priceTotal = BigInt(listing.price)
+  const currency = listing.currency ?? 'eth'
+  const priceLabel = formatPrice(listing.price, currency)
 
   async function handleBuy() {
     if (!isConnected || !address) {
@@ -39,20 +43,54 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       toast.error("You can't buy your own listing")
       return
     }
+    if (!publicClient) throw new Error('No RPC client available')
 
     setLoading(true)
-    toast.loading('Confirm purchase in wallet…', { id: 'buy' })
-
     try {
       await ensureBase()
       const order = deserializeOrder(listing.orderComponents)
+
+      // USDC path — buyer must approve Seaport to pull USDC before fulfillOrder.
+      // Per-buy approve (not max) so the spending allowance is bounded; the
+      // trade-off is one extra tx per purchase, which the user agreed to.
+      if (currency === 'usdc') {
+        toast.loading('Checking USDC allowance…', { id: 'buy' })
+        const allowance = (await publicClient.readContract({
+          address: USDC_BASE,
+          abi: ERC20_ABI,
+          functionName: 'allowance',
+          args: [address, SEAPORT_ADDRESS],
+        })) as bigint
+
+        if (allowance < priceTotal) {
+          toast.loading('Approve USDC in wallet… (1 of 2)', { id: 'buy' })
+          const approveHash = await writeContractAsync({
+            chainId: base.id,
+            address: USDC_BASE,
+            abi: ERC20_ABI,
+            functionName: 'approve',
+            args: [SEAPORT_ADDRESS, priceTotal],
+          })
+          toast.loading('Confirming approval…', { id: 'buy' })
+          const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash })
+          if (approveReceipt.status !== 'success') {
+            throw new Error('USDC approval reverted')
+          }
+        }
+
+        toast.loading('Confirm purchase in wallet… (2 of 2)', { id: 'buy' })
+      } else {
+        toast.loading('Confirm purchase in wallet…', { id: 'buy' })
+      }
 
       const hash = await writeContractAsync({
         chainId: base.id,
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'fulfillOrder',
-        value: priceWei,
+        // ETH listings send native value with the call; USDC listings send
+        // zero (Seaport pulls USDC via the approval set above).
+        ...(currency === 'eth' ? { value: priceTotal } : {}),
         args: [
           {
             parameters: {
@@ -70,13 +108,12 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
             },
             signature: listing.signature as Hex,
           },
-          '0x0000000000000000000000000000000000000000000000000000000000000000' as Hex,
+          ZERO_BYTES32,
         ],
       })
 
       // Don't mark filled until the tx actually confirms — a reverted fulfillOrder
       // would leave the order open on-chain but our backend would say "sold".
-      if (!publicClient) throw new Error('No RPC client available')
       toast.loading('Confirming purchase…', { id: 'buy' })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       if (receipt.status !== 'success') {
@@ -102,10 +139,9 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       toast.success('Purchased!', { id: 'buy' })
       onBought?.()
     } catch (err) {
-      toast.error('Purchase failed', {
-        id: 'buy',
-        description: err instanceof Error ? err.message : 'Unknown error',
-      })
+      const raw = err instanceof Error ? err.message : 'Unknown error'
+      const description = /user rejected|user denied|rejected the request/i.test(raw) ? 'Cancelled' : raw
+      toast.error('Purchase failed', { id: 'buy', description })
     } finally {
       setLoading(false)
     }
@@ -121,7 +157,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
           : 'border-[#2a2a2a] text-[#888] hover:border-[#8B5CF6] hover:text-[#8B5CF6]'
       } ${className}`}
     >
-      {bought ? 'bought' : loading ? 'buying…' : `buy ${eth} ETH`}
+      {bought ? 'bought' : loading ? 'buying…' : `buy ${priceLabel}`}
     </button>
   )
 }
