@@ -18,6 +18,7 @@ export interface Notification {
   tokenImage?: string
   amount?: number
   price?: string
+  currency?: 'eth' | 'usdc' // for $ vs ETH formatting; absent on legacy notifs
   listingId?: string
   comment?: string
 }

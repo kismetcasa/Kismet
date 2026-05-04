@@ -67,9 +67,11 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
   const meta = moment.metadata ?? {}
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
-  // Fetch sale config for price + supply display
+  // Fetch sale config: needed for both display (price + supply) AND collect
+  // (price + currency drive the on-chain mint call). hidePriceSupply only
+  // controls whether we show the badges, not whether we fetch — otherwise
+  // collect would be permanently disabled in compact contexts.
   useEffect(() => {
-    if (hidePriceSupply) return
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
@@ -78,13 +80,14 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
     fetch(`/api/moment?${params}`)
       .then((r) => r.ok ? r.json() as Promise<MomentDetail> : Promise.reject())
       .then((detail) => {
-        setPrice(formatPrice(detail.saleConfig.pricePerToken))
+        const cur = inferCollectCurrency(detail.saleConfig)
+        setPrice(formatPrice(detail.saleConfig.pricePerToken, cur))
         setPricePerToken(BigInt(detail.saleConfig.pricePerToken))
-        setCurrency(inferCollectCurrency(detail.saleConfig))
+        setCurrency(cur)
         setMaxSupply(detail.maxSupply ?? null)
       })
       .catch(() => {})
-  }, [moment.address, moment.token_id, hidePriceSupply])
+  }, [moment.address, moment.token_id])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return

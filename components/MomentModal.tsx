@@ -93,9 +93,9 @@ export function MomentModal({
         : false
 
   // Derived price and supply — prefer passed-in values, fall back to fetched detail
-  const price = initialPrice ?? (detail ? formatPrice(detail.saleConfig.pricePerToken) : null)
   const pricePerToken = initialPricePerToken ?? (detail ? BigInt(detail.saleConfig.pricePerToken) : null)
   const currency = initialCurrency ?? (detail ? inferCollectCurrency(detail.saleConfig) : null)
+  const price = initialPrice ?? (detail && currency ? formatPrice(detail.saleConfig.pricePerToken, currency) : null)
   const displayMaxSupply: number | null | undefined =
     initialMaxSupply !== undefined
       ? initialMaxSupply

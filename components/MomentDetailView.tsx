@@ -244,7 +244,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
   const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
-  const price = detail ? formatPrice(detail.saleConfig.pricePerToken) : null
+  const price = detail
+    ? formatPrice(detail.saleConfig.pricePerToken, inferCollectCurrency(detail.saleConfig))
+    : null
 
   const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
   const hiddenCount = comments.length - TOP_COMMENTS

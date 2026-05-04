@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
     amount?: number
     comment?: string
     pricePerToken?: string
+    currency?: 'eth' | 'usdc'
   } | null
 
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
@@ -34,6 +35,7 @@ export async function POST(req: NextRequest) {
   const amount = Number(body.amount ?? 1)
   const comment = body.comment
   const pricePerToken = body.pricePerToken
+  const currency = body.currency === 'usdc' || body.currency === 'eth' ? body.currency : undefined
 
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
@@ -72,6 +74,7 @@ export async function POST(req: NextRequest) {
         tokenName: meta.name,
         amount: safeAmount,
         ...(pricePerToken ? { price: pricePerToken } : {}),
+        ...(currency ? { currency } : {}),
         ...(comment && comment !== DEFAULT_COLLECT_COMMENT ? { comment } : {}),
       })
     } catch {

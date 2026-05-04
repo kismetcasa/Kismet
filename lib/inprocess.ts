@@ -1,4 +1,4 @@
-import { formatEther } from 'viem'
+import { formatEther, formatUnits } from 'viem'
 
 export const INPROCESS_API = 'https://api.inprocess.world/api'
 
@@ -135,12 +135,23 @@ export function inferCollectCurrency(saleConfig: {
   return 'eth'
 }
 
-/** Format wei price to a human-readable ETH string (BigInt-safe via viem) */
-export function formatPrice(pricePerToken: string): string {
-  const wei = BigInt(pricePerToken)
-  if (wei === 0n) return 'free'
-  const eth = formatEther(wei)
-  // Trim trailing zeros: "0.100000…" → "0.1"
+/**
+ * Format an on-chain price (base units) for display. ETH renders as "X ETH"
+ * (18 decimals); USDC renders as "$X" (6 decimals). Currency defaults to ETH
+ * for legacy callers.
+ */
+export function formatPrice(
+  pricePerToken: string,
+  currency: 'eth' | 'usdc' = 'eth',
+): string {
+  const value = BigInt(pricePerToken)
+  if (value === 0n) return 'free'
+  if (currency === 'usdc') {
+    const usd = formatUnits(value, 6)
+    const trimmed = usd.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+    return `$${trimmed}`
+  }
+  const eth = formatEther(value)
   const trimmed = eth.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
   return `${trimmed} ETH`
 }

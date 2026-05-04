@@ -24,24 +24,16 @@ export const ZORA_1155_MINT_ABI = parseAbi([
   'function mintFee() view returns (uint256)',
 ])
 
-// FixedPriceSaleStrategy.sale() — defensive on-chain read of the active sale
-// config (price, window). Used as a sanity check when computing tx value.
-export const ZORA_FIXED_PRICE_SALE_ABI = parseAbi([
-  'function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint96 pricePerToken, address fundsRecipient))',
-])
-
 // ERC20Minter — note that mint() lives on the strategy itself, NOT on the 1155
 // (unlike the FixedPrice flow). Args are typed parameters, no minterArguments
 // bytes blob.
 export const ZORA_ERC20_MINTER_ABI = parseAbi([
   'function mint(address mintTo, uint256 quantity, address tokenAddress, uint256 tokenId, uint256 totalValue, address currency, address mintReferral, string comment)',
-  'function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint256 pricePerToken, address fundsRecipient, address currency))',
 ])
 
 export const ERC20_ABI = parseAbi([
   'function approve(address spender, uint256 value) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
-  'function balanceOf(address account) view returns (uint256)',
 ])
 
 // FixedPriceSale's mint() reads (mintTo, comment) out of an abi-encoded blob

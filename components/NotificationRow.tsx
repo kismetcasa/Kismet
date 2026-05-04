@@ -39,7 +39,7 @@ function NotificationContent({ n }: { n: Notification }) {
           )}
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
             {n.amount && n.amount > 1 ? `${n.amount} editions` : '1 edition'}
-            {n.price ? ` · ${formatPrice(n.price)}` : ''} · {time}
+            {n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
         </>
       )
@@ -50,7 +50,7 @@ function NotificationContent({ n }: { n: Notification }) {
             {n.actor ? `${shortAddress(n.actor)} bought your listing` : 'your listing was filled'}
           </p>
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
-            {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price)}` : ''} · {time}
+            {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
         </>
       )
@@ -77,7 +77,7 @@ function NotificationContent({ n }: { n: Notification }) {
         <>
           <p className="text-xs font-mono text-[#efefef] truncate">your listing expired</p>
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
-            {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price)}` : ''} · {time}
+            {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
         </>
       )
