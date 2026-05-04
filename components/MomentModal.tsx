@@ -4,8 +4,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { X, Star, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
-import { useAccount, useReadContract } from 'wagmi'
+import { useAccount, useReadContract, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
+import { isAddress } from 'viem'
+import { toast } from 'sonner'
 import {
   resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT,
   type Moment, type MomentDetail, type MomentComment,
@@ -13,6 +15,7 @@ import {
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
+import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -48,6 +51,11 @@ export function MomentModal({
   const [collected, setCollected] = useState(false)
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
+  const { signMessageAsync } = useSignMessage()
+  const [hasSplits, setHasSplits] = useState(false)
+  const [splitAddress, setSplitAddress] = useState('')
+  const [distributing, setDistributing] = useState(false)
+  const [distributeHash, setDistributeHash] = useState<string | null>(null)
   const [creatorName, setCreatorName] = useState(
     () => initialCreatorName ?? shortAddress(moment.creator.address),
   )
@@ -92,6 +100,23 @@ export function MomentModal({
         ? Number(ownedBalance) > 0
         : false
 
+  // Total mint count (Zora 1155 maintains it natively). Authoritative read so
+  // the figure is correct immediately after a fresh collect, before the
+  // inprocess indexer catches up.
+  const { data: totalMinted, refetch: refetchTotalMinted } = useReadContract({
+    address: moment.address as `0x${string}`,
+    abi: ZORA_1155_MINT_ABI,
+    functionName: 'totalSupply',
+    args: [BigInt(moment.token_id)],
+    query: { refetchInterval: 30_000 },
+  })
+
+  // Creator-only distribute UI. Use the prop's creator (always present) so
+  // the check can render before MomentDetail loads.
+  const isCreator =
+    !!connectedAddress &&
+    connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
+
   // Derived price and supply — prefer passed-in values, fall back to fetched detail
   const pricePerToken = initialPricePerToken ?? (detail ? BigInt(detail.saleConfig.pricePerToken) : null)
   const currency = initialCurrency ?? (detail ? inferCollectCurrency(detail.saleConfig) : null)
@@ -119,6 +144,56 @@ export function MomentModal({
       .then((d) => { if (d) { setCachedDetail(moment.address, moment.token_id, d); setDetail(d) } })
       .catch(() => {})
   }, [moment.address, moment.token_id, initialPrice, initialMaxSupply])
+
+  // Surface the distribute UI only when this moment was minted with multiple
+  // splits via /api/mint (the route writes the kismetart:splits:* flag). Same
+  // gate the detail page uses, kept in sync between surfaces.
+  useEffect(() => {
+    if (!isCreator) return
+    fetch(`/api/moment/splits?collectionAddress=${moment.address}&tokenId=${moment.token_id}`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setHasSplits(d.hasSplits === true))
+      .catch(() => {})
+  }, [moment.address, moment.token_id, isCreator])
+
+  async function handleDistribute() {
+    const addr = splitAddress.trim()
+    if (!addr || !isAddress(addr)) { toast.error('Invalid split address'); return }
+    if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    setDistributing(true)
+    try {
+      const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
+      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
+      if (!nonce) throw new Error('Could not fetch nonce')
+      const message = `Distribute Kismet Art split\nCollection: ${moment.address.toLowerCase()}\nToken: ${moment.token_id}\nSplit: ${addr.toLowerCase()}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
+      const signature = await signMessageAsync({ message })
+      const res = await fetch('/api/distribute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          splitAddress: addr,
+          collectionAddress: moment.address,
+          tokenId: moment.token_id,
+          chainId: 8453,
+          callerAddress: connectedAddress,
+          signature,
+          nonce,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
+      if (!data.hash) throw new Error('Distribute submitted but no tx hash returned')
+      setDistributeHash(data.hash)
+      toast.success('Distributed!')
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : 'Unknown error'
+      const description = /user rejected|user denied|rejected the request/i.test(raw) ? 'Cancelled' : raw
+      toast.error('Distribution failed', { description })
+    } finally {
+      setDistributing(false)
+    }
+  }
 
   // Fetch creator profile via shared cache (cache hit if card already resolved it)
   useEffect(() => {
@@ -192,7 +267,10 @@ export function MomentModal({
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
     })
-    if (result) setCollected(true)
+    if (result) {
+      setCollected(true)
+      refetchTotalMinted().catch(() => {})
+    }
   }
 
   const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
@@ -339,6 +417,48 @@ export function MomentModal({
 
           {/* Spacer */}
           <div className="flex-1 min-h-4" />
+
+          {/* Distribute earnings (creator + has-splits) — sits above collect */}
+          {isCreator && hasSplits && (
+            <div className="px-5 pb-2 flex flex-col gap-2">
+              <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">distribute earnings</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={splitAddress}
+                  onChange={(e) => setSplitAddress(e.target.value)}
+                  placeholder="0x… split address"
+                  className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                />
+                <button
+                  onClick={handleDistribute}
+                  disabled={distributing || !splitAddress.trim()}
+                  className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+                >
+                  {distributing ? '…' : '→'}
+                </button>
+              </div>
+              {distributeHash && (
+                <a
+                  href={`https://basescan.org/tx/${distributeHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] font-mono text-[#555] hover:text-[#888]"
+                >
+                  distributed: {distributeHash.slice(0, 10)}…{distributeHash.slice(-8)}
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* Total collected stat — directly above the action row */}
+          {totalMinted !== undefined && (
+            <div className="px-5 -mb-1">
+              <p className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
+                {Number(totalMinted).toLocaleString()} collected
+              </p>
+            </div>
+          )}
 
           {/* Collect row — list to the left when owned */}
           <div className="px-5 pb-2 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
