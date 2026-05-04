@@ -143,12 +143,16 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
+        // Writing-moment payload per inprocess docs (moment/create/writing.mdx):
+        // - `title` lives at the top level (not inside token, and not aliased as "name")
+        // - the writing body lives at `token.tokenContent` (not "content")
+        // The top-level `name` is our private hint that mint-proxy strips before
+        // forwarding upstream — used to populate the moment-meta KV entry.
         const payload = {
+          title: name.trim(),
           contract: { address: targetCollection },
           token: {
-            name: name.trim(),
-            ...(description.trim() ? { description: description.trim() } : {}),
-            content: textContent.trim(),
+            tokenContent: textContent.trim(),
             createReferral: CREATE_REFERRAL,
             salesConfig,
             mintToCreatorCount: 1,
@@ -381,19 +385,22 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         />
       </div>
 
-      {/* Description */}
-      <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Description
-        </label>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="describe your work…"
-          rows={3}
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
-        />
-      </div>
+      {/* Description — only meaningful for media moments (goes into Arweave
+          metadata). The inprocess writing endpoint has no description field. */}
+      {mintMode === 'media' && (
+        <div>
+          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+            Description
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="describe your work…"
+            rows={3}
+            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
+          />
+        </div>
+      )}
 
       {/* Price + Supply */}
       <div className="flex gap-3">

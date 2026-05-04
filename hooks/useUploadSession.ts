@@ -10,13 +10,20 @@ import { useAccount, useSignMessage } from 'wagmi'
  * can't exfiltrate it. Server-controlled TTL via cookie Max-Age — no
  * client-side clock to drift.
  *
- * `validForAddress` is a per-tab cache of the address the cookie is bound
- * to (we already know it from the sign-in flow); it lets us skip the
- * `GET /api/session` round-trip on repeat calls within the same render
- * tree. If a different wallet connects, the cache invalidates and we
- * re-validate against the server.
+ * Two module-level caches scoped per address (so multiple useUploadSession
+ * consumers share state):
+ * - `validForAddress`: address the cookie was last verified for. Skips the
+ *   `GET /api/session` round-trip on repeat calls.
+ * - `inFlight`: a single shared Promise for an active sign-in flow. If two
+ *   call sites fire `ensureSession()` concurrently (e.g. a user clicks two
+ *   mark-read actions in <1s), they coalesce onto the same wallet prompt
+ *   instead of triggering two separate signature requests.
+ *
+ * If a different wallet connects, both caches invalidate on next call and
+ * we re-validate against the server.
  */
 let validForAddress: string | null = null
+let inFlight: { address: string; promise: Promise<void> } | null = null
 
 export function useUploadSession() {
   const { address } = useAccount()
@@ -28,38 +35,54 @@ export function useUploadSession() {
 
     if (validForAddress === lower) return
 
-    // Validate the existing cookie (if any) on the server. Single round-trip;
-    // returns 401 if no cookie or expired.
-    const probe = await fetch('/api/session', { method: 'GET', credentials: 'same-origin' })
-    if (probe.ok) {
-      const data = (await probe.json().catch(() => ({}))) as { address?: string }
-      if (data.address?.toLowerCase() === lower) {
-        validForAddress = lower
-        return
+    // Coalesce concurrent calls onto a single sign-in flow.
+    if (inFlight && inFlight.address === lower) return inFlight.promise
+
+    const promise = (async () => {
+      // Validate the existing cookie (if any) on the server. Single round-trip;
+      // returns 401 if no cookie or expired.
+      const probe = await fetch('/api/session', { method: 'GET', credentials: 'same-origin' })
+      if (probe.ok) {
+        const data = (await probe.json().catch(() => ({}))) as { address?: string }
+        if (data.address?.toLowerCase() === lower) {
+          validForAddress = lower
+          return
+        }
+        // Cookie belongs to a different address — drop it and re-auth.
+        await fetch('/api/session', { method: 'DELETE', credentials: 'same-origin' }).catch(() => {})
       }
-      // Cookie belongs to a different address — drop it and re-auth.
-      await fetch('/api/session', { method: 'DELETE', credentials: 'same-origin' }).catch(() => {})
+
+      // No valid session — run the sign-in flow.
+      const nonceRes = await fetch(`/api/profile/${address}/nonce`)
+      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
+      if (!nonce) throw new Error('Could not fetch nonce')
+
+      const message = `Sign in to Kismet Art\nAddress: ${lower}\nNonce: ${nonce}`
+      const signature = await signMessageAsync({ message })
+
+      const res = await fetch('/api/session', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address, signature, nonce }),
+      })
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; address?: string; error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Session creation failed')
+
+      validForAddress = lower
+    })()
+
+    inFlight = { address: lower, promise }
+    try {
+      await promise
+    } finally {
+      // Clear only if our entry is still the one in flight — guards against
+      // a wallet-switch racing with the in-flight clear.
+      if (inFlight && inFlight.address === lower && inFlight.promise === promise) {
+        inFlight = null
+      }
     }
-
-    // No valid session — run the sign-in flow.
-    const nonceRes = await fetch(`/api/profile/${address}/nonce`)
-    if (!nonceRes.ok) throw new Error('Could not fetch nonce')
-    const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-    if (!nonce) throw new Error('Could not fetch nonce')
-
-    const message = `Sign in to Kismet Art\nAddress: ${lower}\nNonce: ${nonce}`
-    const signature = await signMessageAsync({ message })
-
-    const res = await fetch('/api/session', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, signature, nonce }),
-    })
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; address?: string; error?: string }
-    if (!res.ok) throw new Error(data.error ?? 'Session creation failed')
-
-    validForAddress = lower
   }, [address, signMessageAsync])
 
   return { ensureSession }

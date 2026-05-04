@@ -27,10 +27,14 @@ export async function proxyMintRequest(
     }
   }
 
-  // body.name is our private hint for moment-meta; never forward to InProcess
+  // body.name is our private hint for moment-meta; never forward to InProcess.
+  // For writing moments inprocess uses `title` at top level — fall back to
+  // that so we still capture a display name even if `name` is omitted.
   const { name: bodyName, ...forwardBody } = body
+  const bodyTitle = typeof body?.title === 'string' ? body.title : undefined
   const displayName =
     (typeof bodyName === 'string' && bodyName) ||
+    bodyTitle ||
     (typeof tokenObj.name === 'string' && (tokenObj.name as string)) ||
     undefined
 
