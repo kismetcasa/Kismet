@@ -7,12 +7,20 @@ import { useRouter } from 'next/navigation'
 import { Star, Copy, Check, ExternalLink } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { toast } from 'sonner'
-import { resolveUri, formatPrice, shortAddress, DEFAULT_COLLECT_COMMENT, type Moment, type MomentDetail } from '@/lib/inprocess'
+import {
+  resolveUri,
+  formatPrice,
+  shortAddress,
+  inferCollectCurrency,
+  DEFAULT_COLLECT_COMMENT,
+  type Moment,
+  type MomentDetail,
+} from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { useAdmin } from '@/contexts/AdminContext'
 import { ERC1155_ABI } from '@/lib/seaport'
+import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -26,16 +34,19 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
   const router = useRouter()
   const [imgError, setImgError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
+  const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
+  const [currency, setCurrency] = useState<CollectCurrency | null>(null)
   const [maxSupply, setMaxSupply] = useState<number | null | undefined>(undefined)
   const [creatorName, setCreatorName] = useState(() => shortAddress(moment.creator.address))
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
   const [modalOpen, setModalOpen] = useState(false)
-  const [collecting, setCollecting] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { collect, status: collectStatus } = useDirectCollect()
+  const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
 
   useEffect(() => {
     fetchCreatorProfile(moment.creator.address).then(({ name, avatarUrl }) => {
@@ -56,9 +67,11 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
   const meta = moment.metadata ?? {}
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
-  // Fetch sale config for price + supply display
+  // Fetch sale config: needed for both display (price + supply) AND collect
+  // (price + currency drive the on-chain mint call). hidePriceSupply only
+  // controls whether we show the badges, not whether we fetch — otherwise
+  // collect would be permanently disabled in compact contexts.
   useEffect(() => {
-    if (hidePriceSupply) return
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
@@ -67,11 +80,14 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
     fetch(`/api/moment?${params}`)
       .then((r) => r.ok ? r.json() as Promise<MomentDetail> : Promise.reject())
       .then((detail) => {
-        setPrice(formatPrice(detail.saleConfig.pricePerToken))
+        const cur = inferCollectCurrency(detail.saleConfig)
+        setPrice(formatPrice(detail.saleConfig.pricePerToken, cur))
+        setPricePerToken(BigInt(detail.saleConfig.pricePerToken))
+        setCurrency(cur)
         setMaxSupply(detail.maxSupply ?? null)
       })
       .catch(() => {})
-  }, [moment.address, moment.token_id, hidePriceSupply])
+  }, [moment.address, moment.token_id])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
@@ -90,34 +106,18 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
 
   async function handleCollect() {
     if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
-    setCollecting(true)
-    try {
-      const res = await fetch('/api/collect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          moment: { collectionAddress: moment.address, tokenId: moment.token_id, chainId: 8453 },
-          amount: 1,
-          comment: DEFAULT_COLLECT_COMMENT,
-          account: connectedAddress,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        const msg = data.detail ?? data.error ?? data.message ?? 'Collect failed'
-        if (typeof msg === 'string' && /insufficient/i.test(msg)) {
-          throw new Error('Collects are paused — platform balance needs top-up. Try again shortly.')
-        }
-        throw new Error(msg)
-      }
-      setCollected(true)
-      toast.success('Collected!')
-    } catch (err) {
-      toast.error('Collect failed', { description: err instanceof Error ? err.message : 'Unknown error' })
-    } finally {
-      setCollecting(false)
-    }
+    if (pricePerToken === null || currency === null) return // sale config not yet loaded
+    const result = await collect({
+      collectionAddress: moment.address as `0x${string}`,
+      tokenId: moment.token_id,
+      pricePerToken,
+      currency,
+      amount: 1,
+      comment: DEFAULT_COLLECT_COMMENT,
+    })
+    if (result) setCollected(true)
   }
+  const collectReady = pricePerToken !== null && currency !== null
 
   const imageUrl = meta.image ? resolveUri(meta.image) : null
   const isVideo =
@@ -234,7 +234,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
           }`}>
             <button
               onClick={handleCollect}
-              disabled={collecting || collected || owned > 0}
+              disabled={collecting || collected || owned > 0 || !collectReady}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 collected || owned > 0 ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
               }`}
@@ -262,6 +262,8 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
           moment={moment}
           onClose={() => setModalOpen(false)}
           initialPrice={price ?? undefined}
+          initialPricePerToken={pricePerToken ?? undefined}
+          initialCurrency={currency ?? undefined}
           initialMaxSupply={maxSupply !== undefined ? maxSupply : undefined}
           initialCreatorName={creatorName}
           initialCreatorAvatar={creatorAvatar}

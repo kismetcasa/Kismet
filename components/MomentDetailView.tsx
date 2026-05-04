@@ -8,10 +8,11 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X } from 'lucide-react'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
+import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -53,8 +54,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   )
   const [showAllComments, setShowAllComments] = useState(false)
   const [commentText, setCommentText] = useState('')
-  const [collecting, setCollecting] = useState(false)
   const [collected, setCollected] = useState(false)
+  const { collect, status: collectStatus } = useDirectCollect()
+  const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
   const [creatorName, setCreatorName] = useState('')
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -187,39 +189,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   async function handleCollect() {
     if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
-    setCollecting(true)
-    try {
-      const res = await fetch('/api/collect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          moment: { collectionAddress: address, tokenId, chainId: 8453 },
-          amount: 1,
-          comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
-          account: connectedAddress,
-          pricePerToken: detail?.saleConfig.pricePerToken,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        const msg = data.detail ?? data.error ?? data.message ?? 'Collect failed'
-        // "Insufficient balance" from inprocess on the x-api-key path means the
-        // platform's smart account (linked to our INPROCESS_API_KEY) is out of
-        // ETH on Base — NOT the user's wallet. Surface that distinction so we
-        // don't blame the collector for a platform-level operations issue.
-        if (typeof msg === 'string' && /insufficient/i.test(msg)) {
-          throw new Error('Collects are paused — platform balance needs top-up. Try again shortly.')
-        }
-        throw new Error(msg)
-      }
+    if (!detail) return
+    const result = await collect({
+      collectionAddress: address as `0x${string}`,
+      tokenId,
+      pricePerToken: BigInt(detail.saleConfig.pricePerToken),
+      currency: inferCollectCurrency(detail.saleConfig),
+      amount: 1,
+      comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
+    })
+    if (result) {
       setCollected(true)
       setCommentText('')
-      toast.success('Collected!')
       setTimeout(fetchComments, 3000)
-    } catch (err) {
-      toast.error('Collect failed', { description: err instanceof Error ? err.message : 'Unknown error' })
-    } finally {
-      setCollecting(false)
     }
   }
 
@@ -262,7 +244,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
   const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
-  const price = detail ? formatPrice(detail.saleConfig.pricePerToken) : null
+  const price = detail
+    ? formatPrice(detail.saleConfig.pricePerToken, inferCollectCurrency(detail.saleConfig))
+    : null
 
   const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
   const hiddenCount = comments.length - TOP_COMMENTS
@@ -468,7 +452,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             }`}>
               <button
                 onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected}
+                disabled={collecting || alreadyOwned || collected || !detail}
                 className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                   collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
                 }`}

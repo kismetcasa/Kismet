@@ -1,79 +1,86 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from 'viem'
-import { INPROCESS_API, DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
+import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import { redis } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 
+/**
+ * Records a successful direct mint. The actual on-chain mint is submitted by
+ * the user's wallet via useDirectCollect — Kismet no longer proxies a
+ * sponsored collect through inprocess. This endpoint exists purely to bump
+ * trending, append the token to the collector's owned list, and notify the
+ * creator. Failures here never undo the mint; the client treats it as
+ * best-effort.
+ */
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`collect:${ip}`, 20, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
-  const apiKey = process.env.INPROCESS_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: 'INPROCESS_API_KEY not configured' }, { status: 500 })
-  }
+  const body = (await req.json().catch(() => null)) as {
+    moment?: { collectionAddress?: string; tokenId?: string }
+    account?: string
+    amount?: number
+    comment?: string
+    pricePerToken?: string
+    currency?: 'eth' | 'usdc'
+  } | null
 
-  const body = await req.json()
+  if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const col = (body as { moment?: { collectionAddress?: string } }).moment?.collectionAddress
-  const tok = (body as { moment?: { tokenId?: string } }).moment?.tokenId
-  if (col && !isAddress(col)) {
+  const collectionAddress = body.moment?.collectionAddress
+  const tokenId = body.moment?.tokenId
+  const account = body.account?.toLowerCase()
+  const amount = Number(body.amount ?? 1)
+  const comment = body.comment
+  const pricePerToken = body.pricePerToken
+  const currency = body.currency === 'usdc' || body.currency === 'eth' ? body.currency : undefined
+
+  if (!collectionAddress || !isAddress(collectionAddress)) {
     return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
   }
-  if (tok && !/^\d+$/.test(String(tok))) {
+  if (!tokenId || !/^\d+$/.test(String(tokenId))) {
     return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
   }
+  if (!account || !isAddress(account)) {
+    return NextResponse.json({ error: 'Invalid account' }, { status: 400 })
+  }
 
-  // Strip pricePerToken — our internal field, not part of InProcess CollectPayload
-  const { pricePerToken, ...forwardBody } = body as Record<string, unknown> & { pricePerToken?: string }
+  const collectionLower = collectionAddress.toLowerCase()
+  const safeAmount = Number.isFinite(amount) && amount > 0 ? amount : 1
 
-  const res = await fetch(`${INPROCESS_API}/moment/collect`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-    },
-    body: JSON.stringify(forwardBody),
-  })
+  await Promise.all([
+    redis.zincrby('kismetart:trending', 1, `${collectionLower}:${tokenId}`).catch(() => {}),
+    redis
+      .zadd(`kismetart:collected:${account}`, {
+        score: Date.now(),
+        member: `${collectionLower}:${tokenId}`,
+      })
+      .catch(() => {}),
+  ])
 
-  // Fire-and-forget: increment trending score, record collector, notify creator
-  if (res.ok) {
-    const account = (body as { account?: string }).account?.toLowerCase()
-    const amount = Number((body as { amount?: number }).amount ?? 1)
-    const comment = (body as { comment?: string }).comment
-
-    if (col && tok) {
-      const colLower = col.toLowerCase()
-      redis.zincrby('kismetart:trending', 1, `${colLower}:${tok}`).catch(() => {})
-      if (account) {
-        redis.zadd(`kismetart:collected:${account}`, { score: Date.now(), member: `${colLower}:${tok}` }).catch(() => {})
-        void (async () => {
-          const meta = await getMomentMeta(colLower, tok)
-          if (!meta) return
-          await writeNotification({
-            type: 'collect',
-            recipient: meta.creator,
-            actor: account,
-            tokenAddress: colLower,
-            tokenId: tok,
-            tokenName: meta.name,
-            amount: Number.isFinite(amount) && amount > 0 ? amount : 1,
-            ...(pricePerToken ? { price: pricePerToken } : {}),
-            ...(comment && comment !== DEFAULT_COLLECT_COMMENT ? { comment } : {}),
-          })
-        })()
-      }
+  // Notification is fire-and-forget — never let it gate the response.
+  void (async () => {
+    try {
+      const meta = await getMomentMeta(collectionLower, tokenId)
+      if (!meta) return
+      await writeNotification({
+        type: 'collect',
+        recipient: meta.creator,
+        actor: account,
+        tokenAddress: collectionLower,
+        tokenId,
+        tokenName: meta.name,
+        amount: safeAmount,
+        ...(pricePerToken ? { price: pricePerToken } : {}),
+        ...(currency ? { currency } : {}),
+        ...(comment && comment !== DEFAULT_COLLECT_COMMENT ? { comment } : {}),
+      })
+    } catch {
+      // notifications are non-critical
     }
-  }
+  })()
 
-  const text = await res.text()
-  let data: unknown
-  try {
-    data = JSON.parse(text)
-  } catch {
-    return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
-  }
-  return NextResponse.json(data, { status: res.status })
+  return NextResponse.json({ ok: true })
 }

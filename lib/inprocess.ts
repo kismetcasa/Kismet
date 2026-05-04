@@ -1,4 +1,4 @@
-import { formatEther } from 'viem'
+import { formatEther, formatUnits } from 'viem'
 
 export const INPROCESS_API = 'https://api.inprocess.world/api'
 
@@ -101,6 +101,7 @@ export interface MomentDetail {
   owner: string
   maxSupply?: number
   saleConfig: {
+    type?: 'fixedPrice' | 'erc20Mint'
     pricePerToken: string
     saleStart: string
     saleEnd: string
@@ -116,12 +117,41 @@ export interface MomentDetail {
   }
 }
 
-/** Format wei price to a human-readable ETH string (BigInt-safe via viem) */
-export function formatPrice(pricePerToken: string): string {
-  const wei = BigInt(pricePerToken)
-  if (wei === 0n) return 'free'
-  const eth = formatEther(wei)
-  // Trim trailing zeros: "0.100000…" → "0.1"
+/**
+ * Map an inprocess saleConfig to the currency tag used by the direct-collect
+ * hook. Prefers the explicit `type` field; falls back to comparing `currency`
+ * against the USDC address. Returns 'eth' as a safe default for legacy
+ * responses missing both fields.
+ */
+export function inferCollectCurrency(saleConfig: {
+  type?: string
+  currency?: string
+}): 'eth' | 'usdc' {
+  if (saleConfig.type === 'erc20Mint') return 'usdc'
+  if (saleConfig.type === 'fixedPrice') return 'eth'
+  // Fallback: only USDC is currently supported as an ERC20 currency.
+  const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  if (saleConfig.currency && saleConfig.currency.toLowerCase() === USDC_BASE) return 'usdc'
+  return 'eth'
+}
+
+/**
+ * Format an on-chain price (base units) for display. ETH renders as "X ETH"
+ * (18 decimals); USDC renders as "$X" (6 decimals). Currency defaults to ETH
+ * for legacy callers.
+ */
+export function formatPrice(
+  pricePerToken: string,
+  currency: 'eth' | 'usdc' = 'eth',
+): string {
+  const value = BigInt(pricePerToken)
+  if (value === 0n) return 'free'
+  if (currency === 'usdc') {
+    const usd = formatUnits(value, 6)
+    const trimmed = usd.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+    return `$${trimmed}`
+  }
+  const eth = formatEther(value)
   const trimmed = eth.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
   return `${trimmed} ETH`
 }

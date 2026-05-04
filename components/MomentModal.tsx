@@ -6,14 +6,14 @@ import Link from 'next/link'
 import { X, Star, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { toast } from 'sonner'
 import {
-  resolveUri, formatPrice, shortAddress, formatRelativeTime, DEFAULT_COLLECT_COMMENT,
+  resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT,
   type Moment, type MomentDetail, type MomentComment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
+import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -25,6 +25,8 @@ interface MomentModalProps {
   onClose: () => void
   // Props pre-populated by MomentCard to avoid redundant fetches
   initialPrice?: string
+  initialPricePerToken?: bigint
+  initialCurrency?: CollectCurrency
   initialMaxSupply?: number | null
   initialCreatorName?: string
   initialCreatorAvatar?: string
@@ -35,14 +37,17 @@ export function MomentModal({
   moment,
   onClose,
   initialPrice,
+  initialPricePerToken,
+  initialCurrency,
   initialMaxSupply,
   initialCreatorName,
   initialCreatorAvatar,
   initialOwnedBalance,
 }: MomentModalProps) {
   const [detail, setDetail] = useState<MomentDetail | null>(null)
-  const [collecting, setCollecting] = useState(false)
   const [collected, setCollected] = useState(false)
+  const { collect, status: collectStatus } = useDirectCollect()
+  const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
   const [creatorName, setCreatorName] = useState(
     () => initialCreatorName ?? shortAddress(moment.creator.address),
   )
@@ -88,13 +93,16 @@ export function MomentModal({
         : false
 
   // Derived price and supply — prefer passed-in values, fall back to fetched detail
-  const price = initialPrice ?? (detail ? formatPrice(detail.saleConfig.pricePerToken) : null)
+  const pricePerToken = initialPricePerToken ?? (detail ? BigInt(detail.saleConfig.pricePerToken) : null)
+  const currency = initialCurrency ?? (detail ? inferCollectCurrency(detail.saleConfig) : null)
+  const price = initialPrice ?? (detail && currency ? formatPrice(detail.saleConfig.pricePerToken, currency) : null)
   const displayMaxSupply: number | null | undefined =
     initialMaxSupply !== undefined
       ? initialMaxSupply
       : detail
         ? (detail.maxSupply ?? null)
         : undefined
+  const collectReady = pricePerToken !== null && currency !== null
 
   // Fetch moment detail only when card didn't pass price/supply
   useEffect(() => {
@@ -175,33 +183,16 @@ export function MomentModal({
 
   async function handleCollect() {
     if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
-    setCollecting(true)
-    try {
-      const res = await fetch('/api/collect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          moment: { collectionAddress: moment.address, tokenId: moment.token_id, chainId: 8453 },
-          amount: 1,
-          comment: DEFAULT_COLLECT_COMMENT,
-          account: connectedAddress,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        const msg = data.detail ?? data.error ?? data.message ?? 'Collect failed'
-        if (typeof msg === 'string' && /insufficient/i.test(msg)) {
-          throw new Error('Collects are paused — platform balance needs top-up. Try again shortly.')
-        }
-        throw new Error(msg)
-      }
-      setCollected(true)
-      toast.success('Collected!')
-    } catch (err) {
-      toast.error('Collect failed', { description: err instanceof Error ? err.message : 'Unknown error' })
-    } finally {
-      setCollecting(false)
-    }
+    if (pricePerToken === null || currency === null) return
+    const result = await collect({
+      collectionAddress: moment.address as `0x${string}`,
+      tokenId: moment.token_id,
+      pricePerToken,
+      currency,
+      amount: 1,
+      comment: DEFAULT_COLLECT_COMMENT,
+    })
+    if (result) setCollected(true)
   }
 
   const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
@@ -364,7 +355,7 @@ export function MomentModal({
             }`}>
               <button
                 onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected}
+                disabled={collecting || alreadyOwned || collected || !collectReady}
                 className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                   collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
                 }`}

@@ -1,4 +1,5 @@
 import { encodeFunctionData, type Address } from 'viem'
+import { ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
 
 // inprocess's Base Mainnet ZORA 1155 Contract Factory.
 // Source: https://github.com/sweetmantech/docs-in-process/blob/main/docs/pages/protocol-deployments.mdx
@@ -10,9 +11,11 @@ import { encodeFunctionData, type Address } from 'viem'
 // collection is tracked by their indexer.
 export const FACTORY_ADDRESS = '0x540C18B7f99b3b599c6FeB99964498931c211858' as const
 
-// Zora's Fixed Price Sale Strategy on Base mainnet.
-// From zoraCreatorFixedPriceSaleStrategyAddress[8453] in @zoralabs/protocol-deployments.
-const FIXED_PRICE_STRATEGY_ADDRESS = '0x2994762aA0E4C750c51f333C10d81961faEBE785' as const
+// Zora's Fixed Price Sale Strategy on Base mainnet — single source of truth
+// in lib/zoraMint.ts. Re-exported as a local const here so deploy + collect
+// stay in lockstep: the address granted MINTER permission during deploy must
+// match the one called from useDirectCollect.
+const FIXED_PRICE_STRATEGY_ADDRESS = ZORA_FIXED_PRICE_STRATEGY
 
 // Open-edition supply (max uint64) — used when no supply cap specified.
 // Matches inprocess's OPEN_EDITION_MINT_SIZE.
