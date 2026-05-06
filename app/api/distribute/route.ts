@@ -95,6 +95,8 @@ export async function POST(req: NextRequest) {
   }
 
   // Caller must be creator or admin of the moment per inprocess.
+  // /moment returns MomentDetail with `momentAdmins: string[]` — creator is
+  // momentAdmins[0], delegated admins follow.
   try {
     const momentUrl = new URL(`${INPROCESS_API}/moment`)
     momentUrl.searchParams.set('collectionAddress', collectionAddress)
@@ -104,14 +106,14 @@ export async function POST(req: NextRequest) {
     if (!momentRes.ok) {
       return NextResponse.json({ error: 'Could not verify moment creator' }, { status: 403 })
     }
-    const momentData = await momentRes.json() as {
-      creator?: { address?: string }
-      admins?: { address: string }[]
-    }
+    const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
     const callerLower = callerAddress.toLowerCase()
-    const isCreator = momentData.creator?.address?.toLowerCase() === callerLower
-    const isAdmin = momentData.admins?.some((a) => a.address?.toLowerCase() === callerLower) ?? false
-    if (!isCreator && !isAdmin) {
+    const adminsLower = Array.isArray(momentData.momentAdmins)
+      ? momentData.momentAdmins
+          .filter((a): a is string => typeof a === 'string')
+          .map((a) => a.toLowerCase())
+      : []
+    if (!adminsLower.includes(callerLower)) {
       return NextResponse.json({ error: 'Only the moment creator or an admin may distribute' }, { status: 403 })
     }
   } catch {
