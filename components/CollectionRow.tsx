@@ -3,8 +3,13 @@
 import { useEffect, useState } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { formatEther } from 'viem'
+import { useAccount } from 'wagmi'
+import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { MAX_COLLECT_ALL_BATCH } from '@/lib/zoraMint'
+import { useCollectAll } from '@/hooks/useCollectAll'
 import { MomentCard } from './MomentCard'
 
 export interface FeaturedCollectionRow {
@@ -13,16 +18,26 @@ export interface FeaturedCollectionRow {
   metadata?: { name?: string; image?: string; description?: string }
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
-  candidateTokenIds: string[]
+  ethEligibleTokenIds: string[]
+  ethEligibleTotalWei: string
   featuredAt: number
 }
 
 interface CollectionRowProps {
   collection: FeaturedCollectionRow
-  // Replaces the default "view collection" CTA block. When provided, the
-  // caller supplies the full bottom row (e.g. cost-preview + collect-all from
-  // the FeaturedFeed wrapper). Default keeps the row useful on its own.
+  // Replaces the default cost-preview + collect-all action block. Most
+  // callers leave this undefined and get the canonical bulk-collect UX.
   primaryAction?: React.ReactNode
+}
+
+// Trim a wei value's formatted ether string to ≤4 decimal places, dropping
+// trailing zeroes. Keeps the cost chip narrow without lying about precision.
+function formatEthChip(wei: bigint): string {
+  const full = formatEther(wei)
+  if (!full.includes('.')) return full
+  const [whole, frac] = full.split('.')
+  const trimmed = frac.slice(0, 4).replace(/0+$/, '')
+  return trimmed ? `${whole}.${trimmed}` : whole
 }
 
 export function CollectionRow({ collection, primaryAction }: CollectionRowProps) {
@@ -88,7 +103,7 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
             >
               view collection
             </Link>
-            {primaryAction}
+            {primaryAction ?? <DefaultCollectAllAction collection={c} />}
           </div>
         </div>
       </div>
@@ -113,4 +128,65 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
       </div>
     </article>
   )
+}
+
+// Cost-preview + collect-all button. Hidden when nothing's ETH-eligible (e.g.,
+// USDC-only collections); we don't surface a partial CTA there.
+function DefaultCollectAllAction({ collection }: { collection: FeaturedCollectionRow }) {
+  const eligibleCount = collection.ethEligibleTokenIds.length
+  const { isConnected } = useAccount()
+  const { openConnectModal } = useConnectModal()
+  const { collectAll, status } = useCollectAll()
+
+  if (eligibleCount === 0) return null
+
+  const inFlight = status !== 'idle' && status !== 'done' && status !== 'error'
+  const batchSize = Math.min(eligibleCount, MAX_COLLECT_ALL_BATCH)
+  const totalWei = BigInt(collection.ethEligibleTotalWei)
+  const costLabel = totalWei > 0n ? `Ξ ${formatEthChip(totalWei)}` : 'free'
+
+  function handleClick() {
+    if (!isConnected) {
+      openConnectModal?.()
+      return
+    }
+    collectAll({
+      collectionAddress: collection.contractAddress as `0x${string}`,
+      candidateTokenIds: collection.ethEligibleTokenIds,
+    })
+  }
+
+  const label = inFlight
+    ? statusLabel(status)
+    : `collect all (${batchSize}${eligibleCount > MAX_COLLECT_ALL_BATCH ? ` of ${eligibleCount}` : ''})`
+
+  return (
+    <div className="flex items-stretch gap-1.5">
+      <span className="px-2 py-1.5 text-xs font-mono border border-[#2a2a2a] text-[#888] whitespace-nowrap">
+        {costLabel}
+      </span>
+      <button
+        onClick={handleClick}
+        disabled={inFlight}
+        className="flex-1 py-1.5 text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors disabled:opacity-60 disabled:cursor-wait"
+      >
+        {label}
+      </button>
+    </div>
+  )
+}
+
+function statusLabel(status: ReturnType<typeof useCollectAll>['status']): string {
+  switch (status) {
+    case 'preparing':
+      return 'preparing…'
+    case 'minting':
+      return 'confirm in wallet…'
+    case 'confirming':
+      return 'confirming…'
+    case 'recording':
+      return 'finalizing…'
+    default:
+      return 'collecting…'
+  }
 }

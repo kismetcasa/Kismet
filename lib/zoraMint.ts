@@ -43,3 +43,16 @@ export const ERC20_ABI = parseAbi([
 export function encodeFixedPriceMinterArgs(mintTo: Address, comment: string): `0x${string}` {
   return encodeAbiParameters(parseAbiParameters('address, string'), [mintTo, comment ?? ''])
 }
+
+// OZ Multicall — every Zora 1155 collection inherits this. Lets us batch many
+// per-token mint() calls into one user signature for "collect all" on a
+// featured collection. Reverts atomically on any sub-call failure, so callers
+// MUST pre-filter eligibility (see lib/saleConfig.ts).
+export const ZORA_MULTICALL_ABI = parseAbi([
+  'function multicall(bytes[] data) payable returns (bytes[] results)',
+])
+
+// Cap on how many mints we'll batch per "collect all" tx. Picked to keep gas
+// well under the wallet-preview-readable limit (~5M for 20 × ~250k each on
+// Base) so users see the full impact before signing.
+export const MAX_COLLECT_ALL_BATCH = 20
