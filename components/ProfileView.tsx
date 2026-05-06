@@ -782,7 +782,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                 <h2 className="text-xs font-mono text-[#888] uppercase tracking-wider">
                   {sectionLabel[section]}{count !== null ? ` (${count})` : ''}
                 </h2>
-                {section === 'mints' && (
+                {section === 'mints' && !isCollapsed && (
                   <button
                     onClick={(e) => { e.stopPropagation(); setCollectionsMode((v) => !v) }}
                     className={`text-xs font-mono px-2.5 py-1 border transition-colors ${

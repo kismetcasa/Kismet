@@ -229,30 +229,34 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
               />
             </div>
           )}
+          {/* Action row order: price | supply | collect. Price + supply are
+              info chips on the left; collect is the wide CTA on the right.
+              The button picks up `border-l` only when the chips precede it
+              (i.e. !hidePriceSupply); when alone, no internal divider. */}
           <div className={`flex ${owned > 0 ? 'w-full sm:flex-1' : 'w-full'} border transition-colors ${
             collected || owned > 0 ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
           }`}>
-            <button
-              onClick={handleCollect}
-              disabled={collecting || collected || owned > 0 || !collectReady}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                collected || owned > 0 ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
-              }`}
-            >
-              {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
-            </button>
             {!hidePriceSupply && (
               <>
+                <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                  <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+                </div>
                 <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                   <span className="text-[11px] font-mono text-[#444]">
                     {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
                   </span>
                 </div>
-                <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-                </div>
               </>
             )}
+            <button
+              onClick={handleCollect}
+              disabled={collecting || collected || owned > 0 || !collectReady}
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${!hidePriceSupply ? 'border-l border-[#2a2a2a]' : ''} ${
+                collected || owned > 0 ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
+            </button>
           </div>
         </div>
       </article>

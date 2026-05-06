@@ -478,18 +478,13 @@ export function MomentModal({
                 />
               </div>
             )}
+            {/* Action row order: price | supply | collect. */}
             <div className={`flex ${alreadyOwned ? 'w-full sm:flex-1' : 'flex-1'} border transition-colors ${
               alreadyOwned || collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
             }`}>
-              <button
-                onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected || !collectReady}
-                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
-                }`}
-              >
-                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
-              </button>
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+              </div>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
                   {displayMaxSupply === undefined
@@ -499,9 +494,15 @@ export function MomentModal({
                       : displayMaxSupply.toLocaleString()}
                 </span>
               </div>
-              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-              </div>
+              <button
+                onClick={handleCollect}
+                disabled={collecting || alreadyOwned || collected || !collectReady}
+                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 border-l border-[#2a2a2a] ${collecting ? 'cursor-not-allowed' : ''} ${
+                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
+                }`}
+              >
+                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+              </button>
             </div>
           </div>
 
