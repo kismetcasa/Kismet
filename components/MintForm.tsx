@@ -65,6 +65,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
   }
 
   const MAX_FILE_BYTES = 50 * 1024 * 1024
+  const TEXT_MAX = 5000
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
@@ -118,6 +119,10 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
     if (!name.trim()) { toast.error('Please enter a title'); return }
     if (mintMode === 'media' && !file) { toast.error('Please select a file to mint'); return }
     if (mintMode === 'text' && !textContent.trim()) { toast.error('Please enter text content'); return }
+    if (mintMode === 'text' && textContent.length > TEXT_MAX) {
+      toast.error(`Text exceeds ${TEXT_MAX.toLocaleString()} character limit`)
+      return
+    }
     if (splits.length === 1) { toast.error('Splits require at least 2 recipients'); return }
     if (splits.length > 1 && Math.round(splitsTotal * 100) !== 10000) {
       toast.error(`Split allocations must sum to 100% (currently ${splitsTotal}%)`)
@@ -376,13 +381,22 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
             />
           </>
         ) : (
-          <textarea
-            value={textContent}
-            onChange={(e) => setTextContent(e.target.value)}
-            placeholder="write your moment…"
-            rows={12}
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
-          />
+          <>
+            <textarea
+              value={textContent}
+              onChange={(e) => setTextContent(e.target.value)}
+              placeholder="write your moment…"
+              rows={12}
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
+            />
+            <div
+              className={`mt-1.5 text-right text-[10px] font-mono ${
+                textContent.length > TEXT_MAX ? 'accent-grad' : 'text-[#555]'
+              }`}
+            >
+              {textContent.length.toLocaleString()} / {TEXT_MAX.toLocaleString()}
+            </div>
+          </>
         )}
       </div>
 
