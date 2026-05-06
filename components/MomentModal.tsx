@@ -309,9 +309,13 @@ export function MomentModal({
               <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
             </button>
           )}
+          {/* Navigate to detail page on click. Don't close the modal here —
+              closing first reveals the homepage for the duration of the
+              client navigation, producing a visible flash. Letting the
+              modal stay mounted means the user keeps seeing the moment
+              while the next route loads. */}
           <Link
             href={`/moment/${moment.address}/${moment.token_id}`}
-            onClick={onClose}
             className="absolute inset-0 z-10 cursor-pointer"
           />
           {isVideo && mediaUrl ? (
@@ -474,7 +478,9 @@ export function MomentModal({
             </div>
           )}
 
-          {/* Collect row — list to the left when owned */}
+          {/* Action row. Each control is its own bordered container — list
+              (when owned), price+supply chips, collect — mirroring how the
+              card lays them out. */}
           <div className="px-5 pb-2 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
             {alreadyOwned && (
               <div className="w-full sm:flex-none sm:w-1/3">
@@ -490,10 +496,7 @@ export function MomentModal({
                 />
               </div>
             )}
-            {/* Action row order: price | supply | collect. */}
-            <div className={`flex ${alreadyOwned ? 'w-full sm:flex-1' : 'flex-1'} border transition-colors ${
-              alreadyOwned || collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
-            }`}>
+            <div className="flex border border-[#2a2a2a] sm:flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
@@ -506,23 +509,25 @@ export function MomentModal({
                       : displayMaxSupply.toLocaleString()}
                 </span>
               </div>
-              <button
-                onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected || !collectReady}
-                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 border-l border-[#2a2a2a] ${collecting ? 'cursor-not-allowed' : ''} ${
-                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
-                }`}
-              >
-                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
-              </button>
             </div>
+            <button
+              onClick={handleCollect}
+              disabled={collecting || alreadyOwned || collected || !collectReady}
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+                collected || alreadyOwned
+                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                  : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+            </button>
           </div>
 
-          {/* View page — hugs bottom */}
+          {/* View page — hugs bottom. Same no-onClose treatment as the
+              media link above, for the same reason. */}
           <div className="px-5 pb-5">
             <Link
               href={`/moment/${moment.address}/${moment.token_id}`}
-              onClick={onClose}
               className="w-full flex items-center justify-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors py-2.5"
             >
               view page →

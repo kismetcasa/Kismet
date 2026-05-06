@@ -226,7 +226,9 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
           </Link>
         </div>
 
-        {/* Actions — list (if owned) + collect + price */}
+        {/* Actions row. Each control is its own bordered container so the
+            visual grouping mirrors meaning: ListButton, price+supply chips,
+            and the collect CTA are independent. */}
         <div className="px-4 pb-4 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
           {owned > 0 && (
             <div className={`w-full sm:flex-none ${hidePriceSupply ? 'sm:w-1/2' : 'sm:w-1/3'}`}>
@@ -241,35 +243,29 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
               />
             </div>
           )}
-          {/* Action row order: price | supply | collect. Price + supply are
-              info chips on the left; collect is the wide CTA on the right.
-              The button picks up `border-l` only when the chips precede it
-              (i.e. !hidePriceSupply); when alone, no internal divider. */}
-          <div className={`flex ${owned > 0 ? 'w-full sm:flex-1' : 'w-full'} border transition-colors ${
-            collected || owned > 0 ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
-          }`}>
-            {!hidePriceSupply && (
-              <>
-                <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-                </div>
-                <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono text-[#444]">
-                    {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
-                  </span>
-                </div>
-              </>
-            )}
-            <button
-              onClick={handleCollect}
-              disabled={collecting || collected || owned > 0 || !collectReady}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${!hidePriceSupply ? 'border-l border-[#2a2a2a]' : ''} ${
-                collected || owned > 0 ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
-              }`}
-            >
-              {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
-            </button>
-          </div>
+          {!hidePriceSupply && (
+            <div className="flex border border-[#2a2a2a] sm:flex-none">
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+              </div>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-[#444]">
+                  {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
+                </span>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={handleCollect}
+            disabled={collecting || collected || owned > 0 || !collectReady}
+            className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+              collected || owned > 0
+                ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+            }`}
+          >
+            {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
+          </button>
         </div>
       </article>
 

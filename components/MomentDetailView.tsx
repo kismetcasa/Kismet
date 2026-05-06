@@ -792,7 +792,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
-          {/* List + Collect — hugs the bottom */}
+          {/* Action row. Each control gets its own bordered container —
+              list (when owned), price+supply chips, and collect — so the
+              boundaries match the meaning of each control. */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
             {alreadyOwned && (
               <div className="w-2/5 flex-none">
@@ -808,10 +810,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 />
               </div>
             )}
-            {/* Action row order: price | supply | collect. */}
-            <div className={`flex ${alreadyOwned ? 'flex-1' : 'w-full'} border transition-colors ${
-              alreadyOwned || collected ? 'border-[#8B5CF6]' : 'border-[#2a2a2a]'
-            }`}>
+            <div className="flex border border-[#2a2a2a] flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
@@ -820,16 +819,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? 'open' : detail.maxSupply.toLocaleString())}
                 </span>
               </div>
-              <button
-                onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected || !detail}
-                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase transition-all disabled:opacity-50 border-l border-[#2a2a2a] ${collecting ? 'cursor-not-allowed' : ''} ${
-                  collected || alreadyOwned ? 'text-[#8B5CF6] bg-[#8B5CF6]/10' : 'text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white'
-                }`}
-              >
-                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
-              </button>
             </div>
+            <button
+              onClick={handleCollect}
+              disabled={collecting || alreadyOwned || collected || !detail}
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+                collected || alreadyOwned
+                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                  : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+            </button>
           </div>
 
           {/* Site admin — feature/unfeature */}

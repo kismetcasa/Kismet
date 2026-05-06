@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createPublicClient, http, isAddress, type Address } from 'viem'
 import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
-import { getTrackedCollections, addTrackedCollection, getCollectionsByArtist } from '@/lib/kv'
+import {
+  getTrackedCollections,
+  addTrackedCollection,
+  getCollectionsByArtist,
+  getCollectionMeta,
+} from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -31,44 +36,61 @@ export async function GET(req: NextRequest) {
   const artist = searchParams.get('artist')
   const feed = searchParams.get('feed')
 
-  // Discovery feed: proxy inprocess `/api/collections` with no artist
-  // filter (= the in•process collective) and return rich rows for the
-  // CollectionCard component. Paginated to match how the timeline feed
-  // works on the same Discover page.
+  // Discovery feed: enumerate the collections tracked in our KV (deployed
+  // through this client + the platform collection). Hydrate each with the
+  // rich shape from inprocess `/api/collection`, falling back to KV-stored
+  // metadata when the indexer hasn't picked the collection up yet.
+  // Returning the global inprocess feed here would surface collections we
+  // didn't deploy and hide our own freshly-deployed ones until the indexer
+  // catches up — neither matches the discovery semantics we want.
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
-    const url = new URL(`${INPROCESS_API}/collections`)
-    url.searchParams.set('limit', String(limit))
-    url.searchParams.set('page', String(page))
-    try {
-      const [res, hiddenSet] = await Promise.all([
-        fetch(url.toString(), {
-          headers: { Accept: 'application/json' },
-          next: { revalidate: 60 },
-        }),
-        getHiddenCollectionsSet(),
-      ])
-      const text = await res.text()
-      let data: { collections?: { contractAddress?: string }[] } | unknown
-      try {
-        data = JSON.parse(text)
-      } catch {
-        return NextResponse.json({ collections: [], pagination: { page, limit, total: 0, total_pages: 1 } })
-      }
-      // Strip creator-hidden collections from the global feed. Creators can
-      // still reach their own hidden collections via direct URL or profile.
-      const d = data as { collections?: { contractAddress?: string }[] }
-      if (hiddenSet.size > 0 && Array.isArray(d.collections)) {
-        d.collections = d.collections.filter((c) => {
-          const addr = c.contractAddress?.toLowerCase()
-          return !addr || !hiddenSet.has(addr)
-        })
-      }
-      return NextResponse.json(data, { status: res.status })
-    } catch {
-      return NextResponse.json({ collections: [], pagination: { page, limit, total: 0, total_pages: 1 } })
-    }
+    const [tracked, hiddenSet] = await Promise.all([
+      getTrackedCollections(),
+      getHiddenCollectionsSet(),
+    ])
+    const visible = tracked.filter((addr) => !hiddenSet.has(addr.toLowerCase()))
+    const total = visible.length
+    const total_pages = Math.max(1, Math.ceil(total / limit))
+    const start = (page - 1) * limit
+    const slice = visible.slice(start, start + limit)
+    const collections = await Promise.all(
+      slice.map(async (address) => {
+        try {
+          const url = new URL(`${INPROCESS_API}/collection`)
+          url.searchParams.set('collectionAddress', address)
+          url.searchParams.set('chainId', '8453')
+          const res = await fetch(url.toString(), {
+            headers: { Accept: 'application/json' },
+            next: { revalidate: 60 },
+          })
+          if (res.ok) {
+            const text = await res.text()
+            if (text) {
+              const data = JSON.parse(text) as Record<string, unknown>
+              if (data && Object.keys(data).length > 0) {
+                return { contractAddress: address, ...data }
+              }
+            }
+          }
+        } catch {
+          // fall through to KV fallback below
+        }
+        const kv = await getCollectionMeta(address)
+        return {
+          contractAddress: address,
+          name: kv?.name,
+          metadata: kv
+            ? { name: kv.name, image: kv.image, description: kv.description }
+            : undefined,
+        }
+      }),
+    )
+    return NextResponse.json({
+      collections,
+      pagination: { page, limit, total, total_pages },
+    })
   }
 
   if (artist) {
