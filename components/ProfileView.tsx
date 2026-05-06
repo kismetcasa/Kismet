@@ -36,11 +36,21 @@ interface ArtistCollection {
   createdAt?: string
 }
 
+// Shape returned by inprocess GET /api/airdrops, normalized through our proxy.
+// One row per airdropped (token, recipient) pair — multiple recipients on a
+// single airdrop yield multiple rows.
+interface AirdropRecord {
+  collectionAddress: string
+  tokenId: string
+  recipient: { address: string; username?: string }
+  amount: number
+}
+
 // ─── section ordering / collapse ─────────────────────────────────────────────
 
-type SectionId = 'mints' | 'collected' | 'listings' | 'payments'
+type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops'
 
-const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments']
+const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments', 'airdrops']
 const SECTIONS_KEY = 'kismetart:profile-sections'
 
 interface SectionsConfig {
@@ -48,17 +58,26 @@ interface SectionsConfig {
   collapsed: Partial<Record<SectionId, boolean>>
 }
 
+// Reconcile a stored ordering with the current DEFAULT_ORDER: drop any
+// obsolete sections (renames/removals) and append any newly-introduced
+// sections at the end. This preserves user-customized ordering across
+// schema bumps — adding a new section appends it instead of resetting.
+function reconcileOrder(stored: unknown): SectionId[] {
+  if (!Array.isArray(stored)) return DEFAULT_ORDER
+  const valid = (stored as unknown[]).filter(
+    (s): s is SectionId => typeof s === 'string' && (DEFAULT_ORDER as string[]).includes(s),
+  )
+  const missing = DEFAULT_ORDER.filter((s) => !valid.includes(s))
+  return [...valid, ...missing]
+}
+
 function loadSectionsConfig(): SectionsConfig {
   if (typeof window === 'undefined') return { order: DEFAULT_ORDER, collapsed: {} }
   try {
     const raw = localStorage.getItem(SECTIONS_KEY)
     if (!raw) return { order: DEFAULT_ORDER, collapsed: {} }
-    const parsed = JSON.parse(raw) as SectionsConfig
-    const validOrder =
-      Array.isArray(parsed.order) &&
-      parsed.order.length === DEFAULT_ORDER.length &&
-      DEFAULT_ORDER.every((s) => parsed.order.includes(s))
-    return { order: validOrder ? parsed.order : DEFAULT_ORDER, collapsed: parsed.collapsed ?? {} }
+    const parsed = JSON.parse(raw) as { order?: unknown; collapsed?: SectionsConfig['collapsed'] }
+    return { order: reconcileOrder(parsed.order), collapsed: parsed.collapsed ?? {} }
   } catch {
     return { order: DEFAULT_ORDER, collapsed: {} }
   }
@@ -121,12 +140,14 @@ export function ProfileView({ address }: ProfileViewProps) {
   const [collected, setCollected] = useState<Moment[]>([])
   const [listings, setListings] = useState<Listing[]>([])
   const [payments, setPayments] = useState<Payment[]>([])
+  const [airdrops, setAirdrops] = useState<AirdropRecord[]>([])
   const [artistCollections, setArtistCollections] = useState<ArtistCollection[]>([])
   const [loadingProfile, setLoadingProfile] = useState(true)
   const [loadingMoments, setLoadingMoments] = useState(true)
   const [loadingCollected, setLoadingCollected] = useState(true)
   const [loadingListings, setLoadingListings] = useState(true)
   const [loadingPayments, setLoadingPayments] = useState(true)
+  const [loadingAirdrops, setLoadingAirdrops] = useState(true)
   const [loadingCollections, setLoadingCollections] = useState(true)
   const [editing, setEditing] = useState(false)
   const [usernameInput, setUsernameInput] = useState('')
@@ -238,6 +259,14 @@ export function ProfileView({ address }: ProfileViewProps) {
       .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
       .catch(() => setPayments([]))
       .finally(() => setLoadingPayments(false))
+  }, [address])
+
+  useEffect(() => {
+    fetch(`/api/airdrops?artist_address=${address}`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setAirdrops(Array.isArray(d.airdrops) ? d.airdrops : []))
+      .catch(() => setAirdrops([]))
+      .finally(() => setLoadingAirdrops(false))
   }, [address])
 
   useEffect(() => {
@@ -382,12 +411,14 @@ export function ProfileView({ address }: ProfileViewProps) {
     collected: 'Collected',
     listings: 'Listings',
     payments: 'Sales',
+    airdrops: 'Airdrops',
   }
   const sectionCount: Record<SectionId, number | null> = {
     mints: loadingMoments ? null : moments.length,
     collected: loadingCollected ? null : collected.length,
     listings: loadingListings ? null : listings.length,
     payments: loadingPayments ? null : payments.length,
+    airdrops: loadingAirdrops ? null : airdrops.length,
   }
   const sectionContent: Record<SectionId, React.ReactNode> = {
     mints: collectionsMode ? (
@@ -479,6 +510,35 @@ export function ProfileView({ address }: ProfileViewProps) {
             >
               {p.hash.slice(0, 8)}…
             </a>
+          </div>
+        ))}
+      </div>
+    ),
+    airdrops: loadingAirdrops ? (
+      <div className="flex flex-col gap-1">
+        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
+      </div>
+    ) : airdrops.length === 0 ? (
+      <p className="text-[#555] font-mono text-xs">no airdrops sent yet</p>
+    ) : (
+      <div className="flex flex-col divide-y divide-[#1a1a1a]">
+        {airdrops.map((a, i) => (
+          <div key={`${a.collectionAddress}:${a.tokenId}:${a.recipient.address}:${i}`} className="flex items-center justify-between py-2.5 gap-4">
+            <Link
+              href={`/profile/${a.recipient.address}`}
+              className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors truncate"
+            >
+              {a.recipient.username ? `@${a.recipient.username}` : shortAddress(a.recipient.address)}
+            </Link>
+            <Link
+              href={`/moment/${a.collectionAddress}/${a.tokenId}`}
+              className="text-xs font-mono text-[#444] hover:text-[#888] transition-colors flex-shrink-0"
+            >
+              token #{a.tokenId}
+            </Link>
+            <span className="text-xs font-mono accent-grad flex-shrink-0">
+              ×{a.amount.toLocaleString()}
+            </span>
           </div>
         ))}
       </div>
