@@ -64,7 +64,6 @@ export async function POST(req: NextRequest) {
     callerAddress?: string
     signature?: string
     nonce?: string
-    chainId?: number
   }
   try {
     body = await req.json()
@@ -157,10 +156,9 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // chainId is required by inprocess to pick the right network for the
-    // mint — without it the upstream call defaults to mainnet and the
-    // airdrop never lands on Base. Same convention used by /distribute and
-    // /moment/update-uri.
+    // Inprocess infers the chain from the collection contract — request body
+    // shape is { recipients, collectionAddress } per their docs; chainId comes
+    // back in the response, not sent in.
     const res = await fetch(`${INPROCESS_API}/moment/airdrop`, {
       method: 'POST',
       headers: {
@@ -171,7 +169,6 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         recipients: body.recipients,
         collectionAddress: body.collectionAddress,
-        chainId: body.chainId ?? 8453,
       }),
     })
     const text = await res.text()
