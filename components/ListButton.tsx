@@ -29,6 +29,10 @@ interface ListButtonProps {
   name?: string
   image?: string
   creatorAddress?: string
+  // Writing-moment support: persisted on the listing so MarketCard can
+  // render a snippet preview instead of "no preview".
+  contentUri?: string
+  contentMime?: string
   onListed?: () => void
   buttonClassName?: string
   narrowInput?: boolean
@@ -40,6 +44,8 @@ export function ListButton({
   name,
   image,
   creatorAddress,
+  contentUri,
+  contentMime,
   onListed,
   buttonClassName,
   narrowInput,
@@ -204,6 +210,8 @@ export function ListButton({
           name,
           image,
           creatorAddress,
+          contentUri,
+          contentMime,
         }),
       })
 

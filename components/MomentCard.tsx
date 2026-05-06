@@ -236,6 +236,8 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
                 name={meta.name}
                 image={meta.image ? resolveUri(meta.image) : undefined}
                 creatorAddress={moment.creator?.address}
+                contentUri={meta.content?.uri}
+                contentMime={meta.content?.mime}
               />
             </div>
           )}

@@ -484,6 +484,8 @@ export function MomentModal({
                   name={meta.name}
                   image={meta.image ? resolveUri(meta.image) : undefined}
                   creatorAddress={creatorAddress}
+                  contentUri={meta.content?.uri}
+                  contentMime={meta.content?.mime}
                   buttonClassName="h-auto sm:h-full"
                 />
               </div>
