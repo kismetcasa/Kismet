@@ -3,7 +3,17 @@ import { randomUUID } from 'crypto'
 import type { NextRequest, NextResponse } from 'next/server'
 
 export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
-export const SESSION_COOKIE = 'kismet_session'
+
+// `__Host-` prefix is browser-enforced cookie integrity: the browser only
+// accepts cookies with this prefix when they are also Secure, Path=/, and
+// have NO Domain attribute set. This blocks subdomain-based cookie
+// confusion attacks (an attacker on attacker.kismet-art.vercel.app can't
+// set a cookie that overrides ours). Requires HTTPS — so we only apply
+// the prefix in production. Dev (localhost http) keeps the plain name.
+export const SESSION_COOKIE =
+  process.env.NODE_ENV === 'production'
+    ? '__Host-kismet_session'
+    : 'kismet_session'
 
 const key = (token: string) => `kismetart:session:${token}`
 
