@@ -18,6 +18,17 @@ type PriceCurrency = 'eth' | 'usdc'
 
 type MintMode = 'media' | 'text'
 
+// 0xSplits' SplitMain requires `accounts` sorted ascending by address.
+// Lowercase-compare on the hex string gives the same ordering as numeric
+// ascending for properly-formed addresses.
+function sortSplits(s: Split[]): Split[] {
+  return [...s].sort((a, b) => {
+    const al = a.address.toLowerCase()
+    const bl = b.address.toLowerCase()
+    return al < bl ? -1 : al > bl ? 1 : 0
+  })
+}
+
 interface MintFormProps {
   collectionAddress?: string
 }
@@ -59,7 +70,20 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
     if (!isAddress(addr)) { toast.error('Invalid address'); return }
     if (isNaN(pct) || pct <= 0 || pct > 100) { toast.error('Allocation must be 1–100'); return }
     if (splitsTotal + pct > 100) { toast.error('Total allocation exceeds 100%'); return }
-    if (splits.some((s) => s.address === addr)) { toast.error('Address already added'); return }
+    // EVM addresses are case-insensitive but 0xSplits' SplitMain rejects
+    // byte-level duplicates, so "0xABC" + "0xabc" would revert the deploy.
+    const lowerAddr = addr.toLowerCase()
+    if (splits.some((s) => s.address.toLowerCase() === lowerAddr)) {
+      toast.error('Address already added')
+      return
+    }
+    // When residencies is ON, buildFinalSplits auto-appends RESIDENCIES_ADDRESS
+    // at 5%. Letting the user add it manually creates a duplicate that
+    // SplitMain rejects.
+    if (residenciesEnabled && lowerAddr === RESIDENCIES_ADDRESS.toLowerCase()) {
+      toast.error('Residencies is already on below — disable the toggle first to set its allocation manually')
+      return
+    }
     setSplits((prev) => [...prev, { address: addr, percentAllocation: pct }])
     setSplitInput({ address: '', pct: '' })
   }
@@ -97,19 +121,37 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
   // When residencies is off: pass creator splits as-is (or undefined for payoutRecipient).
   // When residencies is on + no custom splits: [creator 95%, residencies 5%].
   // When residencies is on + custom splits: scale each split by ×0.95, append residencies at 5%.
+  //
+  // 0xSplits' SplitMain.createSplit requires `accounts` to be sorted ascending
+  // by address — sort defensively so it works even if inprocess forwards our
+  // array as-is. Tight 4-decimal rounding + drift correction keeps the sum
+  // exactly 100.0000 across cumulative IEEE-754 ε.
   function buildFinalSplits(): Split[] | undefined {
-    if (!residenciesEnabled) return splits.length >= 2 ? splits : undefined
+    if (!residenciesEnabled) {
+      return splits.length >= 2 ? sortSplits(splits) : undefined
+    }
     if (splits.length < 2) {
-      return [
+      return sortSplits([
         { address: address!, percentAllocation: 95 },
         { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
-      ]
+      ])
     }
-    const scaled = splits.map((s) => ({
+    const scaled = splits.map((s) =>
+      Math.round(s.percentAllocation * 0.95 * 10000) / 10000,
+    )
+    const sumScaled = scaled.reduce((a, b) => a + b, 0)
+    const drift = 95 - sumScaled
+    if (Math.abs(drift) > 0.00001 && scaled.length > 0) {
+      scaled[0] = Math.round((scaled[0] + drift) * 10000) / 10000
+    }
+    const finalSplits = splits.map((s, i) => ({
       address: s.address,
-      percentAllocation: parseFloat((s.percentAllocation * 0.95).toFixed(4)),
+      percentAllocation: scaled[i],
     }))
-    return [...scaled, { address: RESIDENCIES_ADDRESS, percentAllocation: 5 }]
+    return sortSplits([
+      ...finalSplits,
+      { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
+    ])
   }
 
   async function handleMint(e: React.FormEvent) {
