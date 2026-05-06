@@ -4,17 +4,16 @@ import { muteActor, unmuteActor, getMutedActors } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 
-// GET stays public — the muted list is non-sensitive and we display it
-// alongside the user's own notifications. Rate-limited to keep it cheap.
+// Mute list is per-user. Cookie-authenticated to match GET /api/notifications
+// — only the session owner can read their own list.
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`notif-mute-get:${ip}`, 60, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
-  const { searchParams } = new URL(req.url)
-  const address = searchParams.get('address')
-  if (!address || !isAddress(address)) {
-    return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+  const address = await getSessionAddress(req)
+  if (!address) {
+    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
   }
 
   const muted = await getMutedActors(address)

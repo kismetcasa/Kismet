@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { NotificationRow } from './NotificationRow'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { fetchCreatorProfile } from '@/lib/profileCache'
 import { humanError } from '@/lib/toast'
 import type { Notification, NotificationType } from '@/lib/notifications'
 
@@ -23,8 +24,11 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
   { value: 'sale', label: 'sales' },
   { value: 'follow', label: 'follows' },
   { value: 'mint', label: 'mints' },
+  { value: 'airdrop', label: 'airdrops' },
   { value: 'listing_expired', label: 'expired' },
 ]
+
+const POLL_INTERVAL_MS = 30_000
 
 export function NotificationFeed({ address }: NotificationFeedProps) {
   const { ensureSession } = useUploadSession()
@@ -35,6 +39,10 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  // Map of address (lowercased) → display name. NotificationRow keys off
+  // each notification's actor; we batch-resolve them per page so the row
+  // can render @username instead of 0x123…abc without N HTTP requests.
+  const [actorNames, setActorNames] = useState<Record<string, string>>({})
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   const hasMore = items.length < total
@@ -46,37 +54,84 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
     setTotal(0)
   }, [tab, typeFilter])
 
-  // Fetch page — replaces on page 1, appends on page > 1
-  useEffect(() => {
-    let cancelled = false
-    if (page === 1) setLoading(true)
+  const fetchPage = useCallback(async (targetPage: number, signal?: AbortSignal): Promise<void> => {
+    if (targetPage === 1) setLoading(true)
     else setLoadingMore(true)
 
     const params = new URLSearchParams({
-      address,
       tab,
-      page: String(page),
+      page: String(targetPage),
       limit: String(PAGE_LIMIT),
     })
     if (typeFilter !== 'all') params.set('type', typeFilter)
 
-    fetch(`/api/notifications?${params.toString()}`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((data) => {
-        if (cancelled) return
-        const newItems: Notification[] = data.notifications ?? []
-        setItems((prev) => (page === 1 ? newItems : [...prev, ...newItems]))
-        setTotal(data.total ?? 0)
+    try {
+      const r = await fetch(`/api/notifications?${params.toString()}`, {
+        credentials: 'same-origin',
+        signal,
       })
-      .catch(() => {
-        if (!cancelled && page === 1) { setItems([]); setTotal(0) }
-      })
-      .finally(() => {
-        if (!cancelled) { setLoading(false); setLoadingMore(false) }
-      })
+      if (!r.ok) throw new Error('not ok')
+      const data = await r.json()
+      if (signal?.aborted) return
+      const newItems: Notification[] = data.notifications ?? []
+      setItems((prev) => (targetPage === 1 ? newItems : [...prev, ...newItems]))
+      setTotal(data.total ?? 0)
+    } catch {
+      if (signal?.aborted) return
+      if (targetPage === 1) { setItems([]); setTotal(0) }
+    } finally {
+      if (!signal?.aborted) { setLoading(false); setLoadingMore(false) }
+    }
+  }, [tab, typeFilter])
 
+  // Fetch page — replaces on page 1, appends on page > 1
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchPage(page, controller.signal)
+    return () => controller.abort()
+  }, [page, fetchPage])
+
+  // Live refresh while the modal is open: re-poll the first page every 30s
+  // (only when the tab is visible) so new notifications surface without
+  // requiring the user to close + reopen the modal. Mirrors the bell's
+  // visibility-aware polling pattern.
+  useEffect(() => {
+    if (page !== 1) return
+    const tick = () => { if (!document.hidden) fetchPage(1) }
+    const interval = setInterval(tick, POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [page, fetchPage])
+
+  // Batch-resolve actor display names for the current page. Drives the
+  // "@username" rendering in NotificationRow; falls back to shortAddress
+  // when the actor doesn't have a profile. profileCache memoizes results
+  // so this is cheap on subsequent pages.
+  useEffect(() => {
+    let cancelled = false
+    const unresolved = Array.from(
+      new Set(
+        items
+          .map((n) => n.actor?.toLowerCase())
+          .filter((a): a is string => !!a && !(a in actorNames)),
+      ),
+    )
+    if (unresolved.length === 0) return
+    void Promise.all(unresolved.map((a) => fetchCreatorProfile(a))).then((profiles) => {
+      if (cancelled) return
+      setActorNames((prev) => {
+        const next = { ...prev }
+        for (let i = 0; i < unresolved.length; i++) {
+          next[unresolved[i]] = profiles[i].name
+        }
+        return next
+      })
+    })
     return () => { cancelled = true }
-  }, [address, tab, typeFilter, page])
+  }, [items, actorNames])
 
   // Infinite scroll sentinel
   useEffect(() => {
@@ -206,6 +261,7 @@ export function NotificationFeed({ address }: NotificationFeedProps) {
           <NotificationRow
             key={n.id}
             notification={n}
+            actorName={n.actor ? actorNames[n.actor.toLowerCase()] : undefined}
             onClick={() => handleRowClick(n.id)}
             onMute={handleMute}
           />

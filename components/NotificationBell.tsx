@@ -24,7 +24,9 @@ export function NotificationBell({ address }: NotificationBellProps) {
   const fetchCount = useCallback(async () => {
     if (!address) return
     try {
-      const res = await fetch(`/api/notifications/unread?address=${address}`)
+      // Cookie-authenticated: returns 401 before sign-in (count stays 0)
+      // and counts the session owner's unread once they're signed in.
+      const res = await fetch('/api/notifications/unread', { credentials: 'same-origin' })
       if (!res.ok) return
       const data = await res.json()
       if (typeof data.count === 'number') setCount(data.count)

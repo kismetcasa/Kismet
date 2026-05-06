@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
@@ -25,6 +25,16 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   const publicClient = usePublicClient()
   const ensureBase = useEnsureBase()
   const [cancelling, setCancelling] = useState(false)
+  // Inline two-tap confirmation guards against accidental cancels — the first
+  // tap arms the button (label flips, 3s timeout to disarm), the second tap
+  // actually fires the wallet sig. Costs gas + ends the listing, so we want
+  // a deliberate gesture before launching the tx.
+  const [confirmArmed, setConfirmArmed] = useState(false)
+  const armTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (armTimeoutRef.current) clearTimeout(armTimeoutRef.current)
+  }, [])
 
   const isSeller = address?.toLowerCase() === listing.seller.toLowerCase()
   // formatPrice handles both ETH (wei, 18dp) and USDC (base units, 6dp) and
@@ -141,11 +151,26 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
 
         {isSeller ? (
           <button
-            onClick={handleCancel}
+            onClick={() => {
+              if (cancelling) return
+              if (!confirmArmed) {
+                setConfirmArmed(true)
+                if (armTimeoutRef.current) clearTimeout(armTimeoutRef.current)
+                armTimeoutRef.current = setTimeout(() => setConfirmArmed(false), 3000)
+                return
+              }
+              if (armTimeoutRef.current) clearTimeout(armTimeoutRef.current)
+              setConfirmArmed(false)
+              handleCancel()
+            }}
             disabled={cancelling}
-            className={`w-full text-xs font-mono tracking-wider uppercase px-4 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-red-900 hover:text-red-400 transition-colors disabled:opacity-40 ${cancelling ? 'cursor-not-allowed' : ''}`}
+            className={`w-full text-xs font-mono tracking-wider uppercase px-4 py-2.5 border transition-colors disabled:opacity-40 ${cancelling ? 'cursor-not-allowed' : ''} ${
+              confirmArmed
+                ? 'border-red-700 text-red-400'
+                : 'border-[#2a2a2a] text-[#555] hover:border-red-900 hover:text-red-400'
+            }`}
           >
-            {cancelling ? 'cancelling…' : 'cancel listing'}
+            {cancelling ? 'cancelling…' : confirmArmed ? 'tap again to confirm' : 'cancel listing'}
           </button>
         ) : (
           <BuyButton listing={listing} onBought={onRemove} className="w-full" />

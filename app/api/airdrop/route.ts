@@ -4,6 +4,7 @@ import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
+import { getMomentMeta, writeNotification } from '@/lib/notifications'
 
 const PERMISSION_BIT_ADMIN = 2n
 
@@ -149,11 +150,42 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({ recipients: body.recipients, collectionAddress: body.collectionAddress }),
     })
     const text = await res.text()
+    let parsed: unknown
     try {
-      return NextResponse.json(JSON.parse(text), { status: res.status })
+      parsed = JSON.parse(text)
     } catch {
       return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
     }
+
+    // Fan-out: notify each airdrop recipient that they received a token from
+    // the creator. Fire-and-forget — KV failures never undo the on-chain
+    // airdrop. Mirrors the mint follower-fanout pattern in lib/mint-proxy.ts.
+    if (res.ok) {
+      void (async () => {
+        try {
+          const collectionLower = body.collectionAddress!.toLowerCase()
+          const meta = await getMomentMeta(collectionLower, tokenId).catch(() => null)
+          await Promise.all(
+            body.recipients!
+              .filter((r) => r.recipientAddress.toLowerCase() !== body.callerAddress!.toLowerCase())
+              .map((r) =>
+                writeNotification({
+                  type: 'airdrop',
+                  recipient: r.recipientAddress,
+                  actor: body.callerAddress,
+                  tokenAddress: collectionLower,
+                  tokenId: r.tokenId,
+                  tokenName: meta?.name,
+                }),
+              ),
+          )
+        } catch {
+          // notifications are non-critical
+        }
+      })()
+    }
+
+    return NextResponse.json(parsed, { status: res.status })
   } catch {
     return NextResponse.json({ error: 'upstream unreachable' }, { status: 502 })
   }

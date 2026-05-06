@@ -39,12 +39,12 @@ export function NotificationModal({ address, onClose }: NotificationModalProps) 
   useEffect(() => {
     if (tab !== 'settings') return
     setMutedLoading(true)
-    fetch(`/api/notifications/mute?address=${address}`)
+    fetch('/api/notifications/mute', { credentials: 'same-origin' })
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMuted(Array.isArray(d.muted) ? d.muted : []))
       .catch(() => setMuted([]))
       .finally(() => setMutedLoading(false))
-  }, [tab, address])
+  }, [tab])
 
   async function handleUnmute(actor: string) {
     const previous = muted
