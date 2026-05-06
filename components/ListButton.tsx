@@ -19,6 +19,7 @@ import {
   serializeOrder,
 } from '@/lib/seaport'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+import { humanError } from '@/lib/toast'
 
 type ListCurrency = 'eth' | 'usdc'
 
@@ -82,7 +83,7 @@ export function ListButton({
       openConnectModal?.()
       return
     }
-    if (!publicClient) { toast.error('No RPC client available'); return }
+    if (!publicClient) { toast.error('Network unavailable'); return }
 
     const parsedPrice = parseFloat(priceInput)
     if (!priceInput || isNaN(parsedPrice) || parsedPrice <= 0) {
@@ -216,10 +217,7 @@ export function ListButton({
       setPriceInput('')
       onListed?.()
     } catch (err) {
-      toast.error('Listing failed', {
-        id: 'list',
-        description: err instanceof Error ? err.message : 'Unknown error',
-      })
+      toast.error('Listing failed', { id: 'list', description: humanError(err) })
     } finally {
       setStep('idle')
     }

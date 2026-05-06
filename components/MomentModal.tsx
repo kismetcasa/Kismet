@@ -20,6 +20,7 @@ import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
+import { humanError } from '@/lib/toast'
 
 const TOP_COMMENTS = 3
 
@@ -160,13 +161,17 @@ export function MomentModal({
     const addr = splitAddress.trim()
     if (!addr || !isAddress(addr)) { toast.error('Invalid split address'); return }
     if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    if (!currency) { toast.error('Sale config still loading'); return }
     setDistributing(true)
     try {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
       if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
       if (!nonce) throw new Error('Could not fetch nonce')
-      const message = `Distribute Kismet Art split\nCollection: ${moment.address.toLowerCase()}\nToken: ${moment.token_id}\nSplit: ${addr.toLowerCase()}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
+      // Currency baked into the signed message — the inprocess /distribute
+      // call needs tokenAddress=USDC_BASE for USDC splits, otherwise it
+      // defaults to ETH and distributes nothing from a USDC contract.
+      const message = `Distribute Kismet Art split\nCollection: ${moment.address.toLowerCase()}\nToken: ${moment.token_id}\nSplit: ${addr.toLowerCase()}\nCurrency: ${currency}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
       const res = await fetch('/api/distribute', {
         method: 'POST',
@@ -176,6 +181,7 @@ export function MomentModal({
           collectionAddress: moment.address,
           tokenId: moment.token_id,
           chainId: 8453,
+          currency,
           callerAddress: connectedAddress,
           signature,
           nonce,
@@ -185,11 +191,9 @@ export function MomentModal({
       if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
       if (!data.hash) throw new Error('Distribute submitted but no tx hash returned')
       setDistributeHash(data.hash)
-      toast.success('Distributed!')
+      toast.success('Distributed!', { id: 'distribute' })
     } catch (err) {
-      const raw = err instanceof Error ? err.message : 'Unknown error'
-      const description = /user rejected|user denied|rejected the request/i.test(raw) ? 'Cancelled' : raw
-      toast.error('Distribution failed', { description })
+      toast.error('Distribution failed', { id: 'distribute', description: humanError(err) })
     } finally {
       setDistributing(false)
     }

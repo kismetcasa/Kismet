@@ -6,6 +6,7 @@ import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import type { Address, Hash } from 'viem'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+import { humanError } from '@/lib/toast'
 import {
   ERC20_ABI,
   KISMET_REFERRAL,
@@ -83,7 +84,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         return null
       }
       if (!publicClient) {
-        toast.error('Network unavailable. Try again.')
+        toast.error('Network unavailable')
         return null
       }
 
@@ -210,9 +211,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         return { hash }
       } catch (err) {
         setStatus('error')
-        const message = err instanceof Error ? err.message : 'Collect failed'
-        const description = /user rejected|user denied|rejected the request/i.test(message) ? 'Cancelled' : message
-        toast.error('Collect failed', { id: TOAST_ID, description })
+        toast.error('Collect failed', { id: TOAST_ID, description: humanError(err) })
         return null
       }
     },

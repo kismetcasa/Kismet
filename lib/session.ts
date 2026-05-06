@@ -3,7 +3,17 @@ import { randomUUID } from 'crypto'
 import type { NextRequest, NextResponse } from 'next/server'
 
 export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
-export const SESSION_COOKIE = 'kismet_session'
+
+// `__Host-` prefix is browser-enforced cookie integrity: the browser only
+// accepts cookies with this prefix when they are also Secure, Path=/, and
+// have NO Domain attribute set. This blocks subdomain-based cookie
+// confusion attacks (an attacker on attacker.kismet-art.vercel.app can't
+// set a cookie that overrides ours). Requires HTTPS — so we only apply
+// the prefix in production. Dev (localhost http) keeps the plain name.
+export const SESSION_COOKIE =
+  process.env.NODE_ENV === 'production'
+    ? '__Host-kismet_session'
+    : 'kismet_session'
 
 const key = (token: string) => `kismetart:session:${token}`
 
@@ -31,6 +41,32 @@ export async function getSessionAddress(req: NextRequest): Promise<string | null
   const token = req.cookies.get(SESSION_COOKIE)?.value
   if (!token) return null
   return verifySession(token)
+}
+
+/**
+ * Read the session and, if valid, return both the address and the cookie
+ * token so the caller can re-stamp the cookie's Max-Age (sliding session).
+ * Industry standard: a session that expires at exactly 7 days regardless
+ * of activity logs active users out mid-action; refreshing on each
+ * authenticated request keeps them signed in as long as they're using
+ * the app, while still expiring after 7 days of inactivity.
+ */
+export async function getSessionContext(req: NextRequest): Promise<{ address: string; token: string } | null> {
+  const token = req.cookies.get(SESSION_COOKIE)?.value
+  if (!token) return null
+  const address = await verifySession(token)
+  if (!address) return null
+  return { address, token }
+}
+
+/**
+ * Slide the session forward by re-stamping the cookie + extending the
+ * Redis key TTL on a successful authenticated request. Cheap (1 cookie
+ * write + 1 Redis EXPIRE), idempotent across concurrent requests.
+ */
+export async function slideSession(res: NextResponse, token: string): Promise<void> {
+  setSessionCookie(res, token)
+  await redis.expire(key(token), SESSION_TTL_SECONDS).catch(() => {})
 }
 
 /**

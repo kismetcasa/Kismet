@@ -4,6 +4,7 @@ import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { redis } from '@/lib/redis'
+import { USDC_BASE } from '@/lib/zoraMint'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
@@ -30,6 +31,11 @@ export async function POST(req: NextRequest) {
     collectionAddress?: string
     tokenId?: string
     chainId?: number
+    // 'eth' (default) or 'usdc'. Maps to the inprocess `tokenAddress` field
+    // — required for USDC distributions per their docs (otherwise the call
+    // defaults to native ETH and distributes nothing from a USDC splits
+    // contract).
+    currency?: 'eth' | 'usdc'
     callerAddress?: string
     signature?: string
     nonce?: string
@@ -41,6 +47,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { splitAddress, collectionAddress, tokenId, callerAddress, signature, nonce } = body
+  const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
 
   if (!splitAddress || !isAddress(splitAddress)) {
     return NextResponse.json({ error: 'valid splitAddress required' }, { status: 400 })
@@ -58,7 +65,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'signature and nonce required' }, { status: 401 })
   }
 
-  const message = `Distribute Kismet Art split\nCollection: ${collectionAddress.toLowerCase()}\nToken: ${tokenId}\nSplit: ${splitAddress.toLowerCase()}\nAddress: ${callerAddress.toLowerCase()}\nNonce: ${nonce}`
+  // Currency is part of the signed message so an attacker can't substitute
+  // a different distribution token after the fact (replay protection).
+  const message = `Distribute Kismet Art split\nCollection: ${collectionAddress.toLowerCase()}\nToken: ${tokenId}\nSplit: ${splitAddress.toLowerCase()}\nCurrency: ${currency}\nAddress: ${callerAddress.toLowerCase()}\nNonce: ${nonce}`
   let sigValid = false
   try {
     sigValid = await verifyMessage({
@@ -111,13 +120,19 @@ export async function POST(req: NextRequest) {
 
   // Forward only the specific fields inprocess expects — never relay arbitrary
   // body keys, which could ride along to undocumented upstream parameters.
+  // Per inprocess docs (payments/distribute): tokenAddress is required for
+  // ERC20 distributions (defaults to native ETH if omitted).
   const res = await fetch(`${INPROCESS_API}/distribute`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
     },
-    body: JSON.stringify({ splitAddress, chainId: body.chainId ?? 8453 }),
+    body: JSON.stringify({
+      splitAddress,
+      chainId: body.chainId ?? 8453,
+      ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
+    }),
   })
 
   const text = await res.text()

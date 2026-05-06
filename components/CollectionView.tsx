@@ -44,6 +44,20 @@ interface CollectionViewProps {
   collectionDescription?: string
   admins?: MomentAdmin[]
   indexing?: boolean
+  // Enriched detail fields from inprocess `GET /api/collection`. Optional —
+  // page falls back to the lightweight metadata when these aren't returned
+  // (e.g., indexer hasn't picked up the collection yet).
+  defaultAdminUsername?: string
+  payoutRecipient?: string
+  createdAt?: string
+}
+
+function formatCreatedDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  } catch {
+    return ''
+  }
 }
 
 export function CollectionView({
@@ -54,6 +68,9 @@ export function CollectionView({
   collectionDescription,
   admins = [],
   indexing = false,
+  defaultAdminUsername,
+  payoutRecipient,
+  createdAt,
 }: CollectionViewProps) {
   const router = useRouter()
   const [profiles, setProfiles] = useState<Record<string, AvatarProfile>>({})
@@ -113,8 +130,33 @@ export function CollectionView({
           )}
         </div>
         <div className="flex flex-col gap-1.5 min-w-0 pt-1">
-          <h1 className="text-base font-mono text-[#efefef] truncate">{displayName}</h1>
+          <h1 className="text-base font-mono text-[#efefef] truncate">
+            {displayName}
+            {defaultAdminUsername && (
+              <span className="text-[#555] font-normal"> by @{defaultAdminUsername}</span>
+            )}
+          </h1>
           <p className="text-[10px] font-mono text-[#444]">{shortAddress(address)}</p>
+          {/* Enriched chips: payout transparency (only when it differs from
+              the admin — same-address payouts are noise) and creation date. */}
+          {(payoutRecipient || createdAt) && (
+            <div className="flex flex-wrap gap-2 mt-1.5">
+              {createdAt && (
+                <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
+                  created {formatCreatedDate(createdAt)}
+                </span>
+              )}
+              {payoutRecipient && (
+                <Link
+                  href={`/profile/${payoutRecipient}`}
+                  className="text-[10px] font-mono text-[#555] hover:text-[#888] uppercase tracking-widest transition-colors"
+                  title="Sale proceeds route here"
+                >
+                  payouts → {shortAddress(payoutRecipient)}
+                </Link>
+              )}
+            </div>
+          )}
           {description && (
             <p className="text-xs font-mono text-[#555] mt-1 line-clamp-3">{description}</p>
           )}

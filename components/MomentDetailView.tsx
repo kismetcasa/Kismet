@@ -7,16 +7,20 @@ import { useAccount, useReadContract, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useUploadSession } from '@/hooks/useUploadSession'
+import uploadToArweave from '@/lib/arweave/uploadToArweave'
+import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
+import { humanError } from '@/lib/toast'
 
 interface Props {
   address: string
@@ -70,6 +74,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [splitAddress, setSplitAddress] = useState('')
   const [distributing, setDistributing] = useState(false)
   const [distributeHash, setDistributeHash] = useState<string | null>(null)
+  // Edit-metadata flow: visible only to moment admins. Pre-populated from
+  // the loaded MomentDetail so they can fix typos / replace the image
+  // without re-typing everything.
+  const [editing, setEditing] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [editDesc, setEditDesc] = useState('')
+  const [editFile, setEditFile] = useState<File | null>(null)
+  const [editPreview, setEditPreview] = useState<string | null>(null)
+  const [savingMeta, setSavingMeta] = useState(false)
+  const editFileInputRef = useRef<HTMLInputElement>(null)
+  const { ensureSession } = useUploadSession()
 
   const { data: ownedBalance } = useReadContract({
     address: address as `0x${string}`,
@@ -225,13 +240,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     const addr = splitAddress.trim()
     if (!addr || !isAddress(addr)) { toast.error('Invalid split address'); return }
     if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    if (!detail) { toast.error('Moment details still loading'); return }
+    // Route the distribute call to the right token type per the moment's
+    // sale config — USDC moments need tokenAddress=USDC_BASE on the
+    // inprocess side, otherwise the call defaults to ETH and distributes
+    // nothing from a USDC splits contract.
+    const currency = inferCollectCurrency(detail.saleConfig)
     setDistributing(true)
     try {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
       if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
       if (!nonce) throw new Error('Could not fetch nonce')
-      const message = `Distribute Kismet Art split\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nSplit: ${addr.toLowerCase()}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
+      const message = `Distribute Kismet Art split\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nSplit: ${addr.toLowerCase()}\nCurrency: ${currency}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
 
       const res = await fetch('/api/distribute', {
@@ -242,6 +263,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           collectionAddress: address,
           tokenId,
           chainId: 8453,
+          currency,
           callerAddress: connectedAddress,
           signature,
           nonce,
@@ -251,9 +273,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
       if (!data.hash) throw new Error('Distribute submitted but no tx hash returned')
       setDistributeHash(data.hash)
-      toast.success('Distributed!')
+      toast.success('Distributed!', { id: 'distribute' })
     } catch (err) {
-      toast.error('Distribution failed', { description: err instanceof Error ? err.message : 'Unknown error' })
+      toast.error('Distribution failed', { id: 'distribute', description: humanError(err) })
     } finally {
       setDistributing(false)
     }
@@ -263,6 +285,115 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     navigator.clipboard.writeText(`${window.location.origin}/moment/${address}/${tokenId}`).catch(() => {})
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 1500)
+  }
+
+  function openEditor() {
+    if (!detail) return
+    setEditName(detail.metadata.name ?? '')
+    setEditDesc(detail.metadata.description ?? '')
+    setEditFile(null)
+    setEditPreview(null)
+    setEditing(true)
+  }
+
+  function closeEditor() {
+    if (editPreview) URL.revokeObjectURL(editPreview)
+    setEditFile(null)
+    setEditPreview(null)
+    setEditing(false)
+  }
+
+  function handleEditFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (!f) return
+    const MAX = 50 * 1024 * 1024
+    if (f.size > MAX) { toast.error('File too large', { description: 'Max 50 MB' }); return }
+    if (editPreview) URL.revokeObjectURL(editPreview)
+    setEditFile(f)
+    setEditPreview(URL.createObjectURL(f))
+  }
+
+  async function handleSaveMetadata() {
+    if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    if (!detail) return
+    if (!editName.trim()) { toast.error('Title required'); return }
+
+    setSavingMeta(true)
+    try {
+      await ensureSession()
+
+      // Reuse the existing image URI when the creator didn't pick a new
+      // file — Arweave is content-addressed so the original ar:// stays
+      // valid forever.
+      let imageUri = detail.metadata.image
+      if (editFile) {
+        toast.loading('Uploading image…', { id: 'edit-meta' })
+        imageUri = await uploadToArweave(editFile)
+      }
+
+      // Build the new metadata JSON. Preserve animation_url + content
+      // fields from the existing metadata so video/writing moments keep
+      // their media bindings intact when only name/description changed.
+      const newMetadata: Record<string, unknown> = {
+        name: editName.trim(),
+        description: editDesc.trim(),
+        ...(imageUri ? { image: imageUri } : {}),
+        ...(detail.metadata.animation_url ? { animation_url: detail.metadata.animation_url } : {}),
+        ...(detail.metadata.content ? { content: detail.metadata.content } : {}),
+      }
+
+      toast.loading('Uploading metadata…', { id: 'edit-meta' })
+      const newUri = await uploadJson(newMetadata)
+
+      toast.loading('Sign update in wallet…', { id: 'edit-meta' })
+      const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
+      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
+      if (!nonce) throw new Error('Could not fetch nonce')
+      const message = `Update Kismet Art metadata\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
+      const signature = await signMessageAsync({ message })
+
+      toast.loading('Updating on-chain…', { id: 'edit-meta' })
+      const res = await fetch('/api/moment/update-uri', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collectionAddress: address,
+          tokenId,
+          newUri,
+          callerAddress: connectedAddress,
+          signature,
+          nonce,
+          chainId: 8453,
+          displayName: editName.trim(),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? data.detail ?? data.message ?? 'Update failed')
+
+      // Optimistically refresh the in-memory detail so UI reflects the
+      // new metadata immediately. The proper refetch from inprocess will
+      // catch up within a poll cycle.
+      const optimistic: MomentDetail = {
+        ...detail,
+        uri: newUri,
+        metadata: {
+          ...detail.metadata,
+          name: editName.trim(),
+          description: editDesc.trim(),
+          ...(imageUri ? { image: imageUri } : {}),
+        },
+      }
+      setCachedDetail(address, tokenId, optimistic)
+      setDetail(optimistic)
+
+      toast.success('Metadata updated!', { id: 'edit-meta' })
+      closeEditor()
+    } catch (err) {
+      toast.error('Update failed', { id: 'edit-meta', description: humanError(err) })
+    } finally {
+      setSavingMeta(false)
+    }
   }
 
   // Prefer real inprocess metadata once we have it; fall back to whatever we
@@ -353,14 +484,132 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <h1 className="text-sm font-mono text-[#efefef] leading-snug">
                 {meta.name ?? `#${tokenId}`}
               </h1>
-              <button
-                onClick={handleCopyLink}
-                className="flex items-center gap-1 text-xs font-mono text-[#555] hover:text-[#888] transition-colors flex-shrink-0"
-              >
-                {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
-                {linkCopied ? 'copied' : 'share'}
-              </button>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {/* Edit metadata — admin-only. Pencil icon lives next to
+                    share so the visual weight stays light; expanding into
+                    a full inline panel below the title preserves spatial
+                    locality (you edit what you're looking at). */}
+                {isCreator && !editing && detail && (
+                  <button
+                    onClick={openEditor}
+                    className="flex items-center gap-1 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+                    title="edit metadata"
+                  >
+                    <Pencil size={11} />
+                    edit
+                  </button>
+                )}
+                <button
+                  onClick={handleCopyLink}
+                  className="flex items-center gap-1 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+                >
+                  {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
+                  {linkCopied ? 'copied' : 'share'}
+                </button>
+              </div>
             </div>
+
+            {/* Inline edit panel — pre-populated from the loaded detail.
+                Image is optional: if the creator only wants to fix a typo
+                in the title or description, they leave the image alone
+                and we keep the existing ar:// in the new metadata JSON. */}
+            {editing && detail && (
+              <div className="flex flex-col gap-3 border border-[#2a2a2a] p-3 bg-[#0a0a0a]">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-[#888]">edit metadata</p>
+                  <button
+                    onClick={closeEditor}
+                    disabled={savingMeta}
+                    className="text-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
+                    title="cancel"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">title</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    disabled={savingMeta}
+                    placeholder="title"
+                    className="bg-[#111] border border-[#2a2a2a] px-2.5 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">description</label>
+                  <textarea
+                    value={editDesc}
+                    onChange={(e) => setEditDesc(e.target.value)}
+                    disabled={savingMeta}
+                    rows={3}
+                    placeholder="description"
+                    className="bg-[#111] border border-[#2a2a2a] px-2.5 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 resize-none"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">image (optional)</label>
+                  <div className="flex items-center gap-2">
+                    {/* Show whatever's currently selected: new file preview > existing on-chain image > nothing */}
+                    {(editPreview || imageUrl) && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={editPreview ?? imageUrl ?? ''}
+                        alt="preview"
+                        className="w-12 h-12 object-cover bg-[#111] border border-[#2a2a2a]"
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => editFileInputRef.current?.click()}
+                      disabled={savingMeta}
+                      className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] border border-[#2a2a2a] px-2.5 py-1.5 disabled:opacity-50"
+                    >
+                      {editFile ? 'replace' : 'change image'}
+                    </button>
+                    {editFile && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (editPreview) URL.revokeObjectURL(editPreview)
+                          setEditFile(null)
+                          setEditPreview(null)
+                          if (editFileInputRef.current) editFileInputRef.current.value = ''
+                        }}
+                        disabled={savingMeta}
+                        className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] disabled:opacity-50"
+                      >
+                        keep current
+                      </button>
+                    )}
+                    <input
+                      ref={editFileInputRef}
+                      type="file"
+                      accept="image/*,video/*"
+                      onChange={handleEditFile}
+                      className="hidden"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSaveMetadata}
+                    disabled={savingMeta || !editName.trim()}
+                    className="flex-1 text-xs font-mono tracking-wider uppercase py-2 btn-accent disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {savingMeta ? 'saving…' : 'save changes'}
+                  </button>
+                  <button
+                    onClick={closeEditor}
+                    disabled={savingMeta}
+                    className="text-xs font-mono tracking-wider uppercase px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
+                  >
+                    cancel
+                  </button>
+                </div>
+              </div>
+            )}
             <Link
               href={creatorAddress ? `/profile/${creatorAddress}` : '#'}
               className="flex items-center gap-2 group w-fit"

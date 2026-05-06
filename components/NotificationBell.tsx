@@ -24,7 +24,9 @@ export function NotificationBell({ address }: NotificationBellProps) {
   const fetchCount = useCallback(async () => {
     if (!address) return
     try {
-      const res = await fetch(`/api/notifications/unread?address=${address}`)
+      // Cookie-authenticated: returns 401 before sign-in (count stays 0)
+      // and counts the session owner's unread once they're signed in.
+      const res = await fetch('/api/notifications/unread', { credentials: 'same-origin' })
       if (!res.ok) return
       const data = await res.json()
       if (typeof data.count === 'number') setCount(data.count)
@@ -71,11 +73,14 @@ export function NotificationBell({ address }: NotificationBellProps) {
       <button
         onClick={() => setModalOpen((v) => !v)}
         className="relative text-[#888] hover:text-[#efefef] transition-colors p-1"
-        aria-label="Notifications"
+        aria-label={count > 0 ? `Notifications, ${count} unread` : 'Notifications'}
       >
         <Bell size={18} />
         {count > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-[#8B5CF6] text-[9px] font-mono text-white flex items-center justify-center leading-none">
+          <span
+            aria-hidden="true"
+            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-[#8B5CF6] text-[9px] font-mono text-white flex items-center justify-center leading-none"
+          >
             {badge}
           </span>
         )}

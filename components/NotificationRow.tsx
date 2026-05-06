@@ -8,6 +8,9 @@ import type { Notification } from '@/lib/notifications'
 
 interface NotificationRowProps {
   notification: Notification
+  // Resolved display name for `notification.actor`, batch-fetched by the
+  // parent feed via profileCache. Falls back to shortAddress when missing.
+  actorName?: string
   onClick?: () => void
   onMute?: (actor: string) => void
 }
@@ -20,19 +23,24 @@ function notificationHref(n: Notification): string {
     case 'sale':
     case 'mint':
     case 'listing_expired':
+    case 'airdrop':
       return n.tokenAddress && n.tokenId ? `/moment/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
 
-function NotificationContent({ n }: { n: Notification }) {
+function NotificationContent({ n, actorName }: { n: Notification; actorName?: string }) {
   const time = formatRelativeTime(n.timestamp)
+  // Prefer the resolved display name (username/ENS) when available; fall
+  // back to the shortened address. Memoized in the parent so this is just
+  // a lookup.
+  const actorLabel = n.actor ? (actorName ?? shortAddress(n.actor)) : null
 
   switch (n.type) {
     case 'collect':
       return (
         <>
           <p className="text-xs font-mono text-[#efefef] truncate">
-            {n.actor ? shortAddress(n.actor) : 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your moment'}
+            {actorLabel ?? 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your moment'}
           </p>
           {n.comment && (
             <p className="text-[10px] font-mono text-[#888] mt-0.5 truncate">"{n.comment}"</p>
@@ -47,7 +55,7 @@ function NotificationContent({ n }: { n: Notification }) {
       return (
         <>
           <p className="text-xs font-mono text-[#efefef] truncate">
-            {n.actor ? `${shortAddress(n.actor)} bought your listing` : 'your listing was filled'}
+            {actorLabel ? `${actorLabel} bought your listing` : 'your listing was filled'}
           </p>
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
             {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
@@ -58,7 +66,7 @@ function NotificationContent({ n }: { n: Notification }) {
       return (
         <>
           <p className="text-xs font-mono text-[#efefef] truncate">
-            {n.actor ? shortAddress(n.actor) : 'someone'} followed you
+            {actorLabel ?? 'someone'} followed you
           </p>
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
         </>
@@ -67,11 +75,11 @@ function NotificationContent({ n }: { n: Notification }) {
       // Self-notification (no actor) = "your moment was created" — confirms
       // the user's own create action. Follower-fanout (actor set) = "@addr
       // minted X" — surfaces creates by people you follow.
-      if (n.actor) {
+      if (actorLabel) {
         return (
           <>
             <p className="text-xs font-mono text-[#efefef] truncate">
-              {shortAddress(n.actor)} minted {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+              {actorLabel} minted {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
             </p>
             <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
           </>
@@ -92,6 +100,15 @@ function NotificationContent({ n }: { n: Notification }) {
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
             {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
+        </>
+      )
+    case 'airdrop':
+      return (
+        <>
+          <p className="text-xs font-mono text-[#efefef] truncate">
+            {actorLabel ?? 'someone'} airdropped you {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+          </p>
+          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
         </>
       )
   }
@@ -135,7 +152,7 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   return <img src={resolveUri(n.tokenImage)} alt="" className="object-cover flex-shrink-0" style={{ width: size, height: size }} />
 }
 
-export function NotificationRow({ notification, onClick, onMute }: NotificationRowProps) {
+export function NotificationRow({ notification, actorName, onClick, onMute }: NotificationRowProps) {
   const size = 32
   const href = notificationHref(notification)
   const unread = !notification.read
@@ -153,7 +170,7 @@ export function NotificationRow({ notification, onClick, onMute }: NotificationR
           <NotificationLeft n={notification} size={size} />
         </div>
         <div className="flex-1 min-w-0">
-          <NotificationContent n={notification} />
+          <NotificationContent n={notification} actorName={actorName} />
         </div>
         {unread && (
           <div className="w-1.5 h-1.5 rounded-full bg-[#8B5CF6] mt-2 flex-shrink-0" aria-label="unread" />

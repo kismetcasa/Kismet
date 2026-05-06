@@ -11,6 +11,7 @@ import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { formatPrice } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+import { humanError } from '@/lib/toast'
 
 interface BuyButtonProps {
   listing: Listing
@@ -139,9 +140,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       toast.success('Purchased!', { id: 'buy' })
       onBought?.()
     } catch (err) {
-      const raw = err instanceof Error ? err.message : 'Unknown error'
-      const description = /user rejected|user denied|rejected the request/i.test(raw) ? 'Cancelled' : raw
-      toast.error('Purchase failed', { id: 'buy', description })
+      toast.error('Purchase failed', { id: 'buy', description: humanError(err) })
     } finally {
       setLoading(false)
     }

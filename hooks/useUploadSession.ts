@@ -5,7 +5,7 @@ import { useAccount, useSignMessage } from 'wagmi'
 
 /**
  * Ensures the wallet has a valid Kismet Art session, prompting one wallet
- * signature if not. Auth state lives in an httpOnly `kismet_session` cookie
+ * signature if not. Auth state lives in an httpOnly session cookie
  * set by `POST /api/session`; the client never sees the token, so an XSS
  * can't exfiltrate it. Server-controlled TTL via cookie Max-Age — no
  * client-side clock to drift.

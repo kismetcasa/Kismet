@@ -8,6 +8,7 @@ import { isAddress } from 'viem'
 import { Plus, X } from 'lucide-react'
 import Image from 'next/image'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
+import { humanError } from '@/lib/toast'
 
 interface AirdropFormProps {
   moments: Moment[]
@@ -52,8 +53,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       const { nonce } = await nonceRes.json().catch(() => ({}))
       if (!nonce) throw new Error('Could not fetch nonce')
       const message = `Airdrop moment on Kismet Art\nCollection: ${selected.address.toLowerCase()}\nToken: ${selected.token_id}\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
+      toast.loading('Sign airdrop in wallet…', { id: 'airdrop' })
       const signature = await signMessageAsync({ message })
 
+      toast.loading('Airdropping…', { id: 'airdrop' })
       const res = await fetch('/api/airdrop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,9 +73,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       if (!data.hash) throw new Error('Airdrop submitted but no tx hash returned')
       setResultHash(data.hash)
       setRecipients([])
-      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`)
+      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
     } catch (err) {
-      toast.error('Airdrop failed', { description: err instanceof Error ? err.message : 'Unknown error' })
+      toast.error('Airdrop failed', { id: 'airdrop', description: humanError(err) })
     } finally {
       setSending(false)
     }

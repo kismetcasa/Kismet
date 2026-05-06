@@ -9,6 +9,33 @@ interface Props {
   params: Promise<{ address: string }>
 }
 
+interface CollectionDetail {
+  default_admin?: { address: string; username?: string }
+  payout_recipient?: string
+  created_at?: string
+}
+
+async function fetchCollectionDetail(address: string): Promise<CollectionDetail | null> {
+  // GET /api/collection (singular) returns enriched data: default_admin
+  // (with username), payout_recipient, timestamps. We use this on the
+  // collection detail page; the plural endpoint already powers the
+  // lightweight metadata fetch below.
+  try {
+    const url = new URL(`${INPROCESS_API}/collection`)
+    url.searchParams.set('collectionAddress', address)
+    url.searchParams.set('chainId', '8453')
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 120 },
+    })
+    if (!res.ok) return null
+    const text = await res.text()
+    return text ? (JSON.parse(text) as CollectionDetail) : null
+  } catch {
+    return null
+  }
+}
+
 async function fetchCollectionMeta(
   address: string
 ): Promise<{ name?: string; image?: string; description?: string } | null> {
@@ -59,10 +86,11 @@ export default async function CollectionPage({ params }: Props) {
 
   if (!isAddress(address)) notFound()
 
-  const [moments, meta, kvMeta] = await Promise.all([
+  const [moments, meta, kvMeta, detail] = await Promise.all([
     fetchCollectionMoments(address),
     fetchCollectionMeta(address),
     getKvCollectionMeta(address),
+    fetchCollectionDetail(address),
   ])
 
   // Collect unique admins from all moments (excluding the creator)
@@ -80,6 +108,15 @@ export default async function CollectionPage({ params }: Props) {
   // surface that explicitly instead of an empty grid that looks like a bug.
   const indexing = !!kvMeta && moments.length === 0
 
+  // Show payout chip only when it differs from the deploying admin —
+  // otherwise it's redundant noise. The vast majority of creators leave
+  // payouts to themselves; the few who route through a splits contract
+  // benefit from the transparency.
+  const showPayout =
+    !!detail?.payout_recipient &&
+    !!detail?.default_admin?.address &&
+    detail.payout_recipient.toLowerCase() !== detail.default_admin.address.toLowerCase()
+
   return (
     <CollectionView
       address={address}
@@ -89,6 +126,9 @@ export default async function CollectionPage({ params }: Props) {
       collectionDescription={meta?.description}
       admins={admins}
       indexing={indexing}
+      defaultAdminUsername={detail?.default_admin?.username}
+      payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
+      createdAt={detail?.created_at}
     />
   )
 }
