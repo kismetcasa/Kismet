@@ -21,7 +21,7 @@ import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 const TOP_COMMENTS = 3
 
@@ -196,7 +196,7 @@ export function MomentModal({
       setDistributeHash(data.hash)
       toast.success('Distributed!', { id: 'distribute' })
     } catch (err) {
-      toast.error('Distribution failed', { id: 'distribute', description: humanError(err) })
+      toastError('Distribution', err, { id: 'distribute' })
     } finally {
       setDistributing(false)
     }

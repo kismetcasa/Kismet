@@ -13,7 +13,7 @@ import { CREATE_REFERRAL } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface CreateCollectionFormProps {
@@ -350,7 +350,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       }
       setStep('idle')
       setUploadProgress(0)
-      toast.error('Deploy failed', { id: 'create-collection', description: humanError(err) })
+      toastError('Deploy', err, { id: 'create-collection' })
     }
   }
 

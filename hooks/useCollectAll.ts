@@ -6,7 +6,7 @@ import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { encodeFunctionData, type Address, type Hash } from 'viem'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 import { fetchEthEligibleTokens } from '@/lib/saleConfig'
 import {
   KISMET_REFERRAL,
@@ -183,10 +183,7 @@ export function useCollectAll(): UseCollectAllReturn {
         return { hash, minted: batch.length }
       } catch (err) {
         setStatus('error')
-        toast.error('Collect all failed', {
-          id: TOAST_ID,
-          description: humanError(err),
-        })
+        toastError('Collect all', err, { id: TOAST_ID })
         return null
       }
     },

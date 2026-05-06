@@ -8,7 +8,7 @@ import { isAddress } from 'viem'
 import { Plus, X } from 'lucide-react'
 import Image from 'next/image'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 interface AirdropFormProps {
   moments: Moment[]
@@ -75,7 +75,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       setRecipients([])
       toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
     } catch (err) {
-      toast.error('Airdrop failed', { id: 'airdrop', description: humanError(err) })
+      toastError('Airdrop', err, { id: 'airdrop' })
     } finally {
       setSending(false)
     }
