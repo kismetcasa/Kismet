@@ -12,7 +12,7 @@ import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 type PriceCurrency = 'eth' | 'usdc'
 
@@ -314,7 +314,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
     } catch (err) {
       setStep('idle')
       setUploadProgress(0)
-      toast.error('Mint failed', { id: 'mint', description: humanError(err) })
+      toastError('Mint', err, { id: 'mint' })
     }
   }
 

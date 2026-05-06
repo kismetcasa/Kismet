@@ -11,7 +11,7 @@ import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import { BuyButton } from './BuyButton'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 interface MarketCardProps {
   listing: Listing
@@ -104,7 +104,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       toast.success('Listing cancelled!', { id: 'cancel' })
       onRemove?.()
     } catch (err) {
-      toast.error('Cancel failed', { id: 'cancel', description: humanError(err) })
+      toastError('Cancel', err, { id: 'cancel' })
     } finally {
       setCancelling(false)
     }

@@ -1,9 +1,12 @@
 import type { Metadata } from 'next'
+import { cookies } from 'next/headers'
 import { isAddress } from 'viem'
 import { notFound } from 'next/navigation'
 import { INPROCESS_API, resolveUri, shortAddress, fetchCollectionMoments, type MomentAdmin } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
+import { isCollectionHidden } from '@/lib/hiddenCollections'
+import { SESSION_COOKIE, verifySession } from '@/lib/session'
 
 interface Props {
   params: Promise<{ address: string }>
@@ -86,12 +89,41 @@ export default async function CollectionPage({ params }: Props) {
 
   if (!isAddress(address)) notFound()
 
-  const [moments, meta, kvMeta, detail] = await Promise.all([
+  // Resolve the viewer so we can decide whether a hidden collection should
+  // render as a placeholder. Server-component cookie reads don't have a
+  // NextRequest; touch the cookie store directly. cookies() opts this
+  // route into dynamic rendering, which is what we want for the per-user
+  // hidden-state branch.
+  const cookieStore = await cookies()
+  const sessionToken = cookieStore.get(SESSION_COOKIE)?.value
+  const viewer = sessionToken ? await verifySession(sessionToken) : null
+
+  const [moments, meta, kvMeta, detail, hidden] = await Promise.all([
     fetchCollectionMoments(address),
     fetchCollectionMeta(address),
     getKvCollectionMeta(address),
     fetchCollectionDetail(address),
+    isCollectionHidden(address),
   ])
+
+  const defaultAdminAddress = detail?.default_admin?.address?.toLowerCase()
+  const viewerLower = viewer?.toLowerCase() ?? null
+  const isCreator =
+    !!viewerLower &&
+    !!defaultAdminAddress &&
+    viewerLower === defaultAdminAddress
+
+  // Non-creator visitors of a hidden collection see a placeholder. Creator
+  // sees normally with a hidden indicator + unhide affordance.
+  if (hidden && !isCreator) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-24 text-center">
+        <p className="text-sm font-mono text-[#888]">
+          this collection has been hidden by the creator
+        </p>
+      </div>
+    )
+  }
 
   // Collect unique admins from all moments (excluding the creator)
   const adminMap = new Map<string, MomentAdmin>()
@@ -127,8 +159,10 @@ export default async function CollectionPage({ params }: Props) {
       admins={admins}
       indexing={indexing}
       defaultAdminUsername={detail?.default_admin?.username}
+      defaultAdminAddress={detail?.default_admin?.address}
       payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
       createdAt={detail?.created_at}
+      initialHidden={hidden}
     />
   )
 }

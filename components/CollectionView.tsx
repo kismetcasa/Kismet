@@ -4,9 +4,12 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Star } from 'lucide-react'
+import { useAccount } from 'wagmi'
+import { toast } from 'sonner'
+import { ArrowLeft, Star, Eye, EyeOff } from 'lucide-react'
 import { resolveUri, shortAddress, type Moment, type MomentAdmin } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -49,8 +52,15 @@ interface CollectionViewProps {
   // page falls back to the lightweight metadata when these aren't returned
   // (e.g., indexer hasn't picked up the collection yet).
   defaultAdminUsername?: string
+  // Default-admin (deployer) address — used to gate the creator-only hide
+  // button. Not the same as the on-chain ADMIN bit check; that runs
+  // server-side at toggle time. This prop is for UI rendering only.
+  defaultAdminAddress?: string
   payoutRecipient?: string
   createdAt?: string
+  // Server-rendered initial hidden state (read from KV). Toggled locally
+  // after a successful POST to /api/collection/hide.
+  initialHidden?: boolean
 }
 
 function formatCreatedDate(iso: string): string {
@@ -70,14 +80,46 @@ export function CollectionView({
   admins = [],
   indexing = false,
   defaultAdminUsername,
+  defaultAdminAddress,
   payoutRecipient,
   createdAt,
+  initialHidden = false,
 }: CollectionViewProps) {
   const router = useRouter()
+  const { address: connectedAddress } = useAccount()
   const { isAdmin, featuredCollectionAddrs, toggleFeaturedCollection } = useAdmin()
   const [profiles, setProfiles] = useState<Record<string, AvatarProfile>>({})
+  const [hidden, setHidden] = useState(initialHidden)
+  const [hidePending, setHidePending] = useState(false)
 
   const isFeatured = featuredCollectionAddrs.has(address.toLowerCase())
+  const isCreator =
+    !!connectedAddress &&
+    !!defaultAdminAddress &&
+    connectedAddress.toLowerCase() === defaultAdminAddress.toLowerCase()
+
+  async function handleToggleHidden() {
+    if (hidePending) return
+    const next = !hidden
+    setHidePending(true)
+    try {
+      const res = await fetch('/api/collection/hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address, hidden: next }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error ?? 'Hide failed')
+      }
+      setHidden(next)
+      toast.success(next ? 'Collection hidden from public' : 'Collection visible again', { id: 'collection-hide' })
+    } catch (err) {
+      toastError('Hide', err, { id: 'collection-hide' })
+    } finally {
+      setHidePending(false)
+    }
+  }
 
   const firstMoment = moments[0]
   const displayName = collectionName || shortAddress(address)
@@ -115,6 +157,16 @@ export function CollectionView({
         <ArrowLeft size={12} />
         back
       </button>
+
+      {/* Creator-only banner so the creator knows their collection is hidden */}
+      {hidden && isCreator && (
+        <div className="px-3 py-2 mb-6 border border-[#2a2a2a] bg-[#1a1a1a] flex items-center gap-2">
+          <EyeOff size={11} className="text-[#888]" />
+          <p className="text-[10px] font-mono text-[#888] uppercase tracking-widest">
+            hidden from public — only you can see this
+          </p>
+        </div>
+      )}
 
       {/* Collection header */}
       <div className="flex gap-5 mb-10">
@@ -164,18 +216,33 @@ export function CollectionView({
           {description && (
             <p className="text-xs font-mono text-[#555] mt-1 line-clamp-3">{description}</p>
           )}
-          {isAdmin && (
-            <button
-              onClick={() => toggleFeaturedCollection(address)}
-              className={`flex items-center gap-1.5 text-xs font-mono mt-2 transition-colors w-fit ${
-                isFeatured ? 'text-yellow-400' : 'text-[#555] hover:text-[#888]'
-              }`}
-              title={isFeatured ? 'Unfeature collection' : 'Feature collection'}
-            >
-              <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-              {isFeatured ? 'unfeature' : 'feature'}
-            </button>
-          )}
+          <div className="flex items-center gap-3 mt-2">
+            {isAdmin && (
+              <button
+                onClick={() => toggleFeaturedCollection(address)}
+                className={`flex items-center gap-1.5 text-xs font-mono transition-colors ${
+                  isFeatured ? 'text-yellow-400' : 'text-[#555] hover:text-[#888]'
+                }`}
+                title={isFeatured ? 'Unfeature collection' : 'Feature collection'}
+              >
+                <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                {isFeatured ? 'unfeature' : 'feature'}
+              </button>
+            )}
+            {isCreator && (
+              <button
+                onClick={handleToggleHidden}
+                disabled={hidePending}
+                className={`flex items-center gap-1.5 text-xs font-mono transition-colors disabled:opacity-50 ${
+                  hidden ? 'text-[#888] hover:text-[#efefef]' : 'text-[#555] hover:text-[#888]'
+                }`}
+                title={hidden ? 'Show collection on public feeds' : 'Hide collection from public feeds'}
+              >
+                {hidden ? <Eye size={12} /> : <EyeOff size={12} />}
+                {hidden ? 'hidden' : 'hide'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

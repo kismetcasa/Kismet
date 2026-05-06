@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollections } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
+import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { getSessionAddress } from '@/lib/session'
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = new URL(`${INPROCESS_API}/timeline`)
@@ -117,6 +119,23 @@ export async function GET(req: NextRequest) {
       const ma = a as { created_at: string }
       const mb = b as { created_at: string }
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
+    })
+  }
+
+  // Hide creator-hidden moments. Viewer-aware: a creator can still see
+  // their own hidden moments in feeds (so they can navigate back to unhide
+  // from the detail page). Everyone else gets the moment filtered out.
+  const [hiddenSet, viewer] = await Promise.all([
+    getHiddenMomentsSet(),
+    getSessionAddress(req),
+  ])
+  if (hiddenSet.size > 0) {
+    const viewerLower = viewer?.toLowerCase() ?? null
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
+      const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
+      if (!hiddenSet.has(key)) return true
+      return viewerLower !== null && moment.creator?.address?.toLowerCase() === viewerLower
     })
   }
 

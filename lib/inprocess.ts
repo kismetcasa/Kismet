@@ -106,6 +106,10 @@ export interface MomentDetail {
     animation_url?: string
     content?: { mime?: string; uri?: string }
   }
+  // Set by /api/moment from the kismetart:hidden-moments KV. True when the
+  // creator has hidden the moment from public feeds. Detail page renders
+  // an unhide affordance for the creator and a hidden placeholder otherwise.
+  hidden?: boolean
 }
 
 /**

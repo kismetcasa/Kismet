@@ -6,7 +6,7 @@ import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import type { Address, Hash } from 'viem'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 import {
   ERC20_ABI,
   KISMET_REFERRAL,
@@ -211,7 +211,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         return { hash }
       } catch (err) {
         setStatus('error')
-        toast.error('Collect failed', { id: TOAST_ID, description: humanError(err) })
+        toastError('Collect', err, { id: TOAST_ID })
         return null
       }
     },

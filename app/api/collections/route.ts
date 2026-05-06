@@ -5,6 +5,7 @@ import { INPROCESS_API } from '@/lib/inprocess'
 import { getTrackedCollections, addTrackedCollection, getCollectionsByArtist } from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
+import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 
 // Zora 1155 PERMISSION_BIT_ADMIN = 2 (= 2^1). Anyone with this bit can mutate
 // the contract. We require the caller to have it before letting them register
@@ -41,13 +42,29 @@ export async function GET(req: NextRequest) {
     url.searchParams.set('limit', String(limit))
     url.searchParams.set('page', String(page))
     try {
-      const res = await fetch(url.toString(), {
-        headers: { Accept: 'application/json' },
-        next: { revalidate: 60 },
-      })
+      const [res, hiddenSet] = await Promise.all([
+        fetch(url.toString(), {
+          headers: { Accept: 'application/json' },
+          next: { revalidate: 60 },
+        }),
+        getHiddenCollectionsSet(),
+      ])
       const text = await res.text()
-      let data: unknown
-      try { data = JSON.parse(text) } catch { return NextResponse.json({ collections: [], pagination: { page, limit, total: 0, total_pages: 1 } }) }
+      let data: { collections?: { contractAddress?: string }[] } | unknown
+      try {
+        data = JSON.parse(text)
+      } catch {
+        return NextResponse.json({ collections: [], pagination: { page, limit, total: 0, total_pages: 1 } })
+      }
+      // Strip creator-hidden collections from the global feed. Creators can
+      // still reach their own hidden collections via direct URL or profile.
+      const d = data as { collections?: { contractAddress?: string }[] }
+      if (hiddenSet.size > 0 && Array.isArray(d.collections)) {
+        d.collections = d.collections.filter((c) => {
+          const addr = c.contractAddress?.toLowerCase()
+          return !addr || !hiddenSet.has(addr)
+        })
+      }
       return NextResponse.json(data, { status: res.status })
     } catch {
       return NextResponse.json({ collections: [], pagination: { page, limit, total: 0, total_pages: 1 } })
@@ -62,25 +79,31 @@ export async function GET(req: NextRequest) {
     url.searchParams.set('artist', artist)
     url.searchParams.set('limit', '100')
     try {
-      const [res, tracked, kvOwned] = await Promise.all([
+      const [res, tracked, kvOwned, hiddenSet, viewer] = await Promise.all([
         fetch(url.toString(), {
           headers: { Accept: 'application/json' },
           next: { revalidate: 120 },
         }),
         getTrackedCollections(),
         getCollectionsByArtist(artist),
+        getHiddenCollectionsSet(),
+        getSessionAddress(req),
       ])
       const text = await res.text()
       const data = JSON.parse(text)
       const trackedSet = new Set(tracked.map((a: string) => a.toLowerCase()))
+      // Hide creator-hidden collections from non-creator viewers — the artist
+      // sees their own hidden collections so they can navigate back and unhide.
+      const isOwnProfile = viewer?.toLowerCase() === artist.toLowerCase()
       const inprocessAddrs = new Set<string>()
       if (Array.isArray(data.collections)) {
         data.collections = data.collections.filter(
           (c: { contractAddress?: string }) => {
             if (!c.contractAddress) return false
             const lower = c.contractAddress.toLowerCase()
+            if (!trackedSet.has(lower)) return false
             inprocessAddrs.add(lower)
-            return trackedSet.has(lower)
+            return isOwnProfile || !hiddenSet.has(lower)
           }
         )
       } else {
@@ -89,7 +112,9 @@ export async function GET(req: NextRequest) {
       // Merge KV-tracked collections that the indexer hasn't picked up yet.
       // Shape matches what ProfileView consumes: contractAddress + metadata fields.
       for (const meta of kvOwned) {
-        if (inprocessAddrs.has(meta.address.toLowerCase())) continue
+        const lower = meta.address.toLowerCase()
+        if (inprocessAddrs.has(lower)) continue
+        if (!isOwnProfile && hiddenSet.has(lower)) continue
         data.collections.push({
           contractAddress: meta.address,
           name: meta.name,
@@ -104,17 +129,24 @@ export async function GET(req: NextRequest) {
     } catch {
       // Even if inprocess is down, return what we have locally so fresh
       // collections aren't completely invisible.
-      const kvOwned = await getCollectionsByArtist(artist)
+      const [kvOwned, hiddenSet, viewer] = await Promise.all([
+        getCollectionsByArtist(artist),
+        getHiddenCollectionsSet(),
+        getSessionAddress(req),
+      ])
+      const isOwnProfile = viewer?.toLowerCase() === artist.toLowerCase()
       return NextResponse.json({
-        collections: kvOwned.map((meta) => ({
-          contractAddress: meta.address,
-          name: meta.name,
-          metadata: {
+        collections: kvOwned
+          .filter((meta) => isOwnProfile || !hiddenSet.has(meta.address.toLowerCase()))
+          .map((meta) => ({
+            contractAddress: meta.address,
             name: meta.name,
-            image: meta.image,
-            description: meta.description,
-          },
-        })),
+            metadata: {
+              name: meta.name,
+              image: meta.image,
+              description: meta.description,
+            },
+          })),
       })
     }
   }

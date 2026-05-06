@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
-import { toast } from 'sonner'
+import { toastError } from '@/lib/toast'
 
 const SESSION_KEY = 'kismetart:admin-session'
 const SESSION_TTL = 4 * 60 * 60 * 1000 // 4 hours
@@ -117,9 +117,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       applySession(s)
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
     } catch (err) {
-      toast.error('Failed to start admin session', {
-        description: err instanceof Error ? err.message : 'Unknown error',
-      })
+      toastError('Sign in', err)
     }
   }, [address, isAdmin, signMessageAsync])
 
@@ -160,9 +158,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           return next
         })
       } catch (err) {
-        toast.error('Failed to update featured', {
-          description: err instanceof Error ? err.message : 'Unknown error',
-        })
+        toastError('Featured update', err)
       }
     },
     [isAdmin, startSession, featuredKeys],
@@ -204,9 +200,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           return next
         })
       } catch (err) {
-        toast.error('Failed to update featured', {
-          description: err instanceof Error ? err.message : 'Unknown error',
-        })
+        toastError('Featured update', err)
       }
     },
     [isAdmin, startSession, featuredCollectionAddrs],

@@ -13,7 +13,7 @@ import { MarketCard } from './MarketCard'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
 import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 interface Payment {
   id: string
@@ -364,7 +364,7 @@ export function ProfileView({ address }: ProfileViewProps) {
       setEditing(false)
       toast.success('Profile updated!', { id: 'profile' })
     } catch (err) {
-      toast.error('Update failed', { id: 'profile', description: humanError(err) })
+      toastError('Update', err, { id: 'profile' })
     } finally {
       setSaving(false)
     }
@@ -390,7 +390,7 @@ export function ProfileView({ address }: ProfileViewProps) {
       setFollowerCount((c) => c === null ? null : wasFollowing ? c - 1 : c + 1)
       toast.success(wasFollowing ? 'Unfollowed!' : 'Followed!', { id: 'follow' })
     } catch (err) {
-      toast.error(following ? 'Unfollow failed' : 'Follow failed', { id: 'follow', description: humanError(err) })
+      toastError(following ? 'Unfollow' : 'Follow', err, { id: 'follow' })
     } finally {
       setFollowLoading(false)
     }

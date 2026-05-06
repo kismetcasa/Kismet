@@ -19,7 +19,7 @@ import {
   serializeOrder,
 } from '@/lib/seaport'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 type ListCurrency = 'eth' | 'usdc'
 
@@ -225,7 +225,7 @@ export function ListButton({
       setPriceInput('')
       onListed?.()
     } catch (err) {
-      toast.error('Listing failed', { id: 'list', description: humanError(err) })
+      toastError('Listing', err, { id: 'list' })
     } finally {
       setStep('idle')
     }
