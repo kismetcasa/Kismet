@@ -7,7 +7,7 @@ import { useAccount, useReadContract, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
@@ -21,7 +21,7 @@ import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
-import { humanError } from '@/lib/toast'
+import { toastError } from '@/lib/toast'
 
 interface Props {
   address: string
@@ -113,6 +113,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   const isFeatured = featuredKeys.has(`${address.toLowerCase()}:${tokenId}`)
   const creatorAddress = detail?.momentAdmins[0] ?? ''
+  const isHidden = detail?.hidden === true
+  const [hidePending, setHidePending] = useState(false)
   const isCreator =
     !!connectedAddress &&
     !!creatorAddress &&
@@ -269,7 +271,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       setDistributeHash(data.hash)
       toast.success('Distributed!', { id: 'distribute' })
     } catch (err) {
-      toast.error('Distribution failed', { id: 'distribute', description: humanError(err) })
+      toastError('Distribution', err, { id: 'distribute' })
     } finally {
       setDistributing(false)
     }
@@ -279,6 +281,30 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     navigator.clipboard.writeText(`${window.location.origin}/moment/${address}/${tokenId}`).catch(() => {})
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 1500)
+  }
+
+  async function handleToggleHidden() {
+    if (!detail || hidePending) return
+    const next = !isHidden
+    setHidePending(true)
+    try {
+      const res = await fetch('/api/moment/hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collectionAddress: address, tokenId, hidden: next }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error ?? 'Hide failed')
+      }
+      // Patch the local detail so the UI updates without a refetch.
+      setDetail((prev) => (prev ? { ...prev, hidden: next } : prev))
+      toast.success(next ? 'Hidden from public feeds' : 'Visible again', { id: 'hide' })
+    } catch (err) {
+      toastError('Hide', err, { id: 'hide' })
+    } finally {
+      setHidePending(false)
+    }
   }
 
   function openEditor() {
@@ -384,7 +410,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       toast.success('Metadata updated!', { id: 'edit-meta' })
       closeEditor()
     } catch (err) {
-      toast.error('Update failed', { id: 'edit-meta', description: humanError(err) })
+      toastError('Update', err, { id: 'edit-meta' })
     } finally {
       setSavingMeta(false)
     }
@@ -408,6 +434,29 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const visibleComments = showAllComments ? comments : comments.slice(0, TOP_COMMENTS)
   const hiddenCount = comments.length - TOP_COMMENTS
 
+  // Hidden moments are visible only to their creator (so they can unhide).
+  // Non-creator viewers see a placeholder with no metadata leak so the
+  // creator's intent to hide is honored even on direct URL access.
+  if (isHidden && !isCreator) {
+    return (
+      <div className="max-w-6xl mx-auto pb-16">
+        <div className="px-4 py-3 border-b border-[#2a2a2a]">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+          >
+            <ArrowLeft size={12} />
+            back
+          </Link>
+        </div>
+        <div className="flex flex-col items-center justify-center gap-3 py-24 px-6">
+          <EyeOff size={20} className="text-[#444]" />
+          <p className="text-sm font-mono text-[#888]">this moment has been hidden by the creator</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="max-w-6xl mx-auto pb-16">
 
@@ -421,6 +470,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           back
         </Link>
       </div>
+
+      {/* Creator-only banner so the creator knows their moment is hidden */}
+      {isHidden && isCreator && (
+        <div className="px-4 py-2 border-b border-[#2a2a2a] bg-[#1a1a1a] flex items-center gap-2">
+          <EyeOff size={11} className="text-[#888]" />
+          <p className="text-[10px] font-mono text-[#888] uppercase tracking-widest">
+            hidden from public — only you can see this
+          </p>
+        </div>
+      )}
 
       {/* Two-column on desktop, stacked on mobile */}
       <div className="md:grid md:grid-cols-2 border-b border-[#2a2a2a]">
@@ -491,6 +550,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   >
                     <Pencil size={11} />
                     edit
+                  </button>
+                )}
+                {isCreator && detail && (
+                  <button
+                    onClick={handleToggleHidden}
+                    disabled={hidePending}
+                    className={`flex items-center gap-1 text-xs font-mono transition-colors disabled:opacity-50 ${
+                      isHidden ? 'text-[#888] hover:text-[#efefef]' : 'text-[#555] hover:text-[#888]'
+                    }`}
+                    title={isHidden ? 'Show on public feeds' : 'Hide from public feeds'}
+                  >
+                    {isHidden ? <Eye size={11} /> : <EyeOff size={11} />}
+                    {isHidden ? 'hidden' : 'hide'}
                   </button>
                 )}
                 <button

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from 'viem'
 import { INPROCESS_API } from '@/lib/inprocess'
+import { isMomentHidden } from '@/lib/hiddenMoments'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -23,16 +24,21 @@ export async function GET(req: NextRequest) {
   url.searchParams.set('tokenId', tokenId)
   url.searchParams.set('chainId', chainId)
 
-  const res = await fetch(url.toString(), {
-    headers: { 'Accept': 'application/json' },
-    next: { revalidate: 60 },
-  })
-  const text = await res.text()
-  let data: unknown
+  const [upstream, hidden] = await Promise.all([
+    fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 60 },
+    }),
+    isMomentHidden(collectionAddress, tokenId),
+  ])
+  const text = await upstream.text()
+  let data: Record<string, unknown>
   try {
-    data = JSON.parse(text)
+    data = JSON.parse(text) as Record<string, unknown>
   } catch {
-    return NextResponse.json({ error: 'upstream error', status: res.status }, { status: 502 })
+    return NextResponse.json({ error: 'upstream error', status: upstream.status }, { status: 502 })
   }
-  return NextResponse.json(data, { status: res.status })
+  // Inject the hidden flag so the client can render a creator-only
+  // hidden-state UI without an extra round-trip.
+  return NextResponse.json({ ...data, hidden }, { status: upstream.status })
 }
