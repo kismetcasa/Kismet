@@ -71,12 +71,13 @@ interface CollectionOption {
   image?: string
 }
 
-// The platform-wide in•process collection — always shown as the first option
-// in the picker so a fresh user with no deployed collections can mint
-// immediately into the shared feed.
+// The platform-wide collection. Used as the implicit selectedCollection when
+// nothing's been picked, and as the reset target for the × clear button. Not
+// listed in the dropdown — the placeholder copy "mint into a collection
+// (optional)" already conveys "default if you don't pick anything".
 const PLATFORM_OPTION: CollectionOption = {
   address: PLATFORM_COLLECTION,
-  name: 'in•process',
+  name: 'platform',
 }
 
 export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
