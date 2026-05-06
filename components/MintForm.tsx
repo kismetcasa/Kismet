@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import Image from 'next/image'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2 } from 'lucide-react'
 import { parseEther, parseUnits, isAddress } from 'viem'
-import type { CreateMomentPayload, Split } from '@/lib/inprocess'
+import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -61,13 +62,102 @@ function roundToIntegerAllocations(values: number[], target: number): number[] {
 
 interface MintFormProps {
   collectionAddress?: string
+  collectionName?: string
 }
 
-export function MintForm({ collectionAddress }: MintFormProps = {}) {
-  const targetCollection = collectionAddress ?? PLATFORM_COLLECTION
+interface CollectionOption {
+  address: string
+  name: string
+  image?: string
+}
+
+// The platform-wide in•process collection — always shown as the first option
+// in the picker so a fresh user with no deployed collections can mint
+// immediately into the shared feed.
+const PLATFORM_OPTION: CollectionOption = {
+  address: PLATFORM_COLLECTION,
+  name: 'in•process',
+}
+
+export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+
+  // Collection picker — initialized from the URL/prop hint when present,
+  // falls back to the platform default. The picker overrides the prop once
+  // the user makes an explicit selection.
+  const [selectedCollection, setSelectedCollection] = useState<CollectionOption>(() => {
+    if (collectionAddress) {
+      return {
+        address: collectionAddress,
+        name: collectionName ?? shortAddress(collectionAddress),
+      }
+    }
+    return PLATFORM_OPTION
+  })
+  const [userCollections, setUserCollections] = useState<CollectionOption[]>([])
+  const [loadingCollections, setLoadingCollections] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const targetCollection = selectedCollection.address
+
+  // Sync the picker when MintTabs hands us a freshly-deployed collection or
+  // the URL params change. User-driven picker selections still override on
+  // subsequent state updates.
+  useEffect(() => {
+    if (collectionAddress) {
+      setSelectedCollection({
+        address: collectionAddress,
+        name: collectionName ?? shortAddress(collectionAddress),
+      })
+    }
+  }, [collectionAddress, collectionName])
+
+  // Fetch the connected user's deployed collections so the picker can list
+  // them alongside the platform default. /api/collections?artist=… is
+  // creator-aware: the user always sees their own (including hidden ones).
+  useEffect(() => {
+    if (!address) {
+      setUserCollections([])
+      return
+    }
+    let cancelled = false
+    setLoadingCollections(true)
+    fetch(`/api/collections?artist=${address}`)
+      .then((r) => (r.ok ? r.json() : { collections: [] }))
+      .then((d) => {
+        if (cancelled) return
+        const items: CollectionOption[] = (Array.isArray(d.collections) ? d.collections : [])
+          .map((c: { contractAddress?: string; name?: string; metadata?: { name?: string; image?: string } }) => {
+            if (!c.contractAddress) return null
+            return {
+              address: c.contractAddress,
+              name: c.metadata?.name ?? c.name ?? shortAddress(c.contractAddress),
+              image: c.metadata?.image,
+            }
+          })
+          .filter((c: CollectionOption | null): c is CollectionOption => c !== null)
+        setUserCollections(items)
+      })
+      .catch(() => {
+        if (!cancelled) setUserCollections([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCollections(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [address])
+
+  // Picker options: platform first, then user's deployed collections (deduped
+  // against the platform address in case the user happens to be its admin).
+  const collectionOptions: CollectionOption[] = [
+    PLATFORM_OPTION,
+    ...userCollections.filter(
+      (c) => c.address.toLowerCase() !== PLATFORM_COLLECTION.toLowerCase(),
+    ),
+  ]
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const [file, setFile] = useState<File | null>(null)
@@ -404,6 +494,91 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
 
   return (
     <form onSubmit={handleMint} className="flex flex-col gap-6">
+      {/* Collection picker — modeled on AirdropForm's moment picker. Trigger
+          chip shows the current selection (cover + name); click to expand a
+          grid of platform + user-deployed collections. */}
+      <div>
+        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+          Collection <span className="text-[#efefef]">*</span>
+        </label>
+        <button
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+          className="w-full flex items-center gap-3 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 hover:border-[#555] transition-colors text-left"
+        >
+          {selectedCollection.image ? (
+            <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+              <Image
+                src={resolveUri(selectedCollection.image)}
+                alt=""
+                fill
+                className="object-cover"
+                sizes="32px"
+              />
+            </div>
+          ) : (
+            <div className="w-8 h-8 bg-[#1a1a1a] flex-shrink-0" />
+          )}
+          <span className="text-sm text-[#efefef] font-mono truncate flex-1">
+            {selectedCollection.name}
+          </span>
+          <span className="text-[#555] text-xs font-mono flex-shrink-0">
+            {pickerOpen ? '▲' : '▼'}
+          </span>
+        </button>
+
+        {pickerOpen && (
+          <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
+            {collectionOptions.length === 0 ? (
+              <p className="text-xs font-mono text-[#555] px-3 py-4">
+                {loadingCollections ? 'loading…' : 'no collections found'}
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
+                {collectionOptions.map((c, idx) => {
+                  const img = c.image ? resolveUri(c.image) : null
+                  const isSelected =
+                    c.address.toLowerCase() === selectedCollection.address.toLowerCase()
+                  return (
+                    <button
+                      key={c.address}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCollection(c)
+                        setPickerOpen(false)
+                      }}
+                      className={`relative aspect-square bg-[#111] overflow-hidden group ${
+                        isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''
+                      }`}
+                    >
+                      {img ? (
+                        <Image
+                          src={img}
+                          alt={c.name}
+                          fill
+                          className="object-cover"
+                          sizes="120px"
+                          priority={idx < 6}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <span className="text-[#333] font-mono text-[10px]">
+                            {shortAddress(c.address)}
+                          </span>
+                        </div>
+                      )}
+                      <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                        <p className="text-[9px] font-mono text-[#efefef] truncate">{c.name}</p>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Media / Text toggle */}
       <div>
         <div className="flex items-center justify-between mb-2">
