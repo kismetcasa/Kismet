@@ -13,6 +13,7 @@ import {
   type Moment, type MomentDetail, type MomentComment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
@@ -82,7 +83,9 @@ export function MomentModal({
     meta.content?.mime?.startsWith('video/') ||
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
+  const isTextMoment = meta.content?.mime === 'text/plain'
   const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
+  const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   const creatorAddress = moment.creator.address
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
@@ -326,6 +329,13 @@ export function MomentModal({
               className="object-cover"
               sizes="(max-width: 768px) 100vw, 50vw"
             />
+          ) : isTextMoment ? (
+            <div className="w-full h-full flex flex-col justify-center p-6 sm:p-8 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
+              <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-3">writing</span>
+              <p className="text-sm font-mono text-[#bbb] line-clamp-[14] leading-relaxed whitespace-pre-wrap">
+                {textSnippet ?? meta.name ?? 'untitled'}
+              </p>
+            </div>
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
@@ -474,6 +484,8 @@ export function MomentModal({
                   name={meta.name}
                   image={meta.image ? resolveUri(meta.image) : undefined}
                   creatorAddress={creatorAddress}
+                  contentUri={meta.content?.uri}
+                  contentMime={meta.content?.mime}
                   buttonClassName="h-auto sm:h-full"
                 />
               </div>

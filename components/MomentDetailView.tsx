@@ -10,6 +10,7 @@ import { isAddress } from 'viem'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
@@ -51,7 +52,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [detail, setDetail] = useState<MomentDetail | null>(
     initialDetail ?? getCachedDetail(address, tokenId) ?? null
   )
-  const [textContent, setTextContent] = useState<string | null>(null)
+  const textContentUri =
+    detail?.metadata?.content?.mime === 'text/plain'
+      ? detail.metadata.content.uri
+      : undefined
+  const textContent = useTextContent(textContentUri)
   const [comments, setComments] = useState<MomentComment[]>(
     () => getCachedComments(address, tokenId) ?? []
   )
@@ -150,17 +155,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     tryFetch()
     return () => { cancelled = true }
   }, [address, tokenId, initialDetail])
-
-  // Fetch text content for writing moments
-  useEffect(() => {
-    if (!detail) return
-    const { content } = detail.metadata ?? {}
-    if (content?.mime !== 'text/plain' || !content?.uri) return
-    fetch(resolveUri(content.uri))
-      .then((r) => r.text())
-      .then(setTextContent)
-      .catch(() => {})
-  }, [detail])
 
   // Fetch creator profile via shared cache
   useEffect(() => {
@@ -736,6 +730,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   name={meta.name}
                   image={meta.image ? resolveUri(meta.image) : undefined}
                   creatorAddress={creatorAddress}
+                  contentUri={meta.content?.uri}
+                  contentMime={meta.content?.mime}
                   narrowInput
                 />
               </div>

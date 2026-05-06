@@ -64,6 +64,8 @@ export async function POST(req: NextRequest) {
       name?: string
       image?: string
       creatorAddress?: string
+      contentUri?: string
+      contentMime?: string
     }
 
     const {
@@ -140,6 +142,8 @@ export async function POST(req: NextRequest) {
       name: body.name,
       image: body.image,
       creatorAddress: body.creatorAddress,
+      contentUri: body.contentUri,
+      contentMime: body.contentMime,
     })
 
     return NextResponse.json({ listing }, { status: 201 })

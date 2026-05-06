@@ -17,6 +17,7 @@ import {
   type MomentDetail,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { useTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { useAdmin } from '@/contexts/AdminContext'
 import { ERC1155_ABI } from '@/lib/seaport'
@@ -124,7 +125,9 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
     meta.content?.mime?.startsWith('video/') ||
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
+  const isTextMoment = meta.content?.mime === 'text/plain'
   const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
+  const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   return (
     <>
       <article className="group flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
@@ -171,6 +174,13 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
               onError={() => setImgError(true)}
               sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
             />
+          ) : isTextMoment ? (
+            <div className="w-full h-full flex flex-col justify-center p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
+              <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-2">writing</span>
+              <p className="text-xs sm:text-sm font-mono text-[#bbb] line-clamp-7 leading-relaxed whitespace-pre-wrap">
+                {textSnippet ?? meta.name ?? 'untitled'}
+              </p>
+            </div>
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
@@ -226,6 +236,8 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
                 name={meta.name}
                 image={meta.image ? resolveUri(meta.image) : undefined}
                 creatorAddress={moment.creator?.address}
+                contentUri={meta.content?.uri}
+                contentMime={meta.content?.mime}
               />
             </div>
           )}

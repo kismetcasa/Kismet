@@ -6,6 +6,7 @@ import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { useTextContent } from '@/lib/textCache'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import { BuyButton } from './BuyButton'
 import type { Listing } from '@/lib/listings'
@@ -36,6 +37,8 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
     if (armTimeoutRef.current) clearTimeout(armTimeoutRef.current)
   }, [])
 
+  const isTextListing = listing.contentMime === 'text/plain'
+  const textSnippet = useTextContent(isTextListing ? listing.contentUri : undefined)
   const isSeller = address?.toLowerCase() === listing.seller.toLowerCase()
   // formatPrice handles both ETH (wei, 18dp) and USDC (base units, 6dp) and
   // renders the right suffix. Royalty pct is a ratio of two same-currency
@@ -118,6 +121,13 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
             alt={listing.name ?? ''}
             className="w-full h-full object-cover"
           />
+        ) : isTextListing ? (
+          <div className="w-full h-full flex flex-col justify-center p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
+            <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-2">writing</span>
+            <p className="text-xs sm:text-sm font-mono text-[#bbb] line-clamp-7 leading-relaxed whitespace-pre-wrap">
+              {textSnippet ?? listing.name ?? 'untitled'}
+            </p>
+          </div>
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>

@@ -27,6 +27,11 @@ export interface Listing {
   name?: string
   image?: string
   creatorAddress?: string
+  // For writing-type moments: content uri (typically ar://) + mime ('text/plain').
+  // MarketCard fetches the body via the shared text cache when these are
+  // present and renders a preview snippet instead of "no preview".
+  contentUri?: string
+  contentMime?: string
 }
 
 const KEY_ALL = 'kismetart:listings'
