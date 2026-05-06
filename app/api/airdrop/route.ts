@@ -81,6 +81,11 @@ export async function POST(req: NextRequest) {
     if (!isAddress(r.recipientAddress)) {
       return NextResponse.json({ error: `invalid recipientAddress: ${r.recipientAddress}` }, { status: 400 })
     }
+    // tokenId interpolated into the signed message and the moment-meta KV
+    // key — restrict to digits to prevent any control-char shenanigans.
+    if (!r.tokenId || !/^\d+$/.test(String(r.tokenId))) {
+      return NextResponse.json({ error: `invalid tokenId: ${r.tokenId}` }, { status: 400 })
+    }
   }
 
   // Verify the caller is the moment creator via wallet signature

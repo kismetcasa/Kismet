@@ -34,6 +34,32 @@ export async function getSessionAddress(req: NextRequest): Promise<string | null
 }
 
 /**
+ * Read the session and, if valid, return both the address and the cookie
+ * token so the caller can re-stamp the cookie's Max-Age (sliding session).
+ * Industry standard: a session that expires at exactly 7 days regardless
+ * of activity logs active users out mid-action; refreshing on each
+ * authenticated request keeps them signed in as long as they're using
+ * the app, while still expiring after 7 days of inactivity.
+ */
+export async function getSessionContext(req: NextRequest): Promise<{ address: string; token: string } | null> {
+  const token = req.cookies.get(SESSION_COOKIE)?.value
+  if (!token) return null
+  const address = await verifySession(token)
+  if (!address) return null
+  return { address, token }
+}
+
+/**
+ * Slide the session forward by re-stamping the cookie + extending the
+ * Redis key TTL on a successful authenticated request. Cheap (1 cookie
+ * write + 1 Redis EXPIRE), idempotent across concurrent requests.
+ */
+export async function slideSession(res: NextResponse, token: string): Promise<void> {
+  setSessionCookie(res, token)
+  await redis.expire(key(token), SESSION_TTL_SECONDS).catch(() => {})
+}
+
+/**
  * Set the session cookie on a NextResponse with httpOnly + Secure + SameSite=Lax
  * + Max-Age aligned to SESSION_TTL_SECONDS. Lax (not Strict) so OAuth-style
  * redirect flows still pass through; Strict would also work but breaks bookmarked
