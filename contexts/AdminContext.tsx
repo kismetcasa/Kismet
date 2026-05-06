@@ -17,7 +17,9 @@ interface AdminContextValue {
   session: AdminSession | null
   startSession: () => Promise<void>
   featuredKeys: Set<string>
+  featuredCollectionAddrs: Set<string>
   toggleFeatured: (collectionAddress: string, tokenId: string) => Promise<void>
+  toggleFeaturedCollection: (collectionAddress: string) => Promise<void>
 }
 
 const AdminContext = createContext<AdminContextValue>({
@@ -25,7 +27,9 @@ const AdminContext = createContext<AdminContextValue>({
   session: null,
   startSession: async () => {},
   featuredKeys: new Set(),
+  featuredCollectionAddrs: new Set(),
   toggleFeatured: async () => {},
+  toggleFeaturedCollection: async () => {},
 })
 
 export function useAdmin() {
@@ -40,6 +44,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<AdminSession | null>(null)
   const sessionRef = useRef<AdminSession | null>(null)
   const [featuredKeys, setFeaturedKeys] = useState<Set<string>>(new Set())
+  const [featuredCollectionAddrs, setFeaturedCollectionAddrs] = useState<Set<string>>(new Set())
 
   function applySession(s: AdminSession | null) {
     sessionRef.current = s
@@ -74,7 +79,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, [isAdmin])
 
-  // Fetch featured keys on mount
+  // Fetch featured keys on mount (both moments and whole collections)
   useEffect(() => {
     fetch('/api/featured')
       .then((r) => r.json())
@@ -85,6 +90,15 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
               d.featured.map(
                 (f: { collectionAddress: string; tokenId: string }) =>
                   `${f.collectionAddress.toLowerCase()}:${f.tokenId}`,
+              ),
+            ),
+          )
+        }
+        if (Array.isArray(d.featuredCollections)) {
+          setFeaturedCollectionAddrs(
+            new Set(
+              d.featuredCollections.map(
+                (f: { collectionAddress: string }) => f.collectionAddress.toLowerCase(),
               ),
             ),
           )
@@ -154,8 +168,62 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     [isAdmin, startSession, featuredKeys],
   )
 
+  const toggleFeaturedCollection = useCallback(
+    async (collectionAddress: string) => {
+      if (!isAdmin) return
+
+      let s = sessionRef.current
+      if (!s) {
+        await startSession()
+        s = sessionRef.current
+        if (!s) return
+      }
+
+      const key = collectionAddress.toLowerCase()
+      const isFeatured = featuredCollectionAddrs.has(key)
+
+      try {
+        const res = await fetch('/api/featured', {
+          method: isFeatured ? 'DELETE' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'collection',
+            collectionAddress,
+            signature: s.signature,
+            timestamp: s.timestamp,
+          }),
+        })
+        if (!res.ok) {
+          const d = await res.json()
+          throw new Error(d.error ?? 'Failed')
+        }
+        setFeaturedCollectionAddrs((prev) => {
+          const next = new Set(prev)
+          if (isFeatured) next.delete(key)
+          else next.add(key)
+          return next
+        })
+      } catch (err) {
+        toast.error('Failed to update featured', {
+          description: err instanceof Error ? err.message : 'Unknown error',
+        })
+      }
+    },
+    [isAdmin, startSession, featuredCollectionAddrs],
+  )
+
   return (
-    <AdminContext.Provider value={{ isAdmin, session, startSession, featuredKeys, toggleFeatured }}>
+    <AdminContext.Provider
+      value={{
+        isAdmin,
+        session,
+        startSession,
+        featuredKeys,
+        featuredCollectionAddrs,
+        toggleFeatured,
+        toggleFeaturedCollection,
+      }}
+    >
       {children}
     </AdminContext.Provider>
   )

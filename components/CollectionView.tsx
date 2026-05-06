@@ -4,9 +4,10 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Star } from 'lucide-react'
 import { resolveUri, shortAddress, type Moment, type MomentAdmin } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { ProfileAvatar } from './ProfileAvatar'
 
@@ -73,7 +74,10 @@ export function CollectionView({
   createdAt,
 }: CollectionViewProps) {
   const router = useRouter()
+  const { isAdmin, featuredCollectionAddrs, toggleFeaturedCollection } = useAdmin()
   const [profiles, setProfiles] = useState<Record<string, AvatarProfile>>({})
+
+  const isFeatured = featuredCollectionAddrs.has(address.toLowerCase())
 
   const firstMoment = moments[0]
   const displayName = collectionName || shortAddress(address)
@@ -159,6 +163,18 @@ export function CollectionView({
           )}
           {description && (
             <p className="text-xs font-mono text-[#555] mt-1 line-clamp-3">{description}</p>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() => toggleFeaturedCollection(address)}
+              className={`flex items-center gap-1.5 text-xs font-mono mt-2 transition-colors w-fit ${
+                isFeatured ? 'text-yellow-400' : 'text-[#555] hover:text-[#888]'
+              }`}
+              title={isFeatured ? 'Unfeature collection' : 'Feature collection'}
+            >
+              <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+              {isFeatured ? 'unfeature' : 'feature'}
+            </button>
           )}
         </div>
       </div>
