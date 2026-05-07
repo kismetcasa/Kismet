@@ -6,13 +6,14 @@ import Image from 'next/image'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check, X, Search } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
 import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
+import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { toastError } from '@/lib/toast'
 
 interface Payment {
@@ -545,12 +546,55 @@ export function ProfileView({ address }: ProfileViewProps) {
     ),
   }
 
+  // ─── permissions banner gate ─────────────────────────────────────────────
+  // Conditional surface for the /permissions dashboard. Phase 3 deployed
+  // the dashboard but didn't link it from anywhere user-facing — the
+  // entry point is here, on the profile owner's own page, and ONLY
+  // when at least one of their collections is confirmed missing
+  // smart-wallet ADMIN. We pass an empty input to the hook for non-
+  // owners so the wagmi multicall doesn't fire; non-owners see no
+  // banner regardless of the underlying permission state (private
+  // info to the owner only).
+  const collectionAddressesForPerms = isOwner
+    ? artistCollections.map((c) => c.contractAddress)
+    : []
+  const { missingCount: ownCollectionsMissingAdmin } = useCollectionsPermissions(
+    collectionAddressesForPerms,
+  )
+
   // ─── render ───────────────────────────────────────────────────────────────
 
   const displayName = profile?.username || profile?.ensName || shortAddress(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
+      {/* Permissions banner — owner-only, only when issues exist. The
+          /permissions dashboard the link routes to is the central
+          place for fixing legacy collections; this banner is the
+          discoverability bridge. Hidden when missingCount is 0 to
+          avoid permanent UI noise on a healthy profile. */}
+      {isOwner && ownCollectionsMissingAdmin > 0 && (
+        <Link
+          href="/permissions"
+          className="-mb-6 border border-amber-700/50 bg-amber-950/30 hover:bg-amber-950/40 p-3 sm:p-4 flex items-center gap-3 transition-colors"
+        >
+          <ShieldAlert size={14} className="text-amber-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-mono text-amber-200">
+              {ownCollectionsMissingAdmin === 1
+                ? '1 of your collections needs authorize'
+                : `${ownCollectionsMissingAdmin} of your collections need authorize`}
+            </p>
+            <p className="text-[11px] font-mono text-amber-200/70 mt-0.5">
+              Tap to review and grant Kismet ADMIN — one onchain transaction per collection.
+            </p>
+          </div>
+          <span className="text-amber-300 font-mono text-xs flex-shrink-0" aria-hidden>
+            →
+          </span>
+        </Link>
+      )}
+
       {/* Profile header */}
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-6">
