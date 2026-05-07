@@ -9,6 +9,7 @@ import { ProfileAvatar } from './ProfileAvatar'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { humanError } from '@/lib/toast'
 import { shortAddress } from '@/lib/inprocess'
+import { CopyAddress } from './CopyAddress'
 
 type ModalTab = 'feed' | 'settings'
 
@@ -156,6 +157,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                           <span className="text-xs font-mono text-[#888]">
                             {shortAddress(actor)}
                           </span>
+                          <CopyAddress address={actor} size={11} />
                         </div>
                         <button
                           onClick={() => handleUnmute(actor)}

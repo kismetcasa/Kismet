@@ -20,6 +20,7 @@ import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
+import { CopyAddress } from './CopyAddress'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'
 
@@ -727,17 +728,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </div>
               </div>
             )}
-            <Link
-              href={creatorAddress ? `/profile/${creatorAddress}` : '#'}
-              className="flex items-center gap-2 group w-fit"
-            >
-              {creatorAddress && (
-                <ProfileAvatar address={creatorAddress} avatarUrl={creatorAvatar} size={22} />
-              )}
-              <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
-                {creatorName || shortAddress(creatorAddress)}
-              </span>
-            </Link>
+            <div className="flex items-center gap-1.5">
+              <Link
+                href={creatorAddress ? `/profile/${creatorAddress}` : '#'}
+                className="flex items-center gap-2 group"
+              >
+                {creatorAddress && (
+                  <ProfileAvatar address={creatorAddress} avatarUrl={creatorAvatar} size={22} />
+                )}
+                <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
+                  {creatorName || shortAddress(creatorAddress)}
+                </span>
+              </Link>
+              {creatorAddress && <CopyAddress address={creatorAddress} size={11} />}
+            </div>
             {collectionName && (
               <Link
                 href={`/collection/${address}`}
