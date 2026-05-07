@@ -126,15 +126,17 @@ export default async function MomentPage({ params }: Props) {
   // For text moments, prefetch the body at SSR time so the client renders
   // it instantly from the React-props payload instead of waiting for a
   // separate arweave/IPFS fetch. Content is immutable so we skip revalidation.
-  const textUri = detail?.metadata?.content?.mime === 'text/plain'
-    ? detail.metadata.content.uri
-    : undefined
+  // If the Arweave gateway hasn't propagated yet (Turbo settlement lag),
+  // fall back to the KV mirror written at mint time by /api/write so the
+  // body still renders.
+  const isTextMoment = detail?.metadata?.content?.mime === 'text/plain'
+  const textUri = isTextMoment ? detail?.metadata?.content?.uri : undefined
   let initialTextContent: string | undefined
   if (textUri) {
     try {
       const tr = await fetch(resolveUri(textUri), { cache: 'force-cache' })
       if (tr.ok) initialTextContent = await tr.text()
-    } catch { /* non-fatal — client will fetch on mount */ }
+    } catch { /* non-fatal — KV fallback below, then client retry on mount */ }
     // Fall through to the KV mirror written at mint time so the body
     // renders during Arweave propagation lag instead of staying blank.
     if (initialTextContent === undefined) {

@@ -9,10 +9,17 @@ const keyMomentContent = (addr: string, tokenId: string) =>
 const MAX_CONTENT_BYTES = 200 * 1024
 
 /**
- * Mirror a writing-moment body to KV at mint time so the moment page can
- * render it during Arweave propagation lag. Silently no-ops on oversize
- * input — the body still lives on Arweave via inprocess, so the worst
- * case is an empty SSR fall-through (same as before this mirror existed).
+ * Mirrors the raw body of a text ("writing") moment to KV at mint time so
+ * the moment page can render it during Arweave propagation lag — and as
+ * a permanent fallback if Turbo's tx ID never propagates to gateways.
+ * Inprocess uploads the body server-side, returning a `metadata.content.uri`
+ * we don't control; if it 404s, the URI is on-chain so re-uploading
+ * isn't an option.
+ *
+ * Stored without TTL — on-chain references are permanent. Oversized
+ * bodies (> MAX_CONTENT_BYTES) are skipped: the body still lives on
+ * Arweave via inprocess, so the worst case degrades to an empty SSR
+ * fall-through (same as pre-mirror).
  */
 export async function setMomentContent(
   addr: string,
@@ -26,12 +33,33 @@ export async function setMomentContent(
     )
     return
   }
-  await redis.set(keyMomentContent(addr, tokenId), content)
+  try {
+    await redis.set(keyMomentContent(addr, tokenId), content)
+  } catch (err) {
+    // Don't fail the mint over a KV miss — the body is still on Arweave
+    // (eventually). Surface in logs so we can spot a misconfigured Redis
+    // instead of silently degrading.
+    console.error('[momentContent] set failed', {
+      addr,
+      tokenId,
+      err: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
+/**
+ * Read the mirrored body. Returns null when the moment isn't text, was
+ * minted before the mirror existed, or KV is unreachable. Callers should
+ * use this purely as a fallback after the Arweave fetch fails.
+ */
 export async function getMomentContent(
   addr: string,
   tokenId: string,
 ): Promise<string | null> {
-  return redis.get<string>(keyMomentContent(addr, tokenId))
+  try {
+    const v = await redis.get<string | null>(keyMomentContent(addr, tokenId))
+    return typeof v === 'string' ? v : null
+  } catch {
+    return null
+  }
 }

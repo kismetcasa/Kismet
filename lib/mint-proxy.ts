@@ -248,9 +248,11 @@ export async function proxyMintRequest(
       void setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {})
 
       // Mirror the raw writing body to KV so the moment page can render
-      // it during Arweave propagation lag. Only the writing endpoint
-      // carries tokenContent — media mints forward tokenMetadataURI
-      // instead, so the conditional naturally scopes this to writes.
+      // it during Arweave propagation lag — and as a permanent fallback
+      // if the Turbo tx ID never settles to gateways. Only the writing
+      // endpoint carries tokenContent; media mints forward
+      // tokenMetadataURI instead, so the conditional naturally scopes
+      // this to writes.
       const tokenContent =
         typeof tokenObj.tokenContent === 'string' ? tokenObj.tokenContent : undefined
       if (tokenContent) {
