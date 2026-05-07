@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, isAddress, verifyMessage, type Address } from 'viem'
+import { createPublicClient, http, verifyMessage, type Address } from 'viem'
+import { isAddress } from '@/lib/address'
 import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'

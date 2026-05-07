@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage, isAddress } from 'viem'
+import { verifyMessage } from 'viem'
+import { isAddress } from '@/lib/address'
 import { getListing, updateListingStatus } from '@/lib/listings'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'

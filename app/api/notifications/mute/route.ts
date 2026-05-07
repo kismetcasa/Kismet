@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 import { muteActor, unmuteActor, getMutedActors } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionContext, slideSession } from '@/lib/session'

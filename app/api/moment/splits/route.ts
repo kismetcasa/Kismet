@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 import { redis } from '@/lib/redis'
 
 export async function GET(req: NextRequest) {
