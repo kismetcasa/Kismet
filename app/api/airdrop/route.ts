@@ -185,6 +185,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
     }
 
+    // Log upstream rejections so we can debug from Vercel logs without
+    // bothering the user. Includes the wire payload + status for context.
+    if (!res.ok) {
+      console.warn('[airdrop] inprocess rejected', {
+        status: res.status,
+        body: parsed,
+        sent: { recipients: body.recipients, collectionAddress: body.collectionAddress },
+      })
+    }
+
     // Fan-out: notify each airdrop recipient that they received a token from
     // the creator. Fire-and-forget — KV failures never undo the on-chain
     // airdrop. Mirrors the mint follower-fanout pattern in lib/mint-proxy.ts.

@@ -70,6 +70,18 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
+        // Surface the full upstream payload to the console so we can debug
+        // 400s from inprocess validators without depending on the user
+        // copying the toast text. Includes the request payload too so we
+        // can verify the wire shape matches what their docs say.
+        console.warn('[airdrop] /api/airdrop rejected', {
+          status: res.status,
+          response: data,
+          requestPayload: {
+            collectionAddress: selected.address,
+            recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
+          },
+        })
         const errors = Array.isArray(data.errors)
           ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
           : ''
