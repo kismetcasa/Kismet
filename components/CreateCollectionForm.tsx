@@ -1,25 +1,40 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { parseEventLogs, isAddress, parseEther } from 'viem'
 import { toast } from 'sonner'
-import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
-import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, buildCoverTokenSetupActions } from '@/lib/collections'
-import { CREATE_REFERRAL } from '@/lib/config'
+import { Upload, X } from 'lucide-react'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { CREATE_REFERRAL } from '@/lib/config'
 import { toastError } from '@/lib/toast'
-import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
 }
 
+/**
+ * Deploys a new collection via inprocess's `POST /api/collections` (proxied
+ * through `/api/collection/create`). The previous implementation called
+ * Zora's factory directly from the user's wallet — that produced a working
+ * contract, but inprocess's platform smart account never received ADMIN
+ * permission, so every subsequent `/api/mint` call into the collection
+ * reverted at gas estimation ("useroperation reverted: execution
+ * reverted"). Routing through inprocess fixes that at the source: their
+ * deploy grants their smart account the permissions it needs while still
+ * setting the user as defaultAdmin, and the user pays no gas because
+ * inprocess sponsors the deploy via the API key.
+ *
+ * Trade-offs vs the previous flow: features absent from inprocess's
+ * documented `/api/collections` body are not configurable here — royalty
+ * BPS / recipient and explicit minter grants. They can be added back if
+ * inprocess exposes them in the API. The cover-mint optimization is
+ * dropped for now; minting a cover is a one-step follow-up via the Mint
+ * tab and works because the new collection accepts inprocess-driven mints.
+ */
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
   const router = useRouter()
   const { address, isConnected } = useAccount()
@@ -30,186 +45,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [coverPreview, setCoverPreview] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [royaltyBps, setRoyaltyBps] = useState('500')
-  const [royaltyRecipient, setRoyaltyRecipient] = useState('')
-  const [minters, setMinters] = useState<string[]>([])
-  const [minterInput, setMinterInput] = useState('')
-  const [mintCover, setMintCover] = useState(false)
-  const [coverPrice, setCoverPrice] = useState('0')
-  const [coverSupply, setCoverSupply] = useState('')
-  const [step, setStep] = useState<'idle' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'done'>('idle')
+  const [step, setStep] = useState<
+    'idle' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'done'
+  >('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [collectionAddress, setCollectionAddress] = useState<string | null>(null)
-  const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
-  const [deployedImageUri, setDeployedImageUri] = useState<string | undefined>(undefined)
+  const [txHash, setTxHash] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
-
-  const { writeContractAsync } = useWriteContract()
-  const ensureBase = useEnsureBase()
-
-  // Recovery + timeout for in-flight deploys (industry-standard pattern).
-  // Persisted to localStorage so a refresh, tab close, or wallet disconnect
-  // mid-deploy doesn't lose the tx — we resume the receipt watch on next
-  // mount, register KV when it confirms, and redirect to the collection.
-  const PENDING_KEY = address ? `kismetart:pending-deploy:${address.toLowerCase()}` : ''
-  const PENDING_MAX_AGE_MS = 30 * 60 * 1000 // 30 min — older entries are abandoned
-  const TX_TIMEOUT_MS = 90 * 1000 // 90s before we surface a "still pending" message
-
-  function addMinter() {
-    const addr = minterInput.trim()
-    if (!isAddress(addr)) { toast.error('Invalid address'); return }
-    if (minters.includes(addr)) return
-    setMinters((prev) => [...prev, addr])
-    setMinterInput('')
-  }
-
-  const { data: receipt } = useWaitForTransactionReceipt({
-    hash: txHash,
-    query: { enabled: !!txHash && step === 'deploying' },
-  })
-
-  // 1. Recovery on mount: if a deploy was in flight when the user left the
-  //    page, restore the txHash + form state and resume the receipt watch.
-  useEffect(() => {
-    if (!address || !PENDING_KEY) return
-    try {
-      const raw = localStorage.getItem(PENDING_KEY)
-      if (!raw) return
-      const pending = JSON.parse(raw) as {
-        txHash: `0x${string}`
-        name: string
-        description: string
-        deployedImageUri: string
-        mintCover: boolean
-        startedAt: number
-      }
-      if (Date.now() - pending.startedAt > PENDING_MAX_AGE_MS) {
-        localStorage.removeItem(PENDING_KEY)
-        return
-      }
-      setName(pending.name)
-      setDescription(pending.description)
-      setDeployedImageUri(pending.deployedImageUri || undefined)
-      setMintCover(pending.mintCover)
-      setTxHash(pending.txHash)
-      setStep('deploying')
-      toast.loading('Resuming deploy…', { id: 'create-collection' })
-    } catch {}
-    // We only want this on initial mount per address; intentionally narrow deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address])
-
-  // 2. Persist the in-flight tx so a refresh can resume it. Triggered as soon
-  //    as we have a txHash and we're in the deploying state.
-  useEffect(() => {
-    if (!PENDING_KEY || step !== 'deploying' || !txHash) return
-    try {
-      localStorage.setItem(
-        PENDING_KEY,
-        JSON.stringify({
-          txHash,
-          name: name.trim(),
-          description: description.trim(),
-          deployedImageUri: deployedImageUri ?? '',
-          mintCover,
-          startedAt: Date.now(),
-        }),
-      )
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [txHash, step])
-
-  // 3. Stuck-tx warning: if we're still waiting for the receipt after 90s,
-  //    surface a clearer message with a link to basescan so the user has
-  //    options instead of staring at "Deploying…" indefinitely.
-  useEffect(() => {
-    if (step !== 'deploying' || !txHash) return
-    const timer = setTimeout(() => {
-      toast.loading(
-        'Tx still pending — refresh later to resume, or check status on basescan',
-        {
-          id: 'create-collection',
-          description: `https://basescan.org/tx/${txHash}`,
-        },
-      )
-    }, TX_TIMEOUT_MS)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, txHash])
-
-  useEffect(() => {
-    if (!receipt || step !== 'deploying') return
-
-    const clearPending = () => {
-      if (PENDING_KEY) {
-        try { localStorage.removeItem(PENDING_KEY) } catch {}
-      }
-    }
-
-    if (receipt.status === 'reverted') {
-      clearPending()
-      setStep('idle')
-      setTxHash(undefined)
-      setUploadProgress(0)
-      toast.error('Transaction reverted', { id: 'create-collection', description: 'The deploy transaction failed on-chain.' })
-      return
-    }
-    const logs = parseEventLogs({
-      abi: FACTORY_ABI,
-      eventName: 'SetupNewContract',
-      logs: receipt.logs,
-    })
-    // Only trust the parsed factory event. Falling back to logs[0]?.address
-    // would resolve to any unrelated contract that happened to emit a log.
-    const deployedAddress = (logs[0]?.args?.newContract as string | undefined) ?? null
-
-    if (!deployedAddress) {
-      // Tx confirmed but no SetupNewContract event — wrong chain / contract.
-      clearPending()
-      setStep('idle')
-      setTxHash(undefined)
-      toast.error('Deploy incomplete', {
-        id: 'create-collection',
-        description: 'Tx confirmed but no collection address was emitted — likely wrong chain or contract.',
-      })
-      return
-    }
-
-    setCollectionAddress(deployedAddress)
-
-    // Cookie auth: the session was already established before the deploy
-    // (ensureSession ran on Arweave upload), so this call rides on the same
-    // session and the server can verify the caller matches `artist` and is
-    // the on-chain admin of `address`.
-    fetch('/api/collections', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        address: deployedAddress,
-        name: name.trim(),
-        description: description.trim() || undefined,
-        image: deployedImageUri,
-        artist: address,
-      }),
-    }).catch(() => {})
-    onDeployed?.(deployedAddress, name)
-
-    clearPending()
-    setStep('done')
-    toast.success(
-      mintCover ? 'Collection deployed + cover minted!' : 'Collection deployed!',
-      { id: 'create-collection' },
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [receipt, step])
-
-  // Once everything (deploy + optional cover mint) finishes, route to the new collection.
-  useEffect(() => {
-    if (step !== 'done' || !collectionAddress) return
-    router.push(`/collection/${collectionAddress}`)
-  }, [step, collectionAddress, router])
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
@@ -241,19 +84,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       toast.error('Please enter a collection name')
       return
     }
-    if (royaltyRecipient.trim() && !isAddress(royaltyRecipient.trim())) {
-      toast.error('Invalid royalty recipient address')
-      return
-    }
-    if (mintCover && coverSupply.trim()) {
-      const s = parseInt(coverSupply.trim(), 10)
-      if (isNaN(s) || s < 1) { toast.error('Cover supply must be at least 1'); return }
-    }
-
-    setDeployedImageUri(undefined)
 
     try {
-      // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
+      // Cookie session — Arweave uploads need it (server holds the funding
+      // key) and so does /api/collection/create (binds caller to artist).
       await ensureSession()
 
       setStep('uploading-image')
@@ -263,7 +97,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         setUploadProgress(pct)
         toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
       })
-      setDeployedImageUri(imageUri)
 
       setStep('uploading-metadata')
       toast.loading('Uploading collection metadata…', { id: 'create-collection' })
@@ -276,83 +109,48 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       const contractURI = await uploadJson(metadata)
 
       setStep('deploying')
-      toast.loading(
-        mintCover ? 'Deploying collection + cover token…' : 'Deploying collection…',
-        { id: 'create-collection' },
-      )
+      toast.loading('Deploying collection…', { id: 'create-collection' })
 
-      await ensureBase()
-
-      const bps = Math.max(0, Math.min(10000, parseInt(royaltyBps, 10) || 0))
-      const recipient = (royaltyRecipient.trim() || address) as `0x${string}`
-
-      // Collection-wide minter permissions for any addresses the user added.
-      // The factory replays each setupAction on the new collection during deploy.
-      const minterActions = minters
-        .filter((m) => isAddress(m))
-        .map((m) => encodeMinterPermission(m as `0x${string}`))
-
-      // If cover mint is enabled, append the cover-token setupActions so the
-      // token is created in the same transaction. Mirrors how inprocess.world's
-      // own frontend does it (see lib/protocolSdk/create/token-setup.ts in
-      // their public repo). The factory acts as transient admin to run these.
-      let coverActions: `0x${string}`[] = []
-      if (mintCover) {
-        const rawCoverPrice = coverPrice.trim()
-        const normalizedCoverPrice = !rawCoverPrice || rawCoverPrice === '.'
-          ? '0'
-          : rawCoverPrice.startsWith('.')
-            ? `0${rawCoverPrice}`
-            : rawCoverPrice
-        const priceWei = parseEther(normalizedCoverPrice)
-        const maxSupplyVal = coverSupply.trim() ? BigInt(parseInt(coverSupply, 10)) : undefined
-        const now = BigInt(Math.floor(Date.now() / 1000))
-        const farFuture = 18446744073709551615n // max uint64
-        coverActions = buildCoverTokenSetupActions({
-          tokenURI: contractURI,
-          maxSupply: maxSupplyVal,
-          createReferral: CREATE_REFERRAL as `0x${string}`,
-          pricePerTokenWei: priceWei,
-          saleStart: now,
-          saleEnd: farFuture,
-          fundsRecipient: address,
-          creator: address,
-          mintToCreatorCount: 1,
-        })
-      }
-
-      const setupActions = [...minterActions, ...coverActions]
-
-      const hash = await writeContractAsync({
-        chainId: base.id,
-        address: FACTORY_ADDRESS,
-        abi: FACTORY_ABI,
-        functionName: 'createContract',
-        args: [
-          contractURI,
-          name.trim(),
-          {
-            royaltyMintSchedule: 0,
-            royaltyBPS: bps,
-            royaltyRecipient: recipient,
-          },
-          address,
-          setupActions,
-        ],
+      const res = await fetch('/api/collection/create', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          uri: contractURI,
+          image: imageUri,
+          description: description.trim() || undefined,
+        }),
       })
-
-      setTxHash(hash)
-    } catch (err) {
-      // Clear any half-written pending state so a refresh doesn't try to
-      // resume a deploy that never broadcast.
-      if (PENDING_KEY) {
-        try { localStorage.removeItem(PENDING_KEY) } catch {}
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.detail ?? data.error ?? data.message ?? 'Deploy failed')
       }
+      const deployedAddress: string | undefined = data.contractAddress
+      if (!deployedAddress) {
+        throw new Error('Deploy succeeded but no contractAddress returned')
+      }
+
+      setCollectionAddress(deployedAddress)
+      setTxHash(typeof data.hash === 'string' ? data.hash : null)
+      onDeployed?.(deployedAddress, name)
+      setStep('done')
+      toast.success('Collection deployed!', { id: 'create-collection' })
+    } catch (err) {
       setStep('idle')
       setUploadProgress(0)
       toastError('Deploy', err, { id: 'create-collection' })
     }
   }
+
+  // Auto-redirect once the success screen has rendered so the user lands
+  // on their new collection page without a manual click. Effect (not in
+  // render) so it fires exactly once per (step, address) transition.
+  useEffect(() => {
+    if (step !== 'done' || !collectionAddress) return
+    const t = setTimeout(() => router.push(`/collection/${collectionAddress}`), 1500)
+    return () => clearTimeout(t)
+  }, [step, collectionAddress, router])
 
   const isBusy = step !== 'idle' && step !== 'done'
 
@@ -390,18 +188,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           onClick={() => {
             setStep('idle')
             setCollectionAddress(null)
-            setTxHash(undefined)
+            setTxHash(null)
             clearFile()
             setName('')
             setDescription('')
-            setRoyaltyBps('500')
-            setRoyaltyRecipient('')
-            setMinters([])
-            setMinterInput('')
-            setMintCover(false)
-            setCoverPrice('0')
-            setCoverSupply('')
-            setDeployedImageUri(undefined)
           }}
           className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
         >
@@ -415,46 +205,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     <form onSubmit={handleCreate} className="flex flex-col gap-6">
       {/* Cover image */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-mono text-[#888] uppercase tracking-wider">
-            Cover Image <span className="text-[#efefef]">*</span>
-          </span>
-          <div className="flex items-center gap-1.5">
-            {mintCover && (
-              <>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={coverPrice}
-                    onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
-                    placeholder="0"
-                    className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-                  />
-                  <span className="text-[10px] font-mono text-[#555]">eth</span>
-                </div>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={coverSupply}
-                  onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
-                  placeholder="∞"
-                  className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-[#555]"
-                />
-              </>
-            )}
-            <button
-              type="button"
-              onClick={() => setMintCover((v) => !v)}
-              title={mintCover ? 'cancel mint' : 'also mint as first token'}
-              className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors ${
-                mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/10' : 'border-[#2a2a2a] hover:border-[#555]'
-              }`}
-            >
-              {mintCover && <Check size={9} className="text-[#8B5CF6]" />}
-            </button>
-          </div>
-        </div>
+        <span className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+          Cover Image <span className="text-[#efefef]">*</span>
+        </span>
         {coverPreview ? (
           <div className="relative aspect-video bg-[#111] border border-[#2a2a2a] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -526,87 +279,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         />
       </div>
 
-      {/* Royalty */}
-      <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Royalty (%)
-        </label>
-        <div className="relative">
-          <input
-            type="number"
-            value={royaltyBps === '0' ? '' : String(parseInt(royaltyBps, 10) / 100)}
-            onChange={(e) => {
-              const pct = parseFloat(e.target.value) || 0
-              setRoyaltyBps(String(Math.round(pct * 100)))
-            }}
-            min="0"
-            max="100"
-            step="0.5"
-            placeholder="5"
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-8"
-          />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-[#555]">%</span>
-        </div>
-        <p className="text-xs text-[#555] font-mono mt-1">paid to your wallet on secondary sales</p>
-      </div>
-
-      {/* Royalty recipient */}
-      <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Royalty Recipient
-        </label>
-        <input
-          type="text"
-          value={royaltyRecipient}
-          onChange={(e) => setRoyaltyRecipient(e.target.value)}
-          placeholder={address ?? '0x… (defaults to your wallet)'}
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-        />
-      </div>
-
-      {/* Authorized minters */}
-      <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Authorized Minters
-        </label>
-        <div className="flex gap-2 mb-2">
-          <input
-            type="text"
-            value={minterInput}
-            onChange={(e) => setMinterInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== 'Enter') return
-              e.preventDefault()
-              addMinter()
-            }}
-            placeholder="0x… wallet address"
-            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-          />
-          <button
-            type="button"
-            onClick={addMinter}
-            className="px-3 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
-        {minters.length > 0 && (
-          <ul className="flex flex-col gap-1">
-            {minters.map((m) => (
-              <li key={m} className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2">
-                <span className="text-xs font-mono text-[#888] truncate">{m}</span>
-                <button
-                  type="button"
-                  onClick={() => setMinters((prev) => prev.filter((x) => x !== m))}
-                  className="ml-2 text-[#555] hover:text-[#888] flex-shrink-0"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <p className="text-[10px] font-mono text-[#444] -mt-2">
+        deploy is sponsored — no gas required from your wallet
+      </p>
 
       {/* Submit */}
       <button
@@ -626,9 +301,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
 function stepLabel(step: string, progress: number): string {
   switch (step) {
-    case 'uploading-image': return progress > 0 ? `uploading image… ${progress}%` : 'uploading image…'
-    case 'uploading-metadata': return 'uploading metadata…'
-    case 'deploying': return 'deploying…'
-    default: return 'working…'
+    case 'uploading-image':
+      return progress > 0 ? `uploading image… ${progress}%` : 'uploading image…'
+    case 'uploading-metadata':
+      return 'uploading metadata…'
+    case 'deploying':
+      return 'deploying…'
+    default:
+      return 'working…'
   }
 }

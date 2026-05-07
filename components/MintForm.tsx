@@ -279,7 +279,20 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
-          throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
+          const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
+          // Inprocess uses an ERC-4337 smart account to submit the mint. If the
+          // target collection was deployed outside of Kismet/inprocess (e.g.
+          // the old Zora-factory direct-deploy path), inprocess's smart account
+          // doesn't hold the ADMIN bit needed to call setupNewToken — every
+          // mint reverts at gas estimation with this exact phrasing. Surface a
+          // clearer message that points the user at the only working path:
+          // create a fresh collection through Kismet.
+          if (/useroperation reverted|user operation reverted|execution reverted/i.test(raw)) {
+            throw new Error(
+              "Can't mint into this collection. It was deployed outside Kismet, so our minting service isn't authorized on it. Create a new collection from the Create tab to mint.",
+            )
+          }
+          throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
@@ -337,7 +350,20 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
-          throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
+          const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
+          // Inprocess uses an ERC-4337 smart account to submit the mint. If the
+          // target collection was deployed outside of Kismet/inprocess (e.g.
+          // the old Zora-factory direct-deploy path), inprocess's smart account
+          // doesn't hold the ADMIN bit needed to call setupNewToken — every
+          // mint reverts at gas estimation with this exact phrasing. Surface a
+          // clearer message that points the user at the only working path:
+          // create a fresh collection through Kismet.
+          if (/useroperation reverted|user operation reverted|execution reverted/i.test(raw)) {
+            throw new Error(
+              "Can't mint into this collection. It was deployed outside Kismet, so our minting service isn't authorized on it. Create a new collection from the Create tab to mint.",
+            )
+          }
+          throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
