@@ -6,14 +6,13 @@ import Image from 'next/image'
 import { useAccount, useReadContract, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { isAddress } from 'viem'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_MINT_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -83,8 +82,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [collectionName, setCollectionName] = useState<string | null>(null)
   const [collectionImage, setCollectionImage] = useState<string | null>(null)
   const [hasSplits, setHasSplits] = useState(false)
-  const [splitAddress, setSplitAddress] = useState('')
   const [distributing, setDistributing] = useState(false)
+  const { data: splitAddress } = useReadContract({
+    address: address as `0x${string}`,
+    abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
+    functionName: 'getCreatorRewardRecipient',
+    args: [BigInt(tokenId)],
+    query: { enabled: isCreator && hasSplits },
+  })
   const [distributeHash, setDistributeHash] = useState<string | null>(null)
   // Edit-metadata flow: visible only to moment admins. Pre-populated from
   // the loaded MomentDetail so they can fix typos / replace the image
@@ -271,10 +276,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   async function handleDistribute() {
-    const addr = splitAddress.trim()
-    if (!addr || !isAddress(addr)) { toast.error('Invalid split address'); return }
+    if (!splitAddress) { toast.error('Split address not found'); return }
     if (!connectedAddress) { toast.error('Wallet not connected'); return }
     if (!detail) { toast.error('Moment details still loading'); return }
+    const addr = splitAddress
     // Route the distribute call to the right token type per the moment's
     // sale config — USDC moments need tokenAddress=USDC_BASE on the
     // inprocess side, otherwise the call defaults to ETH and distributes
@@ -830,22 +835,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {isCreator && hasSplits && (
             <div className="px-5 pb-4 flex flex-col gap-2">
               <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">distribute earnings</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={splitAddress}
-                  onChange={(e) => setSplitAddress(e.target.value)}
-                  placeholder="0x… split address"
-                  className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-                />
-                <button
-                  onClick={handleDistribute}
-                  disabled={distributing || !splitAddress.trim()}
-                  className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
-                >
-                  {distributing ? '…' : '→'}
-                </button>
-              </div>
+              <button
+                onClick={handleDistribute}
+                disabled={distributing || !splitAddress}
+                className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+              >
+                {distributing ? 'distributing…' : splitAddress ? 'distribute' : 'loading…'}
+              </button>
               {distributeHash && (
                 <a
                   href={`https://basescan.org/tx/${distributeHash}`}

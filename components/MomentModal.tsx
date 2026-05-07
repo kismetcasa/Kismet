@@ -6,7 +6,6 @@ import Link from 'next/link'
 import { X, Star, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 import { useAccount, useReadContract, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { isAddress } from 'viem'
 import { toast } from 'sonner'
 import {
   resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT,
@@ -16,7 +15,7 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_MINT_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -55,8 +54,14 @@ export function MomentModal({
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
   const { signMessageAsync } = useSignMessage()
   const [hasSplits, setHasSplits] = useState(false)
-  const [splitAddress, setSplitAddress] = useState('')
   const [distributing, setDistributing] = useState(false)
+  const { data: splitAddress } = useReadContract({
+    address: moment.address as `0x${string}`,
+    abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
+    functionName: 'getCreatorRewardRecipient',
+    args: [BigInt(moment.token_id)],
+    query: { enabled: isCreator && hasSplits },
+  })
   const [distributeHash, setDistributeHash] = useState<string | null>(null)
   const [creatorName, setCreatorName] = useState(
     () => initialCreatorName ?? shortAddress(moment.creator.address),
@@ -161,10 +166,10 @@ export function MomentModal({
   }, [moment.address, moment.token_id, isCreator])
 
   async function handleDistribute() {
-    const addr = splitAddress.trim()
-    if (!addr || !isAddress(addr)) { toast.error('Invalid split address'); return }
+    if (!splitAddress) { toast.error('Split address not found'); return }
     if (!connectedAddress) { toast.error('Wallet not connected'); return }
     if (!currency) { toast.error('Sale config still loading'); return }
+    const addr = splitAddress
     setDistributing(true)
     try {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
@@ -442,22 +447,13 @@ export function MomentModal({
           {isCreator && hasSplits && (
             <div className="px-5 pb-2 flex flex-col gap-2">
               <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">distribute earnings</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={splitAddress}
-                  onChange={(e) => setSplitAddress(e.target.value)}
-                  placeholder="0x… split address"
-                  className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-                />
-                <button
-                  onClick={handleDistribute}
-                  disabled={distributing || !splitAddress.trim()}
-                  className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
-                >
-                  {distributing ? '…' : '→'}
-                </button>
-              </div>
+              <button
+                onClick={handleDistribute}
+                disabled={distributing || !splitAddress}
+                className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+              >
+                {distributing ? 'distributing…' : splitAddress ? 'distribute' : 'loading…'}
+              </button>
               {distributeHash && (
                 <a
                   href={`https://basescan.org/tx/${distributeHash}`}
