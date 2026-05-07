@@ -158,7 +158,20 @@ export async function POST(req: NextRequest) {
         'x-api-key': apiKey,
         Accept: 'application/json',
       },
-      body: JSON.stringify({ recipients: body.recipients, collectionAddress: body.collectionAddress }),
+      // Inprocess expects the same `moment: { collectionAddress, tokenId,
+      // chainId }` envelope used by /moment/update-uri (their Zod validator
+      // returns "moment: expected object, received undefined" when omitted).
+      // Recipients ride alongside as a flat array of { recipientAddress,
+      // tokenId } so per-recipient tokenIds are still permitted by the
+      // upstream schema.
+      body: JSON.stringify({
+        moment: {
+          collectionAddress: body.collectionAddress,
+          tokenId,
+          chainId: 8453,
+        },
+        recipients: body.recipients,
+      }),
     })
     const text = await res.text()
     let parsed: unknown
