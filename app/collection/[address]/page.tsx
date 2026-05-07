@@ -13,6 +13,10 @@ interface Props {
 }
 
 interface CollectionDetail {
+  // Inprocess's current /api/collection shape returns `creator` (name + the
+  // deployer's wallet). Older indexer rows / cached responses may still
+  // surface `default_admin` instead, so we accept both and prefer creator.
+  creator?: { address: string; username?: string | null }
   default_admin?: { address: string; username?: string }
   payout_recipient?: string
   created_at?: string
@@ -113,7 +117,18 @@ export default async function CollectionPage({ params }: Props) {
     isCollectionHidden(address),
   ])
 
-  const defaultAdminAddress = detail?.default_admin?.address?.toLowerCase()
+  // Prefer the inprocess `creator` field (current shape); fall back to
+  // `default_admin` for older cached responses; finally fall back to the
+  // KV-stored artist (set at deploy time) so the chip never goes missing
+  // for collections we deployed even when inprocess hasn't surfaced an
+  // admin yet.
+  const adminAddressRaw =
+    detail?.creator?.address ??
+    detail?.default_admin?.address ??
+    kvMeta?.artist
+  const adminUsername =
+    detail?.creator?.username ?? detail?.default_admin?.username ?? undefined
+  const defaultAdminAddress = adminAddressRaw?.toLowerCase()
   const viewerLower = viewer?.toLowerCase() ?? null
   const isCreator =
     !!viewerLower &&
@@ -141,8 +156,8 @@ export default async function CollectionPage({ params }: Props) {
 
   const showPayout =
     !!detail?.payout_recipient &&
-    !!detail?.default_admin?.address &&
-    detail.payout_recipient.toLowerCase() !== detail.default_admin.address.toLowerCase()
+    !!adminAddressRaw &&
+    detail.payout_recipient.toLowerCase() !== adminAddressRaw.toLowerCase()
 
   return (
     <CollectionView
@@ -151,8 +166,8 @@ export default async function CollectionPage({ params }: Props) {
       collectionImage={displayMeta?.image}
       collectionDescription={displayMeta?.description}
       isTracked={!!kvMeta}
-      defaultAdminUsername={detail?.default_admin?.username}
-      defaultAdminAddress={detail?.default_admin?.address}
+      defaultAdminUsername={adminUsername}
+      defaultAdminAddress={adminAddressRaw}
       payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
       createdAt={detail?.created_at}
       initialHidden={hidden}
