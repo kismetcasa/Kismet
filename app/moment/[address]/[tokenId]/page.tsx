@@ -89,7 +89,13 @@ export default async function MomentPage({ params }: Props) {
     getFallbackMeta(address, tokenId),
   ])
 
-  const creator = detail?.momentAdmins?.[0]?.toLowerCase()
+  // Prefer the dedicated `creator` field injected by /api/moment from the
+  // timeline lookup. Fall back to momentAdmins[0] for backwards-compat
+  // (older cached responses, moments minted outside the Kismet flow where
+  // momentAdmins[0] happens to be the minter).
+  const creator =
+    detail?.creator?.address?.toLowerCase() ??
+    detail?.momentAdmins?.[0]?.toLowerCase()
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator
 

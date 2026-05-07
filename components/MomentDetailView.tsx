@@ -175,7 +175,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   })
 
   const isFeatured = featuredKeys.has(`${address.toLowerCase()}:${tokenId}`)
-  const creatorAddress = detail?.momentAdmins[0] ?? ''
+  // Prefer the dedicated `creator` field injected by /api/moment from the
+  // timeline lookup; momentAdmins is unordered and [0] is often a platform
+  // admin rather than the minter. Empty-string fallback preserves the
+  // pre-existing isCreator behaviour when both are absent.
+  const creatorAddress = detail?.creator?.address ?? detail?.momentAdmins[0] ?? ''
   const isHidden = detail?.hidden === true
   const [hidePending, setHidePending] = useState(false)
   const isCreator =
