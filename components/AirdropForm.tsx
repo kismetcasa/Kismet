@@ -90,7 +90,18 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   // reads both rows and ORs them — same OR Zora's _hasAnyPermission
   // applies when adminMint runs upstream — so the "already authorized"
   // short-circuit matches inprocess's actual gate.
-  async function authorizeCollection(rawAddr: string, tokenId: bigint = 0n) {
+  async function authorizeCollection(
+    rawAddr: string,
+    tokenId: bigint = 0n,
+    // Explicit signal that the caller is the airdrop-failure toast and
+    // wants the airdrop re-submitted regardless of `pendingAirdropRetry`
+    // state. Sidesteps a React stale-closure bug: the toast's onClick is
+    // captured at toast-creation time, *before* the queued
+    // setPendingAirdropRetry(true) lands — so the closure reads false and
+    // skips the retry. Manual bar callers don't pass this and continue
+    // to use the state-driven path.
+    forceRetryOnAlready: boolean = false,
+  ) {
     const addr = rawAddr.trim()
     if (!isAddress(addr)) {
       toast.error('Invalid collection address', { id: 'authorize-collection' })
@@ -121,11 +132,11 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       // outcome === 'already' — short-circuit the success-flavored
       // toast and (if appropriate) trigger the airdrop retry.
       setAuthAddress('')
-      if (
-        pendingAirdropRetry &&
+      const shouldRetry =
+        (forceRetryOnAlready || pendingAirdropRetry) &&
         selected &&
         selected.address.toLowerCase() === addr.toLowerCase()
-      ) {
+      if (shouldRetry) {
         setPendingAirdropRetry(false)
         toast.success('Already authorized onchain — retrying airdrop', {
           id: 'authorize-collection',
@@ -287,7 +298,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               // the user has authority to write — critical for the
               // platform collection where they aren't defaultAdmin
               // but ARE per-token admin of their own moments.
-              onClick: () => void authorizeCollection(selected.address, BigInt(selected.token_id)),
+              // forceRetryOnAlready=true sidesteps the stale-closure
+              // bug where this onClick was registered before the
+              // setPendingAirdropRetry(true) update landed.
+              onClick: () => void authorizeCollection(selected.address, BigInt(selected.token_id), true),
             },
           })
           return
