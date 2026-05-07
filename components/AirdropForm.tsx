@@ -48,6 +48,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const [authAddress, setAuthAddress] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [authHash, setAuthHash] = useState<`0x${string}` | undefined>(undefined)
+  // Tracks an in-flight airdrop intent that should auto-retry once the
+  // auth flow completes. Set when the airdrop fails with the
+  // admin-permission error. Cleared on retry attempt or on auth
+  // failure. The `isRetry` arg passed to submitAirdrop on auto-retry
+  // is what flips the "still no admin" toast into the indexer-lag
+  // hint, so we don't need a separate "retryAttempted" state.
+  const [pendingAirdropRetry, setPendingAirdropRetry] = useState(false)
   const { data: authReceipt } = useWaitForTransactionReceipt({
     hash: authHash,
     query: { enabled: !!authHash },
@@ -57,6 +64,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     if (!authReceipt) return
     setAuthHash(undefined)
     if (authReceipt.status === 'reverted') {
+      // Tx reverted — drop the retry intent so we don't auto-fire an
+      // airdrop the user can't actually complete.
+      setPendingAirdropRetry(false)
       toast.error('Authorize failed', {
         id: 'authorize-collection',
         description:
@@ -64,10 +74,25 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       })
       return
     }
+    setAuthAddress('')
+    // Auto-retry the airdrop if the user kicked off the authorize from
+    // the airdrop-failure path AND the address they authorized is the
+    // same one their selected moment lives in. Passing isRetry=true to
+    // submitAirdrop flips the next /api/airdrop "no admin" response
+    // into an indexer-lag hint instead of looping back to authorize.
+    if (
+      pendingAirdropRetry &&
+      selected &&
+      selected.address.toLowerCase() === (authAddress || selected.address).toLowerCase()
+    ) {
+      setPendingAirdropRetry(false)
+      toast.success('Authorized — retrying airdrop', { id: 'authorize-collection' })
+      void submitAirdrop({ isRetry: true })
+      return
+    }
     toast.success('Collection authorized — airdrops can now mint into it.', {
       id: 'authorize-collection',
     })
-    setAuthAddress('')
   }, [authReceipt])
 
   async function authorizeCollection(rawAddr: string) {
@@ -101,10 +126,27 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         args: [0n, smartWallet as `0x${string}`],
       })) as bigint
       if ((perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) {
+        setAuthAddress('')
+        // Same auto-retry path as the receipt watcher: if the user
+        // came here from a failed airdrop and the chain says ADMIN
+        // is set, the failure was likely indexer lag — re-submit
+        // with isRetry so the next "no admin" surfaces the right
+        // message instead of looping back here.
+        if (
+          pendingAirdropRetry &&
+          selected &&
+          selected.address.toLowerCase() === addr.toLowerCase()
+        ) {
+          setPendingAirdropRetry(false)
+          toast.success('Already authorized onchain — retrying airdrop', {
+            id: 'authorize-collection',
+          })
+          void submitAirdrop({ isRetry: true })
+          return
+        }
         toast.success('Already authorized — airdrops can mint into this collection.', {
           id: 'authorize-collection',
         })
-        setAuthAddress('')
         return
       }
       await ensureBase()
@@ -122,6 +164,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       setAuthHash(hash)
       toast.loading('Authorizing…', { id: 'authorize-collection' })
     } catch (err) {
+      // User cancelled in wallet, RPC failed, etc. Drop the retry
+      // intent so a future authorize click doesn't surprise-resubmit
+      // the airdrop.
+      setPendingAirdropRetry(false)
       toastError('Authorize', err, { id: 'authorize-collection' })
     } finally {
       setAuthBusy(false)
@@ -140,8 +186,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     setRecipients((prev) => prev.filter((r) => r !== addr))
   }
 
-  async function handleAirdrop(e: React.FormEvent) {
-    e.preventDefault()
+  // Submits the airdrop to /api/airdrop. Pulled out of the form-submit
+  // handler so it can be auto-invoked after the auth flow completes
+  // without needing a synthetic FormEvent. `isRetry` flips the
+  // admin-permission error toast into a stronger "indexer lag" message
+  // when the retry hits the same wall — so we don't loop the user
+  // through a useless second authorize prompt.
+  async function submitAirdrop({ isRetry = false }: { isRetry?: boolean } = {}) {
     if (!isConnected || !address) { openConnectModal?.(); return }
     if (!selected) { toast.error('Select a moment to airdrop'); return }
     if (recipients.length === 0) { toast.error('Add at least one recipient'); return }
@@ -154,10 +205,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       const { nonce } = await nonceRes.json().catch(() => ({}))
       if (!nonce) throw new Error('Could not fetch nonce')
       const message = `Airdrop moment on Kismet Art\nCollection: ${selected.address.toLowerCase()}\nToken: ${selected.token_id}\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
-      toast.loading('Sign airdrop in wallet…', { id: 'airdrop' })
+      toast.loading(isRetry ? 'Re-sign airdrop in wallet…' : 'Sign airdrop in wallet…', { id: 'airdrop' })
       const signature = await signMessageAsync({ message })
 
-      toast.loading('Airdropping…', { id: 'airdrop' })
+      toast.loading(isRetry ? 'Retrying airdrop…' : 'Airdropping…', { id: 'airdrop' })
       const res = await fetch('/api/airdrop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,13 +255,29 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                   '',
               )
             : ''
-        if (
+        const isAuthError =
           (data as { code?: string }).code === 'AUTHORIZE_REQUIRED' ||
           /admin permission/i.test(authMessage)
-        ) {
+        if (isAuthError && isRetry) {
+          // We already authorized once and re-submitted. If inprocess
+          // STILL says no admin, the on-chain state and inprocess's
+          // view diverge — most likely indexer lag. Don't loop the
+          // user through another authorize attempt; surface what's
+          // actually happening so they can wait/refresh.
+          toast.error('Inprocess hasn\'t picked up the authorize yet', {
+            id: 'airdrop',
+            description:
+              'On-chain ADMIN is set but the inprocess indexer is still catching up. Wait a minute and tap airdrop again.',
+          })
+          return
+        }
+        if (isAuthError) {
           // Pre-fill the manual bar so it's obvious which collection
           // we're authorizing, in case the user dismisses the toast.
           setAuthAddress(selected.address)
+          // Mark the airdrop as pending-retry so the auth flow can
+          // auto-resubmit once it lands.
+          setPendingAirdropRetry(true)
           toast.error('Authorization required', {
             id: 'airdrop',
             description:
@@ -240,6 +307,15 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     } finally {
       setSending(false)
     }
+  }
+
+  async function handleAirdrop(e: React.FormEvent) {
+    e.preventDefault()
+    // Manual submits clear any prior pending-retry intent so the
+    // explicit click is treated as a fresh airdrop attempt, not as
+    // a continuation of a stale auth-flow context.
+    setPendingAirdropRetry(false)
+    await submitAirdrop()
   }
 
   const selectedMeta = selected?.metadata ?? {}
