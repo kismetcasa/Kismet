@@ -539,10 +539,12 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 onClick={() => fileInputRef.current?.click()}
                 onDrop={handleDrop}
                 onDragOver={(e) => e.preventDefault()}
-                // Empty drop zone keeps a default aspect for visual structure;
-                // the box will reshape to the dropped file once a preview
-                // exists.
-                className="aspect-[4/5] border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
+                // Compact square placeholder. The preview state below is
+                // dynamic (block w-full h-auto), so the drop zone aspect
+                // doesn't need to match anything specific — square keeps the
+                // empty target obvious without dominating the form. Same
+                // aspect as the cover-image drop zone for visual consistency.
+                className="aspect-square border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
               >
                 <Upload size={24} className="text-[#555]" />
                 <div className="text-center">
