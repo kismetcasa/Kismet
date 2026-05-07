@@ -159,7 +159,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
           {isVideo && mediaUrl ? (
             <video
               src={mediaUrl}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
               autoPlay
               muted
               loop
@@ -170,7 +170,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
               src={imageUrl}
               alt={meta.name ?? 'moment'}
               fill
-              className="object-cover transition-transform duration-500 group-hover:scale-105"
+              className="object-contain transition-transform duration-500 group-hover:scale-105"
               onError={() => setImgError(true)}
               sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
             />

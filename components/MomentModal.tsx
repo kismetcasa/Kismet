@@ -296,8 +296,10 @@ export function MomentModal({
           <X size={16} />
         </button>
 
-        {/* Left: media — click navigates to detail page */}
-        <div className="relative aspect-square bg-[#111] flex-shrink-0 border-b border-[#2a2a2a] md:border-b-0 md:border-r md:border-r-[#2a2a2a]">
+        {/* Left: media — click navigates to detail page. Aspect 4:5 with
+            object-contain so non-square art letterboxes cleanly instead of
+            cropping (matches the in_process pattern for moment media). */}
+        <div className="relative aspect-[4/5] bg-[#111] flex-shrink-0 border-b border-[#2a2a2a] md:border-b-0 md:border-r md:border-r-[#2a2a2a]">
           {isAdmin && (
             <button
               onClick={() => toggleFeatured(moment.address, moment.token_id)}
@@ -321,7 +323,7 @@ export function MomentModal({
           {isVideo && mediaUrl ? (
             <video
               src={mediaUrl}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
               autoPlay muted loop playsInline
               poster={imageUrl ?? undefined}
             />
@@ -330,7 +332,7 @@ export function MomentModal({
               src={imageUrl}
               alt={meta.name ?? 'moment'}
               fill
-              className="object-cover"
+              className="object-contain"
               sizes="(max-width: 768px) 100vw, 50vw"
             />
           ) : isTextMoment ? (

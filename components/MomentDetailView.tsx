@@ -507,13 +507,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           ) : (
             <div
-              className={`relative aspect-square bg-[#111] ${(imageUrl || (isVideo && mediaUrl)) ? 'cursor-zoom-in' : ''}`}
+              className={`relative aspect-[4/5] bg-[#111] ${(imageUrl || (isVideo && mediaUrl)) ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (imageUrl || (isVideo && mediaUrl)) setLightboxOpen(true) }}
             >
               {isVideo && mediaUrl ? (
                 <video
                   src={mediaUrl}
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-contain"
                   autoPlay
                   muted
                   loop
@@ -524,7 +524,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   src={imageUrl}
                   alt={meta.name ?? 'moment'}
                   fill
-                  className="object-cover"
+                  className="object-contain"
                   sizes="(max-width: 768px) 100vw, 50vw"
                   priority
                 />

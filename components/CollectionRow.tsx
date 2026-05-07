@@ -72,7 +72,7 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
               src={imgUrl}
               alt={name}
               fill
-              className="object-cover transition-transform duration-500 group-hover/img:scale-105"
+              className="object-contain transition-transform duration-500 group-hover/img:scale-105"
               sizes="(max-width: 768px) 100vw, 41vw"
             />
           ) : (

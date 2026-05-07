@@ -119,7 +119,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
           <img
             src={listing.image}
             alt={listing.name ?? ''}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain"
           />
         ) : isTextListing ? (
           <div className="w-full h-full flex flex-col justify-center p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">

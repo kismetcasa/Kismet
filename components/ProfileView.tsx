@@ -437,7 +437,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                       src={imgUrl}
                       alt={collectionName}
                       fill
-                      className="object-cover transition-transform duration-500 group-hover/img:scale-105"
+                      className="object-contain transition-transform duration-500 group-hover/img:scale-105"
                       sizes="(max-width: 640px) 50vw, 33vw"
                     />
                   ) : (

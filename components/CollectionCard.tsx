@@ -65,7 +65,7 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
             src={imgUrl}
             alt={collectionName}
             fill
-            className="object-cover transition-transform duration-500 group-hover/img:scale-105"
+            className="object-contain transition-transform duration-500 group-hover/img:scale-105"
             sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           />
         ) : (
