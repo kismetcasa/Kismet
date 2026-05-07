@@ -69,9 +69,18 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? data.detail ?? 'Airdrop failed')
-      if (!data.hash) throw new Error('Airdrop submitted but no tx hash returned')
-      setResultHash(data.hash)
+      if (!res.ok) {
+        const errors = Array.isArray(data.errors)
+          ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
+          : ''
+        throw new Error((data.detail ?? data.error ?? data.message ?? 'Airdrop failed') + errors)
+      }
+      // Inprocess wraps a CDP-bundler userOp; the hash field name varies
+      // across their SDK versions. Accept any of the common shapes.
+      const txHash: string | undefined =
+        data.hash ?? data.txHash ?? data.transactionHash ?? data.userOpHash
+      if (!txHash) throw new Error('Airdrop submitted but no tx hash returned')
+      setResultHash(txHash)
       setRecipients([])
       toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
     } catch (err) {
