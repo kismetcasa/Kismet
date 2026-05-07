@@ -2,16 +2,22 @@ import { Redis } from '@upstash/redis'
 
 const url = process.env.UPSTASH_REDIS_REST_URL
 const token = process.env.UPSTASH_REDIS_REST_TOKEN
+
+// Warn-and-continue rather than throw: Next.js's `Collecting page data`
+// pass loads route modules during build, and Vercel doesn't always
+// inject env vars during that step. Throwing here would kill the
+// build; a placeholder lets it complete, and any actual Redis call at
+// runtime will surface the misconfig via Upstash's own error path.
 if (!url || !token) {
-  // Redis powers sessions, profiles, hidden state, featured feeds,
-  // listings, and rate limits — the app cannot meaningfully boot
-  // without it. Fail fast with a clear message.
-  throw new Error(
-    'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required',
+  console.warn(
+    '[redis] UPSTASH_REDIS_REST_URL/TOKEN not set — Redis calls will fail at runtime',
   )
 }
 
-export const redis = new Redis({ url, token })
+export const redis = new Redis({
+  url: url ?? 'https://placeholder.upstash.io',
+  token: token ?? 'placeholder',
+})
 
 export const FEATURED_KEY = 'kismetart:featured'
 export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
