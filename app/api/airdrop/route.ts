@@ -123,12 +123,6 @@ export async function POST(req: NextRequest) {
   }
   if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
 
-  // Consume nonce only after signature is verified — failed sig leaves nonce reusable
-  const nonceValid = await consumeNonce(body.callerAddress, body.nonce)
-  if (!nonceValid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
-  }
-
   // Confirm caller is creator or admin. Inprocess's /moment endpoint
   // returns MomentDetail with `momentAdmins: string[]` — the creator is
   // momentAdmins[0], delegated admins follow. Off-chain admin grants are
@@ -159,6 +153,73 @@ export async function POST(req: NextRequest) {
   }
   if (!authorized) {
     return NextResponse.json({ error: 'Only the moment creator or an admin may airdrop' }, { status: 403 })
+  }
+
+  // Pre-flight: confirm the artist's inprocess smart wallet has ADMIN at
+  // the moment's tokenId or collection-wide. Mirrors Zora's
+  // _hasAnyPermission OR check that adminMint runs upstream — so a
+  // pre-flight pass means inprocess's call should also pass (modulo
+  // indexer lag). On RPC or smart-wallet-lookup failure, fall through
+  // and let inprocess be the source of truth: a flaky read shouldn't
+  // block a user whose state on chain is actually fine.
+  let smartWalletAuthorized: boolean | null = null
+  try {
+    const smartWalletUrl = new URL(`${INPROCESS_API}/smartwallet`)
+    smartWalletUrl.searchParams.set('artist_wallet', body.callerAddress)
+    const swRes = await fetch(smartWalletUrl.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 3600 },
+    })
+    if (swRes.ok) {
+      const swData = (await swRes.json()) as { address?: string }
+      const smartWallet = swData.address
+      if (smartWallet && isAddress(smartWallet)) {
+        const client = serverBaseClient()
+        const safeRead = async (tid: bigint): Promise<bigint | null> => {
+          try {
+            return (await client.readContract({
+              address: body.collectionAddress as Address,
+              abi: COLLECTION_PERMISSIONS_ABI,
+              functionName: 'permissions',
+              args: [tid, smartWallet as Address],
+            })) as bigint
+          } catch {
+            return null
+          }
+        }
+        const [tokenPerms, collectionPerms] = await Promise.all([
+          safeRead(BigInt(tokenId)),
+          safeRead(0n),
+        ])
+        // Both reads must succeed before we deny — a single RPC error
+        // shouldn't cause a false negative.
+        if (tokenPerms !== null && collectionPerms !== null) {
+          const effective = tokenPerms | collectionPerms
+          smartWalletAuthorized = (effective & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
+        }
+      }
+    }
+  } catch {
+    // Pre-flight unavailable; let inprocess be the source of truth.
+  }
+  if (smartWalletAuthorized === false) {
+    return NextResponse.json(
+      {
+        code: 'AUTHORIZE_REQUIRED',
+        error:
+          "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+        collectionAddress: body.collectionAddress,
+      },
+      { status: 403 },
+    )
+  }
+
+  // Consume nonce only after all auth + pre-flight checks pass — a
+  // failure on any of those leaves the nonce reusable so the user
+  // doesn't have to fetch a fresh one before the next attempt.
+  const nonceValid = await consumeNonce(body.callerAddress, body.nonce)
+  if (!nonceValid) {
+    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
   // Inprocess expects the same `moment: { collectionAddress, tokenId,
