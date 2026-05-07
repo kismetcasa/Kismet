@@ -44,6 +44,9 @@ export interface Moment {
   created_at: string
   updated_at?: string
   metadata?: MomentMetadataInline
+  // Set to true by the timeline API when a hidden moment is returned to its
+  // creator on their own profile feed, so the UI can show the hidden badge.
+  hidden?: boolean
 }
 
 export interface Split {

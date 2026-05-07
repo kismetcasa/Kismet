@@ -529,7 +529,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           ) : (
             <div
-              className={`relative aspect-[4/5] bg-[#111] ${(imageUrl || (isVideo && mediaUrl)) ? 'cursor-zoom-in' : ''}`}
+              className={`relative aspect-square bg-[#111] ${(imageUrl || (isVideo && mediaUrl)) ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (imageUrl || (isVideo && mediaUrl)) setLightboxOpen(true) }}
             >
               {isVideo && mediaUrl ? (

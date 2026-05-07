@@ -248,7 +248,18 @@ export function ListButton({
 
   return (
     <div className="flex gap-1.5 items-center w-full">
-      <div className="relative flex-1 min-w-0">
+      <div className="flex flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] focus-within:border-[#555]">
+        {showToggle && (
+          <button
+            type="button"
+            onClick={() => setCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+            disabled={isBusy}
+            title="tap to switch currency"
+            className="pl-2 pr-1 text-[10px] font-mono text-[#888] hover:text-[#efefef] transition-colors disabled:opacity-40 flex-shrink-0"
+          >
+            {currency === 'eth' ? 'ETH' : '$'}
+          </button>
+        )}
         <input
           type="text"
           inputMode="decimal"
@@ -256,21 +267,10 @@ export function ListButton({
           onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceInput(v) }}
           onFocus={() => setInputFocused(true)}
           onBlur={() => setInputFocused(false)}
-          placeholder={currency === 'usdc' ? '$' : 'ETH'}
+          placeholder={showToggle ? '' : (currency === 'usdc' ? '$' : 'ETH')}
           disabled={isBusy}
-          className={`w-full bg-[#111] border border-[#2a2a2a] pl-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 ${showToggle ? 'pr-12' : 'pr-2'}`}
+          className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none disabled:opacity-50"
         />
-        {showToggle && (
-          <button
-            type="button"
-            onClick={() => setCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
-            disabled={isBusy}
-            title="toggle currency"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-mono text-[#888] hover:text-[#efefef] transition-colors px-1 py-0.5 disabled:opacity-40"
-          >
-            {currency === 'eth' ? 'ETH' : 'USDC'}
-          </button>
-        )}
       </div>
       <div className="flex gap-1 flex-shrink-0 ml-auto">
         <button

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Star, Copy, Check, ExternalLink } from 'lucide-react'
+import { Star, Copy, Check, ExternalLink, EyeOff } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import {
@@ -158,11 +158,15 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
               <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
             </button>
           )}
-          {owned > 0 && maxSupply !== null && (
+          {moment.hidden ? (
+            <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-[#2a2a2a]">
+              <EyeOff size={10} className="text-[#555]" />
+            </span>
+          ) : (owned > 0 && maxSupply !== null) ? (
             <span className="absolute top-2 right-2 z-10 px-1.5 py-0.5 bg-[#0d0d0d]/80 border border-[#2a2a2a] text-[#efefef] font-mono text-[10px] leading-tight">
               ×{owned}
             </span>
-          )}
+          ) : null}
           {isVideo && mediaUrl ? (
             <video
               src={mediaUrl}
@@ -240,11 +244,11 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
-              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-[#444]">
-                  {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
-                </span>
-              </div>
+              {maxSupply !== null && maxSupply !== undefined && maxSupply > 0 && (
+                <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                  <span className="text-[11px] font-mono text-[#444]">{maxSupply.toLocaleString()}</span>
+                </div>
+              )}
             </div>
           )}
           {owned > 0 && (

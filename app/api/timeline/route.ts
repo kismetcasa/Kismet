@@ -140,12 +140,19 @@ export async function GET(req: NextRequest) {
   if (hiddenSet.size > 0) {
     const viewerLower = viewer?.toLowerCase() ?? null
     const isOwnProfile = viewerLower !== null && creator === viewerLower
-    merged = merged.filter((m: unknown) => {
-      const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
-      const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
-      if (!hiddenSet.has(key)) return true
-      return isOwnProfile && moment.creator?.address?.toLowerCase() === viewerLower
-    })
+    merged = merged
+      .filter((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
+        const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
+        if (!hiddenSet.has(key)) return true
+        return isOwnProfile && moment.creator?.address?.toLowerCase() === viewerLower
+      })
+      .map((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string }
+        const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
+        if (hiddenSet.has(key)) return { ...(m as object), hidden: true }
+        return m
+      })
   }
 
   // Following priority: bubble followed creators to the top, preserve internal order
