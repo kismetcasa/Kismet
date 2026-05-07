@@ -257,14 +257,14 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
                 creatorAddress={moment.creator?.address}
                 contentUri={meta.content?.uri}
                 contentMime={meta.content?.mime}
-                ethOnly
+                buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
               />
             </div>
           )}
           <button
             onClick={handleCollect}
             disabled={collecting || collected || owned > 0 || !collectReady}
-            className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
               collected || owned > 0
                 ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
                 : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'

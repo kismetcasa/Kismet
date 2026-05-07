@@ -102,7 +102,7 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
             href={`/mint?collection=${c.contractAddress}&name=${encodeURIComponent(collectionName)}`}
             className="flex-1 py-1.5 text-center text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors"
           >
-            mint all
+            collect all
           </Link>
         )}
       </div>

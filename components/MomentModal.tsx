@@ -509,7 +509,6 @@ export function MomentModal({
                   contentUri={meta.content?.uri}
                   contentMime={meta.content?.mime}
                   buttonClassName="h-full"
-                  ethOnly
                 />
               </div>
             )}

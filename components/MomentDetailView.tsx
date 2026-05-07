@@ -861,7 +861,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   creatorAddress={creatorAddress}
                   contentUri={meta.content?.uri}
                   contentMime={meta.content?.mime}
-                  narrowInput
                 />
               </div>
             )}
