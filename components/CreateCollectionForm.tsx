@@ -479,12 +479,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           </div>
         </div>
         {coverPreview ? (
-          // aspect-square + object-contain mirrors how the cover actually
-          // renders in card grids (CollectionCard, ProfileView, FeaturedFeed
-          // CollectionRow hero). Preview = display, no surprise on submit.
-          <div className="relative aspect-square bg-[#111] border border-[#2a2a2a] overflow-hidden">
+          // No aspect constraint on the wrapper — the dropped image renders
+          // at full width with auto height so the box conforms to its native
+          // aspect. 1:1 stays 1:1, 16:9 stays 16:9, 9:16 stays 9:16. The
+          // artist sees exactly what they dropped, no letterbox or crop.
+          <div className="relative bg-[#111] border border-[#2a2a2a] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={coverPreview} alt="cover preview" className="w-full h-full object-contain" />
+            <img src={coverPreview} alt="cover preview" className="block w-full h-auto" />
             <button
               type="button"
               onClick={clearFile}
@@ -505,8 +506,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
               setCoverPreview(URL.createObjectURL(f))
             }}
             onDragOver={(e) => e.preventDefault()}
-            // Match the preview aspect so the form doesn't jump in height
-            // the moment a file is dropped.
+            // Empty drop zone keeps a default aspect for visual structure;
+            // the box will reshape to the dropped file once a preview exists.
             className="aspect-square border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
           >
             <Upload size={24} className="text-[#555]" />

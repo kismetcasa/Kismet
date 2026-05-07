@@ -557,16 +557,16 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         {mintMode === 'media' ? (
           <>
             {preview ? (
-              // aspect-[4/5] + object-contain mirrors the moment detail page
-              // exactly (MomentDetailView/MomentModal). What the artist sees
-              // here is what collectors will see — letterbox bars on
-              // non-4:5 art instead of a misleading center-crop preview.
-              <div className="relative aspect-[4/5] bg-[#111] border border-[#2a2a2a] overflow-hidden">
+              // No aspect constraint on the wrapper — image/video render at
+              // full width with auto height, so the box conforms to whatever
+              // the artist dropped. 16:9 stays 16:9, 9:16 stays 9:16, 1:1
+              // stays 1:1. No letterbox, no crop, no surprise.
+              <div className="relative bg-[#111] border border-[#2a2a2a] overflow-hidden">
                 {file?.type.startsWith('video/') ? (
-                  <video src={preview} className="w-full h-full object-contain" muted autoPlay loop playsInline />
+                  <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={preview} alt="preview" className="w-full h-full object-contain" />
+                  <img src={preview} alt="preview" className="block w-full h-auto" />
                 )}
                 <button
                   type="button"
@@ -581,8 +581,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 onClick={() => fileInputRef.current?.click()}
                 onDrop={handleDrop}
                 onDragOver={(e) => e.preventDefault()}
-                // Match the preview aspect so the form doesn't jump in height
-                // the moment a file is dropped.
+                // Empty drop zone keeps a default aspect for visual structure;
+                // the box will reshape to the dropped file once a preview
+                // exists.
                 className="aspect-[4/5] border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
               >
                 <Upload size={24} className="text-[#555]" />
