@@ -113,6 +113,12 @@ export interface MomentDetail {
   // creator has hidden the moment from public feeds. Detail page renders
   // an unhide affordance for the creator and a hidden placeholder otherwise.
   hidden?: boolean
+  // Set by /api/moment via a parallel lookup against the timeline endpoint,
+  // which has a dedicated `creator` field. Inprocess's own /api/moment
+  // shape only exposes momentAdmins (an unordered list of every admin
+  // including platform/smart-wallet keys), so position [0] is not reliably
+  // the minter. Prefer this when displaying "creator".
+  creator?: { address: string; username: string | null } | null
 }
 
 /**
