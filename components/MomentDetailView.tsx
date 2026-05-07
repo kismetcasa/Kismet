@@ -297,8 +297,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error ?? 'Hide failed')
       }
-      // Patch the local detail so the UI updates without a refetch.
-      setDetail((prev) => (prev ? { ...prev, hidden: next } : prev))
+      // Patch the local detail AND the shared moment-cache so any subsequent
+      // modal open or detail re-mount in the same session sees the new state.
+      // The edit-metadata handler does the same below.
+      setDetail((prev) => {
+        if (!prev) return prev
+        const updated = { ...prev, hidden: next }
+        setCachedDetail(address, tokenId, updated)
+        return updated
+      })
       toast.success(next ? 'Hidden from public feeds' : 'Visible again', { id: 'hide' })
     } catch (err) {
       toastError('Hide', err, { id: 'hide' })
