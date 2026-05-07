@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
-import { createPublicClient, http, type Address } from 'viem'
-import { base } from 'viem/chains'
+import { type Address } from 'viem'
 import { redis, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
+import { serverBaseClient } from '@/lib/rpc'
 import { INPROCESS_API, type Moment } from '@/lib/inprocess'
 import { fetchEthEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -49,7 +49,7 @@ export async function GET() {
     return NextResponse.json({ collections: [] })
   }
 
-  const client = createPublicClient({ chain: base, transport: http() })
+  const client = serverBaseClient()
 
   const collections = await Promise.all(
     refs.map(async (ref): Promise<HydratedFeaturedCollection | null> => {

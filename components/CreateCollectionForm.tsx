@@ -335,21 +335,32 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         .map((m) => encodeMinterPermission(m as `0x${string}`))
 
       // Authorize the inprocess platform smart wallet as ADMIN so subsequent
-      // /api/mint calls into this collection can succeed. Without this grant,
-      // the userOp inprocess submits reverts at gas estimation
-      // ("useroperation reverted: execution reverted") because Zora 1155's
-      // setupNewToken is gated on the ADMIN bit. ADMIN — not MINTER —
-      // because setupNewToken specifically requires admin per Zora's
-      // PermissionsConstants. The smart wallet is per-EOA on inprocess; we
-      // look up the smart wallet bound to *this user's* wallet (the deployer)
-      // so the user can mint into their own collection. If the lookup fails
-      // we skip the grant — dev environments without an inprocess key still
-      // need a working deploy path.
+      // /api/mint and /api/airdrop calls into this collection can succeed.
+      // Without this grant, the userOp inprocess submits reverts at gas
+      // estimation ("useroperation reverted: execution reverted") because
+      // Zora 1155's setupNewToken is gated on the ADMIN bit. ADMIN — not
+      // MINTER — because setupNewToken specifically requires admin per
+      // Zora's PermissionsConstants. The smart wallet is per-EOA on
+      // inprocess; we look up the smart wallet bound to *this user's*
+      // wallet (the deployer) so the user can mint into their own
+      // collection.
+      //
+      // Strict failure: if the lookup fails or returns garbage, fail the
+      // deploy here rather than silently skipping the grant. A missing
+      // grant turns into a non-actionable "Authorization required" toast
+      // on every subsequent mint/airdrop, with no way for the user to
+      // recover from a banner since they're already defaultAdmin and
+      // there's nothing for them to fix. Better to fail fast at deploy
+      // than ship a half-authorized collection.
       const inprocessSmartWallet = await fetchInprocessSmartWallet(address)
-      const inprocessAdminAction =
-        inprocessSmartWallet && isAddress(inprocessSmartWallet)
-          ? [encodeAdminPermission(inprocessSmartWallet as `0x${string}`)]
-          : []
+      if (!inprocessSmartWallet || !isAddress(inprocessSmartWallet)) {
+        throw new Error(
+          'Could not resolve your inprocess smart wallet — try again in a moment',
+        )
+      }
+      const inprocessAdminAction = [
+        encodeAdminPermission(inprocessSmartWallet as `0x${string}`),
+      ]
 
       // If cover mint is enabled, append the cover-token setupActions so the
       // token is created in the same transaction. Mirrors how inprocess.world's

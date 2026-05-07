@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, verifyMessage, type Address } from 'viem'
+import { verifyMessage, type Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { setMomentMeta } from '@/lib/notifications'
+import { serverBaseClient } from '@/lib/rpc'
 
 const PERMISSION_BIT_ADMIN = 2n
 const PERMISSION_BIT_METADATA = 16n
@@ -35,7 +35,7 @@ async function canUpdateUri(
   caller: string,
 ): Promise<boolean> {
   try {
-    const client = createPublicClient({ chain: base, transport: http() })
+    const client = serverBaseClient()
     const mask = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
     const tokenPerms = (await client.readContract({
       address: collectionAddress as Address,

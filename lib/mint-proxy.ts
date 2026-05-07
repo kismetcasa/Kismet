@@ -6,6 +6,7 @@ import { trackWallet } from './profile'
 import { checkRateLimit, getClientIp } from './ratelimit'
 import { setMomentMeta, writeNotification } from './notifications'
 import { getFollowers } from './follows'
+import { checkSmartWalletAdmin } from './smartWalletPreflight'
 
 // 0xSplits' SplitMain caps usable recipients well below this in practice
 // (gas-bound), but 50 is a generous safety net that no legitimate UI flow
@@ -139,6 +140,38 @@ export async function proxyMintRequest(
     bodyTitle ||
     (typeof tokenObj.name === 'string' && (tokenObj.name as string)) ||
     undefined
+
+  // Pre-flight: confirm the artist's inprocess smart wallet has ADMIN
+  // at tokenId 0 of the target collection. setupNewToken (the gas-
+  // estimation entry point for /moment/create + /moment/create/writing)
+  // requires collection-wide ADMIN — without it, the userOp inprocess
+  // submits reverts at gas estimation with "useroperation reverted:
+  // execution reverted" and a half-uploaded moment dies on the way
+  // upstream. Catching it here returns a structured AUTHORIZE_REQUIRED
+  // 403 so the client surfaces the actionable banner instead of a
+  // generic "execution reverted" toast.
+  //
+  // RPC or smart-wallet-lookup failures fall through to inprocess —
+  // mirrors /api/airdrop's preflight semantics: a flaky read shouldn't
+  // deny a user whose state on chain is actually fine.
+  const collectionAddress =
+    typeof (body?.contract as Record<string, unknown> | undefined)?.address === 'string'
+      ? ((body.contract as Record<string, unknown>).address as string)
+      : undefined
+  if (account && collectionAddress) {
+    const preflight = await checkSmartWalletAdmin(account, collectionAddress, [0n])
+    if (preflight === 'unauthorized') {
+      return NextResponse.json(
+        {
+          code: 'AUTHORIZE_REQUIRED',
+          error:
+            "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+          collectionAddress,
+        },
+        { status: 403 },
+      )
+    }
+  }
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const apiKey = process.env.INPROCESS_API_KEY

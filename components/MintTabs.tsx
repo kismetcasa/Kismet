@@ -33,7 +33,12 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
   const fetchMoments = useCallback(() => {
     if (!address || loadingMoments || momentsFetched) return
     setLoadingMoments(true)
-    fetch(`/api/timeline?creator=${address}&limit=100`)
+    // ?airdroppable=… surfaces both moments this user created AND moments
+    // where they hold per-token ADMIN via a creator's "Delegate airdrop"
+    // grant. Without this, delegates would have no way to find their
+    // delegated moments in the picker even though /api/airdrop would
+    // authorize them to airdrop.
+    fetch(`/api/timeline?airdroppable=${address}&limit=100`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
       .catch(() => setMoments([]))

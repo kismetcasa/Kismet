@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, verifyMessage, type Address } from 'viem'
+import { verifyMessage, type Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
+import { serverBaseClient } from '@/lib/rpc'
+import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
 
 const PERMISSION_BIT_ADMIN = 2n
 
@@ -30,7 +31,7 @@ const COLLECTION_PERMISSIONS_ABI = [
  */
 async function isOnChainAdmin(collectionAddress: string, tokenId: string, caller: string): Promise<boolean> {
   try {
-    const client = createPublicClient({ chain: base, transport: http() })
+    const client = serverBaseClient()
     const tokenScopedPerms = (await client.readContract({
       address: collectionAddress as Address,
       abi: COLLECTION_PERMISSIONS_ABI,
@@ -123,12 +124,6 @@ export async function POST(req: NextRequest) {
   }
   if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
 
-  // Consume nonce only after signature is verified — failed sig leaves nonce reusable
-  const nonceValid = await consumeNonce(body.callerAddress, body.nonce)
-  if (!nonceValid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
-  }
-
   // Confirm caller is creator or admin. Inprocess's /moment endpoint
   // returns MomentDetail with `momentAdmins: string[]` — the creator is
   // momentAdmins[0], delegated admins follow. Off-chain admin grants are
@@ -159,6 +154,38 @@ export async function POST(req: NextRequest) {
   }
   if (!authorized) {
     return NextResponse.json({ error: 'Only the moment creator or an admin may airdrop' }, { status: 403 })
+  }
+
+  // Pre-flight: confirm the artist's inprocess smart wallet has ADMIN at
+  // the moment's tokenId or collection-wide. Mirrors Zora's
+  // _hasAnyPermission OR check that adminMint runs upstream — so a
+  // pre-flight pass means inprocess's call should also pass (modulo
+  // indexer lag). On RPC or smart-wallet-lookup failure, fall through
+  // and let inprocess be the source of truth: a flaky read shouldn't
+  // block a user whose state on chain is actually fine.
+  const preflight = await checkSmartWalletAdmin(
+    body.callerAddress,
+    body.collectionAddress,
+    [BigInt(tokenId), 0n],
+  )
+  if (preflight === 'unauthorized') {
+    return NextResponse.json(
+      {
+        code: 'AUTHORIZE_REQUIRED',
+        error:
+          "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+        collectionAddress: body.collectionAddress,
+      },
+      { status: 403 },
+    )
+  }
+
+  // Consume nonce only after all auth + pre-flight checks pass — a
+  // failure on any of those leaves the nonce reusable so the user
+  // doesn't have to fetch a fresh one before the next attempt.
+  const nonceValid = await consumeNonce(body.callerAddress, body.nonce)
+  if (!nonceValid) {
+    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
   // Inprocess expects the same `moment: { collectionAddress, tokenId,

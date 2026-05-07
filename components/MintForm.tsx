@@ -187,20 +187,23 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
     else setTextContent('')
   }
 
-  // Detects the userOp-revert phrasing that comes back when minting into a
-  // collection where inprocess's smart account isn't yet ADMIN. Shows an
-  // actionable toast (button → the collection's authorize banner) and
-  // resets form state; caller bails out without throwing so the generic
-  // toastError path doesn't fire. Gated on the *currently selected*
-  // collection (could come from the URL prop or from the picker) and
-  // skipped for the platform default — a userOp revert against
-  // PLATFORM_COLLECTION isn't one our user can fix from a creator
-  // banner, so the raw error is more honest there.
-  function maybeHandleAuthError(raw: string): boolean {
-    if (
-      isPlatformDefault ||
-      !/useroperation reverted|user operation reverted|execution reverted/i.test(raw)
-    ) {
+  // Detects the auth-failure paths that come back when minting into a
+  // collection where inprocess's smart account isn't yet ADMIN:
+  //   - structured 403 with code 'AUTHORIZE_REQUIRED' (mint-proxy's
+  //     server-side preflight catches it before the userOp ever runs)
+  //   - the userOp-revert phrasing (fallback when the preflight returns
+  //     'unknown' due to RPC flake and inprocess is the source of truth)
+  // Shows an actionable toast (button → the collection's authorize
+  // banner) and resets form state; caller bails out without throwing
+  // so the generic toastError path doesn't fire. Gated on the
+  // *currently selected* collection (could come from the URL prop or
+  // from the picker) and skipped for the platform default — a userOp
+  // revert against PLATFORM_COLLECTION isn't one our user can fix
+  // from a creator banner, so the raw error is more honest there.
+  function maybeHandleAuthError(raw: string, data?: { code?: unknown }): boolean {
+    const isAuthCode = data?.code === 'AUTHORIZE_REQUIRED'
+    const isAuthRevert = /useroperation reverted|user operation reverted|execution reverted/i.test(raw)
+    if (isPlatformDefault || (!isAuthCode && !isAuthRevert)) {
       return false
     }
     toast.error('Authorization required', {
@@ -406,7 +409,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           // The userOp-revert path replaces the toast with an actionable
           // one (button → collection's authorize banner) and bails out;
           // anything else falls through to the generic toastError below.
-          if (maybeHandleAuthError(raw)) return
+          if (maybeHandleAuthError(raw, data)) return
           throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
@@ -469,7 +472,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           // The userOp-revert path replaces the toast with an actionable
           // one (button → collection's authorize banner) and bails out;
           // anything else falls through to the generic toastError below.
-          if (maybeHandleAuthError(raw)) return
+          if (maybeHandleAuthError(raw, data)) return
           throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')

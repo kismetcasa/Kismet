@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, type Address } from 'viem'
+import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
+import { serverBaseClient } from '@/lib/rpc'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import {
   getTrackedCollections,
@@ -280,14 +280,14 @@ export async function POST(req: NextRequest) {
   // check Zora uses when gating addPermission/setSale; we read it directly
   // rather than trusting an off-chain claim. tokenId 0 is the collection-wide
   // permission row.
-  // Use a configured RPC when available — the public Base default lags
-  // behind the chain head enough that a freshly-mined deploy can read 0
-  // permissions (false negative → 403). Retry a few times on either a
-  // false-negative or RPC error to ride out propagation lag.
-  const client = createPublicClient({
-    chain: base,
-    transport: http(process.env.BASE_RPC_URL),
-  })
+  // The public Base RPC default lags behind the chain head enough that a
+  // freshly-mined deploy can read 0 permissions (false negative → 403).
+  // Retry a few times on either a false-negative or RPC error to ride out
+  // propagation lag. serverBaseClient routes through
+  // NEXT_PUBLIC_BASE_RPC_URL when set (paid Alchemy/Infura) so the lag
+  // is shorter to begin with — the retry is belt-and-suspenders for the
+  // tail latency of even a paid provider's slowest replica.
+  const client = serverBaseClient()
   let isAdmin = false
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 4; attempt++) {

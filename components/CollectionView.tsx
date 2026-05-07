@@ -4,8 +4,7 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { useAccount, useReadContract } from 'wagmi'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck } from 'lucide-react'
@@ -15,7 +14,7 @@ import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { useGrantPermission } from '@/hooks/useGrantPermission'
 import {
   COLLECTION_ABI,
   PERMISSION_BIT_ADMIN,
@@ -137,48 +136,99 @@ export function CollectionView({
     ((inprocessPerms as bigint) & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
   const showAuthorize = isCreator && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
 
-  const ensureBase = useEnsureBase()
-  const { writeContractAsync } = useWriteContract()
-  const [authorizeHash, setAuthorizeHash] = useState<`0x${string}` | undefined>(undefined)
-  const [authorizing, setAuthorizing] = useState(false)
-  const { data: authorizeReceipt } = useWaitForTransactionReceipt({
-    hash: authorizeHash,
-    query: { enabled: !!authorizeHash },
-  })
+  // Centralized addPermission flow — same hook AirdropForm uses. Banner
+  // grants the smart wallet ADMIN at tokenId 0 (collection-wide) since
+  // the user is defaultAdmin of their own collections.
+  const {
+    grant,
+    reset: resetGrant,
+    busy: authorizing,
+    receipt: authorizeReceipt,
+  } = useGrantPermission()
+
+  // Separate hook instance for the post-deploy minter grants — keeps its
+  // tx watcher independent of the smart-wallet authorize banner so a
+  // pending minter grant doesn't fight with a concurrent banner click.
+  const {
+    grant: grantMinter,
+    reset: resetMinterGrant,
+    busy: minterGranting,
+    receipt: minterReceipt,
+  } = useGrantPermission()
+  const [minterInput, setMinterInput] = useState('')
+
+  useEffect(() => {
+    if (!minterReceipt) return
+    resetMinterGrant()
+    if (minterReceipt.status === 'reverted') {
+      toast.error('Authorize failed', {
+        id: 'authorize-minter',
+        description: 'The transaction reverted on-chain — only collection admins can grant minter.',
+      })
+      return
+    }
+    setMinterInput('')
+    toast.success('Minter authorized', { id: 'authorize-minter' })
+  }, [minterReceipt, resetMinterGrant])
+
+  async function handleAuthorizeMinter() {
+    const target = minterInput.trim()
+    if (!isAddress(target)) {
+      toast.error('Invalid address', { id: 'authorize-minter' })
+      return
+    }
+    try {
+      toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
+      const outcome = await grantMinter({
+        collection: address as `0x${string}`,
+        grantee: target as `0x${string}`,
+        tokenId: 0n,
+        bit: 'minter',
+      })
+      if (outcome === 'submitted') {
+        toast.loading('Authorizing minter…', { id: 'authorize-minter' })
+        return
+      }
+      // Already had MINTER on chain
+      setMinterInput('')
+      toast.success('Already a minter on this collection', { id: 'authorize-minter' })
+    } catch (err) {
+      toastError('Authorize minter', err, { id: 'authorize-minter' })
+    }
+  }
 
   // When the authorize tx confirms, refetch the permission read so the
-  // button hides itself without a manual reload.
+  // banner hides itself without a manual reload.
   useEffect(() => {
     if (!authorizeReceipt) return
-    setAuthorizing(false)
+    resetGrant()
     if (authorizeReceipt.status === 'reverted') {
       toast.error('Authorize failed', { id: 'authorize', description: 'The transaction reverted on-chain.' })
       return
     }
     void refetchInprocessPerms()
     toast.success('Kismet authorized — minting now works for this collection', { id: 'authorize' })
-  }, [authorizeReceipt, refetchInprocessPerms])
+  }, [authorizeReceipt, refetchInprocessPerms, resetGrant])
 
   async function handleAuthorize() {
     if (!connectedAddress || !inprocessConfigured || !inprocessSmartWallet) return
-    setAuthorizing(true)
     try {
-      await ensureBase()
       toast.loading('Confirm in wallet…', { id: 'authorize' })
-      const hash = await writeContractAsync({
-        chainId: base.id,
-        address: address as `0x${string}`,
-        abi: COLLECTION_ABI,
-        functionName: 'addPermission',
-        // tokenId 0 is the collection-wide permission row; granting ADMIN
-        // there gives inprocess admin over every token in the collection,
-        // present and future.
-        args: [0n, inprocessSmartWallet as `0x${string}`, PERMISSION_BIT_ADMIN],
+      const outcome = await grant({
+        collection: address as `0x${string}`,
+        grantee: inprocessSmartWallet as `0x${string}`,
+        tokenId: 0n,
+        bit: 'admin',
       })
-      setAuthorizeHash(hash)
-      toast.loading('Authorizing…', { id: 'authorize' })
+      if (outcome === 'submitted') {
+        toast.loading('Authorizing…', { id: 'authorize' })
+        return
+      }
+      // Already had ADMIN on chain — refetch so the banner hides
+      // immediately instead of waiting for the (nonexistent) tx.
+      void refetchInprocessPerms()
+      toast.success('Kismet already authorized for this collection', { id: 'authorize' })
     } catch (err) {
-      setAuthorizing(false)
       toastError('Authorize', err, { id: 'authorize' })
     }
   }
@@ -407,6 +457,49 @@ export function CollectionView({
           >
             {authorizing ? 'authorizing…' : 'authorize'}
           </button>
+        </div>
+      )}
+
+      {/* Authorize minters — post-deploy MINTER grants for this
+          collection. Visible only to the creator (defaultAdmin can
+          grant collection-wide MINTER). The grant is at tokenId 0 so
+          the address can mint copies of any token in the collection,
+          present and future. ADMIN bit is reserved for the inprocess
+          smart wallet (handled by the banner above). */}
+      {isCreator && (
+        <div className="mb-8 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
+          <div className="flex items-center gap-1.5 mb-2">
+            <ShieldCheck size={12} className="text-[#888]" />
+            <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
+              Authorize minters
+            </p>
+          </div>
+          <p className="text-[11px] font-mono text-[#555] mb-3">
+            Grant another wallet permission to mint copies of any token in this collection.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={minterInput}
+              onChange={(e) => setMinterInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void handleAuthorizeMinter()
+                }
+              }}
+              placeholder="0x… wallet address"
+              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            />
+            <button
+              type="button"
+              onClick={() => void handleAuthorizeMinter()}
+              disabled={minterGranting || !minterInput.trim()}
+              className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
+            >
+              {minterGranting ? 'authorizing…' : 'authorize'}
+            </button>
+          </div>
         </div>
       )}
 

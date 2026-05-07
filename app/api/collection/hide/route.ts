@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, type Address } from 'viem'
+import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { base } from 'viem/chains'
 import { getSessionAddress } from '@/lib/session'
+import { serverBaseClient } from '@/lib/rpc'
 import {
   hideCollection,
   unhideCollection,
@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const client = createPublicClient({ chain: base, transport: http() })
+    const client = serverBaseClient()
     const perms = (await client.readContract({
       address: address as Address,
       abi: COLLECTION_PERMISSIONS_ABI,
