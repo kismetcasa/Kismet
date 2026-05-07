@@ -3,6 +3,7 @@ import { createPublicClient, http, type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
+import { PLATFORM_COLLECTION } from '@/lib/config'
 import {
   getTrackedCollections,
   addTrackedCollection,
@@ -86,7 +87,10 @@ export async function GET(req: NextRequest) {
       getTrackedCollections(),
       getHiddenCollectionsSet(),
     ])
-    const visible = tracked.filter((addr) => !hiddenSet.has(addr.toLowerCase()))
+    const platformLower = PLATFORM_COLLECTION.toLowerCase()
+    const visible = tracked.filter(
+      (addr) => !hiddenSet.has(addr.toLowerCase()) && addr.toLowerCase() !== platformLower,
+    )
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
     const start = (page - 1) * limit

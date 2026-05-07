@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
 import { isAddress } from 'viem'
 import { notFound } from 'next/navigation'
-import { INPROCESS_API, resolveUri, shortAddress, fetchCollectionMoments, type MomentAdmin } from '@/lib/inprocess'
+import { INPROCESS_API, resolveUri, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
@@ -74,7 +74,13 @@ async function loadKvFallback(
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address } = await params
-  const meta = await fetchCollectionMeta(address)
+  // KV is written at deploy time and is always fast; only fall back to
+  // inprocess (fetchCollectionMeta) when KV has nothing.
+  const [kvMeta, inprocessMeta] = await Promise.all([
+    getKvCollectionMeta(address),
+    fetchCollectionMeta(address),
+  ])
+  const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
   const imageUrl = meta?.image ? resolveUri(meta.image) : undefined
   return {
@@ -98,8 +104,9 @@ export default async function CollectionPage({ params }: Props) {
   const sessionToken = cookieStore.get(SESSION_COOKIE)?.value
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
-  const [moments, meta, kvMeta, detail, hidden] = await Promise.all([
-    fetchCollectionMoments(address),
+  // Moments are fetched client-side in CollectionView so the header renders
+  // immediately from the fast KV + inprocess-detail fetches below.
+  const [meta, kvMeta, detail, hidden] = await Promise.all([
     fetchCollectionMeta(address),
     getKvCollectionMeta(address),
     fetchCollectionDetail(address),
@@ -125,25 +132,13 @@ export default async function CollectionPage({ params }: Props) {
     )
   }
 
-  // Collect unique admins from all moments (excluding the creator)
-  const adminMap = new Map<string, MomentAdmin>()
-  for (const m of moments) {
-    for (const admin of m.admins ?? []) {
-      if (admin.address.toLowerCase() !== m.creator.address.toLowerCase()) {
-        adminMap.set(admin.address.toLowerCase(), admin)
-      }
-    }
-  }
-  const admins = Array.from(adminMap.values())
+  // Prefer KV metadata (fast, written at deploy time) and fall back to
+  // the inprocess response. For collections not deployed through our platform
+  // only the inprocess response may have name/image.
+  const displayMeta = kvMeta
+    ? { name: kvMeta.name, image: kvMeta.image, description: kvMeta.description }
+    : meta
 
-  // If we know about this collection locally but the indexer has nothing yet,
-  // surface that explicitly instead of an empty grid that looks like a bug.
-  const indexing = !!kvMeta && moments.length === 0
-
-  // Show payout chip only when it differs from the deploying admin —
-  // otherwise it's redundant noise. The vast majority of creators leave
-  // payouts to themselves; the few who route through a splits contract
-  // benefit from the transparency.
   const showPayout =
     !!detail?.payout_recipient &&
     !!detail?.default_admin?.address &&
@@ -152,12 +147,10 @@ export default async function CollectionPage({ params }: Props) {
   return (
     <CollectionView
       address={address}
-      moments={moments}
-      collectionName={meta?.name}
-      collectionImage={meta?.image}
-      collectionDescription={meta?.description}
-      admins={admins}
-      indexing={indexing}
+      collectionName={displayMeta?.name}
+      collectionImage={displayMeta?.image}
+      collectionDescription={displayMeta?.description}
+      isTracked={!!kvMeta}
       defaultAdminUsername={detail?.default_admin?.username}
       defaultAdminAddress={detail?.default_admin?.address}
       payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}

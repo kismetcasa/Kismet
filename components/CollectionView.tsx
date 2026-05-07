@@ -51,24 +51,16 @@ function AvatarRow({
 
 interface CollectionViewProps {
   address: string
-  moments: Moment[]
   collectionName?: string
   collectionImage?: string
   collectionDescription?: string
-  admins?: MomentAdmin[]
-  indexing?: boolean
-  // Enriched detail fields from inprocess `GET /api/collection`. Optional —
-  // page falls back to the lightweight metadata when these aren't returned
-  // (e.g., indexer hasn't picked up the collection yet).
+  // Whether this collection was deployed through our platform (KV-tracked).
+  // Used to distinguish "empty — indexing" from "empty — truly nothing here".
+  isTracked?: boolean
   defaultAdminUsername?: string
-  // Default-admin (deployer) address — used to gate the creator-only hide
-  // button. Not the same as the on-chain ADMIN bit check; that runs
-  // server-side at toggle time. This prop is for UI rendering only.
   defaultAdminAddress?: string
   payoutRecipient?: string
   createdAt?: string
-  // Server-rendered initial hidden state (read from KV). Toggled locally
-  // after a successful POST to /api/collection/hide.
   initialHidden?: boolean
 }
 
@@ -82,12 +74,10 @@ function formatCreatedDate(iso: string): string {
 
 export function CollectionView({
   address,
-  moments,
   collectionName,
   collectionImage,
   collectionDescription,
-  admins = [],
-  indexing = false,
+  isTracked = false,
   defaultAdminUsername,
   defaultAdminAddress,
   payoutRecipient,
@@ -99,6 +89,10 @@ export function CollectionView({
   const { isAdmin, featuredCollectionAddrs, toggleFeaturedCollection } = useAdmin()
   const [profiles, setProfiles] = useState<Record<string, AvatarProfile>>({})
   const [hidden, setHidden] = useState(initialHidden)
+  // Moments fetched client-side so the header renders immediately from server
+  // data, and hidden-moment filtering is applied via the session-aware
+  // /api/timeline route (creator sees their own hidden moments; others don't).
+  const [moments, setMoments] = useState<Moment[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
   const { ensureSession } = useUploadSession()
 
@@ -210,32 +204,62 @@ export function CollectionView({
     }
   }
 
-  const firstMoment = moments[0]
+  // Fetch moments client-side. This keeps the server render fast (header data
+  // only) and ensures hidden-moment filtering is applied via the session-aware
+  // timeline route. Creator sees their own hidden moments; others don't.
+  useEffect(() => {
+    let cancelled = false
+    setMoments(null) // reset to loading when address changes
+    fetch(`/api/timeline?collection=${address}&limit=50`)
+      .then((r) => (r.ok ? r.json() : { moments: [] }))
+      .then((d) => {
+        if (cancelled) return
+        const loaded: Moment[] = Array.isArray(d.moments) ? d.moments : []
+        setMoments(loaded)
+        // Fetch profiles for all creators and split admins found in moments
+        const creatorSet = new Set(loaded.map((m) => m.creator.address.toLowerCase()))
+        const adminAddrs = new Set(
+          loaded
+            .flatMap((m) => m.admins ?? [])
+            .filter((a) => !creatorSet.has(a.address.toLowerCase()))
+            .map((a) => a.address.toLowerCase()),
+        )
+        ;[...creatorSet, ...adminAddrs].forEach((addr) => {
+          fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
+            if (!cancelled)
+              setProfiles((prev) => ({ ...prev, [addr]: { name, avatarUrl } }))
+          })
+        })
+      })
+      .catch(() => { if (!cancelled) setMoments([]) })
+    return () => { cancelled = true }
+  }, [address])
+
+  const loadedMoments = moments ?? []
   const displayName = collectionName || shortAddress(address)
+  const firstMoment = loadedMoments[0]
   const rawImgUrl = collectionImage || firstMoment?.metadata?.image
   const imgUrl = rawImgUrl ? resolveUri(rawImgUrl) : null
   const description = collectionDescription
 
-  // Unique creator addresses across all moments
+  // Unique creator addresses across all loaded moments
   const uniqueCreators = Array.from(
-    new Set(moments.map((m) => m.creator.address.toLowerCase()))
+    new Set(loadedMoments.map((m) => m.creator.address.toLowerCase()))
   )
 
-  // Unique admin addresses not already in creators
-  const uniqueAdmins = admins.filter(
-    (a) => !uniqueCreators.includes(a.address.toLowerCase())
+  // Unique split admin addresses (from moment admins, excluding moment creators)
+  const uniqueAdmins = Array.from(
+    loadedMoments
+      .flatMap((m) => m.admins ?? [])
+      .reduce((map, admin) => {
+        const lower = admin.address.toLowerCase()
+        if (!uniqueCreators.includes(lower)) map.set(lower, admin)
+        return map
+      }, new Map<string, MomentAdmin>())
+      .values()
   )
 
-  const allAddresses = [...uniqueCreators, ...uniqueAdmins.map((a) => a.address)]
-
-  useEffect(() => {
-    allAddresses.forEach((addr) => {
-      fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
-        setProfiles((prev: Record<string, AvatarProfile>) => ({ ...prev, [addr.toLowerCase()]: { name, avatarUrl } }))
-      })
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address])
+  const indexing = isTracked && moments !== null && loadedMoments.length === 0
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -391,9 +415,15 @@ export function CollectionView({
       {/* NFT grid */}
       <section>
         <h2 className="text-xs font-mono text-[#555] uppercase tracking-widest mb-4">
-          moments{moments.length > 0 ? ` (${moments.length})` : ''}
+          moments{loadedMoments.length > 0 ? ` (${loadedMoments.length})` : ''}
         </h2>
-        {moments.length === 0 ? (
+        {moments === null ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="aspect-square bg-[#111] border border-[#1a1a1a] animate-pulse" />
+            ))}
+          </div>
+        ) : loadedMoments.length === 0 ? (
           indexing ? (
             <p className="text-xs font-mono text-[#888]">
               indexing your first mint… can take a few minutes. refresh to check.
@@ -403,7 +433,7 @@ export function CollectionView({
           )
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-            {moments.map((m) => (
+            {loadedMoments.map((m) => (
               <MomentCard key={m.id || `${m.address}-${m.token_id}`} moment={m} hidePriceSupply />
             ))}
           </div>

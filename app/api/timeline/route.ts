@@ -34,7 +34,13 @@ export async function GET(req: NextRequest) {
     ? new Set(followingParam.split(',').map((a) => a.toLowerCase()).filter(Boolean))
     : null
 
-  const collections = await getTrackedCollections()
+  // ?collection= fetches a single collection (used by the collection detail page
+  // to load moments client-side with hidden-moment filtering applied).
+  const singleCollection = searchParams.get('collection')?.toLowerCase() ?? null
+
+  const collections = singleCollection
+    ? [singleCollection]
+    : await getTrackedCollections()
 
   // Trending and featured need larger samples for cross-collection sorting
   const fetchLimit =
