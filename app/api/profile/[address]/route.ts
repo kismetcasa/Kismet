@@ -63,7 +63,12 @@ export async function PUT(
     return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
   }
 
-  const body = await req.json() as { username?: string; avatarUrl?: string; signature: string; nonce: string }
+  let body: { username?: string; avatarUrl?: string; signature?: string; nonce?: string }
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  }
 
   if (!body.signature || !body.nonce) {
     return NextResponse.json({ error: 'signature and nonce required' }, { status: 400 })

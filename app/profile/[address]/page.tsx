@@ -1,5 +1,5 @@
-import { isAddress } from 'viem'
 import { notFound } from 'next/navigation'
+import { isAddress } from '@/lib/address'
 import { ProfileView } from '@/components/ProfileView'
 
 interface Props {

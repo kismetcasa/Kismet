@@ -1,7 +1,10 @@
 import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
+import { notFound } from 'next/navigation'
+import { isAddress } from '@/lib/address'
 import { INPROCESS_API, resolveUri, type MomentDetail } from '@/lib/inprocess'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
+import { getMomentContent } from '@/lib/momentContent'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { MomentDetailView } from '@/components/MomentDetailView'
@@ -51,6 +54,9 @@ async function getFallbackMeta(
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address, tokenId } = await params
+  if (!isAddress(address) || !/^\d+$/.test(tokenId)) {
+    return { title: 'Moment — Kismet Art' }
+  }
   const [detail, fallback] = await Promise.all([
     fetchDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
@@ -75,6 +81,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function MomentPage({ params }: Props) {
   const { address, tokenId } = await params
+
+  // Mirror the validation /api/moment already does (route.ts:15-20) so we
+  // don't waste an upstream fetch + KV reads on garbage routes.
+  if (!isAddress(address) || !/^\d+$/.test(tokenId)) notFound()
 
   // Resolve the viewer up front so we can decide whether to hand the full
   // detail (with metadata) to the client or render a server-side placeholder
@@ -115,6 +125,12 @@ export default async function MomentPage({ params }: Props) {
       const tr = await fetch(resolveUri(textUri), { cache: 'force-cache' })
       if (tr.ok) initialTextContent = await tr.text()
     } catch { /* non-fatal — client will fetch on mount */ }
+    // Fall through to the KV mirror written at mint time so the body
+    // renders during Arweave propagation lag instead of staying blank.
+    if (initialTextContent === undefined) {
+      const kv = await getMomentContent(address, tokenId)
+      if (kv) initialTextContent = kv
+    }
   }
 
   return (

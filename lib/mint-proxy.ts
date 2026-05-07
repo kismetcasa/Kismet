@@ -5,6 +5,7 @@ import { redis } from './redis'
 import { trackWallet } from './profile'
 import { checkRateLimit, getClientIp } from './ratelimit'
 import { setMomentMeta, writeNotification } from './notifications'
+import { setMomentContent } from './momentContent'
 import { getFollowers } from './follows'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
 
@@ -237,6 +238,17 @@ export async function proxyMintRequest(
 
     if (contractAddress && tokenId && account) {
       void setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {})
+
+      // Mirror the raw writing body to KV so the moment page can render
+      // it during Arweave propagation lag. Only the writing endpoint
+      // carries tokenContent — media mints forward tokenMetadataURI
+      // instead, so the conditional naturally scopes this to writes.
+      const tokenContent =
+        typeof tokenObj.tokenContent === 'string' ? tokenObj.tokenContent : undefined
+      if (tokenContent) {
+        void setMomentContent(contractAddress, tokenId, tokenContent).catch(() => {})
+      }
+
       // Self-notification for the creator. No `actor` so NotificationRow
       // renders "your moment was created".
       void writeNotification({
