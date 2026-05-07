@@ -490,7 +490,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     <div className="max-w-6xl mx-auto pb-16">
 
       {/* Back nav */}
-      <div className="px-4 py-3 border-b border-[#2a2a2a]">
+      <div className="px-4 py-3 border-b border-[#2a2a2a] flex items-center justify-between">
         <Link
           href="/"
           className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
@@ -498,6 +498,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           <ArrowLeft size={12} />
           back
         </Link>
+        {totalMinted !== undefined && (
+          <p className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
+            total collected: {Number(totalMinted).toLocaleString()}
+          </p>
+        )}
       </div>
 
       {/* Creator-only banner so the creator knows their moment is hidden */}
@@ -516,7 +521,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         {/* Left: media — sticky on desktop */}
         <div className="border-b border-[#2a2a2a] md:border-b-0 md:border-r md:border-r-[#2a2a2a] md:sticky md:top-14">
           {isTextMoment ? (
-            <div className="min-h-64 flex items-start p-6 sm:p-10 bg-[#111]">
+            <div className="min-h-64 flex flex-col p-6 sm:p-10 bg-[#111]">
+              <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-3">writing</span>
               <p className="text-sm font-mono text-[#efefef] leading-relaxed whitespace-pre-wrap">
                 {textContent ?? (detail ? '' : '…')}
               </p>
@@ -833,24 +839,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
-          {/* Total collected — sits above the action row when we have a count */}
-          {totalMinted !== undefined && (
-            <div className="px-5 -mb-1">
-              <p className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
-                {Number(totalMinted).toLocaleString()} collected
-              </p>
+          {/* Action row: [price|supply] [list] [collect] */}
+          <div className="px-5 py-4 flex gap-2 items-stretch">
+            <div className="flex border border-[#2a2a2a] flex-none">
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+              </div>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-[#444]">
+                  {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? 'open' : detail.maxSupply.toLocaleString())}
+                </span>
+              </div>
             </div>
-          )}
-
-          {/* Action row. Each control gets its own bordered container —
-              list (when owned), price+supply chips, and collect — so the
-              boundaries match the meaning of each control. Stacks on
-              mobile (ListButton on its own row above the chip+collect
-              pair) so the collect CTA isn't squeezed to ~37px when the
-              owner case puts three controls into one ~280px row. */}
-          <div className="px-5 py-4 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
             {alreadyOwned && (
-              <div className="w-full sm:flex-none sm:w-2/5">
+              <div className="flex-1 min-w-0">
                 <ListButton
                   collectionAddress={address}
                   tokenId={tokenId}
@@ -863,29 +865,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 />
               </div>
             )}
-            <div className="flex gap-2 items-stretch w-full sm:flex-1">
-              <div className="flex border border-[#2a2a2a] flex-none">
-                <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-                </div>
-                <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono text-[#444]">
-                    {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? 'open' : detail.maxSupply.toLocaleString())}
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected || !detail}
-                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                  collected || alreadyOwned
-                    ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
-                    : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
-                }`}
-              >
-                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
-              </button>
-            </div>
+            <button
+              onClick={handleCollect}
+              disabled={collecting || alreadyOwned || collected || !detail}
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+                collected || alreadyOwned
+                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                  : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+            </button>
           </div>
 
           {/* Site admin — feature/unfeature */}

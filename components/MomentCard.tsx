@@ -175,7 +175,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
               sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
             />
           ) : isTextMoment ? (
-            <div className="w-full h-full flex flex-col justify-center p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
+            <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
               <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-2">writing</span>
               <p className="text-xs sm:text-sm font-mono text-[#bbb] line-clamp-7 leading-relaxed whitespace-pre-wrap">
                 {textSnippet ?? meta.name ?? 'untitled'}
@@ -226,14 +226,22 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
           </Link>
         </div>
 
-        {/* Actions row. Each control owns its own bordered container so the
-            visual grouping mirrors meaning. ListButton stacks above on
-            mobile because it carries an input field; the price/supply
-            chip stays inline next to the collect CTA on every viewport
-            so the chip never stretches into a near-empty full-width row. */}
-        <div className="px-4 pb-4 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
+        {/* Actions row: [price|supply] [list] [collect] */}
+        <div className="px-4 pb-4 flex gap-2 items-stretch">
+          {!hidePriceSupply && (
+            <div className="flex border border-[#2a2a2a] flex-none">
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+              </div>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-[#444]">
+                  {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
+                </span>
+              </div>
+            </div>
+          )}
           {owned > 0 && (
-            <div className={`w-full sm:flex-none ${hidePriceSupply ? 'sm:w-1/2' : 'sm:w-1/3'}`}>
+            <div className="flex-1 min-w-0">
               <ListButton
                 collectionAddress={moment.address}
                 tokenId={moment.token_id}
@@ -242,34 +250,22 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
                 creatorAddress={moment.creator?.address}
                 contentUri={meta.content?.uri}
                 contentMime={meta.content?.mime}
+                ethOnly
+                narrowInput
               />
             </div>
           )}
-          <div className="flex gap-2 items-stretch w-full sm:flex-1">
-            {!hidePriceSupply && (
-              <div className="flex border border-[#2a2a2a] flex-none">
-                <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-                </div>
-                <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono text-[#444]">
-                    {maxSupply === undefined ? '…' : (maxSupply === null || maxSupply === 0 ? 'open' : maxSupply.toLocaleString())}
-                  </span>
-                </div>
-              </div>
-            )}
-            <button
-              onClick={handleCollect}
-              disabled={collecting || collected || owned > 0 || !collectReady}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                collected || owned > 0
-                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
-                  : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
-              }`}
-            >
-              {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
-            </button>
-          </div>
+          <button
+            onClick={handleCollect}
+            disabled={collecting || collected || owned > 0 || !collectReady}
+            className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+              collected || owned > 0
+                ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+            }`}
+          >
+            {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
+          </button>
         </div>
       </article>
 

@@ -334,7 +334,7 @@ export function MomentModal({
               sizes="(max-width: 768px) 100vw, 50vw"
             />
           ) : isTextMoment ? (
-            <div className="w-full h-full flex flex-col justify-center p-6 sm:p-8 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
+            <div className="w-full h-full flex flex-col p-6 sm:p-8 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
               <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-3">writing</span>
               <p className="text-sm font-mono text-[#bbb] line-clamp-[14] leading-relaxed whitespace-pre-wrap">
                 {textSnippet ?? meta.name ?? 'untitled'}
@@ -478,14 +478,24 @@ export function MomentModal({
             </div>
           )}
 
-          {/* Action row. Each control owns its own bordered container —
-              list (when owned), price+supply chip, collect. The chip
-              stays paired with the collect button on every viewport so
-              it never stretches into a near-empty full-width row on
-              mobile, mirroring how the card lays them out. */}
-          <div className="px-5 pb-2 flex flex-col gap-1.5 sm:flex-row sm:gap-2 sm:items-stretch">
+          {/* Action row: [price|supply] [list] [collect] */}
+          <div className="px-5 pb-2 flex gap-2 items-stretch">
+            <div className="flex border border-[#2a2a2a] flex-none">
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+              </div>
+              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-[#444]">
+                  {displayMaxSupply === undefined
+                    ? '…'
+                    : displayMaxSupply === null || displayMaxSupply === 0
+                      ? 'open'
+                      : displayMaxSupply.toLocaleString()}
+                </span>
+              </div>
+            </div>
             {alreadyOwned && (
-              <div className="w-full sm:flex-none sm:w-1/3">
+              <div className="flex-1 min-w-0">
                 <ListButton
                   collectionAddress={moment.address}
                   tokenId={moment.token_id}
@@ -494,37 +504,23 @@ export function MomentModal({
                   creatorAddress={creatorAddress}
                   contentUri={meta.content?.uri}
                   contentMime={meta.content?.mime}
-                  buttonClassName="h-auto sm:h-full"
+                  buttonClassName="h-full"
+                  ethOnly
+                  narrowInput
                 />
               </div>
             )}
-            <div className="flex gap-2 items-stretch w-full sm:flex-1">
-              <div className="flex border border-[#2a2a2a] flex-none">
-                <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-                </div>
-                <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                  <span className="text-[11px] font-mono text-[#444]">
-                    {displayMaxSupply === undefined
-                      ? '…'
-                      : displayMaxSupply === null || displayMaxSupply === 0
-                        ? 'open'
-                        : displayMaxSupply.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={handleCollect}
-                disabled={collecting || alreadyOwned || collected || !collectReady}
-                className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                  collected || alreadyOwned
-                    ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
-                    : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
-                }`}
-              >
-                {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
-              </button>
-            </div>
+            <button
+              onClick={handleCollect}
+              disabled={collecting || alreadyOwned || collected || !collectReady}
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+                collected || alreadyOwned
+                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                  : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+              }`}
+            >
+              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+            </button>
           </div>
 
           {/* View page — hugs bottom. Same no-onClose treatment as the
