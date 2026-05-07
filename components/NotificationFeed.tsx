@@ -42,6 +42,7 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [authRequired, setAuthRequired] = useState(false)
+  const [fetchError, setFetchError] = useState(false)
   // Map of address (lowercased) → display name. NotificationRow keys off
   // each notification's actor; we batch-resolve them per page so the row
   // can render @username instead of 0x123…abc without N HTTP requests.
@@ -58,6 +59,7 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
     setItems([])
     setTotal(0)
     setAuthRequired(false)
+    setFetchError(false)
   }, [apiTab, typeFilter])
 
   const fetchPage = useCallback(async (targetPage: number, signal?: AbortSignal): Promise<void> => {
@@ -77,15 +79,16 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
         signal,
       })
       if (r.status === 401) { setAuthRequired(true); setLoading(false); setLoadingMore(false); return }
-      if (!r.ok) throw new Error('not ok')
+      if (!r.ok) { if (targetPage === 1) setFetchError(true); return }
       const data = await r.json()
       if (signal?.aborted) return
+      setFetchError(false)
       const newItems: Notification[] = data.notifications ?? []
       setItems((prev) => (targetPage === 1 ? newItems : [...prev, ...newItems]))
       setTotal(data.total ?? 0)
     } catch {
       if (signal?.aborted) return
-      if (targetPage === 1) { setItems([]); setTotal(0) }
+      if (targetPage === 1) { setFetchError(true); setItems([]); setTotal(0) }
     } finally {
       if (!signal?.aborted) { setLoading(false); setLoadingMore(false) }
     }
@@ -248,12 +251,17 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
             sign in to see notifications
           </p>
         )}
-        {!authRequired && loading && items.length === 0 && (
+        {!authRequired && fetchError && (
+          <p className="text-xs font-mono text-[#555] text-center py-12">
+            failed to load — try again
+          </p>
+        )}
+        {!authRequired && !fetchError && loading && items.length === 0 && (
           <div className="flex justify-center py-12">
             <Loader2 size={16} className="animate-spin text-[#555]" />
           </div>
         )}
-        {!authRequired && !loading && displayItems.length === 0 && (
+        {!authRequired && !fetchError && !loading && displayItems.length === 0 && (
           <p className="text-xs font-mono text-[#555] text-center py-12">
             {feedTab === 'following' ? 'no activity from followed creators yet' : feedTab === 'notifications' ? 'nothing important yet' : 'no notifications yet'}
           </p>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { usePathname } from 'next/navigation'
 import { Bell } from 'lucide-react'
 import { NotificationModal } from './NotificationModal'
@@ -24,14 +25,15 @@ export function NotificationBell({ address }: NotificationBellProps) {
   const fetchCount = useCallback(async () => {
     if (!address) return
     try {
-      // Cookie-authenticated: returns 401 before sign-in (count stays 0)
-      // and counts the session owner's unread once they're signed in.
       const res = await fetch('/api/notifications/unread', { credentials: 'same-origin' })
+      // On 401 the session has expired — clear the stale badge so it doesn't
+      // show a phantom count while the feed shows "sign in to see notifications".
+      if (res.status === 401) { setCount(0); return }
       if (!res.ok) return
       const data = await res.json()
       if (typeof data.count === 'number') setCount(data.count)
     } catch {
-      // Silent — stale count is fine
+      // Silent — stale count is fine on network errors
     }
   }, [address])
 
@@ -86,7 +88,10 @@ export function NotificationBell({ address }: NotificationBellProps) {
         )}
       </button>
 
-      {modalOpen && <NotificationModal onClose={() => setModalOpen(false)} />}
+      {modalOpen && createPortal(
+        <NotificationModal onClose={() => setModalOpen(false)} />,
+        document.body,
+      )}
     </div>
   )
 }
