@@ -684,7 +684,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
               {isPlatformDefault
                 ? loadingCollections
                   ? 'loading collections…'
-                  : 'mint into a collection (optional)'
+                  : 'no collection'
                 : selectedCollection.name}
             </span>
             <span className="text-[#555] text-xs font-mono flex-shrink-0">
