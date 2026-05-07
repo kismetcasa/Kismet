@@ -147,12 +147,18 @@ export default async function CollectionPage({ params }: Props) {
     )
   }
 
-  // Prefer KV metadata (fast, written at deploy time) and fall back to
-  // the inprocess response. For collections not deployed through our platform
-  // only the inprocess response may have name/image.
-  const displayMeta = kvMeta
-    ? { name: kvMeta.name, image: kvMeta.image, description: kvMeta.description }
-    : meta
+  // Per-field merge: KV wins for fields it has (fast, deploy-time written),
+  // inprocess fills in any gaps. We used to be all-or-nothing — `kvMeta ? {…}
+  // : meta` — which meant a partial KV row (e.g. a backfill that only set
+  // `name`) would mask the image + description that inprocess actually had,
+  // making collections look stripped-down when both data sources were
+  // populated. Per-field fallback means the cheaper source still wins
+  // when present without sacrificing data we already have elsewhere.
+  const displayMeta = {
+    name: kvMeta?.name ?? meta?.name,
+    image: kvMeta?.image ?? meta?.image,
+    description: kvMeta?.description ?? meta?.description,
+  }
 
   const showPayout =
     !!detail?.payout_recipient &&
