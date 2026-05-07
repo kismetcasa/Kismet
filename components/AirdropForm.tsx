@@ -95,7 +95,17 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     })
   }, [authReceipt])
 
-  async function authorizeCollection(rawAddr: string) {
+  // `tokenId` is the scope of the permission read + grant. Default 0n
+  // means "collection-wide" — works for collections the user deployed
+  // themselves (they hold defaultAdmin). For shared collections like
+  // the platform collection where the user isn't defaultAdmin but IS
+  // per-token admin of their own moments, callers should pass the
+  // moment's tokenId so the grant lands on a row the user has authority
+  // to write. The precheck reads BOTH the per-token row and tokenId 0
+  // and ORs them together — same OR Zora's _hasAnyPermission applies
+  // when adminMint runs upstream, so our "already authorized" message
+  // matches inprocess's actual gate.
+  async function authorizeCollection(rawAddr: string, tokenId: bigint = 0n) {
     const addr = rawAddr.trim()
     if (!isAddress(addr)) {
       toast.error('Invalid collection address', { id: 'authorize-collection' })
@@ -117,15 +127,36 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       if (!smartWallet || !isAddress(smartWallet)) {
         throw new Error('Could not resolve your inprocess smart wallet')
       }
-      // Skip the tx if the smart wallet already has ADMIN — saves the
-      // user a wallet popup and a wasted gas estimate.
-      const perms = (await publicClient.readContract({
-        address: addr as `0x${string}`,
-        abi: COLLECTION_ABI,
-        functionName: 'permissions',
-        args: [0n, smartWallet as `0x${string}`],
-      })) as bigint
-      if ((perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) {
+      // Read both the per-token row and the collection-wide row in
+      // parallel and OR the bits — that's exactly what Zora does in
+      // _hasAnyPermission when inprocess's adminMint runs. If either
+      // already grants ADMIN, no tx is needed.
+      //
+      // Reads are wrapped to tolerate Base's public RPC rate limits:
+      // a flaky read shouldn't surface as "Authorize failed" when we
+      // can just submit the tx. The on-chain addPermission is a
+      // bitwise OR on the existing row, so re-granting an already-set
+      // bit is a no-op (wastes gas only). Better to err toward
+      // submitting than blocking the user.
+      const safeRead = async (tid: bigint): Promise<bigint> => {
+        try {
+          return (await publicClient.readContract({
+            address: addr as `0x${string}`,
+            abi: COLLECTION_ABI,
+            functionName: 'permissions',
+            args: [tid, smartWallet as `0x${string}`],
+          })) as bigint
+        } catch (err) {
+          console.warn('[authorize] permissions read failed, proceeding to tx', { tid: tid.toString(), err })
+          return 0n
+        }
+      }
+      const [tokenPerms, collectionPerms] = await Promise.all([
+        safeRead(tokenId),
+        tokenId === 0n ? Promise.resolve(0n) : safeRead(0n),
+      ])
+      const effectivePerms = tokenPerms | collectionPerms
+      if ((effectivePerms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) {
         setAuthAddress('')
         // Same auto-retry path as the receipt watcher: if the user
         // came here from a failed airdrop and the chain says ADMIN
@@ -156,10 +187,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         address: addr as `0x${string}`,
         abi: COLLECTION_ABI,
         functionName: 'addPermission',
-        // tokenId 0 is the collection-wide permission row — granting
-        // ADMIN there gives inprocess admin over every token in the
-        // collection, present and future.
-        args: [0n, smartWallet as `0x${string}`, PERMISSION_BIT_ADMIN],
+        // Grant at `tokenId` — caller must hold ADMIN on this same
+        // row to make the write land. For the platform collection
+        // where the user isn't defaultAdmin, that means passing the
+        // moment's tokenId (the user is per-token admin of their
+        // own minted moments). For collections the user deployed,
+        // the default tokenId 0 works because they're defaultAdmin.
+        args: [tokenId, smartWallet as `0x${string}`, PERMISSION_BIT_ADMIN],
       })
       setAuthHash(hash)
       toast.loading('Authorizing…', { id: 'authorize-collection' })
@@ -284,7 +318,11 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
             action: {
               label: 'Authorize',
-              onClick: () => void authorizeCollection(selected.address),
+              // Pass the moment's tokenId so the grant lands on a row
+              // the user has authority to write — critical for the
+              // platform collection where they aren't defaultAdmin
+              // but ARE per-token admin of their own moments.
+              onClick: () => void authorizeCollection(selected.address, BigInt(selected.token_id)),
             },
           })
           return
@@ -320,6 +358,15 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
 
   const selectedMeta = selected?.metadata ?? {}
   const selectedImage = selectedMeta.image ? resolveUri(selectedMeta.image) : null
+  // When the manual bar's address matches the selected moment's
+  // collection, scope to the moment's tokenId so users on shared
+  // collections (PLATFORM) — where they're per-token admin but not
+  // defaultAdmin — can grant on a row they have authority to write.
+  // Default to 0n (collection-wide) for any other address.
+  const authBarTokenId =
+    selected && authAddress.trim().toLowerCase() === selected.address.toLowerCase()
+      ? BigInt(selected.token_id)
+      : 0n
 
   return (
     <form onSubmit={handleAirdrop} className="flex flex-col gap-6">
@@ -455,7 +502,11 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           inprocess smart wallet on any collection they control,
           without leaving the airdrop tab. The same handler powers
           the toast prompt that fires after an airdrop fails with
-          "admin permission". */}
+          "admin permission". When the typed address matches the
+          selected moment's collection, we scope the grant to the
+          moment's tokenId — required for shared collections like
+          PLATFORM where the user is per-token admin but not
+          collection-wide admin. */}
       <div>
         <label className="flex items-center gap-1.5 text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
           <ShieldCheck size={12} />
@@ -469,7 +520,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault()
-                void authorizeCollection(authAddress)
+                void authorizeCollection(authAddress, authBarTokenId)
               }
             }}
             placeholder="0x… collection address"
@@ -477,7 +528,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           />
           <button
             type="button"
-            onClick={() => void authorizeCollection(authAddress)}
+            onClick={() => void authorizeCollection(authAddress, authBarTokenId)}
             disabled={authBusy || !authAddress.trim() || !!authHash}
             className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
           >
@@ -485,7 +536,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           </button>
         </div>
         <p className="text-[10px] font-mono text-[#444] mt-1.5">
-          one-time onchain grant — only the collection admin can authorize
+          {authBarTokenId === 0n
+            ? 'one-time onchain grant — only the collection admin can authorize'
+            : `scoped to your moment #${selected?.token_id} (you must be admin of this token)`}
         </p>
       </div>
 
