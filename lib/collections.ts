@@ -23,19 +23,13 @@ const OPEN_EDITION_MINT_SIZE = 18446744073709551615n
 
 // Per Zora's PermissionsConstants: ADMIN=2, MINTER=4, SALES=8, METADATA=16,
 // FUNDS_MANAGER=32. Canonical exports live in lib/permissions.ts; this
-// file re-imports for use in encodeAdminPermission / encodeMinterPermission
-// below. New code should import directly from @/lib/permissions —
-// these were left re-exported temporarily so existing import sites
-// could be migrated without breaking the build mid-commit.
+// file imports them only for use in encodeAdminPermission /
+// encodeMinterPermission below. All other call-sites import the
+// constants from @/lib/permissions directly.
 import {
   PERMISSION_BIT_ADMIN,
   PERMISSION_BIT_MINTER,
 } from './permissions'
-
-// Re-export so callers that already import PERMISSION_BIT_ADMIN from
-// '@/lib/collections' keep working without churn. New imports should
-// target '@/lib/permissions' directly.
-export { PERMISSION_BIT_ADMIN }
 
 const COLLECTION_ABI = [
   {

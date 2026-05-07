@@ -59,6 +59,20 @@ const COLLECTION_PERMISSIONS_ABI = [
 ] as const
 
 /**
+ * Thrown when `permissions()` decodes to a non-bigint — structural
+ * (proxy upgrade, wrong chain, ABI drift) rather than transient.
+ * Distinguished as its own error type so readPermissions's retry
+ * loop can break out immediately instead of wasting ~5s of backoff
+ * waiting for an RPC fix that won't come.
+ */
+export class NonBigIntPermsError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'NonBigIntPermsError'
+  }
+}
+
+/**
  * Read a single (tokenId, user) permission row. Wraps the contract read
  * with a few retries — Base's public RPC and even paid providers can
  * lag the chain head for a few seconds after a deploy/grant tx confirms,
@@ -69,6 +83,15 @@ const COLLECTION_PERMISSIONS_ABI = [
  * Returns the permission bitmap (uint256) on success. Throws on every
  * attempt failing — callers decide whether to treat that as 'unknown'
  * (preflight semantics, fall through) or 'fatal' (post-deploy verify).
+ *
+ * Two failure modes; both retry-able vs not:
+ *   - Transient (RPC throws / network timeout / rate limit): retry up
+ *     to `retries` times with backoff.
+ *   - Structural (NonBigIntPermsError — contract decoded to wrong
+ *     shape): no point retrying, fail fast on the first observation.
+ *     Saves ~5s of latency per call when a contract is genuinely
+ *     misconfigured (the healthcheck takes that slow path, audit
+ *     endpoint reads malformed contracts, etc.).
  */
 export async function readPermissions(
   client: PublicClientLike,
@@ -94,17 +117,19 @@ export async function readPermissions(
       // string or number instead. A silent unsafe cast would feed a
       // non-bigint into hasAdminBit() and the bitwise AND would surface
       // as falsy — we'd interpret a "broken read" as "missing ADMIN"
-      // and fire false-negative warnings everywhere. Throwing here
-      // forces the retry path (transient) or surfaces a clear error
-      // (definitive) instead.
+      // and fire false-negative warnings everywhere.
       if (typeof result !== 'bigint') {
-        throw new Error(
+        throw new NonBigIntPermsError(
           `permissions(${tokenId}, ${user}) on ${collection} returned non-bigint: ${typeof result}`,
         )
       }
       return result
     } catch (err) {
       lastErr = err
+      // Structural failure: skip the rest of the retry schedule.
+      // No amount of backoff will turn a non-bigint return into
+      // a bigint return; that requires a contract / ABI change.
+      if (err instanceof NonBigIntPermsError) break
     }
     if (attempt < retries - 1) {
       await new Promise((r) => setTimeout(r, backoffMs * (attempt + 1)))
