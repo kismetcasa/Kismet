@@ -8,11 +8,24 @@ const nextConfig = {
   serverExternalPackages: ['@ardrive/turbo-sdk'],
 
   images: {
+    // Mirror the AR.IO + IPFS gateway pool in lib/arweave/gateways.ts so
+    // MomentImage can fall through to alternates when one edge has a stale
+    // 404 (e.g. CDN77 in front of arweave.net during the propagation window).
+    // Wildcards cover subdomain redirects (`<txid>.arweave.net` style).
     remotePatterns: [
       { protocol: 'https', hostname: 'arweave.net' },
       { protocol: 'https', hostname: '*.arweave.net' },
+      { protocol: 'https', hostname: 'permagate.io' },
+      { protocol: 'https', hostname: '*.permagate.io' },
+      { protocol: 'https', hostname: 'g8way.io' },
+      { protocol: 'https', hostname: '*.g8way.io' },
+      { protocol: 'https', hostname: 'ar-io.dev' },
+      { protocol: 'https', hostname: '*.ar-io.dev' },
       { protocol: 'https', hostname: 'ipfs.io' },
       { protocol: 'https', hostname: '*.ipfs.io' },
+      { protocol: 'https', hostname: 'dweb.link' },
+      { protocol: 'https', hostname: '*.dweb.link' },
+      { protocol: 'https', hostname: 'cloudflare-ipfs.com' },
       { protocol: 'https', hostname: 'ipfs.decentralized-content.com' },
     ],
     // Arweave + IPFS are content-addressed (URL contains a hash), so the

@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Star, Copy, Check, ExternalLink, EyeOff } from 'lucide-react'
@@ -24,6 +23,7 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
+import { MomentImage } from './MomentImage'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface MomentCardProps {
@@ -181,13 +181,13 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
               loop
               playsInline
             />
-          ) : imageUrl && !imgError ? (
-            <Image
-              src={imageUrl}
+          ) : meta.image && !imgError ? (
+            <MomentImage
+              src={meta.image}
               alt={meta.name ?? 'moment'}
               fill
               className="object-contain transition-transform duration-500 group-hover:scale-105"
-              onError={() => setImgError(true)}
+              onAllError={() => setImgError(true)}
               sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
             />
           ) : isTextMoment ? (

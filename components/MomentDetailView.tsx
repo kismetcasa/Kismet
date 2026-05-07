@@ -20,6 +20,7 @@ import { useGrantPermission } from '@/hooks/useGrantPermission'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
+import { MomentImage, MomentImg } from './MomentImage'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -80,6 +81,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [showFullDesc, setShowFullDesc] = useState(false)
   const [descOverflows, setDescOverflows] = useState(false)
+  const [imgError, setImgError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   const [collectionName, setCollectionName] = useState<string | null>(null)
   const [collectionImage, setCollectionImage] = useState<string | null>(null)
@@ -625,14 +627,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   loop
                   playsInline
                 />
-              ) : imageUrl ? (
-                <Image
-                  src={imageUrl}
+              ) : meta.image && !imgError ? (
+                <MomentImage
+                  src={meta.image}
                   alt={meta.name ?? 'moment'}
                   fill
                   className="object-contain"
                   sizes="(max-width: 768px) 100vw, 50vw"
                   priority
+                  onAllError={() => setImgError(true)}
                 />
               ) : !detail ? (
                 <div className="w-full h-full flex items-center justify-center">
@@ -736,11 +739,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">image (optional)</label>
                   <div className="flex items-center gap-2">
-                    {/* Show whatever's currently selected: new file preview > existing on-chain image > nothing */}
-                    {(editPreview || imageUrl) && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={editPreview ?? imageUrl ?? ''}
+                    {/* Show whatever's currently selected: new file preview > existing on-chain image > nothing.
+                        MomentImg handles both — a blob URL from the file picker passes through unchanged,
+                        an ar:// URI walks the gateway pool on error. */}
+                    {(editPreview || meta.image) && (
+                      <MomentImg
+                        src={editPreview ?? meta.image ?? ''}
                         alt="preview"
                         className="w-12 h-12 object-cover bg-[#111] border border-[#2a2a2a]"
                       />
@@ -1041,10 +1045,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               autoPlay muted loop playsInline
               onClick={(e) => e.stopPropagation()}
             />
-          ) : imageUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={imageUrl}
+          ) : meta.image ? (
+            <MomentImg
+              src={meta.image}
               alt={meta.name ?? 'moment'}
               className="max-h-[95vh] max-w-[95vw] object-contain"
               onClick={(e) => e.stopPropagation()}

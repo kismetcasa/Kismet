@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
 import { X, Star, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 import { useAccount, useReadContract, useSignMessage } from 'wagmi'
@@ -18,6 +17,7 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_MINT_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
+import { MomentImage } from './MomentImage'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'
@@ -70,6 +70,7 @@ export function MomentModal({
   const [linkCopied, setLinkCopied] = useState(false)
   const [showFullDesc, setShowFullDesc] = useState(false)
   const [descOverflows, setDescOverflows] = useState(false)
+  const [imgError, setImgError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -333,12 +334,13 @@ export function MomentModal({
               autoPlay muted loop playsInline
               poster={imageUrl ?? undefined}
             />
-          ) : imageUrl ? (
-            <Image
-              src={imageUrl}
+          ) : meta.image && !imgError ? (
+            <MomentImage
+              src={meta.image}
               alt={meta.name ?? 'moment'}
               fill
               className="object-contain"
+              onAllError={() => setImgError(true)}
               sizes="(max-width: 768px) 100vw, 50vw"
             />
           ) : isTextMoment ? (

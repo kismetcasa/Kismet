@@ -1,35 +1,7 @@
+import { gatewayUrls } from './gateways'
+
 // First entry is 0 so the immediate try doesn't pay a sleep.
 const BACKOFF_MS = [0, 1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000]
-
-// Pool of public AR.IO gateways federating the same Arweave data. Each has
-// its own CDN edge cache, so a stale 404 cached at one (e.g. CDN77 in front
-// of arweave.net during the propagation window) doesn't block verification
-// on the others. First successful HEAD wins.
-const ARWEAVE_GATEWAYS = [
-  'https://arweave.net',
-  'https://permagate.io',
-  'https://g8way.io',
-  'https://ar-io.dev',
-] as const
-
-const IPFS_GATEWAYS = [
-  'https://ipfs.io/ipfs',
-  'https://dweb.link/ipfs',
-  'https://cloudflare-ipfs.com/ipfs',
-] as const
-
-function gatewayUrls(uri: string): string[] {
-  if (!uri) return []
-  if (uri.startsWith('ar://')) {
-    const id = uri.slice(5)
-    return ARWEAVE_GATEWAYS.map((g) => `${g}/${id}`)
-  }
-  if (uri.startsWith('ipfs://')) {
-    const cid = uri.slice(7)
-    return IPFS_GATEWAYS.map((g) => `${g}/${cid}`)
-  }
-  return [uri]
-}
 
 /**
  * Poll the gateway pool for `uri` until any HEAD returns 200 or the budget
