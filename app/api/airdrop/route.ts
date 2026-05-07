@@ -204,6 +204,37 @@ export async function POST(req: NextRequest) {
       })
     }
 
+    // The artist's inprocess smart wallet must hold ADMIN on the target
+    // collection for the upstream adminMint to land — same constraint
+    // /api/mint has. When inprocess says so verbatim ("The account does
+    // not have admin permission for this collection"), surface a
+    // structured 403 the client can detect and route the artist to the
+    // Authorize banner on /collection/{address} (a one-click on-chain
+    // grant from their own wallet, since they're defaultAdmin).
+    if (
+      !res.ok &&
+      parsed &&
+      typeof parsed === 'object' &&
+      /admin permission/i.test(
+        String(
+          (parsed as Record<string, unknown>).error ??
+            (parsed as Record<string, unknown>).message ??
+            (parsed as Record<string, unknown>).detail ??
+            '',
+        ),
+      )
+    ) {
+      return NextResponse.json(
+        {
+          code: 'AUTHORIZE_REQUIRED',
+          error:
+            "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+          collectionAddress: body.collectionAddress,
+        },
+        { status: 403 },
+      )
+    }
+
     // Fan-out: notify each airdrop recipient that they received a token from
     // the creator. Fire-and-forget — KV failures never undo the on-chain
     // airdrop. Mirrors the mint follower-fanout pattern in lib/mint-proxy.ts.

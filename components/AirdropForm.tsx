@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -16,6 +17,7 @@ interface AirdropFormProps {
 }
 
 export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
+  const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
@@ -82,6 +84,43 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
           },
         })
+        // Mirrors MintForm.maybeHandleAuthError. Two detection paths:
+        //   1. Structured `{ code: 'AUTHORIZE_REQUIRED' }` — what
+        //      /api/airdrop returns when it converts the upstream
+        //      "admin permission" error itself.
+        //   2. Raw `/admin permission/i` match against the upstream
+        //      response body — fallback for when the server hasn't
+        //      converted (older deploy, edge cache, or any path where
+        //      the upstream message reaches us verbatim).
+        // Either way, route the artist to /collection/{address} where
+        // the existing CollectionView Authorize banner lets them grant
+        // ADMIN to their inprocess smart wallet in one tx (they hold
+        // ADMIN as defaultAdmin). Bail out early so the generic
+        // toastError below doesn't double-fire.
+        const authMessage =
+          typeof data === 'object' && data !== null
+            ? String(
+                (data as Record<string, unknown>).error ??
+                  (data as Record<string, unknown>).message ??
+                  (data as Record<string, unknown>).detail ??
+                  '',
+              )
+            : ''
+        if (
+          (data as { code?: string }).code === 'AUTHORIZE_REQUIRED' ||
+          /admin permission/i.test(authMessage)
+        ) {
+          toast.error('Authorization required', {
+            id: 'airdrop',
+            description:
+              "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+            action: {
+              label: 'Authorize',
+              onClick: () => router.push(`/collection/${selected.address}`),
+            },
+          })
+          return
+        }
         const errors = Array.isArray(data.errors)
           ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
           : ''
