@@ -189,6 +189,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           callerAddress: address,
           signature,
           nonce,
+          // Tells the server to bypass the smart-wallet ADMIN preflight.
+          // Set when the client just landed an on-chain authorize and is
+          // re-submitting — at that point a preflight 'unauthorized'
+          // verdict almost always means RPC node staleness (the bit IS
+          // set, but a non-canonical node hasn't synced). Trust inprocess
+          // to be the authoritative source on retries.
+          ...(isRetry ? { isRetry: true } : {}),
         }),
       })
       const data = await res.json().catch(() => ({}))

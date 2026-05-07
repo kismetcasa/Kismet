@@ -66,6 +66,13 @@ export async function POST(req: NextRequest) {
     callerAddress?: string
     signature?: string
     nonce?: string
+    // Set by the client when re-submitting after a successful on-chain
+    // authorize. Bypasses the smart-wallet ADMIN preflight to avoid
+    // looping the user through a redundant authorize when a public-RPC
+    // node returns stale (pre-grant) state. Inprocess remains the
+    // authoritative source — if the on-chain bit really is missing,
+    // its gas-estimation will surface the actual revert.
+    isRetry?: boolean
   }
   try {
     body = await req.json()
@@ -163,21 +170,32 @@ export async function POST(req: NextRequest) {
   // indexer lag). On RPC or smart-wallet-lookup failure, fall through
   // and let inprocess be the source of truth: a flaky read shouldn't
   // block a user whose state on chain is actually fine.
-  const preflight = await checkSmartWalletAdmin(
-    body.callerAddress,
-    body.collectionAddress,
-    [BigInt(tokenId), 0n],
-  )
-  if (preflight === 'unauthorized') {
-    return NextResponse.json(
-      {
-        code: 'AUTHORIZE_REQUIRED',
-        error:
-          "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
-        collectionAddress: body.collectionAddress,
-      },
-      { status: 403 },
+  //
+  // Skipped on retries (`isRetry`): the client just landed an on-chain
+  // authorize and is re-submitting. A preflight 'unauthorized' result
+  // here almost always means RPC node staleness (one of Base's public
+  // nodes hasn't synced the grant yet), not a real missing bit — so
+  // bouncing the user back to authorize again would be a frustrating
+  // dead-end. Let inprocess decide: if the bit really is missing, its
+  // gas-estimation will surface the revert, and the client's
+  // `isRetry`-aware error branch flips to the indexer-lag hint.
+  if (!body.isRetry) {
+    const preflight = await checkSmartWalletAdmin(
+      body.callerAddress,
+      body.collectionAddress,
+      [BigInt(tokenId), 0n],
     )
+    if (preflight === 'unauthorized') {
+      return NextResponse.json(
+        {
+          code: 'AUTHORIZE_REQUIRED',
+          error:
+            "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+          collectionAddress: body.collectionAddress,
+        },
+        { status: 403 },
+      )
+    }
   }
 
   // Consume nonce only after all auth + pre-flight checks pass — a
