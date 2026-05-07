@@ -125,17 +125,11 @@ export async function proxyMintRequest(
     return NextResponse.json({ error: splitsValidation.message }, { status: 400 })
   }
 
-  // Phase 2 strict-routing: the request body MUST identify a collection,
-  // either by `contract.address` (mint into existing) or by
-  // `contract.name + contract.uri` (auto-deploy + first mint, the
-  // documented inprocess pattern). Rejecting payloads that have neither
-  // catches malformed UI requests at the proxy boundary instead of
-  // letting them reach inprocess where the failure is opaque ("invalid
-  // contract"). This also closes the silent-fallback footgun: previous
-  // versions of MintForm would route anything-without-a-pick to
-  // PLATFORM_COLLECTION; with that fallback removed in MintForm, a
-  // request with no contract fields here is unambiguously a UI bug we
-  // want surfaced.
+  // Strict routing: the body must identify a collection, either by
+  // `contract.address` (existing) or by `contract.name + contract.uri`
+  // (auto-deploy + first mint, the documented inprocess pattern).
+  // Catching malformed payloads here gives a clearer error than the
+  // opaque "invalid contract" inprocess would return upstream.
   const contractField = body?.contract as Record<string, unknown> | undefined
   const hasAddress =
     typeof contractField?.address === 'string' && isAddress(contractField.address)

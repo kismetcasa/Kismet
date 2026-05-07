@@ -18,23 +18,14 @@ interface CollectionItem {
 }
 
 /**
- * Phase 3 — central dashboard for an artist's collection permissions.
+ * One-stop dashboard for an artist's collection permissions. Lists
+ * every collection the connected wallet has deployed and renders a
+ * per-row status badge:
  *
- * Lists every collection the connected wallet has deployed (via
- * /api/collections?artist=…, which is creator-aware and includes hidden
- * ones for the owner). For each row, batch-reads permissions(0,
- * smartWallet) and renders a status badge:
- *
- *   ✅ green  — smart wallet has ADMIN; collection is mint-ready
- *   ⚠️ amber  — smart wallet missing ADMIN; needs a one-time Authorize
- *               from the creator (links to /collection/<addr> banner)
- *   ⏳ gray   — read still in flight or unknown (RPC blip etc.)
- *
- * Closes the discoverability gap from earlier phases: Phase 1's banner
- * only fires on a per-collection visit, Phase 2's picker badges only
- * surface during a mint flow. This page is the one-stop "is anything
- * broken?" view a user can bookmark or revisit after deploying many
- * collections.
+ *   ✅ ready    — smart wallet has ADMIN; collection is mint-ready
+ *   ⚠️ authorize — smart wallet missing ADMIN; row links to the
+ *                  collection page where the Authorize banner lives
+ *   ⏳ checking — read in flight, or RPC errored (treated as unknown)
  */
 export function PermissionsDashboard() {
   const { address, isConnected } = useAccount()
@@ -311,10 +302,8 @@ function PermissionRow({
     </div>
   )
 
-  // The row links to the collection page when authorize is needed
-  // (where the Phase 1 banner handles the on-chain grant), otherwise
-  // links to the same page for general management. Wrapping the whole
-  // tile keeps the click target large.
+  // Whole tile is the click target — large hit area, links to the
+  // collection page where the Authorize banner lives.
   return (
     <Link
       href={`/collection/${address}`}

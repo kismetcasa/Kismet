@@ -2,22 +2,16 @@ import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 
 /**
- * Resolves an artist's inprocess smart wallet address from their EOA.
- *
- * Inprocess's `/api/smartwallet` documented response shape is
- * `{ address: "0x..." }` but historically the API has returned a few
- * variants (`smartWallet`, `smart_wallet`, `smartAccount`, raw address
- * string). Centralizing the defensive parsing here ensures the local
- * proxy (`/api/inprocess/smart-wallet`) and the server-side audit
- * endpoint (`/api/permissions/audit`) can never drift on which shapes
- * they accept — that drift was producing false-negative "smartwallet
- * lookup failed" rows in audit results when the upstream returned a
- * non-canonical shape.
+ * Resolves an artist's inprocess smart wallet address from their EOA via
+ * `GET /api/smartwallet`. Centralizes the defensive shape parsing —
+ * inprocess's documented response is `{ address }` but real responses
+ * have historically used `smartWallet` / `smart_wallet` / `smartAccount`
+ * or a raw address string. Accepting all known shapes here ensures every
+ * call site sees the same lenient parsing.
  *
  * Returns the lowercased address on success, or null on any failure
- * (invalid input, network error, non-200 upstream, unparseable
- * response). Callers decide how to surface the failure (the local
- * proxy returns a 502; the audit endpoint records an "error" row).
+ * (invalid input, network, non-200, unparseable response). Callers
+ * surface their own errors (HTTP 502, "skipped" log, etc.).
  */
 export async function resolveSmartWallet(
   artistWallet: string,
@@ -45,8 +39,7 @@ export async function resolveSmartWallet(
   try {
     parsed = JSON.parse(text)
   } catch {
-    // Some upstream paths return a bare address string; treat that as
-    // the address itself rather than a parse failure.
+    // Some responses come back as a bare address string.
     parsed = text.trim()
   }
 
@@ -62,6 +55,5 @@ export async function resolveSmartWallet(
 
   if (typeof candidate !== 'string' || !isAddress(candidate)) return null
 
-  // Lowercase for stable comparison/storage; viem accepts any casing.
   return candidate.toLowerCase()
 }

@@ -51,8 +51,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
-  // Public client for the post-deploy permission verification (Phase 1).
-  // Same chain as the deploy itself — verify reads happen on Base mainnet.
+  // For the post-deploy permission verification.
   const publicClient = usePublicClient({ chainId: base.id })
 
   // Resolved inprocess smart wallet for the connected EOA. Set in
@@ -109,9 +108,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       setDeployedImageUri(pending.deployedImageUri || undefined)
       setMintCover(pending.mintCover)
       setTxHash(pending.txHash)
-      // Restore the resolved smart wallet when present. Older entries
-      // (deployed before Phase 1) won't have it; the receipt handler
-      // re-resolves in that case.
+      // Older localStorage entries won't have this field; the receipt
+      // handler re-resolves in that case.
       if (pending.resolvedSmartWallet) setResolvedSmartWallet(pending.resolvedSmartWallet)
       setStep('deploying')
       toast.loading('Resuming deploy…', { id: 'create-collection' })
@@ -200,26 +198,15 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       return
     }
 
-    // Phase 1 fail-closed gate. The factory's setupActions include
-    // encodeAdminPermission(inprocessSmartWallet) — but if that call
-    // silently no-ops (factory bug, contract upgrade, signature drift,
-    // wrong factory bytecode, etc.) the collection deploys with NO
-    // smart-wallet ADMIN and every subsequent /api/moment/create
-    // reverts at gas estimation with "useroperation reverted: execution
-    // reverted". The user sees "deployed!" then can't mint, with no
-    // recoverable path (their banner only shows for collections they
-    // admin AND the smart wallet has no admin to grant from itself).
-    //
-    // Verifying both perm rows on-chain before we mark step='done'
-    // turns this from "silent regression" into "user sees a clear
-    // error toast and we know within seconds that the deploy didn't
-    // fully take". Wrapped in async IIFE so the surrounding useEffect
-    // signature stays sync — wagmi's receipt only fires once per tx
-    // so re-entry isn't a real concern.
+    // Verify both ADMIN grants on-chain before declaring success. If
+    // the inprocessAdminAction setupAction silently no-ops (wrong
+    // factory bytecode, ABI drift, etc.) the collection deploys
+    // without smart-wallet ADMIN and every subsequent mint reverts
+    // upstream — fail-closed here so the user sees a clear error
+    // instead of a silent regression.
     void (async () => {
-      // Re-resolve smart wallet on resume if state was empty (e.g. a
-      // pre-Phase-1 localStorage entry). Skipping verification on
-      // resume would defeat the purpose of fail-closed.
+      // Re-resolve smart wallet on resume from localStorage where the
+      // field wasn't persisted in older entries.
       let smartWallet = resolvedSmartWallet
       if (!smartWallet && address) {
         try {

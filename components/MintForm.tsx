@@ -80,36 +80,25 @@ interface CollectionOption {
   image?: string
 }
 
-// Phase 2 removed the implicit PLATFORM_OPTION fallback (the silent route
-// to PLATFORM_COLLECTION on submit when nothing was picked — the bug that
-// surfaced as AUTHORIZE_REQUIRED for users who weren't admin of the
-// platform collection). With it gone, `selectedCollection: null` means
-// "auto-deploy a fresh collection on submit and mint into it" — the
-// inprocess /api/moment/create pattern with contract.name+uri.
-//
-// PLATFORM_COLLECTION is still imported for the picker filter below
-// (defense in depth in case it leaks into the user-collection list from
-// the indexer) and for the curated showcase role; it's no longer the
-// implicit destination for end-user mints.
+// PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
+// case it leaks into the user-collection list from the indexer) but is
+// no longer the implicit destination for end-user mints — when nothing
+// is selected, submit auto-creates a fresh collection via inprocess's
+// /api/moment/create with contract.name+uri.
 
 export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
   const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
-  // Public client for the post-auto-deploy permission verification
-  // (Phase 2). Used to read permissions(0, smartWallet) on the
-  // freshly-deployed contract immediately after the inprocess userOp
-  // succeeds — surfaces a one-shot warning if smart wallet didn't end
-  // up with ADMIN, so the user knows to authorize before their next
-  // mint into the same collection. Same chain as the main mint flow.
+  // For post-auto-deploy permission verification — reads
+  // permissions(0, smartWallet) on the freshly-deployed contract so we
+  // can surface a one-shot Authorize CTA if the smart wallet didn't
+  // end up with ADMIN.
   const publicClient = usePublicClient({ chainId: base.id })
 
-  // Collection picker — initialized from the URL/prop hint when present,
-  // null otherwise. null = "auto-deploy a fresh collection on submit
-  // and mint into it" (the Phase 2 default). The picker reflects the
-  // user's explicit selection and can be cleared back to null via the
-  // × button to re-enter auto-deploy mode.
+  // null = auto-deploy a fresh collection on submit. Initialized from the
+  // URL/prop hint when present; cleared back to null via the × button.
   const [selectedCollection, setSelectedCollection] = useState<CollectionOption | null>(() => {
     if (collectionAddress) {
       return {
@@ -186,43 +175,30 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   const collectionOptions: CollectionOption[] = userCollections.filter(
     (c) => c.address.toLowerCase() !== PLATFORM_COLLECTION.toLowerCase(),
   )
-  // Phase 2: "auto-deploy mode" replaces what was "isPlatformDefault" —
-  // when no collection is selected, submit auto-creates a new one via
-  // inprocess /api/moment/create with contract.name+uri (the documented
-  // first-mint pattern). The user fills `newCollectionName` below the
-  // picker; the moment's image becomes the collection cover so we don't
-  // ask for a separate upload.
+  // No collection selected → auto-create one on submit via
+  // /api/moment/create with contract.name+uri.
   const isAutoDeploy = !selectedCollection
 
-  // Phase 3: batch-read permissions for the user's existing collections
-  // so we can show ⚠️ badges on the ones whose smart wallet is missing
-  // ADMIN (the legacy-collection-survival path). The dropdown row is
-  // still selectable when unauthorized — picking it triggers the same
-  // Phase 1 banner above the form, which routes the user to the
-  // collection page to authorize. The picker button also gets a small
-  // dot indicator when missingCount > 0 so users notice without
-  // opening the dropdown.
+  // Batch-read permissions for the user's existing collections so the
+  // picker can show ⚠️ badges on rows where the smart wallet is
+  // missing ADMIN. Selecting a flagged row still works — the inline
+  // banner below the picker routes the user to the collection page
+  // to authorize.
   const {
     byAddress: collectionsPerms,
     missingCount: collectionsMissingAdmin,
   } = useCollectionsPermissions(collectionOptions.map((c) => c.address))
 
-  // Phase 1 client-side preflight. Reads `permissions(0, smartWallet)` on
-  // the SELECTED collection and surfaces an inline Authorize banner
-  // BEFORE the user fills the form, instead of catching the same error
-  // post-upload via maybeHandleAuthError. Saves an Arweave round-trip
-  // on every mint into a collection where the smart wallet isn't yet
-  // ADMIN. Skipped in auto-deploy mode: there's no collection to read
-  // permissions on yet — the contract is created mid-flow by inprocess
-  // and we do a post-mint verify in trackAndVerifyAutoDeploy below,
-  // surfacing a one-shot warning if the smart wallet didn't end up
-  // with ADMIN on the new contract.
+  // Client-side preflight on the SELECTED collection. Saves an Arweave
+  // round-trip when the smart wallet isn't ADMIN — the form blocks
+  // submit and surfaces an Authorize CTA before any upload work.
+  // Skipped in auto-deploy mode (no collection to read yet); auto-
+  // deploy uses post-mint verification in trackAndVerifyAutoDeploy
+  // below.
   //
-  // The smart wallet is per-EOA on inprocess; resolved via the
-  // useInprocessSmartWallet hook (cached, deduped by EOA). We compare
-  // ONLY against ADMIN bit since that's what /api/moment/create's
-  // upstream userOp needs — MINTER alone won't work for setupNewToken
-  // through the inprocess relay (lib/collections.ts:30).
+  // We check the ADMIN bit specifically because inprocess's relay
+  // requires it for setupNewToken — MINTER alone won't work through
+  // the relay even though Zora's contract would accept it.
   const { address: smartWalletForCaller } = useInprocessSmartWallet(address)
   const { data: smartWalletPerms } = useReadContract({
     address: targetCollection ? (targetCollection as `0x${string}`) : undefined,
@@ -264,20 +240,13 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
-  // Phase 3: address of an auto-deployed collection that came back from
-  // inprocess WITHOUT smart-wallet ADMIN. Set by trackAndVerifyAutoDeploy
-  // when the post-mint perms read shows missing ADMIN; surfaces as a
-  // persistent warning panel in the success card (so the user doesn't
-  // miss it after the transient toast disappears) and clears on
-  // "mint another" / form reset.
+  // Address of an auto-deployed collection where the smart wallet did
+  // NOT end up with ADMIN. Surfaces as a persistent warning in the
+  // success card; cleared by the "Mint another" handler.
   const [autoDeployNeedsAuth, setAutoDeployNeedsAuth] = useState<string | null>(null)
-  // Race guard for trackAndVerifyAutoDeploy. The verify is fired via
-  // `void` after setStep('done'), so the user can click "Mint another"
-  // (which clears autoDeployNeedsAuth + resets the form) BEFORE the
-  // post-mint perms read settles. Without this ref, a stale verify
-  // would write back to setAutoDeployNeedsAuth and re-surface the
-  // warning panel against a freshly-reset form. Setting the ref to
-  // null in "Mint another" signals any in-flight verify to bail.
+  // Race guard for the fire-and-forget post-mint verify: if the user
+  // clicks "Mint another" before the verify settles, this ref gets
+  // nulled and the helper bails before writing stale state.
   const verifyTargetRef = useRef<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -421,10 +390,8 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
     e.preventDefault()
 
     if (!isConnected || !address) { openConnectModal?.(); return }
-    // Phase 1 client preflight — bail before Arweave upload if we already
-    // know the smart wallet doesn't hold ADMIN. Banner above the form
-    // still renders the actionable Authorize CTA; this just prevents an
-    // unauthorized click from kicking off the (expensive) media upload.
+    // Bail before any Arweave upload if the smart wallet isn't ADMIN.
+    // The banner above the form still renders the Authorize CTA.
     if (preflightUnauthorized) {
       toast.error('Authorization required', {
         id: 'mint',
@@ -434,11 +401,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
       return
     }
     if (!name.trim()) { toast.error('Please enter a title'); return }
-    // Phase 2 auto-deploy: collection name is required when nothing's
-    // selected. We fall back to the moment's title if the user left
-    // newCollectionName blank — better than rejecting the submit since
-    // the title is already validated above. If both are blank we'd
-    // never reach here (the name check above would have returned).
+    // Falls back to the moment title when newCollectionName is blank.
+    // If both are blank we'd never reach here — name validation above
+    // would have returned.
     const resolvedCollectionName = isAutoDeploy
       ? (newCollectionName.trim() || name.trim())
       : (selectedCollection?.name ?? '')
@@ -493,35 +458,16 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
     const finalSplits = buildFinalSplits()
 
-    // Phase 2 helper: after a successful auto-deploy mint, register the
-    // brand-new collection in KV (so it appears on the artist's profile +
-    // future picker dropdowns) and verify the smart wallet ended up with
-    // ADMIN. Pattern A's auto-grant behavior is undocumented; if the
-    // smart wallet is missing ADMIN, the moment is still real (it lives
-    // on chain at the new collection) but follow-up mints into the same
-    // collection would fail at preflight. We surface that as a one-shot
-    // toast with an Authorize CTA pointing at the new collection page.
-    //
-    // Both calls are fire-and-forget and never throw — the mint
-    // succeeded, so a KV registration hiccup or a verify-RPC blip
-    // shouldn't undo the success state. Failures log to console for
-    // operator debugging.
+    // After a successful auto-deploy mint: register the new collection
+    // in KV and verify the smart wallet ended up with ADMIN. The mint
+    // itself is real on chain regardless of how this goes — both calls
+    // fire-and-forget; failures log to console.
     async function trackAndVerifyAutoDeploy(
       contractAddress: string,
       imageUri: string | undefined,
     ): Promise<void> {
-      // Mark this contract as the verify-in-flight target. If the user
-      // hits "Mint another" before we settle, that handler clears the
-      // ref to null and the post-read state writes below short-circuit
-      // — no stale warning panel re-appears against a reset form.
       verifyTargetRef.current = contractAddress
 
-      // Phase 2 originally inlined a single-shot fetch here. The auto-
-      // deploy path is MORE susceptible to RPC propagation lag than
-      // CreateCollectionForm's explicit deploy (the contract was just
-      // created seconds ago) so it now uses the same exponential-
-      // backoff helper — registers reliably even when the chain head
-      // hasn't propagated to the RPC's slowest replica yet.
       await registerCollectionWithBackoff({
         address: contractAddress,
         name: resolvedCollectionName,
@@ -547,15 +493,8 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 perms: perms.toString(),
               },
             )
-            // Race guard: only persist the warning if this verify
-            // result still applies to the current success card. If
-            // the user already clicked "Mint another" (which clears
-            // verifyTargetRef.current to null), bail without writing.
+            // Bail if "Mint another" already cleared the target.
             if (verifyTargetRef.current !== contractAddress) return
-            // Phase 3: persist the warning into success-card state so
-            // the user has a stable surface to act on (the toast below
-            // disappears in a few seconds; the success card stays
-            // until they click "Mint another").
             setAutoDeployNeedsAuth(contractAddress)
             toast.info('Authorize for next mint', {
               description:
@@ -580,15 +519,11 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
     try {
       if (mintMode === 'text') {
-        // Phase 2: in auto-deploy mode for text moments, upload a
-        // collection-metadata JSON to Arweave and pass it as
-        // contract.uri. We include an inline SVG `data:` URI for the
-        // image field — text moments have no media file to use as the
-        // cover, and an absent `image` makes inprocess + most
-        // marketplaces render a broken-image placeholder on the
-        // collection card. The SVG is content-addressed and small;
-        // operators can swap it for a richer asset later via
-        // lib/generateTextCover.ts without changing call sites.
+        // Text moments have no media file to reuse as a cover, so
+        // auto-deploy uploads a small collection-metadata JSON whose
+        // `image` field is an inline SVG (see lib/generateTextCover.ts).
+        // Without a cover, marketplace cards fall back to broken-image
+        // icons.
         let contractField:
           | { address: string }
           | { name: string; uri: string }
@@ -691,12 +626,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         }
         const metadataUri = await uploadJson(metadata)
 
-        // Phase 2 auto-deploy: when no collection is selected, upload a
-        // separate collection-metadata JSON whose `image` field points at
-        // the moment's media URI (the moment doubles as the collection's
-        // cover for first-mint UX — saves the user a second image upload
-        // and gives them a non-blank collection card immediately). The
-        // user can swap this out later via collection-management UI.
+        // For auto-deploy, the moment's media doubles as the new
+        // collection's cover image. Saves the user a second upload and
+        // gives the collection card a non-blank thumbnail immediately.
         let collectionUri: string | null = null
         if (isAutoDeploy) {
           toast.loading('Uploading collection metadata…', { id: 'mint' })
@@ -819,14 +751,10 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             {result.hash.slice(0, 10)}…{result.hash.slice(-8)}
           </a>
         </div>
-        {/* Phase 3: persistent warning when an auto-deploy mint
-            succeeded but the smart wallet didn't end up with ADMIN on
-            the new contract. Without this surface, the only signal is
-            the transient post-mint toast — easy to miss, and the user
-            then hits AUTHORIZE_REQUIRED next time they try to mint into
-            the same collection. The button routes to the collection
-            page where Phase 1's banner runs the on-chain addPermission
-            from the user's EOA (which IS admin via defaultAdmin). */}
+        {/* Persistent warning when an auto-deploy left the smart
+            wallet without ADMIN on the new contract — without it the
+            user would only see the transient post-mint toast. Routes
+            to the collection page's existing Authorize banner. */}
         {autoDeployNeedsAuth && (
           <div className="text-left p-3 sm:p-4 border border-amber-700/50 bg-amber-950/30 flex items-start gap-2.5">
             <ShieldAlert size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
@@ -851,13 +779,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           onClick={() => {
             setStep('idle')
             setResult(null)
-            // Phase 3: clear the persistent warning along with other
-            // form state — staying on it across "Mint another" would
-            // confuse the next mint into a different (or new) collection.
             setAutoDeployNeedsAuth(null)
-            // Race guard: signal any in-flight trackAndVerifyAutoDeploy
-            // to bail before writing setAutoDeployNeedsAuth (which would
-            // re-surface the warning panel against this freshly-reset form).
+            // Signal any in-flight verify to bail before writing stale
+            // state against this freshly-reset form.
             verifyTargetRef.current = null
             clearFile()
             setTextContent('')
@@ -881,14 +805,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
   return (
     <form onSubmit={handleMint} className="flex flex-col gap-6">
-      {/* Phase 1 inline preflight banner. Surfaces BEFORE the user fills
-          the form when their inprocess smart wallet doesn't hold ADMIN
-          on the selected collection — same on-chain check the server's
-          mint-proxy preflight runs, just earlier in the lifecycle so
-          we don't burn an Arweave upload + Turbo settlement wait
-          before discovering the deploy isn't authorized. Mirrors the
-          Authorize banner pattern in CollectionView so users see a
-          consistent CTA when permissions are missing. */}
+      {/* Inline preflight banner — same on-chain check the mint-proxy
+          runs, surfaced earlier in the lifecycle so we don't burn an
+          Arweave upload before discovering missing ADMIN. */}
       {preflightUnauthorized && (
         <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-start gap-2.5">
@@ -1031,7 +950,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
       )}
 
       {/* Collections picker — optional; if the user doesn't pick one, the
-          auto-deploy is the default when nothing's selected (Phase 2). */}
+          auto-deploy is the default when nothing's selected. */}
       <div>
         <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
           Collection
@@ -1062,12 +981,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                   ? 'loading collections…'
                   : '+ create new collection'}
             </span>
-            {/* Phase 3: subtle amber dot when at least one of the user's
-                existing collections is confirmed missing ADMIN. Cues the
-                user to open the dropdown and see which ones need
-                attention. Hidden when no issues OR when an issue-free
-                collection is currently selected (the badge per-row in
-                the dropdown is the more specific signal). */}
+            {/* Subtle amber dot when at least one collection in the
+                picker needs authorize. Per-row badges in the dropdown
+                identify the specific ones. */}
             {collectionsMissingAdmin > 0 && (
               <span
                 className="w-2 h-2 bg-amber-400 rounded-full flex-shrink-0"
@@ -1096,12 +1012,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
         {pickerOpen && (
           <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
-            {/* Phase 3: explain the ⚠️ badges when at least one of the
-                user's collections is confirmed missing ADMIN. Without
-                this, users see badges with no explanation and can't
-                tell what action to take. Picking a flagged collection
-                still works — the Phase 1 banner above the form
-                surfaces the Authorize CTA on selection. */}
+            {/* Explains the ⚠️ badges below. Picking a flagged row
+                still works — the banner above the form will then
+                surface the Authorize CTA. */}
             {collectionsMissingAdmin > 0 && (
               <div className="px-3 py-2 border-b border-[#2a2a2a] bg-amber-950/30 flex items-start gap-2">
                 <ShieldAlert size={12} className="text-amber-400 flex-shrink-0 mt-0.5" />
@@ -1155,11 +1068,8 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                   const isSelected =
                     selectedCollection !== null &&
                     c.address.toLowerCase() === selectedCollection.address.toLowerCase()
-                  // Phase 3: render an amber ⚠️ overlay when the
-                  // smart wallet is confirmed missing ADMIN on this
-                  // collection. hasAdmin === null means loading or
-                  // RPC error — render no badge in those cases so we
-                  // don't surface a false-negative.
+                  // hasAdmin === null = loading or RPC error; render
+                  // no badge in those cases.
                   const permStatus = collectionsPerms[c.address.toLowerCase()]
                   const needsAuth = permStatus?.hasAdmin === false
                   return (
@@ -1214,7 +1124,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           </div>
         )}
 
-        {/* Phase 2: collection-name input, surfaces only in auto-deploy
+        {/* Collection-name input, surfaces only in auto-deploy
             mode. Optional — falls back to the moment title at submit
             (see resolvedCollectionName). Showing it conditionally keeps
             the form clean for users who picked an existing collection. */}

@@ -8,10 +8,6 @@ import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
 import { serverBaseClient } from '@/lib/rpc'
 
-// Mirrors the admin-session pattern used by app/api/featured/route.ts —
-// a 4-hour signed-message session keyed off ADMIN_ADDRESS. We reuse the
-// same shape so the admin UI's existing session machinery just works
-// without standing up a new auth layer for this one endpoint.
 const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
 const SESSION_TTL = 4 * 60 * 60 * 1000
 
@@ -36,12 +32,8 @@ async function verifyAdminSession(body: {
   return null
 }
 
-// One row in the audit cache. Persisted at kismetart:collection-perms:<addr>
-// so the GET endpoint (and any future UI badge) can render last-known state
-// without re-hitting RPC every load.
-//
-// `perms` is the bigint serialized as a decimal string — JSON.stringify
-// on bigint throws, so we always normalize before persisting.
+// Cached at kismetart:collection-perms:<addr>. `perms` is bigint-as-string
+// since JSON.stringify can't serialize bigints natively.
 interface CollectionPermsCacheEntry {
   collection: string
   artist: string | null
@@ -59,9 +51,6 @@ async function writeCacheEntry(entry: CollectionPermsCacheEntry): Promise<void> 
   try {
     await redis.set(cacheKey(entry.collection), JSON.stringify(entry))
   } catch (err) {
-    // Cache write failure is non-fatal — the audit response still
-    // returns the freshly-read result. Log so a Redis outage during
-    // audit doesn't silently mean "no cached results next time".
     console.error('[permissions/audit] cache write failed', {
       collection: entry.collection,
       err: err instanceof Error ? err.message : String(err),
@@ -70,12 +59,8 @@ async function writeCacheEntry(entry: CollectionPermsCacheEntry): Promise<void> 
 }
 
 /**
- * Audit one collection: resolve its artist's smart wallet, read on-chain
- * permissions for that wallet at tokenId 0, persist the result.
- *
- * Designed to never throw — all error paths are captured in the returned
- * `error` field so the batch caller can keep auditing the rest of the
- * list rather than aborting on the first hiccup.
+ * Audit one collection. Captures any error path in the returned `error`
+ * field so the batch caller doesn't abort on the first hiccup.
  */
 async function auditOne(
   client: ReturnType<typeof serverBaseClient>,
@@ -99,14 +84,6 @@ async function auditOne(
     return entry
   }
 
-  // Resolve the artist's inprocess smart wallet via the shared helper.
-  // resolveSmartWallet centralizes the defensive shape parsing
-  // (`address`/`smartWallet`/`smart_wallet`/`smartAccount` + raw
-  // string), so this endpoint and the local proxy at
-  // /api/inprocess/smart-wallet can never drift on which response
-  // shapes they accept. Returns null on any failure (network,
-  // non-200, unparseable). Caches under Next's data cache for 1h
-  // (smart-wallet → artist mapping is effectively immutable).
   const smartWallet = await resolveSmartWallet(artist)
 
   if (!smartWallet) {
@@ -152,15 +129,10 @@ async function auditOne(
   return entry
 }
 
-/**
- * Public-facing audit row shape. Strips the `error` string field
- * present on the internal cache entry — those messages can include
- * raw RPC error text, upstream service health hints, or other
- * infra-internal information that's better not leaked through an
- * unauthenticated endpoint. Replaced with a coarse `errored: boolean`
- * so consumers can render a "checking failed" badge without seeing
- * which exact service flaked.
- */
+// Public-facing audit row. Strips the cache's `error` string (which can
+// include raw RPC errors and internal infra signals) — replaced with a
+// coarse `errored: boolean`. Detailed errors stay in the cache for the
+// admin-gated POST response.
 interface PublicAuditResult {
   collection: string
   artist: string | null
@@ -184,19 +156,11 @@ function toPublicResult(entry: CollectionPermsCacheEntry): PublicAuditResult {
 }
 
 /**
- * GET /api/permissions/audit — public, returns last-known cached results
- * for every tracked collection. Useful for an admin dashboard / status
- * page without forcing a fresh on-chain read every visit. Returns an
- * empty array for collections that have never been audited.
- *
- * Endpoint is intentionally unauthenticated — the data (smart wallet ↔
- * artist EOA pairs, ADMIN status) is derivable from on-chain events
- * already, so direct disclosure isn't a leak. The previous version
- * also surfaced the cache's raw `error` string (RPC errors, internal
- * status messages); those are now redacted to a boolean `errored`
- * field so a public scrape can't pivot internal-infra signals out of
- * the response. Detailed errors stay in the cache for the admin-gated
- * POST handler's response.
+ * GET /api/permissions/audit — public read of last-known cached results.
+ * Empty array if nothing has been audited yet. Smart-wallet ↔ artist EOA
+ * pairs are derivable from on-chain events anyway, so direct disclosure
+ * is fine; only the raw error strings are redacted (see
+ * `PublicAuditResult`).
  */
 export async function GET() {
   const tracked = await getTrackedCollections()
@@ -216,10 +180,8 @@ export async function GET() {
   for (let i = 0; i < addresses.length; i++) {
     const raw = raws[i]
     if (!raw) continue
-    // Guard JSON.parse per entry: a single corrupt cache entry
-    // (Upstash partial write, manual surgery, schema drift) shouldn't
-    // 500 the whole response and hide every other collection's status.
-    // Log + skip the bad entry instead.
+    // Guard per-entry parse: one corrupt entry shouldn't 500 the whole
+    // response and hide every other collection's status.
     try {
       const entry =
         typeof raw === 'string' ? (JSON.parse(raw) as CollectionPermsCacheEntry) : raw
@@ -235,20 +197,13 @@ export async function GET() {
 }
 
 /**
- * POST /api/permissions/audit — admin-only. Walks every tracked collection,
- * reads on-chain permissions for the artist's smart wallet, persists to
- * the per-collection cache, returns the full summary.
+ * POST /api/permissions/audit — admin-only. Audits every tracked
+ * collection, persists to cache, returns the full summary including the
+ * verbose `error` field for each row.
  *
- * Idempotent and safe to re-run — every call overwrites cached entries
- * with fresh reads. Skips PLATFORM_COLLECTION because that's audited
- * separately by the startup healthcheck (lib/healthcheck.ts) against a
- * different operator wallet (OPERATOR_SMART_WALLET, not per-artist).
- *
- * Concurrency capped at 10 in-flight reads — RPC providers throttle on
- * burst, and Upstash's free tier doesn't love thousands of parallel
- * writes either. With ~100 tracked collections this finishes in well
- * under the 60s Vercel function ceiling; we'd need to switch to a
- * background queue if Kismet ever crosses ~1000 collections.
+ * Skips PLATFORM_COLLECTION (the boot healthcheck audits that against
+ * OPERATOR_SMART_WALLET, not per-artist). Concurrency capped at 10 to
+ * stay within RPC + Upstash burst limits.
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as {

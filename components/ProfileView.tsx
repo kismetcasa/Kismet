@@ -547,14 +547,10 @@ export function ProfileView({ address }: ProfileViewProps) {
   }
 
   // ─── permissions banner gate ─────────────────────────────────────────────
-  // Conditional surface for the /permissions dashboard. Phase 3 deployed
-  // the dashboard but didn't link it from anywhere user-facing — the
-  // entry point is here, on the profile owner's own page, and ONLY
-  // when at least one of their collections is confirmed missing
-  // smart-wallet ADMIN. We pass an empty input to the hook for non-
-  // owners so the wagmi multicall doesn't fire; non-owners see no
-  // banner regardless of the underlying permission state (private
-  // info to the owner only).
+  // Owner-only entry point to the /permissions dashboard. We pass an
+  // empty list for non-owners so the wagmi multicall doesn't fire —
+  // visitors don't need (and shouldn't see) someone else's permission
+  // state.
   const collectionAddressesForPerms = isOwner
     ? artistCollections.map((c) => c.contractAddress)
     : []
@@ -568,11 +564,8 @@ export function ProfileView({ address }: ProfileViewProps) {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
-      {/* Permissions banner — owner-only, only when issues exist. The
-          /permissions dashboard the link routes to is the central
-          place for fixing legacy collections; this banner is the
-          discoverability bridge. Hidden when missingCount is 0 to
-          avoid permanent UI noise on a healthy profile. */}
+      {/* Owner-only permissions banner. Hidden when missingCount is 0
+          to keep healthy profiles uncluttered. */}
       {isOwner && ownCollectionsMissingAdmin > 0 && (
         <Link
           href="/permissions"
