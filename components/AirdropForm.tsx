@@ -189,6 +189,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           callerAddress: address,
           signature,
           nonce,
+          // Tells the server to bypass the smart-wallet ADMIN preflight.
+          // Set when the client just landed an on-chain authorize and is
+          // re-submitting — at that point a preflight 'unauthorized'
+          // verdict almost always means RPC node staleness (the bit IS
+          // set, but a non-canonical node hasn't synced). Trust inprocess
+          // to be the authoritative source on retries.
+          ...(isRetry ? { isRetry: true } : {}),
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -249,10 +256,31 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           // Mark the airdrop as pending-retry so the auth flow can
           // auto-resubmit once it lands.
           setPendingAirdropRetry(true)
+          // Server includes the resolved smart wallet + per-scope
+          // perms in AUTHORIZE_REQUIRED responses. Surface the smart
+          // wallet address in the description so users can verify it
+          // matches the address they granted ADMIN to — the "I
+          // already authorized" confusion almost always traces back
+          // to granting a different address (or granting MINTER (4)
+          // instead of ADMIN (2)).
+          const responseData = data as {
+            smartWallet?: string
+            perms?: Array<{ tokenId: string; value: string | null }>
+          }
+          const sw = responseData.smartWallet
+          const swShort = sw ? `${sw.slice(0, 6)}…${sw.slice(-4)}` : null
+          const nonZeroPerms = responseData.perms?.filter(
+            (p) => p.value !== null && p.value !== '0',
+          )
+          const hasOtherBits = (nonZeroPerms?.length ?? 0) > 0
+          const description = swShort
+            ? hasOtherBits
+              ? `Kismet's smart wallet ${swShort} has permissions on this collection but is missing the ADMIN bit. If you granted MINTER instead of ADMIN, re-grant with ADMIN.`
+              : `Kismet's smart wallet ${swShort} needs ADMIN on this collection. One-time onchain grant from your wallet.`
+            : "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet."
           toast.error('Authorization required', {
             id: 'airdrop',
-            description:
-              "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+            description,
             action: {
               label: 'Authorize',
               // Pass the moment's tokenId so the grant lands on a row

@@ -21,6 +21,49 @@ interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
 }
 
+interface RegisterCollectionPayload {
+  address: string
+  name: string
+  description?: string
+  image?: string
+  artist?: string
+}
+
+// /api/collections POST has two race-prone gates that can spuriously 403/502
+// on a freshly-mined deploy: (1) the on-chain admin check reads via the
+// public Base RPC which can lag behind the chain head, and (2) Upstash can
+// hiccup. Retrying with backoff covers both. We log to console so a missed
+// registration is visible in devtools instead of silently producing a
+// "deployed!" toast for a collection that never enters our KV.
+async function registerCollectionWithBackoff(payload: RegisterCollectionPayload) {
+  const delays = [0, 1000, 2500, 5000]
+  let lastDetail: string | null = null
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]))
+    try {
+      const res = await fetch('/api/collections', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (res.ok) return
+      const text = await res.text().catch(() => '')
+      lastDetail = `${res.status} ${text.slice(0, 200)}`
+      // 401/403 with stable causes (bad session, wrong artist) won't fix on
+      // retry; 502 (admin-check RPC) and 429 will. 502 is the propagation
+      // race we expect post-deploy.
+      if (res.status === 401 || res.status === 403) break
+    } catch (err) {
+      lastDetail = err instanceof Error ? err.message : String(err)
+    }
+  }
+  console.error('[CreateCollectionForm] /api/collections registration failed', {
+    address: payload.address,
+    detail: lastDetail,
+  })
+}
+
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
   const router = useRouter()
   const { address, isConnected } = useAccount()
@@ -182,19 +225,17 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     // Cookie auth: the session was already established before the deploy
     // (ensureSession ran on Arweave upload), so this call rides on the same
     // session and the server can verify the caller matches `artist` and is
-    // the on-chain admin of `address`.
-    fetch('/api/collections', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        address: deployedAddress,
-        name: name.trim(),
-        description: description.trim() || undefined,
-        image: deployedImageUri,
-        artist: address,
-      }),
-    }).catch(() => {})
+    // the on-chain admin of `address`. Fire-and-forget but with logging +
+    // retry — silently swallowing this means the collection never lands in
+    // KV and the user sees a misleading "deployed!" while the collection
+    // never appears in feeds.
+    void registerCollectionWithBackoff({
+      address: deployedAddress,
+      name: name.trim(),
+      description: description.trim() || undefined,
+      image: deployedImageUri,
+      artist: address,
+    })
     onDeployed?.(deployedAddress, name)
 
     clearPending()
@@ -356,6 +397,20 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // consistent with what the deploy will look like for every
       // subsequent token created via /api/mint.
       const setupActions = [...minterActions, ...inprocessAdminAction, ...coverActions]
+
+      // Telemetry: log the cover-mint state and the count of cover actions
+      // baked into the deploy tx, so if a user reports "I had cover mint on
+      // but no cover token was minted" we can confirm whether the toggle was
+      // actually true at click time. mintCover=false here ⇒ user toggled off
+      // (or never on); coverActions.length=0 with mintCover=true ⇒ a build bug.
+      console.log('[CreateCollectionForm] deploy submitted', {
+        mintCover,
+        coverActionsCount: coverActions.length,
+        coverPrice: mintCover ? coverPrice : undefined,
+        coverSupply: mintCover ? coverSupply : undefined,
+        mintersCount: minterActions.length,
+        inprocessAdminGranted: inprocessAdminAction.length > 0,
+      })
 
       const hash = await writeContractAsync({
         chainId: base.id,

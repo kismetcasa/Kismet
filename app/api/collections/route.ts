@@ -280,20 +280,46 @@ export async function POST(req: NextRequest) {
   // check Zora uses when gating addPermission/setSale; we read it directly
   // rather than trusting an off-chain claim. tokenId 0 is the collection-wide
   // permission row.
-  try {
-    const client = serverBaseClient()
-    const perms = (await client.readContract({
-      address: body.address as Address,
-      abi: COLLECTION_PERMISSIONS_ABI,
-      functionName: 'permissions',
-      args: [0n, sessionAddress as Address],
-    })) as bigint
-    const isAdmin = (perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
-    if (!isAdmin) {
-      return NextResponse.json({ error: 'Caller is not admin of this collection' }, { status: 403 })
+  // The public Base RPC default lags behind the chain head enough that a
+  // freshly-mined deploy can read 0 permissions (false negative → 403).
+  // Retry a few times on either a false-negative or RPC error to ride out
+  // propagation lag. serverBaseClient routes through
+  // NEXT_PUBLIC_BASE_RPC_URL when set (paid Alchemy/Infura) so the lag
+  // is shorter to begin with — the retry is belt-and-suspenders for the
+  // tail latency of even a paid provider's slowest replica.
+  const client = serverBaseClient()
+  let isAdmin = false
+  let lastErr: unknown = null
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const perms = (await client.readContract({
+        address: body.address as Address,
+        abi: COLLECTION_PERMISSIONS_ABI,
+        functionName: 'permissions',
+        args: [0n, sessionAddress as Address],
+      })) as bigint
+      if ((perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) {
+        isAdmin = true
+        break
+      }
+      lastErr = new Error(`perms=${perms} missing ADMIN bit`)
+    } catch (err) {
+      lastErr = err
     }
-  } catch {
-    return NextResponse.json({ error: 'Could not verify collection admin on-chain' }, { status: 502 })
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
+    }
+  }
+  if (!isAdmin) {
+    console.error('[collections POST] admin check failed', {
+      address: body.address,
+      caller: sessionAddress,
+      err: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    })
+    return NextResponse.json(
+      { error: 'Could not verify collection admin on-chain' },
+      { status: 502 },
+    )
   }
 
   await addTrackedCollection(body.address, {

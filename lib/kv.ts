@@ -35,8 +35,15 @@ export async function addTrackedCollection(
       ops.push(redis.set(keyCollectionMeta(address), JSON.stringify(data)))
     }
     await Promise.all(ops)
-  } catch {
-    // Redis not configured — silently skip
+  } catch (err) {
+    // Surface in Vercel function logs instead of swallowing — if Upstash
+    // is unreachable or misconfigured, a brand-new deploy silently won't
+    // show up in any feed and the user gets a misleading green toast.
+    console.error('[kv] addTrackedCollection failed', {
+      address,
+      hasName: !!meta?.name,
+      err: err instanceof Error ? err.message : String(err),
+    })
   }
 }
 
