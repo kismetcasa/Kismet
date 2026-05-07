@@ -26,6 +26,14 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '20') || 20))
   const creator = searchParams.get('creator')?.toLowerCase() ?? undefined
   const collector = searchParams.get('collector')?.toLowerCase() ?? undefined
+  // Returns moments where this address holds admin authority — both
+  // moments they created (creator === address) and moments where they
+  // were delegated ADMIN at the per-token row via addPermission. Used
+  // by the airdrop picker so delegates can actually see + airdrop
+  // moments granted to them, not just their own. Distinct from
+  // ?creator= which filters to moments they specifically created
+  // (used by ProfileView for the "their work" feed).
+  const airdroppable = searchParams.get('airdroppable')?.toLowerCase() ?? undefined
   const sort = searchParams.get('sort') // 'trending' | null
   const featured = searchParams.get('featured') === '1'
   // Comma-separated addresses to prioritise in the feed (following mode)
@@ -62,6 +70,28 @@ export async function GET(req: NextRequest) {
     merged = merged.filter((m: unknown) => {
       const moment = m as { creator?: { address?: string } }
       return moment.creator?.address?.toLowerCase() === creator
+    })
+  }
+
+  // Airdroppable filter — moments this address has admin authority over.
+  // Inprocess populates `admins[]` from on-chain ADMIN holders at each
+  // moment's tokenId, so delegated admins appear here even though they
+  // aren't the creator. Match on either `creator.address` or any entry
+  // in `admins[]` so the creator's own moments still surface (some
+  // inprocess responses don't include the creator in admins[] when they
+  // hold the bit only via tokenId 0).
+  if (airdroppable) {
+    merged = merged.filter((m: unknown) => {
+      const moment = m as {
+        creator?: { address?: string }
+        admins?: { address?: string }[]
+      }
+      if (moment.creator?.address?.toLowerCase() === airdroppable) return true
+      return (
+        moment.admins?.some(
+          (a) => a.address?.toLowerCase() === airdroppable,
+        ) ?? false
+      )
     })
   }
 
