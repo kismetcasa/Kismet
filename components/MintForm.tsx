@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import Image from 'next/image'
+import { useRouter } from 'next/navigation'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -81,6 +82,7 @@ const PLATFORM_OPTION: CollectionOption = {
 }
 
 export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
+  const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
@@ -183,6 +185,36 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
     setMintMode(mode)
     if (mode === 'text') clearFile()
     else setTextContent('')
+  }
+
+  // Detects the userOp-revert phrasing that comes back when minting into a
+  // collection where inprocess's smart account isn't yet ADMIN. Shows an
+  // actionable toast (button → the collection's authorize banner) and
+  // resets form state; caller bails out without throwing so the generic
+  // toastError path doesn't fire. Gated on the *currently selected*
+  // collection (could come from the URL prop or from the picker) and
+  // skipped for the platform default — a userOp revert against
+  // PLATFORM_COLLECTION isn't one our user can fix from a creator
+  // banner, so the raw error is more honest there.
+  function maybeHandleAuthError(raw: string): boolean {
+    if (
+      isPlatformDefault ||
+      !/useroperation reverted|user operation reverted|execution reverted/i.test(raw)
+    ) {
+      return false
+    }
+    toast.error('Authorization required', {
+      id: 'mint',
+      description:
+        "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+      action: {
+        label: 'Authorize',
+        onClick: () => router.push(`/collection/${targetCollection}`),
+      },
+    })
+    setStep('idle')
+    setUploadProgress(0)
+    return true
   }
 
   function addSplit() {
@@ -370,7 +402,12 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
-          throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
+          const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
+          // The userOp-revert path replaces the toast with an actionable
+          // one (button → collection's authorize banner) and bails out;
+          // anything else falls through to the generic toastError below.
+          if (maybeHandleAuthError(raw)) return
+          throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
@@ -428,7 +465,12 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
-          throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
+          const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
+          // The userOp-revert path replaces the toast with an actionable
+          // one (button → collection's authorize banner) and bails out;
+          // anything else falls through to the generic toastError below.
+          if (maybeHandleAuthError(raw)) return
+          throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)

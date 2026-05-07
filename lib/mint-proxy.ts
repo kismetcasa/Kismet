@@ -96,7 +96,12 @@ export async function proxyMintRequest(
   const allowed = await checkRateLimit(`${rateLimitKey}:${ip}`, 10, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
-  const body = (await req.json()) as Record<string, unknown>
+  let body: Record<string, unknown>
+  try {
+    body = (await req.json()) as Record<string, unknown>
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  }
   const account = typeof body?.account === 'string' ? body.account : undefined
   if (account) void trackWallet(account)
 
@@ -139,20 +144,56 @@ export async function proxyMintRequest(
   const apiKey = process.env.INPROCESS_API_KEY
   if (apiKey) headers['x-api-key'] = apiKey
 
-  const upstream = await fetch(`${INPROCESS_API}/${endpoint}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(forwardBody),
-  })
+  let upstream: Response
+  try {
+    upstream = await fetch(`${INPROCESS_API}/${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(forwardBody),
+    })
+  } catch (err) {
+    // Network-level failure reaching inprocess. Surface as 502 with a
+    // human-readable detail rather than letting it bubble to a bare 500.
+    return NextResponse.json(
+      {
+        error: 'upstream unreachable',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      { status: 502 },
+    )
+  }
 
   const text = await upstream.text()
   let data: unknown
   try {
     data = JSON.parse(text)
   } catch {
+    // Inprocess returned non-JSON (often an HTML error page from a 5xx).
+    // Log the raw body so server-side debugging can see what actually
+    // came back; surface a 502 with the snippet to the client.
+    console.error(
+      `[mint-proxy] upstream non-JSON response: status=${upstream.status} body=${text.slice(0, 500)}`,
+    )
     return NextResponse.json(
       { error: 'upstream error', status: upstream.status, detail: text.slice(0, 200) },
       { status: 502 },
+    )
+  }
+
+  // Always log non-OK upstream responses so we can diagnose on-chain
+  // reverts (caller missing ADMIN on the collection, sale-config rejected,
+  // splits contract failure, etc.). Request body is logged sans the
+  // potentially-large tokenContent so writing-moments don't bloat the log.
+  if (!upstream.ok) {
+    const safeBody = { ...forwardBody }
+    if (safeBody.token && typeof safeBody.token === 'object') {
+      const t = safeBody.token as Record<string, unknown>
+      if (typeof t.tokenContent === 'string' && t.tokenContent.length > 80) {
+        safeBody.token = { ...t, tokenContent: `${t.tokenContent.slice(0, 80)}…` }
+      }
+    }
+    console.error(
+      `[mint-proxy] upstream ${upstream.status}: ${JSON.stringify(data).slice(0, 500)} | request: ${JSON.stringify(safeBody).slice(0, 500)}`,
     )
   }
 

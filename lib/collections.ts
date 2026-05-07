@@ -22,8 +22,13 @@ const FIXED_PRICE_STRATEGY_ADDRESS = ZORA_FIXED_PRICE_STRATEGY
 const OPEN_EDITION_MINT_SIZE = 18446744073709551615n
 
 // Per Zora's PermissionsConstants: ADMIN=2, MINTER=4, SALES=8, METADATA=16,
-// FUNDS_MANAGER=32. We grant MINTER (4) — the address can mint but cannot
-// transfer admin or change royalty config.
+// FUNDS_MANAGER=32.
+// - MINTER (4): the address can mint copies of an existing token but cannot
+//   create new tokens.
+// - ADMIN (2): the address can do everything an admin can — including
+//   setupNewToken. Required for inprocess's platform smart wallet, which
+//   submits new-token userOps via /api/mint and is gated on this bit.
+export const PERMISSION_BIT_ADMIN = 2n
 const PERMISSION_BIT_MINTER = 4n
 
 const COLLECTION_ABI = [
@@ -79,6 +84,16 @@ const COLLECTION_ABI = [
     ],
     outputs: [],
   },
+  {
+    name: 'permissions',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenId', type: 'uint256' },
+      { name: 'user', type: 'address' },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
 ] as const
 
 const FIXED_PRICE_SALE_STRATEGY_ABI = [
@@ -114,6 +129,25 @@ export function encodeMinterPermission(minterAddress: Address): `0x${string}` {
     args: [0n, minterAddress, PERMISSION_BIT_MINTER],
   })
 }
+
+// Grant collection-wide ADMIN permission to an address. We use this to
+// authorize the inprocess platform smart wallet so that subsequent
+// /api/mint calls (which submit userOps via that smart wallet) can run
+// setupNewToken without reverting at gas estimation. Same encoding as
+// encodeMinterPermission but with the ADMIN bit (2) instead of MINTER (4).
+export function encodeAdminPermission(adminAddress: Address): `0x${string}` {
+  return encodeFunctionData({
+    abi: COLLECTION_ABI,
+    functionName: 'addPermission',
+    args: [0n, adminAddress, PERMISSION_BIT_ADMIN],
+  })
+}
+
+// Re-export the ABI fragment for the read+write pieces consumers need
+// outside this module: `permissions` (read) for "is this address already
+// admin?" checks, and `addPermission` (write) for the retroactive
+// authorize flow on existing collections.
+export { COLLECTION_ABI }
 
 interface CoverTokenSetupParams {
   tokenURI: string
