@@ -16,3 +16,12 @@ import { isAddress as viemIsAddress, type Address } from 'viem'
 export function isAddress(value: unknown): value is Address {
   return typeof value === 'string' && viemIsAddress(value, { strict: false })
 }
+
+/**
+ * Validates a token ID as a non-empty decimal string. Single source of
+ * truth for the `/^\d+$/` checks scattered across moment + listing
+ * routes — use this instead of inlining the regex.
+ */
+export function isValidTokenId(value: unknown): value is string {
+  return typeof value === 'string' && /^\d+$/.test(value)
+}

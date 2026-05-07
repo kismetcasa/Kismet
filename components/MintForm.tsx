@@ -11,6 +11,7 @@ import { parseEther, parseUnits, isAddress } from 'viem'
 import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
+import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 import { USDC_BASE } from '@/lib/zoraMint'
@@ -42,7 +43,7 @@ function sortSplits(s: Split[]): Split[] {
 // matches `target` exactly.
 function roundToIntegerAllocations(values: number[], target: number): number[] {
   const rounded = values.map((v) => Math.max(1, Math.round(v)))
-  let sum = rounded.reduce((a, b) => a + b, 0)
+  const sum = rounded.reduce((a, b) => a + b, 0)
   let drift = target - sum
   let idx = 0
   // Bound the loop generously; drift is bounded by recipient count in practice.
@@ -174,7 +175,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
-  const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'minting' | 'done'>('idle')
+  const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
 
@@ -439,6 +440,23 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           ...(file!.type.startsWith('video/') ? { animation_url: mediaUri } : {}),
         }
         const metadataUri = await uploadJson(metadata)
+
+        // HEAD-poll both URIs before kicking off the on-chain mint.
+        // Turbo confirms ingestion before the gateway has propagated, so
+        // jumping straight to /api/mint can produce a moment whose
+        // metadata fetches 404 at indexing time. 45s budget covers the
+        // typical propagation window; on timeout we surface a retry
+        // message rather than commit a broken moment.
+        setStep('verifying-upload')
+        toast.loading('Verifying Arweave propagation…', { id: 'mint' })
+        const [mediaOk, metadataOk] = await Promise.all([
+          verifyArweaveAvailable(mediaUri),
+          verifyArweaveAvailable(metadataUri),
+        ])
+        if (!mediaOk || !metadataOk) {
+          const which = !mediaOk && !metadataOk ? 'media + metadata' : !mediaOk ? 'media' : 'metadata'
+          throw new Error(`Arweave still settling (${which} not yet propagated) — try again in a minute`)
+        }
 
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
@@ -925,6 +943,7 @@ function stepLabel(step: string, progress: number): string {
   switch (step) {
     case 'uploading-media': return progress > 0 ? `uploading media… ${progress}%` : 'uploading media…'
     case 'uploading-metadata': return 'uploading metadata…'
+    case 'verifying-upload': return 'verifying Arweave propagation…'
     case 'minting': return 'minting…'
     default: return 'working…'
   }

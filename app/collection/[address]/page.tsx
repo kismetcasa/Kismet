@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
-import { isAddress } from 'viem'
 import { notFound } from 'next/navigation'
+import { isAddress } from '@/lib/address'
 import { INPROCESS_API, resolveUri, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'

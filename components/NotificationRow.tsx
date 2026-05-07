@@ -43,7 +43,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
             {actorLabel ?? 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your moment'}
           </p>
           {n.comment && (
-            <p className="text-[10px] font-mono text-[#888] mt-0.5 truncate">"{n.comment}"</p>
+            <p className="text-[10px] font-mono text-[#888] mt-0.5 truncate">&ldquo;{n.comment}&rdquo;</p>
           )}
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
             {n.amount && n.amount > 1 ? `${n.amount} editions` : '1 edition'}

@@ -608,7 +608,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <div className="min-h-64 flex flex-col p-6 sm:p-10 bg-[#111]">
               <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-3">writing</span>
               <p className="text-sm font-mono text-[#efefef] leading-relaxed whitespace-pre-wrap">
-                {textContent ?? (detail ? '' : '…')}
+                {textContent ?? <span className="text-[#888]">loading from Arweave…</span>}
               </p>
             </div>
           ) : (

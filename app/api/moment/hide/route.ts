@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from '@/lib/address'
+import { isAddress, isValidTokenId } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMeta } from '@/lib/notifications'
 import { hideMoment, unhideMoment, isMomentHidden } from '@/lib/hiddenMoments'
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
   }
-  if (!tokenId || !/^\d+$/.test(tokenId)) {
+  if (!isValidTokenId(tokenId)) {
     return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
   }
   if (typeof hidden !== 'boolean') {
@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collectionAddress = searchParams.get('collectionAddress')
   const tokenId = searchParams.get('tokenId')
-  if (!collectionAddress || !isAddress(collectionAddress) || !tokenId || !/^\d+$/.test(tokenId)) {
+  if (!collectionAddress || !isAddress(collectionAddress) || !isValidTokenId(tokenId)) {
     return NextResponse.json({ error: 'Invalid query params' }, { status: 400 })
   }
   const hidden = await isMomentHidden(collectionAddress, tokenId)
