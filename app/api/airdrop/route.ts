@@ -132,10 +132,11 @@ export async function POST(req: NextRequest) {
   if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
 
   // Confirm caller is creator or admin. Inprocess's /moment endpoint
-  // returns MomentDetail with `momentAdmins: string[]` — the creator is
-  // momentAdmins[0], delegated admins follow. Off-chain admin grants are
-  // captured here. On-chain ADMIN bit is the fallback for fresh tokens
-  // the indexer hasn't picked up yet.
+  // returns `momentAdmins: string[]` — an unordered list including
+  // platform smart wallets, factory grants, and the actual minter. We
+  // accept any caller in that list (creator OR delegated admin), so the
+  // ordering doesn't matter here. On-chain ADMIN bit is the fallback for
+  // fresh tokens the indexer hasn't picked up yet.
   const callerLower = body.callerAddress.toLowerCase()
   let authorized = false
   try {
