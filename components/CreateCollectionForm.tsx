@@ -16,54 +16,12 @@ import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
+import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError } from '@/lib/toast'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
-}
-
-interface RegisterCollectionPayload {
-  address: string
-  name: string
-  description?: string
-  image?: string
-  artist?: string
-}
-
-// /api/collections POST has two race-prone gates that can spuriously 403/502
-// on a freshly-mined deploy: (1) the on-chain admin check reads via the
-// public Base RPC which can lag behind the chain head, and (2) Upstash can
-// hiccup. Retrying with backoff covers both. We log to console so a missed
-// registration is visible in devtools instead of silently producing a
-// "deployed!" toast for a collection that never enters our KV.
-async function registerCollectionWithBackoff(payload: RegisterCollectionPayload) {
-  const delays = [0, 1000, 2500, 5000]
-  let lastDetail: string | null = null
-  for (let i = 0; i < delays.length; i++) {
-    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]))
-    try {
-      const res = await fetch('/api/collections', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      if (res.ok) return
-      const text = await res.text().catch(() => '')
-      lastDetail = `${res.status} ${text.slice(0, 200)}`
-      // 401/403 with stable causes (bad session, wrong artist) won't fix on
-      // retry; 502 (admin-check RPC) and 429 will. 502 is the propagation
-      // race we expect post-deploy.
-      if (res.status === 401 || res.status === 403) break
-    } catch (err) {
-      lastDetail = err instanceof Error ? err.message : String(err)
-    }
-  }
-  console.error('[CreateCollectionForm] /api/collections registration failed', {
-    address: payload.address,
-    detail: lastDetail,
-  })
 }
 
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {

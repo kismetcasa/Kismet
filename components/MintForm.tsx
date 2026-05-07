@@ -18,7 +18,9 @@ import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
+import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
+import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
 
@@ -500,33 +502,19 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
       contractAddress: string,
       imageUri: string | undefined,
     ): Promise<void> {
-      try {
-        const res = await fetch('/api/collections', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            address: contractAddress,
-            name: resolvedCollectionName,
-            description: description.trim() || undefined,
-            image: imageUri,
-            artist: address,
-          }),
-        })
-        if (!res.ok) {
-          const text = await res.text().catch(() => '')
-          console.error('[MintForm] auto-deploy collection registration failed', {
-            address: contractAddress,
-            status: res.status,
-            detail: text.slice(0, 200),
-          })
-        }
-      } catch (err) {
-        console.error('[MintForm] auto-deploy collection registration threw', {
-          address: contractAddress,
-          err: err instanceof Error ? err.message : String(err),
-        })
-      }
+      // Phase 2 originally inlined a single-shot fetch here. The auto-
+      // deploy path is MORE susceptible to RPC propagation lag than
+      // CreateCollectionForm's explicit deploy (the contract was just
+      // created seconds ago) so it now uses the same exponential-
+      // backoff helper — registers reliably even when the chain head
+      // hasn't propagated to the RPC's slowest replica yet.
+      await registerCollectionWithBackoff({
+        address: contractAddress,
+        name: resolvedCollectionName,
+        description: description.trim() || undefined,
+        image: imageUri,
+        artist: address,
+      })
 
       if (publicClient && smartWalletForCaller && isAddress(smartWalletForCaller)) {
         try {
@@ -573,13 +561,15 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
     try {
       if (mintMode === 'text') {
-        // Phase 2: in auto-deploy mode for text moments, upload a minimal
-        // collection-metadata JSON to Arweave and pass it as contract.uri.
-        // No image — text moments have no inherent cover; the collection
-        // gets a coverless metadata record (image field omitted). Most
-        // metadata schemas tolerate a missing image; viewers fall back to
-        // a generated placeholder. The user can update the collection
-        // cover later via the collection-management UI.
+        // Phase 2: in auto-deploy mode for text moments, upload a
+        // collection-metadata JSON to Arweave and pass it as
+        // contract.uri. We include an inline SVG `data:` URI for the
+        // image field — text moments have no media file to use as the
+        // cover, and an absent `image` makes inprocess + most
+        // marketplaces render a broken-image placeholder on the
+        // collection card. The SVG is content-addressed and small;
+        // operators can swap it for a richer asset later via
+        // lib/generateTextCover.ts without changing call sites.
         let contractField:
           | { address: string }
           | { name: string; uri: string }
@@ -590,6 +580,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           const collectionMetadata: Record<string, unknown> = {
             name: resolvedCollectionName,
             description: description.trim() || undefined,
+            image: generateTextCollectionCoverDataUri(resolvedCollectionName),
             createReferral: CREATE_REFERRAL,
           }
           const collectionUri = await uploadJson(collectionMetadata)
