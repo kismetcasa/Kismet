@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
@@ -13,7 +14,10 @@ interface Props {
   params: Promise<{ address: string; tokenId: string }>
 }
 
-async function fetchDetail(address: string, tokenId: string): Promise<MomentDetail | null> {
+// React.cache dedupes within a single request so generateMetadata and
+// MomentPage share results — without it each render makes two upstream
+// inprocess fetches plus two Redis reads each for hidden + KV fallback.
+const fetchDetail = cache(async (address: string, tokenId: string): Promise<MomentDetail | null> => {
   try {
     const url = new URL(`${INPROCESS_API}/moment`)
     url.searchParams.set('collectionAddress', address)
@@ -35,22 +39,22 @@ async function fetchDetail(address: string, tokenId: string): Promise<MomentDeta
   } catch {
     return null
   }
-}
+})
 
 // For the cover token (tokenId='1') of a kismet-tracked collection we have
 // the same metadata in KV that we wrote at deploy time. Synthesize a minimal
 // fallback so the image, title, and description render instantly while
 // inprocess catches up — but only for tokenId=1 since later tokens have
 // their own metadata that isn't in KV.
-async function getFallbackMeta(
+const getFallbackMeta = cache(async (
   address: string,
   tokenId: string,
-): Promise<{ name?: string; image?: string; description?: string } | undefined> {
+): Promise<{ name?: string; image?: string; description?: string } | undefined> => {
   if (tokenId !== '1') return undefined
   const kv = await getKvCollectionMeta(address)
   if (!kv) return undefined
   return { name: kv.name, image: kv.image, description: kv.description }
-}
+})
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address, tokenId } = await params
