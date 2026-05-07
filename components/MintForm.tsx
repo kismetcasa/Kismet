@@ -638,6 +638,23 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         />
       </div>
 
+      {/* Description — only meaningful for media moments (goes into Arweave
+          metadata). The inprocess writing endpoint has no description field. */}
+      {mintMode === 'media' && (
+        <div>
+          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+            Description
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="describe your work…"
+            rows={3}
+            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
+          />
+        </div>
+      )}
+
       {/* Collections picker — optional; if the user doesn't pick one, the
           platform default is used implicitly. */}
       <div>
@@ -741,23 +758,6 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           </div>
         )}
       </div>
-
-      {/* Description — only meaningful for media moments (goes into Arweave
-          metadata). The inprocess writing endpoint has no description field. */}
-      {mintMode === 'media' && (
-        <div>
-          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-            Description
-          </label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="describe your work…"
-            rows={3}
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
-          />
-        </div>
-      )}
 
       {/* Price + Supply */}
       <div className="flex gap-3">
