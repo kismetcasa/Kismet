@@ -12,6 +12,7 @@ import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermis
 import { CREATE_REFERRAL } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
+import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { toastError } from '@/lib/toast'
@@ -19,6 +20,49 @@ import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
+}
+
+interface RegisterCollectionPayload {
+  address: string
+  name: string
+  description?: string
+  image?: string
+  artist?: string
+}
+
+// /api/collections POST has two race-prone gates that can spuriously 403/502
+// on a freshly-mined deploy: (1) the on-chain admin check reads via the
+// public Base RPC which can lag behind the chain head, and (2) Upstash can
+// hiccup. Retrying with backoff covers both. We log to console so a missed
+// registration is visible in devtools instead of silently producing a
+// "deployed!" toast for a collection that never enters our KV.
+async function registerCollectionWithBackoff(payload: RegisterCollectionPayload) {
+  const delays = [0, 1000, 2500, 5000]
+  let lastDetail: string | null = null
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]))
+    try {
+      const res = await fetch('/api/collections', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (res.ok) return
+      const text = await res.text().catch(() => '')
+      lastDetail = `${res.status} ${text.slice(0, 200)}`
+      // 401/403 with stable causes (bad session, wrong artist) won't fix on
+      // retry; 502 (admin-check RPC) and 429 will. 502 is the propagation
+      // race we expect post-deploy.
+      if (res.status === 401 || res.status === 403) break
+    } catch (err) {
+      lastDetail = err instanceof Error ? err.message : String(err)
+    }
+  }
+  console.error('[CreateCollectionForm] /api/collections registration failed', {
+    address: payload.address,
+    detail: lastDetail,
+  })
 }
 
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
@@ -182,19 +226,17 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     // Cookie auth: the session was already established before the deploy
     // (ensureSession ran on Arweave upload), so this call rides on the same
     // session and the server can verify the caller matches `artist` and is
-    // the on-chain admin of `address`.
-    fetch('/api/collections', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        address: deployedAddress,
-        name: name.trim(),
-        description: description.trim() || undefined,
-        image: deployedImageUri,
-        artist: address,
-      }),
-    }).catch(() => {})
+    // the on-chain admin of `address`. Fire-and-forget but with logging +
+    // retry — silently swallowing this means the collection never lands in
+    // KV and the user sees a misleading "deployed!" while the collection
+    // never appears in feeds.
+    void registerCollectionWithBackoff({
+      address: deployedAddress,
+      name: name.trim(),
+      description: description.trim() || undefined,
+      image: deployedImageUri,
+      artist: address,
+    })
     onDeployed?.(deployedAddress, name)
 
     clearPending()
@@ -265,6 +307,24 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
       })
       setDeployedImageUri(imageUri)
+
+      // The cover image URI gets baked into the metadata JSON which gets
+      // baked into the on-chain contractURI. If Turbo's data hasn't
+      // propagated to Arweave gateways by the time the moment renders,
+      // the image is permanently broken — re-uploading doesn't help
+      // because the URI is fixed on-chain. Block on settlement first.
+      toast.loading('Verifying Arweave propagation…', { id: 'create-collection' })
+      const imageOk = await verifyArweaveAvailable(imageUri)
+      if (!imageOk) {
+        toast.error('Arweave is settling slowly', {
+          id: 'create-collection',
+          description:
+            'Your upload isn’t lost — give it a couple of minutes and try again. We blocked the deploy to avoid a permanently broken cover image.',
+        })
+        setStep('idle')
+        setUploadProgress(0)
+        return
+      }
 
       setStep('uploading-metadata')
       toast.loading('Uploading collection metadata…', { id: 'create-collection' })
@@ -356,6 +416,20 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // consistent with what the deploy will look like for every
       // subsequent token created via /api/mint.
       const setupActions = [...minterActions, ...inprocessAdminAction, ...coverActions]
+
+      // Telemetry: log the cover-mint state and the count of cover actions
+      // baked into the deploy tx, so if a user reports "I had cover mint on
+      // but no cover token was minted" we can confirm whether the toggle was
+      // actually true at click time. mintCover=false here ⇒ user toggled off
+      // (or never on); coverActions.length=0 with mintCover=true ⇒ a build bug.
+      console.log('[CreateCollectionForm] deploy submitted', {
+        mintCover,
+        coverActionsCount: coverActions.length,
+        coverPrice: mintCover ? coverPrice : undefined,
+        coverSupply: mintCover ? coverSupply : undefined,
+        mintersCount: minterActions.length,
+        inprocessAdminGranted: inprocessAdminAction.length > 0,
+      })
 
       const hash = await writeContractAsync({
         chainId: base.id,
@@ -453,42 +527,64 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           <span className="text-xs font-mono text-[#888] uppercase tracking-wider">
             Cover Image <span className="text-[#efefef]">*</span>
           </span>
-          <div className="flex items-center gap-1.5">
-            {mintCover && (
-              <>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={coverPrice}
-                    onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
-                    placeholder="0"
-                    className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-                  />
-                  <span className="text-[10px] font-mono text-[#555]">eth</span>
-                </div>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={coverSupply}
-                  onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
-                  placeholder="∞"
-                  className="w-14 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-[#555]"
-                />
-              </>
-            )}
-            <button
-              type="button"
-              onClick={() => setMintCover((v) => !v)}
-              title={mintCover ? 'cancel mint' : 'also mint as first token'}
+          {/* Full-row clickable toggle. Previously this was a 4×4 px square
+              with no label — easy to misread as decoration and easy to
+              miss-click into the adjacent price/supply inputs. The whole
+              button (icon + label) is now the hit target, so a stray click
+              anywhere in the row registers. */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={mintCover}
+            onClick={() => setMintCover((v) => !v)}
+            className={`flex items-center gap-2 px-2 py-1 border transition-colors cursor-pointer ${
+              mintCover
+                ? 'border-[#8B5CF6] bg-[#8B5CF6]/10 text-[#efefef]'
+                : 'border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#bbb]'
+            }`}
+          >
+            <span
               className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors ${
-                mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/10' : 'border-[#2a2a2a] hover:border-[#555]'
+                mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/20' : 'border-[#444]'
               }`}
             >
-              {mintCover && <Check size={9} className="text-[#8B5CF6]" />}
-            </button>
-          </div>
+              {mintCover && <Check size={11} className="text-[#8B5CF6]" />}
+            </span>
+            <span className="text-[10px] font-mono uppercase tracking-wider">
+              mint as first token
+            </span>
+          </button>
         </div>
+        {/* Cover-mint config row — only shown when the toggle is on. Pulled
+            out of the toggle row so the toggle has a stable hit area and
+            the price/supply inputs can sit on their own line with labels. */}
+        {mintCover && (
+          <div className="flex items-center gap-3 mb-2 pl-2 border-l border-[#2a2a2a]">
+            <label className="flex items-center gap-1.5">
+              <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">price</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={coverPrice}
+                onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
+                placeholder="0"
+                className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+              />
+              <span className="text-[10px] font-mono text-[#555]">eth</span>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">supply</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={coverSupply}
+                onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
+                placeholder="∞"
+                className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-[#555]"
+              />
+            </label>
+          </div>
+        )}
         {coverPreview ? (
           // No aspect constraint on the wrapper — the dropped image renders
           // at full width with auto height so the box conforms to its native

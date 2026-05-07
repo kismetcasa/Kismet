@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyMessage } from 'viem'
-import { isAddress } from '@/lib/address'
+import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return NextResponse.json({ error: 'valid collectionAddress required' }, { status: 400 })
   }
-  if (!tokenId || !/^\d+$/.test(tokenId)) {
+  if (!isValidTokenId(tokenId)) {
     return NextResponse.json({ error: 'valid tokenId required' }, { status: 400 })
   }
   if (!callerAddress || !isAddress(callerAddress)) {
@@ -96,8 +96,9 @@ export async function POST(req: NextRequest) {
   }
 
   // Caller must be creator or admin of the moment per inprocess.
-  // /moment returns MomentDetail with `momentAdmins: string[]` — creator is
-  // momentAdmins[0], delegated admins follow.
+  // /moment returns `momentAdmins: string[]` — an unordered list. We
+  // accept any caller in the list (creator OR delegated admin) via
+  // .includes() below, so ordering doesn't matter here.
   try {
     const momentUrl = new URL(`${INPROCESS_API}/moment`)
     momentUrl.searchParams.set('collectionAddress', collectionAddress)

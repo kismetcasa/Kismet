@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
-import { isAddress } from 'viem'
 import { notFound } from 'next/navigation'
+import { isAddress } from '@/lib/address'
 import { INPROCESS_API, resolveUri, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
@@ -13,19 +13,22 @@ interface Props {
 }
 
 interface CollectionDetail {
-  // inprocess GET /api/collection actually returns `creator`, not
-  // `default_admin`. Older code assumed `default_admin` and silently
-  // resolved to undefined, so the Authorize banner never rendered for
-  // any collection — the `isCreator` check always failed. Accept both
-  // shapes so we tolerate either response variant.
-  creator?: { address: string; username?: string }
+  // Inprocess's current /api/collection shape returns `creator` (name + the
+  // deployer's wallet). Older indexer rows / cached responses may still
+  // surface `default_admin` instead, so we accept both and prefer creator.
+  creator?: { address: string; username?: string | null }
   default_admin?: { address: string; username?: string }
   payout_recipient?: string
   created_at?: string
-}
-
-function getDefaultAdmin(detail: CollectionDetail | null | undefined) {
-  return detail?.creator ?? detail?.default_admin
+  // The same call also returns the parsed contract metadata. We thread
+  // these through to displayMeta below as a third fallback after KV and
+  // the plural-endpoint fetch — the singular endpoint is the one we know
+  // empirically returns image + description for newly indexed collections.
+  metadata?: {
+    name?: string
+    image?: string
+    description?: string
+  }
 }
 
 async function fetchCollectionDetail(address: string): Promise<CollectionDetail | null> {
@@ -123,8 +126,18 @@ export default async function CollectionPage({ params }: Props) {
     isCollectionHidden(address),
   ])
 
-  const admin = getDefaultAdmin(detail)
-  const defaultAdminAddress = admin?.address?.toLowerCase()
+  // Prefer the inprocess `creator` field (current shape); fall back to
+  // `default_admin` for older cached responses; finally fall back to the
+  // KV-stored artist (set at deploy time) so the chip never goes missing
+  // for collections we deployed even when inprocess hasn't surfaced an
+  // admin yet.
+  const adminAddressRaw =
+    detail?.creator?.address ??
+    detail?.default_admin?.address ??
+    kvMeta?.artist
+  const adminUsername =
+    detail?.creator?.username ?? detail?.default_admin?.username ?? undefined
+  const defaultAdminAddress = adminAddressRaw?.toLowerCase()
   const viewerLower = viewer?.toLowerCase() ?? null
   const isCreator =
     !!viewerLower &&
@@ -143,17 +156,26 @@ export default async function CollectionPage({ params }: Props) {
     )
   }
 
-  // Prefer KV metadata (fast, written at deploy time) and fall back to
-  // the inprocess response. For collections not deployed through our platform
-  // only the inprocess response may have name/image.
-  const displayMeta = kvMeta
-    ? { name: kvMeta.name, image: kvMeta.image, description: kvMeta.description }
-    : meta
+  // Per-field merge across three sources, in priority order:
+  //   1. KV (fast, written at deploy time — wins when present)
+  //   2. Plural-endpoint meta (legacy fetchCollectionMeta path)
+  //   3. Singular-endpoint metadata (the one we know empirically carries
+  //      image + description for currently-indexed collections)
+  // Used to be all-or-nothing on KV, which meant a partial KV row could
+  // shadow inprocess data we already had — and we weren't even reading
+  // the singular endpoint's metadata, so image + description were lost
+  // for collections where the plural-endpoint fetch didn't return a hit.
+  const displayMeta = {
+    name: kvMeta?.name ?? meta?.name ?? detail?.metadata?.name,
+    image: kvMeta?.image ?? meta?.image ?? detail?.metadata?.image,
+    description:
+      kvMeta?.description ?? meta?.description ?? detail?.metadata?.description,
+  }
 
   const showPayout =
     !!detail?.payout_recipient &&
-    !!admin?.address &&
-    detail.payout_recipient.toLowerCase() !== admin.address.toLowerCase()
+    !!adminAddressRaw &&
+    detail.payout_recipient.toLowerCase() !== adminAddressRaw.toLowerCase()
 
   return (
     <CollectionView
@@ -162,8 +184,8 @@ export default async function CollectionPage({ params }: Props) {
       collectionImage={displayMeta?.image}
       collectionDescription={displayMeta?.description}
       isTracked={!!kvMeta}
-      defaultAdminUsername={admin?.username}
-      defaultAdminAddress={admin?.address}
+      defaultAdminUsername={adminUsername}
+      defaultAdminAddress={adminAddressRaw}
       payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
       createdAt={detail?.created_at}
       initialHidden={hidden}
