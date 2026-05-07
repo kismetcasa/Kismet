@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
-import { INPROCESS_API } from '@/lib/inprocess'
+import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
 
 /**
  * Returns the inprocess platform smart wallet address bound to a given
@@ -16,9 +16,14 @@ import { INPROCESS_API } from '@/lib/inprocess'
  *
  * Per inprocess docs (GET /api/smartwallet) the lookup is keyed off
  * `artist_wallet` and requires no API key — it's a public read. We
- * still proxy through our server so we can normalize the response and
+ * proxy through our server so we can normalize the response (multiple
+ * historical shape variants — see lib/resolveSmartWallet.ts) and
  * cache via Next.js's fetch deduplication (1h; the address is per-EOA
  * and effectively immutable).
+ *
+ * Defensive parsing lives in lib/resolveSmartWallet.ts so the
+ * server-side audit endpoint and this proxy can never drift on which
+ * upstream response shapes they accept.
  */
 export const revalidate = 3600
 
@@ -29,60 +34,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'artist_wallet required' }, { status: 400 })
   }
 
-  let upstream: Response
-  try {
-    const url = new URL(`${INPROCESS_API}/smartwallet`)
-    url.searchParams.set('artist_wallet', artistWallet)
-    upstream = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 3600 },
-    })
-  } catch (err) {
-    return NextResponse.json(
-      {
-        error: 'upstream unreachable',
-        detail: err instanceof Error ? err.message : String(err),
-      },
-      { status: 502 },
-    )
-  }
-
-  const text = await upstream.text()
-  if (!upstream.ok) {
+  const address = await resolveSmartWallet(artistWallet)
+  if (!address) {
+    // resolveSmartWallet returns null for any failure mode (network,
+    // non-200, unparseable). We surface a single 502 here — callers
+    // already treat 502 as "could not resolve" and the granular
+    // diagnostic lives in the helper's logs.
     console.error(
-      `[inprocess/smart-wallet] upstream ${upstream.status} for artist=${artistWallet}: ${text.slice(0, 500)}`,
+      `[inprocess/smart-wallet] could not resolve smart wallet for artist=${artistWallet}`,
     )
-    return NextResponse.json(
-      { error: 'upstream error', status: upstream.status, detail: text.slice(0, 200) },
-      { status: 502 },
-    )
+    return NextResponse.json({ error: 'could not resolve smart wallet' }, { status: 502 })
   }
-
-  // Documented shape is `{ address: "0x..." }`. Be defensive about a few
-  // common alternates and a raw address string in case the docs drift.
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    parsed = text.trim()
-  }
-  const candidate =
-    typeof parsed === 'string'
-      ? parsed
-      : parsed && typeof parsed === 'object'
-        ? ((parsed as Record<string, unknown>).address
-            ?? (parsed as Record<string, unknown>).smartWallet
-            ?? (parsed as Record<string, unknown>).smart_wallet
-            ?? (parsed as Record<string, unknown>).smartAccount)
-        : undefined
-
-  if (typeof candidate !== 'string' || !isAddress(candidate)) {
-    console.error(
-      `[inprocess/smart-wallet] could not extract address for artist=${artistWallet}: ${text.slice(0, 500)}`,
-    )
-    return NextResponse.json({ error: 'invalid upstream response' }, { status: 502 })
-  }
-
-  // Lowercase for stable comparison/storage; viem accepts any casing.
-  return NextResponse.json({ address: candidate.toLowerCase() })
+  return NextResponse.json({ address })
 }

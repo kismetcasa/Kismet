@@ -8,21 +8,25 @@ import {
   useWriteContract,
 } from 'wagmi'
 import { base } from 'wagmi/chains'
+import { COLLECTION_ABI } from '@/lib/collections'
 import {
-  COLLECTION_ABI,
   PERMISSION_BIT_ADMIN,
-} from '@/lib/collections'
+  PERMISSION_BIT_METADATA,
+  PERMISSION_BIT_MINTER,
+} from '@/lib/permissions'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 
-// Permission bits Zora's 1155 contract honors. Mirrors the constants in
-// lib/collections.ts but exposed as a string union so callers don't have
-// to import bigint constants directly.
+// String-keyed alias over the bigint constants in lib/permissions.ts.
+// Exposed so call-sites (banners, picker UIs) don't have to import the
+// bigints directly — the bit name is the user-facing label they're
+// granting. The lookup table below is the single bridge between the
+// names and the canonical constants.
 export type PermissionBit = 'admin' | 'minter' | 'metadata'
 
 const BIT_VALUES: Record<PermissionBit, bigint> = {
-  admin: PERMISSION_BIT_ADMIN, // 2n
-  minter: 4n,
-  metadata: 16n,
+  admin: PERMISSION_BIT_ADMIN,
+  minter: PERMISSION_BIT_MINTER,
+  metadata: PERMISSION_BIT_METADATA,
 }
 
 export interface GrantPermissionRequest {

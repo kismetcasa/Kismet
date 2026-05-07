@@ -5,48 +5,38 @@ import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
+import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
-
-const PERMISSION_BIT_ADMIN = 2n
-
-const COLLECTION_PERMISSIONS_ABI = [
-  {
-    name: 'permissions',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'tokenId', type: 'uint256' },
-      { name: 'user', type: 'address' },
-    ],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const
 
 /**
  * Fallback admin check via on-chain `permissions` read. Inprocess's indexer
  * runs minutes behind a fresh mint, so a legit creator can transiently fail
  * the inprocess /moment lookup. The on-chain ADMIN bit is authoritative for
  * any token Zora minted, regardless of indexer state.
+ *
+ * Reads ARE OR'd (token-scope + collection-wide tokenId 0) to mirror Zora's
+ * `_hasAnyPermission`. defaultAdmin lives in tokenId 0, so a creator who
+ * never received per-token grants still passes via the collection-wide row.
  */
 async function isOnChainAdmin(collectionAddress: string, tokenId: string, caller: string): Promise<boolean> {
   try {
     const client = serverBaseClient()
-    const tokenScopedPerms = (await client.readContract({
-      address: collectionAddress as Address,
-      abi: COLLECTION_PERMISSIONS_ABI,
-      functionName: 'permissions',
-      args: [BigInt(tokenId), caller as Address],
-    })) as bigint
-    if ((tokenScopedPerms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) return true
+    const tokenScopedPerms = await readPermissions(
+      client,
+      collectionAddress as Address,
+      BigInt(tokenId),
+      caller as Address,
+    )
+    if (hasAdminBit(tokenScopedPerms)) return true
     // Collection-wide admin (tokenId 0) also counts — that's where defaultAdmin lives.
-    const collectionWidePerms = (await client.readContract({
-      address: collectionAddress as Address,
-      abi: COLLECTION_PERMISSIONS_ABI,
-      functionName: 'permissions',
-      args: [0n, caller as Address],
-    })) as bigint
-    return (collectionWidePerms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
+    const collectionWidePerms = await readPermissions(
+      client,
+      collectionAddress as Address,
+      0n,
+      caller as Address,
+    )
+    return hasAdminBit(collectionWidePerms)
   } catch {
     return false
   }

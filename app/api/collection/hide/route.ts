@@ -2,29 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
+import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import {
   hideCollection,
   unhideCollection,
   isCollectionHidden,
 } from '@/lib/hiddenCollections'
-
-// Same on-chain ADMIN check used by /api/collections POST. tokenId 0 is the
-// collection-wide permission row in Zora 1155; PERMISSION_BIT_ADMIN = 2.
-const PERMISSION_BIT_ADMIN = 2n
-
-const COLLECTION_PERMISSIONS_ABI = [
-  {
-    name: 'permissions',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'tokenId', type: 'uint256' },
-      { name: 'user', type: 'address' },
-    ],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const
 
 interface HideBody {
   address?: string
@@ -57,15 +41,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // tokenId 0 is the collection-wide permission row in Zora 1155;
+    // defaultAdmin lives there. readPermissions retries 4× on RPC blip
+    // and includes a runtime bigint guard against ABI drift.
     const client = serverBaseClient()
-    const perms = (await client.readContract({
-      address: address as Address,
-      abi: COLLECTION_PERMISSIONS_ABI,
-      functionName: 'permissions',
-      args: [0n, viewer as Address],
-    })) as bigint
-    const isAdmin = (perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
-    if (!isAdmin) {
+    const perms = await readPermissions(client, address as Address, 0n, viewer as Address)
+    if (!hasAdminBit(perms)) {
       return NextResponse.json(
         { error: 'Only a collection admin can hide it' },
         { status: 403 },

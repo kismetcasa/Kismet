@@ -125,6 +125,27 @@ export async function proxyMintRequest(
     return NextResponse.json({ error: splitsValidation.message }, { status: 400 })
   }
 
+  // Strict routing: the body must identify a collection, either by
+  // `contract.address` (existing) or by `contract.name + contract.uri`
+  // (auto-deploy + first mint, the documented inprocess pattern).
+  // Catching malformed payloads here gives a clearer error than the
+  // opaque "invalid contract" inprocess would return upstream.
+  const contractField = body?.contract as Record<string, unknown> | undefined
+  const hasAddress =
+    typeof contractField?.address === 'string' && isAddress(contractField.address)
+  const hasNameAndUri =
+    typeof contractField?.name === 'string' && contractField.name.trim().length > 0 &&
+    typeof contractField?.uri === 'string' && contractField.uri.trim().length > 0
+  if (!hasAddress && !hasNameAndUri) {
+    return NextResponse.json(
+      {
+        error:
+          'contract must include either an address (existing collection) or name+uri (deploy a new one)',
+      },
+      { status: 400 },
+    )
+  }
+
   // body.name is our private hint for moment-meta; never forward to InProcess.
   // For writing moments inprocess uses `title` at top level — fall back to
   // that so we still capture a display name even if `name` is omitted.

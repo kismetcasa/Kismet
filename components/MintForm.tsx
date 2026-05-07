@@ -3,17 +3,24 @@
 import { useState, useRef, useEffect } from 'react'
 import Image from 'next/image'
 import { useRouter } from 'next/navigation'
-import { useAccount } from 'wagmi'
+import { useAccount, usePublicClient, useReadContract } from 'wagmi'
+import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Upload, X, Plus, Trash2 } from 'lucide-react'
-import { parseEther, parseUnits, isAddress } from 'viem'
+import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
+import { parseEther, parseUnits, isAddress, type Address } from 'viem'
 import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
+import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { COLLECTION_ABI } from '@/lib/collections'
+import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
+import { hasAdminBit, readPermissions } from '@/lib/permissions'
+import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
 
@@ -73,37 +80,44 @@ interface CollectionOption {
   image?: string
 }
 
-// The platform-wide collection. Used as the implicit selectedCollection when
-// nothing's been picked, and as the reset target for the × clear button. Not
-// listed in the dropdown — the placeholder copy "mint into a collection
-// (optional)" already conveys "default if you don't pick anything".
-const PLATFORM_OPTION: CollectionOption = {
-  address: PLATFORM_COLLECTION,
-  name: 'platform',
-}
+// PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
+// case it leaks into the user-collection list from the indexer) but is
+// no longer the implicit destination for end-user mints — when nothing
+// is selected, submit auto-creates a fresh collection via inprocess's
+// /api/moment/create with contract.name+uri.
 
 export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
   const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+  // For post-auto-deploy permission verification — reads
+  // permissions(0, smartWallet) on the freshly-deployed contract so we
+  // can surface a one-shot Authorize CTA if the smart wallet didn't
+  // end up with ADMIN.
+  const publicClient = usePublicClient({ chainId: base.id })
 
-  // Collection picker — initialized from the URL/prop hint when present,
-  // falls back to the platform default. The picker overrides the prop once
-  // the user makes an explicit selection.
-  const [selectedCollection, setSelectedCollection] = useState<CollectionOption>(() => {
+  // null = auto-deploy a fresh collection on submit. Initialized from the
+  // URL/prop hint when present; cleared back to null via the × button.
+  const [selectedCollection, setSelectedCollection] = useState<CollectionOption | null>(() => {
     if (collectionAddress) {
       return {
         address: collectionAddress,
         name: collectionName ?? shortAddress(collectionAddress),
       }
     }
-    return PLATFORM_OPTION
+    return null
   })
+  // Name for the auto-deployed collection. Surfaces as a required input
+  // below the picker when `selectedCollection` is null. Defaults to the
+  // moment title if the user leaves it blank — better than a generic
+  // "untitled" since the collection's name shows up everywhere the
+  // artist's body of work is browsed.
+  const [newCollectionName, setNewCollectionName] = useState('')
   const [userCollections, setUserCollections] = useState<CollectionOption[]>([])
   const [loadingCollections, setLoadingCollections] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const targetCollection = selectedCollection.address
+  const targetCollection = selectedCollection?.address
 
   // Sync the picker when MintTabs hands us a freshly-deployed collection or
   // the URL params change. User-driven picker selections still override on
@@ -118,8 +132,8 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   }, [collectionAddress, collectionName])
 
   // Fetch the connected user's deployed collections so the picker can list
-  // them alongside the platform default. /api/collections?artist=… is
-  // creator-aware: the user always sees their own (including hidden ones).
+  // them as overrides to the auto-deploy default. /api/collections?artist=…
+  // is creator-aware: the user always sees their own (including hidden ones).
   useEffect(() => {
     if (!address) {
       setUserCollections([])
@@ -154,14 +168,62 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
     }
   }, [address])
 
-  // Picker dropdown lists the user's deployed collections only — the
-  // platform is the implicit default when nothing's selected, so it doesn't
-  // need a row in the dropdown.
+  // Picker dropdown lists the user's deployed collections. The platform
+  // collection is filtered out as defense in depth — even if it leaked
+  // into the user's collection list from the indexer, we never want
+  // end-user mints routing into it (curated content only).
   const collectionOptions: CollectionOption[] = userCollections.filter(
     (c) => c.address.toLowerCase() !== PLATFORM_COLLECTION.toLowerCase(),
   )
-  const isPlatformDefault =
-    selectedCollection.address.toLowerCase() === PLATFORM_COLLECTION.toLowerCase()
+  // No collection selected → auto-create one on submit via
+  // /api/moment/create with contract.name+uri.
+  const isAutoDeploy = !selectedCollection
+
+  // Batch-read permissions for the user's existing collections so the
+  // picker can show ⚠️ badges on rows where the smart wallet is
+  // missing ADMIN. Selecting a flagged row still works — the inline
+  // banner below the picker routes the user to the collection page
+  // to authorize.
+  const {
+    byAddress: collectionsPerms,
+    missingCount: collectionsMissingAdmin,
+  } = useCollectionsPermissions(collectionOptions.map((c) => c.address))
+
+  // Client-side preflight on the SELECTED collection. Saves an Arweave
+  // round-trip when the smart wallet isn't ADMIN — the form blocks
+  // submit and surfaces an Authorize CTA before any upload work.
+  // Skipped in auto-deploy mode (no collection to read yet); auto-
+  // deploy uses post-mint verification in trackAndVerifyAutoDeploy
+  // below.
+  //
+  // We check the ADMIN bit specifically because inprocess's relay
+  // requires it for setupNewToken — MINTER alone won't work through
+  // the relay even though Zora's contract would accept it.
+  const { address: smartWalletForCaller } = useInprocessSmartWallet(address)
+  const { data: smartWalletPerms } = useReadContract({
+    address: targetCollection ? (targetCollection as `0x${string}`) : undefined,
+    abi: COLLECTION_ABI,
+    functionName: 'permissions',
+    args:
+      smartWalletForCaller && isAddress(smartWalletForCaller)
+        ? [0n, smartWalletForCaller as `0x${string}`]
+        : undefined,
+    query: {
+      enabled:
+        !!smartWalletForCaller &&
+        !!targetCollection &&
+        isAddress(targetCollection) &&
+        !isAutoDeploy,
+    },
+  })
+  // True only when the read has resolved AND it shows missing ADMIN.
+  // Distinguishing from "still loading" matters: we don't want the banner
+  // flickering in for a frame between mount and the first read.
+  const preflightUnauthorized =
+    !isAutoDeploy &&
+    !!smartWalletForCaller &&
+    smartWalletPerms !== undefined &&
+    !hasAdminBit(smartWalletPerms as bigint)
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const [file, setFile] = useState<File | null>(null)
@@ -178,6 +240,14 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
+  // Address of an auto-deployed collection where the smart wallet did
+  // NOT end up with ADMIN. Surfaces as a persistent warning in the
+  // success card; cleared by the "Mint another" handler.
+  const [autoDeployNeedsAuth, setAutoDeployNeedsAuth] = useState<string | null>(null)
+  // Race guard for the fire-and-forget post-mint verify: if the user
+  // clicks "Mint another" before the verify settles, this ref gets
+  // nulled and the helper bails before writing stale state.
+  const verifyTargetRef = useRef<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
@@ -196,15 +266,17 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   //     'unknown' due to RPC flake and inprocess is the source of truth)
   // Shows an actionable toast (button → the collection's authorize
   // banner) and resets form state; caller bails out without throwing
-  // so the generic toastError path doesn't fire. Gated on the
-  // *currently selected* collection (could come from the URL prop or
-  // from the picker) and skipped for the platform default — a userOp
-  // revert against PLATFORM_COLLECTION isn't one our user can fix
-  // from a creator banner, so the raw error is more honest there.
+  // so the generic toastError path doesn't fire.
+  //
+  // Gated on having a selected collection. In auto-deploy mode there's
+  // no pre-existing collection to authorize against — the contract
+  // doesn't exist yet, so the AUTHORIZE_REQUIRED code can't fire. Any
+  // failure in auto-deploy mode is a deploy-time error, surfaced
+  // through the generic toast path with the upstream message intact.
   function maybeHandleAuthError(raw: string, data?: { code?: unknown }): boolean {
     const isAuthCode = data?.code === 'AUTHORIZE_REQUIRED'
     const isAuthRevert = /useroperation reverted|user operation reverted|execution reverted/i.test(raw)
-    if (isPlatformDefault || (!isAuthCode && !isAuthRevert)) {
+    if (isAutoDeploy || !targetCollection || (!isAuthCode && !isAuthRevert)) {
       return false
     }
     toast.error('Authorization required', {
@@ -318,7 +390,23 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
     e.preventDefault()
 
     if (!isConnected || !address) { openConnectModal?.(); return }
+    // Bail before any Arweave upload if the smart wallet isn't ADMIN.
+    // The banner above the form still renders the Authorize CTA.
+    if (preflightUnauthorized) {
+      toast.error('Authorization required', {
+        id: 'mint',
+        description:
+          "This collection hasn't authorized Kismet for minting. Tap Authorize on the banner above to grant ADMIN.",
+      })
+      return
+    }
     if (!name.trim()) { toast.error('Please enter a title'); return }
+    // Falls back to the moment title when newCollectionName is blank.
+    // If both are blank we'd never reach here — name validation above
+    // would have returned.
+    const resolvedCollectionName = isAutoDeploy
+      ? (newCollectionName.trim() || name.trim())
+      : (selectedCollection?.name ?? '')
     if (mintMode === 'media' && !file) { toast.error('Please select a file to mint'); return }
     if (mintMode === 'text' && !textContent.trim()) { toast.error('Please enter text content'); return }
     if (mintMode === 'text' && textContent.length > TEXT_MAX) {
@@ -370,8 +458,99 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
     const finalSplits = buildFinalSplits()
 
+    // After a successful auto-deploy mint: register the new collection
+    // in KV and verify the smart wallet ended up with ADMIN. The mint
+    // itself is real on chain regardless of how this goes — both calls
+    // fire-and-forget; failures log to console.
+    async function trackAndVerifyAutoDeploy(
+      contractAddress: string,
+      imageUri: string | undefined,
+    ): Promise<void> {
+      verifyTargetRef.current = contractAddress
+
+      await registerCollectionWithBackoff({
+        address: contractAddress,
+        name: resolvedCollectionName,
+        description: description.trim() || undefined,
+        image: imageUri,
+        artist: address,
+      })
+
+      if (publicClient && smartWalletForCaller && isAddress(smartWalletForCaller)) {
+        try {
+          const perms = await readPermissions(
+            publicClient,
+            contractAddress as Address,
+            0n,
+            smartWalletForCaller as Address,
+          )
+          if (!hasAdminBit(perms)) {
+            console.warn(
+              '[MintForm] auto-deploy: smart wallet missing ADMIN on new collection',
+              {
+                collection: contractAddress,
+                smartWallet: smartWalletForCaller,
+                perms: perms.toString(),
+              },
+            )
+            // Bail if "Mint another" already cleared the target.
+            if (verifyTargetRef.current !== contractAddress) return
+            setAutoDeployNeedsAuth(contractAddress)
+            toast.info('Authorize for next mint', {
+              description:
+                "Moment minted. For follow-up mints into this collection, grant Kismet ADMIN.",
+              action: {
+                label: 'Authorize',
+                onClick: () => router.push(`/collection/${contractAddress}`),
+              },
+            })
+          }
+        } catch (err) {
+          // RPC failure ≠ permission failure. Log only — the moment
+          // succeeded; we'd rather not show an alarming toast based on
+          // a transient read error.
+          console.warn(
+            '[MintForm] post-auto-deploy permission read threw',
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      }
+    }
+
     try {
       if (mintMode === 'text') {
+        // Text moments have no media file to reuse as a cover, so
+        // auto-deploy uploads a small collection-metadata JSON whose
+        // `image` field is an inline SVG (see lib/generateTextCover.ts).
+        // Without a cover, marketplace cards fall back to broken-image
+        // icons.
+        let contractField:
+          | { address: string }
+          | { name: string; uri: string }
+        if (isAutoDeploy) {
+          await ensureSession()
+          setStep('uploading-metadata')
+          toast.loading('Uploading collection metadata…', { id: 'mint' })
+          const collectionMetadata: Record<string, unknown> = {
+            name: resolvedCollectionName,
+            description: description.trim() || undefined,
+            image: generateTextCollectionCoverDataUri(resolvedCollectionName),
+            createReferral: CREATE_REFERRAL,
+          }
+          const collectionUri = await uploadJson(collectionMetadata)
+          setStep('verifying-upload')
+          toast.loading('Verifying Arweave propagation…', { id: 'mint' })
+          const ok = await verifyArweaveAvailable(collectionUri)
+          if (!ok) {
+            throw new Error(
+              'Arweave still settling (collection metadata not yet propagated) — try again in a minute',
+            )
+          }
+          contractField = { name: resolvedCollectionName, uri: collectionUri }
+        } else {
+          contractField = { address: targetCollection! }
+        }
+
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
@@ -382,7 +561,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         // forwarding upstream — used to populate the moment-meta KV entry.
         const payload = {
           title: name.trim(),
-          contract: { address: targetCollection },
+          contract: contractField,
           token: {
             tokenContent: textContent.trim(),
             createReferral: CREATE_REFERRAL,
@@ -415,6 +594,12 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
+        if (isAutoDeploy && data.contractAddress) {
+          // Text moments don't have a media file, so the new
+          // collection's cover stays unset (image: undefined). User
+          // can update it later via collection-management UI.
+          void trackAndVerifyAutoDeploy(data.contractAddress, undefined)
+        }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
 
@@ -441,28 +626,52 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         }
         const metadataUri = await uploadJson(metadata)
 
-        // HEAD-poll both URIs before kicking off the on-chain mint.
-        // Turbo confirms ingestion before the gateway has propagated, so
-        // jumping straight to /api/mint can produce a moment whose
-        // metadata fetches 404 at indexing time. 45s budget covers the
-        // typical propagation window; on timeout we surface a retry
-        // message rather than commit a broken moment.
+        // For auto-deploy, the moment's media doubles as the new
+        // collection's cover image. Saves the user a second upload and
+        // gives the collection card a non-blank thumbnail immediately.
+        let collectionUri: string | null = null
+        if (isAutoDeploy) {
+          toast.loading('Uploading collection metadata…', { id: 'mint' })
+          const collectionMetadata = {
+            name: resolvedCollectionName,
+            description: description.trim(),
+            image: mediaUri,
+            createReferral: CREATE_REFERRAL,
+          }
+          collectionUri = await uploadJson(collectionMetadata)
+        }
+
+        // HEAD-poll all URIs (media, moment metadata, and collection
+        // metadata when auto-deploying) before kicking off the on-chain
+        // mint. Turbo confirms ingestion before the gateway has
+        // propagated, so jumping straight to /api/mint can produce a
+        // moment whose metadata fetches 404 at indexing time. 45s
+        // budget covers the typical propagation window; on timeout we
+        // surface a retry message rather than commit a broken moment.
         setStep('verifying-upload')
         toast.loading('Verifying Arweave propagation…', { id: 'mint' })
-        const [mediaOk, metadataOk] = await Promise.all([
+        const [mediaOk, metadataOk, collectionOk] = await Promise.all([
           verifyArweaveAvailable(mediaUri),
           verifyArweaveAvailable(metadataUri),
+          collectionUri ? verifyArweaveAvailable(collectionUri) : Promise.resolve(true),
         ])
-        if (!mediaOk || !metadataOk) {
-          const which = !mediaOk && !metadataOk ? 'media + metadata' : !mediaOk ? 'media' : 'metadata'
-          throw new Error(`Arweave still settling (${which} not yet propagated) — try again in a minute`)
+        if (!mediaOk || !metadataOk || !collectionOk) {
+          const failed: string[] = []
+          if (!mediaOk) failed.push('media')
+          if (!metadataOk) failed.push('metadata')
+          if (!collectionOk) failed.push('collection metadata')
+          throw new Error(
+            `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
+          )
         }
 
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
         const payload: CreateMomentPayload & { name: string } = {
-          contract: { address: targetCollection },
+          contract: isAutoDeploy
+            ? { name: resolvedCollectionName, uri: collectionUri! }
+            : { address: targetCollection! },
           token: {
             tokenMetadataURI: metadataUri,
             createReferral: CREATE_REFERRAL,
@@ -495,6 +704,13 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
+        if (isAutoDeploy && data.contractAddress) {
+          // The moment's media doubles as the collection cover for
+          // first-mint UX; pass mediaUri so the KV registration can
+          // store it and the collection card has a non-blank image
+          // immediately.
+          void trackAndVerifyAutoDeploy(data.contractAddress, mediaUri)
+        }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
       }
@@ -535,10 +751,38 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             {result.hash.slice(0, 10)}…{result.hash.slice(-8)}
           </a>
         </div>
+        {/* Persistent warning when an auto-deploy left the smart
+            wallet without ADMIN on the new contract — without it the
+            user would only see the transient post-mint toast. Routes
+            to the collection page's existing Authorize banner. */}
+        {autoDeployNeedsAuth && (
+          <div className="text-left p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex items-start gap-2.5">
+            <ShieldAlert size={14} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-mono text-[#efefef]">
+                Authorize for follow-up mints
+              </p>
+              <p className="text-[11px] font-mono text-[#888] mt-1">
+                Your moment is on chain. To mint more into this collection, grant Kismet ADMIN — one onchain tx from your wallet.
+              </p>
+              <button
+                type="button"
+                onClick={() => router.push(`/collection/${autoDeployNeedsAuth}`)}
+                className="mt-2.5 text-[10px] font-mono uppercase tracking-wider px-4 py-2 btn-accent"
+              >
+                authorize →
+              </button>
+            </div>
+          </div>
+        )}
         <button
           onClick={() => {
             setStep('idle')
             setResult(null)
+            setAutoDeployNeedsAuth(null)
+            // Signal any in-flight verify to bail before writing stale
+            // state against this freshly-reset form.
+            verifyTargetRef.current = null
             clearFile()
             setTextContent('')
             setName('')
@@ -547,6 +791,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             setMaxSupply('')
             setSplits([])
             setSplitInput({ address: '', pct: '' })
+            // Also reset the new-collection-name input so the next
+            // auto-deploy starts blank.
+            setNewCollectionName('')
           }}
           className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
         >
@@ -558,6 +805,32 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
   return (
     <form onSubmit={handleMint} className="flex flex-col gap-6">
+      {/* Inline preflight banner — same on-chain check the mint-proxy
+          runs, surfaced earlier in the lifecycle so we don't burn an
+          Arweave upload before discovering missing ADMIN. */}
+      {preflightUnauthorized && (
+        <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck size={16} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-mono text-[#efefef]">
+                Authorize Kismet to mint into {selectedCollection.name}
+              </p>
+              <p className="text-[11px] font-mono text-[#888] mt-0.5">
+                One-time onchain grant from the collection&apos;s admin. Required before this collection can mint moments via Kismet.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push(`/collection/${targetCollection}`)}
+            className="flex-shrink-0 text-xs font-mono tracking-wider uppercase px-4 py-2 btn-accent"
+          >
+            authorize
+          </button>
+        </div>
+      )}
+
       {/* Media / Text toggle */}
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -677,10 +950,10 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
       )}
 
       {/* Collections picker — optional; if the user doesn't pick one, the
-          platform default is used implicitly. */}
+          auto-deploy is the default when nothing's selected. */}
       <div>
         <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Collections
+          Collection
         </label>
         <div className="flex items-stretch gap-1.5">
           <button
@@ -688,7 +961,7 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             onClick={() => setPickerOpen((v) => !v)}
             className="flex-1 min-w-0 flex items-center gap-3 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 hover:border-[#555] transition-colors text-left"
           >
-            {!isPlatformDefault && selectedCollection.image ? (
+            {selectedCollection?.image ? (
               <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
                 <Image
                   src={resolveUri(selectedCollection.image)}
@@ -698,26 +971,39 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                   sizes="32px"
                 />
               </div>
-            ) : !isPlatformDefault ? (
+            ) : selectedCollection ? (
               <div className="w-8 h-8 bg-[#1a1a1a] flex-shrink-0" />
             ) : null}
-            <span className={`text-sm font-mono truncate flex-1 ${isPlatformDefault ? 'text-[#555]' : 'text-[#efefef]'}`}>
-              {isPlatformDefault
-                ? loadingCollections
+            <span className={`text-sm font-mono truncate flex-1 ${selectedCollection ? 'text-[#efefef]' : 'text-[#555]'}`}>
+              {selectedCollection
+                ? selectedCollection.name
+                : loadingCollections
                   ? 'loading collections…'
-                  : 'no collection'
-                : selectedCollection.name}
+                  : '+ create new collection'}
             </span>
+            {/* Subtle amber dot when at least one collection in the
+                picker needs authorize. Per-row badges in the dropdown
+                identify the specific ones. */}
+            {collectionsMissingAdmin > 0 && (
+              <span
+                className="w-2 h-2 bg-[#8B5CF6] rounded-full flex-shrink-0"
+                title={
+                  collectionsMissingAdmin === 1
+                    ? '1 of your collections needs authorize before minting'
+                    : `${collectionsMissingAdmin} of your collections need authorize before minting`
+                }
+              />
+            )}
             <span className="text-[#555] text-xs font-mono flex-shrink-0">
               {pickerOpen ? '▲' : '▼'}
             </span>
           </button>
-          {!isPlatformDefault && (
+          {selectedCollection && (
             <button
               type="button"
-              onClick={() => setSelectedCollection(PLATFORM_OPTION)}
+              onClick={() => setSelectedCollection(null)}
               className="px-3 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888] transition-colors"
-              title="Clear selection"
+              title="Clear selection (auto-deploy a new collection on submit)"
             >
               <X size={12} />
             </button>
@@ -726,12 +1012,53 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
         {pickerOpen && (
           <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
+            {/* Explains the ⚠️ badges below. Picking a flagged row
+                still works — the banner above the form will then
+                surface the Authorize CTA. */}
+            {collectionsMissingAdmin > 0 && (
+              <div className="px-3 py-2 border-b border-[#2a2a2a] bg-[#8B5CF6]/5 flex items-start gap-2">
+                <ShieldAlert size={12} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-[11px] font-mono text-[#efefef]">
+                    {collectionsMissingAdmin === 1
+                      ? '1 collection needs authorize'
+                      : `${collectionsMissingAdmin} collections need authorize`}
+                  </p>
+                  <p className="text-[10px] font-mono text-[#888] mt-0.5">
+                    Pick one to see the authorize CTA. One-time onchain grant from your wallet.
+                  </p>
+                </div>
+              </div>
+            )}
+            {/* Always-present "create new" option lets users return to
+                auto-deploy mode even after picking an existing
+                collection. Mirrors the explicit ✕ clear button but
+                lives in the dropdown for users who didn't notice it. */}
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedCollection(null)
+                setPickerOpen(false)
+              }}
+              className={`w-full text-left px-3 py-3 border-b border-[#2a2a2a] transition-colors ${
+                isAutoDeploy
+                  ? 'bg-[#8B5CF6]/10'
+                  : 'hover:bg-[#1a1a1a]'
+              }`}
+            >
+              <span className={`text-xs font-mono ${isAutoDeploy ? 'accent-grad' : 'text-[#efefef]'}`}>
+                + create new collection
+              </span>
+              <p className="text-[10px] font-mono text-[#555] mt-0.5">
+                deploy a fresh collection and mint this moment as its first token
+              </p>
+            </button>
             {collectionOptions.length === 0 ? (
               <p className="text-xs font-mono text-[#555] px-3 py-4">
                 {loadingCollections
-                  ? 'loading…'
+                  ? 'loading existing collections…'
                   : isConnected
-                    ? 'no collections created'
+                    ? 'no existing collections — pick the option above to create one'
                     : 'connect a wallet to see your collections'}
               </p>
             ) : (
@@ -739,7 +1066,12 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 {collectionOptions.map((c, idx) => {
                   const img = c.image ? resolveUri(c.image) : null
                   const isSelected =
+                    selectedCollection !== null &&
                     c.address.toLowerCase() === selectedCollection.address.toLowerCase()
+                  // hasAdmin === null = loading or RPC error; render
+                  // no badge in those cases.
+                  const permStatus = collectionsPerms[c.address.toLowerCase()]
+                  const needsAuth = permStatus?.hasAdmin === false
                   return (
                     <button
                       key={c.address}
@@ -751,6 +1083,11 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                       className={`relative aspect-square bg-[#111] overflow-hidden group ${
                         isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''
                       }`}
+                      title={
+                        needsAuth
+                          ? `${c.name} — needs authorize before minting`
+                          : c.name
+                      }
                     >
                       {img ? (
                         <Image
@@ -768,6 +1105,14 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                           </span>
                         </div>
                       )}
+                      {needsAuth && (
+                        <div
+                          className="absolute top-1 right-1 w-5 h-5 bg-[#8B5CF6]/95 border border-[#8B5CF6]/50 flex items-center justify-center"
+                          aria-label="Needs authorize"
+                        >
+                          <ShieldAlert size={11} className="text-[#efefef]" />
+                        </div>
+                      )}
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         <p className="text-[9px] font-mono text-[#efefef] truncate">{c.name}</p>
                       </div>
@@ -776,6 +1121,28 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Collection-name input, surfaces only in auto-deploy
+            mode. Optional — falls back to the moment title at submit
+            (see resolvedCollectionName). Showing it conditionally keeps
+            the form clean for users who picked an existing collection. */}
+        {isAutoDeploy && (
+          <div className="mt-3">
+            <label className="block text-[10px] font-mono text-[#555] uppercase tracking-wider mb-1.5">
+              new collection name
+            </label>
+            <input
+              type="text"
+              value={newCollectionName}
+              onChange={(e) => setNewCollectionName(e.target.value)}
+              placeholder={name.trim() || 'my collection'}
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            />
+            <p className="text-[10px] font-mono text-[#555] mt-1.5">
+              your moment&apos;s {mintMode === 'media' ? 'image' : 'first words'} will be used as the collection cover. blank uses your moment title.
+            </p>
           </div>
         )}
       </div>

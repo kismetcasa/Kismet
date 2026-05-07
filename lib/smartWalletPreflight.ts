@@ -1,9 +1,8 @@
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { INPROCESS_API } from '@/lib/inprocess'
+import { hasAdminBit } from '@/lib/permissions'
+import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
 import { serverBaseClient } from '@/lib/rpc'
-
-const PERMISSION_BIT_ADMIN = 2n
 
 const COLLECTION_PERMISSIONS_ABI = [
   {
@@ -82,22 +81,20 @@ export async function checkSmartWalletAdmin(
   if (!isAddress(callerEoa) || !isAddress(collectionAddress) || tokenIds.length === 0) {
     return { status: 'unknown', reason: 'invalid inputs' }
   }
+  // Use the shared resolver so this preflight, the local proxy, and
+  // the audit endpoint all accept the same set of inprocess response
+  // shapes (`address` / `smartWallet` / `smart_wallet` / `smartAccount`
+  // / raw string). Previously this file had its own `swData.address`
+  // parser that rejected legitimate non-canonical shapes and surfaced
+  // them as `'unknown'` even when audit's GET would accept them —
+  // divergent leniency between surfaces.
   let smartWallet: string | undefined
   try {
-    const smartWalletUrl = new URL(`${INPROCESS_API}/smartwallet`)
-    smartWalletUrl.searchParams.set('artist_wallet', callerEoa)
-    const swRes = await fetch(smartWalletUrl.toString(), {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 3600 },
-    })
-    if (!swRes.ok) {
-      return { status: 'unknown', reason: `smartwallet endpoint ${swRes.status}` }
+    const resolved = await resolveSmartWallet(callerEoa)
+    if (!resolved) {
+      return { status: 'unknown', reason: 'could not resolve smart wallet' }
     }
-    const swData = (await swRes.json()) as { address?: string }
-    smartWallet = swData.address
-    if (!smartWallet || !isAddress(smartWallet)) {
-      return { status: 'unknown', reason: 'smartwallet endpoint returned invalid address' }
-    }
+    smartWallet = resolved
 
     const client = serverBaseClient()
     const safeRead = async (tid: bigint): Promise<bigint | null> => {
@@ -124,10 +121,7 @@ export async function checkSmartWalletAdmin(
       return { status: 'unknown', smartWallet, perms, reason: 'rpc read failed' }
     }
     const effective = (reads as bigint[]).reduce((acc, r) => acc | r, 0n)
-    const status: PreflightStatus =
-      (effective & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
-        ? 'authorized'
-        : 'unauthorized'
+    const status: PreflightStatus = hasAdminBit(effective) ? 'authorized' : 'unauthorized'
     return { status, smartWallet, perms }
   } catch (err) {
     return {

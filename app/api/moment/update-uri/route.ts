@@ -3,31 +3,23 @@ import { verifyMessage, type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import {
+  PERMISSION_BIT_ADMIN,
+  PERMISSION_BIT_METADATA,
+  readPermissions,
+} from '@/lib/permissions'
 import { consumeNonce } from '@/lib/profile'
 import { setMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
-
-const PERMISSION_BIT_ADMIN = 2n
-const PERMISSION_BIT_METADATA = 16n
-
-const COLLECTION_PERMISSIONS_ABI = [
-  {
-    name: 'permissions',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'tokenId', type: 'uint256' },
-      { name: 'user', type: 'address' },
-    ],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const
 
 /**
  * Caller must hold ADMIN (2) or METADATA (16) permission on the token —
  * the two bits Zora's 1155 contract honors for `updateTokenURI`. We check
  * token-scoped first, then fall back to collection-wide (tokenId 0) so
  * defaultAdmin holders pass regardless of per-token grants.
+ *
+ * Uses readPermissions for retry + bigint runtime guard; no separate
+ * helper for the ADMIN|METADATA mask since this is the only caller.
  */
 async function canUpdateUri(
   collectionAddress: string,
@@ -37,19 +29,19 @@ async function canUpdateUri(
   try {
     const client = serverBaseClient()
     const mask = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
-    const tokenPerms = (await client.readContract({
-      address: collectionAddress as Address,
-      abi: COLLECTION_PERMISSIONS_ABI,
-      functionName: 'permissions',
-      args: [BigInt(tokenId), caller as Address],
-    })) as bigint
+    const tokenPerms = await readPermissions(
+      client,
+      collectionAddress as Address,
+      BigInt(tokenId),
+      caller as Address,
+    )
     if ((tokenPerms & mask) !== 0n) return true
-    const collectionPerms = (await client.readContract({
-      address: collectionAddress as Address,
-      abi: COLLECTION_PERMISSIONS_ABI,
-      functionName: 'permissions',
-      args: [0n, caller as Address],
-    })) as bigint
+    const collectionPerms = await readPermissions(
+      client,
+      collectionAddress as Address,
+      0n,
+      caller as Address,
+    )
     return (collectionPerms & mask) !== 0n
   } catch {
     return false

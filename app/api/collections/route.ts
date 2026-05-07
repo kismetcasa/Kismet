@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
+import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import {
@@ -13,25 +14,6 @@ import {
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
-
-// Zora 1155 PERMISSION_BIT_ADMIN = 2 (= 2^1). Anyone with this bit can mutate
-// the contract. We require the caller to have it before letting them register
-// the collection in our tracked list — otherwise anyone could pollute artist
-// pages with arbitrary contract addresses.
-const PERMISSION_BIT_ADMIN = 2n
-
-const COLLECTION_PERMISSIONS_ABI = [
-  {
-    name: 'permissions',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'tokenId', type: 'uint256' },
-      { name: 'user', type: 'address' },
-    ],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -287,18 +269,28 @@ export async function POST(req: NextRequest) {
   // NEXT_PUBLIC_BASE_RPC_URL when set (paid Alchemy/Infura) so the lag
   // is shorter to begin with — the retry is belt-and-suspenders for the
   // tail latency of even a paid provider's slowest replica.
+  // Outer retry-on-zero loop: distinct from readPermissions's internal
+  // retry-on-throw. The two cover different failure modes:
+  //   - readPermissions retries on RPC throw (transient network)
+  //   - this loop ALSO retries on a definitive `perms=0` read, because
+  //     the deploy tx may have just landed and the chain head can be
+  //     1-2 blocks ahead of the RPC's slowest replica. Retrying on zero
+  //     gives time for the new state to propagate.
+  // We pass `retries: 1` so each outer iteration does one read, and the
+  // outer loop owns the wider retry/backoff schedule.
   const client = serverBaseClient()
   let isAdmin = false
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const perms = (await client.readContract({
-        address: body.address as Address,
-        abi: COLLECTION_PERMISSIONS_ABI,
-        functionName: 'permissions',
-        args: [0n, sessionAddress as Address],
-      })) as bigint
-      if ((perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) {
+      const perms = await readPermissions(
+        client,
+        body.address as Address,
+        0n,
+        sessionAddress as Address,
+        { retries: 1 },
+      )
+      if (hasAdminBit(perms)) {
         isAdmin = true
         break
       }

@@ -6,13 +6,14 @@ import Image from 'next/image'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check, X, Search } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
 import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
+import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { toastError } from '@/lib/toast'
 
 interface Payment {
@@ -545,12 +546,49 @@ export function ProfileView({ address }: ProfileViewProps) {
     ),
   }
 
+  // ─── permissions banner gate ─────────────────────────────────────────────
+  // Owner-only entry point to the /permissions dashboard. We pass an
+  // empty list for non-owners so the wagmi multicall doesn't fire —
+  // visitors don't need (and shouldn't see) someone else's permission
+  // state.
+  const collectionAddressesForPerms = isOwner
+    ? artistCollections.map((c) => c.contractAddress)
+    : []
+  const { missingCount: ownCollectionsMissingAdmin } = useCollectionsPermissions(
+    collectionAddressesForPerms,
+  )
+
   // ─── render ───────────────────────────────────────────────────────────────
 
   const displayName = profile?.username || profile?.ensName || shortAddress(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
+      {/* Owner-only permissions banner. Hidden when missingCount is 0
+          to keep healthy profiles uncluttered. */}
+      {isOwner && ownCollectionsMissingAdmin > 0 && (
+        <Link
+          href="/permissions"
+          role="alert"
+          className="border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:bg-[#8B5CF6]/10 p-3 sm:p-4 flex items-center gap-3 transition-colors"
+        >
+          <ShieldAlert size={14} className="text-[#8B5CF6] flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-mono text-[#efefef]">
+              {ownCollectionsMissingAdmin === 1
+                ? '1 of your collections needs authorize'
+                : `${ownCollectionsMissingAdmin} of your collections need authorize`}
+            </p>
+            <p className="text-[11px] font-mono text-[#888] mt-0.5">
+              Tap to review and grant Kismet ADMIN — one onchain transaction per collection.
+            </p>
+          </div>
+          <span className="text-[#8B5CF6] font-mono text-xs flex-shrink-0" aria-hidden>
+            →
+          </span>
+        </Link>
+      )}
+
       {/* Profile header */}
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-6">

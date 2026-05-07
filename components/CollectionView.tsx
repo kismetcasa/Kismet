@@ -15,10 +15,8 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
-import {
-  COLLECTION_ABI,
-  PERMISSION_BIT_ADMIN,
-} from '@/lib/collections'
+import { COLLECTION_ABI } from '@/lib/collections'
+import { hasAdminBit } from '@/lib/permissions'
 import { MomentCard } from './MomentCard'
 import { ProfileAvatar } from './ProfileAvatar'
 
@@ -132,8 +130,7 @@ export function CollectionView({
     query: { enabled: inprocessConfigured && isCreator },
   })
   const inprocessIsAdmin =
-    inprocessPerms !== undefined &&
-    ((inprocessPerms as bigint) & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
+    inprocessPerms !== undefined && hasAdminBit(inprocessPerms as bigint)
   const showAuthorize = isCreator && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
 
   // Centralized addPermission flow — same hook AirdropForm uses. Banner
