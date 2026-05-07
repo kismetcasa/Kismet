@@ -14,7 +14,6 @@ import {
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
-import { qualifiesForFeedBatch } from '@/lib/momentCount'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -85,18 +84,9 @@ export async function GET(req: NextRequest) {
       getHiddenCollectionsSet(),
     ])
     const platformLower = PLATFORM_COLLECTION.toLowerCase()
-    const candidates = tracked.filter(
+    const visible = tracked.filter(
       (addr) => !hiddenSet.has(addr.toLowerCase()) && addr.toLowerCase() !== platformLower,
     )
-    // Hide single-moment collections (auto-deploy + first mint produces a
-    // count of 1; we want the discover feed to surface real series, not
-    // moments wearing a collection wrapper). Filter at source so pagination
-    // math stays correct: total/total_pages reflect the post-filter set,
-    // and each page returns exactly `limit` cards (modulo the last). Filter
-    // is fail-open — collections we can't classify (inprocess transient
-    // error, indexer lag) still appear, matching legacy behavior.
-    const qualifies = await qualifiesForFeedBatch(candidates)
-    const visible = candidates.filter((addr) => qualifies.get(addr.toLowerCase()) !== false)
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
     const start = (page - 1) * limit
