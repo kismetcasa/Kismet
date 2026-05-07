@@ -94,7 +94,7 @@ export function MarketView() {
           <p className="text-sm font-mono text-[#555]">no listings yet</p>
           <p className="text-xs font-mono text-[#333] mt-2">
             collect a moment on{' '}
-            <a href="/" className="accent-grad hover:underline">discover</a>
+            <Link href="/" className="accent-grad hover:underline">discover</Link>
             {' '}then{' '}
             <Link href={address ? `/profile/${address}` : '/'} className="accent-grad hover:underline">list</Link>
             {' '}it here
