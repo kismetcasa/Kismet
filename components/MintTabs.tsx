@@ -71,23 +71,10 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
       </div>
 
       {tab === 'mint' && (
-        <>
-          {deployedCollection && (
-            <div className="mb-6 p-3 border border-[#8B5CF6]/30 bg-[#8B5CF6]/5 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-xs font-mono accent-grad">minting into: {deployedCollection.name}</p>
-                <p className="text-xs font-mono text-[#555] mt-0.5 break-all">{deployedCollection.address}</p>
-              </div>
-              <button
-                onClick={() => setDeployedCollection(null)}
-                className="text-xs font-mono text-[#555] hover:text-[#888] whitespace-nowrap underline"
-              >
-                clear
-              </button>
-            </div>
-          )}
-          <MintForm collectionAddress={deployedCollection?.address} />
-        </>
+        <MintForm
+          collectionAddress={deployedCollection?.address}
+          collectionName={deployedCollection?.name}
+        />
       )}
 
       {tab === 'create' && (

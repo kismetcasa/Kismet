@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 
 const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
 

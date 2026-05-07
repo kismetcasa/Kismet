@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, isAddress, type Address } from 'viem'
+import { createPublicClient, http, type Address } from 'viem'
+import { isAddress } from '@/lib/address'
 import { base } from 'viem/chains'
 import { getSessionAddress } from '@/lib/session'
 import {

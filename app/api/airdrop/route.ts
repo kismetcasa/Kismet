@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createPublicClient, http, isAddress, verifyMessage, type Address } from 'viem'
+import { createPublicClient, http, verifyMessage, type Address } from 'viem'
+import { isAddress } from '@/lib/address'
 import { base } from 'viem/chains'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -128,9 +129,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // Confirm caller is creator or admin. Inprocess's indexer is the primary
-  // source (it carries off-chain admin grants), with on-chain ADMIN bit as a
-  // fallback for freshly minted tokens that haven't been indexed yet.
+  // Confirm caller is creator or admin. Inprocess's /moment endpoint
+  // returns MomentDetail with `momentAdmins: string[]` — the creator is
+  // momentAdmins[0], delegated admins follow. Off-chain admin grants are
+  // captured here. On-chain ADMIN bit is the fallback for fresh tokens
+  // the indexer hasn't picked up yet.
   const callerLower = body.callerAddress.toLowerCase()
   let authorized = false
   try {
@@ -140,10 +143,13 @@ export async function POST(req: NextRequest) {
     momentUrl.searchParams.set('chainId', '8453')
     const momentRes = await fetch(momentUrl.toString(), { headers: { Accept: 'application/json' } })
     if (momentRes.ok) {
-      const momentData = await momentRes.json() as { creator?: { address?: string }; admins?: { address: string }[] }
-      const isCreator = momentData.creator?.address?.toLowerCase() === callerLower
-      const isAdmin = momentData.admins?.some((a) => a.address?.toLowerCase() === callerLower) ?? false
-      authorized = isCreator || isAdmin
+      const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
+      const adminsLower = Array.isArray(momentData.momentAdmins)
+        ? momentData.momentAdmins
+            .filter((a): a is string => typeof a === 'string')
+            .map((a) => a.toLowerCase())
+        : []
+      authorized = adminsLower.includes(callerLower)
     }
   } catch {
     // Fall through to on-chain check.
@@ -177,6 +183,16 @@ export async function POST(req: NextRequest) {
       parsed = JSON.parse(text)
     } catch {
       return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
+    }
+
+    // Log upstream rejections so we can debug from Vercel logs without
+    // bothering the user. Includes the wire payload + status for context.
+    if (!res.ok) {
+      console.warn('[airdrop] inprocess rejected', {
+        status: res.status,
+        body: parsed,
+        sent: { recipients: body.recipients, collectionAddress: body.collectionAddress },
+      })
     }
 
     // Fan-out: notify each airdrop recipient that they received a token from

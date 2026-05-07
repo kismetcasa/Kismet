@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMeta } from '@/lib/notifications'
 import { hideMoment, unhideMoment, isMomentHidden } from '@/lib/hiddenMoments'
+import { INPROCESS_API } from '@/lib/inprocess'
 
 interface HideBody {
   collectionAddress?: string
@@ -37,19 +38,42 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'hidden must be a boolean' }, { status: 400 })
   }
 
-  // Authorize against the local moment-meta record. mint-proxy writes
-  // { creator, name } on every successful mint via this app, so any moment
-  // minted through Kismet has a verifiable creator. Moments that pre-date
-  // the moment-meta KV (or were minted directly through inprocess) won't
-  // have an entry — those fall back to a 403 since we can't prove ownership.
+  // Authorize against the local moment-meta record first (fast path —
+  // mint-proxy writes { creator, name } on every successful Kismet mint).
+  // Fall back to inprocess /api/moment for older mints (pre moment-meta KV)
+  // or moments minted outside Kismet — momentAdmins[0] is the creator.
   const meta = await getMomentMeta(collectionAddress, tokenId)
-  if (!meta?.creator) {
+  let creatorLower = meta?.creator?.toLowerCase()
+
+  if (!creatorLower) {
+    try {
+      const url = new URL(`${INPROCESS_API}/moment`)
+      url.searchParams.set('collectionAddress', collectionAddress)
+      url.searchParams.set('tokenId', tokenId)
+      url.searchParams.set('chainId', '8453')
+      const res = await fetch(url.toString(), {
+        headers: { Accept: 'application/json' },
+        next: { revalidate: 60 },
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { momentAdmins?: string[] }
+        const firstAdmin = Array.isArray(data?.momentAdmins) ? data.momentAdmins[0] : undefined
+        if (firstAdmin && typeof firstAdmin === 'string') {
+          creatorLower = firstAdmin.toLowerCase()
+        }
+      }
+    } catch {
+      // Network or JSON failure — fall through to the 403 below.
+    }
+  }
+
+  if (!creatorLower) {
     return NextResponse.json(
       { error: 'Cannot verify creator for this moment' },
       { status: 403 },
     )
   }
-  if (meta.creator.toLowerCase() !== viewer.toLowerCase()) {
+  if (creatorLower !== viewer.toLowerCase()) {
     return NextResponse.json({ error: 'Only the creator can hide this moment' }, { status: 403 })
   }
 

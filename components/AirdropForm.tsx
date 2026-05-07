@@ -69,9 +69,30 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? data.detail ?? 'Airdrop failed')
-      if (!data.hash) throw new Error('Airdrop submitted but no tx hash returned')
-      setResultHash(data.hash)
+      if (!res.ok) {
+        // Surface the full upstream payload to the console so we can debug
+        // 400s from inprocess validators without depending on the user
+        // copying the toast text. Includes the request payload too so we
+        // can verify the wire shape matches what their docs say.
+        console.warn('[airdrop] /api/airdrop rejected', {
+          status: res.status,
+          response: data,
+          requestPayload: {
+            collectionAddress: selected.address,
+            recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
+          },
+        })
+        const errors = Array.isArray(data.errors)
+          ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
+          : ''
+        throw new Error((data.detail ?? data.error ?? data.message ?? 'Airdrop failed') + errors)
+      }
+      // Inprocess wraps a CDP-bundler userOp; the hash field name varies
+      // across their SDK versions. Accept any of the common shapes.
+      const txHash: string | undefined =
+        data.hash ?? data.txHash ?? data.transactionHash ?? data.userOpHash
+      if (!txHash) throw new Error('Airdrop submitted but no tx hash returned')
+      setResultHash(txHash)
       setRecipients([])
       toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
     } catch (err) {

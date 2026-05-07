@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 
 export async function GET(req: NextRequest) {

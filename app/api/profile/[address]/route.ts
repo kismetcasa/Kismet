@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage, isAddress, createPublicClient, http } from 'viem'
+import { verifyMessage, createPublicClient, http } from 'viem'
+import { isAddress } from '@/lib/address'
 import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
 import { getProfile, upsertProfile, consumeNonce } from '@/lib/profile'

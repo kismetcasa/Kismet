@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 import { createNonce } from '@/lib/profile'
 
 export async function GET(

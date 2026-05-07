@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server'
-import { isAddress } from 'viem'
+import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from './inprocess'
 import { redis } from './redis'
 import { trackWallet } from './profile'

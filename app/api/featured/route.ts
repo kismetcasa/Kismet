@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage, isAddress } from 'viem'
+import { verifyMessage } from 'viem'
+import { isAddress } from '@/lib/address'
 import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
 
 const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()

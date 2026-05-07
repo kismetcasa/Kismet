@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress, verifyTypedData } from 'viem'
+import { verifyTypedData } from 'viem'
+import { isAddress } from '@/lib/address'
 import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,

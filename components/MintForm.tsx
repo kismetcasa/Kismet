@@ -1,13 +1,14 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2 } from 'lucide-react'
 import { parseEther, parseUnits, isAddress } from 'viem'
-import type { CreateMomentPayload, Split } from '@/lib/inprocess'
+import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -62,14 +63,104 @@ function roundToIntegerAllocations(values: number[], target: number): number[] {
 
 interface MintFormProps {
   collectionAddress?: string
+  collectionName?: string
 }
 
-export function MintForm({ collectionAddress }: MintFormProps = {}) {
+interface CollectionOption {
+  address: string
+  name: string
+  image?: string
+}
+
+// The platform-wide collection. Used as the implicit selectedCollection when
+// nothing's been picked, and as the reset target for the × clear button. Not
+// listed in the dropdown — the placeholder copy "mint into a collection
+// (optional)" already conveys "default if you don't pick anything".
+const PLATFORM_OPTION: CollectionOption = {
+  address: PLATFORM_COLLECTION,
+  name: 'platform',
+}
+
+export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
   const router = useRouter()
-  const targetCollection = collectionAddress ?? PLATFORM_COLLECTION
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+
+  // Collection picker — initialized from the URL/prop hint when present,
+  // falls back to the platform default. The picker overrides the prop once
+  // the user makes an explicit selection.
+  const [selectedCollection, setSelectedCollection] = useState<CollectionOption>(() => {
+    if (collectionAddress) {
+      return {
+        address: collectionAddress,
+        name: collectionName ?? shortAddress(collectionAddress),
+      }
+    }
+    return PLATFORM_OPTION
+  })
+  const [userCollections, setUserCollections] = useState<CollectionOption[]>([])
+  const [loadingCollections, setLoadingCollections] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const targetCollection = selectedCollection.address
+
+  // Sync the picker when MintTabs hands us a freshly-deployed collection or
+  // the URL params change. User-driven picker selections still override on
+  // subsequent state updates.
+  useEffect(() => {
+    if (collectionAddress) {
+      setSelectedCollection({
+        address: collectionAddress,
+        name: collectionName ?? shortAddress(collectionAddress),
+      })
+    }
+  }, [collectionAddress, collectionName])
+
+  // Fetch the connected user's deployed collections so the picker can list
+  // them alongside the platform default. /api/collections?artist=… is
+  // creator-aware: the user always sees their own (including hidden ones).
+  useEffect(() => {
+    if (!address) {
+      setUserCollections([])
+      return
+    }
+    let cancelled = false
+    setLoadingCollections(true)
+    fetch(`/api/collections?artist=${address}`)
+      .then((r) => (r.ok ? r.json() : { collections: [] }))
+      .then((d) => {
+        if (cancelled) return
+        const items: CollectionOption[] = (Array.isArray(d.collections) ? d.collections : [])
+          .map((c: { contractAddress?: string; name?: string; metadata?: { name?: string; image?: string } }) => {
+            if (!c.contractAddress) return null
+            return {
+              address: c.contractAddress,
+              name: c.metadata?.name ?? c.name ?? shortAddress(c.contractAddress),
+              image: c.metadata?.image,
+            }
+          })
+          .filter((c: CollectionOption | null): c is CollectionOption => c !== null)
+        setUserCollections(items)
+      })
+      .catch(() => {
+        if (!cancelled) setUserCollections([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCollections(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [address])
+
+  // Picker dropdown lists the user's deployed collections only — the
+  // platform is the implicit default when nothing's selected, so it doesn't
+  // need a row in the dropdown.
+  const collectionOptions: CollectionOption[] = userCollections.filter(
+    (c) => c.address.toLowerCase() !== PLATFORM_COLLECTION.toLowerCase(),
+  )
+  const isPlatformDefault =
+    selectedCollection.address.toLowerCase() === PLATFORM_COLLECTION.toLowerCase()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const [file, setFile] = useState<File | null>(null)
@@ -97,14 +188,17 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
   }
 
   // Detects the userOp-revert phrasing that comes back when minting into a
-  // collection where inprocess's smart account isn't yet ADMIN. If matched,
-  // shows an actionable toast (with a button that takes the user straight
-  // to the collection page where they can click "Authorize") and resets
-  // the form state. Returns true when handled — caller should bail out
-  // without throwing so the generic toastError path doesn't fire.
+  // collection where inprocess's smart account isn't yet ADMIN. Shows an
+  // actionable toast (button → the collection's authorize banner) and
+  // resets form state; caller bails out without throwing so the generic
+  // toastError path doesn't fire. Gated on the *currently selected*
+  // collection (could come from the URL prop or from the picker) and
+  // skipped for the platform default — a userOp revert against
+  // PLATFORM_COLLECTION isn't one our user can fix from a creator
+  // banner, so the raw error is more honest there.
   function maybeHandleAuthError(raw: string): boolean {
     if (
-      !collectionAddress ||
+      isPlatformDefault ||
       !/useroperation reverted|user operation reverted|execution reverted/i.test(raw)
     ) {
       return false
@@ -115,7 +209,7 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
         "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
       action: {
         label: 'Authorize',
-        onClick: () => router.push(`/collection/${collectionAddress}`),
+        onClick: () => router.push(`/collection/${targetCollection}`),
       },
     })
     setStep('idle')
@@ -517,6 +611,111 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
               {textContent.length.toLocaleString()} / {TEXT_MAX.toLocaleString()}
             </div>
           </>
+        )}
+      </div>
+
+      {/* Collections picker — sits below the media/text upload so the visual
+          hierarchy puts content first, container second. Optional; if the user
+          doesn't pick one, the platform default is used implicitly. */}
+      <div>
+        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+          Collections
+        </label>
+        <div className="flex items-stretch gap-1.5">
+          <button
+            type="button"
+            onClick={() => setPickerOpen((v) => !v)}
+            className="flex-1 min-w-0 flex items-center gap-3 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 hover:border-[#555] transition-colors text-left"
+          >
+            {!isPlatformDefault && selectedCollection.image ? (
+              <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+                <Image
+                  src={resolveUri(selectedCollection.image)}
+                  alt=""
+                  fill
+                  className="object-cover"
+                  sizes="32px"
+                />
+              </div>
+            ) : !isPlatformDefault ? (
+              <div className="w-8 h-8 bg-[#1a1a1a] flex-shrink-0" />
+            ) : null}
+            <span className={`text-sm font-mono truncate flex-1 ${isPlatformDefault ? 'text-[#555]' : 'text-[#efefef]'}`}>
+              {isPlatformDefault
+                ? loadingCollections
+                  ? 'loading collections…'
+                  : 'mint into a collection (optional)'
+                : selectedCollection.name}
+            </span>
+            <span className="text-[#555] text-xs font-mono flex-shrink-0">
+              {pickerOpen ? '▲' : '▼'}
+            </span>
+          </button>
+          {!isPlatformDefault && (
+            <button
+              type="button"
+              onClick={() => setSelectedCollection(PLATFORM_OPTION)}
+              className="px-3 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888] transition-colors"
+              title="Clear selection"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+
+        {pickerOpen && (
+          <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
+            {collectionOptions.length === 0 ? (
+              <p className="text-xs font-mono text-[#555] px-3 py-4">
+                {loadingCollections
+                  ? 'loading…'
+                  : isConnected
+                    ? 'no collections deployed yet — your moment will mint to the platform feed'
+                    : 'connect a wallet to see your collections'}
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
+                {collectionOptions.map((c, idx) => {
+                  const img = c.image ? resolveUri(c.image) : null
+                  const isSelected =
+                    c.address.toLowerCase() === selectedCollection.address.toLowerCase()
+                  return (
+                    <button
+                      key={c.address}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCollection(c)
+                        setPickerOpen(false)
+                      }}
+                      className={`relative aspect-square bg-[#111] overflow-hidden group ${
+                        isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''
+                      }`}
+                    >
+                      {img ? (
+                        <Image
+                          src={img}
+                          alt={c.name}
+                          fill
+                          className="object-cover"
+                          sizes="120px"
+                          priority={idx < 6}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <span className="text-[#333] font-mono text-[10px]">
+                            {shortAddress(c.address)}
+                          </span>
+                        </div>
+                      )}
+                      <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                        <p className="text-[9px] font-mono text-[#efefef] truncate">{c.name}</p>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
