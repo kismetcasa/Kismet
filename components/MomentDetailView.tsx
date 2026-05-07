@@ -236,11 +236,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Fetch creator profile via shared cache
   useEffect(() => {
     if (!creatorAddress) return
+    // Seed from the inprocess-provided username so we don't flash a raw
+    // address while Kismet's profile cache resolves. Kismet wins if it
+    // has a resolved (non-fallback) name, otherwise we keep whichever
+    // seeded value we had.
+    const inprocessUsername = detail?.creator?.username ?? null
+    if (inprocessUsername) setCreatorName(inprocessUsername)
     fetchCreatorProfile(creatorAddress).then(({ name, avatarUrl }) => {
-      setCreatorName(name)
+      const resolved = !!name && name !== shortAddress(creatorAddress)
+      if (resolved) setCreatorName(name)
       setCreatorAvatar(avatarUrl)
     })
-  }, [creatorAddress])
+  }, [creatorAddress, detail?.creator?.username])
 
   // Fetch comments — skip if already seeded from shared cache
   const fetchComments = useCallback(async () => {

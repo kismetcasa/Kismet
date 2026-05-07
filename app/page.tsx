@@ -346,6 +346,7 @@ function MainFeed() {
   const { address } = useAccount()
   const [subTab, setSubTab] = useState<MainSubTab>('mints')
   const [followingOn, setFollowingOn] = useState(false)
+  const [mostMintsOn, setMostMintsOn] = useState(false)
   const [followingAddrs, setFollowingAddrs] = useState<string[]>([])
 
   useEffect(() => {
@@ -356,28 +357,37 @@ function MainFeed() {
       .catch(() => setFollowingAddrs([]))
   }, [address, followingOn])
 
-  const apiUrl = followingAddrs.length
-    ? `/api/timeline?following=${followingAddrs.join(',')}`
-    : '/api/timeline'
+  // Build the timeline URL with optional following filter and trending sort.
+  // sort=trending uses the Redis trending zset (incremented per collect),
+  // which acts as a proxy for "most-minted" since each mint/collect bumps
+  // the score.
+  const apiUrl = (() => {
+    const params = new URLSearchParams()
+    if (followingAddrs.length) params.set('following', followingAddrs.join(','))
+    if (mostMintsOn) params.set('sort', 'trending')
+    const qs = params.toString()
+    return qs ? `/api/timeline?${qs}` : '/api/timeline'
+  })()
 
-  const feedKey = `main-${followingOn ? 'following' : 'all'}-${followingAddrs.join(',')}`
+  const feedKey = `main-${followingOn ? 'following' : 'all'}-${mostMintsOn ? 'mostmints' : 'recent'}-${followingAddrs.join(',')}`
 
-  // Sub-tab row: mints / collections · following (no borders, text-only)
+  // Sub-tab row: mints / collections (slightly bigger, slash-separated)
+  // followed by boxed filter tabs (following · most mints) on the right.
   const subTabBar = (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3 flex-wrap">
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => setSubTab('mints')}
-          className={`text-[10px] font-mono tracking-wider transition-colors ${
+          className={`text-xs font-mono tracking-wider transition-colors ${
             subTab === 'mints' ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
           }`}
         >
           mints
         </button>
-        <span className="text-[10px] font-mono text-[#2a2a2a] select-none">/</span>
+        <span className="text-xs font-mono text-[#2a2a2a] select-none">/</span>
         <button
           onClick={() => setSubTab('collections')}
-          className={`text-[10px] font-mono tracking-wider transition-colors ${
+          className={`text-xs font-mono tracking-wider transition-colors ${
             subTab === 'collections' ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
           }`}
         >
@@ -387,13 +397,25 @@ function MainFeed() {
       {address && (
         <button
           onClick={() => setFollowingOn((v) => !v)}
-          className={`text-[10px] font-mono tracking-wider transition-colors ${
-            followingOn ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
+          className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
+            followingOn
+              ? 'border-[#8B5CF6] text-[#8B5CF6]'
+              : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
           }`}
         >
           following
         </button>
       )}
+      <button
+        onClick={() => setMostMintsOn((v) => !v)}
+        className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
+          mostMintsOn
+            ? 'border-[#8B5CF6] text-[#8B5CF6]'
+            : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
+        }`}
+      >
+        most mints
+      </button>
     </div>
   )
 

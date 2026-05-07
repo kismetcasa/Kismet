@@ -161,14 +161,14 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
                 href={`/profile/${listing.creatorAddress}`}
                 className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
               >
-                creator {creatorName}
+                {creatorName}
               </Link>
             ) : <span />}
             <Link
               href={`/profile/${listing.seller}`}
               className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
             >
-              seller {sellerName}
+              {sellerName}
             </Link>
           </div>
           <div className="flex items-center justify-between mt-0.5">

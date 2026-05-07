@@ -310,12 +310,20 @@ export function CollectionView({
 
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
-  // our Redis cache may have a name the user registered with us.
+  // our Redis cache may have a name the user registered with us. Always
+  // check Kismet — if it has a resolved username it wins over inprocess's
+  // (Kismet is the surface the user updates here). When Kismet returns
+  // its shortAddress fallback, we keep whatever inprocess seeded so we
+  // don't downgrade an inprocess username back to a raw address.
   useEffect(() => {
-    if (!defaultAdminAddress || defaultAdminUsername) return
+    if (!defaultAdminAddress) return
     fetchCreatorProfile(defaultAdminAddress).then(({ name }) => {
-      const isUsername = name && name !== shortAddress(defaultAdminAddress)
-      setResolvedAdminName(isUsername ? `@${name}` : name || shortAddress(defaultAdminAddress))
+      const isUsername = !!name && name !== shortAddress(defaultAdminAddress)
+      if (isUsername) {
+        setResolvedAdminName(`@${name}`)
+      } else if (!defaultAdminUsername) {
+        setResolvedAdminName(name || shortAddress(defaultAdminAddress))
+      }
     })
   }, [defaultAdminAddress, defaultAdminUsername])
 

@@ -39,7 +39,13 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
   const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
   const [currency, setCurrency] = useState<CollectCurrency | null>(null)
   const [maxSupply, setMaxSupply] = useState<number | null | undefined>(undefined)
-  const [creatorName, setCreatorName] = useState(() => shortAddress(moment.creator.address))
+  // Seed with the inprocess-provided username when available so we never
+  // flash a raw address for users who set their name on inprocess but not
+  // on Kismet. Falls back to shortAddress until Kismet's profile cache
+  // resolves below; if Kismet has a different (resolved) username it wins.
+  const [creatorName, setCreatorName] = useState(
+    () => moment.creator.username || shortAddress(moment.creator.address),
+  )
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
   const [modalOpen, setModalOpen] = useState(false)
   const [collected, setCollected] = useState(false)
@@ -52,7 +58,11 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
 
   useEffect(() => {
     fetchCreatorProfile(moment.creator.address).then(({ name, avatarUrl }) => {
-      setCreatorName(name)
+      // Only overwrite when Kismet returned an actual resolved name —
+      // otherwise the seeded inprocess username (or shortAddress fallback)
+      // already in state is at least as good as Kismet's shortAddress.
+      const resolved = !!name && name !== shortAddress(moment.creator.address)
+      if (resolved) setCreatorName(name)
       setCreatorAvatar(avatarUrl)
     })
   }, [moment.creator.address])
