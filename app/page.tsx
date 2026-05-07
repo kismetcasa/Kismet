@@ -363,19 +363,9 @@ function MainFeed() {
 
   const feedKey = `main-${followingOn ? 'following' : 'all'}-${followingAddrs.join(',')}`
 
-  // Sub-tab row: following · mints / collections (no borders, text-only)
+  // Sub-tab row: mints / collections · following (no borders, text-only)
   const subTabBar = (
     <div className="flex items-center gap-3">
-      {address && (
-        <button
-          onClick={() => setFollowingOn((v) => !v)}
-          className={`text-[10px] font-mono tracking-wider transition-colors ${
-            followingOn ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
-          }`}
-        >
-          following
-        </button>
-      )}
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => setSubTab('mints')}
@@ -395,6 +385,16 @@ function MainFeed() {
           collections
         </button>
       </div>
+      {address && (
+        <button
+          onClick={() => setFollowingOn((v) => !v)}
+          className={`text-[10px] font-mono tracking-wider transition-colors ${
+            followingOn ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
+          }`}
+        >
+          following
+        </button>
+      )}
     </div>
   )
 
