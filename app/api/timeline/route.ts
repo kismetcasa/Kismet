@@ -128,20 +128,23 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Hide creator-hidden moments. Viewer-aware: a creator can still see
-  // their own hidden moments in feeds (so they can navigate back to unhide
-  // from the detail page). Everyone else gets the moment filtered out.
+  // Hide creator-hidden moments. On a creator's own profile feed
+  // (?creator=<their address>) they can still see their own hidden moments
+  // so they can navigate to the detail page and unhide. Everywhere else
+  // (main feed, trending, collection view, someone else's profile) hidden
+  // means hidden for everyone including the creator themselves.
   const [hiddenSet, viewer] = await Promise.all([
     getHiddenMomentsSet(),
     getSessionAddress(req),
   ])
   if (hiddenSet.size > 0) {
     const viewerLower = viewer?.toLowerCase() ?? null
+    const isOwnProfile = viewerLower !== null && creator === viewerLower
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
       const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
       if (!hiddenSet.has(key)) return true
-      return viewerLower !== null && moment.creator?.address?.toLowerCase() === viewerLower
+      return isOwnProfile && moment.creator?.address?.toLowerCase() === viewerLower
     })
   }
 
