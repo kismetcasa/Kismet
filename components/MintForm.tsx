@@ -557,12 +557,16 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
         {mintMode === 'media' ? (
           <>
             {preview ? (
-              <div className="relative aspect-square bg-[#111] border border-[#2a2a2a] overflow-hidden">
+              // aspect-[4/5] + object-contain mirrors the moment detail page
+              // exactly (MomentDetailView/MomentModal). What the artist sees
+              // here is what collectors will see — letterbox bars on
+              // non-4:5 art instead of a misleading center-crop preview.
+              <div className="relative aspect-[4/5] bg-[#111] border border-[#2a2a2a] overflow-hidden">
                 {file?.type.startsWith('video/') ? (
-                  <video src={preview} className="w-full h-full object-cover" muted autoPlay loop playsInline />
+                  <video src={preview} className="w-full h-full object-contain" muted autoPlay loop playsInline />
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={preview} alt="preview" className="w-full h-full object-cover" />
+                  <img src={preview} alt="preview" className="w-full h-full object-contain" />
                 )}
                 <button
                   type="button"
@@ -577,7 +581,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 onClick={() => fileInputRef.current?.click()}
                 onDrop={handleDrop}
                 onDragOver={(e) => e.preventDefault()}
-                className="aspect-square border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
+                // Match the preview aspect so the form doesn't jump in height
+                // the moment a file is dropped.
+                className="aspect-[4/5] border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
               >
                 <Upload size={24} className="text-[#555]" />
                 <div className="text-center">

@@ -479,9 +479,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           </div>
         </div>
         {coverPreview ? (
-          <div className="relative aspect-video bg-[#111] border border-[#2a2a2a] overflow-hidden">
+          // aspect-square + object-contain mirrors how the cover actually
+          // renders in card grids (CollectionCard, ProfileView, FeaturedFeed
+          // CollectionRow hero). Preview = display, no surprise on submit.
+          <div className="relative aspect-square bg-[#111] border border-[#2a2a2a] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={coverPreview} alt="cover preview" className="w-full h-full object-cover" />
+            <img src={coverPreview} alt="cover preview" className="w-full h-full object-contain" />
             <button
               type="button"
               onClick={clearFile}
@@ -502,7 +505,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
               setCoverPreview(URL.createObjectURL(f))
             }}
             onDragOver={(e) => e.preventDefault()}
-            className="aspect-video border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
+            // Match the preview aspect so the form doesn't jump in height
+            // the moment a file is dropped.
+            className="aspect-square border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
           >
             <Upload size={24} className="text-[#555]" />
             <div className="text-center">
