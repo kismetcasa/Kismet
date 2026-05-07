@@ -52,6 +52,13 @@ export const ZORA_MULTICALL_ABI = parseAbi([
   'function multicall(bytes[] data) payable returns (bytes[] results)',
 ])
 
+// Zora 1155: returns the splits contract address for a token (set as the
+// per-token royaltyRecipient when inprocess deploys a splits contract at
+// mint time). Used to auto-resolve the split address for distribution.
+export const ZORA_CREATOR_REWARD_RECIPIENT_ABI = parseAbi([
+  'function getCreatorRewardRecipient(uint256 tokenId) view returns (address)',
+])
+
 // Cap on how many mints we'll batch per "collect all" tx. Picked to keep gas
 // well under the wallet-preview-readable limit (~5M for 20 × ~250k each on
 // Base) so users see the full impact before signing.
