@@ -90,19 +90,19 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
         )}
       </div>
 
-      <div className="px-4 pb-4 flex flex-col gap-1.5 mt-auto">
+      <div className="px-4 pb-4 flex gap-1.5 mt-auto">
         <Link
           href={`/collection/${c.contractAddress}`}
-          className="w-full py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+          className="flex-1 py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
         >
-          view
+          open
         </Link>
         {primaryAction ?? (
           <Link
             href={`/mint?collection=${c.contractAddress}&name=${encodeURIComponent(collectionName)}`}
-            className="w-full py-1.5 text-center text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors"
+            className="flex-1 py-1.5 text-center text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors"
           >
-            mint into
+            mint all
           </Link>
         )}
       </div>

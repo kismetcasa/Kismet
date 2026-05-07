@@ -301,11 +301,17 @@ export function CollectionView({
         <div className="flex flex-col gap-1.5 min-w-0 pt-1">
           <h1 className="text-base font-mono text-[#efefef] truncate">
             {displayName}
-            {defaultAdminUsername && (
-              <span className="text-[#555] font-normal"> by @{defaultAdminUsername}</span>
-            )}
           </h1>
-          <p className="text-[10px] font-mono text-[#444]">{shortAddress(address)}</p>
+          {defaultAdminAddress ? (
+            <Link
+              href={`/profile/${defaultAdminAddress}`}
+              className="text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors w-fit"
+            >
+              {defaultAdminUsername ? `@${defaultAdminUsername}` : shortAddress(defaultAdminAddress)}
+            </Link>
+          ) : (
+            <p className="text-[10px] font-mono text-[#444]">{shortAddress(address)}</p>
+          )}
           {/* Enriched chips: payout transparency (only when it differs from
               the admin — same-address payouts are noise) and creation date. */}
           {(payoutRecipient || createdAt) && (

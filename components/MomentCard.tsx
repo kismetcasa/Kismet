@@ -29,9 +29,10 @@ import { ProfileAvatar } from './ProfileAvatar'
 interface MomentCardProps {
   moment: Moment
   hidePriceSupply?: boolean
+  directLink?: boolean
 }
 
-export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
+export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardProps) {
   const router = useRouter()
   const [imgError, setImgError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
@@ -133,7 +134,13 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
       <article className="group flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
         {/* Media — click opens modal on desktop, navigates to detail page on mobile */}
         <div
-          onClick={() => window.innerWidth < 640 ? router.push(`/moment/${moment.address}/${moment.token_id}`) : setModalOpen(true)}
+          onClick={() => {
+            if (directLink || window.innerWidth < 640) {
+              router.push(`/moment/${moment.address}/${moment.token_id}`)
+            } else {
+              setModalOpen(true)
+            }
+          }}
           onMouseEnter={prefetchComments}
           className="cursor-pointer relative aspect-square bg-[#111] overflow-hidden"
         >
@@ -268,7 +275,7 @@ export function MomentCard({ moment, hidePriceSupply }: MomentCardProps) {
         </div>
       </article>
 
-      {modalOpen && (
+      {!directLink && modalOpen && (
         <MomentModal
           moment={moment}
           onClose={() => setModalOpen(false)}

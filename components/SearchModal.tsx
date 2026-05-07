@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Search, X, Loader2, ExternalLink } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
-import { shortAddress } from '@/lib/inprocess'
+import { resolveUri, shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -123,16 +123,15 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             <section>
               <p className="px-4 pt-3 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Collections</p>
               {results.collections.map((col) => (
-                <a
+                <Link
                   key={col.address}
-                  href={`https://inprocess.world/collect/base:${col.address}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={`/collection/${col.address}`}
+                  onClick={onClose}
                   className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
                 >
                   {col.image ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={col.image} alt={col.name} className="w-7 h-7 object-cover flex-shrink-0" />
+                    <img src={resolveUri(col.image)} alt={col.name} className="w-7 h-7 object-cover flex-shrink-0" />
                   ) : (
                     <div className="w-7 h-7 bg-[#2a2a2a] flex-shrink-0" />
                   )}
@@ -140,8 +139,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                     <p className="text-sm text-[#efefef] font-mono truncate">{col.name}</p>
                     <p className="text-xs text-[#555] font-mono">{shortAddress(col.address)}</p>
                   </div>
-                  <ExternalLink size={10} className="text-[#444] flex-shrink-0" />
-                </a>
+                </Link>
               ))}
             </section>
           )}

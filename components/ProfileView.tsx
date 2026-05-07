@@ -472,11 +472,11 @@ export function ProfileView({ address }: ProfileViewProps) {
     ) : (
       loadingMoments ? skeleton(6) : moments.length === 0
         ? <p className="text-[#555] font-mono text-xs">no mints yet</p>
-        : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>
+        : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply directLink />)}</div>
     ),
     collected: loadingCollected ? skeleton(6) : collected.length === 0
       ? <p className="text-[#555] font-mono text-xs">none collected yet</p>
-      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{collected.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>,
+      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{collected.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply directLink />)}</div>,
     listings: loadingListings ? skeleton(3) : listings.length === 0
       ? (
         <p className="text-[#555] font-mono text-xs">

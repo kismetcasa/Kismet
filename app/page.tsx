@@ -84,7 +84,7 @@ function TabBar({
             onDragEnd={draggable ? onDragEnd : undefined}
             onClick={() => onSelect(tab)}
             className={`
-              relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
+              relative px-3 py-2 text-[11px] font-mono tracking-wider uppercase
               transition-colors select-none
               ${isActive ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'}
               ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}
@@ -230,7 +230,7 @@ function MomentFeed({
 
 // ─── collections feed (paginated grid) ───────────────────────────────────────
 
-function CollectionsFeed() {
+function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
   const [items, setItems] = useState<CollectionDisplay[]>([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
@@ -262,6 +262,16 @@ function CollectionsFeed() {
   }, [])
 
   useEffect(() => { fetchPage(1) }, [fetchPage])
+
+  const followingSet = followingAddrs
+    ? new Set(followingAddrs.map((a) => a.toLowerCase()))
+    : null
+  const displayItems = followingSet
+    ? items.filter((c) => {
+        const admin = (c as { default_admin?: { address?: string } }).default_admin?.address?.toLowerCase()
+        return admin ? followingSet.has(admin) : false
+      })
+    : items
 
   return (
     <div>
@@ -299,16 +309,16 @@ function CollectionsFeed() {
         </div>
       )}
 
-      {!loading && !error && items.length === 0 && (
+      {!loading && !error && displayItems.length === 0 && (
         <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-[#555]">no collections yet</p>
         </div>
       )}
 
-      {!loading && items.length > 0 && (
+      {!loading && displayItems.length > 0 && (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {items.map((c) => (
+            {displayItems.map((c) => (
               <CollectionCard key={c.contractAddress} collection={c} />
             ))}
           </div>
@@ -372,7 +382,7 @@ function MainFeed() {
           {id}
         </button>
       ))}
-      {subTab === 'mints' && address && (
+      {address && (
         <button
           onClick={() => setFollowingOn((v) => !v)}
           className={`text-xs font-mono tracking-wider px-2.5 py-1 border transition-colors ${
@@ -391,7 +401,7 @@ function MainFeed() {
     return (
       <div>
         <div className="pt-4">{subTabBar}</div>
-        <CollectionsFeed />
+        <CollectionsFeed followingAddrs={followingOn && followingAddrs.length > 0 ? followingAddrs : undefined} />
       </div>
     )
   }
