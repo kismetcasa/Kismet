@@ -161,10 +161,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Only the moment creator or an admin may airdrop' }, { status: 403 })
   }
 
+  // Inprocess expects the same `moment: { collectionAddress, tokenId,
+  // chainId }` envelope used by /moment/update-uri (their Zod validator
+  // returns "Invalid input: moment Invalid input: expected object, received
+  // undefined" when omitted). Recipients ride alongside as a flat array of
+  // { recipientAddress, tokenId } so per-recipient tokenIds are still
+  // permitted by the upstream schema.
+  const upstreamPayload = {
+    moment: {
+      collectionAddress: body.collectionAddress,
+      tokenId,
+      chainId: 8453,
+    },
+    recipients: body.recipients,
+  }
+
   try {
-    // Inprocess infers the chain from the collection contract — request body
-    // shape is { recipients, collectionAddress } per their docs; chainId comes
-    // back in the response, not sent in.
     const res = await fetch(`${INPROCESS_API}/moment/airdrop`, {
       method: 'POST',
       headers: {
@@ -172,10 +184,7 @@ export async function POST(req: NextRequest) {
         'x-api-key': apiKey,
         Accept: 'application/json',
       },
-      body: JSON.stringify({
-        recipients: body.recipients,
-        collectionAddress: body.collectionAddress,
-      }),
+      body: JSON.stringify(upstreamPayload),
     })
     const text = await res.text()
     let parsed: unknown
@@ -191,7 +200,7 @@ export async function POST(req: NextRequest) {
       console.warn('[airdrop] inprocess rejected', {
         status: res.status,
         body: parsed,
-        sent: { recipients: body.recipients, collectionAddress: body.collectionAddress },
+        sent: upstreamPayload,
       })
     }
 
