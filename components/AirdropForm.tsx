@@ -389,6 +389,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                 <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
                   <Image src={selectedImage} alt="" fill className="object-cover" sizes="32px" />
                 </div>
+              ) : selectedMeta.content?.mime === 'text/plain' ? (
+                <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] flex items-center justify-center">
+                  <span className="text-[7px] font-mono text-[#555] uppercase tracking-widest">txt</span>
+                </div>
               ) : (
                 <div className="w-8 h-8 bg-[#1a1a1a] flex-shrink-0" />
               )}
@@ -428,6 +432,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                     >
                       {img ? (
                         <Image src={img} alt={meta.name ?? ''} fill className="object-cover" sizes="120px" priority={idx < 6} />
+                      ) : meta.content?.mime === 'text/plain' ? (
+                        <div className="w-full h-full flex flex-col p-2 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
+                          <span className="text-[8px] font-mono text-[#555] uppercase tracking-widest mb-1">writing</span>
+                          <p className="text-[9px] font-mono text-[#888] leading-tight line-clamp-5">
+                            {meta.name ?? `#${m.token_id}`}
+                          </p>
+                        </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
                           <span className="text-[#333] font-mono text-[10px]">#{m.token_id}</span>
