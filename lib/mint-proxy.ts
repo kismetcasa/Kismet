@@ -160,13 +160,21 @@ export async function proxyMintRequest(
       : undefined
   if (account && collectionAddress) {
     const preflight = await checkSmartWalletAdmin(account, collectionAddress, [0n])
-    if (preflight === 'unauthorized') {
+    console.log('[mint-proxy] preflight', {
+      endpoint,
+      caller: account,
+      collection: collectionAddress,
+      ...preflight,
+    })
+    if (preflight.status === 'unauthorized') {
       return NextResponse.json(
         {
           code: 'AUTHORIZE_REQUIRED',
           error:
             "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
           collectionAddress,
+          smartWallet: preflight.smartWallet,
+          perms: preflight.perms,
         },
         { status: 403 },
       )

@@ -176,22 +176,38 @@ export async function POST(req: NextRequest) {
   // here almost always means RPC node staleness (one of Base's public
   // nodes hasn't synced the grant yet), not a real missing bit — so
   // bouncing the user back to authorize again would be a frustrating
-  // dead-end. Let inprocess decide: if the bit really is missing, its
-  // gas-estimation will surface the revert, and the client's
-  // `isRetry`-aware error branch flips to the indexer-lag hint.
+  // dead-end. Let inprocess decide.
   if (!body.isRetry) {
     const preflight = await checkSmartWalletAdmin(
       body.callerAddress,
       body.collectionAddress,
       [BigInt(tokenId), 0n],
     )
-    if (preflight === 'unauthorized') {
+    // Always log so production deployments leave a trail when users
+    // hit AUTHORIZE_REQUIRED — without this, the only signal is the
+    // 403 status code, which doesn't tell us *which* smart wallet was
+    // checked or *what* perms it actually had. Both are needed to
+    // diagnose the "I already authorized" reports.
+    console.log('[airdrop] preflight', {
+      caller: body.callerAddress,
+      collection: body.collectionAddress,
+      tokenId,
+      ...preflight,
+    })
+    if (preflight.status === 'unauthorized') {
       return NextResponse.json(
         {
           code: 'AUTHORIZE_REQUIRED',
           error:
             "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
           collectionAddress: body.collectionAddress,
+          // Surface the smart wallet + per-scope perms so the client
+          // can show the user *which* address needs ADMIN and *what*
+          // bits it currently holds. If the user thinks they
+          // authorized a different address (or granted MINTER instead
+          // of ADMIN), this is what makes the discrepancy visible.
+          smartWallet: preflight.smartWallet,
+          perms: preflight.perms,
         },
         { status: 403 },
       )
