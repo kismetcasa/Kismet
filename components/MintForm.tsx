@@ -7,7 +7,7 @@ import { useAccount, usePublicClient, useReadContract } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Upload, X, Plus, Trash2, ShieldCheck } from 'lucide-react'
+import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
 import { parseEther, parseUnits, isAddress, type Address } from 'viem'
 import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -15,6 +15,7 @@ import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
+import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 import { COLLECTION_ABI, PERMISSION_BIT_ADMIN } from '@/lib/collections'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
@@ -191,6 +192,19 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   // ask for a separate upload.
   const isAutoDeploy = !selectedCollection
 
+  // Phase 3: batch-read permissions for the user's existing collections
+  // so we can show ⚠️ badges on the ones whose smart wallet is missing
+  // ADMIN (the legacy-collection-survival path). The dropdown row is
+  // still selectable when unauthorized — picking it triggers the same
+  // Phase 1 banner above the form, which routes the user to the
+  // collection page to authorize. The picker button also gets a small
+  // dot indicator when missingCount > 0 so users notice without
+  // opening the dropdown.
+  const {
+    byAddress: collectionsPerms,
+    missingCount: collectionsMissingAdmin,
+  } = useCollectionsPermissions(collectionOptions.map((c) => c.address))
+
   // Phase 1 client-side preflight. Reads `permissions(0, smartWallet)` on
   // the SELECTED collection and surfaces an inline Authorize banner
   // BEFORE the user fills the form, instead of catching the same error
@@ -248,6 +262,13 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
   const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
+  // Phase 3: address of an auto-deployed collection that came back from
+  // inprocess WITHOUT smart-wallet ADMIN. Set by trackAndVerifyAutoDeploy
+  // when the post-mint perms read shows missing ADMIN; surfaces as a
+  // persistent warning panel in the success card (so the user doesn't
+  // miss it after the transient toast disappears) and clears on
+  // "mint another" / form reset.
+  const [autoDeployNeedsAuth, setAutoDeployNeedsAuth] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
@@ -524,6 +545,11 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 perms: perms.toString(),
               },
             )
+            // Phase 3: persist the warning into success-card state so
+            // the user has a stable surface to act on (the toast below
+            // disappears in a few seconds; the success card stays
+            // until they click "Mint another").
+            setAutoDeployNeedsAuth(contractAddress)
             toast.info('Authorize for next mint', {
               description:
                 "Moment minted. For follow-up mints into this collection, grant Kismet ADMIN.",
@@ -783,10 +809,42 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             {result.hash.slice(0, 10)}…{result.hash.slice(-8)}
           </a>
         </div>
+        {/* Phase 3: persistent warning when an auto-deploy mint
+            succeeded but the smart wallet didn't end up with ADMIN on
+            the new contract. Without this surface, the only signal is
+            the transient post-mint toast — easy to miss, and the user
+            then hits AUTHORIZE_REQUIRED next time they try to mint into
+            the same collection. The button routes to the collection
+            page where Phase 1's banner runs the on-chain addPermission
+            from the user's EOA (which IS admin via defaultAdmin). */}
+        {autoDeployNeedsAuth && (
+          <div className="text-left p-3 sm:p-4 border border-amber-700/50 bg-amber-950/30 flex items-start gap-2.5">
+            <ShieldAlert size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-mono text-amber-200">
+                Authorize for follow-up mints
+              </p>
+              <p className="text-[11px] font-mono text-amber-200/70 mt-1">
+                Your moment is on chain. To mint more into this collection, grant Kismet ADMIN — one onchain tx from your wallet.
+              </p>
+              <button
+                type="button"
+                onClick={() => router.push(`/collection/${autoDeployNeedsAuth}`)}
+                className="mt-2.5 text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 border border-amber-600 text-amber-100 hover:border-amber-400 hover:bg-amber-900/40 transition-colors"
+              >
+                authorize →
+              </button>
+            </div>
+          </div>
+        )}
         <button
           onClick={() => {
             setStep('idle')
             setResult(null)
+            // Phase 3: clear the persistent warning along with other
+            // form state — staying on it across "Mint another" would
+            // confuse the next mint into a different (or new) collection.
+            setAutoDeployNeedsAuth(null)
             clearFile()
             setTextContent('')
             setName('')
@@ -795,6 +853,9 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             setMaxSupply('')
             setSplits([])
             setSplitInput({ address: '', pct: '' })
+            // Also reset the new-collection-name input so the next
+            // auto-deploy starts blank.
+            setNewCollectionName('')
           }}
           className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
         >
@@ -987,6 +1048,22 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                   ? 'loading collections…'
                   : '+ create new collection'}
             </span>
+            {/* Phase 3: subtle amber dot when at least one of the user's
+                existing collections is confirmed missing ADMIN. Cues the
+                user to open the dropdown and see which ones need
+                attention. Hidden when no issues OR when an issue-free
+                collection is currently selected (the badge per-row in
+                the dropdown is the more specific signal). */}
+            {collectionsMissingAdmin > 0 && (
+              <span
+                className="w-2 h-2 bg-amber-400 rounded-full flex-shrink-0"
+                title={
+                  collectionsMissingAdmin === 1
+                    ? '1 of your collections needs authorize before minting'
+                    : `${collectionsMissingAdmin} of your collections need authorize before minting`
+                }
+              />
+            )}
             <span className="text-[#555] text-xs font-mono flex-shrink-0">
               {pickerOpen ? '▲' : '▼'}
             </span>
@@ -1005,6 +1082,27 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
 
         {pickerOpen && (
           <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
+            {/* Phase 3: explain the ⚠️ badges when at least one of the
+                user's collections is confirmed missing ADMIN. Without
+                this, users see badges with no explanation and can't
+                tell what action to take. Picking a flagged collection
+                still works — the Phase 1 banner above the form
+                surfaces the Authorize CTA on selection. */}
+            {collectionsMissingAdmin > 0 && (
+              <div className="px-3 py-2 border-b border-[#2a2a2a] bg-amber-950/30 flex items-start gap-2">
+                <ShieldAlert size={12} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-[11px] font-mono text-amber-200">
+                    {collectionsMissingAdmin === 1
+                      ? '1 collection needs authorize'
+                      : `${collectionsMissingAdmin} collections need authorize`}
+                  </p>
+                  <p className="text-[10px] font-mono text-amber-200/60 mt-0.5">
+                    Pick one to see the authorize CTA. One-time onchain grant from your wallet.
+                  </p>
+                </div>
+              </div>
+            )}
             {/* Always-present "create new" option lets users return to
                 auto-deploy mode even after picking an existing
                 collection. Mirrors the explicit ✕ clear button but
@@ -1043,6 +1141,13 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                   const isSelected =
                     selectedCollection !== null &&
                     c.address.toLowerCase() === selectedCollection.address.toLowerCase()
+                  // Phase 3: render an amber ⚠️ overlay when the
+                  // smart wallet is confirmed missing ADMIN on this
+                  // collection. hasAdmin === null means loading or
+                  // RPC error — render no badge in those cases so we
+                  // don't surface a false-negative.
+                  const permStatus = collectionsPerms[c.address.toLowerCase()]
+                  const needsAuth = permStatus?.hasAdmin === false
                   return (
                     <button
                       key={c.address}
@@ -1054,6 +1159,11 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                       className={`relative aspect-square bg-[#111] overflow-hidden group ${
                         isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''
                       }`}
+                      title={
+                        needsAuth
+                          ? `${c.name} — needs authorize before minting`
+                          : c.name
+                      }
                     >
                       {img ? (
                         <Image
@@ -1069,6 +1179,14 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                           <span className="text-[#333] font-mono text-[10px]">
                             {shortAddress(c.address)}
                           </span>
+                        </div>
+                      )}
+                      {needsAuth && (
+                        <div
+                          className="absolute top-1 right-1 w-5 h-5 bg-amber-500/95 border border-amber-300 flex items-center justify-center"
+                          aria-label="Needs authorize"
+                        >
+                          <ShieldAlert size={11} className="text-amber-950" />
                         </div>
                       )}
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
