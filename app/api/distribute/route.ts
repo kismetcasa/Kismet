@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyMessage } from 'viem'
-import { isAddress } from '@/lib/address'
+import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return NextResponse.json({ error: 'valid collectionAddress required' }, { status: 400 })
   }
-  if (!tokenId || !/^\d+$/.test(tokenId)) {
+  if (!isValidTokenId(tokenId)) {
     return NextResponse.json({ error: 'valid tokenId required' }, { status: 400 })
   }
   if (!callerAddress || !isAddress(callerAddress)) {

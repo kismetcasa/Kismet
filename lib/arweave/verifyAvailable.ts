@@ -1,8 +1,7 @@
 import { resolveUri } from '@/lib/inprocess'
 
-// Capped exponential backoff in ms. The cumulative wall clock through
-// the full schedule is 38s; the budgetMs check stops earlier if needed.
-const BACKOFF_MS = [1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000]
+// First entry is 0 so the immediate try doesn't pay a sleep.
+const BACKOFF_MS = [0, 1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000]
 
 /**
  * Poll an `ar://` (or HTTPS) URI until a HEAD returns 200 or the budget
@@ -19,21 +18,13 @@ export async function verifyArweaveAvailable(
 ): Promise<boolean> {
   const url = resolveUri(uri)
   const start = Date.now()
-
-  // Try once immediately so an already-propagated upload doesn't pay
-  // the first sleep.
-  try {
-    const res = await fetch(url, { method: 'HEAD', cache: 'no-store' })
-    if (res.ok) return true
-  } catch { /* network blip — fall through to retry loop */ }
-
   for (const delay of BACKOFF_MS) {
     if (Date.now() - start + delay >= budgetMs) return false
-    await new Promise((r) => setTimeout(r, delay))
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay))
     try {
       const res = await fetch(url, { method: 'HEAD', cache: 'no-store' })
       if (res.ok) return true
-    } catch { /* keep trying */ }
+    } catch { /* transient — keep polling */ }
   }
   return false
 }

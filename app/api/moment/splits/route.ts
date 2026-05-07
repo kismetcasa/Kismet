@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isAddress } from '@/lib/address'
+import { isAddress, isValidTokenId } from '@/lib/address'
 import { redis } from '@/lib/redis'
 
 export async function GET(req: NextRequest) {
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   if (!isAddress(collectionAddress)) {
     return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
   }
-  if (!/^\d+$/.test(tokenId)) {
+  if (!isValidTokenId(tokenId)) {
     return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
   }
 

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
-import { isAddress } from '@/lib/address'
+import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API, resolveUri, type MomentDetail } from '@/lib/inprocess'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
@@ -54,7 +54,7 @@ async function getFallbackMeta(
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address, tokenId } = await params
-  if (!isAddress(address) || !/^\d+$/.test(tokenId)) {
+  if (!isAddress(address) || !isValidTokenId(tokenId)) {
     return { title: 'Moment — Kismet Art' }
   }
   const [detail, fallback] = await Promise.all([
@@ -82,9 +82,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function MomentPage({ params }: Props) {
   const { address, tokenId } = await params
 
-  // Mirror the validation /api/moment already does (route.ts:15-20) so we
-  // don't waste an upstream fetch + KV reads on garbage routes.
-  if (!isAddress(address) || !/^\d+$/.test(tokenId)) notFound()
+  // Mirror the validation /api/moment already does so we don't waste an
+  // upstream fetch + KV reads on garbage routes.
+  if (!isAddress(address) || !isValidTokenId(tokenId)) notFound()
 
   // Resolve the viewer up front so we can decide whether to hand the full
   // detail (with metadata) to the client or render a server-side placeholder

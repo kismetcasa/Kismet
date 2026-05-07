@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyTypedData } from 'viem'
-import { isAddress } from '@/lib/address'
+import { isAddress, isValidTokenId } from '@/lib/address'
 import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,
@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
     if (!isAddress(seller)) {
       return NextResponse.json({ error: 'Invalid seller address' }, { status: 400 })
     }
-    if (!/^\d+$/.test(tokenId)) {
+    if (!isValidTokenId(tokenId)) {
       return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
     }
     if (BigInt(price) <= 0n) {

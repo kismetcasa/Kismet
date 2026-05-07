@@ -19,7 +19,13 @@ export async function setMomentContent(
   tokenId: string,
   content: string,
 ): Promise<void> {
-  if (Buffer.byteLength(content, 'utf8') > MAX_CONTENT_BYTES) return
+  const bytes = Buffer.byteLength(content, 'utf8')
+  if (bytes > MAX_CONTENT_BYTES) {
+    console.warn(
+      `[momentContent] skipping mirror for ${addr}:${tokenId}: body is ${bytes}B (max ${MAX_CONTENT_BYTES}B)`,
+    )
+    return
+  }
   await redis.set(keyMomentContent(addr, tokenId), content)
 }
 

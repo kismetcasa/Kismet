@@ -454,7 +454,8 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           verifyArweaveAvailable(metadataUri),
         ])
         if (!mediaOk || !metadataOk) {
-          throw new Error('Arweave still settling — try again in a minute')
+          const which = !mediaOk && !metadataOk ? 'media + metadata' : !mediaOk ? 'media' : 'metadata'
+          throw new Error(`Arweave still settling (${which} not yet propagated) — try again in a minute`)
         }
 
         setStep('minting')
