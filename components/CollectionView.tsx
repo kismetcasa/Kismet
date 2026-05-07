@@ -4,8 +4,7 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { useAccount, useReadContract } from 'wagmi'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck } from 'lucide-react'
@@ -15,7 +14,7 @@ import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { useGrantPermission } from '@/hooks/useGrantPermission'
 import {
   COLLECTION_ABI,
   PERMISSION_BIT_ADMIN,
@@ -130,48 +129,48 @@ export function CollectionView({
     ((inprocessPerms as bigint) & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
   const showAuthorize = isCreator && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
 
-  const ensureBase = useEnsureBase()
-  const { writeContractAsync } = useWriteContract()
-  const [authorizeHash, setAuthorizeHash] = useState<`0x${string}` | undefined>(undefined)
-  const [authorizing, setAuthorizing] = useState(false)
-  const { data: authorizeReceipt } = useWaitForTransactionReceipt({
-    hash: authorizeHash,
-    query: { enabled: !!authorizeHash },
-  })
+  // Centralized addPermission flow — same hook AirdropForm uses. Banner
+  // grants the smart wallet ADMIN at tokenId 0 (collection-wide) since
+  // the user is defaultAdmin of their own collections.
+  const {
+    grant,
+    reset: resetGrant,
+    busy: authorizing,
+    receipt: authorizeReceipt,
+  } = useGrantPermission()
 
   // When the authorize tx confirms, refetch the permission read so the
-  // button hides itself without a manual reload.
+  // banner hides itself without a manual reload.
   useEffect(() => {
     if (!authorizeReceipt) return
-    setAuthorizing(false)
+    resetGrant()
     if (authorizeReceipt.status === 'reverted') {
       toast.error('Authorize failed', { id: 'authorize', description: 'The transaction reverted on-chain.' })
       return
     }
     void refetchInprocessPerms()
     toast.success('Kismet authorized — minting now works for this collection', { id: 'authorize' })
-  }, [authorizeReceipt, refetchInprocessPerms])
+  }, [authorizeReceipt, refetchInprocessPerms, resetGrant])
 
   async function handleAuthorize() {
     if (!connectedAddress || !inprocessConfigured || !inprocessSmartWallet) return
-    setAuthorizing(true)
     try {
-      await ensureBase()
       toast.loading('Confirm in wallet…', { id: 'authorize' })
-      const hash = await writeContractAsync({
-        chainId: base.id,
-        address: address as `0x${string}`,
-        abi: COLLECTION_ABI,
-        functionName: 'addPermission',
-        // tokenId 0 is the collection-wide permission row; granting ADMIN
-        // there gives inprocess admin over every token in the collection,
-        // present and future.
-        args: [0n, inprocessSmartWallet as `0x${string}`, PERMISSION_BIT_ADMIN],
+      const outcome = await grant({
+        collection: address as `0x${string}`,
+        grantee: inprocessSmartWallet as `0x${string}`,
+        tokenId: 0n,
+        bit: 'admin',
       })
-      setAuthorizeHash(hash)
-      toast.loading('Authorizing…', { id: 'authorize' })
+      if (outcome === 'submitted') {
+        toast.loading('Authorizing…', { id: 'authorize' })
+        return
+      }
+      // Already had ADMIN on chain — refetch so the banner hides
+      // immediately instead of waiting for the (nonexistent) tx.
+      void refetchInprocessPerms()
+      toast.success('Kismet already authorized for this collection', { id: 'authorize' })
     } catch (err) {
-      setAuthorizing(false)
       toastError('Authorize', err, { id: 'authorize' })
     }
   }
