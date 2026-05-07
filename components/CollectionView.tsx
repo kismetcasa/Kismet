@@ -4,14 +4,22 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount } from 'wagmi'
+import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
-import { ArrowLeft, Star, Eye, EyeOff } from 'lucide-react'
+import { isAddress } from 'viem'
+import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck } from 'lucide-react'
 import { resolveUri, shortAddress, type Moment, type MomentAdmin } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useEnsureBase } from '@/lib/useEnsureBase'
+import {
+  COLLECTION_ABI,
+  PERMISSION_BIT_ADMIN,
+} from '@/lib/collections'
+import { INPROCESS_SMART_WALLET } from '@/lib/config'
 import { MomentCard } from './MomentCard'
 import { ProfileAvatar } from './ProfileAvatar'
 
@@ -99,6 +107,74 @@ export function CollectionView({
     !!connectedAddress &&
     !!defaultAdminAddress &&
     connectedAddress.toLowerCase() === defaultAdminAddress.toLowerCase()
+
+  // Retroactive authorize flow — for collections deployed before we
+  // started granting inprocess's smart wallet ADMIN as a setupAction.
+  // Without that grant, every /api/mint into the collection reverts at
+  // gas estimation. The creator can grant it after the fact with a
+  // single addPermission call from their own wallet (they hold ADMIN
+  // already as defaultAdmin).
+  const inprocessConfigured =
+    !!INPROCESS_SMART_WALLET && isAddress(INPROCESS_SMART_WALLET)
+  const { data: inprocessPerms, refetch: refetchInprocessPerms } = useReadContract({
+    address: address as `0x${string}`,
+    abi: COLLECTION_ABI,
+    functionName: 'permissions',
+    args: inprocessConfigured
+      ? [0n, INPROCESS_SMART_WALLET as `0x${string}`]
+      : undefined,
+    query: { enabled: inprocessConfigured && isCreator },
+  })
+  const inprocessIsAdmin =
+    inprocessPerms !== undefined &&
+    (BigInt(inprocessPerms as bigint) & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
+  const showAuthorize = isCreator && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
+
+  const ensureBase = useEnsureBase()
+  const { writeContractAsync } = useWriteContract()
+  const [authorizeHash, setAuthorizeHash] = useState<`0x${string}` | undefined>(undefined)
+  const [authorizing, setAuthorizing] = useState(false)
+  const { data: authorizeReceipt } = useWaitForTransactionReceipt({
+    hash: authorizeHash,
+    query: { enabled: !!authorizeHash },
+  })
+
+  // When the authorize tx confirms, refetch the permission read so the
+  // button hides itself without a manual reload.
+  useEffect(() => {
+    if (!authorizeReceipt) return
+    setAuthorizing(false)
+    if (authorizeReceipt.status === 'reverted') {
+      toast.error('Authorize failed', { id: 'authorize', description: 'The transaction reverted on-chain.' })
+      return
+    }
+    void refetchInprocessPerms()
+    toast.success('Kismet authorized — minting now works for this collection', { id: 'authorize' })
+  }, [authorizeReceipt, refetchInprocessPerms])
+
+  async function handleAuthorize() {
+    if (!connectedAddress || !inprocessConfigured) return
+    setAuthorizing(true)
+    try {
+      await ensureBase()
+      toast.loading('Confirm in wallet…', { id: 'authorize' })
+      const hash = await writeContractAsync({
+        chainId: base.id,
+        address: address as `0x${string}`,
+        abi: COLLECTION_ABI,
+        functionName: 'addPermission',
+        // tokenId 0 is the collection-wide permission row; granting ADMIN
+        // there gives inprocess admin over every token in the collection,
+        // present and future.
+        args: [0n, INPROCESS_SMART_WALLET as `0x${string}`, PERMISSION_BIT_ADMIN],
+      })
+      setAuthorizeHash(hash)
+      toast.loading('Authorizing…', { id: 'authorize' })
+    } catch (err) {
+      setAuthorizing(false)
+      toastError('Authorize', err, { id: 'authorize' })
+    }
+  }
 
   async function handleToggleHidden() {
     if (hidePending) return
@@ -252,6 +328,33 @@ export function CollectionView({
           </div>
         </div>
       </div>
+
+      {/* Authorize banner — surfaces when the creator's collection
+          predates the inprocess-admin grant we now bake into deploy.
+          One click, one tx, and minting works end-to-end. Only renders
+          for the creator + only when the grant is actually missing. */}
+      {showAuthorize && (
+        <div className="mb-8 p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck size={16} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-mono text-[#efefef]">
+                Authorize Kismet to mint into this collection
+              </p>
+              <p className="text-[11px] font-mono text-[#888] mt-0.5">
+                One-time onchain grant. Required because this collection was deployed before our minting upgrade.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleAuthorize}
+            disabled={authorizing}
+            className="flex-shrink-0 text-xs font-mono tracking-wider uppercase px-4 py-2 btn-accent disabled:opacity-50"
+          >
+            {authorizing ? 'authorizing…' : 'authorize'}
+          </button>
+        </div>
+      )}
 
       {/* Artists */}
       {uniqueCreators.length > 0 && (

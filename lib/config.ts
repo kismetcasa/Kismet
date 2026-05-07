@@ -18,3 +18,14 @@ export const CREATE_REFERRAL =
 export const RESIDENCIES_ADDRESS =
   process.env.NEXT_PUBLIC_RESIDENCIES_ADDRESS ||
   '0x58f19e55058057B04feAe2EEA88F90B84b7714Eb'
+
+// Inprocess platform smart wallet — the ERC-4337 smart account that sits
+// behind our INPROCESS_API_KEY. It needs ADMIN permission (bit 2) on every
+// collection we mint into via /api/mint, otherwise its userOp reverts at
+// gas estimation ("useroperation reverted: execution reverted") because
+// Zora 1155's setupNewToken is gated on ADMIN. We grant it as a
+// setupAction at deploy time for new collections, and expose a retroactive
+// "authorize" flow on the collection page for collections deployed before
+// this change. Find the address in your inprocess artist dashboard.
+export const INPROCESS_SMART_WALLET =
+  (process.env.NEXT_PUBLIC_INPROCESS_SMART_WALLET ?? '').toLowerCase()

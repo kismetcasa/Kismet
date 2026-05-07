@@ -279,7 +279,21 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
-          throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
+          const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
+          // Inprocess submits the mint via an ERC-4337 smart account; if
+          // that account doesn't hold ADMIN on the target collection,
+          // setupNewToken reverts at gas estimation with this exact
+          // phrasing. The fix is a one-time addPermission tx the creator
+          // can do from the collection page. Point the user there.
+          if (
+            collectionAddress &&
+            /useroperation reverted|user operation reverted|execution reverted/i.test(raw)
+          ) {
+            throw new Error(
+              `This collection hasn't authorized Kismet for minting yet. Open the collection page (/collection/${collectionAddress}) and click "Authorize" — it's a one-time onchain grant from your wallet.`,
+            )
+          }
+          throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
@@ -337,7 +351,21 @@ export function MintForm({ collectionAddress }: MintFormProps = {}) {
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
-          throw new Error((data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors)
+          const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
+          // Inprocess submits the mint via an ERC-4337 smart account; if
+          // that account doesn't hold ADMIN on the target collection,
+          // setupNewToken reverts at gas estimation with this exact
+          // phrasing. The fix is a one-time addPermission tx the creator
+          // can do from the collection page. Point the user there.
+          if (
+            collectionAddress &&
+            /useroperation reverted|user operation reverted|execution reverted/i.test(raw)
+          ) {
+            throw new Error(
+              `This collection hasn't authorized Kismet for minting yet. Open the collection page (/collection/${collectionAddress}) and click "Authorize" — it's a one-time onchain grant from your wallet.`,
+            )
+          }
+          throw new Error(raw)
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)

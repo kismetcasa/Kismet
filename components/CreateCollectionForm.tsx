@@ -8,8 +8,8 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther } from 'viem'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
-import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, buildCoverTokenSetupActions } from '@/lib/collections'
-import { CREATE_REFERRAL } from '@/lib/config'
+import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions } from '@/lib/collections'
+import { CREATE_REFERRAL, INPROCESS_SMART_WALLET } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -292,6 +292,20 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         .filter((m) => isAddress(m))
         .map((m) => encodeMinterPermission(m as `0x${string}`))
 
+      // Authorize the inprocess platform smart wallet as ADMIN so subsequent
+      // /api/mint calls into this collection can succeed. Without this grant,
+      // the userOp inprocess submits reverts at gas estimation
+      // ("useroperation reverted: execution reverted") because Zora 1155's
+      // setupNewToken is gated on the ADMIN bit. ADMIN — not MINTER —
+      // because setupNewToken specifically requires admin per Zora's
+      // PermissionsConstants. We skip this when the env var isn't
+      // configured so dev deploys don't fail; production deployments
+      // should always set NEXT_PUBLIC_INPROCESS_SMART_WALLET.
+      const inprocessAdminAction =
+        INPROCESS_SMART_WALLET && isAddress(INPROCESS_SMART_WALLET)
+          ? [encodeAdminPermission(INPROCESS_SMART_WALLET as `0x${string}`)]
+          : []
+
       // If cover mint is enabled, append the cover-token setupActions so the
       // token is created in the same transaction. Mirrors how inprocess.world's
       // own frontend does it (see lib/protocolSdk/create/token-setup.ts in
@@ -321,7 +335,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         })
       }
 
-      const setupActions = [...minterActions, ...coverActions]
+      // Order matters when cover-mint is on: the inprocess admin grant
+      // runs *before* the cover-token actions, so by the time the cover
+      // token is set up, inprocess already holds ADMIN — staying
+      // consistent with what the deploy will look like for every
+      // subsequent token created via /api/mint.
+      const setupActions = [...minterActions, ...inprocessAdminAction, ...coverActions]
 
       const hash = await writeContractAsync({
         chainId: base.id,
