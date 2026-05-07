@@ -363,10 +363,7 @@ function MainFeed() {
 
   const feedKey = `main-${followingOn ? 'following' : 'all'}-${followingAddrs.join(',')}`
 
-  // Sub-pills row: mints (default) / collections, with the optional
-  // "following" filter rendered alongside on the mints sub-tab. Following
-  // doesn't apply to the collective collections feed, so it disappears
-  // when the user switches to collections.
+  // Sub-pills row: mints / collections + independent following toggle.
   const subTabBar = (
     <div className="flex items-center gap-3">
       {(['mints', 'collections'] as MainSubTab[]).map((id) => (
