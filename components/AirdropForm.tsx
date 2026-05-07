@@ -1,15 +1,24 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useEffect, useState } from 'react'
+import {
+  useAccount,
+  usePublicClient,
+  useSignMessage,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from 'wagmi'
+import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { Plus, X } from 'lucide-react'
+import { Plus, ShieldCheck, X } from 'lucide-react'
 import Image from 'next/image'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
+import { COLLECTION_ABI, PERMISSION_BIT_ADMIN } from '@/lib/collections'
+import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
+import { useEnsureBase } from '@/lib/useEnsureBase'
 
 interface AirdropFormProps {
   moments: Moment[]
@@ -17,10 +26,12 @@ interface AirdropFormProps {
 }
 
 export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
-  const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
+  const publicClient = usePublicClient({ chainId: base.id })
+  const { writeContractAsync } = useWriteContract()
+  const ensureBase = useEnsureBase()
 
   const [selected, setSelected] = useState<Moment | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -28,6 +39,94 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
+
+  // Manual authorize bar — lets the user grant ADMIN to their inprocess
+  // smart wallet on any collection they're defaultAdmin of, without
+  // navigating to the collection page. Mirrors the on-chain flow used
+  // by CollectionView's banner: lookup smart wallet → read permissions
+  // → addPermission(0, smartWallet, ADMIN) if missing.
+  const [authAddress, setAuthAddress] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authHash, setAuthHash] = useState<`0x${string}` | undefined>(undefined)
+  const { data: authReceipt } = useWaitForTransactionReceipt({
+    hash: authHash,
+    query: { enabled: !!authHash },
+  })
+
+  useEffect(() => {
+    if (!authReceipt) return
+    setAuthHash(undefined)
+    if (authReceipt.status === 'reverted') {
+      toast.error('Authorize failed', {
+        id: 'authorize-collection',
+        description:
+          'The transaction reverted on-chain — only the collection admin can grant ADMIN.',
+      })
+      return
+    }
+    toast.success('Collection authorized — airdrops can now mint into it.', {
+      id: 'authorize-collection',
+    })
+    setAuthAddress('')
+  }, [authReceipt])
+
+  async function authorizeCollection(rawAddr: string) {
+    const addr = rawAddr.trim()
+    if (!isAddress(addr)) {
+      toast.error('Invalid collection address', { id: 'authorize-collection' })
+      return
+    }
+    if (!isConnected || !address) {
+      openConnectModal?.()
+      return
+    }
+    if (!publicClient) {
+      toast.error('No network client available', { id: 'authorize-collection' })
+      return
+    }
+    setAuthBusy(true)
+    try {
+      // The artist's inprocess smart wallet is the entity that needs
+      // ADMIN — same as MintForm. Look it up from the connected EOA.
+      const smartWallet = await fetchInprocessSmartWallet(address)
+      if (!smartWallet || !isAddress(smartWallet)) {
+        throw new Error('Could not resolve your inprocess smart wallet')
+      }
+      // Skip the tx if the smart wallet already has ADMIN — saves the
+      // user a wallet popup and a wasted gas estimate.
+      const perms = (await publicClient.readContract({
+        address: addr as `0x${string}`,
+        abi: COLLECTION_ABI,
+        functionName: 'permissions',
+        args: [0n, smartWallet as `0x${string}`],
+      })) as bigint
+      if ((perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN) {
+        toast.success('Already authorized — airdrops can mint into this collection.', {
+          id: 'authorize-collection',
+        })
+        setAuthAddress('')
+        return
+      }
+      await ensureBase()
+      toast.loading('Confirm in wallet…', { id: 'authorize-collection' })
+      const hash = await writeContractAsync({
+        chainId: base.id,
+        address: addr as `0x${string}`,
+        abi: COLLECTION_ABI,
+        functionName: 'addPermission',
+        // tokenId 0 is the collection-wide permission row — granting
+        // ADMIN there gives inprocess admin over every token in the
+        // collection, present and future.
+        args: [0n, smartWallet as `0x${string}`, PERMISSION_BIT_ADMIN],
+      })
+      setAuthHash(hash)
+      toast.loading('Authorizing…', { id: 'authorize-collection' })
+    } catch (err) {
+      toastError('Authorize', err, { id: 'authorize-collection' })
+    } finally {
+      setAuthBusy(false)
+    }
+  }
 
   function addRecipient() {
     const addr = recipientInput.trim()
@@ -92,11 +191,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         //      response body — fallback for when the server hasn't
         //      converted (older deploy, edge cache, or any path where
         //      the upstream message reaches us verbatim).
-        // Either way, route the artist to /collection/{address} where
-        // the existing CollectionView Authorize banner lets them grant
-        // ADMIN to their inprocess smart wallet in one tx (they hold
-        // ADMIN as defaultAdmin). Bail out early so the generic
-        // toastError below doesn't double-fire.
+        // Toast action triggers the wallet prompt directly (no nav)
+        // so the user can grant ADMIN inline and immediately retry.
+        // Manual bar at the bottom of the form is the always-visible
+        // alternative for arbitrary collections.
         const authMessage =
           typeof data === 'object' && data !== null
             ? String(
@@ -110,13 +208,16 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           (data as { code?: string }).code === 'AUTHORIZE_REQUIRED' ||
           /admin permission/i.test(authMessage)
         ) {
+          // Pre-fill the manual bar so it's obvious which collection
+          // we're authorizing, in case the user dismisses the toast.
+          setAuthAddress(selected.address)
           toast.error('Authorization required', {
             id: 'airdrop',
             description:
               "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
             action: {
               label: 'Authorize',
-              onClick: () => router.push(`/collection/${selected.address}`),
+              onClick: () => void authorizeCollection(selected.address),
             },
           })
           return
@@ -273,6 +374,44 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           tx: {resultHash.slice(0, 10)}…{resultHash.slice(-8)}
         </a>
       )}
+
+      {/* Manual authorize: lets the creator grant ADMIN to their
+          inprocess smart wallet on any collection they control,
+          without leaving the airdrop tab. The same handler powers
+          the toast prompt that fires after an airdrop fails with
+          "admin permission". */}
+      <div>
+        <label className="flex items-center gap-1.5 text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+          <ShieldCheck size={12} />
+          Authorize collection
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={authAddress}
+            onChange={(e) => setAuthAddress(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void authorizeCollection(authAddress)
+              }
+            }}
+            placeholder="0x… collection address"
+            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+          />
+          <button
+            type="button"
+            onClick={() => void authorizeCollection(authAddress)}
+            disabled={authBusy || !authAddress.trim() || !!authHash}
+            className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
+          >
+            {authHash ? 'authorizing…' : authBusy ? 'checking…' : 'authorize'}
+          </button>
+        </div>
+        <p className="text-[10px] font-mono text-[#444] mt-1.5">
+          one-time onchain grant — only the collection admin can authorize
+        </p>
+      </div>
 
       <button
         type="submit"
