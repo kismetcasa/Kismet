@@ -151,33 +151,31 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
 
       {/* Info */}
       <div className="p-4 flex flex-col gap-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="text-sm font-mono text-[#efefef] truncate">
+        <div>
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-sm font-mono text-[#efefef]">
               {listing.name ?? 'untitled'}
             </p>
-            {listing.creatorAddress && (
-              <Link
-                href={`/profile/${listing.creatorAddress}`}
-                className="text-xs font-mono text-[#555] mt-0.5 hover:text-[#888] transition-colors w-fit block"
-              >
-                creator {creatorName}
-              </Link>
-            )}
+            <p className="text-xs font-mono accent-grad shrink-0">{priceLabel}</p>
+          </div>
+          {listing.creatorAddress && (
+            <Link
+              href={`/profile/${listing.creatorAddress}`}
+              className="text-xs font-mono text-[#555] mt-1 hover:text-[#888] transition-colors w-fit block"
+            >
+              creator {creatorName}
+            </Link>
+          )}
+          <div className="flex items-center justify-between mt-1">
+            {Number(listing.royaltyAmount) > 0 ? (
+              <p className="text-xs font-mono text-[#333]">{royaltyPct}% royalty</p>
+            ) : <span />}
             <Link
               href={`/profile/${listing.seller}`}
-              className="text-xs font-mono text-[#333] mt-0.5 hover:text-[#555] transition-colors w-fit block"
+              className="text-xs font-mono text-[#333] hover:text-[#555] transition-colors"
             >
               seller {sellerName}
             </Link>
-          </div>
-          <div className="text-right shrink-0">
-            <p className="text-xs font-mono accent-grad">{priceLabel}</p>
-            {Number(listing.royaltyAmount) > 0 && (
-              <p className="text-xs font-mono text-[#333] mt-0.5">
-                {royaltyPct}% royalty
-              </p>
-            )}
           </div>
         </div>
 
