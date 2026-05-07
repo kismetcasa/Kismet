@@ -9,6 +9,7 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { humanError } from '@/lib/toast'
 import type { Notification, NotificationType } from '@/lib/notifications'
 
+export type FeedTab = 'notifications' | 'all' | 'following'
 type Tab = 'priority' | 'all'
 type TypeFilter = 'all' | NotificationType
 
@@ -26,15 +27,21 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
 
 const POLL_INTERVAL_MS = 30_000
 
-export function NotificationFeed() {
+interface NotificationFeedProps {
+  feedTab: FeedTab
+  followingAddrs?: string[]
+}
+
+export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedProps) {
   const { ensureSession } = useUploadSession()
-  const [tab, setTab] = useState<Tab>('priority')
+  const apiTab: Tab = feedTab === 'notifications' ? 'priority' : 'all'
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [page, setPage] = useState(1)
   const [items, setItems] = useState<Notification[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [authRequired, setAuthRequired] = useState(false)
   // Map of address (lowercased) → display name. NotificationRow keys off
   // each notification's actor; we batch-resolve them per page so the row
   // can render @username instead of 0x123…abc without N HTTP requests.
@@ -43,19 +50,20 @@ export function NotificationFeed() {
 
   const hasMore = items.length < total
 
-  // Reset list when tab or filter changes
+  // Reset list when feed tab or type filter changes
   useEffect(() => {
     setPage(1)
     setItems([])
     setTotal(0)
-  }, [tab, typeFilter])
+    setAuthRequired(false)
+  }, [feedTab, typeFilter])
 
   const fetchPage = useCallback(async (targetPage: number, signal?: AbortSignal): Promise<void> => {
     if (targetPage === 1) setLoading(true)
     else setLoadingMore(true)
 
     const params = new URLSearchParams({
-      tab,
+      tab: apiTab,
       page: String(targetPage),
       limit: String(PAGE_LIMIT),
     })
@@ -66,6 +74,7 @@ export function NotificationFeed() {
         credentials: 'same-origin',
         signal,
       })
+      if (r.status === 401) { setAuthRequired(true); setLoading(false); setLoadingMore(false); return }
       if (!r.ok) throw new Error('not ok')
       const data = await r.json()
       if (signal?.aborted) return
@@ -78,7 +87,7 @@ export function NotificationFeed() {
     } finally {
       if (!signal?.aborted) { setLoading(false); setLoadingMore(false) }
     }
-  }, [tab, typeFilter])
+  }, [apiTab, typeFilter])
 
   // Fetch page — replaces on page 1, appends on page > 1
   useEffect(() => {
@@ -199,61 +208,55 @@ export function NotificationFeed() {
     }
   }
 
+  const displayItems = feedTab === 'following' && followingAddrs && followingAddrs.length > 0
+    ? items.filter((n) => n.actor && followingAddrs.includes(n.actor.toLowerCase()))
+    : items
+
   return (
     <div className="flex flex-col">
-      {/* Header: tabs + mark all read */}
-      <div className="flex items-center justify-between border-b border-[#2a2a2a] px-1 pb-2">
-        <div className="flex gap-4">
-          {(['priority', 'all'] as Tab[]).map((t) => (
+      {/* Type filters + mark-all-read */}
+      <div className="flex items-center gap-2 px-1 py-2 border-b border-[#2a2a2a] overflow-x-auto">
+        <div className="flex gap-1 flex-1">
+          {TYPE_FILTERS.map((f) => (
             <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`text-xs font-mono tracking-wider uppercase transition-colors ${
-                tab === t ? 'text-[#efefef]' : 'text-[#555] hover:text-[#888]'
+              key={f.value}
+              onClick={() => setTypeFilter(f.value)}
+              className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors flex-shrink-0 ${
+                typeFilter === f.value
+                  ? 'border-[#8B5CF6] text-[#8B5CF6]'
+                  : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
               }`}
             >
-              {t}
+              {f.label}
             </button>
           ))}
         </div>
         <button
           onClick={handleMarkAllRead}
-          className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] transition-colors"
+          className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] transition-colors flex-shrink-0"
         >
           mark all read
         </button>
       </div>
 
-      {/* Type filters */}
-      <div className="flex gap-1 px-1 py-3 overflow-x-auto">
-        {TYPE_FILTERS.map((f) => (
-          <button
-            key={f.value}
-            onClick={() => setTypeFilter(f.value)}
-            className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors flex-shrink-0 ${
-              typeFilter === f.value
-                ? 'border-[#8B5CF6] text-[#8B5CF6]'
-                : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
       {/* List */}
       <div className="flex flex-col">
-        {loading && items.length === 0 && (
+        {authRequired && (
+          <p className="text-xs font-mono text-[#555] text-center py-12">
+            sign in to see notifications
+          </p>
+        )}
+        {!authRequired && loading && items.length === 0 && (
           <div className="flex justify-center py-12">
             <Loader2 size={16} className="animate-spin text-[#555]" />
           </div>
         )}
-        {!loading && items.length === 0 && (
+        {!authRequired && !loading && displayItems.length === 0 && (
           <p className="text-xs font-mono text-[#555] text-center py-12">
-            {tab === 'priority' ? 'nothing important yet' : 'no notifications yet'}
+            {feedTab === 'following' ? 'no activity from followed creators yet' : feedTab === 'notifications' ? 'nothing important yet' : 'no notifications yet'}
           </p>
         )}
-        {items.map((n) => (
+        {displayItems.map((n) => (
           <NotificationRow
             key={n.id}
             notification={n}

@@ -63,6 +63,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [commentsLoading, setCommentsLoading] = useState(
     () => getCachedComments(address, tokenId) === undefined
   )
+  const [commentSenderNames, setCommentSenderNames] = useState<Record<string, string>>({})
   const [showAllComments, setShowAllComments] = useState(false)
   const [commentText, setCommentText] = useState('')
   const [collected, setCollected] = useState(false)
@@ -190,6 +191,22 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }, [address, tokenId])
 
   useEffect(() => { fetchComments() }, [fetchComments])
+
+  // Batch-resolve comment sender display names via shared profile cache
+  useEffect(() => {
+    if (comments.length === 0) return
+    let cancelled = false
+    const senders = Array.from(new Set(comments.map((c) => c.sender.toLowerCase())))
+    Promise.all(senders.map((a) => fetchCreatorProfile(a))).then((profiles) => {
+      if (cancelled) return
+      setCommentSenderNames((prev) => {
+        const next = { ...prev }
+        for (let i = 0; i < senders.length; i++) next[senders[i]] = profiles[i].name
+        return next
+      })
+    })
+    return () => { cancelled = true }
+  }, [comments])
 
   useEffect(() => {
     if (!address) return
@@ -771,7 +788,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       href={`/profile/${c.sender}`}
                       className="text-[11px] font-mono text-[#555] flex-shrink-0 hover:text-[#888] transition-colors"
                     >
-                      {shortAddress(c.sender)}
+                      {commentSenderNames[c.sender.toLowerCase()] ?? shortAddress(c.sender)}
                     </Link>
                     <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
                       {c.comment}
