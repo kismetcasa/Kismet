@@ -8,6 +8,7 @@ import { setMomentMeta, writeNotification } from './notifications'
 import { setMomentContent } from './momentContent'
 import { getFollowers } from './follows'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
+import { invalidateMomentCount } from './momentCount'
 
 // 0xSplits' SplitMain caps usable recipients well below this in practice
 // (gas-bound), but 50 is a generous safety net that no legitimate UI flow
@@ -266,6 +267,11 @@ export async function proxyMintRequest(
     const tokenId = r.tokenId
 
     if (contractAddress && tokenId && account) {
+      // Drop the cached "qualifies for feed" entry so a freshly-promoted
+      // collection (1 → 2 moments) surfaces in /api/collections?feed=1 on the
+      // next request rather than waiting for TTL.
+      void invalidateMomentCount(contractAddress).catch(() => {})
+
       void setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {})
 
       // Mirror the raw writing body to KV so the moment page can render
