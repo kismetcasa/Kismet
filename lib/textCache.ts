@@ -18,11 +18,17 @@ export async function fetchTextContent(uri: string): Promise<string> {
   return text
 }
 
-/** React hook wrapper. Returns null until the body resolves; never throws. */
-export function useTextContent(uri: string | undefined): string | null {
-  const [text, setText] = useState<string | null>(() =>
-    uri ? cache.get(uri) ?? null : null,
-  )
+/** React hook wrapper. Returns null until the body resolves; never throws.
+ *  Pass initialValue to hydrate from a server-prefetched string instantly. */
+export function useTextContent(uri: string | undefined, initialValue?: string): string | null {
+  const [text, setText] = useState<string | null>(() => {
+    if (!uri) return null
+    if (initialValue !== undefined) {
+      cache.set(uri, initialValue)
+      return initialValue
+    }
+    return cache.get(uri) ?? null
+  })
   useEffect(() => {
     if (!uri) return
     if (cache.has(uri)) {
