@@ -223,9 +223,20 @@ export async function POST(req: NextRequest) {
 
   // api.inprocess.world wants the body wrapped in `moment: {…}`
   // (rejects the flat shape the public docs cURL on inprocess.world
-  // shows). Per-recipient tokenIds stay on each recipient — the
-  // validator above enforces uniformity so one signature can't fan
-  // out across tokens.
+  // shows — empirically the validator demands the envelope). Per-
+  // recipient tokenIds stay on each recipient; the validator above
+  // enforces uniformity so one signature can't fan out across tokens.
+  //
+  // `account` is undocumented on the airdrop endpoint but is the
+  // same override mint-proxy sends to /moment/create (see
+  // lib/mint-proxy.ts). Without it, inprocess routes the call through
+  // whichever smart wallet the platform `INPROCESS_API_KEY` resolves
+  // to — which is NOT the artist's smart wallet (the one that holds
+  // ADMIN at deploy time via Kismet's setupActions). The chain check
+  // passes, the upstream call rejects, and the user is stuck.
+  // Forwarding the artist's EOA here lets inprocess re-derive the
+  // artist's smart wallet and call as that identity — the same one
+  // with ADMIN.
   const upstreamPayload = {
     moment: {
       collectionAddress: body.collectionAddress,
@@ -233,6 +244,7 @@ export async function POST(req: NextRequest) {
       chainId: 8453,
     },
     recipients: body.recipients,
+    account: body.callerAddress,
   }
 
   try {
