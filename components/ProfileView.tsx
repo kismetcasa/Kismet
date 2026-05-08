@@ -10,6 +10,8 @@ import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert } from 'lucid
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
+import { CuratePanel } from './CuratePanel'
+import { useAdmin } from '@/contexts/AdminContext'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
 import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
@@ -49,8 +51,13 @@ interface AirdropRecord {
 
 // ─── section ordering / collapse ─────────────────────────────────────────────
 
-type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops'
+type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops' | 'curate'
 
+// `curate` is intentionally absent from DEFAULT_ORDER — it's appended at
+// render time only on the curator's own profile, pinned last and not
+// drag-reorderable. Keeping it out of the persisted order means it never
+// leaks into a non-curator's localStorage state and never shows up where
+// it shouldn't.
 const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments', 'airdrops']
 const SECTIONS_KEY = 'kismetart:profile-sections'
 
@@ -133,8 +140,12 @@ export function ProfileView({ address }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
+  const { isCurator } = useAdmin()
 
   const isOwner = connectedAddress?.toLowerCase() === address.toLowerCase()
+  // Curators get a Curate panel on their own profile, pinned as the last
+  // section. The panel reuses the existing /api/featured plumbing.
+  const showCurate = isOwner && isCurator
 
   const [profile, setProfile] = useState<Profile | null>(null)
   const [moments, setMoments] = useState<Moment[]>([])
@@ -413,6 +424,7 @@ export function ProfileView({ address }: ProfileViewProps) {
     listings: 'Listings',
     payments: 'Sales',
     airdrops: 'Airdrops',
+    curate: 'Curate',
   }
   const sectionCount: Record<SectionId, number | null> = {
     mints: loadingMoments ? null : moments.length,
@@ -420,6 +432,8 @@ export function ProfileView({ address }: ProfileViewProps) {
     listings: loadingListings ? null : listings.length,
     payments: loadingPayments ? null : payments.length,
     airdrops: loadingAirdrops ? null : airdrops.length,
+    // Curate count rendered by the panel itself (it knows the live featured set).
+    curate: null,
   }
   const sectionContent: Record<SectionId, React.ReactNode> = {
     mints: collectionsMode ? (
@@ -544,6 +558,7 @@ export function ProfileView({ address }: ProfileViewProps) {
         ))}
       </div>
     ),
+    curate: <CuratePanel />,
   }
 
   // ─── permissions banner gate ─────────────────────────────────────────────
@@ -795,23 +810,26 @@ export function ProfileView({ address }: ProfileViewProps) {
       )}
 
 
-      {/* Draggable / collapsible sections */}
+      {/* Draggable / collapsible sections. The optional `curate` section is
+          appended last for the curator on their own profile and is not
+          drag-reorderable — it stays pinned to the bottom. */}
       <div className="flex flex-col">
-        {sectionOrder.map((section, idx) => {
+        {(showCurate ? [...sectionOrder, 'curate' as const] : sectionOrder).map((section, idx) => {
           const isCollapsed = sectionCollapsed[section] ?? false
           const count = sectionCount[section]
+          const draggable = section !== 'curate'
           return (
             <div
               key={section}
-              onDragOver={(e) => onDragOver(e, idx)}
+              onDragOver={draggable ? (e) => onDragOver(e, idx) : undefined}
               className={`border-t border-[#2a2a2a] transition-opacity duration-150 ${draggingSection === section ? 'opacity-40' : 'opacity-100'}`}
             >
               <div
-                draggable
-                onDragStart={() => onDragStart(idx)}
-                onDragEnd={onDragEnd}
+                draggable={draggable}
+                onDragStart={draggable ? () => onDragStart(idx) : undefined}
+                onDragEnd={draggable ? onDragEnd : undefined}
                 onClick={() => toggleCollapsed(section)}
-                className="flex items-center gap-2 py-4 cursor-grab active:cursor-grabbing select-none"
+                className={`flex items-center gap-2 py-4 select-none ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
               >
                 <ChevronRight
                   size={12}

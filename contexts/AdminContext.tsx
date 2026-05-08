@@ -14,6 +14,11 @@ interface AdminSession {
 
 interface AdminContextValue {
   isAdmin: boolean
+  // Curators share the admin's featured-feed permissions (add/remove
+  // moments + collections) but get a dedicated panel on their own profile
+  // instead of the per-card star button. The two roles can co-exist: an
+  // address that is both admin and curator sees both surfaces.
+  isCurator: boolean
   session: AdminSession | null
   startSession: () => Promise<void>
   featuredKeys: Set<string>
@@ -24,6 +29,7 @@ interface AdminContextValue {
 
 const AdminContext = createContext<AdminContextValue>({
   isAdmin: false,
+  isCurator: false,
   session: null,
   startSession: async () => {},
   featuredKeys: new Set(),
@@ -41,6 +47,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const { signMessageAsync } = useSignMessage()
 
   const [isAdmin, setIsAdmin] = useState(false)
+  const [isCurator, setIsCurator] = useState(false)
   const [session, setSession] = useState<AdminSession | null>(null)
   const sessionRef = useRef<AdminSession | null>(null)
   const [featuredKeys, setFeaturedKeys] = useState<Set<string>>(new Set())
@@ -51,19 +58,25 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     setSession(s)
   }
 
-  // Check admin status server-side so the address never ships in the client bundle
+  // Check privileged status server-side so the addresses never ship in the
+  // client bundle. Returns both isAdmin and isCurator flags in one call.
   useEffect(() => {
-    if (!address) { setIsAdmin(false); return }
+    if (!address) { setIsAdmin(false); setIsCurator(false); return }
     fetch(`/api/admin/me?address=${address}`)
       .then((r) => r.json())
-      .then((d) => setIsAdmin(d.isAdmin === true))
-      .catch(() => setIsAdmin(false))
+      .then((d) => {
+        setIsAdmin(d.isAdmin === true)
+        setIsCurator(d.isCurator === true)
+      })
+      .catch(() => { setIsAdmin(false); setIsCurator(false) })
   }, [address])
 
-  // Restore from sessionStorage once admin is confirmed; clear when not admin.
-  // Combined into one effect so the restore never races with the clear.
+  // Restore from sessionStorage once a privileged role is confirmed; clear
+  // otherwise. Combined into one effect so the restore never races with
+  // the clear. Both admins and curators use the same session key — the
+  // server verifies signerAddress, so cross-role mixups are impossible.
   useEffect(() => {
-    if (!isAdmin) {
+    if (!isAdmin && !isCurator) {
       applySession(null)
       return
     }
@@ -77,7 +90,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         sessionStorage.removeItem(SESSION_KEY)
       }
     } catch {}
-  }, [isAdmin])
+  }, [isAdmin, isCurator])
 
   // Fetch featured keys on mount (both moments and whole collections)
   useEffect(() => {
@@ -108,7 +121,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const startSession = useCallback(async () => {
-    if (!address || !isAdmin) return
+    if (!address || (!isAdmin && !isCurator)) return
     const timestamp = Date.now()
     const message = `Kismet Art admin session\nAddress: ${address.toLowerCase()}\nTimestamp: ${timestamp}`
     try {
@@ -119,11 +132,11 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       toastError('Sign in', err)
     }
-  }, [address, isAdmin, signMessageAsync])
+  }, [address, isAdmin, isCurator, signMessageAsync])
 
   const toggleFeatured = useCallback(
     async (collectionAddress: string, tokenId: string) => {
-      if (!isAdmin) return
+      if (!address || (!isAdmin && !isCurator)) return
 
       // Auto-start session if needed; re-read via ref after async sign
       let s = sessionRef.current
@@ -145,6 +158,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
             tokenId,
             signature: s.signature,
             timestamp: s.timestamp,
+            signerAddress: address,
           }),
         })
         if (!res.ok) {
@@ -161,12 +175,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         toastError('Featured update', err)
       }
     },
-    [isAdmin, startSession, featuredKeys],
+    [address, isAdmin, isCurator, startSession, featuredKeys],
   )
 
   const toggleFeaturedCollection = useCallback(
     async (collectionAddress: string) => {
-      if (!isAdmin) return
+      if (!address || (!isAdmin && !isCurator)) return
 
       let s = sessionRef.current
       if (!s) {
@@ -187,6 +201,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
             collectionAddress,
             signature: s.signature,
             timestamp: s.timestamp,
+            signerAddress: address,
           }),
         })
         if (!res.ok) {
@@ -203,13 +218,14 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         toastError('Featured update', err)
       }
     },
-    [isAdmin, startSession, featuredCollectionAddrs],
+    [address, isAdmin, isCurator, startSession, featuredCollectionAddrs],
   )
 
   return (
     <AdminContext.Provider
       value={{
         isAdmin,
+        isCurator,
         session,
         startSession,
         featuredKeys,

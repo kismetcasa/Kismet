@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollections } from '@/lib/kv'
+import { getTrackedCollectionsByScope, type CollectionScope } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -46,9 +46,18 @@ export async function GET(req: NextRequest) {
   // to load moments client-side with hidden-moment filtering applied).
   const singleCollection = searchParams.get('collection')?.toLowerCase() ?? null
 
+  // ?scope=standalone narrows the fan-out to the shared platform contract
+  // (one-off mints), `collections` to user-deployed collections, default
+  // `all` keeps current behaviour. The mints sub-tab + trending discovery
+  // surface use `standalone` so collection moments don't leak into the
+  // mints feed; collection content is reachable through /api/collections.
+  const rawScope = searchParams.get('scope')
+  const scope: CollectionScope =
+    rawScope === 'standalone' || rawScope === 'collections' ? rawScope : 'all'
+
   const collections = singleCollection
     ? [singleCollection]
-    : await getTrackedCollections()
+    : await getTrackedCollectionsByScope(scope)
 
   // Trending and featured need larger samples for cross-collection sorting
   const fetchLimit =

@@ -24,6 +24,27 @@ export async function getTrackedCollections(): Promise<string[]> {
   }
 }
 
+/**
+ * Filter the tracked set by discovery scope. `standalone` keeps only the
+ * shared platform contract (where one-off mints live); `collections` keeps
+ * only user-deployed collections; `all` is the unfiltered list. The split
+ * is keyed on PLATFORM_COLLECTION because every moment unambiguously lives
+ * at exactly one (collection_address, token_id) pair — either it's on the
+ * platform contract or in a user collection.
+ */
+export type CollectionScope = 'standalone' | 'collections' | 'all'
+
+export async function getTrackedCollectionsByScope(
+  scope: CollectionScope = 'all',
+): Promise<string[]> {
+  const all = await getTrackedCollections()
+  if (scope === 'all') return all
+  const platformLower = PLATFORM_COLLECTION.toLowerCase()
+  return scope === 'standalone'
+    ? all.filter((a) => a.toLowerCase() === platformLower)
+    : all.filter((a) => a.toLowerCase() !== platformLower)
+}
+
 export async function addTrackedCollection(
   address: string,
   meta?: Omit<CollectionMeta, 'address'>

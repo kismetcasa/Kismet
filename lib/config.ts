@@ -18,3 +18,15 @@ export const CREATE_REFERRAL =
 export const RESIDENCIES_ADDRESS =
   process.env.NEXT_PUBLIC_RESIDENCIES_ADDRESS ||
   '0x58f19e55058057B04feAe2EEA88F90B84b7714Eb'
+
+// Curator allowlist — addresses (besides ADMIN_ADDRESS) that can add or
+// remove entries from the featured feed. Each curator gets a "Curate"
+// section on their own profile page; on the server, /api/featured accepts
+// signatures from any address in this list. Comma-separated, lowercased.
+// Default seeds the initial curator without requiring an env change.
+export const CURATOR_ADDRESSES: readonly string[] = (
+  process.env.CURATOR_ADDRESSES ?? '0x3D140B892437dD7857701098415deB2daaE03A40'
+)
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean)

@@ -356,9 +356,13 @@ function MainFeed() {
       .catch(() => setFollowingAddrs([]))
   }, [address, followingOn])
 
+  // Mints sub-tab is scoped to standalone moments — the shared platform
+  // contract. Collection moments surface inside their collection card, so
+  // restricting the mints feed prevents the same moment appearing in both
+  // sub-tabs. Drop `scope=standalone` to restore the cross-cutting feed.
   const apiUrl = followingAddrs.length
-    ? `/api/timeline?following=${followingAddrs.join(',')}`
-    : '/api/timeline'
+    ? `/api/timeline?scope=standalone&following=${followingAddrs.join(',')}`
+    : '/api/timeline?scope=standalone'
 
   const feedKey = `main-${followingOn ? 'following' : 'all'}-${followingAddrs.join(',')}`
 
@@ -468,7 +472,7 @@ export default function DiscoverPage() {
         {active === 'trending' && (
           <MomentFeed
             feedKey="trending"
-            apiUrl="/api/timeline?sort=trending"
+            apiUrl="/api/timeline?sort=trending&scope=standalone"
             emptyMessage="no collects recorded yet — trending appears as mints are collected"
           />
         )}
