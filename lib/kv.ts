@@ -3,13 +3,9 @@ import { PLATFORM_COLLECTION } from './config'
 import { INPROCESS_API } from './inprocess'
 
 const KEY = 'kismetart:collections'
-// Marker set: addresses we've registered as auto-deployed wrappers. The
-// rule is "every tracked entry counts as a curated collection UNLESS it's
-// in this set." That polarity preserves legacy entries (registered before
-// this flag existed, no marker) — they default to "real collection" and
-// keep working in the Collections feed, profile collections list, mint
-// dropdown picker, etc. New auto-deploy registrations explicitly join
-// this set and get excluded from collection-shaped surfaces.
+// Negative marker — auto-deploy wrappers join this set and get excluded
+// from collection-shaped surfaces. Legacy entries with no marker default
+// to "real collection" without needing a backfill.
 const AUTO_DEPLOY_KEY = 'kismetart:auto-deploy-collections'
 
 export interface CollectionMeta {
@@ -20,9 +16,6 @@ export interface CollectionMeta {
   artist?: string // lowercased deployer address
 }
 
-/** How a collection was registered. Drives whether it appears in
- *  collection-shaped surfaces (Collections feed, profile collections list,
- *  moment-detail collection chip) or is treated as a standalone wrapper. */
 export type CollectionSource = 'create-form' | 'auto-deploy'
 
 const keyCollectionMeta = (address: string) =>
@@ -38,24 +31,15 @@ export async function getTrackedCollections(): Promise<string[]> {
   }
 }
 
-/**
- * Filter the tracked set by discovery scope. `standalone` keeps the shared
- * platform contract (where one-off mints live) PLUS auto-deployed wrapper
- * collections — both are functionally individual mints. `collections` keeps
- * only collections explicitly registered via the Create Collection form.
- * `all` is the unfiltered list, used by surfaces that mix both kinds (the
- * roster tab, profile feeds, the airdrop picker).
- */
+// standalone = PLATFORM + auto-deploy wrappers (functionally one-off mints).
+// collections = curated (Create Collection form) only.
+// all = unfiltered.
 export type CollectionScope = 'standalone' | 'collections' | 'all'
 
 export async function getTrackedCollectionsByScope(
   scope: CollectionScope = 'all',
 ): Promise<string[]> {
   if (scope === 'all') return getTrackedCollections()
-  // 'collections' and 'standalone' are complementary slices of the same
-  // tracked set. Load both source sets once and slice from there — the
-  // earlier shape called getTrackedCollections() twice (once directly and
-  // once inside getUserCollections), doubling the Redis read.
   const [all, autoDeploy] = await Promise.all([
     getTrackedCollections(),
     getAutoDeployCollections(),
@@ -69,20 +53,6 @@ export async function getTrackedCollectionsByScope(
   return scope === 'collections' ? all.filter(isCollection) : all.filter((a) => !isCollection(a))
 }
 
-/**
- * Addresses that count as collections in the curatorial sense — every
- * tracked address that is NOT explicitly marked as an auto-deploy wrapper
- * AND is not the shared platform contract. Legacy entries (registered
- * before the auto-deploy marker existed) flow through as collections by
- * default, so a user who already has Create Collection deploys keeps
- * seeing them in the Collections feed and the mint-dropdown picker.
- *
- * Empty on Redis errors so a transient outage surfaces as an empty feed
- * instead of a partial one — the marker-set read is fail-open (treat
- * unread marker as "not auto-deploy"), which means a partial outage
- * could briefly leak auto-deploy wrappers into the Collections feed.
- * That's a less-bad failure mode than hiding every legitimate collection.
- */
 export async function getUserCollections(): Promise<string[]> {
   return getTrackedCollectionsByScope('collections')
 }
@@ -102,13 +72,8 @@ export async function addTrackedCollection(
 ): Promise<void> {
   try {
     const ops: Promise<unknown>[] = [redis.sadd(KEY, address)]
-    // Auto-deployed wrappers are NOT collections in the curatorial sense —
-    // they're individual mints whose contract happens to be unique. The
-    // protocol creates them on first-mint when no collection is picked.
-    // Mark them in AUTO_DEPLOY_KEY so collection-shaped surfaces filter
-    // them out. Default ('create-form') writes nothing to the marker set,
-    // which means legacy entries (registered before this flag existed)
-    // also default to "real collection" without needing a backfill.
+    // Auto-deploy wrappers join the marker set; collection-shaped
+    // surfaces filter them out.
     if (source === 'auto-deploy') {
       ops.push(redis.sadd(AUTO_DEPLOY_KEY, address))
     }
@@ -118,9 +83,8 @@ export async function addTrackedCollection(
     }
     await Promise.all(ops)
   } catch (err) {
-    // Surface in Vercel function logs instead of swallowing — if Upstash
-    // is unreachable or misconfigured, a brand-new deploy silently won't
-    // show up in any feed and the user gets a misleading green toast.
+    // Log instead of swallow — a silent KV write failure means the
+    // collection never appears in any feed despite a green-toast UI.
     console.error('[kv] addTrackedCollection failed', {
       address,
       hasName: !!meta?.name,
@@ -130,9 +94,7 @@ export async function addTrackedCollection(
   }
 }
 
-// Used by the collection page as a fallback when inprocess hasn't indexed
-// a freshly-deployed collection yet. Returns null if Redis isn't configured
-// or no metadata was stored at deploy time.
+// Fallback when the inprocess indexer hasn't picked up a fresh deploy.
 export async function getCollectionMeta(
   address: string
 ): Promise<CollectionMeta | null> {
@@ -147,11 +109,9 @@ export async function getCollectionMeta(
   }
 }
 
-// Used by the artist's profile page as a fallback when inprocess hasn't
-// indexed a freshly-deployed collection yet. Walks the curated-collection
-// set (every tracked entry minus PLATFORM and minus auto-deploy markers)
-// so auto-deployed mint wrappers stay out of the artist's "Collections"
-// surface — those belong in their Mints feed.
+// Fallback for the artist profile page when inprocess hasn't indexed
+// a fresh deploy. Walks curated collections only — auto-deploy
+// wrappers belong in the artist's Mints feed.
 export async function getCollectionsByArtist(
   artist: string
 ): Promise<CollectionMeta[]> {
@@ -173,10 +133,8 @@ export async function getCollectionsByArtist(
   }
 }
 
-// Fetches a collection's image from inprocess as a fallback for KV entries
-// that were registered before the cover-image flow shipped (or whose
-// image upload happened after the KV write). Bounded 5min cache so a
-// single search query doesn't fan out repeated upstream calls.
+// Cover-image fallback for KV entries registered before the cover flow
+// shipped. 5min upstream cache bounds the search-query fan-out cost.
 async function fetchInprocessCollectionImage(address: string): Promise<string | undefined> {
   try {
     const url = new URL(`${INPROCESS_API}/collection`)
@@ -196,11 +154,8 @@ async function fetchInprocessCollectionImage(address: string): Promise<string | 
   }
 }
 
+// Searches curated collections only; moments have their own search endpoint.
 export async function searchCollections(query: string): Promise<CollectionMeta[]> {
-  // Search ranges over the curated-collection set — auto-deployed wrappers
-  // (whose name is just the moment title) shouldn't surface as collection
-  // search results. Moment search has its own endpoint; this is strictly
-  // for curated collections.
   const addresses = await getUserCollections()
   if (!addresses.length) return []
   const keys = addresses.map(keyCollectionMeta)
@@ -217,10 +172,8 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
       if (results.length >= 20) break
     }
   }
-  // Backfill any matches missing a cover image from inprocess. Scoped to
-  // the matched results so latency stays bounded; 5min upstream cache
-  // (see fetchInprocessCollectionImage) keeps the cost flat across
-  // repeated searches.
+  // Backfill missing cover images from inprocess. Scoped to matches so
+  // latency stays bounded.
   return Promise.all(
     results.map(async (meta) => {
       if (meta.image) return meta

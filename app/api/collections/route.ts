@@ -23,10 +23,10 @@ export async function GET(req: NextRequest) {
   const feed = searchParams.get('feed')
   const singleAddress = searchParams.get('address')
 
-  // Single-collection metadata lookup used by MomentDetailView to show the
-  // collection name + cover image in the moment detail panel. Only returns
-  // data for user-created platform collections (tracked in KV, not the
-  // platform default) so standalone moments don't show a collection header.
+  // Single-collection lookup for MomentDetailView's collection chip.
+  // Returns the rich shape only for curated collections; standalone /
+  // auto-deploy / unknown contracts get a minimal stub so they don't
+  // render a header.
   if (singleAddress) {
     if (!isAddress(singleAddress)) {
       return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
@@ -36,14 +36,6 @@ export async function GET(req: NextRequest) {
     if (lowerAddr === platformLower) {
       return NextResponse.json({ contractAddress: singleAddress })
     }
-    // Gate the rich response on the curated-collection set (every tracked
-    // entry minus auto-deploy markers minus PLATFORM). Auto-deployed
-    // wrappers are real on-chain contracts but they're functionally
-    // individual mints — the moment-detail collection chip shouldn't
-    // render a name/cover for them, so we fall through to the minimal
-    // {contractAddress} stub the same way we do for the platform contract
-    // and unknown contracts. Legacy entries with no marker default to
-    // "real collection" and keep rendering their chip.
     const [userCreated, hiddenSet] = await Promise.all([
       getUserCollections(),
       getHiddenCollectionsSet(),
@@ -79,18 +71,10 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Discovery feed: enumerate the curated-collection set (every tracked
-  // address minus PLATFORM minus auto-deploy markers) and hydrate each
-  // with the rich shape from inprocess `/api/collection`, falling back to
-  // KV-stored metadata when the indexer hasn't picked the collection up
-  // yet. Auto-deployed mint wrappers and the platform contract are
-  // excluded inside getUserCollections, so legacy entries (no marker)
-  // flow through as real collections by default — preserving the
-  // mint-into-existing path for users who deployed before the marker
-  // existed. Returning the global inprocess feed here would surface
-  // collections we didn't deploy and hide our own freshly-deployed ones
-  // until the indexer catches up — neither matches the discovery
-  // semantics we want.
+  // Discovery feed: enumerate curated collections, hydrate each from
+  // inprocess /api/collection (KV fallback when the indexer is lagging).
+  // Proxying inprocess's global feed instead would surface collections
+  // we didn't deploy and miss our freshly-deployed ones.
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
@@ -119,19 +103,13 @@ export async function GET(req: NextRequest) {
             const text = await res.text()
             if (text) {
               const data: unknown = JSON.parse(text)
-              // Trust only plain objects with at least one field — inprocess
-              // returns null when a collection isn't indexed yet, and we
-              // want to fall through to the KV fallback in that case.
+              // inprocess returns null pre-index; fall through to KV.
               if (
                 data &&
                 typeof data === 'object' &&
                 !Array.isArray(data) &&
                 Object.keys(data).length > 0
               ) {
-                // Override `contractAddress` with the address from our
-                // tracked set so the card's link uses the same casing the
-                // rest of the app stores (and so we never accidentally
-                // route on a missing/typo'd field).
                 return { ...(data as Record<string, unknown>), contractAddress: address }
               }
             }
@@ -175,14 +153,9 @@ export async function GET(req: NextRequest) {
       ])
       const text = await res.text()
       const data = JSON.parse(text)
-      // Filter the artist's collections to the curated-collection set —
-      // auto-deployed mint wrappers belong with the artist's mints, not
-      // their collections. getCollectionsByArtist already walks the same
-      // set for the KV fallback below, so the two paths agree on what
-      // counts as a collection.
+      // Filter to curated only — auto-deploy wrappers go in Mints feed.
       const userSet = new Set(userCreated.map((a: string) => a.toLowerCase()))
-      // Hide creator-hidden collections from non-creator viewers — the artist
-      // sees their own hidden collections so they can navigate back and unhide.
+      // Artist sees their own hidden collections so they can unhide.
       const isOwnProfile = viewer?.toLowerCase() === artist.toLowerCase()
       const inprocessAddrs = new Set<string>()
       if (Array.isArray(data.collections)) {
@@ -198,8 +171,7 @@ export async function GET(req: NextRequest) {
       } else {
         data.collections = []
       }
-      // Merge KV-tracked collections that the indexer hasn't picked up yet.
-      // Shape matches what ProfileView consumes: contractAddress + metadata fields.
+      // KV fallback for collections the indexer hasn't picked up yet.
       for (const meta of kvOwned) {
         const lower = meta.address.toLowerCase()
         if (inprocessAddrs.has(lower)) continue
@@ -216,8 +188,7 @@ export async function GET(req: NextRequest) {
       }
       return NextResponse.json(data, { status: res.status })
     } catch {
-      // Even if inprocess is down, return what we have locally so fresh
-      // collections aren't completely invisible.
+      // Inprocess down — fall back to local KV only.
       const [kvOwned, hiddenSet, viewer] = await Promise.all([
         getCollectionsByArtist(artist),
         getHiddenCollectionsSet(),
@@ -261,10 +232,8 @@ export async function POST(req: NextRequest) {
     image?: string
     description?: string
     artist?: string
-    // 'create-form' = explicit Create Collection form (default for legacy
-    // callers that don't pass the field). 'auto-deploy' = MintForm's
-    // first-mint wrapper, which writes the AUTO_DEPLOY_KEY marker that
-    // gates every collection-shaped surface from rendering it.
+    // 'auto-deploy' marks MintForm's first-mint wrappers; default
+    // 'create-form' is the explicit Create Collection flow.
     source?: CollectionSource
   }
   try {
@@ -276,32 +245,16 @@ export async function POST(req: NextRequest) {
   if (!body.address || !isAddress(body.address)) {
     return NextResponse.json({ error: 'valid address required' }, { status: 400 })
   }
-  // Caller must claim themselves as the artist — prevents one user from
-  // populating another's profile page.
+  // Caller must claim themselves as the artist (no spoofing).
   if (!body.artist || body.artist.toLowerCase() !== sessionAddress) {
     return NextResponse.json({ error: 'artist must match session address' }, { status: 403 })
   }
 
-  // Caller must have ADMIN bit on the collection on-chain. This is the same
-  // check Zora uses when gating addPermission/setSale; we read it directly
-  // rather than trusting an off-chain claim. tokenId 0 is the collection-wide
-  // permission row.
-  // The public Base RPC default lags behind the chain head enough that a
-  // freshly-mined deploy can read 0 permissions (false negative → 403).
-  // Retry a few times on either a false-negative or RPC error to ride out
-  // propagation lag. serverBaseClient routes through
-  // NEXT_PUBLIC_BASE_RPC_URL when set (paid Alchemy/Infura) so the lag
-  // is shorter to begin with — the retry is belt-and-suspenders for the
-  // tail latency of even a paid provider's slowest replica.
-  // Outer retry-on-zero loop: distinct from readPermissions's internal
-  // retry-on-throw. The two cover different failure modes:
-  //   - readPermissions retries on RPC throw (transient network)
-  //   - this loop ALSO retries on a definitive `perms=0` read, because
-  //     the deploy tx may have just landed and the chain head can be
-  //     1-2 blocks ahead of the RPC's slowest replica. Retrying on zero
-  //     gives time for the new state to propagate.
-  // We pass `retries: 1` so each outer iteration does one read, and the
-  // outer loop owns the wider retry/backoff schedule.
+  // Caller must hold ADMIN on chain (tokenId 0 = collection-wide row).
+  // Outer retry rides out RPC propagation lag for fresh deploys —
+  // readPermissions retries on throw, this loop retries on a definitive
+  // perms=0 read since the deploy tx may have landed but a slow replica
+  // hasn't synced yet.
   const client = serverBaseClient()
   let isAdmin = false
   let lastErr: unknown = null
@@ -338,11 +291,6 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Default source is 'create-form' so legacy callers and the explicit
-  // Create Collection form (which doesn't pass the field) write only to
-  // KEY — no AUTO_DEPLOY_KEY marker. MintForm's auto-deploy path passes
-  // 'auto-deploy' explicitly, which writes the marker and keeps the
-  // wrapper out of every collection-shaped surface.
   const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
   await addTrackedCollection(
     body.address,

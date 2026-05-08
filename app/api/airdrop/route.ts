@@ -221,20 +221,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // Wire shape: empirically `api.inprocess.world/api/moment/airdrop`
-  // (the host our INPROCESS_API constant points at) requires a
-  //   { moment: { collectionAddress, tokenId, chainId }, recipients: [...] }
-  // envelope and rejects the flat shape with
-  //   { errors: [{ field: 'moment', message: 'expected object, received undefined' }] }
-  // The public docs cURL on `inprocess.world/api/moment/airdrop` (no
-  // api. subdomain) shows a flat body, but the api. host runs a
-  // stricter validator. Until those two are reconciled upstream, we
-  // match what our actual host accepts. Tested 2026-05-08 with a
-  // direct curl from the production API key.
-  //
-  // Per-recipient tokenIds in recipients[] still ride alongside (we
-  // constrain them to one value above so a single signature can't
-  // fan out to multiple tokens, but the schema accepts per-recipient).
+  // api.inprocess.world wants the body wrapped in `moment: {…}`
+  // (rejects the flat shape the public docs cURL on inprocess.world
+  // shows). Per-recipient tokenIds stay on each recipient — the
+  // validator above enforces uniformity so one signature can't fan
+  // out across tokens.
   const upstreamPayload = {
     moment: {
       collectionAddress: body.collectionAddress,
