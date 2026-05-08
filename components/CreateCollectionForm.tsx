@@ -584,68 +584,72 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     <form onSubmit={handleCreate} className="flex flex-col gap-6">
       {/* Cover image */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-mono text-[#888] uppercase tracking-wider">
+        <div className="flex items-start justify-between gap-3 mb-2">
+          <span className="text-xs font-mono text-[#888] uppercase tracking-wider pt-1">
             Cover Image <span className="text-[#efefef]">*</span>
           </span>
-          {/* Full-row clickable toggle. Previously this was a 4×4 px square
-              with no label — easy to misread as decoration and easy to
-              miss-click into the adjacent price/supply inputs. The whole
-              button (icon + label) is now the hit target, so a stray click
-              anywhere in the row registers. */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={mintCover}
-            onClick={() => setMintCover((v) => !v)}
-            className={`flex items-center gap-2 px-2 py-1 border transition-colors cursor-pointer ${
-              mintCover
-                ? 'border-[#8B5CF6] bg-[#8B5CF6]/10 text-[#efefef]'
-                : 'border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#bbb]'
-            }`}
-          >
-            <span
-              className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors ${
-                mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/20' : 'border-[#444]'
+          {/* Toggle + cover-mint config stacked on the right so price/supply
+              live directly underneath the toggle when it's on, instead of
+              spanning the full row width. */}
+          <div className="flex flex-col items-end gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={mintCover}
+              onClick={() => setMintCover((v) => !v)}
+              className={`flex items-start gap-2 px-2 py-1 border transition-colors cursor-pointer ${
+                mintCover
+                  ? 'border-[#8B5CF6] bg-[#8B5CF6]/10 text-[#efefef]'
+                  : 'border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#bbb]'
               }`}
             >
-              {mintCover && <Check size={11} className="text-[#8B5CF6]" />}
-            </span>
-            <span className="text-[10px] font-mono uppercase tracking-wider">
-              mint as first token
-            </span>
-          </button>
-        </div>
-        {/* Cover-mint config row — only shown when the toggle is on. Pulled
-            out of the toggle row so the toggle has a stable hit area and
-            the price/supply inputs can sit on their own line with labels. */}
-        {mintCover && (
-          <div className="flex items-center gap-3 mb-2 pl-2 border-l border-[#2a2a2a]">
-            <label className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">price</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={coverPrice}
-                onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
-                placeholder="0"
-                className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-              />
-              <span className="text-[10px] font-mono text-[#555]">eth</span>
-            </label>
-            <label className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">supply</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={coverSupply}
-                onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
-                placeholder="∞"
-                className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-[#555]"
-              />
-            </label>
+              <span
+                className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors mt-px ${
+                  mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/20' : 'border-[#444]'
+                }`}
+              >
+                {mintCover && <Check size={11} className="text-[#8B5CF6]" />}
+              </span>
+              <span className="flex flex-col text-left">
+                <span className="text-[10px] font-mono uppercase tracking-wider">
+                  mint cover
+                </span>
+                {mintCover && (
+                  <span className="text-[9px] font-mono text-[#888] mt-0.5 normal-case tracking-normal">
+                    first mint in collection
+                  </span>
+                )}
+              </span>
+            </button>
+            {mintCover && (
+              <div className="flex items-center gap-3 pl-2 border-l border-[#2a2a2a]">
+                <label className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">price</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={coverPrice}
+                    onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
+                    placeholder="0"
+                    className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                  />
+                  <span className="text-[10px] font-mono text-[#555]">eth</span>
+                </label>
+                <label className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">supply</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={coverSupply}
+                    onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
+                    placeholder="∞"
+                    className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-[#555]"
+                  />
+                </label>
+              </div>
+            )}
           </div>
-        )}
+        </div>
         {coverPreview ? (
           // No aspect constraint on the wrapper — the dropped image renders
           // at full width with auto height so the box conforms to its native

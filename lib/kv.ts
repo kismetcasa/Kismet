@@ -1,5 +1,6 @@
 import { redis } from './redis'
 import { PLATFORM_COLLECTION } from './config'
+import { INPROCESS_API } from './inprocess'
 
 const KEY = 'kismetart:collections'
 
@@ -109,6 +110,29 @@ export async function getCollectionsByArtist(
   }
 }
 
+// Fetches a collection's image from inprocess as a fallback for KV entries
+// that were registered before the cover-image flow shipped (or whose
+// image upload happened after the KV write). Bounded 5min cache so a
+// single search query doesn't fan out repeated upstream calls.
+async function fetchInprocessCollectionImage(address: string): Promise<string | undefined> {
+  try {
+    const url = new URL(`${INPROCESS_API}/collection`)
+    url.searchParams.set('collectionAddress', address)
+    url.searchParams.set('chainId', '8453')
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 300 },
+    })
+    if (!res.ok) return undefined
+    const text = await res.text()
+    if (!text) return undefined
+    const data = JSON.parse(text) as { metadata?: { image?: string } }
+    return typeof data?.metadata?.image === 'string' ? data.metadata.image : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function searchCollections(query: string): Promise<CollectionMeta[]> {
   const addresses = await getTrackedCollections()
   if (!addresses.length) return []
@@ -126,5 +150,15 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
       if (results.length >= 20) break
     }
   }
-  return results
+  // Backfill any matches missing a cover image from inprocess. Scoped to
+  // the matched results so latency stays bounded; 5min upstream cache
+  // (see fetchInprocessCollectionImage) keeps the cost flat across
+  // repeated searches.
+  return Promise.all(
+    results.map(async (meta) => {
+      if (meta.image) return meta
+      const image = await fetchInprocessCollectionImage(meta.address)
+      return image ? { ...meta, image } : meta
+    }),
+  )
 }

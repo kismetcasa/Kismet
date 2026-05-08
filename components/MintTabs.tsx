@@ -79,6 +79,7 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
         <MintForm
           collectionAddress={deployedCollection?.address}
           collectionName={deployedCollection?.name}
+          onSwitchToCreate={() => setTab('create')}
         />
       )}
 

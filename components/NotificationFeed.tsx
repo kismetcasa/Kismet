@@ -9,8 +9,6 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { humanError } from '@/lib/toast'
 import type { Notification, NotificationType } from '@/lib/notifications'
 
-export type FeedTab = 'notifications' | 'all' | 'following'
-type Tab = 'priority' | 'all'
 type TypeFilter = 'all' | NotificationType
 
 const PAGE_LIMIT = 20
@@ -27,14 +25,8 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
 
 const POLL_INTERVAL_MS = 30_000
 
-interface NotificationFeedProps {
-  feedTab: FeedTab
-  followingAddrs?: string[]
-}
-
-export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedProps) {
+export function NotificationFeed() {
   const { ensureSession } = useUploadSession()
-  const apiTab: Tab = feedTab === 'notifications' ? 'priority' : 'all'
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [page, setPage] = useState(1)
   const [items, setItems] = useState<Notification[]>([])
@@ -51,23 +43,21 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
 
   const hasMore = items.length < total
 
-  // Reset + re-fetch only when the API-level tab or type filter changes.
-  // Switching between 'all' and 'following' (both use apiTab='all') does NOT
-  // clear items — the following filter is applied client-side to existing data.
+  // Reset + re-fetch when the type filter changes.
   useEffect(() => {
     setPage(1)
     setItems([])
     setTotal(0)
     setAuthRequired(false)
     setFetchError(false)
-  }, [apiTab, typeFilter])
+  }, [typeFilter])
 
   const fetchPage = useCallback(async (targetPage: number, signal?: AbortSignal): Promise<void> => {
     if (targetPage === 1) setLoading(true)
     else setLoadingMore(true)
 
     const params = new URLSearchParams({
-      tab: apiTab,
+      tab: 'all',
       page: String(targetPage),
       limit: String(PAGE_LIMIT),
     })
@@ -92,7 +82,7 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
     } finally {
       if (!signal?.aborted) { setLoading(false); setLoadingMore(false) }
     }
-  }, [apiTab, typeFilter])
+  }, [typeFilter])
 
   // Fetch page — replaces on page 1, appends on page > 1
   useEffect(() => {
@@ -213,9 +203,7 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
     }
   }
 
-  const displayItems = feedTab === 'following' && followingAddrs && followingAddrs.length > 0
-    ? items.filter((n) => n.actor && followingAddrs.includes(n.actor.toLowerCase()))
-    : items
+  const displayItems = items
 
   return (
     <div className="flex flex-col">
@@ -263,7 +251,7 @@ export function NotificationFeed({ feedTab, followingAddrs }: NotificationFeedPr
         )}
         {!authRequired && !fetchError && !loading && displayItems.length === 0 && (
           <p className="text-xs font-mono text-[#555] text-center py-12">
-            {feedTab === 'following' ? 'no activity from followed creators yet' : feedTab === 'notifications' ? 'nothing important yet' : 'no notifications yet'}
+            no notifications yet
           </p>
         )}
         {displayItems.map((n) => (

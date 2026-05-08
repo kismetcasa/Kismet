@@ -72,6 +72,7 @@ function roundToIntegerAllocations(values: number[], target: number): number[] {
 interface MintFormProps {
   collectionAddress?: string
   collectionName?: string
+  onSwitchToCreate?: () => void
 }
 
 interface CollectionOption {
@@ -86,7 +87,7 @@ interface CollectionOption {
 // is selected, submit auto-creates a fresh collection via inprocess's
 // /api/moment/create with contract.name+uri.
 
-export function MintForm({ collectionAddress, collectionName }: MintFormProps = {}) {
+export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }: MintFormProps = {}) {
   const router = useRouter()
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -108,12 +109,6 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
     }
     return null
   })
-  // Name for the auto-deployed collection. Surfaces as a required input
-  // below the picker when `selectedCollection` is null. Defaults to the
-  // moment title if the user leaves it blank — better than a generic
-  // "untitled" since the collection's name shows up everywhere the
-  // artist's body of work is browsed.
-  const [newCollectionName, setNewCollectionName] = useState('')
   const [userCollections, setUserCollections] = useState<CollectionOption[]>([])
   const [loadingCollections, setLoadingCollections] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -401,11 +396,12 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
       return
     }
     if (!name.trim()) { toast.error('Please enter a title'); return }
-    // Falls back to the moment title when newCollectionName is blank.
-    // If both are blank we'd never reach here — name validation above
-    // would have returned.
+    // Auto-deploy uses the moment title as the collection name. Users
+    // who want more control over the collection (separate name, royalty,
+    // etc.) flow through the dedicated Create Collection tab via the
+    // dropdown's "+ create new collection" entry.
     const resolvedCollectionName = isAutoDeploy
-      ? (newCollectionName.trim() || name.trim())
+      ? name.trim()
       : (selectedCollection?.name ?? '')
     if (mintMode === 'media' && !file) { toast.error('Please select a file to mint'); return }
     if (mintMode === 'text' && !textContent.trim()) { toast.error('Please enter text content'); return }
@@ -800,9 +796,6 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
             setMaxSupply('')
             setSplits([])
             setSplitInput({ address: '', pct: '' })
-            // Also reset the new-collection-name input so the next
-            // auto-deploy starts blank.
-            setNewCollectionName('')
           }}
           className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
         >
@@ -894,7 +887,22 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 <Upload size={24} className="text-[#555]" />
                 <div className="text-center">
                   <p className="text-xs font-mono text-[#555]">drop file or click to upload</p>
-                  <p className="text-xs font-mono text-[#333] mt-1">image, video, gif</p>
+                  <p className="text-xs font-mono text-[#333] mt-1">
+                    image, video, gif,{' '}
+                    {/* "text" is a shortcut into the writing-moment mode.
+                        stopPropagation so we don't also trigger the parent
+                        drop zone's file-picker click handler. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        switchMode('text')
+                      }}
+                      className="accent-grad hover:underline cursor-pointer"
+                    >
+                      text
+                    </button>
+                  </p>
                 </div>
               </div>
             )}
@@ -957,6 +965,54 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           />
         </div>
       )}
+
+      {/* Price + Supply — placed before the Collection picker so the
+          submission-shape fields cluster together; the picker (which can
+          be left at "auto-deploy") sits below as a step-down decision. */}
+      <div className="flex gap-3">
+        <div className="flex-1">
+          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+            Price
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={price}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14"
+            />
+            <button
+              type="button"
+              onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+              title="toggle currency"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded"
+            >
+              {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
+            </button>
+          </div>
+          {price === '0' && (
+            <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
+          )}
+        </div>
+
+        <div className="flex-1">
+          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+            Supply
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={maxSupply}
+            onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
+            placeholder="unlimited"
+            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+          />
+          {!maxSupply.trim() && (
+            <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
+          )}
+        </div>
+      </div>
 
       {/* Collections picker — optional; if the user doesn't pick one, the
           auto-deploy is the default when nothing's selected. */}
@@ -1039,37 +1095,51 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
                 </div>
               </div>
             )}
-            {/* Always-present "create new" option lets users return to
-                auto-deploy mode even after picking an existing
-                collection. Mirrors the explicit ✕ clear button but
-                lives in the dropdown for users who didn't notice it. */}
+            {/* "Create new collection" entry — routes the user to the
+                dedicated Create Collection tab where they can configure
+                cover image, royalty, minters, etc. The Mint tab still
+                falls back to auto-deploying a collection named after
+                the moment title when the user submits without a
+                selection (handled by resolvedCollectionName above). */}
             <button
               type="button"
               onClick={() => {
-                setSelectedCollection(null)
                 setPickerOpen(false)
+                onSwitchToCreate?.()
               }}
-              className={`w-full text-left px-3 py-3 border-b border-[#2a2a2a] transition-colors ${
-                isAutoDeploy
-                  ? 'bg-[#8B5CF6]/10'
-                  : 'hover:bg-[#1a1a1a]'
-              }`}
+              className="w-full text-left px-3 py-3 border-b border-[#2a2a2a] bg-[#8B5CF6]/10 hover:bg-[#8B5CF6]/20 transition-colors"
             >
-              <span className={`text-xs font-mono ${isAutoDeploy ? 'accent-grad' : 'text-[#efefef]'}`}>
+              <span className="text-xs font-mono accent-grad">
                 + create new collection
               </span>
               <p className="text-[10px] font-mono text-[#555] mt-0.5">
-                deploy a fresh collection and mint this moment as its first token
+                opens the create collection form
               </p>
             </button>
             {collectionOptions.length === 0 ? (
-              <p className="text-xs font-mono text-[#555] px-3 py-4">
-                {loadingCollections
-                  ? 'loading existing collections…'
-                  : isConnected
-                    ? 'no existing collections — pick the option above to create one'
-                    : 'connect a wallet to see your collections'}
-              </p>
+              loadingCollections ? (
+                <p className="text-xs font-mono text-[#555] px-3 py-4">
+                  loading existing collections…
+                </p>
+              ) : isConnected ? (
+                <p className="text-xs font-mono text-[#555] px-3 py-4">
+                  Create a{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPickerOpen(false)
+                      onSwitchToCreate?.()
+                    }}
+                    className="accent-grad hover:underline cursor-pointer"
+                  >
+                    Collection
+                  </button>
+                </p>
+              ) : (
+                <p className="text-xs font-mono text-[#555] px-3 py-4">
+                  connect a wallet to see your collections
+                </p>
+              )
             ) : (
               <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
                 {collectionOptions.map((c, idx) => {
@@ -1133,73 +1203,6 @@ export function MintForm({ collectionAddress, collectionName }: MintFormProps = 
           </div>
         )}
 
-        {/* Collection-name input, surfaces only in auto-deploy
-            mode. Optional — falls back to the moment title at submit
-            (see resolvedCollectionName). Showing it conditionally keeps
-            the form clean for users who picked an existing collection. */}
-        {isAutoDeploy && (
-          <div className="mt-3">
-            <label className="block text-[10px] font-mono text-[#555] uppercase tracking-wider mb-1.5">
-              new collection name
-            </label>
-            <input
-              type="text"
-              value={newCollectionName}
-              onChange={(e) => setNewCollectionName(e.target.value)}
-              placeholder={name.trim() || 'my collection'}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-            />
-            <p className="text-[10px] font-mono text-[#555] mt-1.5">
-              your moment&apos;s {mintMode === 'media' ? 'image' : 'first words'} will be used as the collection cover. blank uses your moment title.
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Price + Supply */}
-      <div className="flex gap-3">
-        <div className="flex-1">
-          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-            Price
-          </label>
-          <div className="relative">
-            <input
-              type="text"
-              inputMode="decimal"
-              value={price}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14"
-            />
-            <button
-              type="button"
-              onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
-              title="toggle currency"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded"
-            >
-              {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
-            </button>
-          </div>
-          {price === '0' && (
-            <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
-          )}
-        </div>
-
-        <div className="flex-1">
-          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-            Supply
-          </label>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={maxSupply}
-            onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
-            placeholder="unlimited"
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-          />
-          {!maxSupply.trim() && (
-            <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
-          )}
-        </div>
       </div>
 
       {/* Revenue splits */}

@@ -20,6 +20,44 @@ interface SearchModalProps {
   initialQuery?: string
 }
 
+// Single collection row in the search results. Tracks the image's
+// load state so a broken/slow Arweave URL falls back to a styled
+// initial-letter chip instead of the empty gray box that was rendering
+// before — both when col.image is missing entirely and when it's
+// present but fails to fetch.
+function CollectionResult({ col, onClose }: { col: CollectionMeta; onClose: () => void }) {
+  const [errored, setErrored] = useState(false)
+  const showImage = !!col.image && !errored
+  const initial = (col.name || '?').trim().charAt(0).toUpperCase() || '?'
+  return (
+    <Link
+      href={`/collection/${col.address}`}
+      onClick={onClose}
+      className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
+    >
+      <div className="w-7 h-7 flex-shrink-0 overflow-hidden">
+        {showImage ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={resolveUri(col.image!)}
+            alt={col.name}
+            className="w-full h-full object-cover"
+            onError={() => setErrored(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#8B5CF6]/30 to-[#C084FC]/15">
+            <span className="text-[11px] font-mono text-[#efefef]">{initial}</span>
+          </div>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-[#efefef] font-mono truncate">{col.name}</p>
+        <p className="text-xs text-[#555] font-mono">{shortAddress(col.address)}</p>
+      </div>
+    </Link>
+  )
+}
+
 export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
   const [query, setQuery] = useState(initialQuery)
   const [results, setResults] = useState<SearchResults | null>(null)
@@ -123,28 +161,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             <section>
               <p className="px-4 pt-3 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Collections</p>
               {results.collections.map((col) => (
-                <Link
-                  key={col.address}
-                  href={`/collection/${col.address}`}
-                  onClick={onClose}
-                  className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
-                >
-                  <div className="w-7 h-7 bg-[#2a2a2a] flex-shrink-0 overflow-hidden">
-                    {col.image && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={resolveUri(col.image)}
-                        alt={col.name}
-                        className="w-full h-full object-cover"
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                      />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-[#efefef] font-mono truncate">{col.name}</p>
-                    <p className="text-xs text-[#555] font-mono">{shortAddress(col.address)}</p>
-                  </div>
-                </Link>
+                <CollectionResult key={col.address} col={col} onClose={onClose} />
               ))}
             </section>
           )}

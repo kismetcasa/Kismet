@@ -39,7 +39,13 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
   const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
   const [currency, setCurrency] = useState<CollectCurrency | null>(null)
   const [maxSupply, setMaxSupply] = useState<number | null | undefined>(undefined)
-  const [creatorName, setCreatorName] = useState(() => shortAddress(moment.creator.address))
+  // Seed with the inprocess-provided username when available so we never
+  // flash a raw address for users who set their name on inprocess but not
+  // on Kismet. Falls back to shortAddress until Kismet's profile cache
+  // resolves below; if Kismet has a different (resolved) username it wins.
+  const [creatorName, setCreatorName] = useState(
+    () => moment.creator.username || shortAddress(moment.creator.address),
+  )
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
   const [modalOpen, setModalOpen] = useState(false)
   const [collected, setCollected] = useState(false)
@@ -52,7 +58,11 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
 
   useEffect(() => {
     fetchCreatorProfile(moment.creator.address).then(({ name, avatarUrl }) => {
-      setCreatorName(name)
+      // Only overwrite when Kismet returned an actual resolved name —
+      // otherwise the seeded inprocess username (or shortAddress fallback)
+      // already in state is at least as good as Kismet's shortAddress.
+      const resolved = !!name && name !== shortAddress(moment.creator.address)
+      if (resolved) setCreatorName(name)
       setCreatorAvatar(avatarUrl)
     })
   }, [moment.creator.address])
@@ -163,15 +173,11 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
               <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
             </button>
           )}
-          {moment.hidden ? (
+          {moment.hidden && (
             <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-[#2a2a2a]">
               <EyeOff size={10} className="text-[#555]" />
             </span>
-          ) : (owned > 0 && maxSupply !== null) ? (
-            <span className="absolute top-2 right-2 z-10 px-1.5 py-0.5 bg-[#0d0d0d]/80 border border-[#2a2a2a] text-[#efefef] font-mono text-[10px] leading-tight">
-              ×{owned}
-            </span>
-          ) : null}
+          )}
           {isVideo && mediaUrl ? (
             <video
               src={mediaUrl}
