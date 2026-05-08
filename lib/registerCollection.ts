@@ -26,6 +26,10 @@ export interface RegisterCollectionPayload {
   // without a selected collection. Auto-deploy is recorded in our tracked
   // set for moment fan-out but excluded from collection-shaped surfaces.
   source?: 'create-form' | 'auto-deploy'
+  // tokenId of the cover artwork minted at deploy time, when applicable.
+  // Server flags it in the cover-moments set so it doesn't appear as a
+  // standalone mint in any Mints feed.
+  coverTokenId?: string
 }
 
 export async function registerCollectionWithBackoff(

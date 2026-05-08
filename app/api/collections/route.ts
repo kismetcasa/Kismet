@@ -11,6 +11,7 @@ import {
   addTrackedCollection,
   getCollectionsByArtist,
   getCollectionMeta,
+  markCoverMoment,
   type CollectionSource,
 } from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -242,6 +243,9 @@ export async function POST(req: NextRequest) {
     // 'auto-deploy' marks MintForm's first-mint wrappers; default
     // 'create-form' is the explicit Create Collection flow.
     source?: CollectionSource
+    // tokenId minted as the collection's cover (Create Collection form
+    // only). Marked in cover-moments so it stays out of Mints feeds.
+    coverTokenId?: string
   }
   try {
     body = await req.json()
@@ -309,5 +313,8 @@ export async function POST(req: NextRequest) {
     },
     source,
   )
+  if (source === 'create-form' && body.coverTokenId && /^\d+$/.test(body.coverTokenId)) {
+    await markCoverMoment(body.address, body.coverTokenId)
+  }
   return NextResponse.json({ ok: true })
 }
