@@ -168,6 +168,13 @@ export async function POST(req: NextRequest) {
   // nodes hasn't synced the grant yet), not a real missing bit — so
   // bouncing the user back to authorize again would be a frustrating
   // dead-end. Let inprocess decide.
+  // Track the preflight verdict outside the `if` so the upstream-error
+  // path below can tell the difference between "chain genuinely has no
+  // ADMIN" (real auth issue, prompt the user) and "chain has ADMIN but
+  // inprocess hasn't indexed it yet" (lag, tell them to wait). Without
+  // this distinction the client loops the user through repeated
+  // authorize prompts whenever inprocess lags behind chain state.
+  let preflightAuthorized = false
   if (!body.isRetry) {
     const preflight = await checkSmartWalletAdmin(
       body.callerAddress,
@@ -203,6 +210,7 @@ export async function POST(req: NextRequest) {
         { status: 403 },
       )
     }
+    preflightAuthorized = preflight.status === 'authorized'
   }
 
   // Consume nonce only after all auth + pre-flight checks pass — a
@@ -213,18 +221,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // Inprocess expects the same `moment: { collectionAddress, tokenId,
-  // chainId }` envelope used by /moment/update-uri (their Zod validator
-  // returns "Invalid input: moment Invalid input: expected object, received
-  // undefined" when omitted). Recipients ride alongside as a flat array of
-  // { recipientAddress, tokenId } so per-recipient tokenIds are still
-  // permitted by the upstream schema.
+  // Wire shape per inprocess's documented /moment/airdrop endpoint:
+  //   { collectionAddress, recipients: [{ recipientAddress, tokenId }] }
+  // Top-level collectionAddress (no `moment: { … }` envelope) and no
+  // chainId in the request — chainId is inferred from the API key's
+  // network binding and only appears in the response. Per-recipient
+  // tokenIds remain in the recipients array (we constrain them to a
+  // single value above so one signature can't fan out to multiple
+  // tokens, but the schema supports per-recipient values).
   const upstreamPayload = {
-    moment: {
-      collectionAddress: body.collectionAddress,
-      tokenId,
-      chainId: 8453,
-    },
+    collectionAddress: body.collectionAddress,
     recipients: body.recipients,
   }
 
@@ -259,10 +265,18 @@ export async function POST(req: NextRequest) {
     // The artist's inprocess smart wallet must hold ADMIN on the target
     // collection for the upstream adminMint to land — same constraint
     // /api/mint has. When inprocess says so verbatim ("The account does
-    // not have admin permission for this collection"), surface a
-    // structured 403 the client can detect and route the artist to the
-    // Authorize banner on /collection/{address} (a one-click on-chain
-    // grant from their own wallet, since they're defaultAdmin).
+    // not have admin permission for this collection") we surface a
+    // structured 403, but we need to distinguish two very different
+    // situations:
+    //
+    //   - preflight passed (chain has ADMIN) OR caller is retrying after
+    //     a successful authorize → inprocess's indexer simply hasn't
+    //     caught up yet. Tag as INDEXER_LAG so the client shows a
+    //     "wait + retry" toast instead of prompting another authorize
+    //     that the user has already completed.
+    //   - preflight verdict was 'unknown' (RPC blip) OR was skipped on
+    //     a non-retry submit → we can't prove the chain is authorized,
+    //     so be conservative and route them to the authorize flow.
     if (
       !res.ok &&
       parsed &&
@@ -276,13 +290,21 @@ export async function POST(req: NextRequest) {
         ),
       )
     ) {
+      const treatAsIndexerLag = body.isRetry || preflightAuthorized
       return NextResponse.json(
-        {
-          code: 'AUTHORIZE_REQUIRED',
-          error:
-            "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
-          collectionAddress: body.collectionAddress,
-        },
+        treatAsIndexerLag
+          ? {
+              code: 'INDEXER_LAG',
+              error:
+                "On-chain ADMIN is set but inprocess's indexer is still catching up. Wait a moment and retry.",
+              collectionAddress: body.collectionAddress,
+            }
+          : {
+              code: 'AUTHORIZE_REQUIRED',
+              error:
+                "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+              collectionAddress: body.collectionAddress,
+            },
         { status: 403 },
       )
     }
