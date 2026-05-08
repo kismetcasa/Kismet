@@ -26,41 +26,28 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '20') || 20))
   const creator = searchParams.get('creator')?.toLowerCase() ?? undefined
   const collector = searchParams.get('collector')?.toLowerCase() ?? undefined
-  // Returns moments where this address holds admin authority — both
-  // moments they created (creator === address) and moments where they
-  // were delegated ADMIN at the per-token row via addPermission. Used
-  // by the airdrop picker so delegates can actually see + airdrop
-  // moments granted to them, not just their own. Distinct from
-  // ?creator= which filters to moments they specifically created
-  // (used by ProfileView for the "their work" feed).
+  // Moments where this address holds admin authority — creator OR a
+  // per-token ADMIN delegate. Distinct from ?creator= which is the
+  // strict "their work" filter used by profile feeds.
   const airdroppable = searchParams.get('airdroppable')?.toLowerCase() ?? undefined
   const sort = searchParams.get('sort') // 'trending' | null
   const featured = searchParams.get('featured') === '1'
-  // Comma-separated addresses to prioritise in the feed (following mode)
   const followingParam = searchParams.get('following')
   const followingSet = followingParam
     ? new Set(followingParam.split(',').map((a) => a.toLowerCase()).filter(Boolean))
     : null
 
-  // ?collection= fetches a single collection (used by the collection detail page
-  // to load moments client-side with hidden-moment filtering applied).
   const singleCollection = searchParams.get('collection')?.toLowerCase() ?? null
 
-  // ?scope=standalone narrows the fan-out to the shared platform contract
-  // (one-off mints), `collections` to user-deployed collections, default
-  // `all` keeps current behaviour. The mints sub-tab + trending discovery
-  // surface use `standalone` so collection moments don't leak into the
-  // mints feed; collection content is reachable through /api/collections.
+  // standalone = PLATFORM + auto-deploy wrappers; collections = curated
+  // (user-deployed) only; all = unfiltered. Mints feed uses standalone
+  // so collection moments don't double up across sub-tabs.
   const rawScope = searchParams.get('scope')
   const scope: CollectionScope =
     rawScope === 'standalone' || rawScope === 'collections' ? rawScope : 'all'
 
-  // Curated allowlist: ?creators=0xabc,0xdef restricts the merged feed
-  // to moments by these creators. Empty value (?creators=) returns
-  // nothing — explicit, so a roster tab with an empty list shows its
-  // empty state instead of the full feed. Garbage entries (non-EOA
-  // strings) are silently dropped rather than 400'd, so a partially-
-  // valid allowlist still works.
+  // Curated roster: ?creators=0xa,0xb. Empty value matches nothing
+  // (so an empty roster shows its empty state, not the full feed).
   const creatorsParam = searchParams.get('creators')
   const creatorsSet =
     creatorsParam !== null
@@ -73,29 +60,14 @@ export async function GET(req: NextRequest) {
       : null
   const filterToCreators = creatorsSet !== null
 
-  // Timestamp cutoff: ?after=<ISO date> or <ms> filters merged moments to
-  // those minted on/after the cutoff. Used by the trending "this week"
-  // toggle and as the primitive for future event/show surfaces. Invalid
-  // input is silently ignored (matches the rest of the route's lenient
-  // parsing of pagination params).
-  const afterParam = searchParams.get('after')
-  let afterCutoff: number | null = null
-  if (afterParam) {
-    const asInt = /^\d+$/.test(afterParam) ? parseInt(afterParam, 10) : NaN
-    const parsed = Number.isFinite(asInt) ? asInt : Date.parse(afterParam)
-    if (Number.isFinite(parsed)) afterCutoff = parsed
-  }
-
   const collections = singleCollection
     ? [singleCollection]
     : await getTrackedCollectionsByScope(scope)
 
-  // Bump the per-collection sample size whenever cross-collection sorting,
-  // featured curation, or post-merge filtering could thin the result set
-  // below `page * limit`. Without this, narrow ?creators= or ?after=
-  // filters could empty paginated pages even when matches exist deeper.
-  const needsLargerSample =
-    sort === 'trending' || featured || filterToCreators || afterCutoff !== null
+  // Cross-collection sort, featured curation, and the creators allowlist
+  // can each thin the result set below `page * limit`. Bump the per-
+  // collection sample so paginated pages don't empty out prematurely.
+  const needsLargerSample = sort === 'trending' || featured || filterToCreators
   const fetchLimit = needsLargerSample ? Math.max(page * limit, 200) : page * limit
   const results = await Promise.all(collections.map((c) => fetchCollection(c, fetchLimit)))
 
@@ -117,18 +89,6 @@ export async function GET(req: NextRequest) {
       const moment = m as { creator?: { address?: string } }
       const addr = moment.creator?.address?.toLowerCase()
       return addr ? creatorsSet.has(addr) : false
-    })
-  }
-
-  // Timestamp cutoff — drops moments whose created_at is strictly before
-  // the cutoff. inprocess returns ISO strings; Date.parse handles both
-  // ISO and RFC 2822, and NaN compares unfavourably so missing/garbage
-  // created_at falls out of the window.
-  if (afterCutoff !== null) {
-    merged = merged.filter((m: unknown) => {
-      const moment = m as { created_at?: string }
-      const ts = moment.created_at ? Date.parse(moment.created_at) : NaN
-      return Number.isFinite(ts) && ts >= afterCutoff
     })
   }
 
@@ -268,6 +228,17 @@ export async function GET(req: NextRequest) {
   const start = (page - 1) * limit
   const moments = merged.slice(start, start + limit)
   const total_pages = Math.max(1, Math.ceil(merged.length / limit))
+
+  // Visibility for "empty feed" reports — lets us tell at a glance whether
+  // the issue is fan-out (no tracked collections), upstream (inprocess
+  // returned nothing), or filtering (over-eager scope/hide/creator).
+  if (moments.length === 0) {
+    console.log('[timeline] empty', {
+      scope, collections: collections.length,
+      mergedBeforeFilter: results.flat().length, mergedAfterFilter: merged.length,
+      filters: { creator, collector, airdroppable, featured, sort, filterToCreators, hasFollowing: !!followingSet?.size },
+    })
+  }
 
   return NextResponse.json({
     status: 'success',

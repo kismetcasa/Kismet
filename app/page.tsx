@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAccount } from 'wagmi'
 import { RefreshCw } from 'lucide-react'
 import { MomentCard } from '@/components/MomentCard'
@@ -361,7 +361,6 @@ function MainFeed() {
   const { address } = useAccount()
   const [subTab, setSubTab] = useState<MainSubTab>('mints')
   const [followingOn, setFollowingOn] = useState(false)
-  const [mostMintsOn, setMostMintsOn] = useState(false)
   const [followingAddrs, setFollowingAddrs] = useState<string[]>([])
 
   useEffect(() => {
@@ -372,24 +371,14 @@ function MainFeed() {
       .catch(() => setFollowingAddrs([]))
   }, [address, followingOn])
 
-  // Mints sub-tab is scoped to standalone moments — the shared platform
-  // contract. Collection moments surface inside their collection card, so
-  // restricting the mints feed prevents the same moment appearing in both
-  // sub-tabs. The optional following/most-mints filters compose on top:
-  // sort=trending uses the Redis trending zset (incremented per collect),
-  // which acts as a proxy for "most-minted" since each mint/collect bumps
-  // the score. Drop scope=standalone to restore the cross-cutting feed.
-  const apiUrl = (() => {
-    const params = new URLSearchParams({ scope: 'standalone' })
-    if (followingAddrs.length) params.set('following', followingAddrs.join(','))
-    if (mostMintsOn) params.set('sort', 'trending')
-    return `/api/timeline?${params.toString()}`
-  })()
+  // scope=standalone keeps collection moments out of the mints sub-tab —
+  // they surface inside their collection card instead of appearing twice.
+  const apiUrl = followingAddrs.length
+    ? `/api/timeline?scope=standalone&following=${followingAddrs.join(',')}`
+    : '/api/timeline?scope=standalone'
 
-  const feedKey = `main-${followingOn ? 'following' : 'all'}-${mostMintsOn ? 'mostmints' : 'recent'}-${followingAddrs.join(',')}`
+  const feedKey = `main-${followingOn ? 'following' : 'all'}-${followingAddrs.join(',')}`
 
-  // Sub-tab row: mints / collections (slightly bigger, slash-separated)
-  // followed by boxed filter tabs (following · most mints) on the right.
   const subTabBar = (
     <div className="flex items-center gap-3 flex-wrap">
       <div className="flex items-center gap-1.5">
@@ -423,16 +412,6 @@ function MainFeed() {
           following
         </button>
       )}
-      <button
-        onClick={() => setMostMintsOn((v) => !v)}
-        className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
-          mostMintsOn
-            ? 'border-[#8B5CF6] text-[#8B5CF6]'
-            : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
-        }`}
-      >
-        most mints
-      </button>
     </div>
   )
 
@@ -504,7 +483,13 @@ export default function DiscoverPage() {
           </>
         )}
 
-        {active === 'trending' && <TrendingFeed />}
+        {active === 'trending' && (
+          <MomentFeed
+            feedKey="trending"
+            apiUrl="/api/timeline?sort=trending&scope=standalone"
+            emptyMessage="no collects recorded yet — trending appears as mints are collected"
+          />
+        )}
 
         {active === 'main' && <MainFeed />}
 
@@ -517,56 +502,6 @@ export default function DiscoverPage() {
         )}
       </div>
     </div>
-  )
-}
-
-// ─── trending feed ───────────────────────────────────────────────────────────
-
-function TrendingFeed() {
-  const [weekOnly, setWeekOnly] = useState(false)
-
-  // Memoize on weekOnly so the URL is stable across re-renders. Without
-  // memoization, raw Date.now() would produce a different ms value each
-  // render — apiUrl would change, MomentFeed's fetch_ closure would change,
-  // and any future state added to TrendingFeed could refetch on every
-  // render. Bucketing to the start of the UTC day gives a fresh cutoff
-  // each calendar day without continuous churn.
-  const apiUrl = useMemo(() => {
-    const params = new URLSearchParams({ sort: 'trending', scope: 'standalone' })
-    if (weekOnly) {
-      const dayMs = 24 * 60 * 60 * 1000
-      const cutoff = (Math.floor(Date.now() / dayMs) - 7) * dayMs
-      params.set('after', String(cutoff))
-    }
-    return `/api/timeline?${params.toString()}`
-  }, [weekOnly])
-
-  const feedKey = `trending-${weekOnly ? 'week' : 'all'}`
-
-  const header = (
-    <button
-      onClick={() => setWeekOnly((v) => !v)}
-      className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
-        weekOnly
-          ? 'border-[#efefef] text-[#efefef]'
-          : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888]'
-      }`}
-    >
-      this week
-    </button>
-  )
-
-  return (
-    <MomentFeed
-      feedKey={feedKey}
-      apiUrl={apiUrl}
-      header={header}
-      emptyMessage={
-        weekOnly
-          ? 'no collects in the last 7 days — try the all-time view'
-          : 'no collects recorded yet — trending appears as mints are collected'
-      }
-    />
   )
 }
 
