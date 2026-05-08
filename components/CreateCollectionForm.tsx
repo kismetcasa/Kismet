@@ -289,6 +289,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         description: description.trim() || undefined,
         image: deployedImageUri,
         artist: address,
+        // Cover token is the only setupAction that creates a token, so it
+        // lands at tokenId 1 deterministically. Marking it keeps the cover
+        // out of every Mints feed (it lives on the collection card instead).
+        coverTokenId: mintCover ? '1' : undefined,
       })
       onDeployed?.(deployedAddress, name)
 

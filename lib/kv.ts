@@ -7,6 +7,11 @@ const KEY = 'kismetart:collections'
 // from collection-shaped surfaces. Legacy entries with no marker default
 // to "real collection" without needing a backfill.
 const AUTO_DEPLOY_KEY = 'kismetart:auto-deploy-collections'
+// Cover tokens (tokenId minted during Create Collection deploy when the
+// "mint cover" toggle is on). Members are `<addr>:<tokenId>` strings.
+// Filtered out of every Mints surface so collection cover art doesn't
+// appear as a standalone mint card.
+const COVER_MOMENTS_KEY = 'kismetart:cover-moments'
 
 export interface CollectionMeta {
   address: string
@@ -62,6 +67,23 @@ async function getAutoDeployCollections(): Promise<string[]> {
     return (await redis.smembers(AUTO_DEPLOY_KEY)) as string[]
   } catch {
     return []
+  }
+}
+
+export async function getCoverMomentsSet(): Promise<Set<string>> {
+  try {
+    const members = (await redis.smembers(COVER_MOMENTS_KEY)) as string[]
+    return new Set(members.map((m) => m.toLowerCase()))
+  } catch {
+    return new Set()
+  }
+}
+
+export async function markCoverMoment(address: string, tokenId: string): Promise<void> {
+  try {
+    await redis.sadd(COVER_MOMENTS_KEY, `${address.toLowerCase()}:${tokenId}`)
+  } catch {
+    /* non-critical — cover will leak into Mints feed but no other harm */
   }
 }
 

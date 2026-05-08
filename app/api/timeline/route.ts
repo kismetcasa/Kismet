@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollectionsByScope, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCoverMomentsSet, type CollectionScope } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -90,6 +90,19 @@ export async function GET(req: NextRequest) {
       const addr = moment.creator?.address?.toLowerCase()
       return addr ? creatorsSet.has(addr) : false
     })
+  }
+
+  // Cover tokens are collection art, not standalone mints. Filter them
+  // out of every Mints surface; the collection-page view (singleCollection)
+  // skips the filter so covers still show on /collection/<addr>.
+  if (!singleCollection) {
+    const covers = await getCoverMomentsSet()
+    if (covers.size > 0) {
+      merged = merged.filter((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string }
+        return !covers.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+      })
+    }
   }
 
   // Creator filter (Featured / Profile feeds)
