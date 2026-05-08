@@ -216,7 +216,19 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   async function submitAirdrop({ isRetry = false }: { isRetry?: boolean } = {}) {
     if (!isConnected || !address) { openConnectModal?.(); return }
     if (!selected) { toast.error('Select a moment to airdrop'); return }
-    if (recipients.length === 0) { toast.error('Add at least one recipient'); return }
+
+    // Auto-commit a pending recipient sitting in the input — clicking
+    // AIRDROP with a valid address typed but not yet added is a common
+    // footgun. Mirror what pressing Enter or clicking + would do, then
+    // proceed with the merged list.
+    const pending = recipientInput.trim()
+    let activeRecipients = recipients
+    if (pending && isAddress(pending) && !recipients.includes(pending.toLowerCase())) {
+      activeRecipients = [...recipients, pending.toLowerCase()]
+      setRecipients(activeRecipients)
+      setRecipientInput('')
+    }
+    if (activeRecipients.length === 0) { toast.error('Add at least one recipient'); return }
 
     setSending(true)
     setResultHash(null)
@@ -235,7 +247,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           collectionAddress: selected.address,
-          recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
+          recipients: activeRecipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
           callerAddress: address,
           signature,
           nonce,
@@ -259,7 +271,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           response: data,
           requestPayload: {
             collectionAddress: selected.address,
-            recipients: recipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
+            recipients: activeRecipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
           },
         })
         // Mirrors MintForm.maybeHandleAuthError. Two detection paths:
@@ -362,7 +374,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       if (!txHash) throw new Error('Airdrop submitted but no tx hash returned')
       setResultHash(txHash)
       setRecipients([])
-      toast.success(`Airdropped to ${recipients.length} recipient${recipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
+      toast.success(`Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
     } finally {
@@ -557,19 +569,31 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={sending || !selected || recipients.length === 0}
-        className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50"
-      >
-        {!isConnected
-          ? 'connect wallet to airdrop'
-          : sending
-          ? 'airdropping…'
-          : selected && recipients.length > 0
-          ? `airdrop to ${recipients.length} wallet${recipients.length !== 1 ? 's' : ''}`
-          : 'airdrop'}
-      </button>
+      {/* Treat a valid address typed into the input as a pending recipient
+          so the user doesn't have to click + first. submitAirdrop commits
+          it to the array before sending; the count below reflects what the
+          submit will actually airdrop to. */}
+      {(() => {
+        const pending = recipientInput.trim()
+        const pendingValid =
+          !!pending && isAddress(pending) && !recipients.includes(pending.toLowerCase())
+        const totalRecipients = recipients.length + (pendingValid ? 1 : 0)
+        return (
+          <button
+            type="submit"
+            disabled={sending || !selected || totalRecipients === 0}
+            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50"
+          >
+            {!isConnected
+              ? 'connect wallet to airdrop'
+              : sending
+              ? 'airdropping…'
+              : selected && totalRecipients > 0
+              ? `airdrop to ${totalRecipients} wallet${totalRecipients !== 1 ? 's' : ''}`
+              : 'airdrop'}
+          </button>
+        )
+      })()}
 
       <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
         airdrop freshly minted supply to recipients

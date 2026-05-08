@@ -3,12 +3,14 @@ import { PLATFORM_COLLECTION } from './config'
 import { INPROCESS_API } from './inprocess'
 
 const KEY = 'kismetart:collections'
-// Subset of KEY containing only collections the user explicitly created via
-// the Create Collection form. Auto-deployed wrapper collections (created by
-// the protocol on first-mint when no collection is selected) live in KEY
-// for moment fan-out, but NOT in USER_KEY — so they surface as individual
-// mints rather than as collections in their own right.
-const USER_KEY = 'kismetart:user-collections'
+// Marker set: addresses we've registered as auto-deployed wrappers. The
+// rule is "every tracked entry counts as a curated collection UNLESS it's
+// in this set." That polarity preserves legacy entries (registered before
+// this flag existed, no marker) — they default to "real collection" and
+// keep working in the Collections feed, profile collections list, mint
+// dropdown picker, etc. New auto-deploy registrations explicitly join
+// this set and get excluded from collection-shaped surfaces.
+const AUTO_DEPLOY_KEY = 'kismetart:auto-deploy-collections'
 
 export interface CollectionMeta {
   address: string
@@ -51,10 +53,11 @@ export async function getTrackedCollectionsByScope(
 ): Promise<string[]> {
   if (scope === 'all') return getTrackedCollections()
   if (scope === 'collections') return getUserCollections()
-  // standalone: tracked minus user-collections (= PLATFORM_COLLECTION +
-  // every auto-deployed wrapper). Computing the difference here avoids
-  // double-storing PLATFORM_COLLECTION in USER_KEY just to filter it back
-  // out, and keeps a single source of truth for the user-collections set.
+  // standalone: tracked minus the curated-collection set
+  // (= PLATFORM_COLLECTION + every auto-deployed wrapper). Computing the
+  // difference here keeps a single source of truth for what counts as a
+  // collection and means we never have to write PLATFORM_COLLECTION into
+  // any auxiliary set just to filter it back out.
   const [all, userCreated] = await Promise.all([
     getTrackedCollections(),
     getUserCollections(),
@@ -63,12 +66,37 @@ export async function getTrackedCollectionsByScope(
   return all.filter((a) => !userSet.has(a.toLowerCase()))
 }
 
-/** Collections explicitly created via the Create Collection form. Empty
- *  on Redis errors so a transient outage doesn't accidentally erase the
- *  Collections feed (the failure surfaces as an empty feed instead). */
+/**
+ * Addresses that count as collections in the curatorial sense — every
+ * tracked address that is NOT explicitly marked as an auto-deploy wrapper
+ * AND is not the shared platform contract. Legacy entries (registered
+ * before the auto-deploy marker existed) flow through as collections by
+ * default, so a user who already has Create Collection deploys keeps
+ * seeing them in the Collections feed and the mint-dropdown picker.
+ *
+ * Empty on Redis errors so a transient outage surfaces as an empty feed
+ * instead of accidentally exposing the marker set's contents.
+ */
 export async function getUserCollections(): Promise<string[]> {
   try {
-    return (await redis.smembers(USER_KEY)) as string[]
+    const [all, autoDeploy] = await Promise.all([
+      getTrackedCollections(),
+      getAutoDeployCollections(),
+    ])
+    const auto = new Set(autoDeploy.map((a) => a.toLowerCase()))
+    const platform = PLATFORM_COLLECTION.toLowerCase()
+    return all.filter((a) => {
+      const lower = a.toLowerCase()
+      return lower !== platform && !auto.has(lower)
+    })
+  } catch {
+    return []
+  }
+}
+
+async function getAutoDeployCollections(): Promise<string[]> {
+  try {
+    return (await redis.smembers(AUTO_DEPLOY_KEY)) as string[]
   } catch {
     return []
   }
@@ -84,9 +112,12 @@ export async function addTrackedCollection(
     // Auto-deployed wrappers are NOT collections in the curatorial sense —
     // they're individual mints whose contract happens to be unique. The
     // protocol creates them on first-mint when no collection is picked.
-    // Skip USER_KEY for those so the Collections feed stays clean.
-    if (source === 'create-form') {
-      ops.push(redis.sadd(USER_KEY, address))
+    // Mark them in AUTO_DEPLOY_KEY so collection-shaped surfaces filter
+    // them out. Default ('create-form') writes nothing to the marker set,
+    // which means legacy entries (registered before this flag existed)
+    // also default to "real collection" without needing a backfill.
+    if (source === 'auto-deploy') {
+      ops.push(redis.sadd(AUTO_DEPLOY_KEY, address))
     }
     if (meta?.name) {
       const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
@@ -124,9 +155,10 @@ export async function getCollectionMeta(
 }
 
 // Used by the artist's profile page as a fallback when inprocess hasn't
-// indexed a freshly-deployed collection yet. Walks USER_KEY (only
-// explicitly-created collections) so auto-deployed mint wrappers stay out
-// of the artist's "Collections" surface — they belong in their Mints feed.
+// indexed a freshly-deployed collection yet. Walks the curated-collection
+// set (every tracked entry minus PLATFORM and minus auto-deploy markers)
+// so auto-deployed mint wrappers stay out of the artist's "Collections"
+// surface — those belong in their Mints feed.
 export async function getCollectionsByArtist(
   artist: string
 ): Promise<CollectionMeta[]> {
@@ -172,9 +204,10 @@ async function fetchInprocessCollectionImage(address: string): Promise<string | 
 }
 
 export async function searchCollections(query: string): Promise<CollectionMeta[]> {
-  // Search ranges over USER_KEY — auto-deployed wrappers (whose name is
-  // just the moment title) shouldn't surface as collection search results.
-  // Moment search has its own endpoint; this one is strictly for curated
+  // Search ranges over the curated-collection set — auto-deployed wrappers
+  // (whose name is just the moment title) shouldn't surface as collection
+  // search results. Moment search has its own endpoint; this is strictly
+  // for curated
   // collections.
   const addresses = await getUserCollections()
   if (!addresses.length) return []

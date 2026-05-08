@@ -36,12 +36,14 @@ export async function GET(req: NextRequest) {
     if (lowerAddr === platformLower) {
       return NextResponse.json({ contractAddress: singleAddress })
     }
-    // Gate the rich response on USER_KEY (explicitly-created collections).
-    // Auto-deployed wrappers are real on-chain contracts but they're
-    // functionally individual mints — the moment-detail collection chip
-    // shouldn't render a name/cover for them, so we fall through to the
-    // minimal {contractAddress} stub the same way we do for the platform
-    // contract and for unknown contracts.
+    // Gate the rich response on the curated-collection set (every tracked
+    // entry minus auto-deploy markers minus PLATFORM). Auto-deployed
+    // wrappers are real on-chain contracts but they're functionally
+    // individual mints — the moment-detail collection chip shouldn't
+    // render a name/cover for them, so we fall through to the minimal
+    // {contractAddress} stub the same way we do for the platform contract
+    // and unknown contracts. Legacy entries with no marker default to
+    // "real collection" and keep rendering their chip.
     const [userCreated, hiddenSet] = await Promise.all([
       getUserCollections(),
       getHiddenCollectionsSet(),
@@ -77,15 +79,18 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Discovery feed: enumerate USER_KEY (collections deployed via the
-  // explicit Create Collection form) and hydrate each with the rich shape
-  // from inprocess `/api/collection`, falling back to KV-stored metadata
-  // when the indexer hasn't picked the collection up yet. Auto-deployed
-  // mint wrappers and the platform contract are excluded by construction
-  // since they aren't in USER_KEY. Returning the global inprocess feed
-  // here would surface collections we didn't deploy and hide our own
-  // freshly-deployed ones until the indexer catches up — neither matches
-  // the discovery semantics we want.
+  // Discovery feed: enumerate the curated-collection set (every tracked
+  // address minus PLATFORM minus auto-deploy markers) and hydrate each
+  // with the rich shape from inprocess `/api/collection`, falling back to
+  // KV-stored metadata when the indexer hasn't picked the collection up
+  // yet. Auto-deployed mint wrappers and the platform contract are
+  // excluded inside getUserCollections, so legacy entries (no marker)
+  // flow through as real collections by default — preserving the
+  // mint-into-existing path for users who deployed before the marker
+  // existed. Returning the global inprocess feed here would surface
+  // collections we didn't deploy and hide our own freshly-deployed ones
+  // until the indexer catches up — neither matches the discovery
+  // semantics we want.
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
@@ -93,11 +98,8 @@ export async function GET(req: NextRequest) {
       getUserCollections(),
       getHiddenCollectionsSet(),
     ])
-    const platformLower = PLATFORM_COLLECTION.toLowerCase()
     const visible = userCreated.filter(
-      // Defensive: USER_KEY shouldn't contain PLATFORM_COLLECTION, but
-      // exclude it anyway in case a legacy entry slipped in.
-      (addr) => !hiddenSet.has(addr.toLowerCase()) && addr.toLowerCase() !== platformLower,
+      (addr) => !hiddenSet.has(addr.toLowerCase()),
     )
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
@@ -173,10 +175,11 @@ export async function GET(req: NextRequest) {
       ])
       const text = await res.text()
       const data = JSON.parse(text)
-      // Filter the artist's collections to USER_KEY only — auto-deployed
-      // mint wrappers belong with the artist's mints, not their collections.
-      // getCollectionsByArtist already walks USER_KEY for the KV fallback
-      // below, so the two paths agree on what counts as a collection.
+      // Filter the artist's collections to the curated-collection set —
+      // auto-deployed mint wrappers belong with the artist's mints, not
+      // their collections. getCollectionsByArtist already walks the same
+      // set for the KV fallback below, so the two paths agree on what
+      // counts as a collection.
       const userSet = new Set(userCreated.map((a: string) => a.toLowerCase()))
       // Hide creator-hidden collections from non-creator viewers — the artist
       // sees their own hidden collections so they can navigate back and unhide.
@@ -260,8 +263,8 @@ export async function POST(req: NextRequest) {
     artist?: string
     // 'create-form' = explicit Create Collection form (default for legacy
     // callers that don't pass the field). 'auto-deploy' = MintForm's
-    // first-mint wrapper. Drives whether the address joins USER_KEY,
-    // which gates every collection-shaped surface.
+    // first-mint wrapper, which writes the AUTO_DEPLOY_KEY marker that
+    // gates every collection-shaped surface from rendering it.
     source?: CollectionSource
   }
   try {
@@ -335,10 +338,11 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Default source is 'create-form' so legacy callers (and the explicit
-  // Create Collection form, which doesn't pass the field) keep landing in
-  // USER_KEY. MintForm's auto-deploy path passes 'auto-deploy' explicitly,
-  // which keeps the wrapper out of every collection-shaped surface.
+  // Default source is 'create-form' so legacy callers and the explicit
+  // Create Collection form (which doesn't pass the field) write only to
+  // KEY — no AUTO_DEPLOY_KEY marker. MintForm's auto-deploy path passes
+  // 'auto-deploy' explicitly, which writes the marker and keeps the
+  // wrapper out of every collection-shaped surface.
   const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
   await addTrackedCollection(
     body.address,
