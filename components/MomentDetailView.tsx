@@ -6,7 +6,6 @@ import Image from 'next/image'
 import { useAccount, useReadContract, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { isAddress } from 'viem'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -16,7 +15,6 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_MINT_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { useGrantPermission } from '@/hooks/useGrantPermission'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
@@ -107,61 +105,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [hasSplits, setHasSplits] = useState(false)
   const [distributing, setDistributing] = useState(false)
   const [distributeHash, setDistributeHash] = useState<string | null>(null)
-  // Per-token ADMIN delegation: lets the creator grant another wallet
-  // permission to airdrop this specific moment. Inprocess's
-  // /api/airdrop authorizes any address present in `momentAdmins`,
-  // which on-chain reads from permissions(tokenId, addr) — so granting
-  // ADMIN at the moment's tokenId makes the delegate eligible.
-  const [delegateInput, setDelegateInput] = useState('')
-  const {
-    grant: grantDelegate,
-    reset: resetDelegateGrant,
-    busy: delegating,
-    receipt: delegateReceipt,
-  } = useGrantPermission()
-
-  useEffect(() => {
-    if (!delegateReceipt) return
-    resetDelegateGrant()
-    if (delegateReceipt.status === 'reverted') {
-      toast.error('Delegate failed', {
-        id: 'delegate-airdrop',
-        description:
-          'The transaction reverted on-chain — only the moment admin can delegate.',
-      })
-      return
-    }
-    setDelegateInput('')
-    toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
-  }, [delegateReceipt, resetDelegateGrant])
-
-  async function handleDelegateAirdrop() {
-    const target = delegateInput.trim()
-    if (!isAddress(target)) {
-      toast.error('Invalid address', { id: 'delegate-airdrop' })
-      return
-    }
-    try {
-      toast.loading('Confirm in wallet…', { id: 'delegate-airdrop' })
-      const outcome = await grantDelegate({
-        collection: address as `0x${string}`,
-        grantee: target as `0x${string}`,
-        tokenId: BigInt(tokenId),
-        bit: 'admin',
-      })
-      if (outcome === 'submitted') {
-        toast.loading('Delegating…', { id: 'delegate-airdrop' })
-        return
-      }
-      // Already had ADMIN at this tokenId — no tx needed.
-      setDelegateInput('')
-      toast.success('Already authorized to airdrop this moment', {
-        id: 'delegate-airdrop',
-      })
-    } catch (err) {
-      toastError('Delegate airdrop', err, { id: 'delegate-airdrop' })
-    }
-  }
   // Edit-metadata flow: visible only to moment admins. Pre-populated from
   // the loaded MomentDetail so they can fix typos / replace the image
   // without re-typing everything.
@@ -958,39 +901,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   distributed: {distributeHash.slice(0, 10)}…{distributeHash.slice(-8)}
                 </a>
               )}
-            </div>
-          )}
-
-          {/* Delegate airdrop — grants another wallet ADMIN at this
-              moment's tokenId so they can airdrop it via /api/airdrop.
-              Mirrors the Distribute UI's compact layout. Only renders
-              for the moment admin (the same gate /api/airdrop's
-              `momentAdmins` check enforces upstream). */}
-          {isCreator && (
-            <div className="px-5 pb-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">delegate airdrop</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={delegateInput}
-                  onChange={(e) => setDelegateInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      void handleDelegateAirdrop()
-                    }
-                  }}
-                  placeholder="0x… wallet address"
-                  className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-                />
-                <button
-                  onClick={() => void handleDelegateAirdrop()}
-                  disabled={delegating || !delegateInput.trim()}
-                  className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
-                >
-                  {delegating ? '…' : '→'}
-                </button>
-              </div>
             </div>
           )}
 

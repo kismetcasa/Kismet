@@ -28,10 +28,22 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   // on-chain primitive lives in the hook.
   const { grant, reset: resetGrant, busy: authBusy, hash: authHash, receipt: authReceipt } =
     useGrantPermission()
+  // Per-token ADMIN delegation: lets the moment admin grant another
+  // wallet permission to airdrop this specific moment via /api/airdrop.
+  // Lives on the airdrop tab now (was inline on the moment detail page);
+  // the picker already filters to airdroppable moments, so the delegate
+  // input below the form is contextual to the selected one.
+  const {
+    grant: grantDelegate,
+    reset: resetDelegateGrant,
+    busy: delegating,
+    receipt: delegateReceipt,
+  } = useGrantPermission()
 
   const [selected, setSelected] = useState<Moment | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [recipientInput, setRecipientInput] = useState('')
+  const [delegateInput, setDelegateInput] = useState('')
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
@@ -120,6 +132,60 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       id: 'authorize-collection',
     })
   }, [authReceipt])
+
+  // Receipt handler for the delegate grant. Mirrors the self-authorize
+  // receipt watcher above but doesn't auto-retry anything — delegation
+  // is a fire-and-forget grant, the recipient airdrops separately.
+  useEffect(() => {
+    if (!delegateReceipt) return
+    resetDelegateGrant()
+    if (delegateReceipt.status === 'reverted') {
+      toast.error('Delegate failed', {
+        id: 'delegate-airdrop',
+        description:
+          'The transaction reverted on-chain — only the moment admin can delegate.',
+      })
+      return
+    }
+    setDelegateInput('')
+    toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
+  }, [delegateReceipt, resetDelegateGrant])
+
+  async function handleDelegateAirdrop() {
+    if (!selected) {
+      toast.error('Pick a moment to delegate first', { id: 'delegate-airdrop' })
+      return
+    }
+    const target = delegateInput.trim()
+    if (!isAddress(target)) {
+      toast.error('Invalid address', { id: 'delegate-airdrop' })
+      return
+    }
+    if (!isConnected || !address) {
+      openConnectModal?.()
+      return
+    }
+    try {
+      toast.loading('Confirm in wallet…', { id: 'delegate-airdrop' })
+      const outcome = await grantDelegate({
+        collection: selected.address as `0x${string}`,
+        grantee: target as `0x${string}`,
+        tokenId: BigInt(selected.token_id),
+        bit: 'admin',
+      })
+      if (outcome === 'submitted') {
+        toast.loading('Delegating…', { id: 'delegate-airdrop' })
+        return
+      }
+      // Already had ADMIN at this tokenId — no tx needed.
+      setDelegateInput('')
+      toast.success('Already authorized to airdrop this moment', {
+        id: 'delegate-airdrop',
+      })
+    } catch (err) {
+      toastError('Delegate airdrop', err, { id: 'delegate-airdrop' })
+    }
+  }
 
   // `tokenId` is the scope of the permission grant. 0n is collection-wide
   // (works on collections the user deployed themselves — they hold
@@ -598,6 +664,49 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
         airdrop freshly minted supply to recipients
       </p>
+
+      {/* Delegate airdrop — moved from the moment detail page so all
+          airdrop-related actions live on this tab. Renders only when a
+          moment is picked (the picker already filtered to moments the
+          connected user has airdrop authority on, so showing the
+          delegate input is contextually safe). Grants per-token ADMIN
+          to the entered address; the recipient airdrops via this same
+          form on their own session. */}
+      {selected && (
+        <div className="flex flex-col gap-2 pt-2 border-t border-[#2a2a2a]">
+          <p className="text-[10px] font-mono text-[#555] uppercase tracking-wider">
+            delegate airdrop
+          </p>
+          <p className="text-[10px] font-mono text-[#444]">
+            let another wallet airdrop this specific moment
+          </p>
+          <div className="flex gap-2">
+            <input
+              id="airdrop-delegate"
+              name="airdrop-delegate"
+              type="text"
+              value={delegateInput}
+              onChange={(e) => setDelegateInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.preventDefault()
+                void handleDelegateAirdrop()
+              }}
+              placeholder="0x… wallet address"
+              aria-label="Delegate wallet address"
+              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            />
+            <button
+              type="button"
+              onClick={() => void handleDelegateAirdrop()}
+              disabled={delegating || !delegateInput.trim()}
+              className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+            >
+              {delegating ? '…' : '→'}
+            </button>
+          </div>
+        </div>
+      )}
 
     </form>
   )

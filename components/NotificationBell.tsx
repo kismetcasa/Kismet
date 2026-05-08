@@ -70,10 +70,35 @@ export function NotificationBell({ address }: NotificationBellProps) {
 
   const badge = count > 9 ? '9+' : String(count)
 
+  // Opening the panel implies "I've seen these" — clear the badge
+  // immediately and mark everything read on the server as a fire-and-
+  // forget. If the session isn't valid the request 401s and the next
+  // poll restores the real count, which is the right fallback.
+  function openPanel() {
+    setModalOpen(true)
+    if (count > 0) {
+      setCount(0)
+      void fetch('/api/notifications/read', {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ all: true }),
+      })
+        .then((r) => {
+          if (r.ok) {
+            // Tell any mounted feed to flip its rows to read so the
+            // unread styling clears alongside the badge.
+            window.dispatchEvent(new CustomEvent('kismetart:notif-read'))
+          }
+        })
+        .catch(() => {})
+    }
+  }
+
   return (
     <div className="relative h-14 flex items-center">
       <button
-        onClick={() => setModalOpen((v) => !v)}
+        onClick={() => (modalOpen ? setModalOpen(false) : openPanel())}
         className="relative text-[#888] hover:text-[#efefef] transition-colors p-1"
         aria-label={count > 0 ? `Notifications, ${count} unread` : 'Notifications'}
       >
