@@ -319,35 +319,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // SWITCHING HOSTS: hit the documented public route at
-  // https://inprocess.world/api/moment/airdrop (NOT api.inprocess.world)
-  // with the flat shape the published docs show. The earlier iteration
-  // landed on api.inprocess.world's stricter validator that rejects the
-  // flat shape and demands a `moment: {…}` envelope — but successful
-  // airdrops via that host routed through a smart wallet our preflight
-  // couldn't pin down (every grant we tried still produced "admin
-  // permission" upstream). The public route is the one the docs
-  // explicitly point at; it may handle wallet routing differently
-  // (e.g. honor the API key's bound artist directly without needing
-  // an `account` override).
+  // api.inprocess.world wants the body wrapped in `moment: {…}`
+  // (rejects the flat shape the public docs cURL on inprocess.world
+  // shows — empirically the validator demands the envelope). Per-
+  // recipient tokenIds stay on each recipient; the validator above
+  // enforces uniformity so one signature can't fan out across tokens.
   //
-  // `account` is undocumented on this endpoint but is the same override
-  // mint-proxy sends to /moment/create successfully. Keep it — if the
-  // public route ignores unknown fields it's harmless, if it honors it
-  // that's a bonus.
+  // `account` is undocumented on the airdrop endpoint but is the
+  // same override mint-proxy sends to /moment/create (see
+  // lib/mint-proxy.ts). Without it, inprocess routes the call through
+  // whichever smart wallet the platform `INPROCESS_API_KEY` resolves
+  // to — which is NOT the artist's smart wallet (the one that holds
+  // ADMIN at deploy time via Kismet's setupActions). The chain check
+  // passes, the upstream call rejects, and the user is stuck.
+  // Forwarding the artist's EOA here lets inprocess re-derive the
+  // artist's smart wallet and call as that identity — the same one
+  // with ADMIN.
   const upstreamPayload = {
-    collectionAddress: body.collectionAddress,
+    moment: {
+      collectionAddress: body.collectionAddress,
+      tokenId,
+      chainId: 8453,
+    },
     recipients: body.recipients,
     account: body.callerAddress,
   }
-  // Resolve from INPROCESS_API by stripping the api.* subdomain. Keeps
-  // every other endpoint on api.inprocess.world (mint, write, timeline,
-  // smart-wallet lookup, etc. — all known-working there) and only flips
-  // the airdrop call to the public host.
-  const airdropEndpoint = `${INPROCESS_API.replace('https://api.', 'https://')}/moment/airdrop`
 
   try {
-    const res = await fetch(airdropEndpoint, {
+    const res = await fetch(`${INPROCESS_API}/moment/airdrop`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -419,9 +418,8 @@ export async function POST(req: NextRequest) {
           '',
       )
       const upstreamSent = {
-        endpoint: airdropEndpoint,
-        collectionAddress: upstreamPayload.collectionAddress,
-        tokenId,
+        collectionAddress: upstreamPayload.moment.collectionAddress,
+        tokenId: upstreamPayload.moment.tokenId,
         recipientCount: upstreamPayload.recipients.length,
         account: upstreamPayload.account,
       }
