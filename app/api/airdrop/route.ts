@@ -175,6 +175,11 @@ export async function POST(req: NextRequest) {
   // this distinction the client loops the user through repeated
   // authorize prompts whenever inprocess lags behind chain state.
   let preflightAuthorized = false
+  // Last preflight diagnostic — so the upstream-error branch can surface
+  // the smart wallet + perms it read in its 403 response (otherwise the
+  // user only sees `code: 'INDEXER_LAG'` and we can't tell whether it's
+  // genuinely lag, a wallet mismatch, or a wrong-bit grant).
+  let preflightSnapshot: { smartWallet?: string; perms?: Array<{ tokenId: string; value: string | null }> } = {}
   if (!body.isRetry) {
     const preflight = await checkSmartWalletAdmin(
       body.callerAddress,
@@ -211,6 +216,7 @@ export async function POST(req: NextRequest) {
       )
     }
     preflightAuthorized = preflight.status === 'authorized'
+    preflightSnapshot = { smartWallet: preflight.smartWallet, perms: preflight.perms }
   }
 
   // Consume nonce only after all auth + pre-flight checks pass — a
@@ -304,6 +310,27 @@ export async function POST(req: NextRequest) {
       )
     ) {
       const treatAsIndexerLag = body.isRetry || preflightAuthorized
+      // Pull every diagnostic field we have onto the response so the
+      // browser console (which is all the user can see in a deployed
+      // build) shows enough to tell whether the next iteration needs
+      // a different override, per-artist API keys, or a co-grant.
+      // `upstreamError` is inprocess's verbatim message; `upstreamSent`
+      // is the exact payload they rejected (modulo our `account`
+      // override above); `smartWallet` + `perms` come from the
+      // preflight read so we can verify on-chain state matches what
+      // inprocess thinks.
+      const upstreamError = String(
+        (parsed as Record<string, unknown>).error ??
+          (parsed as Record<string, unknown>).message ??
+          (parsed as Record<string, unknown>).detail ??
+          '',
+      )
+      const upstreamSent = {
+        collectionAddress: upstreamPayload.moment.collectionAddress,
+        tokenId: upstreamPayload.moment.tokenId,
+        recipientCount: upstreamPayload.recipients.length,
+        account: upstreamPayload.account,
+      }
       return NextResponse.json(
         treatAsIndexerLag
           ? {
@@ -311,12 +338,20 @@ export async function POST(req: NextRequest) {
               error:
                 "On-chain ADMIN is set but inprocess's indexer is still catching up. Wait a moment and retry.",
               collectionAddress: body.collectionAddress,
+              upstreamError,
+              upstreamSent,
+              smartWallet: preflightSnapshot.smartWallet,
+              perms: preflightSnapshot.perms,
             }
           : {
               code: 'AUTHORIZE_REQUIRED',
               error:
                 "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
               collectionAddress: body.collectionAddress,
+              upstreamError,
+              upstreamSent,
+              smartWallet: preflightSnapshot.smartWallet,
+              perms: preflightSnapshot.perms,
             },
         { status: 403 },
       )
