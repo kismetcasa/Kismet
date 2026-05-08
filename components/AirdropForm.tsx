@@ -266,16 +266,21 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                   '',
               )
             : ''
+        const errorCode = (data as { code?: string }).code
+        const isIndexerLag = errorCode === 'INDEXER_LAG'
         const isAuthError =
-          (data as { code?: string }).code === 'AUTHORIZE_REQUIRED' ||
+          errorCode === 'AUTHORIZE_REQUIRED' ||
           /admin permission/i.test(authMessage)
-        if (isAuthError && isRetry) {
-          // We already authorized once and re-submitted. If inprocess
-          // STILL says no admin, the on-chain state and inprocess's
-          // view diverge — most likely indexer lag. Don't loop the
-          // user through another authorize attempt; surface what's
-          // actually happening so they can wait/refresh.
-          toast.error('Inprocess hasn\'t picked up the authorize yet', {
+        // Server tagged this as indexer lag (chain ADMIN is set but
+        // inprocess hasn't picked it up) OR we already retried after a
+        // successful authorize and inprocess still rejects — same
+        // outcome from the user's perspective. Don't loop them through
+        // another authorize prompt; show the wait-and-retry toast.
+        // Also clear any pending-retry intent so a stale auth-flow
+        // context doesn't auto-resubmit later.
+        if (isIndexerLag || (isAuthError && isRetry)) {
+          setPendingAirdropRetry(false)
+          toast.error("Inprocess hasn't picked up the authorize yet", {
             id: 'airdrop',
             description:
               'On-chain ADMIN is set but the inprocess indexer is still catching up. Wait a minute and tap airdrop again.',
@@ -447,16 +452,22 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
 
       {/* Recipients */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+        <label
+          htmlFor="airdrop-recipient"
+          className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2"
+        >
           Recipients
         </label>
         <div className="flex gap-2 mb-2">
           <input
+            id="airdrop-recipient"
+            name="airdrop-recipient"
             type="text"
             value={recipientInput}
             onChange={(e) => setRecipientInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRecipient() } }}
             placeholder="0x… wallet address"
+            aria-label="Recipient wallet address"
             className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
           />
           <button
