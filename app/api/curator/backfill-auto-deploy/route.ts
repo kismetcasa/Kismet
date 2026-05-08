@@ -4,11 +4,12 @@ import { INPROCESS_API } from '@/lib/inprocess'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import { verifyPrivilegedSession } from '@/lib/curator'
 
-// Curator-gated one-shot. Walks kismetart:collections and marks any
-// contract holding ≤ 1 moment as an auto-deploy wrapper, retroactively
-// pulling legacy first-mint contracts out of the Collections feed.
-// Idempotent — re-running only marks contracts that crossed back below
-// the threshold (which can't happen on chain anyway).
+// Curator-gated one-shot. Marks any tracked contract holding exactly
+// one moment as an auto-deploy wrapper — pulls legacy first-mint
+// contracts out of the Collections feed without touching empty
+// Create Collection deploys (count = 0, indexer lag tolerated by
+// re-running) or multi-mint Create Collection deploys (count > 1).
+// Idempotent.
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as {
     signature?: string
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest) {
       if (!res.ok) continue
       const data = await res.json()
       const moments = Array.isArray(data.moments) ? data.moments : []
-      if (moments.length <= 1) {
+      if (moments.length === 1) {
         const added = await redis.sadd('kismetart:auto-deploy-collections', addr)
         if (Number(added) > 0) marked++
       }
