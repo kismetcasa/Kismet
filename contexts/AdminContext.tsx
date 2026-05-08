@@ -12,6 +12,13 @@ interface AdminSession {
   timestamp: number
 }
 
+/** Auth fields a curator/admin call to a privileged endpoint must include. */
+export interface PrivilegedAuth {
+  signature: string
+  timestamp: number
+  signerAddress: string
+}
+
 interface AdminContextValue {
   isAdmin: boolean
   // Curators share the admin's featured-feed permissions (add/remove
@@ -25,6 +32,12 @@ interface AdminContextValue {
   featuredCollectionAddrs: Set<string>
   toggleFeatured: (collectionAddress: string, tokenId: string) => Promise<void>
   toggleFeaturedCollection: (collectionAddress: string) => Promise<void>
+  // Run `fn` with a valid privileged session, auto-prompting a one-time
+  // signature if none is cached. Returns whatever `fn` returns, or null
+  // when the caller isn't privileged or cancels the signature prompt.
+  // Used by curator surfaces (creator-list editor) so they don't have
+  // to re-implement the session dance that toggleFeatured does.
+  withSession: <T>(fn: (auth: PrivilegedAuth) => Promise<T>) => Promise<T | null>
 }
 
 const AdminContext = createContext<AdminContextValue>({
@@ -36,6 +49,7 @@ const AdminContext = createContext<AdminContextValue>({
   featuredCollectionAddrs: new Set(),
   toggleFeatured: async () => {},
   toggleFeaturedCollection: async () => {},
+  withSession: async () => null,
 })
 
 export function useAdmin() {
@@ -178,6 +192,20 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     [address, isAdmin, isCurator, startSession, featuredKeys],
   )
 
+  const withSession = useCallback(
+    async <T,>(fn: (auth: PrivilegedAuth) => Promise<T>): Promise<T | null> => {
+      if (!address || (!isAdmin && !isCurator)) return null
+      let s = sessionRef.current
+      if (!s) {
+        await startSession()
+        s = sessionRef.current
+        if (!s) return null
+      }
+      return fn({ signature: s.signature, timestamp: s.timestamp, signerAddress: address })
+    },
+    [address, isAdmin, isCurator, startSession],
+  )
+
   const toggleFeaturedCollection = useCallback(
     async (collectionAddress: string) => {
       if (!address || (!isAdmin && !isCurator)) return
@@ -232,6 +260,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         featuredCollectionAddrs,
         toggleFeatured,
         toggleFeaturedCollection,
+        withSession,
       }}
     >
       {children}

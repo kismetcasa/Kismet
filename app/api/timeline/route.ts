@@ -55,13 +55,48 @@ export async function GET(req: NextRequest) {
   const scope: CollectionScope =
     rawScope === 'standalone' || rawScope === 'collections' ? rawScope : 'all'
 
+  // Curated allowlist: ?creators=0xabc,0xdef restricts the merged feed
+  // to moments by these creators. Empty value (?creators=) returns
+  // nothing — explicit, so a roster tab with an empty list shows its
+  // empty state instead of the full feed. Garbage entries (non-EOA
+  // strings) are silently dropped rather than 400'd, so a partially-
+  // valid allowlist still works.
+  const creatorsParam = searchParams.get('creators')
+  const creatorsSet =
+    creatorsParam !== null
+      ? new Set(
+          creatorsParam
+            .split(',')
+            .map((a) => a.trim().toLowerCase())
+            .filter((a) => /^0x[a-f0-9]{40}$/.test(a)),
+        )
+      : null
+  const filterToCreators = creatorsSet !== null
+
+  // Timestamp cutoff: ?after=<ISO date> or <ms> filters merged moments to
+  // those minted on/after the cutoff. Used by the trending "this week"
+  // toggle and as the primitive for future event/show surfaces. Invalid
+  // input is silently ignored (matches the rest of the route's lenient
+  // parsing of pagination params).
+  const afterParam = searchParams.get('after')
+  let afterCutoff: number | null = null
+  if (afterParam) {
+    const asInt = /^\d+$/.test(afterParam) ? parseInt(afterParam, 10) : NaN
+    const parsed = Number.isFinite(asInt) ? asInt : Date.parse(afterParam)
+    if (Number.isFinite(parsed)) afterCutoff = parsed
+  }
+
   const collections = singleCollection
     ? [singleCollection]
     : await getTrackedCollectionsByScope(scope)
 
-  // Trending and featured need larger samples for cross-collection sorting
-  const fetchLimit =
-    sort === 'trending' || featured ? Math.max(page * limit, 200) : page * limit
+  // Bump the per-collection sample size whenever cross-collection sorting,
+  // featured curation, or post-merge filtering could thin the result set
+  // below `page * limit`. Without this, narrow ?creators= or ?after=
+  // filters could empty paginated pages even when matches exist deeper.
+  const needsLargerSample =
+    sort === 'trending' || featured || filterToCreators || afterCutoff !== null
+  const fetchLimit = needsLargerSample ? Math.max(page * limit, 200) : page * limit
   const results = await Promise.all(collections.map((c) => fetchCollection(c, fetchLimit)))
 
   // Merge and deduplicate
@@ -73,6 +108,29 @@ export async function GET(req: NextRequest) {
     seen.add(key)
     return true
   })
+
+  // Curated creator allowlist — narrows to moments by the listed creators.
+  // Applied early (before the broader `creator` profile filter and before
+  // sort/featured) so downstream stages all see the already-narrowed set.
+  if (filterToCreators && creatorsSet) {
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { creator?: { address?: string } }
+      const addr = moment.creator?.address?.toLowerCase()
+      return addr ? creatorsSet.has(addr) : false
+    })
+  }
+
+  // Timestamp cutoff — drops moments whose created_at is strictly before
+  // the cutoff. inprocess returns ISO strings; Date.parse handles both
+  // ISO and RFC 2822, and NaN compares unfavourably so missing/garbage
+  // created_at falls out of the window.
+  if (afterCutoff !== null) {
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { created_at?: string }
+      const ts = moment.created_at ? Date.parse(moment.created_at) : NaN
+      return Number.isFinite(ts) && ts >= afterCutoff
+    })
+  }
 
   // Creator filter (Featured / Profile feeds)
   if (creator) {

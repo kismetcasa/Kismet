@@ -12,27 +12,39 @@ import { useAdmin } from '@/contexts/AdminContext'
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
-type TabId = 'featured' | 'trending' | 'main' | 'market'
+type TabId = 'featured' | 'trending' | 'main' | 'roster' | 'market'
 
-const DRAGGABLE: TabId[] = ['main', 'featured', 'trending']
+const DRAGGABLE: TabId[] = ['main', 'featured', 'trending', 'roster']
 const LABEL: Record<TabId, string> = {
   featured: 'featured',
   trending: 'trending',
   main: 'main',
+  roster: 'roster',
   market: 'market',
 }
 
 const ORDER_KEY = 'kismetart:tab-order'
 
+// Reconcile a stored tab order with the current DRAGGABLE list: keep
+// recognized entries in their saved positions, drop unknowns, and append
+// any newly-added tabs at the end. Without the reconcile, adding a new
+// draggable tab (like 'roster') would invalidate every existing user's
+// stored order and reset them all to defaults.
 function loadOrder(): TabId[] {
   if (typeof window === 'undefined') return DRAGGABLE
   try {
     const raw = localStorage.getItem(ORDER_KEY)
     if (!raw) return DRAGGABLE
-    const parsed = JSON.parse(raw) as TabId[]
-    if (parsed.length === 3 && DRAGGABLE.every((t) => parsed.includes(t))) return parsed
-  } catch {}
-  return DRAGGABLE
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return DRAGGABLE
+    const valid = parsed.filter(
+      (t): t is TabId => typeof t === 'string' && DRAGGABLE.includes(t as TabId),
+    )
+    const missing = DRAGGABLE.filter((t) => !valid.includes(t))
+    return [...valid, ...missing]
+  } catch {
+    return DRAGGABLE
+  }
 }
 
 // ─── tab bar ─────────────────────────────────────────────────────────────────
@@ -68,12 +80,15 @@ function TabBar({
     dragIdx.current = null
   }
 
+  // Market is pinned to the right and not draggable; everything in `order`
+  // (whose length tracks DRAGGABLE) is. Computing the cutoff from order
+  // length keeps this honest if more draggable tabs are added later.
   const all: TabId[] = [...order, 'market']
 
   return (
     <div className="flex items-end gap-0 border-b border-[#2a2a2a]">
       {all.map((tab, idx) => {
-        const draggable = idx < 3
+        const draggable = idx < order.length
         const isActive = tab === active
         return (
           <button
@@ -489,15 +504,11 @@ export default function DiscoverPage() {
           </>
         )}
 
-        {active === 'trending' && (
-          <MomentFeed
-            feedKey="trending"
-            apiUrl="/api/timeline?sort=trending&scope=standalone"
-            emptyMessage="no collects recorded yet — trending appears as mints are collected"
-          />
-        )}
+        {active === 'trending' && <TrendingFeed />}
 
         {active === 'main' && <MainFeed />}
+
+        {active === 'roster' && <RosterFeed />}
 
         {active === 'market' && (
           <div className="pt-4">
@@ -506,5 +517,146 @@ export default function DiscoverPage() {
         )}
       </div>
     </div>
+  )
+}
+
+// ─── trending feed ───────────────────────────────────────────────────────────
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
+
+function TrendingFeed() {
+  const [weekOnly, setWeekOnly] = useState(false)
+  // The cutoff is computed when the toggle flips so the URL is stable
+  // across re-renders (otherwise feedKey would change every render and
+  // refetch perpetually). When weekOnly flips off, cutoff goes null.
+  const cutoff = weekOnly ? Date.now() - SEVEN_DAYS_MS : null
+
+  const apiUrl = (() => {
+    const params = new URLSearchParams({ sort: 'trending', scope: 'standalone' })
+    if (cutoff !== null) params.set('after', String(cutoff))
+    return `/api/timeline?${params.toString()}`
+  })()
+
+  // Bucket the cutoff to the day so toggling on/off within the same day
+  // doesn't churn feedKey or the network. Date.now bucket changes once a
+  // day, refreshing the cutoff naturally.
+  const bucket = cutoff !== null ? Math.floor(cutoff / (24 * 60 * 60 * 1000)) : 'all'
+  const feedKey = `trending-${bucket}`
+
+  const header = (
+    <button
+      onClick={() => setWeekOnly((v) => !v)}
+      className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
+        weekOnly
+          ? 'border-[#efefef] text-[#efefef]'
+          : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888]'
+      }`}
+    >
+      this week
+    </button>
+  )
+
+  return (
+    <MomentFeed
+      feedKey={feedKey}
+      apiUrl={apiUrl}
+      header={header}
+      emptyMessage={
+        weekOnly
+          ? 'no collects in the last 7 days — try the all-time view'
+          : 'no collects recorded yet — trending appears as mints are collected'
+      }
+    />
+  )
+}
+
+// ─── roster feed ─────────────────────────────────────────────────────────────
+
+interface CreatorListLite {
+  slug: string
+  name: string
+  addresses: string[]
+}
+
+function RosterFeed() {
+  const [lists, setLists] = useState<CreatorListLite[]>([])
+  const [activeSlug, setActiveSlug] = useState<string | null>(null)
+  const [listsLoaded, setListsLoaded] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/creator-lists')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d: { lists?: CreatorListLite[] }) => {
+        const next = Array.isArray(d.lists) ? d.lists : []
+        setLists(next)
+        setActiveSlug(next[0]?.slug ?? null)
+      })
+      .catch(() => {})
+      .finally(() => setListsLoaded(true))
+  }, [])
+
+  const activeList = lists.find((l) => l.slug === activeSlug) ?? null
+
+  // No lists at all → empty state with curator hint. Don't render
+  // MomentFeed since there's nothing to query.
+  if (listsLoaded && lists.length === 0) {
+    return (
+      <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center mt-4">
+        <p className="text-sm font-mono text-[#555]">
+          no creator rosters yet
+        </p>
+        <p className="text-xs font-mono text-[#444] mt-2">
+          a curator can create one from their profile
+        </p>
+      </div>
+    )
+  }
+
+  // Empty list selected → don't fire the API call (?creators= would be
+  // empty → match-nothing); show empty state inline.
+  const apiUrl =
+    activeList && activeList.addresses.length > 0
+      ? `/api/timeline?creators=${activeList.addresses.join(',')}`
+      : null
+
+  const header = lists.length > 0 ? (
+    <div className="flex items-center gap-2 flex-wrap">
+      {lists.map((l) => (
+        <button
+          key={l.slug}
+          onClick={() => setActiveSlug(l.slug)}
+          className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
+            l.slug === activeSlug
+              ? 'border-[#efefef] text-[#efefef]'
+              : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888]'
+          }`}
+        >
+          {l.name}
+          <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
+        </button>
+      ))}
+    </div>
+  ) : null
+
+  if (!apiUrl) {
+    return (
+      <div>
+        <div className="py-4">{header}</div>
+        <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
+          <p className="text-sm font-mono text-[#555]">
+            {activeList ? 'this list has no creators yet' : 'select a roster'}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <MomentFeed
+      feedKey={`roster-${activeSlug ?? ''}`}
+      apiUrl={apiUrl}
+      header={header}
+      emptyMessage="no moments yet from this roster"
+    />
   )
 }

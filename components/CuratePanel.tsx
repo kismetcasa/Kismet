@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
-import { Star, Check, X } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Star, Check, X, Plus, Pencil } from 'lucide-react'
 import { isAddress } from 'viem'
 import { useAdmin } from '@/contexts/AdminContext'
+import { CreatorListEditor, type CreatorListShape } from './CreatorListEditor'
 
 // Accept the canonical /moment/<address>/<tokenId> URL format used elsewhere
 // in the app, plus the bare `<address>/<tokenId>` shorthand. Returns null
@@ -40,6 +41,23 @@ export function CuratePanel() {
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  // Creator-list state. `editing` is the slug currently in the editor; null
+  // means no editor is open. The sentinel '__new__' opens the editor in
+  // create mode without a list to back-fill from. Lists are fetched once
+  // on mount and patched in place after each save/delete so we don't pay
+  // a round-trip after every mutation.
+  const [lists, setLists] = useState<CreatorListShape[]>([])
+  const [editing, setEditing] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch('/api/creator-lists')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d: { lists?: CreatorListShape[] }) => {
+        if (Array.isArray(d.lists)) setLists(d.lists)
+      })
+      .catch(() => {})
+  }, [])
 
   async function handleSubmit() {
     setFeedback(null)
@@ -126,6 +144,84 @@ export function CuratePanel() {
           </ul>
         </div>
       )}
+
+      {/* Creator lists — published rosters reachable from the homepage Roster
+          tab. Edits go through AdminContext.withSession, so the curator
+          signs once per 4-hour session even when editing multiple lists. */}
+      <div className="flex flex-col gap-2 border-t border-[#1a1a1a] pt-4">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
+            creator lists ({lists.length})
+          </p>
+          {editing !== '__new__' && (
+            <button
+              onClick={() => setEditing('__new__')}
+              className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#efefef] transition-colors"
+            >
+              <Plus size={10} />
+              new list
+            </button>
+          )}
+        </div>
+
+        {editing === '__new__' && (
+          <CreatorListEditor
+            list={null}
+            onClose={() => setEditing(null)}
+            onSaved={(next) => {
+              setLists((prev) => [...prev, next])
+              setEditing(null)
+            }}
+            onDeleted={() => setEditing(null)}
+          />
+        )}
+
+        {lists.length === 0 && editing !== '__new__' && (
+          <p className="text-[11px] font-mono text-[#444]">
+            no lists yet — create one to expose a curated roster on the homepage.
+          </p>
+        )}
+
+        <ul className="flex flex-col gap-1">
+          {lists.map((l) =>
+            editing === l.slug ? (
+              <li key={l.slug}>
+                <CreatorListEditor
+                  list={l}
+                  onClose={() => setEditing(null)}
+                  onSaved={(next) => {
+                    setLists((prev) => prev.map((x) => (x.slug === next.slug ? next : x)))
+                    setEditing(null)
+                  }}
+                  onDeleted={(slug) => {
+                    setLists((prev) => prev.filter((x) => x.slug !== slug))
+                    setEditing(null)
+                  }}
+                />
+              </li>
+            ) : (
+              <li
+                key={l.slug}
+                className="flex items-center justify-between gap-2 px-2.5 py-2 border border-[#1a1a1a] hover:border-[#2a2a2a] transition-colors"
+              >
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-mono text-[#efefef] truncate">{l.name}</span>
+                  <span className="text-[10px] font-mono text-[#555]">
+                    {l.slug} · {l.addresses.length} {l.addresses.length === 1 ? 'creator' : 'creators'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setEditing(l.slug)}
+                  className="text-[#555] hover:text-[#efefef] transition-colors flex-shrink-0"
+                  title="edit"
+                >
+                  <Pencil size={11} />
+                </button>
+              </li>
+            ),
+          )}
+        </ul>
+      </div>
     </div>
   )
 }

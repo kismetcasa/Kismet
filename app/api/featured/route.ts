@@ -1,43 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
-import { CURATOR_ADDRESSES } from '@/lib/config'
-
-const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
-const SESSION_TTL = 4 * 60 * 60 * 1000 // 4 hours in ms
-
-// Verify a session signature from either the admin or any allowlisted
-// curator. The signed message embeds the signer's own address (matching
-// what AdminContext signs client-side), and we accept the request only
-// if (a) the signature recovers to that address and (b) the address is
-// one of the privileged ones. signerAddress is required so a forged
-// curator address can't piggyback on an admin's signature.
-async function verifyPrivilegedSession(body: {
-  signature?: string
-  timestamp?: number
-  signerAddress?: string
-}): Promise<{ error: string; status: number } | null> {
-  if (!body.signature || body.timestamp == null || !body.signerAddress) {
-    return { error: 'signature, timestamp, and signerAddress required', status: 400 }
-  }
-  if (Date.now() - body.timestamp > SESSION_TTL) {
-    return { error: 'Session expired — please sign in again', status: 401 }
-  }
-  const signer = body.signerAddress.toLowerCase()
-  const allowed =
-    (!!ADMIN_ADDRESS && signer === ADMIN_ADDRESS) || CURATOR_ADDRESSES.includes(signer)
-  if (!allowed) return { error: 'Not authorized', status: 403 }
-
-  const message = `Kismet Art admin session\nAddress: ${signer}\nTimestamp: ${body.timestamp}`
-  const verified = await verifyMessage({
-    address: signer as `0x${string}`,
-    message,
-    signature: body.signature as `0x${string}`,
-  })
-  if (!verified) return { error: 'Signature verification failed', status: 401 }
-  return null
-}
+import { verifyPrivilegedSession } from '@/lib/curator'
 
 // GET /api/featured — public, returns both featured moments + collections
 // ordered by recency. Existing consumers reading `featured` keep working;
