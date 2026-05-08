@@ -229,6 +229,17 @@ export async function GET(req: NextRequest) {
   const moments = merged.slice(start, start + limit)
   const total_pages = Math.max(1, Math.ceil(merged.length / limit))
 
+  // Visibility for "empty feed" reports — lets us tell at a glance whether
+  // the issue is fan-out (no tracked collections), upstream (inprocess
+  // returned nothing), or filtering (over-eager scope/hide/creator).
+  if (moments.length === 0) {
+    console.log('[timeline] empty', {
+      scope, collections: collections.length,
+      mergedBeforeFilter: results.flat().length, mergedAfterFilter: merged.length,
+      filters: { creator, collector, airdroppable, featured, sort, filterToCreators, hasFollowing: !!followingSet?.size },
+    })
+  }
+
   return NextResponse.json({
     status: 'success',
     moments,

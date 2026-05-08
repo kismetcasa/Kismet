@@ -127,6 +127,13 @@ export async function GET(req: NextRequest) {
         }
       }),
     )
+    // Visibility for "empty feed" reports — distinguishes "nothing tracked
+    // yet" from "tracked but inprocess+KV both returned nothing".
+    if (collections.length === 0) {
+      console.log('[collections feed] empty', {
+        userCreated: userCreated.length, hidden: hiddenSet.size, visible: visible.length,
+      })
+    }
     return NextResponse.json({
       collections,
       pagination: { page, limit, total, total_pages },
