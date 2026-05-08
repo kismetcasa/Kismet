@@ -169,6 +169,14 @@ export async function POST(req: NextRequest) {
   // fresh tokens the indexer hasn't picked up yet.
   const callerLower = body.callerAddress.toLowerCase()
   let authorized = false
+  // Capture inprocess's reported admin set so the upstream-error
+  // branch below can surface it for diagnostics — comparing
+  // momentAdmins (inprocess's view) against the on-chain ADMIN
+  // grants tells us whether a rejection is indexer lag (operator
+  // missing from the list, but on-chain ADMIN is set) or a wallet
+  // mismatch (operator IS in the list but inprocess still rejects,
+  // meaning they route through some other identity entirely).
+  let inprocessMomentAdmins: string[] = []
   try {
     const momentUrl = new URL(`${INPROCESS_API}/moment`)
     momentUrl.searchParams.set('collectionAddress', body.collectionAddress)
@@ -182,6 +190,7 @@ export async function POST(req: NextRequest) {
             .filter((a): a is string => typeof a === 'string')
             .map((a) => a.toLowerCase())
         : []
+      inprocessMomentAdmins = adminsLower
       authorized = adminsLower.includes(callerLower)
     }
   } catch {
@@ -310,34 +319,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // api.inprocess.world wants the body wrapped in `moment: {…}`
-  // (rejects the flat shape the public docs cURL on inprocess.world
-  // shows — empirically the validator demands the envelope). Per-
-  // recipient tokenIds stay on each recipient; the validator above
-  // enforces uniformity so one signature can't fan out across tokens.
+  // SWITCHING HOSTS: hit the documented public route at
+  // https://inprocess.world/api/moment/airdrop (NOT api.inprocess.world)
+  // with the flat shape the published docs show. The earlier iteration
+  // landed on api.inprocess.world's stricter validator that rejects the
+  // flat shape and demands a `moment: {…}` envelope — but successful
+  // airdrops via that host routed through a smart wallet our preflight
+  // couldn't pin down (every grant we tried still produced "admin
+  // permission" upstream). The public route is the one the docs
+  // explicitly point at; it may handle wallet routing differently
+  // (e.g. honor the API key's bound artist directly without needing
+  // an `account` override).
   //
-  // `account` is undocumented on the airdrop endpoint but is the
-  // same override mint-proxy sends to /moment/create (see
-  // lib/mint-proxy.ts). Without it, inprocess routes the call through
-  // whichever smart wallet the platform `INPROCESS_API_KEY` resolves
-  // to — which is NOT the artist's smart wallet (the one that holds
-  // ADMIN at deploy time via Kismet's setupActions). The chain check
-  // passes, the upstream call rejects, and the user is stuck.
-  // Forwarding the artist's EOA here lets inprocess re-derive the
-  // artist's smart wallet and call as that identity — the same one
-  // with ADMIN.
+  // `account` is undocumented on this endpoint but is the same override
+  // mint-proxy sends to /moment/create successfully. Keep it — if the
+  // public route ignores unknown fields it's harmless, if it honors it
+  // that's a bonus.
   const upstreamPayload = {
-    moment: {
-      collectionAddress: body.collectionAddress,
-      tokenId,
-      chainId: 8453,
-    },
+    collectionAddress: body.collectionAddress,
     recipients: body.recipients,
     account: body.callerAddress,
   }
+  // Resolve from INPROCESS_API by stripping the api.* subdomain. Keeps
+  // every other endpoint on api.inprocess.world (mint, write, timeline,
+  // smart-wallet lookup, etc. — all known-working there) and only flips
+  // the airdrop call to the public host.
+  const airdropEndpoint = `${INPROCESS_API.replace('https://api.', 'https://')}/moment/airdrop`
 
   try {
-    const res = await fetch(`${INPROCESS_API}/moment/airdrop`, {
+    const res = await fetch(airdropEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -409,11 +419,29 @@ export async function POST(req: NextRequest) {
           '',
       )
       const upstreamSent = {
-        collectionAddress: upstreamPayload.moment.collectionAddress,
-        tokenId: upstreamPayload.moment.tokenId,
+        endpoint: airdropEndpoint,
+        collectionAddress: upstreamPayload.collectionAddress,
+        tokenId,
         recipientCount: upstreamPayload.recipients.length,
         account: upstreamPayload.account,
       }
+      // Surface inprocess's own view of the collection's admin set so
+      // the next failure tells us which scenario we're in:
+      //
+      //   1. operator NOT in inprocessMomentAdmins, but on-chain perms
+      //      show ADMIN → real indexer lag. Inprocess just hasn't
+      //      re-indexed since our addPermission tx landed. Wait + retry.
+      //   2. operator IS in inprocessMomentAdmins, upstream STILL says
+      //      "no admin" → inprocess sees the grant but routes airdrops
+      //      through some OTHER wallet. The OPERATOR_SMART_WALLET we
+      //      configured isn't actually the right grantee for airdrop;
+      //      identify the real one and re-grant.
+      //   3. operator NOT in inprocessMomentAdmins AND on-chain perms
+      //      ALSO show no ADMIN → the addPermission tx never landed
+      //      (user signed but it reverted, or wrong collection). Banner
+      //      should re-show.
+      const operatorLower = process.env.OPERATOR_SMART_WALLET?.toLowerCase()
+      const operatorInInprocessAdmins = !!operatorLower && inprocessMomentAdmins.includes(operatorLower)
       return NextResponse.json(
         treatAsIndexerLag
           ? {
@@ -425,6 +453,8 @@ export async function POST(req: NextRequest) {
               upstreamSent,
               smartWallet: preflightSnapshot.smartWallet,
               perms: preflightSnapshot.perms,
+              inprocessMomentAdmins,
+              operatorInInprocessAdmins,
             }
           : {
               code: 'AUTHORIZE_REQUIRED',
@@ -435,6 +465,8 @@ export async function POST(req: NextRequest) {
               upstreamSent,
               smartWallet: preflightSnapshot.smartWallet,
               perms: preflightSnapshot.perms,
+              inprocessMomentAdmins,
+              operatorInInprocessAdmins,
             },
         { status: 403 },
       )
