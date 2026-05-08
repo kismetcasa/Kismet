@@ -74,6 +74,23 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     !hasAdminBit(
       (airdropPerms[0].result as bigint) | (airdropPerms[1].result as bigint),
     )
+  // Inverse signal — both reads succeeded AND the OR'd result holds
+  // ADMIN. When this is true, the inprocess smart wallet provably has
+  // collection-wide-or-token-scoped ADMIN at this very moment from
+  // *our* RPC's view of chain state, so any "admin permission" reject
+  // from the upstream airdrop call is indexer lag, not a real auth
+  // miss. We use it below to skip the Authorize prompt entirely
+  // for moments minted through Kismet — the deploy flow already
+  // granted ADMIN at tokenId 0.
+  const airdropChainAuthorized =
+    !!selected &&
+    !!smartWallet &&
+    airdropPerms?.length === 2 &&
+    airdropPerms[0].status === 'success' &&
+    airdropPerms[1].status === 'success' &&
+    hasAdminBit(
+      (airdropPerms[0].result as bigint) | (airdropPerms[1].result as bigint),
+    )
 
   useEffect(() => {
     if (!authReceipt) return
@@ -273,12 +290,15 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           /admin permission/i.test(authMessage)
         // Server tagged this as indexer lag (chain ADMIN is set but
         // inprocess hasn't picked it up) OR we already retried after a
-        // successful authorize and inprocess still rejects — same
-        // outcome from the user's perspective. Don't loop them through
-        // another authorize prompt; show the wait-and-retry toast.
-        // Also clear any pending-retry intent so a stale auth-flow
-        // context doesn't auto-resubmit later.
-        if (isIndexerLag || (isAuthError && isRetry)) {
+        // successful authorize and inprocess still rejects OR our own
+        // chain reads prove ADMIN is set (so any upstream auth reject
+        // must be lag, not a real miss — covers the case where the
+        // server-side RPC blip degraded its preflight to 'unknown').
+        // Same outcome from the user's perspective: don't loop them
+        // through another authorize prompt; show the wait-and-retry
+        // toast and clear pending-retry intent so a stale auth-flow
+        // context can't auto-resubmit later.
+        if (isIndexerLag || (isAuthError && (isRetry || airdropChainAuthorized))) {
           setPendingAirdropRetry(false)
           toast.error("Inprocess hasn't picked up the authorize yet", {
             id: 'airdrop',
