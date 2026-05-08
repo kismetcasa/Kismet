@@ -6,6 +6,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API, resolveUri, type MomentDetail } from '@/lib/inprocess'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
+import { getMomentMeta as getKvMomentMeta } from '@/lib/notifications'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { MomentDetailView } from '@/components/MomentDetailView'
@@ -70,6 +71,25 @@ const getInitialCollectionMeta = cache(async (
   return { name: kv.name, image: kv.image }
 })
 
+// Authoritative creator EOA for moments minted through Kismet. mint-proxy
+// writes this to KV the instant the upstream call lands, so it's available
+// even before inprocess's timeline indexes the new moment. We thread it
+// into MomentDetailView so the creator chip resolves to the EOA's Kismet
+// profile (where username "Turro" lives) instead of falling back to
+// `momentAdmins[0]` which is typically a smart wallet / platform admin
+// with no profile attached.
+const getKvCreatorAddress = cache(async (
+  address: string,
+  tokenId: string,
+): Promise<string | undefined> => {
+  try {
+    const meta = await getKvMomentMeta(address, tokenId)
+    return meta?.creator
+  } catch {
+    return undefined
+  }
+})
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address, tokenId } = await params
   if (!isAddress(address) || !isValidTokenId(tokenId)) {
@@ -112,18 +132,21 @@ export default async function MomentPage({ params }: Props) {
   const sessionToken = cookieStore.get(SESSION_COOKIE)?.value
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
-  const [detail, fallbackMeta, initialCollectionMeta] = await Promise.all([
+  const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress] = await Promise.all([
     fetchDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
     getInitialCollectionMeta(address),
+    getKvCreatorAddress(address, tokenId),
   ])
 
   // Prefer the dedicated `creator` field injected by /api/moment from the
-  // timeline lookup. Fall back to momentAdmins[0] for backwards-compat
-  // (older cached responses, moments minted outside the Kismet flow where
-  // momentAdmins[0] happens to be the minter).
+  // timeline lookup, then KV moment-meta (Kismet-deployed moments — set
+  // synchronously at mint time so it's there even before inprocess
+  // indexes), then fall back to momentAdmins[0] for moments minted
+  // outside the Kismet flow.
   const creator =
     detail?.creator?.address?.toLowerCase() ??
+    kvCreatorAddress?.toLowerCase() ??
     detail?.momentAdmins?.[0]?.toLowerCase()
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator
@@ -167,6 +190,7 @@ export default async function MomentPage({ params }: Props) {
       initialDetail={detail}
       fallbackMeta={fallbackMeta}
       initialCollectionMeta={initialCollectionMeta}
+      kvCreatorAddress={kvCreatorAddress}
       initialTextContent={initialTextContent}
     />
   )

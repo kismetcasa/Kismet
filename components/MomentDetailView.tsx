@@ -45,6 +45,14 @@ interface Props {
   // this the chip pops in once the client-side /api/collections fetch lands;
   // pre-loading from KV at SSR time keeps it on the first paint.
   initialCollectionMeta?: { name?: string; image?: string }
+  // EOA creator address from KV moment-meta (mint-proxy writes this at
+  // mint time). Authoritative for Kismet-minted moments before the
+  // inprocess timeline indexes them. We prefer it over momentAdmins[0]
+  // because that fallback is typically the platform/smart-wallet admin
+  // — looking up a Kismet profile against a smart wallet finds nothing
+  // and the chip degrades to a raw address even when the user has a
+  // username set against their EOA.
+  kvCreatorAddress?: string
   // Server-prefetched body for text moments — warms the module-level cache
   // so the writing panel renders on first paint without a client fetch.
   initialTextContent?: string
@@ -52,7 +60,7 @@ interface Props {
 
 const TOP_COMMENTS = 3
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, initialTextContent }: Props) {
+export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent }: Props) {
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
@@ -186,11 +194,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   })
 
   const isFeatured = featuredKeys.has(`${address.toLowerCase()}:${tokenId}`)
-  // Prefer the dedicated `creator` field injected by /api/moment from the
-  // timeline lookup; momentAdmins is unordered and [0] is often a platform
-  // admin rather than the minter. Empty-string fallback preserves the
-  // pre-existing isCreator behaviour when both are absent.
-  const creatorAddress = detail?.creator?.address ?? detail?.momentAdmins[0] ?? ''
+  // Resolution order for the moment's creator EOA:
+  //   1. detail.creator.address — inprocess timeline's dedicated creator
+  //      field (preferred when indexed).
+  //   2. kvCreatorAddress — the EOA mint-proxy wrote to KV moment-meta
+  //      at mint time. Available immediately for Kismet-minted moments,
+  //      so we don't degrade to (3) during the brief window before
+  //      inprocess catches up.
+  //   3. detail.momentAdmins[0] — last-resort fallback. Unordered; often
+  //      the platform/smart-wallet admin which has no Kismet profile,
+  //      so the display name lookup degrades to a raw address. Kept for
+  //      moments minted outside the Kismet flow where neither (1) nor
+  //      (2) is populated.
+  const creatorAddress =
+    detail?.creator?.address ?? kvCreatorAddress ?? detail?.momentAdmins[0] ?? ''
   const isHidden = detail?.hidden === true
   const [hidePending, setHidePending] = useState(false)
   const isCreator =
