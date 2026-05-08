@@ -9,9 +9,10 @@ import { Plus, ShieldCheck, X } from 'lucide-react'
 import Image from 'next/image'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
-import { fetchInprocessSmartWallet, useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
+import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { COLLECTION_ABI } from '@/lib/collections'
+import { OPERATOR_SMART_WALLET } from '@/lib/config'
 import { hasAdminBit } from '@/lib/permissions'
 
 interface AirdropFormProps {
@@ -52,34 +53,49 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   // error, cleared on the retry attempt or on auth failure.
   const [pendingAirdropRetry, setPendingAirdropRetry] = useState(false)
 
-  // Permission preflight on the SELECTED moment's collection. We OR the
-  // collection-wide row with the per-token row (mirrors Zora's
-  // _hasAnyPermission), so a creator who is per-token admin on a
-  // shared collection like the platform contract still passes.
-  const { address: smartWallet } = useInprocessSmartWallet(address)
+  // Permission preflight on the SELECTED moment's collection. The
+  // grantee that matters for airdrop is OPERATOR_SMART_WALLET — the
+  // platform CDP smart wallet inprocess routes user-relayed adminMint
+  // calls through under our shared INPROCESS_API_KEY (see
+  // OPERATOR_SMART_WALLET docs in .env.example and lib/healthcheck.ts).
+  // We OR the collection-wide row with the per-token row (mirrors
+  // Zora's _hasAnyPermission), so a single ADMIN at either scope passes.
+  // Artist's own smart wallet is no longer read here — that grant is
+  // necessary for /api/moment/create routing (which mint-proxy already
+  // handles via the `account` override) but doesn't unlock airdrop.
+  // Resolved purely so the artist's own smart-wallet hint can flow
+  // into the legacy AUTHORIZE_REQUIRED toast (responseData.smartWallet)
+  // when the server falls back to its artist-wallet preflight (operator
+  // env unset / RPC failure). For the primary banner + grant flow we
+  // use operatorAddress below, not this.
+  useInprocessSmartWallet(address)
+  const operatorAddress =
+    OPERATOR_SMART_WALLET && isAddress(OPERATOR_SMART_WALLET)
+      ? (OPERATOR_SMART_WALLET as `0x${string}`)
+      : null
   const { data: airdropPerms } = useReadContracts({
     contracts:
-      selected && smartWallet && isAddress(smartWallet)
+      selected && operatorAddress
         ? [
             {
               address: selected.address as `0x${string}`,
               abi: COLLECTION_ABI,
               functionName: 'permissions' as const,
-              args: [0n, smartWallet as `0x${string}`] as const,
+              args: [0n, operatorAddress] as const,
             },
             {
               address: selected.address as `0x${string}`,
               abi: COLLECTION_ABI,
               functionName: 'permissions' as const,
-              args: [BigInt(selected.token_id), smartWallet as `0x${string}`] as const,
+              args: [BigInt(selected.token_id), operatorAddress] as const,
             },
           ]
         : [],
-    query: { enabled: !!selected && !!smartWallet },
+    query: { enabled: !!selected && !!operatorAddress },
   })
   const airdropPreflightUnauthorized =
     !!selected &&
-    !!smartWallet &&
+    !!operatorAddress &&
     airdropPerms?.length === 2 &&
     airdropPerms[0].status === 'success' &&
     airdropPerms[1].status === 'success' &&
@@ -87,16 +103,15 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       (airdropPerms[0].result as bigint) | (airdropPerms[1].result as bigint),
     )
   // Inverse signal — both reads succeeded AND the OR'd result holds
-  // ADMIN. When this is true, the inprocess smart wallet provably has
-  // collection-wide-or-token-scoped ADMIN at this very moment from
-  // *our* RPC's view of chain state, so any "admin permission" reject
-  // from the upstream airdrop call is indexer lag, not a real auth
-  // miss. We use it below to skip the Authorize prompt entirely
-  // for moments minted through Kismet — the deploy flow already
-  // granted ADMIN at tokenId 0.
+  // ADMIN on the operator wallet. When this is true, the platform
+  // operator wallet provably has collection-wide-or-token-scoped
+  // ADMIN from *our* RPC's view of chain state, so any "admin
+  // permission" reject from the upstream airdrop call is indexer
+  // lag, not a real auth miss. Used below to skip the Authorize
+  // prompt entirely for moments where the operator grant is in place.
   const airdropChainAuthorized =
     !!selected &&
-    !!smartWallet &&
+    !!operatorAddress &&
     airdropPerms?.length === 2 &&
     airdropPerms[0].status === 'success' &&
     airdropPerms[1].status === 'success' &&
@@ -218,16 +233,20 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       return
     }
     try {
-      // The artist's inprocess smart wallet is the entity that needs
-      // ADMIN — same as MintForm. Look it up from the connected EOA.
-      const smartWallet = await fetchInprocessSmartWallet(address)
-      if (!smartWallet || !isAddress(smartWallet)) {
-        throw new Error('Could not resolve your inprocess smart wallet')
+      // The OPERATOR smart wallet is the entity that needs ADMIN for
+      // airdrop to work — that's the wallet inprocess routes user-
+      // relayed adminMint calls through under our shared API key.
+      // Granting the artist's own smart wallet (what we used to do
+      // here) only unlocked the mint flow, never airdrop, because
+      // /moment/airdrop doesn't honor the `account` override the
+      // way /moment/create does.
+      if (!operatorAddress) {
+        throw new Error('Operator wallet not configured (NEXT_PUBLIC_OPERATOR_SMART_WALLET)')
       }
       toast.loading('Confirm in wallet…', { id: 'authorize-collection' })
       const outcome = await grant({
         collection: addr as `0x${string}`,
-        grantee: smartWallet as `0x${string}`,
+        grantee: operatorAddress,
         tokenId,
         bit: 'admin',
       })
@@ -605,22 +624,28 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </a>
       )}
 
-      {/* Inline Authorize CTA — shows only when the smart wallet is
+      {/* Inline Authorize CTA — shows when the operator wallet is
           missing ADMIN on the selected moment's collection (collection-
-          wide row + per-token row OR'd, matching the inprocess relay's
-          gate). Replaces the prior manual address input: the address
-          and tokenId are unambiguous from the picked moment, so the
-          user clicks once instead of typing. */}
-      {airdropPreflightUnauthorized && selected && (
+          wide row + per-token row OR'd, matching Zora's
+          _hasAnyPermission). The grant adds ADMIN on the operator
+          wallet — the platform CDP smart wallet that inprocess routes
+          adminMint userOps through under our shared API key. New
+          collections deployed via Kismet's Create Collection form
+          get this grant baked into setupActions, so this banner only
+          appears for legacy / pre-fix collections (and for auto-
+          deployed collections where the deploy ran inside inprocess
+          and we couldn't append a setupAction). */}
+      {airdropPreflightUnauthorized && selected && operatorAddress && (
         <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-start gap-2.5 min-w-0">
             <ShieldCheck size={16} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
             <div className="min-w-0">
               <p className="text-xs font-mono text-[#efefef]">
-                Authorize Kismet to airdrop this moment
+                Authorize Kismet platform for airdrops
               </p>
               <p className="text-[11px] font-mono text-[#888] mt-0.5">
-                One-time onchain grant on {shortAddress(selected.address)}, scoped to token #{selected.token_id}.
+                One-time onchain grant on {shortAddress(selected.address)} — Kismet&apos;s
+                operator wallet ({shortAddress(operatorAddress)}) needs ADMIN to airdrop on your behalf.
               </p>
             </div>
           </div>

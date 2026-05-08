@@ -19,6 +19,23 @@ export const RESIDENCIES_ADDRESS =
   process.env.NEXT_PUBLIC_RESIDENCIES_ADDRESS ||
   '0x58f19e55058057B04feAe2EEA88F90B84b7714Eb'
 
+// Inprocess operator smart wallet — the CDP smart account that submits
+// userOps on behalf of the platform identity for every relayed call
+// (mint, airdrop, write, distribute) made under our INPROCESS_API_KEY.
+// Each user-deployed collection grants this wallet ADMIN at deploy time
+// so admin-mint flows (notably airdrop) route through it cleanly without
+// requiring per-artist API keys. The boot healthcheck (lib/healthcheck.ts)
+// asserts the same wallet has ADMIN on PLATFORM_COLLECTION; this constant
+// extends the same identity to user collections.
+//
+// Server-only OPERATOR_SMART_WALLET stays in place for the healthcheck.
+// Public mirror is required because CreateCollectionForm runs in the
+// browser and bakes the address into setupActions at deploy time.
+// Both env vars must hold the same address; mismatch is a config bug
+// surfaced by the lib/healthcheck assertion at boot.
+export const OPERATOR_SMART_WALLET =
+  process.env.NEXT_PUBLIC_OPERATOR_SMART_WALLET ?? ''
+
 // Curator allowlist — addresses (besides ADMIN_ADDRESS) that can add or
 // remove entries from the featured feed. Each curator gets a "Curate"
 // section on their own profile page; on the server, /api/featured accepts
