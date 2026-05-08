@@ -213,18 +213,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // Inprocess expects the same `moment: { collectionAddress, tokenId,
-  // chainId }` envelope used by /moment/update-uri (their Zod validator
-  // returns "Invalid input: moment Invalid input: expected object, received
-  // undefined" when omitted). Recipients ride alongside as a flat array of
-  // { recipientAddress, tokenId } so per-recipient tokenIds are still
-  // permitted by the upstream schema.
+  // Inprocess /moment/airdrop expects a FLAT body — collectionAddress at
+  // the top level alongside recipients. The `moment: {...}` envelope used
+  // by /moment/update-uri does NOT apply here. Wrapping in `moment`
+  // produces "Invalid input: moment Invalid input: expected object,
+  // received undefined" — confusingly, the validator's error names the
+  // schema `moment`, not a field, so it's complaining that the request
+  // body itself didn't validate, not that a field is missing.
+  // Reference cURL from inprocess docs:
+  //   POST /api/moment/airdrop
+  //   { "collectionAddress": "0x…",
+  //     "recipients": [{"recipientAddress": "0x…", "tokenId": "1"}] }
   const upstreamPayload = {
-    moment: {
-      collectionAddress: body.collectionAddress,
-      tokenId,
-      chainId: 8453,
-    },
+    collectionAddress: body.collectionAddress,
     recipients: body.recipients,
   }
 
