@@ -4,7 +4,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
-import { redis } from '@/lib/redis'
+import { hasRegisteredSplits } from '@/lib/splits'
 import { USDC_BASE } from '@/lib/zoraMint'
 
 /**
@@ -87,11 +87,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
   }
 
-  // Token must have splits registered via our mint flow. Without this anyone
-  // could trigger distribute on arbitrary contract addresses.
-  const splitsKey = `kismetart:splits:${collectionAddress.toLowerCase()}:${tokenId}`
-  const hasSplits = await redis.get(splitsKey)
-  if (!hasSplits) {
+  // Token must have splits registered via our mint flow. Without this gate
+  // anyone could trigger distribute on arbitrary contract addresses.
+  if (!(await hasRegisteredSplits(collectionAddress, tokenId))) {
     return NextResponse.json({ error: 'No splits registered for this token' }, { status: 403 })
   }
 
