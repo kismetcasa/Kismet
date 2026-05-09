@@ -82,7 +82,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [collected, setCollected] = useState(false)
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
-  const [creatorName, setCreatorName] = useState('')
+  // Seed from the inprocess-provided username (or short address) up front so
+  // we don't flash a raw address before fetchCreatorProfile resolves —
+  // matches the seeding MomentCard already does on the discover grid.
+  const [creatorName, setCreatorName] = useState(() => {
+    const seedAddr =
+      initialDetail?.creator?.address ?? kvCreatorAddress ?? initialDetail?.momentAdmins?.[0] ?? ''
+    return initialDetail?.creator?.username || (seedAddr ? shortAddress(seedAddr) : '')
+  })
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
   const [linkCopied, setLinkCopied] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)

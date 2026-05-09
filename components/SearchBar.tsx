@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Search, Loader2, ExternalLink } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
-import { shortAddress } from '@/lib/inprocess'
+import { resolveUri, shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -13,6 +13,32 @@ interface SearchResults {
   users: Profile[]
   collections: CollectionMeta[]
   mints: MomentSearchResult[]
+}
+
+// Resolves ar://… / ipfs://… URIs and falls back to an initial-letter chip
+// when the image is missing or fails to load — matches SearchModal's
+// behavior so dropdown thumbnails don't render as empty gray squares.
+function ResultThumb({ src, alt, name }: { src?: string; alt: string; name: string }) {
+  const [errored, setErrored] = useState(false)
+  const showImage = !!src && !errored
+  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?'
+  return (
+    <div className="w-5 h-5 flex-shrink-0 overflow-hidden">
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={resolveUri(src!)}
+          alt={alt}
+          className="w-full h-full object-cover"
+          onError={() => setErrored(true)}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#8B5CF6]/30 to-[#C084FC]/15">
+          <span className="text-[9px] font-mono text-[#efefef]">{initial}</span>
+        </div>
+      )}
+    </div>
+  )
 }
 
 interface SearchBarProps {
@@ -153,9 +179,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                   onClick={close}
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
-                  {col.image
-                    ? <img src={col.image} alt={col.name} className="w-5 h-5 object-cover flex-shrink-0" /> // eslint-disable-line @next/next/no-img-element
-                    : <div className="w-5 h-5 bg-[#2a2a2a] flex-shrink-0" />}
+                  <ResultThumb src={col.image} alt={col.name} name={col.name} />
                   <span className="text-xs text-[#efefef] font-mono truncate flex-1">{col.name}</span>
                   <ExternalLink size={9} className="text-[#444] flex-shrink-0" />
                 </a>
@@ -176,9 +200,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                   onClick={close}
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
-                  {mint.image
-                    ? <img src={mint.image} alt={mint.name} className="w-5 h-5 object-cover flex-shrink-0" /> // eslint-disable-line @next/next/no-img-element
-                    : <div className="w-5 h-5 bg-[#2a2a2a] flex-shrink-0" />}
+                  <ResultThumb src={mint.image} alt={mint.name} name={mint.name} />
                   <span className="text-xs text-[#efefef] font-mono truncate">{mint.name}</span>
                 </a>
               ))}

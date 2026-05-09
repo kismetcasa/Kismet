@@ -404,7 +404,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           to the entered address; the recipient airdrops via this same
           form on their own session. */}
       {selected && (
-        <div className="flex flex-col gap-2 pt-2 border-t border-[#2a2a2a]">
+        <div className="flex flex-col gap-2 pt-2">
           <p className="text-[10px] font-mono text-[#555] uppercase tracking-wider">
             delegate airdrop
           </p>

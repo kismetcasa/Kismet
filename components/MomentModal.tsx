@@ -345,9 +345,14 @@ export function MomentModal({
                   {meta.name}
                 </p>
               )}
-              <p className="text-sm font-mono text-[#bbb] line-clamp-[12] leading-relaxed whitespace-pre-wrap">
-                {textSnippet ?? meta.name ?? 'untitled'}
-              </p>
+              {textSnippet && (
+                <p className="text-sm font-mono text-[#bbb] line-clamp-[12] leading-relaxed whitespace-pre-wrap">
+                  {textSnippet}
+                </p>
+              )}
+              {!meta.name && !textSnippet && (
+                <p className="text-sm font-mono text-[#bbb]">untitled</p>
+              )}
             </div>
           ) : (
             <div className="w-full h-full flex items-center justify-center">
