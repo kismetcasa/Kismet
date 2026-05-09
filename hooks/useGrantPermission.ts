@@ -83,9 +83,15 @@ async function filterRedundant(
   }
   const reads = await Promise.all(
     ops.map(async (op) => {
-      const tokenPerms = await safeRead(op.collection, op.tokenId, op.grantee)
-      const collPerms =
-        op.tokenId === 0n ? 0n : await safeRead(op.collection, 0n, op.grantee)
+      // Read per-token AND collection-wide rows in parallel (Zora's
+      // _hasAnyPermission ORs both). Skip the collection-wide read
+      // when tokenId is already 0n — same row.
+      const [tokenPerms, collPerms] = await Promise.all([
+        safeRead(op.collection, op.tokenId, op.grantee),
+        op.tokenId === 0n
+          ? Promise.resolve(0n)
+          : safeRead(op.collection, 0n, op.grantee),
+      ])
       return tokenPerms | collPerms
     }),
   )

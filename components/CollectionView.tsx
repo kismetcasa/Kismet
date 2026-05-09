@@ -247,8 +247,8 @@ export function CollectionView({
     loading: creatorsLoading,
     refetch: refetchCreators,
   } = useAuthorizedCreators(
-    canGrantHere ? (address as `0x${string}`) : undefined,
-    canGrantHere && defaultAdminAddress
+    address as `0x${string}`,
+    defaultAdminAddress
       ? (defaultAdminAddress as `0x${string}`)
       : undefined,
   )
@@ -659,9 +659,17 @@ export function CollectionView({
   const imgUrl = rawImgUrl ? resolveUri(rawImgUrl) : null
   const description = collectionDescription
 
-  // Unique creator addresses across all loaded moments
+  // Artists on this collection: the union of moment creators (anyone
+  // who's already minted) and live authorized-creator-tier addresses
+  // (anyone delegated mint authority but not yet shipped). Surfaces
+  // potential contributors before they ship their first token.
   const uniqueCreators = Array.from(
-    new Set(loadedMoments.map((m) => m.creator.address.toLowerCase()))
+    new Set([
+      ...loadedMoments.map((m) => m.creator.address.toLowerCase()),
+      ...authorizedCreators
+        .filter((c) => c.liveOnChain)
+        .map((c) => (c.eoa ?? c.smartWallet).toLowerCase()),
+    ]),
   )
 
   // Unique split admin addresses (from moment admins, excluding moment creators)
