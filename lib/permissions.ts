@@ -17,18 +17,12 @@ type PublicClientLike = {
 // e.g. ADMIN is bit position 1 with value 2. Cross-checked against
 // @zoralabs/zora-1155-contracts.
 //
-//   ADMIN          = 1<<1 = 2
-//   MINTER         = 1<<2 = 4
-//   SALES          = 1<<3 = 8
-//   METADATA       = 1<<4 = 16
-//   FUNDS_MANAGER  = 1<<5 = 32
-//
-// All other modules in this app import these from here.
+//   ADMIN     = 1<<1 = 2
+//   MINTER    = 1<<2 = 4
+//   METADATA  = 1<<4 = 16
 export const PERMISSION_BIT_ADMIN = 2n
 export const PERMISSION_BIT_MINTER = 4n
-export const PERMISSION_BIT_SALES = 8n
 export const PERMISSION_BIT_METADATA = 16n
-export const PERMISSION_BIT_FUNDS_MANAGER = 32n
 
 const COLLECTION_PERMISSIONS_ABI = [
   {
@@ -106,28 +100,6 @@ export async function readPermissions(
 /** True iff the bitmap has the ADMIN bit set. */
 export function hasAdminBit(perms: bigint): boolean {
   return (perms & PERMISSION_BIT_ADMIN) === PERMISSION_BIT_ADMIN
-}
-
-/**
- * Effective permissions for `user` on `tokenId`. Mirrors Zora's
- * `_hasAnyPermission`: rows granted at per-token OR collection-wide
- * (tokenId 0) scope are both honored. Returns the bitwise OR so any
- * downstream role check works uniformly.
- */
-export async function effectivePermissions(
-  client: PublicClientLike,
-  collection: Address,
-  user: Address,
-  tokenId: bigint,
-): Promise<bigint> {
-  if (tokenId === 0n) {
-    return readPermissions(client, collection, 0n, user)
-  }
-  const [tokenScope, collectionScope] = await Promise.all([
-    readPermissions(client, collection, tokenId, user),
-    readPermissions(client, collection, 0n, user),
-  ])
-  return tokenScope | collectionScope
 }
 
 export interface VerifyDeployResult {
