@@ -5,6 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { resolveUri, shortAddress } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { OPERATOR_SMART_WALLET } from '@/lib/config'
 import { CollectAllAction } from './CollectAllAction'
 
 /**
@@ -45,22 +46,34 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
 
   // Resolve creator's display name from either the inline default_admin
   // (when /api/collection populated it) or our profile cache. Falls back
-  // to shortAddress so the chip never disappears.
-  const adminAddr = c.default_admin?.address
-  const initialName = c.default_admin?.username
+  // to shortAddress so the chip never disappears — except when
+  // `default_admin` resolves to the platform operator smart wallet
+  // (collections deployed on behalf of an artist), which has no Kismet
+  // profile. Suppress the chip in that case rather than dead-link it;
+  // the plural endpoint doesn't surface the artist EOA here so there's
+  // no better label to fall back to.
+  const rawAdminAddr = c.default_admin?.address
+  const rawAdminUsername = c.default_admin?.username
+  const isOperatorAdmin =
+    !!rawAdminAddr &&
+    !!OPERATOR_SMART_WALLET &&
+    rawAdminAddr.toLowerCase() === OPERATOR_SMART_WALLET.toLowerCase()
+  const adminAddr = isOperatorAdmin ? undefined : rawAdminAddr
+  const initialUsername = isOperatorAdmin ? undefined : rawAdminUsername
+  const initialName = initialUsername
     ?? (adminAddr ? shortAddress(adminAddr) : null)
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
-    initialName ? (c.default_admin?.username ? `@${c.default_admin.username}` : initialName) : null,
+    initialName ? (initialUsername ? `@${initialUsername}` : initialName) : null,
   )
   useEffect(() => {
-    if (!adminAddr || c.default_admin?.username) return
+    if (!adminAddr || initialUsername) return
     fetchCreatorProfile(adminAddr).then(({ name }) => {
       // profileCache returns username if set, otherwise shortAddress. The
       // `@` prefix only makes sense when a real username resolved.
       const isUsername = name && name !== shortAddress(adminAddr)
       setCreatorLabel(isUsername ? `@${name}` : shortAddress(adminAddr))
     })
-  }, [adminAddr, c.default_admin?.username])
+  }, [adminAddr, initialUsername])
 
   return (
     <article className="flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
