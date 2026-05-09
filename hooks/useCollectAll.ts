@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useAccount, useConfig, usePublicClient, useSendCalls } from 'wagmi'
 import { waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
@@ -97,6 +97,10 @@ export function useCollectAll(): UseCollectAllReturn {
   const { sendCallsAsync } = useSendCalls()
   const ensureBase = useEnsureBase()
   const [status, setStatus] = useState<Status>('idle')
+  // Synchronous re-entrance latch. setStatus is async — between the user's
+  // click and React committing the disabled-button render, a double-click
+  // could otherwise kick off two parallel bundles.
+  const inFlightRef = useRef(false)
 
   const collectAll = useCallback(
     async (args: CollectAllArgs) => {
@@ -114,6 +118,8 @@ export function useCollectAll(): UseCollectAllReturn {
         toast.info('Nothing to collect in this collection')
         return null
       }
+      if (inFlightRef.current) return null
+      inFlightRef.current = true
 
       setStatus('preparing')
       toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
@@ -377,6 +383,8 @@ export function useCollectAll(): UseCollectAllReturn {
         setStatus('error')
         toastError('Collect all', err, { id: TOAST_ID })
         return null
+      } finally {
+        inFlightRef.current = false
       }
     },
     [address, config, publicClient, sendCallsAsync, ensureBase],
