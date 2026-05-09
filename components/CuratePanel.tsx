@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Star, Check, X, Plus, Pencil, Wand2 } from 'lucide-react'
+import { Star, Check, X, Plus, Pencil, ArrowUpRight } from 'lucide-react'
 import { isAddress } from 'viem'
 import { toast } from 'sonner'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -43,31 +43,39 @@ export function CuratePanel() {
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-  const [backfilling, setBackfilling] = useState(false)
+  const [promoteInput, setPromoteInput] = useState('')
+  const [promoting, setPromoting] = useState(false)
 
-  // One-shot migration: marks legacy single-moment contracts as auto-deploy
-  // so they drop out of the Collections feed. Idempotent — safe to re-run.
-  async function handleBackfillAutoDeploy() {
-    if (!confirm('Scan tracked collections and mark single-moment contracts as auto-deploy wrappers?')) return
-    setBackfilling(true)
+  // Promote a legacy collection address into kismetart:created-collections
+  // so it surfaces in the Collections feed, profile collections, mint
+  // dropdown, and search. Used for collections deployed before write-time
+  // tracking shipped (e.g., legacy turro / Poetry x Kismet entries).
+  async function handlePromote() {
+    const addr = promoteInput.trim()
+    if (!isAddress(addr)) {
+      toast.error('Invalid contract address', { id: 'promote-collection' })
+      return
+    }
+    setPromoting(true)
     try {
       const result = await withSession(async (auth) => {
-        const res = await fetch('/api/curator/backfill-auto-deploy', {
+        const res = await fetch('/api/curator/promote-collection', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(auth),
+          body: JSON.stringify({ address: addr, ...auth }),
         })
-        const data = (await res.json().catch(() => ({}))) as { marked?: number; scanned?: number; error?: string }
-        if (!res.ok) throw new Error(data.error ?? 'Backfill failed')
+        const data = (await res.json().catch(() => ({}))) as { promoted?: boolean; error?: string }
+        if (!res.ok) throw new Error(data.error ?? 'Promote failed')
         return data
       })
-      if (result) {
-        toast.success(`Marked ${result.marked ?? 0} of ${result.scanned ?? 0} as auto-deploy`, { id: 'backfill' })
+      if (result?.promoted) {
+        setPromoteInput('')
+        toast.success(`${addr.slice(0, 6)}…${addr.slice(-4)} added to collections`, { id: 'promote-collection' })
       }
     } catch (err) {
-      toastError('Backfill', err, { id: 'backfill' })
+      toastError('Promote', err, { id: 'promote-collection' })
     } finally {
-      setBackfilling(false)
+      setPromoting(false)
     }
   }
 
@@ -174,19 +182,31 @@ export function CuratePanel() {
         </div>
       )}
 
-      {/* Maintenance — one-shot ops the curator can trigger manually. */}
+      {/* Promote a legacy real collection — for entries deployed before
+          write-time tracking shipped. Going forward, every Create
+          Collection form deploy registers automatically. */}
       <div className="flex flex-col gap-2 border-t border-[#1a1a1a] pt-4">
-        <p className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
-          maintenance
-        </p>
-        <button
-          onClick={handleBackfillAutoDeploy}
-          disabled={backfilling}
-          className="flex items-center gap-1.5 text-[11px] font-mono text-[#888] border border-[#1a1a1a] hover:border-[#2a2a2a] hover:text-[#efefef] transition-colors px-2.5 py-2 disabled:opacity-50 w-fit"
-        >
-          <Wand2 size={11} />
-          {backfilling ? 'scanning…' : 'mark legacy single-moment contracts as auto-deploy'}
-        </button>
+        <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
+          add legacy collection
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={promoteInput}
+            onChange={(e) => setPromoteInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handlePromote() } }}
+            placeholder="0x… contract address"
+            disabled={promoting}
+            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
+          />
+          <button
+            onClick={() => void handlePromote()}
+            disabled={promoting || !promoteInput.trim()}
+            className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+          >
+            {promoting ? '…' : <ArrowUpRight size={12} />}
+          </button>
+        </div>
       </div>
 
       {/* Creator lists — rosters reachable from the homepage Roster tab. */}

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollectionsByScope, getCoverMomentsSet, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCoverMomentsSet, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -103,6 +103,17 @@ export async function GET(req: NextRequest) {
         return !covers.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
       })
     }
+  }
+
+  // Strict Mints surface: only moments minted via Kismet's MintForm
+  // appear. Profile/Roster/Featured/Collected stay cross-cut so legacy
+  // moments remain visible in user-history surfaces.
+  if (scope === 'standalone' && !singleCollection) {
+    const createdMints = await getCreatedMintsSet()
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+    })
   }
 
   // Creator filter (Featured / Profile feeds)

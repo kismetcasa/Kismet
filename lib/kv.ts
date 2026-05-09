@@ -3,10 +3,12 @@ import { PLATFORM_COLLECTION } from './config'
 import { INPROCESS_API } from './inprocess'
 
 const KEY = 'kismetart:collections'
-// Negative marker — auto-deploy wrappers join this set and get excluded
-// from collection-shaped surfaces. Legacy entries with no marker default
-// to "real collection" without needing a backfill.
-const AUTO_DEPLOY_KEY = 'kismetart:auto-deploy-collections'
+// Positive tracking — populated at form-submission time, not derived.
+// CREATED_COLLECTIONS_KEY is the curator's source of truth for "what
+// counts as a real collection". CREATED_MINTS_KEY is the same for
+// individual mints. Anything not in these sets isn't recognized.
+const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections'
+const CREATED_MINTS_KEY = 'kismetart:created-mints'
 // Cover tokens (tokenId minted during Create Collection deploy when the
 // "mint cover" toggle is on). Members are `<addr>:<tokenId>` strings.
 // Filtered out of every Mints surface so collection cover art doesn't
@@ -36,7 +38,7 @@ export async function getTrackedCollections(): Promise<string[]> {
   }
 }
 
-// standalone = PLATFORM + auto-deploy wrappers (functionally one-off mints).
+// standalone = tracked minus curated (Mints surface — auto-deploys + PLATFORM).
 // collections = curated (Create Collection form) only.
 // all = unfiltered.
 export type CollectionScope = 'standalone' | 'collections' | 'all'
@@ -45,29 +47,66 @@ export async function getTrackedCollectionsByScope(
   scope: CollectionScope = 'all',
 ): Promise<string[]> {
   if (scope === 'all') return getTrackedCollections()
-  const [all, autoDeploy] = await Promise.all([
+  if (scope === 'collections') return getCreatedCollections()
+  // standalone: every tracked address that is NOT in the curator-blessed
+  // created-collections set.
+  const [all, created] = await Promise.all([
     getTrackedCollections(),
-    getAutoDeployCollections(),
+    getCreatedCollections(),
   ])
-  const auto = new Set(autoDeploy.map((a) => a.toLowerCase()))
-  const platform = PLATFORM_COLLECTION.toLowerCase()
-  const isCollection = (a: string) => {
-    const lower = a.toLowerCase()
-    return lower !== platform && !auto.has(lower)
-  }
-  return scope === 'collections' ? all.filter(isCollection) : all.filter((a) => !isCollection(a))
+  const createdSet = new Set(created.map((a) => a.toLowerCase()))
+  return all.filter((a) => !createdSet.has(a.toLowerCase()))
 }
 
-export async function getUserCollections(): Promise<string[]> {
-  return getTrackedCollectionsByScope('collections')
-}
-
-async function getAutoDeployCollections(): Promise<string[]> {
+// Curator-blessed set: contracts deployed via the Create Collection form,
+// plus any legacy real collection the curator manually promoted.
+export async function getCreatedCollections(): Promise<string[]> {
   try {
-    return (await redis.smembers(AUTO_DEPLOY_KEY)) as string[]
+    return (await redis.smembers(CREATED_COLLECTIONS_KEY)) as string[]
   } catch {
     return []
   }
+}
+
+export async function markCreatedCollection(address: string): Promise<void> {
+  try {
+    await redis.sadd(CREATED_COLLECTIONS_KEY, address)
+  } catch (err) {
+    console.error('[kv] markCreatedCollection failed', { address, err })
+  }
+}
+
+export async function unmarkCreatedCollection(address: string): Promise<boolean> {
+  try {
+    const removed = await redis.srem(CREATED_COLLECTIONS_KEY, address)
+    return Number(removed) > 0
+  } catch {
+    return false
+  }
+}
+
+// Mints minted via Kismet's MintForm. Members are `<addr>:<tokenId>`.
+export async function getCreatedMintsSet(): Promise<Set<string>> {
+  try {
+    const members = (await redis.smembers(CREATED_MINTS_KEY)) as string[]
+    return new Set(members.map((m) => m.toLowerCase()))
+  } catch {
+    return new Set()
+  }
+}
+
+export async function markCreatedMint(address: string, tokenId: string): Promise<void> {
+  try {
+    await redis.sadd(CREATED_MINTS_KEY, `${address.toLowerCase()}:${tokenId}`)
+  } catch (err) {
+    console.error('[kv] markCreatedMint failed', { address, tokenId, err })
+  }
+}
+
+// Backward-compat alias — existing call sites read "collections in the
+// curatorial sense" through this name. Now resolves to created-collections.
+export async function getUserCollections(): Promise<string[]> {
+  return getCreatedCollections()
 }
 
 export async function getCoverMomentsSet(): Promise<Set<string>> {
@@ -94,10 +133,12 @@ export async function addTrackedCollection(
 ): Promise<void> {
   try {
     const ops: Promise<unknown>[] = [redis.sadd(KEY, address)]
-    // Auto-deploy wrappers join the marker set; collection-shaped
-    // surfaces filter them out.
-    if (source === 'auto-deploy') {
-      ops.push(redis.sadd(AUTO_DEPLOY_KEY, address))
+    // Create Collection form deploys join the curator-blessed positive
+    // set. Auto-deploy wrappers (MintForm without selection) skip it —
+    // the contract still tracks for moment fan-out, but it never
+    // surfaces as a collection.
+    if (source === 'create-form') {
+      ops.push(redis.sadd(CREATED_COLLECTIONS_KEY, address))
     }
     if (meta?.name) {
       const data: CollectionMeta = { ...meta, address: address.toLowerCase() }

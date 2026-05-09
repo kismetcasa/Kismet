@@ -8,6 +8,7 @@ import { setMomentMeta, writeNotification } from './notifications'
 import { setMomentContent } from './momentContent'
 import { getFollowers } from './follows'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
+import { markCreatedMint } from './kv'
 
 // 0xSplits' SplitMain caps usable recipients well below this in practice
 // (gas-bound), but 50 is a generous safety net that no legitimate UI flow
@@ -266,6 +267,9 @@ export async function proxyMintRequest(
     const tokenId = r.tokenId
 
     if (contractAddress && tokenId && account) {
+      // Positive tracking: every MintForm-mediated mint joins the
+      // created-mints set so Mints feeds can filter strictly.
+      void markCreatedMint(contractAddress, tokenId).catch(() => {})
       void setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {})
 
       // Mirror the raw writing body to KV so the moment page can render
