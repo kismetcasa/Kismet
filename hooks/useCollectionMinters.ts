@@ -1,10 +1,34 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import type { Address } from 'viem'
+import { toEventSelector, type Address } from 'viem'
 import { usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
+import { UPDATED_PERMISSIONS_TOPIC } from '@/lib/collections'
 import { PERMISSION_BIT_MINTER } from '@/lib/permissions'
+
+// Local typed const so viem can infer log.args structure (a find()
+// over the umbrella COLLECTION_ABI narrows to a generic AbiEvent and
+// loses the args names). We then assert at module init that this
+// definition computes to the same topic the canonical hash in
+// lib/collections pins — so a drifted local definition fails loudly
+// instead of silently producing empty getLogs results.
+const UPDATED_PERMISSIONS_EVENT = {
+  type: 'event',
+  name: 'UpdatedPermissions',
+  inputs: [
+    { name: 'tokenId', type: 'uint256', indexed: true },
+    { name: 'user', type: 'address', indexed: true },
+    { name: 'permissions', type: 'uint256', indexed: true },
+  ],
+  anonymous: false,
+} as const
+
+if (toEventSelector(UPDATED_PERMISSIONS_EVENT) !== UPDATED_PERMISSIONS_TOPIC) {
+  console.error(
+    '[useCollectionMinters] local UpdatedPermissions event drifted from canonical topic — list will be empty.',
+  )
+}
 
 /**
  * Reads the live set of addresses holding MINTER (collection-wide,
@@ -37,15 +61,7 @@ export function useCollectionMinters(collection: Address | undefined) {
     try {
       const logs = await publicClient.getLogs({
         address: collection,
-        event: {
-          type: 'event',
-          name: 'UpdatedPermissions',
-          inputs: [
-            { name: 'tokenId', type: 'uint256', indexed: true },
-            { name: 'user', type: 'address', indexed: true },
-            { name: 'permissions', type: 'uint256', indexed: true },
-          ],
-        },
+        event: UPDATED_PERMISSIONS_EVENT,
         args: { tokenId: 0n },
         fromBlock: 'earliest',
         toBlock: 'latest',

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { base, mainnet } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther, type Address } from 'viem'
 import { toast } from 'sonner'
@@ -19,6 +19,7 @@ import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError } from '@/lib/toast'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+import { shortAddress } from '@/lib/inprocess'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
@@ -36,8 +37,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [description, setDescription] = useState('')
   const [royaltyBps, setRoyaltyBps] = useState('500')
   const [royaltyRecipient, setRoyaltyRecipient] = useState('')
-  const [minters, setMinters] = useState<string[]>([])
+  // Minters are stored as resolved-once entries: ENS gets resolved when
+  // the user clicks +, the 0x is what we encode into setupActions, and
+  // the original input (.eth or 0x) is what we display so the list
+  // doesn't downgrade a vitalik.eth entry to a checksum address.
+  const [minters, setMinters] = useState<Array<{ display: string; address: `0x${string}` }>>([])
   const [minterInput, setMinterInput] = useState('')
+  const [resolvingMinter, setResolvingMinter] = useState(false)
   const [mintCover, setMintCover] = useState(false)
   const [coverPrice, setCoverPrice] = useState('0')
   const [coverSupply, setCoverSupply] = useState('')
@@ -53,6 +59,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const ensureBase = useEnsureBase()
   // For the post-deploy permission verification.
   const publicClient = usePublicClient({ chainId: base.id })
+  // Mainnet client for ENS resolution. wagmi already configures a
+  // mainnet transport (lib/wagmi.ts) — reusing it keeps the configured
+  // RPC consistent with the post-deploy authorize panel.
+  const mainnetClient = usePublicClient({ chainId: mainnet.id })
 
   // Resolved inprocess smart wallet for the connected EOA. Set in
   // handleCreate so the receipt-watcher useEffect can read it back when
@@ -70,12 +80,45 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const PENDING_MAX_AGE_MS = 30 * 60 * 1000 // 30 min — older entries are abandoned
   const TX_TIMEOUT_MS = 90 * 1000 // 90s before we surface a "still pending" message
 
-  function addMinter() {
-    const addr = minterInput.trim()
-    if (!isAddress(addr)) { toast.error('Invalid address'); return }
-    if (minters.includes(addr)) return
-    setMinters((prev) => [...prev, addr])
-    setMinterInput('')
+  // Resolves an ENS name or 0x address to a checksum 0x. Returns null
+  // when the name doesn't resolve so callers can surface a discrete
+  // toast instead of pushing an invalid entry into the list.
+  async function resolveAddressOrEns(raw: string): Promise<`0x${string}` | null> {
+    const trimmed = raw.trim()
+    if (isAddress(trimmed)) return trimmed.toLowerCase() as `0x${string}`
+    if (trimmed.endsWith('.eth') && mainnetClient) {
+      try {
+        const resolved = await mainnetClient.getEnsAddress({ name: trimmed })
+        return resolved ? (resolved.toLowerCase() as `0x${string}`) : null
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+
+  async function addMinter() {
+    if (resolvingMinter) return
+    const raw = minterInput.trim()
+    if (!raw) return
+    setResolvingMinter(true)
+    try {
+      const addr = await resolveAddressOrEns(raw)
+      if (!addr) {
+        toast.error(
+          raw.endsWith('.eth')
+            ? `Could not resolve ${raw}`
+            : 'Invalid address — paste a 0x… or vitalik.eth name',
+        )
+        return
+      }
+      if (minters.some((m) => m.address === addr)) return
+      const display = raw.endsWith('.eth') ? raw : addr
+      setMinters((prev) => [...prev, { display, address: addr }])
+      setMinterInput('')
+    } finally {
+      setResolvingMinter(false)
+    }
   }
 
   const { data: receipt } = useWaitForTransactionReceipt({
@@ -342,13 +385,32 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       toast.error('Please enter a collection name')
       return
     }
-    if (royaltyRecipient.trim() && !isAddress(royaltyRecipient.trim())) {
-      toast.error('Invalid royalty recipient address')
+    const royaltyTrimmed = royaltyRecipient.trim()
+    if (royaltyTrimmed && !isAddress(royaltyTrimmed) && !royaltyTrimmed.endsWith('.eth')) {
+      toast.error('Invalid royalty recipient — paste a 0x… or vitalik.eth name')
       return
     }
     if (mintCover && coverSupply.trim()) {
       const s = parseInt(coverSupply.trim(), 10)
       if (isNaN(s) || s < 1) { toast.error('Cover supply must be at least 1'); return }
+    }
+
+    // Resolve the royalty recipient up-front, before any Arweave
+    // upload or session prompt. An unresolvable .eth name caught here
+    // costs nothing; caught after uploads it would burn an Arweave
+    // entry the user can't get back. Empty -> connected wallet.
+    let resolvedRoyalty: `0x${string}` = address as `0x${string}`
+    if (royaltyTrimmed) {
+      const resolved = await resolveAddressOrEns(royaltyTrimmed)
+      if (!resolved) {
+        toast.error(
+          royaltyTrimmed.endsWith('.eth')
+            ? `Could not resolve royalty recipient ${royaltyTrimmed}`
+            : 'Invalid royalty recipient address',
+        )
+        return
+      }
+      resolvedRoyalty = resolved
     }
 
     setDeployedImageUri(undefined)
@@ -403,13 +465,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       await ensureBase()
 
       const bps = Math.max(0, Math.min(10000, parseInt(royaltyBps, 10) || 0))
-      const recipient = (royaltyRecipient.trim() || address) as `0x${string}`
+      // resolvedRoyalty was computed up-front (pre-uploads) so an
+      // unresolvable .eth never gets here.
+      const recipient = resolvedRoyalty
 
       // Collection-wide minter permissions for any addresses the user added.
       // The factory replays each setupAction on the new collection during deploy.
-      const minterActions = minters
-        .filter((m) => isAddress(m))
-        .map((m) => encodeMinterPermission(m as `0x${string}`))
+      // Entries are pre-resolved to 0x in addMinter, so no extra validation here.
+      const minterActions = minters.map((m) => encodeMinterPermission(m.address))
 
       // Authorize the inprocess platform smart wallet as ADMIN so subsequent
       // /api/mint calls into this collection can succeed. Without this grant,
@@ -785,7 +848,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           type="text"
           value={royaltyRecipient}
           onChange={(e) => setRoyaltyRecipient(e.target.value)}
-          placeholder={address ?? '0x… (defaults to your wallet)'}
+          placeholder={address ? `${shortAddress(address)} (or vitalik.eth)` : '0x… or vitalik.eth (defaults to your wallet)'}
           className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
         />
       </div>
@@ -803,15 +866,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             onKeyDown={(e) => {
               if (e.key !== 'Enter') return
               e.preventDefault()
-              addMinter()
+              void addMinter()
             }}
-            placeholder="0x… wallet address"
+            placeholder="0x… or vitalik.eth"
             className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
           />
           <button
             type="button"
-            onClick={addMinter}
-            className="px-3 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+            onClick={() => void addMinter()}
+            disabled={resolvingMinter || !minterInput.trim()}
+            className="px-3 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
           >
             <Plus size={14} />
           </button>
@@ -819,11 +883,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         {minters.length > 0 && (
           <ul className="flex flex-col gap-1">
             {minters.map((m) => (
-              <li key={m} className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2">
-                <span className="text-xs font-mono text-[#888] truncate">{m}</span>
+              <li key={m.address} className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2">
+                <span className="text-xs font-mono text-[#888] truncate" title={m.address}>
+                  {m.display === m.address ? shortAddress(m.address) : m.display}
+                </span>
                 <button
                   type="button"
-                  onClick={() => setMinters((prev) => prev.filter((x) => x !== m))}
+                  onClick={() => setMinters((prev) => prev.filter((x) => x.address !== m.address))}
                   className="ml-2 text-[#555] hover:text-[#888] flex-shrink-0"
                 >
                   <Trash2 size={12} />

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -172,16 +172,33 @@ export function CollectionView({
     revoke: revokeMinter,
     reset: resetMinterGrant,
     busy: minterGranting,
+    hash: minterHash,
     receipt: minterReceipt,
   } = useGrantPermission()
+  // The hook clears `busy` as soon as a tx is submitted, so on its own
+  // it doesn't keep the buttons disabled while the tx is mining — a
+  // fast second click would clobber the hash and orphan the first tx.
+  // Gate the UI on busy OR (hash set without a receipt) so a tx that's
+  // mid-mine still locks the panel.
+  const minterTxPending = !!minterHash && !minterReceipt
+  const isMinterBusy = minterGranting || minterTxPending
   const [minterInput, setMinterInput] = useState('')
   const [revokingAddr, setRevokingAddr] = useState<string | null>(null)
+  // Captures the in-flight action so the receipt effect knows whether
+  // a confirmed receipt corresponds to a grant or a revoke. Uses a ref
+  // (not state) so the effect can read it without re-firing when we
+  // clear revokingAddr inside the effect itself — that's the
+  // double-toast trap.
+  const pendingMinterActionRef = useRef<'grant' | 'revoke' | null>(null)
 
   // Live list of MINTER-bit holders, scoped collection-wide. Refetched
   // after every grant/revoke confirms so the panel mirrors chain state
   // without a manual reload.
-  const { minters: authorizedMinters, refetch: refetchMinters } =
-    useCollectionMinters(canGrantHere ? (address as `0x${string}`) : undefined)
+  const {
+    minters: authorizedMinters,
+    loading: mintersLoading,
+    refetch: refetchMinters,
+  } = useCollectionMinters(canGrantHere ? (address as `0x${string}`) : undefined)
 
   // Mainnet client for client-side ENS resolution. Wagmi already
   // configures a mainnet transport for ENS (lib/wagmi.ts), so we reuse
@@ -205,7 +222,12 @@ export function CollectionView({
 
   useEffect(() => {
     if (!minterReceipt) return
-    const wasRevoke = !!revokingAddr
+    // Read+clear the pending action ref so a stale receipt persisting
+    // in wagmi's cache after resetMinterGrant() can't re-fire the toast.
+    const action = pendingMinterActionRef.current
+    if (!action) return
+    pendingMinterActionRef.current = null
+    const wasRevoke = action === 'revoke'
     resetMinterGrant()
     setRevokingAddr(null)
     if (minterReceipt.status === 'reverted') {
@@ -218,7 +240,7 @@ export function CollectionView({
     if (!wasRevoke) setMinterInput('')
     toast.success(wasRevoke ? 'Minter revoked' : 'Minter authorized', { id: 'authorize-minter' })
     void refetchMinters()
-  }, [minterReceipt, resetMinterGrant, refetchMinters, revokingAddr])
+  }, [minterReceipt, resetMinterGrant, refetchMinters])
 
   async function handleAuthorizeMinter() {
     const raw = minterInput.trim()
@@ -243,6 +265,7 @@ export function CollectionView({
         bit: 'minter',
       })
       if (outcome === 'submitted') {
+        pendingMinterActionRef.current = 'grant'
         toast.loading('Authorizing minter…', { id: 'authorize-minter' })
         return
       }
@@ -257,7 +280,7 @@ export function CollectionView({
   }
 
   async function handleRevokeMinter(target: `0x${string}`) {
-    if (minterGranting) return
+    if (isMinterBusy) return
     setRevokingAddr(target.toLowerCase())
     try {
       toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
@@ -268,6 +291,7 @@ export function CollectionView({
         bit: 'minter',
       })
       if (outcome === 'submitted') {
+        pendingMinterActionRef.current = 'revoke'
         toast.loading('Revoking minter…', { id: 'authorize-minter' })
         return
       }
@@ -587,38 +611,52 @@ export function CollectionView({
             <button
               type="button"
               onClick={() => void handleAuthorizeMinter()}
-              disabled={minterGranting || !minterInput.trim()}
+              disabled={isMinterBusy || !minterInput.trim()}
               className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
             >
-              {minterGranting && !revokingAddr ? 'authorizing…' : 'authorize'}
+              {isMinterBusy && !revokingAddr ? 'authorizing…' : 'authorize'}
             </button>
           </div>
-          {authorizedMinters.length > 0 && (
-            <ul className="mt-3 flex flex-col gap-1">
-              {authorizedMinters.map((m) => {
-                const isRevoking = revokingAddr === m.toLowerCase()
-                const otherTxBusy = minterGranting && !isRevoking
-                return (
-                  <li
-                    key={m}
-                    className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2"
-                  >
-                    <span className="text-xs font-mono text-[#888] truncate">
-                      {shortAddress(m)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void handleRevokeMinter(m)}
-                      disabled={otherTxBusy || isRevoking}
-                      title="Revoke MINTER permission"
-                      className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </li>
-                )
-              })}
+          {mintersLoading && authorizedMinters.length === 0 ? (
+            <ul className="mt-3 flex flex-col gap-1" aria-busy="true">
+              {[0, 1].map((i) => (
+                <li
+                  key={i}
+                  className="flex items-center justify-between bg-[#111] border border-[#1a1a1a] px-3 py-2 animate-pulse"
+                >
+                  <span className="h-3 w-32 bg-[#1a1a1a]" />
+                  <span className="h-3 w-3 bg-[#1a1a1a] flex-shrink-0" />
+                </li>
+              ))}
             </ul>
+          ) : (
+            authorizedMinters.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-1">
+                {authorizedMinters.map((m) => {
+                  const isRevoking = revokingAddr === m.toLowerCase()
+                  const otherTxBusy = isMinterBusy && !isRevoking
+                  return (
+                    <li
+                      key={m}
+                      className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2"
+                    >
+                      <span className="text-xs font-mono text-[#888] truncate">
+                        {shortAddress(m)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleRevokeMinter(m)}
+                        disabled={otherTxBusy || isRevoking}
+                        title="Revoke MINTER permission"
+                        className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )
           )}
         </div>
       )}
