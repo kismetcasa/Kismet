@@ -11,7 +11,7 @@ export const PLATFORM_COLLECTION =
 // Override per-deployment with NEXT_PUBLIC_CREATE_REFERRAL.
 export const CREATE_REFERRAL =
   process.env.NEXT_PUBLIC_CREATE_REFERRAL ||
-  '0x6A0bA3707dF9D13A4445cD7E04274B2725930cD7'
+  '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 
 // Kismet Casa residencies wallet — receives 5% of primary sale revenue when the
 // creator opts in at mint time via the residencies toggle.
