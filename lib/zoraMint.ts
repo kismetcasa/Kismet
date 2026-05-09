@@ -14,7 +14,7 @@ export const USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 // Single recipient for ALL Kismet platform rewards: Zora's mint-referral split,
 // createReferral on collection deploy, etc. Hardcoded so we can't typo it
 // across files. Keep this in sync with createReferral set during deploy.
-export const KISMET_REFERRAL: Address = '0x6A0bA3707dF9D13A4445cD7E04274B2725930cD7'
+export const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 
 // Zora 1155 mint() (post-v2.0.0 contracts). All inprocess and Kismet deploys
 // from the last ~year are new-style; legacy mintWithRewards() is intentionally
