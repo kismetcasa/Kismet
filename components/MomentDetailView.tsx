@@ -23,8 +23,21 @@ import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
+import { SplitsPanel } from './SplitsPanel'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'
+import { isOperatorAddress } from '@/lib/config'
+
+// `momentAdmins[]` is unordered and may include the operator smart
+// wallet (no Kismet profile) or a 0xSplits SplitWallet (no profile
+// either, but detecting it needs a chain read). Filtering operator
+// addresses covers the common case for moments minted outside the
+// Kismet flow where the creator-fallback chain has to use this list.
+function pickFirstNonOperatorAdmin(
+  admins: readonly string[] | undefined,
+): string | undefined {
+  return admins?.find((a) => !isOperatorAddress(a))
+}
 
 interface Props {
   address: string
@@ -89,7 +102,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // matches the seeding MomentCard already does on the discover grid.
   const [creatorName, setCreatorName] = useState(() => {
     const seedAddr =
-      initialDetail?.creator?.address ?? kvCreatorAddress ?? initialDetail?.momentAdmins?.[0] ?? ''
+      initialDetail?.creator?.address
+      ?? kvCreatorAddress
+      ?? pickFirstNonOperatorAdmin(initialDetail?.momentAdmins)
+      ?? ''
     return initialDetail?.creator?.username || (seedAddr ? shortAddress(seedAddr) : '')
   })
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
@@ -149,13 +165,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   //      at mint time. Available immediately for Kismet-minted moments,
   //      so we don't degrade to (3) during the brief window before
   //      inprocess catches up.
-  //   3. detail.momentAdmins[0] — last-resort fallback. Unordered; often
-  //      the platform/smart-wallet admin which has no Kismet profile,
-  //      so the display name lookup degrades to a raw address. Kept for
-  //      moments minted outside the Kismet flow where neither (1) nor
-  //      (2) is populated.
+  //   3. first non-operator entry in detail.momentAdmins — last-resort
+  //      fallback. The list is unordered and may contain the operator
+  //      smart wallet (filtered out here) or a 0xSplits contract; kept
+  //      for moments minted outside the Kismet flow where neither (1)
+  //      nor (2) is populated.
   const creatorAddress =
-    detail?.creator?.address ?? kvCreatorAddress ?? detail?.momentAdmins[0] ?? ''
+    detail?.creator?.address
+    ?? kvCreatorAddress
+    ?? pickFirstNonOperatorAdmin(detail?.momentAdmins)
+    ?? ''
   const isHidden = detail?.hidden === true
   const [hidePending, setHidePending] = useState(false)
   const isCreator =
@@ -163,7 +182,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  const { hasSplits, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
+  const { hasSplits, recipients: splitRecipients, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
     address,
     tokenId,
     isCreator,
@@ -788,6 +807,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 )}
               </div>
             )}
+            {hasSplits && <SplitsPanel recipients={splitRecipients} />}
             {!commentsLoading && comments.length > 0 && (
               <div className="flex flex-col gap-2">
                 <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">comments</p>

@@ -36,6 +36,11 @@ export const RESIDENCIES_ADDRESS =
 export const OPERATOR_SMART_WALLET =
   process.env.NEXT_PUBLIC_OPERATOR_SMART_WALLET ?? ''
 
+export function isOperatorAddress(address: string | undefined | null): boolean {
+  if (!address || !OPERATOR_SMART_WALLET) return false
+  return address.toLowerCase() === OPERATOR_SMART_WALLET.toLowerCase()
+}
+
 // Admin address — single privileged wallet that passes admin-session
 // signatures (see app/api/permissions/audit/route.ts and lib/curator.ts)
 // and is reported as `isAdmin: true` by /api/admin/me. Always

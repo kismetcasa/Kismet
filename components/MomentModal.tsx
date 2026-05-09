@@ -22,6 +22,7 @@ import { useMomentSplits } from '@/hooks/useMomentSplits'
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { ProfileAvatar } from './ProfileAvatar'
+import { SplitsPanel } from './SplitsPanel'
 import { useAdmin } from '@/contexts/AdminContext'
 
 interface MomentModalProps {
@@ -115,7 +116,7 @@ export function MomentModal({
     !!connectedAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  const { hasSplits, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
+  const { hasSplits, recipients: splitRecipients, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
     address: moment.address,
     tokenId: moment.token_id,
     isCreator,
@@ -349,6 +350,8 @@ export function MomentModal({
                 )}
               </div>
             )}
+
+            {hasSplits && <SplitsPanel recipients={splitRecipients} onNavigate={onClose} />}
 
             {/* Comments */}
             {!commentsLoading && comments.length > 0 && (

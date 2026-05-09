@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toastError } from '@/lib/toast'
+import { MAX_SPLITS } from '@/lib/splits'
 
 /**
  * Admin-only dashboard. Hosts moderation utilities that bypass the
@@ -107,6 +108,11 @@ export function AdminDashboard() {
       </div>
 
       <HideContentCard
+        adminAddress={address!}
+        signMessage={signMessageAsync}
+      />
+
+      <BackfillSplitsCard
         adminAddress={address!}
         signMessage={signMessageAsync}
       />
@@ -275,6 +281,174 @@ function HideContentCard({
           : currentlyHidden
             ? 'sign & unhide'
             : 'sign & hide'}
+      </button>
+    </section>
+  )
+}
+
+// Curator escape-hatch for legacy moments whose splits predate
+// recipient persistence — new mints record recipients automatically.
+function BackfillSplitsCard({
+  adminAddress,
+  signMessage,
+}: {
+  adminAddress: string
+  signMessage: (args: { message: string }) => Promise<string>
+}) {
+  const [link, setLink] = useState('')
+  const [rows, setRows] = useState<{ address: string; percent: string }[]>([
+    { address: '', percent: '' },
+    { address: '', percent: '' },
+  ])
+  const [submitting, setSubmitting] = useState(false)
+
+  const target = parseTarget(link)
+  const isMoment = target?.type === 'moment'
+
+  const numericRows = rows.map((r) => {
+    const n = Number(r.percent)
+    return { address: r.address.trim(), percent: Number.isFinite(n) ? n : NaN }
+  })
+  const sum = numericRows.reduce((acc, r) => acc + (Number.isFinite(r.percent) ? r.percent : 0), 0)
+  const allValid =
+    isMoment &&
+    rows.length >= 2 &&
+    numericRows.every(
+      (r) => /^0x[a-fA-F0-9]{40}$/.test(r.address) && r.percent > 0 && r.percent <= 100,
+    ) &&
+    new Set(numericRows.map((r) => r.address.toLowerCase())).size === numericRows.length &&
+    Math.round(sum) === 100
+
+  function setRow(idx: number, key: 'address' | 'percent', value: string) {
+    setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, [key]: value } : r)))
+  }
+  function addRow() {
+    if (rows.length >= MAX_SPLITS) return
+    setRows((rs) => [...rs, { address: '', percent: '' }])
+  }
+  function removeRow(idx: number) {
+    if (rows.length <= 2) return
+    setRows((rs) => rs.filter((_, i) => i !== idx))
+  }
+
+  async function submit() {
+    if (!target || target.type !== 'moment' || !allValid) return
+    setSubmitting(true)
+    try {
+      const ts = Date.now()
+      const message = `Kismet Art admin session\nAddress: ${adminAddress.toLowerCase()}\nTimestamp: ${ts}`
+      const signature = await signMessage({ message })
+      const res = await fetch('/api/admin/splits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signature,
+          timestamp: ts,
+          collectionAddress: target.address,
+          tokenId: target.tokenId,
+          recipients: numericRows.map((r) => ({
+            address: r.address,
+            percentAllocation: r.percent,
+          })),
+        }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+      if (!res.ok || !json.ok) throw new Error(json.error ?? 'Request failed')
+      toast.success('Splits backfilled', { id: 'admin-splits' })
+      setLink('')
+      setRows([{ address: '', percent: '' }, { address: '', percent: '' }])
+    } catch (err) {
+      toastError('Backfill', err, { id: 'admin-splits' })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="border border-[#2a2a2a] bg-[#161616] p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-[#efefef] font-mono text-sm">Backfill splits</h2>
+        <p className="text-[11px] font-mono text-[#888] mt-1 leading-relaxed">
+          Records the recipient list for a legacy moment so the splits
+          panel on the moment page stops being empty. Only needed for
+          mints made before recipient persistence shipped — new mints
+          already store this automatically. Recipients must sum to 100%.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label className="text-[10px] font-mono text-[#888] uppercase tracking-wider">
+          moment link
+        </label>
+        <input
+          value={link}
+          onChange={(e) => setLink(e.target.value)}
+          placeholder="https://kismet-art.vercel.app/moment/0x…/1"
+          className="bg-[#0a0a0a] border border-[#2a2a2a] focus:border-[#555] outline-none px-2 py-1.5 text-xs font-mono text-[#efefef] placeholder:text-[#444]"
+        />
+        {link.trim() && !isMoment && (
+          <p className="text-[10px] font-mono text-[#c87474]">
+            Backfill is only for moment links — collection-level splits don&apos;t exist.
+          </p>
+        )}
+      </div>
+
+      {isMoment && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <label className="text-[10px] font-mono text-[#888] uppercase tracking-wider">
+              recipients ({rows.length})
+            </label>
+            <span
+              className={`text-[10px] font-mono ${Math.round(sum) === 100 ? 'text-[#888]' : 'text-[#c87474]'}`}
+            >
+              total: {Number.isFinite(sum) ? sum : 0}%
+            </span>
+          </div>
+          {rows.map((r, idx) => (
+            <div key={idx} className="flex gap-2 items-center">
+              <input
+                value={r.address}
+                onChange={(e) => setRow(idx, 'address', e.target.value)}
+                placeholder="0x…"
+                className="flex-1 bg-[#0a0a0a] border border-[#2a2a2a] focus:border-[#555] outline-none px-2 py-1.5 text-xs font-mono text-[#efefef] placeholder:text-[#444]"
+              />
+              <input
+                value={r.percent}
+                onChange={(e) => setRow(idx, 'percent', e.target.value)}
+                placeholder="%"
+                inputMode="numeric"
+                className="w-16 bg-[#0a0a0a] border border-[#2a2a2a] focus:border-[#555] outline-none px-2 py-1.5 text-xs font-mono text-[#efefef] placeholder:text-[#444]"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(idx)}
+                disabled={rows.length <= 2}
+                className="text-[10px] font-mono text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed px-2"
+                title="Remove recipient"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addRow}
+            disabled={rows.length >= MAX_SPLITS}
+            className="text-[10px] font-mono uppercase tracking-wider text-[#555] hover:text-[#888] disabled:opacity-30 w-fit"
+          >
+            + add recipient
+          </button>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={submit}
+        disabled={submitting || !allValid}
+        className="text-xs font-mono tracking-wider uppercase px-4 py-2 btn-accent disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {submitting ? 'signing…' : 'sign & backfill'}
       </button>
     </section>
   )

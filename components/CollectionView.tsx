@@ -9,7 +9,7 @@ import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2 } from 'lucide-react'
-import { resolveUri, shortAddress, type Moment, type MomentAdmin } from '@/lib/inprocess'
+import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -617,15 +617,8 @@ export function CollectionView({
         if (cancelled) return
         const loaded: Moment[] = Array.isArray(d.moments) ? d.moments : []
         setMoments(loaded)
-        // Fetch profiles for all creators and split admins found in moments
         const creatorSet = new Set(loaded.map((m) => m.creator.address.toLowerCase()))
-        const adminAddrs = new Set(
-          loaded
-            .flatMap((m) => m.admins ?? [])
-            .filter((a) => !creatorSet.has(a.address.toLowerCase()))
-            .map((a) => a.address.toLowerCase()),
-        )
-        ;[...creatorSet, ...adminAddrs].forEach((addr) => {
+        creatorSet.forEach((addr) => {
           fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
             if (!cancelled)
               setProfiles((prev) => ({ ...prev, [addr]: { name, avatarUrl } }))
@@ -665,18 +658,6 @@ export function CollectionView({
   // Unique creator addresses across all loaded moments
   const uniqueCreators = Array.from(
     new Set(loadedMoments.map((m) => m.creator.address.toLowerCase()))
-  )
-
-  // Unique split admin addresses (from moment admins, excluding moment creators)
-  const uniqueAdmins = Array.from(
-    loadedMoments
-      .flatMap((m) => m.admins ?? [])
-      .reduce((map, admin) => {
-        const lower = admin.address.toLowerCase()
-        if (!uniqueCreators.includes(lower)) map.set(lower, admin)
-        return map
-      }, new Map<string, MomentAdmin>())
-      .values()
   )
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
@@ -1047,18 +1028,6 @@ export function CollectionView({
           <div className="flex flex-wrap gap-2">
             {uniqueCreators.map((addr) => (
               <AvatarRow key={addr} addr={addr} profiles={profiles} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Splits */}
-      {uniqueAdmins.length > 0 && (
-        <section className="mb-10">
-          <h2 className="text-xs font-mono text-[#555] uppercase tracking-widest mb-4">splits</h2>
-          <div className="flex flex-wrap gap-2">
-            {uniqueAdmins.map((admin) => (
-              <AvatarRow key={admin.address} addr={admin.address} profiles={profiles} />
             ))}
           </div>
         </section>

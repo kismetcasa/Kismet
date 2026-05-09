@@ -5,6 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { isOperatorAddress } from '@/lib/config'
 import { MomentCard } from './MomentCard'
 import { CollectAllAction } from './CollectAllAction'
 
@@ -34,8 +35,13 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
   const name = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
 
-  const adminAddr = c.default_admin?.address
-  const initialUsername = c.default_admin?.username
+  // `default_admin` resolves to the operator smart wallet when the
+  // platform deployed on the artist's behalf. The plural endpoint
+  // doesn't surface a distinct artist EOA, so we suppress the chip
+  // rather than dead-link to an empty profile.
+  const rawAdminAddr = c.default_admin?.address
+  const adminAddr = isOperatorAddress(rawAdminAddr) ? undefined : rawAdminAddr
+  const initialUsername = isOperatorAddress(rawAdminAddr) ? undefined : c.default_admin?.username
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
     initialUsername ? `@${initialUsername}` : adminAddr ? shortAddress(adminAddr) : null,
   )
