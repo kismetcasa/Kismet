@@ -131,6 +131,58 @@ export function useGrantPermission() {
     }
   }
 
+  /**
+   * Mirror of `grant` for revoking a permission bit. Reads the same
+   * (per-token | collection-wide) bitmap to short-circuit a no-op
+   * removePermission, then submits the tx if the bit is currently set.
+   * Caveat: revoking MINTER from a wallet that also holds ADMIN does
+   * not strip mint capability — Zora's mint paths check ADMIN | MINTER.
+   * The chain still accepts the tx; UI should warn or skip when relevant.
+   */
+  async function revoke({
+    collection,
+    grantee,
+    tokenId,
+    bit,
+  }: GrantPermissionRequest): Promise<GrantOutcome> {
+    if (!connected) throw new Error('Wallet not connected')
+    if (!publicClient) throw new Error('No network client available')
+    setBusy(true)
+    try {
+      const bitValue = BIT_VALUES[bit]
+      const safeRead = async (tid: bigint): Promise<bigint> => {
+        try {
+          return (await publicClient.readContract({
+            address: collection,
+            abi: COLLECTION_ABI,
+            functionName: 'permissions',
+            args: [tid, grantee],
+          })) as bigint
+        } catch {
+          return 0n
+        }
+      }
+      const [tokenPerms, collectionPerms] = await Promise.all([
+        safeRead(tokenId),
+        tokenId === 0n ? Promise.resolve(0n) : safeRead(0n),
+      ])
+      const effective = tokenPerms | collectionPerms
+      if ((effective & bitValue) === 0n) return 'already'
+      await ensureBase()
+      const txHash = await writeContractAsync({
+        chainId: base.id,
+        address: collection,
+        abi: COLLECTION_ABI,
+        functionName: 'removePermission',
+        args: [tokenId, grantee, bitValue],
+      })
+      setHash(txHash)
+      return 'submitted'
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** Clear the watched hash so the hook is ready for another grant.
    *  Callers should invoke this after acting on a receipt to release the
    *  watcher and reset state. */
@@ -140,6 +192,7 @@ export function useGrantPermission() {
 
   return {
     grant,
+    revoke,
     reset,
     /** True while the precheck reads or the tx submission is in flight. */
     busy,

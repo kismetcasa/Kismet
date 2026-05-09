@@ -44,6 +44,27 @@ const COLLECTION_ABI = [
     outputs: [],
   },
   {
+    name: 'removePermission',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'tokenId', type: 'uint256' },
+      { name: 'user', type: 'address' },
+      { name: 'permissionBits', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'event',
+    name: 'UpdatedPermissions',
+    inputs: [
+      { name: 'tokenId', type: 'uint256', indexed: true },
+      { name: 'user', type: 'address', indexed: true },
+      { name: 'permissions', type: 'uint256', indexed: true },
+    ],
+    anonymous: false,
+  },
+  {
     name: 'assumeLastTokenIdMatches',
     type: 'function',
     stateMutability: 'view',
