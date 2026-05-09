@@ -4,9 +4,37 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ShieldAlert } from 'lucide-react'
 import { toast } from 'sonner'
+import { createPublicClient, http } from 'viem'
+import { mainnet } from 'viem/chains'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
+import { isAddress } from '@/lib/address'
 import { toastError } from '@/lib/toast'
+
+// Client-side ENS resolver. Resolves against the configured mainnet RPC
+// when present, otherwise falls back to Cloudflare's public ETH gateway
+// — both ENS contracts live on mainnet, so Base RPCs don't help here.
+// Server-side resolution exists too in /api/airdrop/backfill, but it
+// depends on MAINNET_RPC_URL being set on the deploy; doing it
+// client-first means a missing env var doesn't block the admin tool.
+const ensClient = createPublicClient({
+  chain: mainnet,
+  transport: http(process.env.NEXT_PUBLIC_MAINNET_RPC_URL || 'https://cloudflare-eth.com'),
+})
+
+async function resolveRecipientClientSide(value: string): Promise<{ resolved: string | null; original: string }> {
+  const trimmed = value.trim()
+  if (isAddress(trimmed)) return { resolved: trimmed.toLowerCase(), original: trimmed }
+  if (trimmed.endsWith('.eth')) {
+    try {
+      const addr = await ensClient.getEnsAddress({ name: trimmed })
+      return { resolved: addr ? addr.toLowerCase() : null, original: trimmed }
+    } catch {
+      return { resolved: null, original: trimmed }
+    }
+  }
+  return { resolved: null, original: trimmed }
+}
 
 interface BackfillResponse {
   ok?: boolean
@@ -119,7 +147,129 @@ export function AdminDashboard() {
         adminAddress={address!}
         signMessage={signMessageAsync}
       />
+      <AirdropRemoveCard
+        adminAddress={address!}
+        signMessage={signMessageAsync}
+      />
     </div>
+  )
+}
+
+interface RemoveResponse {
+  ok?: boolean
+  removedFromLog?: number
+  removedFromCollected?: number
+  error?: string
+}
+
+function AirdropRemoveCard({
+  adminAddress,
+  signMessage,
+}: {
+  adminAddress: string
+  signMessage: (args: { message: string }) => Promise<string>
+}) {
+  const [sender, setSender] = useState('')
+  const [collection, setCollection] = useState('')
+  const [tokenId, setTokenId] = useState('')
+  const [recipient, setRecipient] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState<RemoveResponse | null>(null)
+
+  async function handleSubmit() {
+    setResult(null)
+    if (!sender.trim() || !collection.trim() || !tokenId.trim() || !recipient.trim()) {
+      toast.error('every field is required', { id: 'unbackfill' })
+      return
+    }
+    if (!isAddress(recipient.trim())) {
+      toast.error('recipient must be a 0x address (resolve ENS first)', { id: 'unbackfill' })
+      return
+    }
+    setSubmitting(true)
+    try {
+      const ts = Date.now()
+      const message = `Kismet Art admin session\nAddress: ${adminAddress.toLowerCase()}\nTimestamp: ${ts}`
+      const signature = await signMessage({ message })
+      const res = await fetch('/api/airdrop/unbackfill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signature,
+          timestamp: ts,
+          sender: sender.trim(),
+          collectionAddress: collection.trim(),
+          tokenId: tokenId.trim(),
+          recipient: recipient.trim(),
+        }),
+      })
+      const json = (await res.json().catch(() => ({}))) as RemoveResponse
+      setResult(json)
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error ?? 'Remove failed')
+      }
+      toast.success(
+        `Removed ${json.removedFromLog ?? 0} log row, ${json.removedFromCollected ?? 0} collected entry`,
+        { id: 'unbackfill' },
+      )
+    } catch (err) {
+      toastError('Remove', err, { id: 'unbackfill' })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="border border-[#2a2a2a] bg-[#161616] p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-[#efefef] font-mono text-sm">Remove airdrop entry</h2>
+        <p className="text-[11px] font-mono text-[#888] mt-1 leading-relaxed">
+          Reverse a backfill that pointed at the wrong recipient. Removes the row
+          from the sender&apos;s airdrop log and the moment from the recipient&apos;s
+          collected zset. Recipient must be a 0x address — resolve ENS first.
+        </p>
+      </div>
+
+      <Field
+        label="sender"
+        value={sender}
+        onChange={setSender}
+        placeholder="0x…"
+      />
+      <Field
+        label="collection address"
+        value={collection}
+        onChange={setCollection}
+        placeholder="0x…"
+      />
+      <Field
+        label="token id"
+        value={tokenId}
+        onChange={setTokenId}
+        placeholder="1"
+      />
+      <Field
+        label="recipient (the bad address to remove)"
+        value={recipient}
+        onChange={setRecipient}
+        placeholder="0x…"
+      />
+
+      <button
+        type="button"
+        onClick={handleSubmit}
+        disabled={submitting}
+        className="text-xs font-mono tracking-wider uppercase px-4 py-2 border border-[#2a2a2a] text-[#efefef] hover:border-[#555] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {submitting ? 'signing + removing…' : 'sign & remove'}
+      </button>
+
+      {result && (
+        <div className="border border-[#2a2a2a] bg-[#0a0a0a] p-2 text-[10px] font-mono text-[#888] whitespace-pre-wrap break-all">
+          {JSON.stringify(result, null, 2)}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -157,6 +307,24 @@ function AirdropBackfillCard({
     }
     setSubmitting(true)
     try {
+      // Pre-resolve ENS names client-side so we surface unresolvable
+      // entries before asking the user to sign — and so the server
+      // request only carries 0x addresses, sidestepping a potentially
+      // unset MAINNET_RPC_URL on the deploy.
+      const resolved = await Promise.all(recipients.map(resolveRecipientClientSide))
+      const unresolved = resolved.filter((r) => !r.resolved).map((r) => r.original)
+      const resolvedAddresses = resolved
+        .map((r) => r.resolved)
+        .filter((a): a is string => !!a)
+      if (resolvedAddresses.length === 0) {
+        setResult({ error: 'No resolvable recipients', unresolved })
+        toast.error('Could not resolve any recipients', { id: 'backfill' })
+        return
+      }
+      if (unresolved.length > 0) {
+        toast.message(`Skipping unresolvable: ${unresolved.join(', ')}`, { id: 'backfill' })
+      }
+
       // The verifying route lowercases ADMIN_ADDRESS server-side and
       // embeds it in the message text. We sign with the same lowercase
       // form so the bytes match. The gate above already confirmed
@@ -171,7 +339,7 @@ function AirdropBackfillCard({
         sender: sender.trim(),
         collectionAddress: collection.trim(),
         tokenId: tokenId.trim(),
-        recipients,
+        recipients: resolvedAddresses,
         ...(txHash.trim() ? { txHash: txHash.trim() } : {}),
         ...(airdropTimestamp.trim()
           ? { airdropTimestamp: Number(airdropTimestamp.trim()) }

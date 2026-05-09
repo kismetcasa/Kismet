@@ -3,12 +3,11 @@ import { type Address, verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { redis } from '@/lib/redis'
 import { getCollectionMeta, getTrackedCollections } from '@/lib/kv'
-import { PLATFORM_COLLECTION } from '@/lib/config'
+import { ADMIN_ADDRESS, PLATFORM_COLLECTION } from '@/lib/config'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
 import { serverBaseClient } from '@/lib/rpc'
 
-const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
 const SESSION_TTL = 4 * 60 * 60 * 1000
 
 async function verifyAdminSession(body: {

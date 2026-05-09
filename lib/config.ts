@@ -36,6 +36,16 @@ export const RESIDENCIES_ADDRESS =
 export const OPERATOR_SMART_WALLET =
   process.env.NEXT_PUBLIC_OPERATOR_SMART_WALLET ?? ''
 
+// Admin address — single privileged wallet that gates /admin tools and
+// passes admin-session signatures (see app/api/permissions/audit/route.ts
+// and app/api/airdrop/backfill/route.ts). Always lowercased to match
+// verifyMessage's recovered-signer comparison. Default seeds the
+// platform admin so a missing env var doesn't lock the dashboard out
+// after a deploy; override per-environment with ADMIN_ADDRESS.
+export const ADMIN_ADDRESS: string = (
+  process.env.ADMIN_ADDRESS ?? '0x3D140B892437dD7857701098415deB2daaE03A40'
+).toLowerCase()
+
 // Curator allowlist — addresses (besides ADMIN_ADDRESS) that can add or
 // remove entries from the featured feed. Each curator gets a "Curate"
 // section on their own profile page; on the server, /api/featured accepts

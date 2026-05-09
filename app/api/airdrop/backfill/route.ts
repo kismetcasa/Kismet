@@ -3,10 +3,10 @@ import { createPublicClient, http, verifyMessage } from 'viem'
 import { mainnet } from 'viem/chains'
 import { isAddress } from '@/lib/address'
 import { recordAirdrop } from '@/lib/airdrops'
+import { ADMIN_ADDRESS } from '@/lib/config'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { redis } from '@/lib/redis'
 
-const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
 const SESSION_TTL = 4 * 60 * 60 * 1000
 
 // Mainnet client purely for ENS lookups — recipients can be passed as

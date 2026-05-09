@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
-import { CURATOR_ADDRESSES } from '@/lib/config'
-
-const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
+import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from '@/lib/config'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)

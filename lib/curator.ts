@@ -1,7 +1,6 @@
 import { verifyMessage } from 'viem'
-import { CURATOR_ADDRESSES } from './config'
+import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from './config'
 
-const ADMIN_ADDRESS = (process.env.ADMIN_ADDRESS ?? '').toLowerCase()
 const SESSION_TTL = 4 * 60 * 60 * 1000 // 4 hours
 
 /**

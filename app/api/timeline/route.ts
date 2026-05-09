@@ -60,9 +60,36 @@ export async function GET(req: NextRequest) {
       : null
   const filterToCreators = creatorsSet !== null
 
-  const collections = singleCollection
+  // Pre-read the collector's zset so we can both (a) seed the fan-out
+  // with any collections referenced there but absent from the tracked
+  // set — otherwise an airdrop into an untracked collection silently
+  // disappears from the recipient's Collected tab — and (b) skip the
+  // second zrange below in the filter stage.
+  let collectedSet: Set<string> | null = null
+  let collectedCollections: string[] = []
+  if (collector) {
+    const pairs = (await redis
+      .zrange(`kismetart:collected:${collector}`, 0, -1, { rev: true })
+      .catch(() => [])) as string[]
+    collectedSet = new Set(pairs)
+    const fromZset = new Set<string>()
+    for (const pair of pairs) {
+      const colon = pair.indexOf(':')
+      if (colon > 0) fromZset.add(pair.slice(0, colon).toLowerCase())
+    }
+    collectedCollections = Array.from(fromZset)
+  }
+
+  const trackedCollections = singleCollection
     ? [singleCollection]
     : await getTrackedCollectionsByScope(scope)
+
+  // Union with any collections found in the collector's zset. Order
+  // doesn't matter (results are merged + deduped below), but a Set
+  // dedupe avoids re-fetching collections that are in both lists.
+  const collections = Array.from(
+    new Set([...trackedCollections, ...collectedCollections]),
+  )
 
   // Cross-collection sort, featured curation, and the creators allowlist
   // can each thin the result set below `page * limit`. Bump the per-
@@ -134,13 +161,14 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Collector filter — returns only moments this address has collected through the app
-  if (collector) {
-    const pairs = (await redis.zrange(`kismetart:collected:${collector}`, 0, -1, { rev: true })) as string[]
-    const collectedSet = new Set(pairs)
+  // Collector filter — returns only moments this address has collected
+  // through the app. zset was hoisted to the top of the handler so the
+  // fan-out could include any collections referenced there.
+  if (collector && collectedSet) {
+    const setRef = collectedSet
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
-      return collectedSet.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+      return setRef.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
     })
   }
 
