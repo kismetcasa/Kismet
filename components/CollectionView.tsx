@@ -16,7 +16,6 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useGrantPermission, type PermissionOp } from '@/hooks/useGrantPermission'
-import { useCollectionMinters } from '@/hooks/useCollectionMinters'
 import { useAuthorizedCreators } from '@/hooks/useAuthorizedCreators'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { COLLECTION_ABI } from '@/lib/collections'
@@ -188,41 +187,14 @@ export function CollectionView({
     receipt: authorizeReceipt,
   } = useGrantPermission()
 
-  // Separate hook instance for the post-deploy minter grants — keeps its
-  // tx watcher independent of the smart-wallet authorize banner so a
-  // pending minter grant doesn't fight with a concurrent banner click.
-  const {
-    grant: grantMinter,
-    revoke: revokeMinter,
-    reset: resetMinterGrant,
-    busy: minterGranting,
-    hash: minterHash,
-    receipt: minterReceipt,
-  } = useGrantPermission()
-  // The hook clears `busy` as soon as a tx is submitted, so on its own
-  // it doesn't keep the buttons disabled while the tx is mining — a
-  // fast second click would clobber the hash and orphan the first tx.
-  // Gate the UI on busy OR (hash set without a receipt) so a tx that's
-  // mid-mine still locks the panel.
-  const minterTxPending = !!minterHash && !minterReceipt
-  const isMinterBusy = minterGranting || minterTxPending
-  const [minterInput, setMinterInput] = useState('')
-  const [revokingAddr, setRevokingAddr] = useState<string | null>(null)
-  // Ref (not state) so the receipt effect reads it without re-firing
-  // when we clear revokingAddr — avoids a double-toast on confirm.
-  const pendingMinterActionRef = useRef<'grant' | 'revoke' | null>(null)
-
-  // Live list of MINTER-bit holders, refetched after every grant/revoke
-  // so the panel mirrors chain state without a manual reload.
-  const {
-    minters: authorizedMinters,
-    loading: mintersLoading,
-    refetch: refetchMinters,
-  } = useCollectionMinters(canGrantHere ? (address as `0x${string}`) : undefined)
-
   // ─── Authorized creators (ADMIN tier) ───────────────────────────────
-  // Separate hook instance from the minter panel so concurrent grants
-  // don't share a tx watcher and clobber each other's receipts.
+  // The collection-page authorization surface. Per-token airdrop
+  // delegation lives in AirdropForm itself (creators delegate one
+  // moment at a time from there). Collection-wide MINTER grants
+  // aren't exposed in our UI — anyone with legacy MINTER from
+  // off-platform still gets the airdrop chip and surfaces in
+  // /api/collections/mintable, but new grants go through this panel
+  // (ADMIN tier) since it covers airdrop authority too.
   const {
     batch: batchCreator,
     reset: resetCreatorGrant,
@@ -247,8 +219,8 @@ export function CollectionView({
     loading: creatorsLoading,
     refetch: refetchCreators,
   } = useAuthorizedCreators(
-    address as `0x${string}`,
-    defaultAdminAddress
+    canGrantHere ? (address as `0x${string}`) : undefined,
+    canGrantHere && defaultAdminAddress
       ? (defaultAdminAddress as `0x${string}`)
       : undefined,
   )
@@ -271,91 +243,6 @@ export function CollectionView({
       }
     }
     return null
-  }
-
-  useEffect(() => {
-    if (!minterReceipt) return
-    // Read+clear the pending action ref so a stale receipt persisting
-    // in wagmi's cache after resetMinterGrant() can't re-fire the toast.
-    const action = pendingMinterActionRef.current
-    if (!action) return
-    pendingMinterActionRef.current = null
-    const wasRevoke = action === 'revoke'
-    resetMinterGrant()
-    setRevokingAddr(null)
-    if (minterReceipt.status === 'reverted') {
-      toast.error(wasRevoke ? 'Revoke failed' : 'Authorize failed', {
-        id: 'authorize-minter',
-        description: 'The transaction reverted on-chain — only collection admins can change minter permissions.',
-      })
-      return
-    }
-    if (!wasRevoke) setMinterInput('')
-    toast.success(wasRevoke ? 'Minter revoked' : 'Minter authorized', { id: 'authorize-minter' })
-    void refetchMinters()
-  }, [minterReceipt, resetMinterGrant, refetchMinters])
-
-  async function handleAuthorizeMinter() {
-    const raw = minterInput.trim()
-    if (!raw) return
-    try {
-      toast.loading('Resolving address…', { id: 'authorize-minter' })
-      const target = await resolveAddressInput(raw)
-      if (!target) {
-        toast.error(
-          raw.endsWith('.eth')
-            ? `Could not resolve ${raw}`
-            : 'Invalid address — paste a 0x… or vitalik.eth name',
-          { id: 'authorize-minter' },
-        )
-        return
-      }
-      toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
-      const outcome = await grantMinter({
-        collection: address as `0x${string}`,
-        grantee: target,
-        tokenId: 0n,
-        bit: 'minter',
-      })
-      if (outcome === 'submitted') {
-        pendingMinterActionRef.current = 'grant'
-        toast.loading('Authorizing minter…', { id: 'authorize-minter' })
-        return
-      }
-      // Already had MINTER on chain — refetch so the list shows them
-      // immediately even if our log scan hadn't caught up yet.
-      setMinterInput('')
-      toast.success('Already a minter on this collection', { id: 'authorize-minter' })
-      void refetchMinters()
-    } catch (err) {
-      toastError('Authorize minter', err, { id: 'authorize-minter' })
-    }
-  }
-
-  async function handleRevokeMinter(target: `0x${string}`) {
-    if (isMinterBusy) return
-    setRevokingAddr(target.toLowerCase())
-    try {
-      toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
-      const outcome = await revokeMinter({
-        collection: address as `0x${string}`,
-        grantee: target,
-        tokenId: 0n,
-        bit: 'minter',
-      })
-      if (outcome === 'submitted') {
-        pendingMinterActionRef.current = 'revoke'
-        toast.loading('Revoking minter…', { id: 'authorize-minter' })
-        return
-      }
-      // Bit wasn't set on chain — refetch to drop them from the list.
-      setRevokingAddr(null)
-      toast.success('Already not a minter', { id: 'authorize-minter' })
-      void refetchMinters()
-    } catch (err) {
-      setRevokingAddr(null)
-      toastError('Revoke minter', err, { id: 'authorize-minter' })
-    }
   }
 
   // ─── Authorize creators (ADMIN to smart wallet) ─────────────────────
@@ -659,17 +546,12 @@ export function CollectionView({
   const imgUrl = rawImgUrl ? resolveUri(rawImgUrl) : null
   const description = collectionDescription
 
-  // Artists on this collection: the union of moment creators (anyone
-  // who's already minted) and live authorized-creator-tier addresses
-  // (anyone delegated mint authority but not yet shipped). Surfaces
-  // potential contributors before they ship their first token.
+  // Unique creator addresses across all loaded moments — surfaces
+  // anyone who has actually shipped a token here, including authorized
+  // creators after they mint. Pre-mint authorizations live in the
+  // admin panel above; this section is the gallery of contributors.
   const uniqueCreators = Array.from(
-    new Set([
-      ...loadedMoments.map((m) => m.creator.address.toLowerCase()),
-      ...authorizedCreators
-        .filter((c) => c.liveOnChain)
-        .map((c) => (c.eoa ?? c.smartWallet).toLowerCase()),
-    ]),
+    new Set(loadedMoments.map((m) => m.creator.address.toLowerCase())),
   )
 
   // Unique split admin addresses (from moment admins, excluding moment creators)
@@ -947,88 +829,6 @@ export function CollectionView({
                         onClick={() => void handleRevokeCreator(c.eoa, c.smartWallet)}
                         disabled={otherTxBusy || isRevoking}
                         title="Revoke creator authorization"
-                        className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )
-          )}
-        </div>
-      )}
-
-      {/* Authorize minters — MINTER bit only, the airdrop tier.
-          Unlocks adminMint (mint copies of existing tokens, surfaces
-          in the Airdrop dropdown) but not setupNewToken — use the
-          Creators panel for that. */}
-      {canGrantHere && (
-        <div className="mb-8 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
-          <div className="flex items-center gap-1.5 mb-2">
-            <ShieldCheck size={12} className="text-[#888]" />
-            <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
-              Authorize minters
-            </p>
-          </div>
-          <p className="text-[11px] font-mono text-[#555] mb-3">
-            Grant another wallet permission to mint copies of any token in this collection. ENS names work.
-          </p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={minterInput}
-              onChange={(e) => setMinterInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  void handleAuthorizeMinter()
-                }
-              }}
-              placeholder="0x… or vitalik.eth"
-              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-            />
-            <button
-              type="button"
-              onClick={() => void handleAuthorizeMinter()}
-              disabled={isMinterBusy || !minterInput.trim()}
-              className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
-            >
-              {isMinterBusy && !revokingAddr ? 'authorizing…' : 'authorize'}
-            </button>
-          </div>
-          {mintersLoading && authorizedMinters.length === 0 ? (
-            <ul className="mt-3 flex flex-col gap-1" aria-busy="true">
-              {[0, 1].map((i) => (
-                <li
-                  key={i}
-                  className="flex items-center justify-between bg-[#111] border border-[#1a1a1a] px-3 py-2 animate-pulse"
-                >
-                  <span className="h-3 w-32 bg-[#1a1a1a]" />
-                  <span className="h-3 w-3 bg-[#1a1a1a] flex-shrink-0" />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            authorizedMinters.length > 0 && (
-              <ul className="mt-3 flex flex-col gap-1">
-                {authorizedMinters.map((m) => {
-                  const isRevoking = revokingAddr === m.toLowerCase()
-                  const otherTxBusy = isMinterBusy && !isRevoking
-                  return (
-                    <li
-                      key={m}
-                      className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2"
-                    >
-                      <span className="text-xs font-mono text-[#888] truncate">
-                        {shortAddress(m)}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void handleRevokeMinter(m)}
-                        disabled={otherTxBusy || isRevoking}
-                        title="Revoke MINTER permission"
                         className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                       >
                         <Trash2 size={12} />

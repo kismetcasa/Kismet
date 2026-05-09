@@ -50,8 +50,7 @@ export async function findMintableCollections(
     fromBlock: 'earliest',
     toBlock: 'latest',
   })
-  // Latest event per collection wins. Same dedupe shape as
-  // useCollectionMinters — keep them consistent.
+  // Latest event per collection wins.
   type Latest = { perms: bigint; block: bigint; idx: number }
   const latest = new Map<string, Latest>()
   for (const log of logs) {
