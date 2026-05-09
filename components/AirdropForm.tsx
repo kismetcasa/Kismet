@@ -1,18 +1,17 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAccount, useReadContracts, useSignMessage } from 'wagmi'
+import { useAccount, useReadContracts } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { Plus, ShieldCheck, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import Image from 'next/image'
 import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
-import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
+import { useAirdrop } from '@/hooks/useAirdrop'
 import { COLLECTION_ABI } from '@/lib/collections'
-import { OPERATOR_SMART_WALLET } from '@/lib/config'
 import { hasAdminBit } from '@/lib/permissions'
 
 interface AirdropFormProps {
@@ -23,17 +22,15 @@ interface AirdropFormProps {
 export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
-  const { signMessageAsync } = useSignMessage()
-  // The shared addPermission flow: precheck → submit tx → watch receipt.
-  // Keeps the airdrop form thin — UX (toasts, retry) lives here, the
-  // on-chain primitive lives in the hook.
-  const { grant, reset: resetGrant, busy: authBusy, hash: authHash, receipt: authReceipt } =
-    useGrantPermission()
+  // Client-side airdrop — the user's EOA calls Zora's adminMint
+  // directly (single recipient) or via the inherited multicall
+  // (batched). Bypasses inprocess's relay entirely so we're not
+  // chasing whichever wallet they route under our shared API key.
+  const { airdrop } = useAirdrop()
   // Per-token ADMIN delegation: lets the moment admin grant another
-  // wallet permission to airdrop this specific moment via /api/airdrop.
-  // Lives on the airdrop tab now (was inline on the moment detail page);
-  // the picker already filters to airdroppable moments, so the delegate
-  // input below the form is contextual to the selected one.
+  // wallet permission to airdrop this specific moment from their own
+  // wallet. Same useGrantPermission primitive that powers the
+  // collection-page authorize banners; just pointed at a delegate.
   const {
     grant: grantDelegate,
     reset: resetDelegateGrant,
@@ -48,109 +45,51 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
-  // Tracks an in-flight airdrop that should auto-retry once the auth
-  // flow completes — set when an airdrop fails with the admin-perms
-  // error, cleared on the retry attempt or on auth failure.
-  const [pendingAirdropRetry, setPendingAirdropRetry] = useState(false)
 
   // Permission preflight on the SELECTED moment's collection. The
-  // grantee that matters for airdrop is OPERATOR_SMART_WALLET — the
-  // platform CDP smart wallet inprocess routes user-relayed adminMint
-  // calls through under our shared INPROCESS_API_KEY (see
-  // OPERATOR_SMART_WALLET docs in .env.example and lib/healthcheck.ts).
-  // We OR the collection-wide row with the per-token row (mirrors
-  // Zora's _hasAnyPermission), so a single ADMIN at either scope passes.
-  // Artist's own smart wallet is no longer read here — that grant is
-  // necessary for /api/moment/create routing (which mint-proxy already
-  // handles via the `account` override) but doesn't unlock airdrop.
-  // Resolved purely so the artist's own smart-wallet hint can flow
-  // into the legacy AUTHORIZE_REQUIRED toast (responseData.smartWallet)
-  // when the server falls back to its artist-wallet preflight (operator
-  // env unset / RPC failure). For the primary banner + grant flow we
-  // use operatorAddress below, not this.
-  useInprocessSmartWallet(address)
-  const operatorAddress =
-    OPERATOR_SMART_WALLET && isAddress(OPERATOR_SMART_WALLET)
-      ? (OPERATOR_SMART_WALLET as `0x${string}`)
-      : null
+  // wallet that needs ADMIN now is the connected EOA itself — the
+  // user signs the airdrop tx directly, so adminMint's gate runs
+  // against `permissions[tokenId][msg.sender] | permissions[0][msg.sender]`
+  // (Zora's _hasAnyPermission). Picker-eligible moments come back
+  // from /api/timeline?airdroppable=… which already filters to
+  // moments where the user holds at least per-token ADMIN, so this
+  // read should pass on every selectable moment; we keep the check
+  // as a defensive guard against a stale cache.
+  const callerAddress =
+    address && isAddress(address) ? (address as `0x${string}`) : null
   const { data: airdropPerms } = useReadContracts({
     contracts:
-      selected && operatorAddress
+      selected && callerAddress
         ? [
             {
               address: selected.address as `0x${string}`,
               abi: COLLECTION_ABI,
               functionName: 'permissions' as const,
-              args: [0n, operatorAddress] as const,
+              args: [0n, callerAddress] as const,
             },
             {
               address: selected.address as `0x${string}`,
               abi: COLLECTION_ABI,
               functionName: 'permissions' as const,
-              args: [BigInt(selected.token_id), operatorAddress] as const,
+              args: [BigInt(selected.token_id), callerAddress] as const,
             },
           ]
         : [],
-    query: { enabled: !!selected && !!operatorAddress },
+    query: { enabled: !!selected && !!callerAddress },
   })
-  const airdropPreflightUnauthorized =
+  const callerLacksAdmin =
     !!selected &&
-    !!operatorAddress &&
+    !!callerAddress &&
     airdropPerms?.length === 2 &&
     airdropPerms[0].status === 'success' &&
     airdropPerms[1].status === 'success' &&
     !hasAdminBit(
       (airdropPerms[0].result as bigint) | (airdropPerms[1].result as bigint),
     )
-  // Inverse signal — both reads succeeded AND the OR'd result holds
-  // ADMIN on the operator wallet. When this is true, the platform
-  // operator wallet provably has collection-wide-or-token-scoped
-  // ADMIN from *our* RPC's view of chain state, so any "admin
-  // permission" reject from the upstream airdrop call is indexer
-  // lag, not a real auth miss. Used below to skip the Authorize
-  // prompt entirely for moments where the operator grant is in place.
-  const airdropChainAuthorized =
-    !!selected &&
-    !!operatorAddress &&
-    airdropPerms?.length === 2 &&
-    airdropPerms[0].status === 'success' &&
-    airdropPerms[1].status === 'success' &&
-    hasAdminBit(
-      (airdropPerms[0].result as bigint) | (airdropPerms[1].result as bigint),
-    )
 
-  useEffect(() => {
-    if (!authReceipt) return
-    resetGrant()
-    if (authReceipt.status === 'reverted') {
-      // Tx reverted — drop the retry intent so we don't auto-fire an
-      // airdrop the user can't actually complete.
-      setPendingAirdropRetry(false)
-      toast.error('Authorize failed', {
-        id: 'authorize-collection',
-        description:
-          'The transaction reverted on-chain — only the collection admin can grant on this row.',
-      })
-      return
-    }
-    // Auto-retry the airdrop when the user kicked off the authorize
-    // from the airdrop-failure path. isRetry=true flips the next
-    // /api/airdrop "no admin" response into an indexer-lag hint
-    // instead of looping back to another authorize prompt.
-    if (pendingAirdropRetry && selected) {
-      setPendingAirdropRetry(false)
-      toast.success('Authorized — retrying airdrop', { id: 'authorize-collection' })
-      void submitAirdrop({ isRetry: true })
-      return
-    }
-    toast.success('Collection authorized — airdrops can now mint into it.', {
-      id: 'authorize-collection',
-    })
-  }, [authReceipt])
-
-  // Receipt handler for the delegate grant. Mirrors the self-authorize
-  // receipt watcher above but doesn't auto-retry anything — delegation
-  // is a fire-and-forget grant, the recipient airdrops separately.
+  // Receipt handler for the delegate grant. Mirrors the previous
+  // version exactly — delegation is a fire-and-forget grant, the
+  // recipient airdrops separately from their own wallet.
   useEffect(() => {
     if (!delegateReceipt) return
     resetDelegateGrant()
@@ -202,84 +141,6 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     }
   }
 
-  // `tokenId` is the scope of the permission grant. 0n is collection-wide
-  // (works on collections the user deployed themselves — they hold
-  // defaultAdmin). For shared collections like the platform collection
-  // where the user isn't defaultAdmin but IS per-token admin of their
-  // own moments, callers should pass the moment's tokenId so the grant
-  // lands on a row the user has authority to write. useGrantPermission
-  // reads both rows and ORs them — same OR Zora's _hasAnyPermission
-  // applies when adminMint runs upstream — so the "already authorized"
-  // short-circuit matches inprocess's actual gate.
-  async function authorizeCollection(
-    rawAddr: string,
-    tokenId: bigint = 0n,
-    // Explicit signal that the caller is the airdrop-failure toast and
-    // wants the airdrop re-submitted regardless of `pendingAirdropRetry`
-    // state. Sidesteps a React stale-closure bug: the toast's onClick is
-    // captured at toast-creation time, *before* the queued
-    // setPendingAirdropRetry(true) lands — so the closure reads false and
-    // skips the retry. Manual bar callers don't pass this and continue
-    // to use the state-driven path.
-    forceRetryOnAlready: boolean = false,
-  ) {
-    const addr = rawAddr.trim()
-    if (!isAddress(addr)) {
-      toast.error('Invalid collection address', { id: 'authorize-collection' })
-      return
-    }
-    if (!isConnected || !address) {
-      openConnectModal?.()
-      return
-    }
-    try {
-      // The OPERATOR smart wallet is the entity that needs ADMIN for
-      // airdrop to work — that's the wallet inprocess routes user-
-      // relayed adminMint calls through under our shared API key.
-      // Granting the artist's own smart wallet (what we used to do
-      // here) only unlocked the mint flow, never airdrop, because
-      // /moment/airdrop doesn't honor the `account` override the
-      // way /moment/create does.
-      if (!operatorAddress) {
-        throw new Error('Operator wallet not configured (NEXT_PUBLIC_OPERATOR_SMART_WALLET)')
-      }
-      toast.loading('Confirm in wallet…', { id: 'authorize-collection' })
-      const outcome = await grant({
-        collection: addr as `0x${string}`,
-        grantee: operatorAddress,
-        tokenId,
-        bit: 'admin',
-      })
-      if (outcome === 'submitted') {
-        toast.loading('Authorizing…', { id: 'authorize-collection' })
-        return
-      }
-      // outcome === 'already' — short-circuit the success-flavored
-      // toast and (if appropriate) trigger the airdrop retry.
-      const shouldRetry =
-        (forceRetryOnAlready || pendingAirdropRetry) &&
-        selected &&
-        selected.address.toLowerCase() === addr.toLowerCase()
-      if (shouldRetry) {
-        setPendingAirdropRetry(false)
-        toast.success('Already authorized onchain — retrying airdrop', {
-          id: 'authorize-collection',
-        })
-        void submitAirdrop({ isRetry: true })
-        return
-      }
-      toast.success('Already authorized — airdrops can mint into this collection.', {
-        id: 'authorize-collection',
-      })
-    } catch (err) {
-      // User cancelled in wallet, RPC failed, etc. Drop the retry
-      // intent so a future authorize click doesn't surprise-resubmit
-      // the airdrop.
-      setPendingAirdropRetry(false)
-      toastError('Authorize', err, { id: 'authorize-collection' })
-    }
-  }
-
   function addRecipient() {
     const addr = recipientInput.trim()
     if (!isAddress(addr)) { toast.error('Invalid address'); return }
@@ -298,7 +159,8 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   // admin-permission error toast into a stronger "indexer lag" message
   // when the retry hits the same wall — so we don't loop the user
   // through a useless second authorize prompt.
-  async function submitAirdrop({ isRetry = false }: { isRetry?: boolean } = {}) {
+  async function handleAirdrop(e: React.FormEvent) {
+    e.preventDefault()
     if (!isConnected || !address) { openConnectModal?.(); return }
     if (!selected) { toast.error('Select a moment to airdrop'); return }
 
@@ -318,162 +180,23 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     setSending(true)
     setResultHash(null)
     try {
-      const nonceRes = await fetch(`/api/profile/${address}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
-      const { nonce } = await nonceRes.json().catch(() => ({}))
-      if (!nonce) throw new Error('Could not fetch nonce')
-      const message = `Airdrop moment on Kismet Art\nCollection: ${selected.address.toLowerCase()}\nToken: ${selected.token_id}\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
-      toast.loading(isRetry ? 'Re-sign airdrop in wallet…' : 'Sign airdrop in wallet…', { id: 'airdrop' })
-      const signature = await signMessageAsync({ message })
-
-      toast.loading(isRetry ? 'Retrying airdrop…' : 'Airdropping…', { id: 'airdrop' })
-      const res = await fetch('/api/airdrop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          collectionAddress: selected.address,
-          recipients: activeRecipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
-          callerAddress: address,
-          signature,
-          nonce,
-          // Tells the server to bypass the smart-wallet ADMIN preflight.
-          // Set when the client just landed an on-chain authorize and is
-          // re-submitting — at that point a preflight 'unauthorized'
-          // verdict almost always means RPC node staleness (the bit IS
-          // set, but a non-canonical node hasn't synced). Trust inprocess
-          // to be the authoritative source on retries.
-          ...(isRetry ? { isRetry: true } : {}),
-        }),
+      toast.loading('Confirm airdrop in wallet…', { id: 'airdrop' })
+      const txHash = await airdrop({
+        collectionAddress: selected.address as `0x${string}`,
+        tokenId: BigInt(selected.token_id),
+        recipients: activeRecipients as `0x${string}`[],
       })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        // Surface the full upstream payload to the console so we can debug
-        // 400s from inprocess validators without depending on the user
-        // copying the toast text. Includes the request payload too so we
-        // can verify the wire shape matches what their docs say.
-        console.warn('[airdrop] /api/airdrop rejected', {
-          status: res.status,
-          response: data,
-          requestPayload: {
-            collectionAddress: selected.address,
-            recipients: activeRecipients.map((r) => ({ recipientAddress: r, tokenId: selected.token_id })),
-          },
-        })
-        // Mirrors MintForm.maybeHandleAuthError. Two detection paths:
-        //   1. Structured `{ code: 'AUTHORIZE_REQUIRED' }` — what
-        //      /api/airdrop returns when it converts the upstream
-        //      "admin permission" error itself.
-        //   2. Raw `/admin permission/i` match against the upstream
-        //      response body — fallback for when the server hasn't
-        //      converted (older deploy, edge cache, or any path where
-        //      the upstream message reaches us verbatim).
-        // Toast action triggers the wallet prompt directly (no nav)
-        // so the user can grant ADMIN inline and immediately retry.
-        // Manual bar at the bottom of the form is the always-visible
-        // alternative for arbitrary collections.
-        const authMessage =
-          typeof data === 'object' && data !== null
-            ? String(
-                (data as Record<string, unknown>).error ??
-                  (data as Record<string, unknown>).message ??
-                  (data as Record<string, unknown>).detail ??
-                  '',
-              )
-            : ''
-        const errorCode = (data as { code?: string }).code
-        const isIndexerLag = errorCode === 'INDEXER_LAG'
-        const isAuthError =
-          errorCode === 'AUTHORIZE_REQUIRED' ||
-          /admin permission/i.test(authMessage)
-        // Server tagged this as indexer lag (chain ADMIN is set but
-        // inprocess hasn't picked it up) OR we already retried after a
-        // successful authorize and inprocess still rejects OR our own
-        // chain reads prove ADMIN is set (so any upstream auth reject
-        // must be lag, not a real miss — covers the case where the
-        // server-side RPC blip degraded its preflight to 'unknown').
-        // Same outcome from the user's perspective: don't loop them
-        // through another authorize prompt; show the wait-and-retry
-        // toast and clear pending-retry intent so a stale auth-flow
-        // context can't auto-resubmit later.
-        if (isIndexerLag || (isAuthError && (isRetry || airdropChainAuthorized))) {
-          setPendingAirdropRetry(false)
-          toast.error("Inprocess hasn't picked up the authorize yet", {
-            id: 'airdrop',
-            description:
-              'On-chain ADMIN is set but the inprocess indexer is still catching up. Wait a minute and tap airdrop again.',
-          })
-          return
-        }
-        if (isAuthError) {
-          // Mark the airdrop as pending-retry so the auth flow can
-          // auto-resubmit once it lands.
-          setPendingAirdropRetry(true)
-          // Server includes the resolved smart wallet + per-scope
-          // perms in AUTHORIZE_REQUIRED responses. Surface the smart
-          // wallet address in the description so users can verify it
-          // matches the address they granted ADMIN to — the "I
-          // already authorized" confusion almost always traces back
-          // to granting a different address (or granting MINTER (4)
-          // instead of ADMIN (2)).
-          const responseData = data as {
-            smartWallet?: string
-            perms?: Array<{ tokenId: string; value: string | null }>
-          }
-          const sw = responseData.smartWallet
-          const swShort = sw ? `${sw.slice(0, 6)}…${sw.slice(-4)}` : null
-          const nonZeroPerms = responseData.perms?.filter(
-            (p) => p.value !== null && p.value !== '0',
-          )
-          const hasOtherBits = (nonZeroPerms?.length ?? 0) > 0
-          const description = swShort
-            ? hasOtherBits
-              ? `Kismet's smart wallet ${swShort} has permissions on this collection but is missing the ADMIN bit. If you granted MINTER instead of ADMIN, re-grant with ADMIN.`
-              : `Kismet's smart wallet ${swShort} needs ADMIN on this collection. One-time onchain grant from your wallet.`
-            : "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet."
-          toast.error('Authorization required', {
-            id: 'airdrop',
-            description,
-            action: {
-              label: 'Authorize',
-              // Pass the moment's tokenId so the grant lands on a row
-              // the user has authority to write — critical for the
-              // platform collection where they aren't defaultAdmin
-              // but ARE per-token admin of their own moments.
-              // forceRetryOnAlready=true sidesteps the stale-closure
-              // bug where this onClick was registered before the
-              // setPendingAirdropRetry(true) update landed.
-              onClick: () => void authorizeCollection(selected.address, BigInt(selected.token_id), true),
-            },
-          })
-          return
-        }
-        const errors = Array.isArray(data.errors)
-          ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
-          : ''
-        throw new Error((data.detail ?? data.error ?? data.message ?? 'Airdrop failed') + errors)
-      }
-      // Inprocess wraps a CDP-bundler userOp; the hash field name varies
-      // across their SDK versions. Accept any of the common shapes.
-      const txHash: string | undefined =
-        data.hash ?? data.txHash ?? data.transactionHash ?? data.userOpHash
-      if (!txHash) throw new Error('Airdrop submitted but no tx hash returned')
       setResultHash(txHash)
       setRecipients([])
-      toast.success(`Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`, { id: 'airdrop' })
+      toast.success(
+        `Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`,
+        { id: 'airdrop' },
+      )
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
     } finally {
       setSending(false)
     }
-  }
-
-  async function handleAirdrop(e: React.FormEvent) {
-    e.preventDefault()
-    // Manual submits clear any prior pending-retry intent so the
-    // explicit click is treated as a fresh airdrop attempt, not as
-    // a continuation of a stale auth-flow context.
-    setPendingAirdropRetry(false)
-    await submitAirdrop()
   }
 
   const selectedMeta = selected?.metadata ?? {}
@@ -624,46 +347,35 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </a>
       )}
 
-      {/* Inline Authorize CTA — shows when the operator wallet is
-          missing ADMIN on the selected moment's collection (collection-
-          wide row + per-token row OR'd, matching Zora's
-          _hasAnyPermission). The grant adds ADMIN on the operator
-          wallet — the platform CDP smart wallet that inprocess routes
-          adminMint userOps through under our shared API key. New
-          collections deployed via Kismet's Create Collection form
-          get this grant baked into setupActions, so this banner only
-          appears for legacy / pre-fix collections (and for auto-
-          deployed collections where the deploy ran inside inprocess
-          and we couldn't append a setupAction). */}
-      {airdropPreflightUnauthorized && selected && operatorAddress && (
-        <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="flex items-start gap-2.5 min-w-0">
-            <ShieldCheck size={16} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <p className="text-xs font-mono text-[#efefef]">
-                Authorize Kismet platform for airdrops
-              </p>
-              <p className="text-[11px] font-mono text-[#888] mt-0.5">
-                One-time onchain grant on {shortAddress(selected.address)} — Kismet&apos;s
-                operator wallet ({shortAddress(operatorAddress)}) needs ADMIN to airdrop on your behalf.
-              </p>
-            </div>
+      {/* Defensive check: the picker only surfaces moments where the
+          server-side /api/timeline?airdroppable=… already confirmed the
+          user holds admin authority, so this banner should be a no-op
+          on the happy path. It only fires if a stale picker cache or
+          wallet switch leaves a moment selected where the connected
+          EOA can't actually authorize the on-chain adminMint. Both
+          permissions reads must succeed AND OR to no ADMIN bit before
+          we surface this — a still-loading or RPC-failed read renders
+          nothing so the user can attempt the airdrop and let the
+          on-chain call surface the actual revert. */}
+      {callerLacksAdmin && selected && (
+        <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex items-start gap-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-mono text-[#efefef]">
+              Your wallet doesn&apos;t have admin on this collection
+            </p>
+            <p className="text-[11px] font-mono text-[#888] mt-0.5">
+              Airdrops mint directly from your wallet. Switch to the wallet that holds
+              defaultAdmin or per-token ADMIN on {shortAddress(selected.address)}, or have
+              the creator delegate airdrop to your address.
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void authorizeCollection(selected.address, BigInt(selected.token_id))}
-            disabled={authBusy || !!authHash}
-            className="flex-shrink-0 text-xs font-mono tracking-wider uppercase px-4 py-2 btn-accent disabled:opacity-50"
-          >
-            {authHash ? 'authorizing…' : authBusy ? 'checking…' : 'authorize'}
-          </button>
         </div>
       )}
 
       {/* Treat a valid address typed into the input as a pending recipient
-          so the user doesn't have to click + first. submitAirdrop commits
-          it to the array before sending; the count below reflects what the
-          submit will actually airdrop to. */}
+          so the user doesn't have to click + first. handleAirdrop commits
+          it to the array before sending; the count below reflects what
+          the submit will actually airdrop to. */}
       {(() => {
         const pending = recipientInput.trim()
         const pendingValid =
@@ -687,7 +399,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       })()}
 
       <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
-        airdrop freshly minted supply to recipients
+        airdrop freshly minted supply to recipients · paid from your wallet
       </p>
 
       {/* Delegate airdrop — moved from the moment detail page so all
