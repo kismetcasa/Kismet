@@ -1,4 +1,4 @@
-import { getTrackedCollections, getCoverMomentsSet } from './kv'
+import { getTrackedCollections } from './kv'
 import { resolveUri, fetchCollectionMoments } from './inprocess'
 
 export interface MomentSearchResult {
@@ -13,10 +13,7 @@ export interface MomentSearchResult {
 const MAX_SEARCH_COLLECTIONS = 25
 
 export async function searchMoments(query: string): Promise<MomentSearchResult[]> {
-  const [allCollections, covers] = await Promise.all([
-    getTrackedCollections(),
-    getCoverMomentsSet(),
-  ])
+  const allCollections = await getTrackedCollections()
   const collections = allCollections.slice(0, MAX_SEARCH_COLLECTIONS)
   const all = await Promise.all(
     collections.map((c) => fetchCollectionMoments(c, { revalidate: 30 })),
@@ -29,9 +26,6 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
     const key = `${moment.address}:${moment.token_id}`
     if (seen.has(key)) continue
     seen.add(key)
-    // Cover tokens are collection art, not standalone mints — match the
-    // /api/timeline filter so search results agree with the Mints feeds.
-    if (covers.has(`${moment.address.toLowerCase()}:${moment.token_id}`)) continue
     const name = (moment.metadata?.name ?? '').toLowerCase()
     const desc = (moment.metadata?.description ?? '').toLowerCase()
     const creator = (moment.creator?.address ?? '').toLowerCase()

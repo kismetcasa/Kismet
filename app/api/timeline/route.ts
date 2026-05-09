@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollectionsByScope, getCoverMomentsSet, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -92,22 +92,10 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Cover tokens are collection art, not standalone mints. Filter them
-  // out of every Mints surface; the collection-page view (singleCollection)
-  // skips the filter so covers still show on /collection/<addr>.
-  if (!singleCollection) {
-    const covers = await getCoverMomentsSet()
-    if (covers.size > 0) {
-      merged = merged.filter((m: unknown) => {
-        const moment = m as { address?: string; token_id?: string }
-        return !covers.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
-      })
-    }
-  }
-
-  // Strict Mints surface: only moments minted via Kismet's MintForm
-  // appear. Profile/Roster/Featured/Collected stay cross-cut so legacy
-  // moments remain visible in user-history surfaces.
+  // Strict Mints surface: only moments tracked in created-mints (mints
+  // via MintForm + covers minted at Create-Collection time) appear.
+  // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
+  // remain visible in user-history surfaces.
   if (scope === 'standalone' && !singleCollection) {
     const createdMints = await getCreatedMintsSet()
     merged = merged.filter((m: unknown) => {

@@ -45,11 +45,13 @@ export function CuratePanel() {
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [promoteInput, setPromoteInput] = useState('')
   const [promoting, setPromoting] = useState(false)
+  const [backfilling, setBackfilling] = useState(false)
 
   // Promote a legacy collection address into kismetart:created-collections
   // so it surfaces in the Collections feed, profile collections, mint
-  // dropdown, and search. Used for collections deployed before write-time
-  // tracking shipped (e.g., legacy turro / Poetry x Kismet entries).
+  // dropdown, and search. The endpoint also auto-backfills the
+  // collection's moments into kismetart:created-mints so the Mints feed
+  // populates without a separate per-mint promote step.
   async function handlePromote() {
     const addr = promoteInput.trim()
     if (!isAddress(addr)) {
@@ -64,18 +66,61 @@ export function CuratePanel() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ address: addr, ...auth }),
         })
-        const data = (await res.json().catch(() => ({}))) as { promoted?: boolean; error?: string }
+        const data = (await res.json().catch(() => ({}))) as {
+          promoted?: boolean
+          mintsBackfilled?: number
+          error?: string
+        }
         if (!res.ok) throw new Error(data.error ?? 'Promote failed')
         return data
       })
       if (result?.promoted) {
         setPromoteInput('')
-        toast.success(`${addr.slice(0, 6)}…${addr.slice(-4)} added to collections`, { id: 'promote-collection' })
+        const mintsNote = result.mintsBackfilled ? ` (+${result.mintsBackfilled} mints)` : ''
+        toast.success(
+          `${addr.slice(0, 6)}…${addr.slice(-4)} added to collections${mintsNote}`,
+          { id: 'promote-collection' },
+        )
       }
     } catch (err) {
       toastError('Promote', err, { id: 'promote-collection' })
     } finally {
       setPromoting(false)
+    }
+  }
+
+  // One-shot global backfill: walks every contract in
+  // kismetart:collections, fetches its moments from inprocess, SADDs
+  // each into kismetart:created-mints. Use after deploying the new
+  // tracking to surface every historical Kismet mint without re-minting.
+  async function handleBackfillMints() {
+    if (!confirm('Scan every tracked contract and add its moments to the Mints feed?')) return
+    setBackfilling(true)
+    try {
+      const result = await withSession(async (auth) => {
+        const res = await fetch('/api/curator/backfill-mints', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(auth),
+        })
+        const data = (await res.json().catch(() => ({}))) as {
+          mintsAdded?: number
+          contractsScanned?: number
+          error?: string
+        }
+        if (!res.ok) throw new Error(data.error ?? 'Backfill failed')
+        return data
+      })
+      if (result) {
+        toast.success(
+          `Added ${result.mintsAdded ?? 0} mints from ${result.contractsScanned ?? 0} contracts`,
+          { id: 'backfill-mints' },
+        )
+      }
+    } catch (err) {
+      toastError('Backfill mints', err, { id: 'backfill-mints' })
+    } finally {
+      setBackfilling(false)
     }
   }
 
@@ -207,6 +252,13 @@ export function CuratePanel() {
             {promoting ? '…' : <ArrowUpRight size={12} />}
           </button>
         </div>
+        <button
+          onClick={handleBackfillMints}
+          disabled={backfilling}
+          className="text-[10px] font-mono text-[#555] hover:text-[#efefef] transition-colors w-fit pt-1 disabled:opacity-50"
+        >
+          {backfilling ? 'scanning…' : 'or: backfill all legacy mints into the Mints feed →'}
+        </button>
       </div>
 
       {/* Creator lists — rosters reachable from the homepage Roster tab. */}
