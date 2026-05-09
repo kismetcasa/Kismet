@@ -50,9 +50,9 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
     setLoadingMoments(true)
     // ?airdroppable=… surfaces both moments this user created AND moments
     // where they hold per-token ADMIN via a creator's "Delegate airdrop"
-    // grant. Without this, delegates would have no way to find their
-    // delegated moments in the picker even though /api/airdrop would
-    // authorize them to airdrop.
+    // grant. Both groups can airdrop client-side via Zora's adminMint;
+    // delegates without this filter would have no way to discover the
+    // moments they're authorized for.
     fetch(`/api/timeline?airdroppable=${address}&limit=100`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))

@@ -408,11 +408,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         .map((m) => encodeMinterPermission(m as `0x${string}`))
 
       // Authorize the inprocess platform smart wallet as ADMIN so subsequent
-      // /api/mint and /api/airdrop calls into this collection can succeed.
-      // Without this grant, the userOp inprocess submits reverts at gas
-      // estimation ("useroperation reverted: execution reverted") because
-      // Zora 1155's setupNewToken is gated on the ADMIN bit. ADMIN — not
-      // MINTER — because setupNewToken specifically requires admin per
+      // /api/mint calls into this collection can succeed. Without this grant,
+      // the userOp inprocess submits reverts at gas estimation
+      // ("useroperation reverted: execution reverted") because Zora 1155's
+      // setupNewToken is gated on the ADMIN bit. ADMIN — not MINTER —
+      // because setupNewToken specifically requires admin per
       // Zora's PermissionsConstants. The smart wallet is per-EOA on
       // inprocess; we look up the smart wallet bound to *this user's*
       // wallet (the deployer) so the user can mint into their own

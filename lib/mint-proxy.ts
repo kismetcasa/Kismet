@@ -174,8 +174,8 @@ export async function proxyMintRequest(
   // generic "execution reverted" toast.
   //
   // RPC or smart-wallet-lookup failures fall through to inprocess —
-  // mirrors /api/airdrop's preflight semantics: a flaky read shouldn't
-  // deny a user whose state on chain is actually fine.
+  // a flaky read shouldn't deny a user whose state on chain is actually
+  // fine. Inprocess remains the authoritative source on the call itself.
   const collectionAddress =
     typeof (body?.contract as Record<string, unknown> | undefined)?.address === 'string'
       ? ((body.contract as Record<string, unknown>).address as string)

@@ -153,12 +153,6 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     setRecipients((prev) => prev.filter((r) => r !== addr))
   }
 
-  // Submits the airdrop to /api/airdrop. Pulled out of the form-submit
-  // handler so it can be auto-invoked after the auth flow completes
-  // without needing a synthetic FormEvent. `isRetry` flips the
-  // admin-permission error toast into a stronger "indexer lag" message
-  // when the retry hits the same wall — so we don't loop the user
-  // through a useless second authorize prompt.
   async function handleAirdrop(e: React.FormEvent) {
     e.preventDefault()
     if (!isConnected || !address) { openConnectModal?.(); return }
