@@ -121,65 +121,49 @@ interface NotificationListResult {
   page: number
 }
 
-export async function getNotifications(
-  address: string,
-  opts: NotificationListOpts = {},
-): Promise<NotificationListResult> {
-  const { tab = 'all', type, limit = 20, page = 1 } = opts
+// Loads every stored notification for `address`, parses each entry, drops
+// muted-actor rows, and stamps a computed `read` flag. Shared by the list +
+// unread-count callers so the parse/mute/read invariants stay in sync.
+async function loadAndAnnotate(address: string): Promise<Notification[]> {
   const [raws, lastRead, readIdsArr, mutedArr] = await Promise.all([
     redis.zrange(keyNotif(address), 0, -1, { rev: true }) as Promise<string[]>,
     redis.get<string>(keyLastRead(address)),
     redis.smembers(keyReadIds(address)) as Promise<string[]>,
     redis.smembers(keyMuted(address)) as Promise<string[]>,
   ])
-
   const lastReadTs = Number(lastRead ?? 0)
   const readIds = new Set(readIdsArr)
   const muted = new Set(mutedArr.map((a) => a.toLowerCase()))
-
   const all: Notification[] = []
   for (const raw of raws) {
     try {
       const n = typeof raw === 'string' ? (JSON.parse(raw) as Notification) : (raw as Notification)
       if (n.actor && muted.has(n.actor.toLowerCase())) continue
-      if (tab === 'priority' && !n.priority) continue
-      if (type && n.type !== type) continue
       const read = n.timestamp <= lastReadTs || readIds.has(n.id)
       all.push({ ...n, read })
     } catch {
       continue
     }
   }
+  return all
+}
 
+export async function getNotifications(
+  address: string,
+  opts: NotificationListOpts = {},
+): Promise<NotificationListResult> {
+  const { tab = 'all', type, limit = 20, page = 1 } = opts
+  const all = (await loadAndAnnotate(address)).filter(
+    (n) => (tab !== 'priority' || n.priority) && (!type || n.type === type),
+  )
   const total = all.length
   const start = (page - 1) * limit
   return { notifications: all.slice(start, start + limit), total, page }
 }
 
 export async function getUnreadCount(address: string): Promise<number> {
-  const [raws, lastRead, readIdsArr, mutedArr] = await Promise.all([
-    redis.zrange(keyNotif(address), 0, -1, { rev: true }) as Promise<string[]>,
-    redis.get<string>(keyLastRead(address)),
-    redis.smembers(keyReadIds(address)) as Promise<string[]>,
-    redis.smembers(keyMuted(address)) as Promise<string[]>,
-  ])
-  const lastReadTs = Number(lastRead ?? 0)
-  const readIds = new Set(readIdsArr)
-  const muted = new Set(mutedArr.map((a) => a.toLowerCase()))
-  let count = 0
-  for (const raw of raws) {
-    try {
-      const n = typeof raw === 'string' ? (JSON.parse(raw) as Notification) : (raw as Notification)
-      if (n.actor && muted.has(n.actor.toLowerCase())) continue
-      if (!n.priority) continue
-      if (n.timestamp <= lastReadTs) continue
-      if (readIds.has(n.id)) continue
-      count += 1
-    } catch {
-      continue
-    }
-  }
-  return count
+  const all = await loadAndAnnotate(address)
+  return all.reduce((acc, n) => acc + (n.priority && !n.read ? 1 : 0), 0)
 }
 
 export async function markAllRead(address: string): Promise<void> {

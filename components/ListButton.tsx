@@ -257,7 +257,7 @@ export function ListButton({
             title="tap to switch currency"
             className="pl-2 pr-1 text-[10px] font-mono text-[#888] hover:text-[#efefef] transition-colors disabled:opacity-40 flex-shrink-0"
           >
-            {currency === 'eth' ? 'ETH' : '$'}
+            {currency === 'eth' ? 'ETH' : 'USDC'}
           </button>
         )}
         <input
@@ -267,7 +267,7 @@ export function ListButton({
           onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceInput(v) }}
           onFocus={() => setInputFocused(true)}
           onBlur={() => setInputFocused(false)}
-          placeholder={showToggle ? '' : (currency === 'usdc' ? '$' : 'ETH')}
+          placeholder={showToggle ? '' : (currency === 'usdc' ? 'USDC' : 'ETH')}
           disabled={isBusy}
           className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none disabled:opacity-50"
         />

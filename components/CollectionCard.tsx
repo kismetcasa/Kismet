@@ -20,11 +20,14 @@ export interface CollectionDisplay {
   // inprocess `/api/collection` (singular) extras — used when present
   default_admin?: { address?: string; username?: string }
   created_at?: string
-  // Bulk-collect hydration from /api/collections?feed=1. When present and
-  // non-empty, the card surfaces a "collect all" button that fires a single
-  // Zora 1155 multicall mint; otherwise the action slot is empty.
+  // Bulk-collect hydration from /api/collections?feed=1. When ETH and/or
+  // USDC eligibility is non-empty, the card surfaces a "collect all" button
+  // that fires a single EIP-5792 wallet_sendCalls bundle covering both legs;
+  // otherwise the action slot is empty.
   ethEligibleTokenIds?: string[]
   ethEligibleTotalWei?: string
+  usdcEligibleTokenIds?: string[]
+  usdcEligibleTotalUsdc?: string
 }
 
 interface CollectionCardProps {
@@ -103,11 +106,14 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
           view collection
         </Link>
         {primaryAction ?? (
-          c.ethEligibleTokenIds && c.ethEligibleTokenIds.length > 0 ? (
+          (c.ethEligibleTokenIds && c.ethEligibleTokenIds.length > 0) ||
+          (c.usdcEligibleTokenIds && c.usdcEligibleTokenIds.length > 0) ? (
             <CollectAllAction
               collectionAddress={c.contractAddress}
-              ethEligibleTokenIds={c.ethEligibleTokenIds}
+              ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
               ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
+              usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
+              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc ?? '0'}
             />
           ) : null
         )}

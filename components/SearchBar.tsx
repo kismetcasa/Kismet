@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { Search, Loader2, ExternalLink } from 'lucide-react'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { resolveUri, shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
@@ -59,12 +60,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
     else { setQuery(''); setResults(null) }
   }, [open])
 
-  // Escape closes
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  useEscapeKey(useCallback(() => setOpen(false), []))
 
   // Click outside closes
   useEffect(() => {

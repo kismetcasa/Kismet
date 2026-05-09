@@ -12,9 +12,11 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useMomentSplits } from '@/hooks/useMomentSplits'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
@@ -106,9 +108,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [collectionImage, setCollectionImage] = useState<string | null>(
     initialCollectionMeta?.image ? resolveUri(initialCollectionMeta.image) : null,
   )
-  const [hasSplits, setHasSplits] = useState(false)
-  const [distributing, setDistributing] = useState(false)
-  const [distributeHash, setDistributeHash] = useState<string | null>(null)
   // Edit-metadata flow: visible only to moment admins. Pre-populated from
   // the loaded MomentDetail so they can fix typos / replace the image
   // without re-typing everything.
@@ -164,12 +163,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  const { data: splitAddress } = useReadContract({
-    address: address as `0x${string}`,
-    abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
-    functionName: 'getCreatorRewardRecipient',
-    args: [BigInt(tokenId)],
-    query: { enabled: isCreator && hasSplits },
+  const { hasSplits, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
+    address,
+    tokenId,
+    isCreator,
   })
 
   // Fetch moment detail. We retry on the client when initialDetail is null
@@ -284,21 +281,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     setDescOverflows(el.scrollHeight > el.clientHeight)
   }, [detail])
 
-  useEffect(() => {
-    if (!lightboxOpen) return
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightboxOpen(false) }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [lightboxOpen])
-
-  // Check splits flag (only for creator)
-  useEffect(() => {
-    if (!isCreator) return
-    fetch(`/api/moment/splits?collectionAddress=${address}&tokenId=${tokenId}`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setHasSplits(d.hasSplits === true))
-      .catch(() => {})
-  }, [address, tokenId, isCreator])
+  useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
 
   async function handleCollect() {
     if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
@@ -322,48 +305,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   async function handleDistribute() {
-    if (!splitAddress) { toast.error('Split address not found'); return }
-    if (!connectedAddress) { toast.error('Wallet not connected'); return }
     if (!detail) { toast.error('Moment details still loading'); return }
-    const addr = splitAddress
-    // Route the distribute call to the right token type per the moment's
-    // sale config — USDC moments need tokenAddress=USDC_BASE on the
-    // inprocess side, otherwise the call defaults to ETH and distributes
-    // nothing from a USDC splits contract.
-    const currency = inferCollectCurrency(detail.saleConfig)
-    setDistributing(true)
-    try {
-      const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
-      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
-      const message = `Distribute Kismet Art split\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nSplit: ${addr.toLowerCase()}\nCurrency: ${currency}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
-      const signature = await signMessageAsync({ message })
-
-      const res = await fetch('/api/distribute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          splitAddress: addr,
-          collectionAddress: address,
-          tokenId,
-          chainId: 8453,
-          currency,
-          callerAddress: connectedAddress,
-          signature,
-          nonce,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
-      if (!data.hash) throw new Error('Distribute submitted but no tx hash returned')
-      setDistributeHash(data.hash)
-      toast.success('Distributed!', { id: 'distribute' })
-    } catch (err) {
-      toastError('Distribution', err, { id: 'distribute' })
-    } finally {
-      setDistributing(false)
-    }
+    await distribute(inferCollectCurrency(detail.saleConfig))
   }
 
   function handleCopyLink() {

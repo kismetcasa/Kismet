@@ -19,7 +19,7 @@ const LABEL: Record<TabId, string> = {
   featured: 'featured',
   trending: 'trending',
   main: 'main',
-  roster: 'roster',
+  roster: 'residents',
   market: 'market',
 }
 

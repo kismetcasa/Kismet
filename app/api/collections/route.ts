@@ -18,7 +18,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
-import { fetchEthEligibleTokens } from '@/lib/saleConfig'
+import { fetchEthEligibleTokens, fetchUsdcEligibleTokens } from '@/lib/saleConfig'
 
 // Cap on tokens we fetch per collection when computing bulk-collect
 // eligibility for the feed. Aligned with MAX_COLLECT_ALL_BATCH (20) since
@@ -64,15 +64,27 @@ async function loadCollectionMeta(address: string): Promise<Record<string, unkno
   }
 }
 
-// Resolve the ETH-eligible token IDs + total cost for a collection so the
+interface CollectAllEligibility {
+  ethEligibleTokenIds: string[]
+  ethEligibleTotalWei: string
+  usdcEligibleTokenIds: string[]
+  usdcEligibleTotalUsdc: string
+}
+
+// Resolve ETH- and USDC-eligible token IDs + totals for a collection so the
 // card can render a one-click "collect all" CTA. Returns empty fields on
 // any failure — the action component then hides itself.
-async function loadEthEligibility(
+async function loadCollectAllEligibility(
   client: ReturnType<typeof serverBaseClient>,
   address: string,
   hiddenMoments: Set<string>,
-): Promise<{ ethEligibleTokenIds: string[]; ethEligibleTotalWei: string }> {
-  const empty = { ethEligibleTokenIds: [], ethEligibleTotalWei: '0' }
+): Promise<CollectAllEligibility> {
+  const empty: CollectAllEligibility = {
+    ethEligibleTokenIds: [],
+    ethEligibleTotalWei: '0',
+    usdcEligibleTokenIds: [],
+    usdcEligibleTotalUsdc: '0',
+  }
   try {
     const tlUrl = new URL(`${INPROCESS_API}/timeline`)
     tlUrl.searchParams.set('collection', address)
@@ -92,10 +104,17 @@ async function loadEthEligibility(
       .filter((m) => m.token_id && !hiddenMoments.has(`${(m.address ?? lowerAddr).toLowerCase()}:${m.token_id}`))
       .map((m) => BigInt(m.token_id as string))
     if (visibleIds.length === 0) return empty
-    const eligible = await fetchEthEligibleTokens(client, address as Address, visibleIds)
+    const [ethEligible, usdcEligible] = await Promise.all([
+      fetchEthEligibleTokens(client, address as Address, visibleIds),
+      fetchUsdcEligibleTokens(client, address as Address, visibleIds),
+    ])
     return {
-      ethEligibleTokenIds: eligible.map((e) => e.tokenId.toString()),
-      ethEligibleTotalWei: eligible
+      ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
+      ethEligibleTotalWei: ethEligible
+        .reduce((sum, e) => sum + e.pricePerToken, 0n)
+        .toString(),
+      usdcEligibleTokenIds: usdcEligible.map((e) => e.tokenId.toString()),
+      usdcEligibleTotalUsdc: usdcEligible
         .reduce((sum, e) => sum + e.pricePerToken, 0n)
         .toString(),
     }
@@ -185,7 +204,7 @@ export async function GET(req: NextRequest) {
         // the same one-click "collect all" UX as the featured rows.
         const [metaPart, eligibility] = await Promise.all([
           loadCollectionMeta(address),
-          loadEthEligibility(client, address, hiddenMoments),
+          loadCollectAllEligibility(client, address, hiddenMoments),
         ])
         return { ...metaPart, ...eligibility }
       }),

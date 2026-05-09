@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useAccount, useSignMessage } from 'wagmi'
@@ -16,6 +16,8 @@ import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
 import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { toastError } from '@/lib/toast'
 
 interface Payment {
@@ -199,17 +201,8 @@ export function ProfileView({ address }: ProfileViewProps) {
     setListAddresses([])
   }, [address])
 
-  // ESC closes the follow modal; lock body scroll while open
-  useEffect(() => {
-    if (!activeList) return
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setActiveList(null) }
-    document.body.style.overflow = 'hidden'
-    window.addEventListener('keydown', handler)
-    return () => {
-      window.removeEventListener('keydown', handler)
-      document.body.style.overflow = ''
-    }
-  }, [activeList])
+  useEscapeKey(useCallback(() => setActiveList(null), []), !!activeList)
+  useBodyScrollLock(!!activeList)
 
   useEffect(() => {
     if (!isOwner) setEditing(false)

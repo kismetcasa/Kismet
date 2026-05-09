@@ -3,7 +3,7 @@ import { type Address } from 'viem'
 import { redis, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
 import { INPROCESS_API, type Moment } from '@/lib/inprocess'
-import { fetchEthEligibleTokens } from '@/lib/saleConfig'
+import { fetchEthEligibleTokens, fetchUsdcEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 
@@ -23,6 +23,8 @@ interface HydratedFeaturedCollection {
   moments: Moment[]
   ethEligibleTokenIds: string[]
   ethEligibleTotalWei: string
+  usdcEligibleTokenIds: string[]
+  usdcEligibleTotalUsdc: string
   featuredAt: number
 }
 
@@ -77,14 +79,20 @@ export async function GET() {
           (m) => !hiddenMoments.has(`${m.address?.toLowerCase()}:${m.token_id}`),
         )
 
-        // Filter to ETH-eligible tokens. No `account` here — the per-user
-        // "skip already-owned" pass runs client-side at click time.
+        // Filter to ETH- and USDC-eligible tokens in parallel. No `account`
+        // here — the per-user "skip already-owned" pass runs client-side at
+        // click time.
         const tokenIds = previewMoments.map((m) => BigInt(m.token_id))
-        const eligible =
-          tokenIds.length > 0
-            ? await fetchEthEligibleTokens(client, ref.address as Address, tokenIds)
-            : []
-        const ethEligibleTotalWei = eligible
+        const [ethEligible, usdcEligible] = tokenIds.length > 0
+          ? await Promise.all([
+              fetchEthEligibleTokens(client, ref.address as Address, tokenIds),
+              fetchUsdcEligibleTokens(client, ref.address as Address, tokenIds),
+            ])
+          : [[], []]
+        const ethEligibleTotalWei = ethEligible
+          .reduce((sum, e) => sum + e.pricePerToken, 0n)
+          .toString()
+        const usdcEligibleTotalUsdc = usdcEligible
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()
 
@@ -94,8 +102,10 @@ export async function GET() {
           metadata: collection.metadata,
           default_admin: collection.default_admin,
           moments: previewMoments.slice(0, ROW_DISPLAY_LIMIT),
-          ethEligibleTokenIds: eligible.map((e) => e.tokenId.toString()),
+          ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
           ethEligibleTotalWei,
+          usdcEligibleTokenIds: usdcEligible.map((e) => e.tokenId.toString()),
+          usdcEligibleTotalUsdc,
           featuredAt: ref.featuredAt,
         }
       } catch {

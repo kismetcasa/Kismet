@@ -16,6 +16,8 @@ export interface FeaturedCollectionRow {
   moments: Moment[]
   ethEligibleTokenIds: string[]
   ethEligibleTotalWei: string
+  usdcEligibleTokenIds: string[]
+  usdcEligibleTotalUsdc: string
   featuredAt: number
 }
 
@@ -94,6 +96,8 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
                 collectionAddress={c.contractAddress}
                 ethEligibleTokenIds={c.ethEligibleTokenIds}
                 ethEligibleTotalWei={c.ethEligibleTotalWei}
+                usdcEligibleTokenIds={c.usdcEligibleTokenIds}
+                usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
               />
             )}
           </div>

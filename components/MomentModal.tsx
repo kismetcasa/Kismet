@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { X, Star, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
-import { useAccount, useReadContract, useSignMessage } from 'wagmi'
+import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import {
@@ -14,13 +14,15 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
+import { useMomentSplits } from '@/hooks/useMomentSplits'
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useAdmin } from '@/contexts/AdminContext'
-import { toastError } from '@/lib/toast'
 
 interface MomentModalProps {
   moment: Moment
@@ -50,10 +52,6 @@ export function MomentModal({
   const [collected, setCollected] = useState(false)
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
-  const { signMessageAsync } = useSignMessage()
-  const [hasSplits, setHasSplits] = useState(false)
-  const [distributing, setDistributing] = useState(false)
-  const [distributeHash, setDistributeHash] = useState<string | null>(null)
   const [creatorName, setCreatorName] = useState(
     () => initialCreatorName ?? shortAddress(moment.creator.address),
   )
@@ -117,12 +115,10 @@ export function MomentModal({
     !!connectedAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  const { data: splitAddress } = useReadContract({
-    address: moment.address as `0x${string}`,
-    abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
-    functionName: 'getCreatorRewardRecipient',
-    args: [BigInt(moment.token_id)],
-    query: { enabled: isCreator && hasSplits },
+  const { hasSplits, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
+    address: moment.address,
+    tokenId: moment.token_id,
+    isCreator,
   })
 
   // Derived price and supply — prefer passed-in values, fall back to fetched detail
@@ -153,57 +149,9 @@ export function MomentModal({
       .catch(() => {})
   }, [moment.address, moment.token_id, initialPrice, initialMaxSupply])
 
-  // Surface the distribute UI only when this moment was minted with multiple
-  // splits via /api/mint (the route writes the kismetart:splits:* flag). Same
-  // gate the detail page uses, kept in sync between surfaces.
-  useEffect(() => {
-    if (!isCreator) return
-    fetch(`/api/moment/splits?collectionAddress=${moment.address}&tokenId=${moment.token_id}`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setHasSplits(d.hasSplits === true))
-      .catch(() => {})
-  }, [moment.address, moment.token_id, isCreator])
-
   async function handleDistribute() {
-    if (!splitAddress) { toast.error('Split address not found'); return }
-    if (!connectedAddress) { toast.error('Wallet not connected'); return }
     if (!currency) { toast.error('Sale config still loading'); return }
-    const addr = splitAddress
-    setDistributing(true)
-    try {
-      const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
-      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
-      // Currency baked into the signed message — the inprocess /distribute
-      // call needs tokenAddress=USDC_BASE for USDC splits, otherwise it
-      // defaults to ETH and distributes nothing from a USDC contract.
-      const message = `Distribute Kismet Art split\nCollection: ${moment.address.toLowerCase()}\nToken: ${moment.token_id}\nSplit: ${addr.toLowerCase()}\nCurrency: ${currency}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
-      const signature = await signMessageAsync({ message })
-      const res = await fetch('/api/distribute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          splitAddress: addr,
-          collectionAddress: moment.address,
-          tokenId: moment.token_id,
-          chainId: 8453,
-          currency,
-          callerAddress: connectedAddress,
-          signature,
-          nonce,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
-      if (!data.hash) throw new Error('Distribute submitted but no tx hash returned')
-      setDistributeHash(data.hash)
-      toast.success('Distributed!', { id: 'distribute' })
-    } catch (err) {
-      toastError('Distribution', err, { id: 'distribute' })
-    } finally {
-      setDistributing(false)
-    }
+    await distribute(currency)
   }
 
   // Fetch creator profile via shared cache (cache hit if card already resolved it)
@@ -248,18 +196,8 @@ export function MomentModal({
     setDescOverflows(el.scrollHeight > el.clientHeight)
   }, [])
 
-  // Lock body scroll while open
-  useEffect(() => {
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = '' }
-  }, [])
-
-  // Close on ESC
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  useBodyScrollLock()
+  useEscapeKey(onClose)
 
   function handleCopyLink() {
     navigator.clipboard.writeText(`${window.location.origin}/moment/${moment.address}/${moment.token_id}`).catch(() => {})
