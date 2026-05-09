@@ -385,10 +385,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       toast.error('Please enter a collection name')
       return
     }
-    // Defer validation of an ENS-form royalty recipient to deploy time —
-    // resolveAddressOrEns runs there and surfaces the resolution failure
-    // as a discrete toast. We only fast-fail when the input is neither
-    // a 0x address nor an ENS name.
     const royaltyTrimmed = royaltyRecipient.trim()
     if (royaltyTrimmed && !isAddress(royaltyTrimmed) && !royaltyTrimmed.endsWith('.eth')) {
       toast.error('Invalid royalty recipient — paste a 0x… or vitalik.eth name')
@@ -397,6 +393,24 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     if (mintCover && coverSupply.trim()) {
       const s = parseInt(coverSupply.trim(), 10)
       if (isNaN(s) || s < 1) { toast.error('Cover supply must be at least 1'); return }
+    }
+
+    // Resolve the royalty recipient up-front, before any Arweave
+    // upload or session prompt. An unresolvable .eth name caught here
+    // costs nothing; caught after uploads it would burn an Arweave
+    // entry the user can't get back. Empty -> connected wallet.
+    let resolvedRoyalty: `0x${string}` = address as `0x${string}`
+    if (royaltyTrimmed) {
+      const resolved = await resolveAddressOrEns(royaltyTrimmed)
+      if (!resolved) {
+        toast.error(
+          royaltyTrimmed.endsWith('.eth')
+            ? `Could not resolve royalty recipient ${royaltyTrimmed}`
+            : 'Invalid royalty recipient address',
+        )
+        return
+      }
+      resolvedRoyalty = resolved
     }
 
     setDeployedImageUri(undefined)
@@ -451,27 +465,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       await ensureBase()
 
       const bps = Math.max(0, Math.min(10000, parseInt(royaltyBps, 10) || 0))
-      // Resolve royalty recipient: empty -> connected wallet, ENS -> on-chain
-      // lookup, 0x -> pass through. Bail loudly on ENS that doesn't resolve
-      // so we don't silently route royalties to address(0) or the deployer.
-      let recipient: `0x${string}`
-      const royaltyTrimmed = royaltyRecipient.trim()
-      if (!royaltyTrimmed) {
-        recipient = address as `0x${string}`
-      } else {
-        const resolved = await resolveAddressOrEns(royaltyTrimmed)
-        if (!resolved) {
-          toast.error(
-            royaltyTrimmed.endsWith('.eth')
-              ? `Could not resolve royalty recipient ${royaltyTrimmed}`
-              : 'Invalid royalty recipient address',
-            { id: 'create-collection' },
-          )
-          setStep('idle')
-          return
-        }
-        recipient = resolved
-      }
+      // resolvedRoyalty was computed up-front (pre-uploads) so an
+      // unresolvable .eth never gets here.
+      const recipient = resolvedRoyalty
 
       // Collection-wide minter permissions for any addresses the user added.
       // The factory replays each setupAction on the new collection during deploy.

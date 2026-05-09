@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -172,10 +172,24 @@ export function CollectionView({
     revoke: revokeMinter,
     reset: resetMinterGrant,
     busy: minterGranting,
+    hash: minterHash,
     receipt: minterReceipt,
   } = useGrantPermission()
+  // The hook clears `busy` as soon as a tx is submitted, so on its own
+  // it doesn't keep the buttons disabled while the tx is mining — a
+  // fast second click would clobber the hash and orphan the first tx.
+  // Gate the UI on busy OR (hash set without a receipt) so a tx that's
+  // mid-mine still locks the panel.
+  const minterTxPending = !!minterHash && !minterReceipt
+  const isMinterBusy = minterGranting || minterTxPending
   const [minterInput, setMinterInput] = useState('')
   const [revokingAddr, setRevokingAddr] = useState<string | null>(null)
+  // Captures the in-flight action so the receipt effect knows whether
+  // a confirmed receipt corresponds to a grant or a revoke. Uses a ref
+  // (not state) so the effect can read it without re-firing when we
+  // clear revokingAddr inside the effect itself — that's the
+  // double-toast trap.
+  const pendingMinterActionRef = useRef<'grant' | 'revoke' | null>(null)
 
   // Live list of MINTER-bit holders, scoped collection-wide. Refetched
   // after every grant/revoke confirms so the panel mirrors chain state
@@ -208,7 +222,12 @@ export function CollectionView({
 
   useEffect(() => {
     if (!minterReceipt) return
-    const wasRevoke = !!revokingAddr
+    // Read+clear the pending action ref so a stale receipt persisting
+    // in wagmi's cache after resetMinterGrant() can't re-fire the toast.
+    const action = pendingMinterActionRef.current
+    if (!action) return
+    pendingMinterActionRef.current = null
+    const wasRevoke = action === 'revoke'
     resetMinterGrant()
     setRevokingAddr(null)
     if (minterReceipt.status === 'reverted') {
@@ -221,7 +240,7 @@ export function CollectionView({
     if (!wasRevoke) setMinterInput('')
     toast.success(wasRevoke ? 'Minter revoked' : 'Minter authorized', { id: 'authorize-minter' })
     void refetchMinters()
-  }, [minterReceipt, resetMinterGrant, refetchMinters, revokingAddr])
+  }, [minterReceipt, resetMinterGrant, refetchMinters])
 
   async function handleAuthorizeMinter() {
     const raw = minterInput.trim()
@@ -246,6 +265,7 @@ export function CollectionView({
         bit: 'minter',
       })
       if (outcome === 'submitted') {
+        pendingMinterActionRef.current = 'grant'
         toast.loading('Authorizing minter…', { id: 'authorize-minter' })
         return
       }
@@ -260,7 +280,7 @@ export function CollectionView({
   }
 
   async function handleRevokeMinter(target: `0x${string}`) {
-    if (minterGranting) return
+    if (isMinterBusy) return
     setRevokingAddr(target.toLowerCase())
     try {
       toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
@@ -271,6 +291,7 @@ export function CollectionView({
         bit: 'minter',
       })
       if (outcome === 'submitted') {
+        pendingMinterActionRef.current = 'revoke'
         toast.loading('Revoking minter…', { id: 'authorize-minter' })
         return
       }
@@ -590,10 +611,10 @@ export function CollectionView({
             <button
               type="button"
               onClick={() => void handleAuthorizeMinter()}
-              disabled={minterGranting || !minterInput.trim()}
+              disabled={isMinterBusy || !minterInput.trim()}
               className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
             >
-              {minterGranting && !revokingAddr ? 'authorizing…' : 'authorize'}
+              {isMinterBusy && !revokingAddr ? 'authorizing…' : 'authorize'}
             </button>
           </div>
           {mintersLoading && authorizedMinters.length === 0 ? (
@@ -613,7 +634,7 @@ export function CollectionView({
               <ul className="mt-3 flex flex-col gap-1">
                 {authorizedMinters.map((m) => {
                   const isRevoking = revokingAddr === m.toLowerCase()
-                  const otherTxBusy = minterGranting && !isRevoking
+                  const otherTxBusy = isMinterBusy && !isRevoking
                   return (
                     <li
                       key={m}
