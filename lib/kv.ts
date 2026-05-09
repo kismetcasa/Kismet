@@ -38,24 +38,18 @@ export async function getTrackedCollections(): Promise<string[]> {
   }
 }
 
-// standalone = tracked minus curated (Mints surface — auto-deploys + PLATFORM).
-// collections = curated (Create Collection form) only.
-// all = unfiltered.
+// 'collections' returns curated only (Create Collection deploys).
+// 'standalone' and 'all' fan-out to every tracked contract; the
+// timeline route narrows 'standalone' post-merge by created-mints
+// membership, so moments inside curated collections (from MintForm
+// or cover-mint) still reach the Mints feed.
 export type CollectionScope = 'standalone' | 'collections' | 'all'
 
 export async function getTrackedCollectionsByScope(
   scope: CollectionScope = 'all',
 ): Promise<string[]> {
-  if (scope === 'all') return getTrackedCollections()
   if (scope === 'collections') return getCreatedCollections()
-  // standalone: every tracked address that is NOT in the curator-blessed
-  // created-collections set.
-  const [all, created] = await Promise.all([
-    getTrackedCollections(),
-    getCreatedCollections(),
-  ])
-  const createdSet = new Set(created.map((a) => a.toLowerCase()))
-  return all.filter((a) => !createdSet.has(a.toLowerCase()))
+  return getTrackedCollections()
 }
 
 // Curator-blessed set: contracts deployed via the Create Collection form,
@@ -70,7 +64,15 @@ export async function getCreatedCollections(): Promise<string[]> {
 
 export async function markCreatedCollection(address: string): Promise<void> {
   try {
-    await redis.sadd(CREATED_COLLECTIONS_KEY, address)
+    // Write to both the master tracked set (so timeline fan-outs include
+    // it) and the curator-blessed positive set (so collection-shaped
+    // surfaces render it). markCreatedCollection is the legacy-promote
+    // entry point — addTrackedCollection handles the going-forward path
+    // and writes the same two keys via its own logic.
+    await Promise.all([
+      redis.sadd(KEY, address),
+      redis.sadd(CREATED_COLLECTIONS_KEY, address),
+    ])
   } catch (err) {
     console.error('[kv] markCreatedCollection failed', { address, err })
   }
