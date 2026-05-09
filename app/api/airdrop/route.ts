@@ -10,6 +10,46 @@ import { serverBaseClient } from '@/lib/rpc'
 import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
 
 /**
+ * Reads ADMIN status of the inprocess operator smart wallet on the
+ * target collection. This is the wallet inprocess routes user-relayed
+ * admin-mint flows (notably airdrop) through under our shared
+ * INPROCESS_API_KEY — see `OPERATOR_SMART_WALLET` env var docs and
+ * lib/healthcheck.ts. ORs the per-token row with the collection-wide
+ * row (tokenId 0) to mirror Zora's `_hasAnyPermission` check.
+ *
+ * Returns:
+ *   - 'authorized'   — operator has ADMIN at one of the requested scopes
+ *   - 'unauthorized' — operator is configured AND both reads succeeded AND
+ *                      neither row holds ADMIN. Caller should AUTHORIZE_REQUIRED.
+ *   - 'unknown'      — operator env is unset (dev / fork — no-op the check)
+ *                      OR an RPC read failed (don't block on a flaky read).
+ */
+async function checkOperatorAuthorized(
+  collectionAddress: string,
+  tokenId: string,
+): Promise<{ status: 'authorized' | 'unauthorized' | 'unknown'; operator?: string; perms?: bigint[] }> {
+  const operator = process.env.OPERATOR_SMART_WALLET
+  if (!operator || !isAddress(operator) || !isAddress(collectionAddress)) {
+    return { status: 'unknown' }
+  }
+  try {
+    const client = serverBaseClient()
+    const [tokenScope, collectionWide] = await Promise.all([
+      readPermissions(client, collectionAddress as Address, BigInt(tokenId), operator as Address),
+      readPermissions(client, collectionAddress as Address, 0n, operator as Address),
+    ])
+    const effective = tokenScope | collectionWide
+    return {
+      status: hasAdminBit(effective) ? 'authorized' : 'unauthorized',
+      operator,
+      perms: [tokenScope, collectionWide],
+    }
+  } catch {
+    return { status: 'unknown', operator }
+  }
+}
+
+/**
  * Fallback admin check via on-chain `permissions` read. Inprocess's indexer
  * runs minutes behind a fresh mint, so a legit creator can transiently fail
  * the inprocess /moment lookup. The on-chain ADMIN bit is authoritative for
@@ -129,6 +169,14 @@ export async function POST(req: NextRequest) {
   // fresh tokens the indexer hasn't picked up yet.
   const callerLower = body.callerAddress.toLowerCase()
   let authorized = false
+  // Capture inprocess's reported admin set so the upstream-error
+  // branch below can surface it for diagnostics — comparing
+  // momentAdmins (inprocess's view) against the on-chain ADMIN
+  // grants tells us whether a rejection is indexer lag (operator
+  // missing from the list, but on-chain ADMIN is set) or a wallet
+  // mismatch (operator IS in the list but inprocess still rejects,
+  // meaning they route through some other identity entirely).
+  let inprocessMomentAdmins: string[] = []
   try {
     const momentUrl = new URL(`${INPROCESS_API}/moment`)
     momentUrl.searchParams.set('collectionAddress', body.collectionAddress)
@@ -142,6 +190,7 @@ export async function POST(req: NextRequest) {
             .filter((a): a is string => typeof a === 'string')
             .map((a) => a.toLowerCase())
         : []
+      inprocessMomentAdmins = adminsLower
       authorized = adminsLower.includes(callerLower)
     }
   } catch {
@@ -175,42 +224,91 @@ export async function POST(req: NextRequest) {
   // this distinction the client loops the user through repeated
   // authorize prompts whenever inprocess lags behind chain state.
   let preflightAuthorized = false
+  // Last preflight diagnostic — so the upstream-error branch can surface
+  // the smart wallet + perms it read in its 403 response (otherwise the
+  // user only sees `code: 'INDEXER_LAG'` and we can't tell whether it's
+  // genuinely lag, a wallet mismatch, or a wrong-bit grant).
+  let preflightSnapshot: { smartWallet?: string; perms?: Array<{ tokenId: string; value: string | null }> } = {}
   if (!body.isRetry) {
-    const preflight = await checkSmartWalletAdmin(
-      body.callerAddress,
-      body.collectionAddress,
-      [BigInt(tokenId), 0n],
-    )
-    // Always log so production deployments leave a trail when users
-    // hit AUTHORIZE_REQUIRED — without this, the only signal is the
-    // 403 status code, which doesn't tell us *which* smart wallet was
-    // checked or *what* perms it actually had. Both are needed to
-    // diagnose the "I already authorized" reports.
-    console.log('[airdrop] preflight', {
+    // The operator check is the one that matters for routing — that's
+    // the wallet inprocess actually uses for relayed adminMint calls.
+    // If it lacks ADMIN, the upstream call will revert with "admin
+    // permission" no matter what the artist's smart wallet holds.
+    // Surface AUTHORIZE_REQUIRED here so the client routes the user to
+    // the operator-grant flow instead of looping them through the
+    // (unrelated) artist-grant flow.
+    //
+    // If OPERATOR_SMART_WALLET is unset (dev / fork), this returns
+    // 'unknown' and we fall through to the legacy artist-smart-wallet
+    // preflight below. That path doesn't reflect what inprocess will
+    // do but it's the best signal we have without the operator config.
+    const operator = await checkOperatorAuthorized(body.collectionAddress, tokenId)
+    console.log('[airdrop] operator-preflight', {
       caller: body.callerAddress,
       collection: body.collectionAddress,
       tokenId,
-      ...preflight,
+      ...operator,
+      perms: operator.perms?.map((p) => p.toString()),
     })
-    if (preflight.status === 'unauthorized') {
+    if (operator.status === 'unauthorized') {
       return NextResponse.json(
         {
           code: 'AUTHORIZE_REQUIRED',
           error:
-            "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+            'Authorize Kismet platform on this collection so it can submit airdrops on your behalf.',
           collectionAddress: body.collectionAddress,
-          // Surface the smart wallet + per-scope perms so the client
-          // can show the user *which* address needs ADMIN and *what*
-          // bits it currently holds. If the user thinks they
-          // authorized a different address (or granted MINTER instead
-          // of ADMIN), this is what makes the discrepancy visible.
-          smartWallet: preflight.smartWallet,
-          perms: preflight.perms,
+          // The grantee the client needs to addPermission ADMIN to.
+          // The client-side authorize flow targets this address, NOT
+          // the artist's smart wallet (granting that one doesn't help
+          // because inprocess routes airdrops through the operator).
+          grantee: operator.operator,
+          scope: 'operator',
+          perms: operator.perms?.map((p) => p.toString()),
         },
         { status: 403 },
       )
     }
-    preflightAuthorized = preflight.status === 'authorized'
+    if (operator.status === 'authorized') {
+      preflightAuthorized = true
+      preflightSnapshot = {
+        smartWallet: operator.operator,
+        perms: [
+          { tokenId, value: operator.perms?.[0]?.toString() ?? null },
+          { tokenId: '0', value: operator.perms?.[1]?.toString() ?? null },
+        ],
+      }
+    } else {
+      // operator.status === 'unknown' — operator env unset or RPC
+      // failed. Fall back to the legacy artist-wallet preflight so
+      // the dev-mode flow still has *some* signal, even if it doesn't
+      // reflect what inprocess actually routes through.
+      const preflight = await checkSmartWalletAdmin(
+        body.callerAddress,
+        body.collectionAddress,
+        [BigInt(tokenId), 0n],
+      )
+      console.log('[airdrop] artist-preflight (operator unknown)', {
+        caller: body.callerAddress,
+        collection: body.collectionAddress,
+        tokenId,
+        ...preflight,
+      })
+      if (preflight.status === 'unauthorized') {
+        return NextResponse.json(
+          {
+            code: 'AUTHORIZE_REQUIRED',
+            error:
+              "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
+            collectionAddress: body.collectionAddress,
+            smartWallet: preflight.smartWallet,
+            perms: preflight.perms,
+          },
+          { status: 403 },
+        )
+      }
+      preflightAuthorized = preflight.status === 'authorized'
+      preflightSnapshot = { smartWallet: preflight.smartWallet, perms: preflight.perms }
+    }
   }
 
   // Consume nonce only after all auth + pre-flight checks pass — a
@@ -304,6 +402,44 @@ export async function POST(req: NextRequest) {
       )
     ) {
       const treatAsIndexerLag = body.isRetry || preflightAuthorized
+      // Pull every diagnostic field we have onto the response so the
+      // browser console (which is all the user can see in a deployed
+      // build) shows enough to tell whether the next iteration needs
+      // a different override, per-artist API keys, or a co-grant.
+      // `upstreamError` is inprocess's verbatim message; `upstreamSent`
+      // is the exact payload they rejected (modulo our `account`
+      // override above); `smartWallet` + `perms` come from the
+      // preflight read so we can verify on-chain state matches what
+      // inprocess thinks.
+      const upstreamError = String(
+        (parsed as Record<string, unknown>).error ??
+          (parsed as Record<string, unknown>).message ??
+          (parsed as Record<string, unknown>).detail ??
+          '',
+      )
+      const upstreamSent = {
+        collectionAddress: upstreamPayload.moment.collectionAddress,
+        tokenId: upstreamPayload.moment.tokenId,
+        recipientCount: upstreamPayload.recipients.length,
+        account: upstreamPayload.account,
+      }
+      // Surface inprocess's own view of the collection's admin set so
+      // the next failure tells us which scenario we're in:
+      //
+      //   1. operator NOT in inprocessMomentAdmins, but on-chain perms
+      //      show ADMIN → real indexer lag. Inprocess just hasn't
+      //      re-indexed since our addPermission tx landed. Wait + retry.
+      //   2. operator IS in inprocessMomentAdmins, upstream STILL says
+      //      "no admin" → inprocess sees the grant but routes airdrops
+      //      through some OTHER wallet. The OPERATOR_SMART_WALLET we
+      //      configured isn't actually the right grantee for airdrop;
+      //      identify the real one and re-grant.
+      //   3. operator NOT in inprocessMomentAdmins AND on-chain perms
+      //      ALSO show no ADMIN → the addPermission tx never landed
+      //      (user signed but it reverted, or wrong collection). Banner
+      //      should re-show.
+      const operatorLower = process.env.OPERATOR_SMART_WALLET?.toLowerCase()
+      const operatorInInprocessAdmins = !!operatorLower && inprocessMomentAdmins.includes(operatorLower)
       return NextResponse.json(
         treatAsIndexerLag
           ? {
@@ -311,12 +447,24 @@ export async function POST(req: NextRequest) {
               error:
                 "On-chain ADMIN is set but inprocess's indexer is still catching up. Wait a moment and retry.",
               collectionAddress: body.collectionAddress,
+              upstreamError,
+              upstreamSent,
+              smartWallet: preflightSnapshot.smartWallet,
+              perms: preflightSnapshot.perms,
+              inprocessMomentAdmins,
+              operatorInInprocessAdmins,
             }
           : {
               code: 'AUTHORIZE_REQUIRED',
               error:
                 "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
               collectionAddress: body.collectionAddress,
+              upstreamError,
+              upstreamSent,
+              smartWallet: preflightSnapshot.smartWallet,
+              perms: preflightSnapshot.perms,
+              inprocessMomentAdmins,
+              operatorInInprocessAdmins,
             },
         { status: 403 },
       )

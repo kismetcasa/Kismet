@@ -9,7 +9,7 @@ import { parseEventLogs, isAddress, parseEther, type Address } from 'viem'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
 import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions } from '@/lib/collections'
-import { CREATE_REFERRAL } from '@/lib/config'
+import { CREATE_REFERRAL, OPERATOR_SMART_WALLET } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
@@ -442,9 +442,30 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // would silently skip verification if /smartwallet is briefly
       // unreachable.
       setResolvedSmartWallet(inprocessSmartWallet)
-      const inprocessAdminAction = [
+      // Grant ADMIN to TWO inprocess wallets at deploy time:
+      //   1. The artist's own smart wallet — what /api/moment/create
+      //      routes through when the user mints into this collection
+      //      (the `account` override on mint-proxy makes inprocess
+      //      derive this wallet from the caller's EOA).
+      //   2. The platform operator smart wallet — what inprocess
+      //      routes through for relayed admin-mint flows like airdrop
+      //      under our shared INPROCESS_API_KEY. Without this grant,
+      //      airdrops on user collections revert at gas estimation
+      //      with "admin permission" because the operator wallet
+      //      carries the API key's identity but holds no on-chain
+      //      authority on the collection.
+      // Skip the operator grant when NEXT_PUBLIC_OPERATOR_SMART_WALLET
+      // is unset (dev / fork) so the deploy still goes through; the
+      // user just won't be able to airdrop until they backfill via
+      // CollectionView's authorize-for-airdrops banner.
+      const inprocessAdminAction: `0x${string}`[] = [
         encodeAdminPermission(inprocessSmartWallet as `0x${string}`),
       ]
+      if (OPERATOR_SMART_WALLET && isAddress(OPERATOR_SMART_WALLET)) {
+        inprocessAdminAction.push(
+          encodeAdminPermission(OPERATOR_SMART_WALLET as `0x${string}`),
+        )
+      }
 
       // If cover mint is enabled, append the cover-token setupActions so the
       // token is created in the same transaction. Mirrors how inprocess.world's
