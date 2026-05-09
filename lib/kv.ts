@@ -60,30 +60,6 @@ export async function getUserCollections(): Promise<string[]> {
   }
 }
 
-// Legacy-promote entry point. Writes both KEY (so timeline fan-outs
-// include the address) and CREATED_COLLECTIONS_KEY (so collection
-// surfaces render it). The going-forward path goes through
-// addTrackedCollection, which writes the same two keys.
-export async function markCreatedCollection(address: string): Promise<void> {
-  try {
-    await Promise.all([
-      redis.sadd(KEY, address),
-      redis.sadd(CREATED_COLLECTIONS_KEY, address),
-    ])
-  } catch (err) {
-    console.error('[kv] markCreatedCollection failed', { address, err })
-  }
-}
-
-export async function unmarkCreatedCollection(address: string): Promise<boolean> {
-  try {
-    const removed = await redis.srem(CREATED_COLLECTIONS_KEY, address)
-    return Number(removed) > 0
-  } catch {
-    return false
-  }
-}
-
 export async function getCreatedMintsSet(): Promise<Set<string>> {
   try {
     const members = (await redis.smembers(CREATED_MINTS_KEY)) as string[]
