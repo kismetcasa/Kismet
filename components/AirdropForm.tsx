@@ -367,16 +367,17 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </a>
       )}
 
-      {/* Defensive check: the picker only surfaces moments where the
-          server-side /api/timeline?airdroppable=… already confirmed the
-          user holds admin authority, so this banner should be a no-op
-          on the happy path. It only fires if a stale picker cache or
-          wallet switch leaves a moment selected where the connected
-          EOA can't actually authorize the on-chain adminMint. Both
-          permissions reads must succeed AND OR to no ADMIN bit before
-          we surface this — a still-loading or RPC-failed read renders
-          nothing so the user can attempt the airdrop and let the
-          on-chain call surface the actual revert. */}
+      {/* Defensive check: the picker surfaces moments where the user
+          holds at least one mint-capable bit (ADMIN or MINTER) — via
+          inprocess's /timeline?airdroppable=… or our log-scan over
+          /collections/mintable. This banner should be a no-op on the
+          happy path, firing only if a stale picker cache or wallet
+          switch leaves a moment selected where the connected EOA
+          can't authorize adminMint. Both permissions reads must
+          succeed AND have neither bit set before we surface — a
+          still-loading or RPC-failed read renders nothing so the
+          user can attempt the airdrop and let the on-chain call
+          surface the actual revert. */}
       {callerLacksMintAccess && selected && (
         <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex items-start gap-2.5">
           <div className="min-w-0">

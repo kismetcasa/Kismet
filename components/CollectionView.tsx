@@ -857,11 +857,13 @@ export function CollectionView({
       {/* Authorize creators — post-deploy ADMIN grant. Two on-chain
           writes batched via multicall: ADMIN to the target's inprocess
           smart wallet (so MintForm relays land setupNewToken) AND
-          MINTER to their EOA (so the same authorization also enables
-          adminMint from their own wallet for direct airdrops). Display
-          rides on a KV mapping written at grant time — inprocess only
-          resolves EOA → smart wallet, so without it we'd render raw
-          contract addresses the admin doesn't recognize. */}
+          ADMIN to their EOA (full delegated authority — adminMint /
+          setupNewToken / addPermission / callSale from the user's own
+          wallet, mirroring what the smart wallet can do via the
+          relay). Display rides on a KV mapping written at grant
+          time — inprocess only resolves EOA → smart wallet, so
+          without it we'd render raw contract addresses the admin
+          doesn't recognize. */}
       {canGrantHere && (
         <div className="mb-4 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
           <div className="flex items-center gap-1.5 mb-2">
@@ -951,11 +953,13 @@ export function CollectionView({
       )}
 
       {/* Authorize minters — post-deploy MINTER grants for this
-          collection. Visible to anyone with on-chain ADMIN (chain
-          enforces the same gate on addPermission). The grant is at
-          tokenId 0 so the address can mint copies of any token,
-          present and future. ADMIN bit is reserved for the inprocess
-          smart wallet (handled by the banner above). */}
+          collection. Distinct from the Creators panel above: MINTER
+          unlocks adminMint only (mint copies of existing tokens —
+          surfaces in the Airdrop dropdown), but NOT setupNewToken.
+          Use this tier for delegated airdrops; use Creators for
+          full delegated mint-into capability. Visible to anyone with
+          on-chain ADMIN — chain enforces the same gate on
+          addPermission. */}
       {canGrantHere && (
         <div className="mb-8 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
           <div className="flex items-center gap-1.5 mb-2">

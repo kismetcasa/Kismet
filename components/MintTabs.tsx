@@ -12,10 +12,13 @@ type Tab = 'mint' | 'create' | 'airdrop'
 interface MintTabsProps {
   initialCollection?: string
   initialCollectionName?: string
-  /** Optional initial tab. Honors only valid Tab values, falls back to
-   *  'mint'. Used by CollectionView's "you can mint here" chip to drop
-   *  authorized minters straight on the Airdrop tab — adminMint is
-   *  what the MINTER bit unlocks, not setupNewToken. */
+  /** Optional initial tab. Honors only valid Tab values, falls back
+   *  to 'mint'. Used by CollectionView's authorization chips: the
+   *  creator-tier chip lands on 'mint' (default — ADMIN unlocks
+   *  setupNewToken via MintForm), the minter-tier chip lands on
+   *  'airdrop' (MINTER unlocks adminMint, which is the airdrop
+   *  primitive). Each chip routes to the surface the bit actually
+   *  enables. */
   initialTab?: string
 }
 

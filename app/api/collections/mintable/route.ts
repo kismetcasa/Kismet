@@ -15,7 +15,11 @@ import { findMintableCollections } from '@/lib/findMintableCollections'
 //
 // Public read — the underlying chain logs are public anyway. We
 // scope to KV-tracked collections so a flood of unrelated contracts
-// doesn't blow out the getLogs query.
+// doesn't blow out the getLogs query. No server-side cache: a stale
+// response would hide newly-granted authorizations from the user
+// who just received them. MintTabs.fetchMoments has a 5s client-side
+// coalescing window which is sufficient for the typical hover/click
+// pattern.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const address = searchParams.get('address')

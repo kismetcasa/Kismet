@@ -226,6 +226,12 @@ export async function addAuthorizedCreator(
   entry: AuthorizedCreator,
 ): Promise<void> {
   try {
+    // Dedupe by EOA: a re-grant (admin re-runs the tx, or our retry
+    // path posts twice) would otherwise create N JSON-distinct entries
+    // for the same address, since the Set members differ on grantedAt
+    // alone. Drop any existing rows for this EOA first so the latest
+    // grant is the single source of truth.
+    await removeAuthorizedCreator(collection, entry.eoa)
     await redis.sadd(keyAuthorizedCreators(collection), JSON.stringify(entry))
   } catch (err) {
     console.error('[kv] addAuthorizedCreator failed', {

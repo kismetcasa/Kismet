@@ -101,22 +101,26 @@ async function filterRedundant(
 }
 
 /**
- * Centralizes the on-chain `addPermission` flow that powers:
+ * Centralizes the on-chain `addPermission` / `removePermission` flow
+ * that powers every authorize surface in the app:
  *   - AirdropForm's smart-wallet self-authorize (per-token or collection-wide)
  *   - CollectionView's Authorize banner (collection-wide self-authorize)
- *   - CollectionView's "Authorize minters" UI (collection-wide MINTER grant
- *     to arbitrary addresses)
+ *   - CollectionView's "Authorize creators" panel (collection-wide ADMIN
+ *     grant to a target's smart wallet AND EOA, via grantBatch multicall)
+ *   - CollectionView's "Authorize minters" panel (collection-wide MINTER
+ *     grant to arbitrary addresses)
  *   - MomentDetailView's "Delegate airdrop" UI (per-token ADMIN grant)
  *
- * The on-chain primitive is the same in every case: read current
- * permissions to skip a no-op tx, then `addPermission(tokenId, grantee,
- * bit)` if the bit isn't already set. Caller wraps with their own
- * UX-specific toasts + side effects.
+ * Single-grant API: `grant` / `revoke` for one (collection, tokenId,
+ * grantee, bit) tuple. Batch API: `grantBatch` / `revokeBatch` route
+ * multiple addPermission / removePermission calls through Zora's
+ * inherited `multicall(bytes[])` so paired grants land in one signature.
  *
- * Reads are wrapped to tolerate Base's public RPC rate limits — a flaky
- * read shouldn't surface as an error when we can just submit the tx.
- * `addPermission` is bitwise OR on the existing row, so re-granting an
- * already-set bit is a gas-only no-op.
+ * Both APIs read current permissions first to skip on-chain no-ops
+ * (re-granting an already-set bit is a gas-only no-op anyway, but the
+ * UX win is avoiding the wallet prompt). Reads are wrapped to tolerate
+ * Base RPC rate limits — a flaky read falls through as "unknown"
+ * = keep the grant.
  */
 export function useGrantPermission() {
   const { address: connected } = useAccount()
