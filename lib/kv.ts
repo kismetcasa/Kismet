@@ -203,21 +203,22 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
 }
 
 export interface AuthorizedCreator {
-  /** Lowercased EOA the admin authorized (the input — 0x or resolved
-   *  from ENS). The on-chain ADMIN grant is on `smartWallet`; this
-   *  field is what we display so the admin sees what they typed. */
-  eoa: string
-  /** Lowercased inprocess smart wallet for `eoa`. Resolved at grant
-   *  time via fetchInprocessSmartWallet — this is the actual on-chain
-   *  grantee since MintForm relays through inprocess. */
+  /** Lowercased EOA the admin authorized. Undefined for chain-only
+   *  entries — addresses that hold ADMIN on-chain but never came
+   *  through our panel (etherscan / foundry grants), discovered by
+   *  the GET endpoint's chain merge. UI renders those as "(unmapped)". */
+  eoa: string | undefined
+  /** Lowercased smart wallet — the on-chain ADMIN grantee. For
+   *  KV-tracked entries this is inprocess's resolution of `eoa`;
+   *  for chain-only entries it's the address from the log scan. */
   smartWallet: string
-  /** Optional original-input label (ENS name, e.g. "vitalik.eth").
-   *  When set, the list shows this instead of `eoa`. */
+  /** Optional ENS label captured at grant time (e.g. "vitalik.eth").
+   *  Displayed instead of the address when present. */
   label?: string
-  /** EOA of the admin who authorized — kept for an audit trail; the
-   *  list UI doesn't surface it today. */
+  /** EOA of the admin who authorized. Empty string for chain-only
+   *  entries — we don't have an audit trail for off-platform grants. */
   grantedBy: string
-  /** ms epoch — sort newest first when rendering. */
+  /** ms epoch — sort newest first when rendering. 0 for chain-only. */
   grantedAt: number
 }
 
@@ -225,6 +226,7 @@ export async function addAuthorizedCreator(
   collection: string,
   entry: AuthorizedCreator,
 ): Promise<void> {
+  if (!entry.eoa) return // chain-only entries are never persisted
   try {
     // Dedupe by EOA: a re-grant (admin re-runs the tx, or our retry
     // path posts twice) would otherwise create N JSON-distinct entries
@@ -254,7 +256,7 @@ export async function removeAuthorizedCreator(
     const matches = members.filter((raw) => {
       try {
         const parsed = JSON.parse(raw) as AuthorizedCreator
-        return parsed.eoa.toLowerCase() === eoaLower
+        return parsed.eoa?.toLowerCase() === eoaLower
       } catch {
         return false
       }

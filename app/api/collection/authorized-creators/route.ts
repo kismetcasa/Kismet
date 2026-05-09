@@ -5,6 +5,8 @@ import { getSessionAddress } from '@/lib/session'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
+import { findAdminHoldersAtZero } from '@/lib/findMintableCollections'
+import { OPERATOR_SMART_WALLET } from '@/lib/config'
 import {
   addAuthorizedCreator,
   removeAuthorizedCreator,
@@ -12,19 +14,85 @@ import {
   type AuthorizedCreator,
 } from '@/lib/kv'
 
-// GET /api/collection/authorized-creators?collection=0x… — public read of
-// the EOA→smart-wallet mapping the panel writes at grant time. The list
-// is also visible on chain (UpdatedPermissions logs); KV exists because
-// inprocess only resolves EOA → smart wallet (one-way), so without KV
-// we'd display raw smart wallet addresses the admin doesn't recognize.
+// GET /api/collection/authorized-creators?collection=0x…[&deployer=0x…]
+// — list every address with on-chain ADMIN at tokenId 0, hydrated with
+// the EOA / label mapping our panel records at grant time. KV alone
+// would miss off-platform grants (etherscan, foundry); chain alone
+// would miss the human-readable label inprocess can't reverse-derive
+// from a smart wallet. Merging surfaces the full picture.
+//
+// `deployer` is optional; when supplied, server resolves their inprocess
+// smart wallet and excludes it (along with OPERATOR_SMART_WALLET) from
+// the chain scan, since both are granted ADMIN at deploy via setupActions
+// and would otherwise pollute the list. Without `deployer` the chain
+// merge is skipped — we fall back to KV-only.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collection = searchParams.get('collection')
+  const deployer = searchParams.get('deployer')
   if (!collection || !isAddress(collection)) {
     return NextResponse.json({ error: 'Invalid collection address' }, { status: 400 })
   }
-  const creators = await getAuthorizedCreators(collection)
-  return NextResponse.json({ creators })
+  const kvCreators = await getAuthorizedCreators(collection)
+
+  if (!deployer || !isAddress(deployer)) {
+    return NextResponse.json({ creators: kvCreators })
+  }
+
+  try {
+    // Without the deployer's SW we can't filter the deploy-time
+    // setupAction grant out of the chain scan, so the artist's own
+    // wallet would surface as a "creator" — better to fall back to
+    // KV-only than emit a misleading list.
+    const deployerSw = await resolveSmartWallet(deployer)
+    if (!deployerSw || !isAddress(deployerSw)) {
+      return NextResponse.json({ creators: kvCreators })
+    }
+    // Filter out the deployer (constructor-set ADMIN doesn't emit, but
+    // a redundant self-addPermission could), their smart wallet
+    // (granted via setupActions), and the operator smart wallet (also
+    // setupActions). Anything left is a real delegated grant.
+    const exclude: Address[] = [deployer as Address, deployerSw as Address]
+    if (OPERATOR_SMART_WALLET && isAddress(OPERATOR_SMART_WALLET)) {
+      exclude.push(OPERATOR_SMART_WALLET as Address)
+    }
+    const client = serverBaseClient()
+    const chainHolders = await findAdminHoldersAtZero(
+      client,
+      collection as Address,
+      exclude,
+    )
+    // Dedup by both SW and EOA — the creator-tier grant lands ADMIN
+    // on both targets, so the chain scan returns both. Without
+    // matching the EOA path we'd surface the same person twice.
+    const kvKeys = new Set<string>()
+    for (const c of kvCreators) {
+      kvKeys.add(c.smartWallet.toLowerCase())
+      if (c.eoa) kvKeys.add(c.eoa.toLowerCase())
+    }
+    // Synthesize chain-only entries (no KV reverse-lookup) so the panel
+    // can still surface them. UI renders these as "(unmapped)" with the
+    // raw smart wallet — admin sees they exist and can revoke.
+    const merged: AuthorizedCreator[] = [...kvCreators]
+    for (const addr of chainHolders) {
+      const lower = addr.toLowerCase()
+      if (kvKeys.has(lower)) continue
+      merged.push({
+        eoa: undefined,
+        smartWallet: lower,
+        label: undefined,
+        grantedBy: '',
+        grantedAt: 0,
+      })
+    }
+    return NextResponse.json({ creators: merged })
+  } catch (err) {
+    console.error('[authorized-creators GET] chain merge failed', {
+      collection,
+      err: err instanceof Error ? err.message : String(err),
+    })
+    return NextResponse.json({ creators: kvCreators })
+  }
 }
 
 interface PostBody {

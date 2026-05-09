@@ -77,12 +77,8 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         : [],
     query: { enabled: !!selected && !!callerAddress },
   })
-  // Zora's adminMint accepts ADMIN OR MINTER (_hasAnyPermission with
-  // ADMIN | MINTER). The picker now merges in moments from collections
-  // where the caller holds collection-wide MINTER (via
-  // /api/collections/mintable), so the preflight has to mirror Zora's
-  // own mask — checking ADMIN only would block the exact users we just
-  // surfaced moments for.
+  // Zora's adminMint accepts ADMIN | MINTER. Mirror the same mask here —
+  // checking ADMIN alone would block MINTER-only authorized minters.
   const callerLacksMintAccess =
     !!selected &&
     !!callerAddress &&
@@ -367,17 +363,11 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </a>
       )}
 
-      {/* Defensive check: the picker surfaces moments where the user
-          holds at least one mint-capable bit (ADMIN or MINTER) — via
-          inprocess's /timeline?airdroppable=… or our log-scan over
-          /collections/mintable. This banner should be a no-op on the
-          happy path, firing only if a stale picker cache or wallet
-          switch leaves a moment selected where the connected EOA
-          can't authorize adminMint. Both permissions reads must
-          succeed AND have neither bit set before we surface — a
-          still-loading or RPC-failed read renders nothing so the
-          user can attempt the airdrop and let the on-chain call
-          surface the actual revert. */}
+      {/* Defensive: should never fire on the happy path since the
+          picker is sourced from authorized-only feeds. Catches stale
+          caches and wallet switches; stays silent while reads are
+          loading or RPC-failed so the user can still attempt and let
+          the chain surface the real revert. */}
       {callerLacksMintAccess && selected && (
         <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex items-start gap-2.5">
           <div className="min-w-0">

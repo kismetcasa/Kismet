@@ -15,8 +15,7 @@ import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
-import { useGrantPermission } from '@/hooks/useGrantPermission'
-import { useCollectionMinters } from '@/hooks/useCollectionMinters'
+import { useGrantPermission, type PermissionOp } from '@/hooks/useGrantPermission'
 import { useAuthorizedCreators } from '@/hooks/useAuthorizedCreators'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { COLLECTION_ABI } from '@/lib/collections'
@@ -110,16 +109,10 @@ export function CollectionView({
     !!defaultAdminAddress &&
     connectedAddress.toLowerCase() === defaultAdminAddress.toLowerCase()
 
-  // The Authorize banner used to render only for the displayed creator
-  // (the address inprocess returns as defaultAdmin). That misses a real
-  // case: when a platform operator deployed a collection on an artist's
-  // behalf, the operator stayed as on-chain admin while the artist is
-  // shown as the creator. The chain enforces that only the actual admin
-  // can call addPermission, so we read the connected viewer's own
-  // permissions and let any wallet with on-chain ADMIN trigger the
-  // grant — not just the displayed creator. The grantee is still
-  // resolved from defaultAdminAddress (we authorize the artist's smart
-  // wallet, regardless of who's signing the tx).
+  // Read the connected viewer's own perms so any wallet with on-chain
+  // ADMIN can authorize — not just the displayed creator. Covers the
+  // case where a platform operator deployed on an artist's behalf and
+  // remains as on-chain admin.
   const { data: viewerPerms } = useReadContract({
     address: address as `0x${string}`,
     abi: COLLECTION_ABI,
@@ -130,18 +123,13 @@ export function CollectionView({
   const viewerHasAdmin =
     viewerPerms !== undefined && hasAdminBit(viewerPerms as bigint)
   const canGrantHere = isCreator || viewerHasAdmin
-  // MINTER-only viewers (granted via the "Authorize minters" panel by
-  // an admin) can call adminMint directly — that's what Zora's MINTER
-  // bit unlocks. They CAN'T setupNewToken (that's ADMIN-only), so the
-  // chip routes them to the Airdrop tab where adminMint actually lives.
+  // MINTER-only viewers can adminMint but not setupNewToken, so their
+  // chip routes to the Airdrop tab.
   const viewerHasMinter =
     viewerPerms !== undefined && hasMinterBit(viewerPerms as bigint)
 
-  // Resolve the *connected viewer's* inprocess smart wallet so we can
-  // surface the creator-tier chip. MintForm relays through inprocess
-  // and the actor on chain is the smart wallet, not the EOA — so a
-  // creator authorization grants ADMIN to the smart wallet, and the
-  // chip's gate has to read the smart wallet's perms (not the EOA's).
+  // Creator-tier chip reads the smart wallet's perms, since MintForm
+  // relays through inprocess and the on-chain actor is the SW.
   const { address: viewerSmartWallet } = useInprocessSmartWallet(connectedAddress)
   const { data: viewerSmartWalletPerms } = useReadContract({
     address: address as `0x${string}`,
@@ -159,9 +147,8 @@ export function CollectionView({
     viewerSmartWalletPerms !== undefined &&
     hasAdminBit(viewerSmartWalletPerms as bigint)
 
-  // Tier resolution for the chip: creator wins over minter — ADMIN is
-  // a strict superset of MINTER for mint flows. Drop both chips for
-  // viewers who already see the full authorize panel below.
+  // Creator wins over minter (ADMIN ⊃ MINTER). Both chips suppressed
+  // for viewers who already see the authorize panels.
   const showCreatorChip = !canGrantHere && viewerSmartWalletHasAdmin
   const showMinterChip = !canGrantHere && !showCreatorChip && viewerHasMinter
 
@@ -200,52 +187,16 @@ export function CollectionView({
     receipt: authorizeReceipt,
   } = useGrantPermission()
 
-  // Separate hook instance for the post-deploy minter grants — keeps its
-  // tx watcher independent of the smart-wallet authorize banner so a
-  // pending minter grant doesn't fight with a concurrent banner click.
-  const {
-    grant: grantMinter,
-    revoke: revokeMinter,
-    reset: resetMinterGrant,
-    busy: minterGranting,
-    hash: minterHash,
-    receipt: minterReceipt,
-  } = useGrantPermission()
-  // The hook clears `busy` as soon as a tx is submitted, so on its own
-  // it doesn't keep the buttons disabled while the tx is mining — a
-  // fast second click would clobber the hash and orphan the first tx.
-  // Gate the UI on busy OR (hash set without a receipt) so a tx that's
-  // mid-mine still locks the panel.
-  const minterTxPending = !!minterHash && !minterReceipt
-  const isMinterBusy = minterGranting || minterTxPending
-  const [minterInput, setMinterInput] = useState('')
-  const [revokingAddr, setRevokingAddr] = useState<string | null>(null)
-  // Captures the in-flight action so the receipt effect knows whether
-  // a confirmed receipt corresponds to a grant or a revoke. Uses a ref
-  // (not state) so the effect can read it without re-firing when we
-  // clear revokingAddr inside the effect itself — that's the
-  // double-toast trap.
-  const pendingMinterActionRef = useRef<'grant' | 'revoke' | null>(null)
-
-  // Live list of MINTER-bit holders, scoped collection-wide. Refetched
-  // after every grant/revoke confirms so the panel mirrors chain state
-  // without a manual reload.
-  const {
-    minters: authorizedMinters,
-    loading: mintersLoading,
-    refetch: refetchMinters,
-  } = useCollectionMinters(canGrantHere ? (address as `0x${string}`) : undefined)
-
   // ─── Authorized creators (ADMIN tier) ───────────────────────────────
-  // Distinct from minters: granting ADMIN to the target's smart wallet
-  // unlocks setupNewToken (mint into the collection via MintForm).
-  // MINTER bit only unlocks adminMint, which is the airdrop flow. We
-  // use a separate hook instance to keep the watchers independent —
-  // the user can fire creator + minter grants in interleaved order
-  // without one's receipt clobbering the other's.
+  // The collection-page authorization surface. Per-token airdrop
+  // delegation lives in AirdropForm itself (creators delegate one
+  // moment at a time from there). Collection-wide MINTER grants
+  // aren't exposed in our UI — anyone with legacy MINTER from
+  // off-platform still gets the airdrop chip and surfaces in
+  // /api/collections/mintable, but new grants go through this panel
+  // (ADMIN tier) since it covers airdrop authority too.
   const {
-    grantBatch: grantCreatorBatch,
-    revokeBatch: revokeCreatorBatch,
+    batch: batchCreator,
     reset: resetCreatorGrant,
     busy: creatorGranting,
     hash: creatorHash,
@@ -255,19 +206,24 @@ export function CollectionView({
   const isCreatorBusy = creatorGranting || creatorTxPending
   const [creatorInput, setCreatorInput] = useState('')
   const [revokingCreatorEoa, setRevokingCreatorEoa] = useState<string | null>(null)
-  // Tracks the in-flight {EOA, smartWallet, label} so the receipt
-  // effect can call /api/collection/authorized-creators after the tx
-  // confirms. Ref vs state for the same reason as the minter ref.
+  // Captures the in-flight action so the receipt effect knows whether
+  // to POST or DELETE the KV mapping after the tx confirms. `eoa` is
+  // undefined for revokes of chain-only entries (no KV row to drop).
   const pendingCreatorRef = useRef<
     | { kind: 'grant'; eoa: string; smartWallet: string; label?: string }
-    | { kind: 'revoke'; eoa: string }
+    | { kind: 'revoke'; eoa: string | undefined }
     | null
   >(null)
   const {
     creators: authorizedCreators,
     loading: creatorsLoading,
     refetch: refetchCreators,
-  } = useAuthorizedCreators(canGrantHere ? (address as `0x${string}`) : undefined)
+  } = useAuthorizedCreators(
+    canGrantHere ? (address as `0x${string}`) : undefined,
+    canGrantHere && defaultAdminAddress
+      ? (defaultAdminAddress as `0x${string}`)
+      : undefined,
+  )
 
   // Mainnet client for client-side ENS resolution. Wagmi already
   // configures a mainnet transport for ENS (lib/wagmi.ts), so we reuse
@@ -275,7 +231,7 @@ export function CollectionView({
   // strict 0x validation when the read fails (offline, RPC blip, .eth
   // record missing).
   const mainnetClient = usePublicClient({ chainId: mainnet.id })
-  async function resolveMinterInput(raw: string): Promise<`0x${string}` | null> {
+  async function resolveAddressInput(raw: string): Promise<`0x${string}` | null> {
     const trimmed = raw.trim()
     if (isAddress(trimmed)) return trimmed.toLowerCase() as `0x${string}`
     if (trimmed.endsWith('.eth') && mainnetClient) {
@@ -289,91 +245,6 @@ export function CollectionView({
     return null
   }
 
-  useEffect(() => {
-    if (!minterReceipt) return
-    // Read+clear the pending action ref so a stale receipt persisting
-    // in wagmi's cache after resetMinterGrant() can't re-fire the toast.
-    const action = pendingMinterActionRef.current
-    if (!action) return
-    pendingMinterActionRef.current = null
-    const wasRevoke = action === 'revoke'
-    resetMinterGrant()
-    setRevokingAddr(null)
-    if (minterReceipt.status === 'reverted') {
-      toast.error(wasRevoke ? 'Revoke failed' : 'Authorize failed', {
-        id: 'authorize-minter',
-        description: 'The transaction reverted on-chain — only collection admins can change minter permissions.',
-      })
-      return
-    }
-    if (!wasRevoke) setMinterInput('')
-    toast.success(wasRevoke ? 'Minter revoked' : 'Minter authorized', { id: 'authorize-minter' })
-    void refetchMinters()
-  }, [minterReceipt, resetMinterGrant, refetchMinters])
-
-  async function handleAuthorizeMinter() {
-    const raw = minterInput.trim()
-    if (!raw) return
-    try {
-      toast.loading('Resolving address…', { id: 'authorize-minter' })
-      const target = await resolveMinterInput(raw)
-      if (!target) {
-        toast.error(
-          raw.endsWith('.eth')
-            ? `Could not resolve ${raw}`
-            : 'Invalid address — paste a 0x… or vitalik.eth name',
-          { id: 'authorize-minter' },
-        )
-        return
-      }
-      toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
-      const outcome = await grantMinter({
-        collection: address as `0x${string}`,
-        grantee: target,
-        tokenId: 0n,
-        bit: 'minter',
-      })
-      if (outcome === 'submitted') {
-        pendingMinterActionRef.current = 'grant'
-        toast.loading('Authorizing minter…', { id: 'authorize-minter' })
-        return
-      }
-      // Already had MINTER on chain — refetch so the list shows them
-      // immediately even if our log scan hadn't caught up yet.
-      setMinterInput('')
-      toast.success('Already a minter on this collection', { id: 'authorize-minter' })
-      void refetchMinters()
-    } catch (err) {
-      toastError('Authorize minter', err, { id: 'authorize-minter' })
-    }
-  }
-
-  async function handleRevokeMinter(target: `0x${string}`) {
-    if (isMinterBusy) return
-    setRevokingAddr(target.toLowerCase())
-    try {
-      toast.loading('Confirm in wallet…', { id: 'authorize-minter' })
-      const outcome = await revokeMinter({
-        collection: address as `0x${string}`,
-        grantee: target,
-        tokenId: 0n,
-        bit: 'minter',
-      })
-      if (outcome === 'submitted') {
-        pendingMinterActionRef.current = 'revoke'
-        toast.loading('Revoking minter…', { id: 'authorize-minter' })
-        return
-      }
-      // Bit wasn't set on chain — refetch to drop them from the list.
-      setRevokingAddr(null)
-      toast.success('Already not a minter', { id: 'authorize-minter' })
-      void refetchMinters()
-    } catch (err) {
-      setRevokingAddr(null)
-      toastError('Revoke minter', err, { id: 'authorize-minter' })
-    }
-  }
-
   // ─── Authorize creators (ADMIN to smart wallet) ─────────────────────
   async function handleAuthorizeCreator() {
     if (isCreatorBusy) return
@@ -381,7 +252,7 @@ export function CollectionView({
     if (!raw) return
     try {
       toast.loading('Resolving address…', { id: 'authorize-creator' })
-      const eoa = await resolveMinterInput(raw)
+      const eoa = await resolveAddressInput(raw)
       if (!eoa) {
         toast.error(
           raw.endsWith('.eth')
@@ -408,15 +279,16 @@ export function CollectionView({
       const swLower = smartWallet.toLowerCase() as `0x${string}`
       const label = raw.endsWith('.eth') ? raw : undefined
       toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
-      const outcome = await grantCreatorBatch([
-        // ADMIN to smart wallet → unlocks setupNewToken via MintForm.
-        { collection: address as `0x${string}`, grantee: swLower, tokenId: 0n, bit: 'admin' },
-        // ADMIN to EOA → full delegated authority from the user's own
-        // wallet (adminMint, addPermission, setupNewToken, callSale).
-        // Same bit on both targets keeps the mental model simple:
-        // "this address can act on this collection" — independent of
-        // which wallet they sign from.
-        { collection: address as `0x${string}`, grantee: eoa, tokenId: 0n, bit: 'admin' },
+      // Multicall: grant ADMIN to SW (MintForm relay) + grant ADMIN to
+      // EOA (direct from-wallet calls) + clear any pre-existing MINTER
+      // on EOA (redundant once ADMIN is set, would otherwise leave a
+      // stale row in the Minters list after a minter→creator upgrade).
+      // filterRedundant short-circuits any of these that's already in
+      // the requested state.
+      const outcome = await batchCreator([
+        { direction: 'grant', collection: address as `0x${string}`, grantee: swLower, tokenId: 0n, bit: 'admin' },
+        { direction: 'grant', collection: address as `0x${string}`, grantee: eoa, tokenId: 0n, bit: 'admin' },
+        { direction: 'revoke', collection: address as `0x${string}`, grantee: eoa, tokenId: 0n, bit: 'minter' },
       ])
       if (outcome === 'submitted') {
         pendingCreatorRef.current = { kind: 'grant', eoa, smartWallet: swLower, label }
@@ -448,38 +320,50 @@ export function CollectionView({
     }
   }
 
-  async function handleRevokeCreator(eoa: string, smartWallet: string) {
+  async function handleRevokeCreator(eoa: string | undefined, smartWallet: string) {
     if (isCreatorBusy) return
-    setRevokingCreatorEoa(eoa.toLowerCase())
+    const eoaLower = eoa?.toLowerCase()
+    setRevokingCreatorEoa(eoaLower ?? smartWallet.toLowerCase())
     try {
       toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
-      const outcome = await revokeCreatorBatch([
+      // Off-platform ADMIN grants (etherscan etc.) only ever hit one
+      // grantee, so we may not have an EOA to clear. Skip the EOA
+      // entry when it's unmapped — the chain only has the SW row.
+      const ops: PermissionOp[] = [
         {
+          direction: 'revoke',
           collection: address as `0x${string}`,
           grantee: smartWallet as `0x${string}`,
           tokenId: 0n,
           bit: 'admin',
         },
-        {
+      ]
+      if (eoa) {
+        ops.push({
+          direction: 'revoke',
           collection: address as `0x${string}`,
           grantee: eoa as `0x${string}`,
           tokenId: 0n,
           bit: 'admin',
-        },
-      ])
+        })
+      }
+      const outcome = await batchCreator(ops)
       if (outcome === 'submitted') {
         pendingCreatorRef.current = { kind: 'revoke', eoa }
         toast.loading('Revoking creator…', { id: 'authorize-creator' })
         return
       }
-      // Both bits already cleared on chain — drop the KV row directly
-      // so the UI doesn't keep showing a stale entry.
-      try {
-        await fetch(
-          `/api/collection/authorized-creators?collection=${address}&eoa=${eoa}`,
-          { method: 'DELETE' },
-        )
-      } catch {}
+      // Already cleared on chain — drop the KV row directly so the UI
+      // doesn't keep showing a stale entry. Chain-only entries (no
+      // mapped EOA) have no KV row to drop.
+      if (eoa) {
+        try {
+          await fetch(
+            `/api/collection/authorized-creators?collection=${address}&eoa=${eoa}`,
+            { method: 'DELETE' },
+          )
+        } catch {}
+      }
       setRevokingCreatorEoa(null)
       toast.success('Already not authorized', { id: 'authorize-creator' })
       void refetchCreators()
@@ -522,7 +406,7 @@ export function CollectionView({
             }),
           })
           setCreatorInput('')
-        } else {
+        } else if (action.eoa) {
           await fetch(
             `/api/collection/authorized-creators?collection=${address}&eoa=${action.eoa}`,
             { method: 'DELETE' },
@@ -655,9 +539,12 @@ export function CollectionView({
   const imgUrl = rawImgUrl ? resolveUri(rawImgUrl) : null
   const description = collectionDescription
 
-  // Unique creator addresses across all loaded moments
+  // Unique creator addresses across all loaded moments — surfaces
+  // anyone who has actually shipped a token here, including authorized
+  // creators after they mint. Pre-mint authorizations live in the
+  // admin panel above; this section is the gallery of contributors.
   const uniqueCreators = Array.from(
-    new Set(loadedMoments.map((m) => m.creator.address.toLowerCase()))
+    new Set(loadedMoments.map((m) => m.creator.address.toLowerCase())),
   )
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
@@ -743,7 +630,7 @@ export function CollectionView({
                 pathname: '/mint',
                 query: {
                   collection: address,
-                  ...(displayName ? { name: displayName } : {}),
+                  name: displayName,
                 },
               }}
               className="mt-2 inline-flex items-center gap-1.5 self-start border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 px-2.5 py-1 transition-colors"
@@ -762,7 +649,7 @@ export function CollectionView({
                 query: {
                   tab: 'airdrop',
                   collection: address,
-                  ...(displayName ? { name: displayName } : {}),
+                  name: displayName,
                 },
               }}
               className="mt-2 inline-flex items-center gap-1.5 self-start border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 px-2.5 py-1 transition-colors"
@@ -835,16 +722,10 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Authorize creators — post-deploy ADMIN grant. Two on-chain
-          writes batched via multicall: ADMIN to the target's inprocess
-          smart wallet (so MintForm relays land setupNewToken) AND
-          ADMIN to their EOA (full delegated authority — adminMint /
-          setupNewToken / addPermission / callSale from the user's own
-          wallet, mirroring what the smart wallet can do via the
-          relay). Display rides on a KV mapping written at grant
-          time — inprocess only resolves EOA → smart wallet, so
-          without it we'd render raw contract addresses the admin
-          doesn't recognize. */}
+      {/* Authorize creators — multicall grants ADMIN to the target's
+          smart wallet (MintForm relay surface) and EOA (direct from-
+          wallet calls), and clears any redundant MINTER row on the
+          EOA to keep the Minters list clean after an upgrade. */}
       {canGrantHere && (
         <div className="mb-4 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
           <div className="flex items-center gap-1.5 mb-2">
@@ -894,23 +775,32 @@ export function CollectionView({
             authorizedCreators.length > 0 && (
               <ul className="mt-3 flex flex-col gap-1">
                 {authorizedCreators.map((c) => {
-                  const eoaLower = c.eoa.toLowerCase()
-                  const isRevoking = revokingCreatorEoa === eoaLower
+                  // Chain-only entries (off-platform addPermission, no
+                  // KV reverse-lookup) key by smart wallet — that's the
+                  // only stable identifier we have.
+                  const rowKey = (c.eoa ?? c.smartWallet).toLowerCase()
+                  const isRevoking = revokingCreatorEoa === rowKey
                   const otherTxBusy = isCreatorBusy && !isRevoking
+                  const display = c.label ?? shortAddress(c.eoa ?? c.smartWallet)
                   return (
                     <li
-                      key={eoaLower}
+                      key={rowKey}
                       className={`flex items-center justify-between bg-[#111] border px-3 py-2 ${
                         c.liveOnChain ? 'border-[#2a2a2a]' : 'border-[#1a1a1a] opacity-60'
                       }`}
                       title={
-                        c.liveOnChain
-                          ? `${c.label ?? c.eoa} → ${c.smartWallet}`
-                          : 'Stale — ADMIN was revoked outside this UI'
+                        !c.liveOnChain
+                          ? 'Stale — ADMIN was revoked outside this UI'
+                          : c.eoa
+                            ? `${c.label ?? c.eoa} → ${c.smartWallet}`
+                            : `Off-platform grant — smart wallet ${c.smartWallet}`
                       }
                     >
                       <span className="text-xs font-mono text-[#888] truncate">
-                        {c.label ?? shortAddress(c.eoa)}
+                        {display}
+                        {!c.eoa && c.liveOnChain && (
+                          <span className="ml-2 text-[#555]">(unmapped)</span>
+                        )}
                         {!c.liveOnChain && (
                           <span className="ml-2 text-[#555]">(stale)</span>
                         )}
@@ -920,92 +810,6 @@ export function CollectionView({
                         onClick={() => void handleRevokeCreator(c.eoa, c.smartWallet)}
                         disabled={otherTxBusy || isRevoking}
                         title="Revoke creator authorization"
-                        className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )
-          )}
-        </div>
-      )}
-
-      {/* Authorize minters — post-deploy MINTER grants for this
-          collection. Distinct from the Creators panel above: MINTER
-          unlocks adminMint only (mint copies of existing tokens —
-          surfaces in the Airdrop dropdown), but NOT setupNewToken.
-          Use this tier for delegated airdrops; use Creators for
-          full delegated mint-into capability. Visible to anyone with
-          on-chain ADMIN — chain enforces the same gate on
-          addPermission. */}
-      {canGrantHere && (
-        <div className="mb-8 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
-          <div className="flex items-center gap-1.5 mb-2">
-            <ShieldCheck size={12} className="text-[#888]" />
-            <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
-              Authorize minters
-            </p>
-          </div>
-          <p className="text-[11px] font-mono text-[#555] mb-3">
-            Grant another wallet permission to mint copies of any token in this collection. ENS names work.
-          </p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={minterInput}
-              onChange={(e) => setMinterInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  void handleAuthorizeMinter()
-                }
-              }}
-              placeholder="0x… or vitalik.eth"
-              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-            />
-            <button
-              type="button"
-              onClick={() => void handleAuthorizeMinter()}
-              disabled={isMinterBusy || !minterInput.trim()}
-              className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
-            >
-              {isMinterBusy && !revokingAddr ? 'authorizing…' : 'authorize'}
-            </button>
-          </div>
-          {mintersLoading && authorizedMinters.length === 0 ? (
-            <ul className="mt-3 flex flex-col gap-1" aria-busy="true">
-              {[0, 1].map((i) => (
-                <li
-                  key={i}
-                  className="flex items-center justify-between bg-[#111] border border-[#1a1a1a] px-3 py-2 animate-pulse"
-                >
-                  <span className="h-3 w-32 bg-[#1a1a1a]" />
-                  <span className="h-3 w-3 bg-[#1a1a1a] flex-shrink-0" />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            authorizedMinters.length > 0 && (
-              <ul className="mt-3 flex flex-col gap-1">
-                {authorizedMinters.map((m) => {
-                  const isRevoking = revokingAddr === m.toLowerCase()
-                  const otherTxBusy = isMinterBusy && !isRevoking
-                  return (
-                    <li
-                      key={m}
-                      className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2"
-                    >
-                      <span className="text-xs font-mono text-[#888] truncate">
-                        {shortAddress(m)}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void handleRevokeMinter(m)}
-                        disabled={otherTxBusy || isRevoking}
-                        title="Revoke MINTER permission"
                         className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                       >
                         <Trash2 size={12} />

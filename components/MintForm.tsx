@@ -79,10 +79,8 @@ interface CollectionOption {
   address: string
   name: string
   image?: string
-  /** 'creator' = user is the deployer / on-chain default admin.
-   *  'authorized' = user's smart wallet was granted ADMIN via the
-   *  collection's "Authorize creators" panel. Drives a chip on the
-   *  picker tile so the user can tell the two apart. */
+  /** 'creator' = own deployment; 'authorized' = SW was granted ADMIN
+   *  via another collection's panel. Drives the picker tile chip. */
   role?: 'creator' | 'authorized'
 }
 
@@ -141,11 +139,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
     let cancelled = false
     setLoadingCollections(true)
-    // include=authorized → server also surfaces collections the user's
-    // smart wallet was granted ADMIN on (post-deploy "Authorize
-    // creators" flow). Each row comes back tagged with `role` so the
-    // picker can render a chip distinguishing your own collections
-    // from collections you've been delegated mint access to.
+    // include=authorized adds collections the user's smart wallet was
+    // granted ADMIN on. Each row carries `role` so the picker can chip
+    // your own collections vs. delegated ones.
     fetch(`/api/collections?artist=${address}&include=authorized`)
       .then((r) => (r.ok ? r.json() : { collections: [] }))
       .then((d) => {

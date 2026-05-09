@@ -12,13 +12,9 @@ type Tab = 'mint' | 'create' | 'airdrop'
 interface MintTabsProps {
   initialCollection?: string
   initialCollectionName?: string
-  /** Optional initial tab. Honors only valid Tab values, falls back
-   *  to 'mint'. Used by CollectionView's authorization chips: the
-   *  creator-tier chip lands on 'mint' (default — ADMIN unlocks
-   *  setupNewToken via MintForm), the minter-tier chip lands on
-   *  'airdrop' (MINTER unlocks adminMint, which is the airdrop
-   *  primitive). Each chip routes to the surface the bit actually
-   *  enables. */
+  /** Optional initial tab — used by CollectionView's authorization
+   *  chips to land on the surface the granted bit unlocks (creator-
+   *  tier → 'mint', minter-tier → 'airdrop'). Falls back to 'mint'. */
   initialTab?: string
 }
 
@@ -34,12 +30,9 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
   )
   const [moments, setMoments] = useState<Moment[]>([])
   const [loadingMoments, setLoadingMoments] = useState(false)
-  // Last successful fetch timestamp, in ms. Used as a coalescing TTL so
-  // hover + click within the same opening don't double-fire, but a tab
-  // re-open after a hide/unhide tx outside the form picks up fresh data.
-  // Previously this was a one-shot `momentsFetched` boolean that latched
-  // forever — caused stale rows in the picker after the user hid a
-  // moment elsewhere on the site.
+  // Last successful fetch timestamp (ms). Coalesces hover+click within
+  // a 5s window but lets a tab re-open after an external hide/unhide
+  // pick up fresh data.
   const [momentsFetchedAt, setMomentsFetchedAt] = useState<number>(0)
 
   // Reset when wallet changes
@@ -50,25 +43,17 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
 
   const fetchMoments = useCallback((opts: { force?: boolean } = {}) => {
     if (!address || loadingMoments) return
-    // Coalesce repeated hover/click within a 5s window to one fetch.
-    // Beyond that, refetch — the previous "fetch once per session" model
-    // left the picker showing moments that had been hidden, deleted, or
-    // newly delegated since the user first opened the tab. The 30s
-    // server-side revalidate on the upstream inprocess call keeps the
-    // refetch cheap when nothing actually changed.
+    // 5s coalescing window: hover+click won't double-fire, but a fresh
+    // tab open after an external change refetches.
     if (!opts.force && momentsFetchedAt > 0 && Date.now() - momentsFetchedAt < 5_000) {
       return
     }
     setLoadingMoments(true)
     // Two parallel sources, deduped on { collection, token_id }:
-    //   1. /timeline?airdroppable=… — inprocess's filter, surfaces
-    //      moments the user created OR where they hold per-token ADMIN
-    //      via a "Delegate airdrop" grant.
-    //   2. /collections/mintable — our log-scan over tracked collections,
-    //      surfaces collections where the user holds collection-wide
-    //      MINTER (or ADMIN). Inprocess's airdroppable filter misses
-    //      this case entirely. We then fan out to /timeline?collection=…
-    //      per result and merge any moments not already in (1).
+    //   1. /timeline?airdroppable=… — inprocess filter (own + per-token
+    //      ADMIN delegations).
+    //   2. /collections/mintable + /timeline?collection=… fan-out —
+    //      collection-wide MINTER grants that inprocess's filter misses.
     const airdroppable = fetch(`/api/timeline?airdroppable=${address}&limit=100`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => (Array.isArray(d.moments) ? (d.moments as Moment[]) : []))
@@ -119,10 +104,9 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
     return () => window.removeEventListener('kismetart:moment-hidden-changed', onChange)
   }, [fetchMoments])
 
-  // Eager-load the picker when we land directly on the airdrop tab via
-  // an external link (e.g. CollectionView's "you can mint here" chip).
-  // Without this the user lands on a blank picker until they hover/click
-  // the tab, which is jarring when they got here from a CTA.
+  // Eager-load the picker when we land on the airdrop tab via an
+  // external CTA (e.g. CollectionView's authorization chip), so the
+  // user doesn't see a blank picker until they hover the tab.
   useEffect(() => {
     if (tab === 'airdrop') fetchMoments()
     // eslint-disable-next-line react-hooks/exhaustive-deps

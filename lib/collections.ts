@@ -188,7 +188,7 @@ if (UPDATED_PERMISSIONS_EVENT) {
   if (computed !== UPDATED_PERMISSIONS_TOPIC) {
     console.error(
       `[collections] UpdatedPermissions ABI drifted: computed ${computed}, expected ${UPDATED_PERMISSIONS_TOPIC}. ` +
-        `useCollectionMinters will return empty results until this is reconciled.`,
+        `findMintableCollections / findAdminHoldersAtZero will return empty results until reconciled.`,
     )
   }
 }
