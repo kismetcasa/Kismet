@@ -4,9 +4,37 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ShieldAlert } from 'lucide-react'
 import { toast } from 'sonner'
+import { createPublicClient, http } from 'viem'
+import { mainnet } from 'viem/chains'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
+import { isAddress } from '@/lib/address'
 import { toastError } from '@/lib/toast'
+
+// Client-side ENS resolver. Resolves against the configured mainnet RPC
+// when present, otherwise falls back to Cloudflare's public ETH gateway
+// — both ENS contracts live on mainnet, so Base RPCs don't help here.
+// Server-side resolution exists too in /api/airdrop/backfill, but it
+// depends on MAINNET_RPC_URL being set on the deploy; doing it
+// client-first means a missing env var doesn't block the admin tool.
+const ensClient = createPublicClient({
+  chain: mainnet,
+  transport: http(process.env.NEXT_PUBLIC_MAINNET_RPC_URL || 'https://cloudflare-eth.com'),
+})
+
+async function resolveRecipientClientSide(value: string): Promise<{ resolved: string | null; original: string }> {
+  const trimmed = value.trim()
+  if (isAddress(trimmed)) return { resolved: trimmed.toLowerCase(), original: trimmed }
+  if (trimmed.endsWith('.eth')) {
+    try {
+      const addr = await ensClient.getEnsAddress({ name: trimmed })
+      return { resolved: addr ? addr.toLowerCase() : null, original: trimmed }
+    } catch {
+      return { resolved: null, original: trimmed }
+    }
+  }
+  return { resolved: null, original: trimmed }
+}
 
 interface BackfillResponse {
   ok?: boolean
@@ -157,6 +185,24 @@ function AirdropBackfillCard({
     }
     setSubmitting(true)
     try {
+      // Pre-resolve ENS names client-side so we surface unresolvable
+      // entries before asking the user to sign — and so the server
+      // request only carries 0x addresses, sidestepping a potentially
+      // unset MAINNET_RPC_URL on the deploy.
+      const resolved = await Promise.all(recipients.map(resolveRecipientClientSide))
+      const unresolved = resolved.filter((r) => !r.resolved).map((r) => r.original)
+      const resolvedAddresses = resolved
+        .map((r) => r.resolved)
+        .filter((a): a is string => !!a)
+      if (resolvedAddresses.length === 0) {
+        setResult({ error: 'No resolvable recipients', unresolved })
+        toast.error('Could not resolve any recipients', { id: 'backfill' })
+        return
+      }
+      if (unresolved.length > 0) {
+        toast.message(`Skipping unresolvable: ${unresolved.join(', ')}`, { id: 'backfill' })
+      }
+
       // The verifying route lowercases ADMIN_ADDRESS server-side and
       // embeds it in the message text. We sign with the same lowercase
       // form so the bytes match. The gate above already confirmed
@@ -171,7 +217,7 @@ function AirdropBackfillCard({
         sender: sender.trim(),
         collectionAddress: collection.trim(),
         tokenId: tokenId.trim(),
-        recipients,
+        recipients: resolvedAddresses,
         ...(txHash.trim() ? { txHash: txHash.trim() } : {}),
         ...(airdropTimestamp.trim()
           ? { airdropTimestamp: Number(airdropTimestamp.trim()) }
