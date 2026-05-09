@@ -1,11 +1,9 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Star, Check, X, Plus, Pencil, ArrowUpRight } from 'lucide-react'
+import { Star, Check, X, Plus, Pencil } from 'lucide-react'
 import { isAddress } from 'viem'
-import { toast } from 'sonner'
 import { useAdmin } from '@/contexts/AdminContext'
-import { toastError } from '@/lib/toast'
 import { CreatorListEditor, type CreatorListShape } from './CreatorListEditor'
 
 // Accept the canonical /moment/<address>/<tokenId> URL format used elsewhere
@@ -31,94 +29,13 @@ function parseMomentRef(input: string): { address: string; tokenId: string } | n
   return null
 }
 
-// Curator surface — feature moments, manage roster lists, promote legacy
-// collections, and run the global mints backfill. Rendered only on the
-// curator's own profile (AdminContext.isCurator + ProfileView.isOwner).
+// Curator surface — feature moments and manage roster lists. Rendered only
+// on the curator's own profile (AdminContext.isCurator + ProfileView.isOwner).
 export function CuratePanel() {
-  const { featuredKeys, toggleFeatured, withSession } = useAdmin()
+  const { featuredKeys, toggleFeatured } = useAdmin()
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-  const [promoteInput, setPromoteInput] = useState('')
-  const [promoting, setPromoting] = useState(false)
-  const [backfilling, setBackfilling] = useState(false)
-
-  // Promote a legacy collection address into kismetart:created-collections
-  // so it surfaces in the Collections feed, profile collections, mint
-  // dropdown, and search. The endpoint also auto-backfills the
-  // collection's moments into kismetart:created-mints so the Mints feed
-  // populates without a separate per-mint promote step.
-  async function handlePromote() {
-    const addr = promoteInput.trim()
-    if (!isAddress(addr)) {
-      toast.error('Invalid contract address', { id: 'promote-collection' })
-      return
-    }
-    setPromoting(true)
-    try {
-      const result = await withSession(async (auth) => {
-        const res = await fetch('/api/curator/promote-collection', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: addr, ...auth }),
-        })
-        const data = (await res.json().catch(() => ({}))) as {
-          promoted?: boolean
-          mintsBackfilled?: number
-          error?: string
-        }
-        if (!res.ok) throw new Error(data.error ?? 'Promote failed')
-        return data
-      })
-      if (result?.promoted) {
-        setPromoteInput('')
-        const mintsNote = result.mintsBackfilled ? ` (+${result.mintsBackfilled} mints)` : ''
-        toast.success(
-          `${addr.slice(0, 6)}…${addr.slice(-4)} added to collections${mintsNote}`,
-          { id: 'promote-collection' },
-        )
-      }
-    } catch (err) {
-      toastError('Promote', err, { id: 'promote-collection' })
-    } finally {
-      setPromoting(false)
-    }
-  }
-
-  // One-shot global backfill: walks every contract in
-  // kismetart:collections, fetches its moments from inprocess, SADDs
-  // each into kismetart:created-mints. Use after deploying the new
-  // tracking to surface every historical Kismet mint without re-minting.
-  async function handleBackfillMints() {
-    if (!confirm('Scan every tracked contract and add its moments to the Mints feed?')) return
-    setBackfilling(true)
-    try {
-      const result = await withSession(async (auth) => {
-        const res = await fetch('/api/curator/backfill-mints', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(auth),
-        })
-        const data = (await res.json().catch(() => ({}))) as {
-          mintsAdded?: number
-          contractsScanned?: number
-          error?: string
-        }
-        if (!res.ok) throw new Error(data.error ?? 'Backfill failed')
-        return data
-      })
-      if (result) {
-        toast.success(
-          `Added ${result.mintsAdded ?? 0} mints from ${result.contractsScanned ?? 0} contracts`,
-          { id: 'backfill-mints' },
-        )
-      }
-    } catch (err) {
-      toastError('Backfill mints', err, { id: 'backfill-mints' })
-    } finally {
-      setBackfilling(false)
-    }
-  }
 
   // Creator-list state. `editing` is the slug currently in the editor; null
   // means no editor is open. The sentinel '__new__' opens the editor in
@@ -222,40 +139,6 @@ export function CuratePanel() {
           </ul>
         </div>
       )}
-
-      {/* Promote a legacy real collection — for entries deployed before
-          write-time tracking shipped. Going forward, every Create
-          Collection form deploy registers automatically. */}
-      <div className="flex flex-col gap-2 border-t border-[#1a1a1a] pt-4">
-        <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
-          add legacy collection
-        </label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={promoteInput}
-            onChange={(e) => setPromoteInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handlePromote() } }}
-            placeholder="0x… contract address"
-            disabled={promoting}
-            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
-          />
-          <button
-            onClick={() => void handlePromote()}
-            disabled={promoting || !promoteInput.trim()}
-            className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
-          >
-            {promoting ? '…' : <ArrowUpRight size={12} />}
-          </button>
-        </div>
-        <button
-          onClick={handleBackfillMints}
-          disabled={backfilling}
-          className="text-[10px] font-mono text-[#555] hover:text-[#efefef] transition-colors w-fit pt-1 disabled:opacity-50"
-        >
-          {backfilling ? 'scanning…' : 'or: backfill all legacy mints into the Mints feed →'}
-        </button>
-      </div>
 
       {/* Creator lists — rosters reachable from the homepage Roster tab. */}
       <div className="flex flex-col gap-2 border-t border-[#1a1a1a] pt-4">
