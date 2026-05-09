@@ -11,7 +11,7 @@ import {
   addTrackedCollection,
   getCollectionsByArtist,
   getCollectionMeta,
-  markCoverMoment,
+  markCreatedMint,
   type CollectionSource,
 } from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -313,8 +313,11 @@ export async function POST(req: NextRequest) {
     },
     source,
   )
+  // Cover tokens minted at deploy time (cover-mint toggle on) ARE
+  // mints — they should show in the Mints feed alongside MintForm
+  // mints. Track them in created-mints just like a normal mint.
   if (source === 'create-form' && body.coverTokenId && /^\d+$/.test(body.coverTokenId)) {
-    await markCoverMoment(body.address, body.coverTokenId)
+    await markCreatedMint(body.address, body.coverTokenId)
   }
   return NextResponse.json({ ok: true })
 }
