@@ -49,44 +49,17 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
       return
     }
     setLoadingMoments(true)
-    // Two parallel sources, deduped on { collection, token_id }:
-    //   1. /timeline?airdroppable=… — inprocess filter (own + per-token
-    //      ADMIN delegations).
-    //   2. /collections/mintable + /timeline?collection=… fan-out —
-    //      collection-wide MINTER grants that inprocess's filter misses.
-    const airdroppable = fetch(`/api/timeline?airdroppable=${address}&limit=100`)
+    // Source: inprocess's /timeline?airdroppable filter (own moments +
+    // per-token ADMIN delegations). Collection-wide MINTER / ADMIN
+    // grants aren't surfaced here — discovery via on-chain log scan
+    // would require unbounded eth_getLogs which most non-paid RPCs
+    // cap out on. Authorized users airdrop by typing the moment URL
+    // or via per-moment "Delegate airdrop" in this same form.
+    fetch(`/api/timeline?airdroppable=${address}&limit=100`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => (Array.isArray(d.moments) ? (d.moments as Moment[]) : []))
-      .catch((): Moment[] => [])
-    const mintable = fetch(`/api/collections/mintable?address=${address}`)
-      .then((r) => (r.ok ? r.json() : { collections: [] }))
-      .then(async (d: { collections?: string[] }) => {
-        const cols = Array.isArray(d.collections) ? d.collections : []
-        if (cols.length === 0) return [] as Moment[]
-        const perCollection = await Promise.all(
-          cols.map((c) =>
-            fetch(`/api/timeline?collection=${c}&limit=50`)
-              .then((r) => (r.ok ? r.json() : { moments: [] }))
-              .then((data: { moments?: Moment[] }) =>
-                Array.isArray(data.moments) ? data.moments : [],
-              )
-              .catch((): Moment[] => []),
-          ),
-        )
-        return perCollection.flat()
-      })
-      .catch((): Moment[] => [])
-    Promise.all([airdroppable, mintable])
-      .then(([primary, supplement]) => {
-        const seen = new Set<string>()
-        const out: Moment[] = []
-        for (const m of [...primary, ...supplement]) {
-          const key = `${(m.address ?? '').toLowerCase()}:${m.token_id ?? ''}`
-          if (seen.has(key) || !key) continue
-          seen.add(key)
-          out.push(m)
-        }
-        setMoments(out)
+      .then((d) => {
+        const moments = Array.isArray(d.moments) ? (d.moments as Moment[]) : []
+        setMoments(moments)
       })
       .catch(() => setMoments([]))
       .finally(() => {

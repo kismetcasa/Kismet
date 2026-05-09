@@ -2,10 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
-import { PERMISSION_BIT_ADMIN, hasAdminBit, readPermissions } from '@/lib/permissions'
+import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
-import { findMintableCollections } from '@/lib/findMintableCollections'
-import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import {
   getTrackedCollections,
@@ -276,65 +274,6 @@ export async function GET(req: NextRequest) {
             description: meta.description,
           },
         })
-      }
-      // Tag every entry built so far as creator-owned. The
-      // authorized-creator branch below appends rows tagged 'authorized'
-      // so MintForm can render them in a separate section of the picker.
-      data.collections = data.collections.map((c: Record<string, unknown>) => ({
-        ...c,
-        role: 'creator' as const,
-      }))
-      // Optional include=authorized: also list collections where the
-      // artist's smart wallet holds ADMIN at tokenId 0. That's where
-      // the post-deploy "Authorize creators" panel lands the grant —
-      // unlocking setupNewToken via MintForm — so the picker has to
-      // reach beyond the creator-tracked KV set to surface them.
-      if (searchParams.get('include') === 'authorized') {
-        try {
-          const sw = await resolveSmartWallet(artist)
-          if (sw && isAddress(sw)) {
-            const tracked = await getTrackedCollections()
-            const alreadyListed = new Set<string>(
-              data.collections.map((c: { contractAddress?: string }) =>
-                (c.contractAddress ?? '').toLowerCase(),
-              ),
-            )
-            const candidates = tracked.filter(
-              (a) => !alreadyListed.has(a.toLowerCase()),
-            ) as Address[]
-            const client = serverBaseClient()
-            const authorized = await findMintableCollections(
-              client,
-              candidates,
-              sw as Address,
-              PERMISSION_BIT_ADMIN,
-            )
-            for (const addr of authorized) {
-              if (hiddenSet.has(addr.toLowerCase())) continue
-              const lower = addr.toLowerCase()
-              const meta = await getCollectionMeta(addr)
-              data.collections.push({
-                contractAddress: addr,
-                name: meta?.name ?? lower,
-                metadata: meta
-                  ? {
-                      name: meta.name,
-                      image: meta.image,
-                      description: meta.description,
-                    }
-                  : undefined,
-                role: 'authorized' as const,
-              })
-            }
-          }
-        } catch (err) {
-          // Non-fatal: a log-scan failure shouldn't drop the creator
-          // collections we already built; the picker still lists those.
-          console.error('[collections artist include=authorized] failed', {
-            artist,
-            err: err instanceof Error ? err.message : String(err),
-          })
-        }
       }
       return NextResponse.json(data, { status: res.status })
     } catch {

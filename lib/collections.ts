@@ -1,4 +1,4 @@
-import { encodeFunctionData, toEventSelector, type Address, type AbiEvent } from 'viem'
+import { encodeFunctionData, type Address } from 'viem'
 import { ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
 
 // inprocess's Base Mainnet ZORA 1155 Contract Factory.
@@ -170,28 +170,6 @@ export function encodeAdminPermission(adminAddress: Address): `0x${string}` {
 // authorize flow on existing collections.
 export { COLLECTION_ABI }
 
-// keccak256("UpdatedPermissions(uint256,address,uint256)") — Zora's
-// canonical 1155 event signature, hardcoded so a typo in the ABI
-// definition above (wrong type, swapped args) fails loudly at module
-// load instead of silently returning empty log queries. Cross-checked
-// against Zora's ZoraCreator1155Impl on Base; bump this constant if
-// Zora ever ships a contract upgrade that changes the signature.
-export const UPDATED_PERMISSIONS_TOPIC =
-  '0x35fb03d0d293ef5b362761900725ce891f8f766b5a662cdd445372355448e7ca' as const
-
-const UPDATED_PERMISSIONS_EVENT = COLLECTION_ABI.find(
-  (item) => item.type === 'event' && item.name === 'UpdatedPermissions',
-) as AbiEvent | undefined
-
-if (UPDATED_PERMISSIONS_EVENT) {
-  const computed = toEventSelector(UPDATED_PERMISSIONS_EVENT)
-  if (computed !== UPDATED_PERMISSIONS_TOPIC) {
-    console.error(
-      `[collections] UpdatedPermissions ABI drifted: computed ${computed}, expected ${UPDATED_PERMISSIONS_TOPIC}. ` +
-        `findMintableCollections will return empty results until reconciled.`,
-    )
-  }
-}
 
 interface CoverTokenSetupParams {
   tokenURI: string
