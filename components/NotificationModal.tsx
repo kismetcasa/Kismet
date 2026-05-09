@@ -6,6 +6,8 @@ import { toast } from 'sonner'
 import { NotificationFeed } from './NotificationFeed'
 import { ProfileAvatar } from './ProfileAvatar'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { humanError } from '@/lib/toast'
 import { shortAddress } from '@/lib/inprocess'
 import { CopyAddress } from './CopyAddress'
@@ -22,18 +24,8 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   const [muted, setMuted] = useState<string[] | null>(null)
   const [mutedLoading, setMutedLoading] = useState(false)
 
-  // Lock body scroll while open
-  useEffect(() => {
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = '' }
-  }, [])
-
-  // ESC to close
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  useBodyScrollLock()
+  useEscapeKey(onClose)
 
   // Fetch muted list when settings tab is first opened
   useEffect(() => {

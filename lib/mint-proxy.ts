@@ -183,12 +183,6 @@ export async function proxyMintRequest(
       : undefined
   if (account && collectionAddress) {
     const preflight = await checkSmartWalletAdmin(account, collectionAddress, [0n])
-    console.log('[mint-proxy] preflight', {
-      endpoint,
-      caller: account,
-      collection: collectionAddress,
-      ...preflight,
-    })
     if (preflight.status === 'unauthorized') {
       return NextResponse.json(
         {

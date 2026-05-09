@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { Search, X, Loader2, ExternalLink } from 'lucide-react'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { resolveUri, shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
@@ -66,11 +67,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useEscapeKey(onClose)
 
   useEffect(() => {
     const q = query.trim()
