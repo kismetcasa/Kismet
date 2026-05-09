@@ -5,6 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { resolveUri, shortAddress } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { CollectAllAction } from './CollectAllAction'
 
 /**
  * Shape we render — compatible with both inprocess `/api/collections` plural
@@ -19,13 +20,17 @@ export interface CollectionDisplay {
   // inprocess `/api/collection` (singular) extras — used when present
   default_admin?: { address?: string; username?: string }
   created_at?: string
+  // Bulk-collect hydration from /api/collections?feed=1. When present and
+  // non-empty, the card surfaces a "collect all" button that fires a single
+  // Zora 1155 multicall mint; otherwise the action slot is empty.
+  ethEligibleTokenIds?: string[]
+  ethEligibleTotalWei?: string
 }
 
 interface CollectionCardProps {
   collection: CollectionDisplay
-  // Override the right-hand action. Default = "mint into" (link to /mint
-  // with this collection pre-selected). Featured rows pass a custom node
-  // for bulk-collect or alternate CTAs.
+  // Override the action slot under "view collection". Default = bulk
+  // "collect all" button when ETH-eligible tokens exist, otherwise empty.
   primaryAction?: React.ReactNode
 }
 
@@ -90,20 +95,21 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
         )}
       </div>
 
-      <div className="px-4 pb-4 flex gap-1.5 mt-auto">
+      <div className="px-4 pb-4 flex flex-col gap-1.5 mt-auto">
         <Link
           href={`/collection/${c.contractAddress}`}
-          className="flex-1 py-2 text-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors"
+          className="w-full py-2 text-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors"
         >
           view collection
         </Link>
         {primaryAction ?? (
-          <Link
-            href={`/mint?collection=${c.contractAddress}&name=${encodeURIComponent(collectionName)}`}
-            className="flex-1 py-2 text-center text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all"
-          >
-            collect all
-          </Link>
+          c.ethEligibleTokenIds && c.ethEligibleTokenIds.length > 0 ? (
+            <CollectAllAction
+              collectionAddress={c.contractAddress}
+              ethEligibleTokenIds={c.ethEligibleTokenIds}
+              ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
+            />
+          ) : null
         )}
       </div>
     </article>

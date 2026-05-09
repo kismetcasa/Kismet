@@ -17,6 +17,92 @@ import {
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
+import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { fetchEthEligibleTokens } from '@/lib/saleConfig'
+
+// Cap on tokens we fetch per collection when computing bulk-collect
+// eligibility for the feed. Aligned with MAX_COLLECT_ALL_BATCH (20) since
+// eligible IDs beyond that get truncated at click time anyway.
+const FEED_ELIGIBLE_TOKEN_LIMIT = 20
+
+// Fetch the rich collection record from inprocess, falling back to local KV
+// when the indexer hasn't yet picked up a freshly-deployed collection.
+async function loadCollectionMeta(address: string): Promise<Record<string, unknown>> {
+  try {
+    const url = new URL(`${INPROCESS_API}/collection`)
+    url.searchParams.set('collectionAddress', address)
+    url.searchParams.set('chainId', '8453')
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 60 },
+    })
+    if (res.ok) {
+      const text = await res.text()
+      if (text) {
+        const data: unknown = JSON.parse(text)
+        // inprocess returns null pre-index; fall through to KV.
+        if (
+          data &&
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          Object.keys(data).length > 0
+        ) {
+          return { ...(data as Record<string, unknown>), contractAddress: address }
+        }
+      }
+    }
+  } catch {
+    // fall through to KV fallback below
+  }
+  const kv = await getCollectionMeta(address)
+  return {
+    contractAddress: address,
+    name: kv?.name,
+    metadata: kv
+      ? { name: kv.name, image: kv.image, description: kv.description }
+      : undefined,
+  }
+}
+
+// Resolve the ETH-eligible token IDs + total cost for a collection so the
+// card can render a one-click "collect all" CTA. Returns empty fields on
+// any failure — the action component then hides itself.
+async function loadEthEligibility(
+  client: ReturnType<typeof serverBaseClient>,
+  address: string,
+  hiddenMoments: Set<string>,
+): Promise<{ ethEligibleTokenIds: string[]; ethEligibleTotalWei: string }> {
+  const empty = { ethEligibleTokenIds: [], ethEligibleTotalWei: '0' }
+  try {
+    const tlUrl = new URL(`${INPROCESS_API}/timeline`)
+    tlUrl.searchParams.set('collection', address)
+    tlUrl.searchParams.set('limit', String(FEED_ELIGIBLE_TOKEN_LIMIT))
+    tlUrl.searchParams.set('chain_id', '8453')
+    const tlRes = await fetch(tlUrl.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 60 },
+    })
+    if (!tlRes.ok) return empty
+    const tlData = (await tlRes.json()) as { moments?: { address?: string; token_id?: string }[] }
+    const moments = Array.isArray(tlData.moments) ? tlData.moments : []
+    const lowerAddr = address.toLowerCase()
+    // Strip individually-hidden moments so we don't bundle them into the
+    // multicall — minting a hidden token from the feed would be surprising.
+    const visibleIds = moments
+      .filter((m) => m.token_id && !hiddenMoments.has(`${(m.address ?? lowerAddr).toLowerCase()}:${m.token_id}`))
+      .map((m) => BigInt(m.token_id as string))
+    if (visibleIds.length === 0) return empty
+    const eligible = await fetchEthEligibleTokens(client, address as Address, visibleIds)
+    return {
+      ethEligibleTokenIds: eligible.map((e) => e.tokenId.toString()),
+      ethEligibleTotalWei: eligible
+        .reduce((sum, e) => sum + e.pricePerToken, 0n)
+        .toString(),
+    }
+  } catch {
+    return empty
+  }
+}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -79,9 +165,10 @@ export async function GET(req: NextRequest) {
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
-    const [userCreated, hiddenSet] = await Promise.all([
+    const [userCreated, hiddenSet, hiddenMoments] = await Promise.all([
       getUserCollections(),
       getHiddenCollectionsSet(),
+      getHiddenMomentsSet(),
     ])
     const visible = userCreated.filter(
       (addr) => !hiddenSet.has(addr.toLowerCase()),
@@ -90,42 +177,17 @@ export async function GET(req: NextRequest) {
     const total_pages = Math.max(1, Math.ceil(total / limit))
     const start = (page - 1) * limit
     const slice = visible.slice(start, start + limit)
+    const client = serverBaseClient()
     const collections = await Promise.all(
       slice.map(async (address) => {
-        try {
-          const url = new URL(`${INPROCESS_API}/collection`)
-          url.searchParams.set('collectionAddress', address)
-          url.searchParams.set('chainId', '8453')
-          const res = await fetch(url.toString(), {
-            headers: { Accept: 'application/json' },
-            next: { revalidate: 60 },
-          })
-          if (res.ok) {
-            const text = await res.text()
-            if (text) {
-              const data: unknown = JSON.parse(text)
-              // inprocess returns null pre-index; fall through to KV.
-              if (
-                data &&
-                typeof data === 'object' &&
-                !Array.isArray(data) &&
-                Object.keys(data).length > 0
-              ) {
-                return { ...(data as Record<string, unknown>), contractAddress: address }
-              }
-            }
-          }
-        } catch {
-          // fall through to KV fallback below
-        }
-        const kv = await getCollectionMeta(address)
-        return {
-          contractAddress: address,
-          name: kv?.name,
-          metadata: kv
-            ? { name: kv.name, image: kv.image, description: kv.description }
-            : undefined,
-        }
+        // Hydrate metadata + bulk-collect eligibility in parallel. Mirrors
+        // /api/featured/collections-hydrated so the discovery grid surfaces
+        // the same one-click "collect all" UX as the featured rows.
+        const [metaPart, eligibility] = await Promise.all([
+          loadCollectionMeta(address),
+          loadEthEligibility(client, address, hiddenMoments),
+        ])
+        return { ...metaPart, ...eligibility }
       }),
     )
     // Visibility for "empty feed" reports — distinguishes "nothing tracked
