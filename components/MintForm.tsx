@@ -79,6 +79,11 @@ interface CollectionOption {
   address: string
   name: string
   image?: string
+  /** 'creator' = user is the deployer / on-chain default admin.
+   *  'authorized' = user's smart wallet was granted ADMIN via the
+   *  collection's "Authorize creators" panel. Drives a chip on the
+   *  picker tile so the user can tell the two apart. */
+  role?: 'creator' | 'authorized'
 }
 
 // PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
@@ -136,17 +141,29 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
     let cancelled = false
     setLoadingCollections(true)
-    fetch(`/api/collections?artist=${address}`)
+    // include=authorized → server also surfaces collections the user's
+    // smart wallet was granted ADMIN on (post-deploy "Authorize
+    // creators" flow). Each row comes back tagged with `role` so the
+    // picker can render a chip distinguishing your own collections
+    // from collections you've been delegated mint access to.
+    fetch(`/api/collections?artist=${address}&include=authorized`)
       .then((r) => (r.ok ? r.json() : { collections: [] }))
       .then((d) => {
         if (cancelled) return
+        type ApiCollection = {
+          contractAddress?: string
+          name?: string
+          metadata?: { name?: string; image?: string }
+          role?: 'creator' | 'authorized'
+        }
         const items: CollectionOption[] = (Array.isArray(d.collections) ? d.collections : [])
-          .map((c: { contractAddress?: string; name?: string; metadata?: { name?: string; image?: string } }) => {
+          .map((c: ApiCollection) => {
             if (!c.contractAddress) return null
             return {
               address: c.contractAddress,
               name: c.metadata?.name ?? c.name ?? shortAddress(c.contractAddress),
               image: c.metadata?.image,
+              role: c.role,
             }
           })
           .filter((c: CollectionOption | null): c is CollectionOption => c !== null)
@@ -1151,6 +1168,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                   // no badge in those cases.
                   const permStatus = collectionsPerms[c.address.toLowerCase()]
                   const needsAuth = permStatus?.hasAdmin === false
+                  const isAuthorized = c.role === 'authorized'
                   return (
                     <button
                       key={c.address}
@@ -1165,7 +1183,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       title={
                         needsAuth
                           ? `${c.name} — needs authorize before minting`
-                          : c.name
+                          : isAuthorized
+                            ? `${c.name} — authorized to mint here`
+                            : c.name
                       }
                     >
                       {img ? (
@@ -1184,14 +1204,22 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                           </span>
                         </div>
                       )}
-                      {needsAuth && (
+                      {needsAuth ? (
                         <div
                           className="absolute top-1 right-1 w-5 h-5 bg-[#8B5CF6]/95 border border-[#8B5CF6]/50 flex items-center justify-center"
                           aria-label="Needs authorize"
                         >
                           <ShieldAlert size={11} className="text-[#efefef]" />
                         </div>
-                      )}
+                      ) : isAuthorized ? (
+                        <div
+                          className="absolute top-1 left-1 px-1.5 py-0.5 bg-[#8B5CF6]/95 border border-[#8B5CF6]/50 text-[9px] font-mono text-[#efefef] uppercase tracking-widest"
+                          aria-label="Authorized to mint"
+                          title="You were authorized as a creator on this collection"
+                        >
+                          authorized
+                        </div>
+                      ) : null}
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         <p className="text-[9px] font-mono text-[#efefef] truncate">{c.name}</p>
                       </div>

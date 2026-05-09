@@ -12,7 +12,7 @@ import { toastError } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
 import { COLLECTION_ABI } from '@/lib/collections'
-import { hasAdminBit } from '@/lib/permissions'
+import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
 
 interface AirdropFormProps {
   moments: Moment[]
@@ -77,15 +77,24 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         : [],
     query: { enabled: !!selected && !!callerAddress },
   })
-  const callerLacksAdmin =
+  // Zora's adminMint accepts ADMIN OR MINTER (_hasAnyPermission with
+  // ADMIN | MINTER). The picker now merges in moments from collections
+  // where the caller holds collection-wide MINTER (via
+  // /api/collections/mintable), so the preflight has to mirror Zora's
+  // own mask — checking ADMIN only would block the exact users we just
+  // surfaced moments for.
+  const callerLacksMintAccess =
     !!selected &&
     !!callerAddress &&
     airdropPerms?.length === 2 &&
     airdropPerms[0].status === 'success' &&
     airdropPerms[1].status === 'success' &&
-    !hasAdminBit(
-      (airdropPerms[0].result as bigint) | (airdropPerms[1].result as bigint),
-    )
+    (() => {
+      const merged =
+        (airdropPerms[0].result as bigint) |
+        (airdropPerms[1].result as bigint)
+      return !hasAdminBit(merged) && !hasMinterBit(merged)
+    })()
 
   // Receipt handler for the delegate grant. Mirrors the previous
   // version exactly — delegation is a fire-and-forget grant, the
@@ -358,26 +367,27 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </a>
       )}
 
-      {/* Defensive check: the picker only surfaces moments where the
-          server-side /api/timeline?airdroppable=… already confirmed the
-          user holds admin authority, so this banner should be a no-op
-          on the happy path. It only fires if a stale picker cache or
-          wallet switch leaves a moment selected where the connected
-          EOA can't actually authorize the on-chain adminMint. Both
-          permissions reads must succeed AND OR to no ADMIN bit before
-          we surface this — a still-loading or RPC-failed read renders
-          nothing so the user can attempt the airdrop and let the
-          on-chain call surface the actual revert. */}
-      {callerLacksAdmin && selected && (
+      {/* Defensive check: the picker surfaces moments where the user
+          holds at least one mint-capable bit (ADMIN or MINTER) — via
+          inprocess's /timeline?airdroppable=… or our log-scan over
+          /collections/mintable. This banner should be a no-op on the
+          happy path, firing only if a stale picker cache or wallet
+          switch leaves a moment selected where the connected EOA
+          can't authorize adminMint. Both permissions reads must
+          succeed AND have neither bit set before we surface — a
+          still-loading or RPC-failed read renders nothing so the
+          user can attempt the airdrop and let the on-chain call
+          surface the actual revert. */}
+      {callerLacksMintAccess && selected && (
         <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex items-start gap-2.5">
           <div className="min-w-0">
             <p className="text-xs font-mono text-[#efefef]">
-              Your wallet doesn&apos;t have admin on this collection
+              Your wallet can&apos;t mint on this collection
             </p>
             <p className="text-[11px] font-mono text-[#888] mt-0.5">
-              Airdrops mint directly from your wallet. Switch to the wallet that holds
-              defaultAdmin or per-token ADMIN on {shortAddress(selected.address)}, or have
-              the creator delegate airdrop to your address.
+              Airdrops mint directly from your wallet. Switch to a wallet that holds
+              ADMIN or MINTER on {shortAddress(selected.address)}, or have
+              the creator authorize your address.
             </p>
           </div>
         </div>
