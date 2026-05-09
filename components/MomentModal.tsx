@@ -346,7 +346,7 @@ export function MomentModal({
                 </p>
               )}
               {textSnippet && (
-                <p className="text-sm font-mono text-[#bbb] line-clamp-[12] leading-relaxed whitespace-pre-wrap">
+                <p className="text-sm font-mono text-[#bbb] leading-relaxed whitespace-pre-wrap">
                   {textSnippet}
                 </p>
               )}

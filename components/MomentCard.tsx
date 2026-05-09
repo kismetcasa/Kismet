@@ -205,7 +205,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
                 </p>
               )}
               {textSnippet && (
-                <p className="text-xs sm:text-sm font-mono text-[#bbb] line-clamp-6 leading-relaxed whitespace-pre-wrap">
+                <p className="text-xs sm:text-sm font-mono text-[#bbb] leading-relaxed whitespace-pre-wrap">
                   {textSnippet}
                 </p>
               )}
