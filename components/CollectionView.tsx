@@ -357,15 +357,11 @@ export function CollectionView({
         if (cancelled) return
         const loaded: Moment[] = Array.isArray(d.moments) ? d.moments : []
         setMoments(loaded)
-        // Fetch profiles for all creators and split admins found in moments
+        // Prefetch profile labels for the artists section. Splits used
+        // to need this too, but moment-level splits moved to the moment
+        // detail page so admin prefetches no longer have a renderer.
         const creatorSet = new Set(loaded.map((m) => m.creator.address.toLowerCase()))
-        const adminAddrs = new Set(
-          loaded
-            .flatMap((m) => m.admins ?? [])
-            .filter((a) => !creatorSet.has(a.address.toLowerCase()))
-            .map((a) => a.address.toLowerCase()),
-        )
-        ;[...creatorSet, ...adminAddrs].forEach((addr) => {
+        creatorSet.forEach((addr) => {
           fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
             if (!cancelled)
               setProfiles((prev) => ({ ...prev, [addr]: { name, avatarUrl } }))
