@@ -14,6 +14,12 @@ import type { SplitRecipient } from './splits'
 // the cleanest way to keep this resolver chain-agnostic — same pattern
 // as `PublicClientLike` in lib/permissions.ts.
 type ResolverClient = {
+  readContract: (args: {
+    address: Address
+    abi: readonly unknown[]
+    functionName: string
+    args?: readonly unknown[]
+  }) => Promise<unknown>
   getLogs: (args: {
     address: Address
     event: AbiEvent
@@ -24,14 +30,16 @@ type ResolverClient = {
   getTransaction: (args: { hash: Hex }) => Promise<{ input: Hex }>
 }
 
-// 0xSplits v1 SplitMain on Base. Inprocess deploys split contracts
-// through this factory at mint time, so the recipient list lives in
-// the calldata of the originating `createSplit` transaction. v2
-// (PullSplitFactory + SplitFactory) uses a different deployment shape
-// and isn't decoded here — the resolver returns null for those, which
-// leaves the moment in the same state as before (admin can backfill
-// manually via /api/admin/splits).
-const SPLITMAIN_BASE: Address = '0x80f1B766817D04870f115fEBbcCADF8DBF75E017'
+// Last-resort SplitMain address for 0xSplits v1 on Base. Used only when
+// reading the SplitWallet's `splitMain()` getter fails (network blip on
+// the only RPC call we can't recover from). The dynamic read below is
+// preferred — it removes the chain-specific hardcode and makes this
+// resolver portable to any v1 SplitMain deployment.
+const SPLITMAIN_BASE_FALLBACK: Address = '0x80f1B766817D04870f115fEBbcCADF8DBF75E017'
+
+const SPLIT_WALLET_ABI = parseAbi([
+  'function splitMain() view returns (address)',
+])
 
 const CREATE_SPLIT_EVENT = parseAbi([
   'event CreateSplit(address indexed split)',
@@ -40,6 +48,8 @@ const CREATE_SPLIT_EVENT = parseAbi([
 const SPLITMAIN_ABI = parseAbi([
   'function createSplit(address[] accounts, uint32[] percentAllocations, uint32 distributorFee, address controller) returns (address)',
 ])
+
+const ZERO_ADDRESS: Address = '0x0000000000000000000000000000000000000000'
 
 // SplitMain stores percentages as fixed-point with 1e6 scale (100% = 1_000_000).
 // Our `SplitRecipient.percentAllocation` is the integer 1-100 the mint flow
@@ -64,10 +74,32 @@ export async function resolveSplitRecipientsOnChain(
   client: ResolverClient,
   splitAddress: Address,
 ): Promise<SplitRecipient[] | null> {
+  if (!splitAddress || splitAddress.toLowerCase() === ZERO_ADDRESS) return null
+
+  // Discover the SplitMain factory from the SplitWallet itself rather
+  // than hardcoding it. The 0xSplits v1 SplitWallet exposes a public
+  // immutable `splitMain` getter that points back to the factory that
+  // deployed it, so this works on any chain v1 is deployed on. v2
+  // PullSplit doesn't expose this getter, so the read reverts and we
+  // fall back to the known v1 address on Base — that fallback also
+  // catches the rare case where the dynamic read fails for transport
+  // reasons rather than ABI mismatch.
+  const dynamicSplitMain = (await client
+    .readContract({
+      address: splitAddress,
+      abi: SPLIT_WALLET_ABI,
+      functionName: 'splitMain',
+    })
+    .catch(() => null)) as Address | null
+  const splitMain: Address =
+    dynamicSplitMain && dynamicSplitMain.toLowerCase() !== ZERO_ADDRESS
+      ? dynamicSplitMain
+      : SPLITMAIN_BASE_FALLBACK
+
   let logs: readonly { transactionHash: Hex | null }[] = []
   try {
     logs = await client.getLogs({
-      address: SPLITMAIN_BASE,
+      address: splitMain,
       event: CREATE_SPLIT_EVENT,
       args: { split: splitAddress },
       fromBlock: 0n,
