@@ -1,6 +1,7 @@
 import {
   decodeFunctionData,
   parseAbi,
+  zeroAddress,
   type AbiEvent,
   type Address,
   type Hex,
@@ -44,10 +45,8 @@ const SPLITMAIN_ABI = parseAbi([
   'function createSplit(address[] accounts, uint32[] percentAllocations, uint32 distributorFee, address controller) returns (address)',
 ])
 
-const ZERO_ADDRESS: Address = '0x0000000000000000000000000000000000000000'
-
-// SplitMain stores percentages with 1e6 scale (100% = 1_000_000). Our
-// SplitRecipient stores the integer 1-100; round to absorb sub-percent
+// SplitMain stores percentages with 1e6 scale (100% = 1_000_000); our
+// SplitRecipient stores the integer 1-100. Round to absorb sub-percent
 // precision created outside our flow.
 const PERCENTAGE_SCALE = 1_000_000
 
@@ -63,7 +62,7 @@ export async function resolveSplitRecipientsOnChain(
   client: ResolverClient,
   splitAddress: Address,
 ): Promise<SplitRecipient[] | null> {
-  if (!splitAddress || splitAddress.toLowerCase() === ZERO_ADDRESS) return null
+  if (!splitAddress || splitAddress.toLowerCase() === zeroAddress) return null
 
   // v1 SplitWallets expose `splitMain()` pointing back to their factory,
   // so we discover SplitMain dynamically rather than hardcoding it.
@@ -75,7 +74,7 @@ export async function resolveSplitRecipientsOnChain(
     })
     .catch(() => null)) as Address | null
   const splitMain: Address =
-    dynamicSplitMain && dynamicSplitMain.toLowerCase() !== ZERO_ADDRESS
+    dynamicSplitMain && dynamicSplitMain.toLowerCase() !== zeroAddress
       ? dynamicSplitMain
       : SPLITMAIN_FALLBACK
 

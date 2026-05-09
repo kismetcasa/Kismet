@@ -1,32 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { ADMIN_ADDRESS } from '@/lib/config'
+import { verifyAdminSession } from '@/lib/curator'
 import { hideCollection, unhideCollection } from '@/lib/hiddenCollections'
 import { hideMoment, unhideMoment } from '@/lib/hiddenMoments'
-
-const SESSION_TTL = 4 * 60 * 60 * 1000
-
-async function verifyAdminSession(body: {
-  signature?: string
-  timestamp?: number
-}): Promise<{ error: string; status: number } | null> {
-  if (!ADMIN_ADDRESS) return { error: 'Admin not configured', status: 403 }
-  if (!body.signature || body.timestamp == null) {
-    return { error: 'signature and timestamp required', status: 400 }
-  }
-  if (Date.now() - body.timestamp > SESSION_TTL) {
-    return { error: 'Session expired — please sign in again', status: 401 }
-  }
-  const message = `Kismet Art admin session\nAddress: ${ADMIN_ADDRESS}\nTimestamp: ${body.timestamp}`
-  const verified = await verifyMessage({
-    address: ADMIN_ADDRESS as `0x${string}`,
-    message,
-    signature: body.signature as `0x${string}`,
-  })
-  if (!verified) return { error: 'Signature verification failed', status: 401 }
-  return null
-}
 
 interface HideBody {
   signature?: string

@@ -6,7 +6,7 @@ export interface SplitRecipient {
   percentAllocation: number
 }
 
-export interface StoredSplitsResult {
+interface StoredSplitsResult {
   hasSplits: boolean
   recipients: SplitRecipient[]
 }
@@ -84,7 +84,7 @@ function validateRecipients(input: unknown): SplitRecipient[] {
   return out
 }
 
-export type ValidateSplitsResult =
+type ValidateSplitsResult =
   | { ok: true; splits: SplitRecipient[] }
   | { ok: false; error: string }
 

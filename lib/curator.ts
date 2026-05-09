@@ -40,3 +40,26 @@ export async function verifyPrivilegedSession(body: {
   if (!verified) return { error: 'Signature verification failed', status: 401 }
   return null
 }
+
+// Stricter variant — admin-only, no curator allowlist. Used by routes
+// that perform platform-wide moderation (hide/unhide, splits backfill).
+export async function verifyAdminSession(body: {
+  signature?: string
+  timestamp?: number
+}): Promise<{ error: string; status: number } | null> {
+  if (!ADMIN_ADDRESS) return { error: 'Admin not configured', status: 403 }
+  if (!body.signature || body.timestamp == null) {
+    return { error: 'signature and timestamp required', status: 400 }
+  }
+  if (Date.now() - body.timestamp > SESSION_TTL) {
+    return { error: 'Session expired — please sign in again', status: 401 }
+  }
+  const message = `Kismet Art admin session\nAddress: ${ADMIN_ADDRESS}\nTimestamp: ${body.timestamp}`
+  const verified = await verifyMessage({
+    address: ADMIN_ADDRESS as `0x${string}`,
+    message,
+    signature: body.signature as `0x${string}`,
+  })
+  if (!verified) return { error: 'Signature verification failed', status: 401 }
+  return null
+}

@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { ADMIN_ADDRESS } from '@/lib/config'
+import { verifyAdminSession } from '@/lib/curator'
 import { setStoredSplits, validateSplitsArray } from '@/lib/splits'
-
-const SESSION_TTL = 4 * 60 * 60 * 1000
 
 interface BackfillBody {
   signature?: string
@@ -14,34 +11,17 @@ interface BackfillBody {
   recipients?: unknown
 }
 
-// Curator-only backfill for legacy moments whose splits were minted
-// before recipient persistence shipped (the old `'1'` flag in KV).
-// Auth mirrors /api/admin/hide; payload mirrors what the mint route
-// accepts. Allocations may be fractional here since admins import
-// from off-chain records — Math.round absorbs the drift.
+// Curator escape-hatch for legacy moments whose splits predate
+// recipient persistence in lib/mint-proxy.ts. New mints record
+// recipients automatically; this route only repairs old ones.
+// Allocations may carry sub-percent precision since admins import
+// from off-chain records (Math.round absorbs the drift).
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as BackfillBody | null
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  if (!ADMIN_ADDRESS) {
-    return NextResponse.json({ error: 'Admin not configured' }, { status: 403 })
-  }
-  if (!body.signature || body.timestamp == null) {
-    return NextResponse.json({ error: 'signature and timestamp required' }, { status: 400 })
-  }
-  if (Date.now() - body.timestamp > SESSION_TTL) {
-    return NextResponse.json({ error: 'Session expired — please sign in again' }, { status: 401 })
-  }
-
-  const message = `Kismet Art admin session\nAddress: ${ADMIN_ADDRESS}\nTimestamp: ${body.timestamp}`
-  const verified = await verifyMessage({
-    address: ADMIN_ADDRESS as `0x${string}`,
-    message,
-    signature: body.signature as `0x${string}`,
-  }).catch(() => false)
-  if (!verified) {
-    return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
-  }
+  const authErr = await verifyAdminSession(body)
+  if (authErr) return NextResponse.json({ error: authErr.error }, { status: authErr.status })
 
   const { collectionAddress, tokenId } = body
   if (!collectionAddress || !isAddress(collectionAddress)) {

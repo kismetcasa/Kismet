@@ -15,13 +15,12 @@ type SplitsValidation =
   | { kind: 'ok'; splits: SplitRecipient[] }
   | { kind: 'error'; message: string }
 
-// Distinguishes "no splits provided" from "provided but invalid" so the
-// mint route can either pass through or 400 — validateSplitsArray treats
-// missing as invalid.
+// Wraps validateSplitsArray to distinguish "no splits provided" (pass
+// through to inprocess unchanged) from "provided but invalid" (400).
 function validateSplits(raw: unknown): SplitsValidation {
-  if (raw === undefined || raw === null) return { kind: 'absent' }
+  if (raw == null) return { kind: 'absent' }
   if (Array.isArray(raw) && raw.length === 0) return { kind: 'absent' }
-  const result = validateSplitsArray(raw, { requireIntegerPercents: true })
+  const result = validateSplitsArray(raw)
   if (!result.ok) return { kind: 'error', message: result.error }
   return { kind: 'ok', splits: result.splits }
 }
