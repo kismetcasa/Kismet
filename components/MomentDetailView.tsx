@@ -397,6 +397,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         setCachedDetail(address, tokenId, updated)
         return updated
       })
+      // Notify other surfaces (notably the airdrop picker in MintTabs)
+      // that hide-state for SOME moment changed so they can refetch.
+      // Without this the picker keeps showing the moment even though
+      // it's been hidden everywhere else, until a wallet-switch or
+      // page reload invalidates its cache.
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('kismetart:moment-hidden-changed'))
+      }
       toast.success(next ? 'Hidden from public feeds' : 'Visible again', { id: 'hide' })
     } catch (err) {
       toastError('Hide', err, { id: 'hide' })

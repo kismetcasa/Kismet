@@ -22,28 +22,52 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
   )
   const [moments, setMoments] = useState<Moment[]>([])
   const [loadingMoments, setLoadingMoments] = useState(false)
-  const [momentsFetched, setMomentsFetched] = useState(false)
+  // Last successful fetch timestamp, in ms. Used as a coalescing TTL so
+  // hover + click within the same opening don't double-fire, but a tab
+  // re-open after a hide/unhide tx outside the form picks up fresh data.
+  // Previously this was a one-shot `momentsFetched` boolean that latched
+  // forever — caused stale rows in the picker after the user hid a
+  // moment elsewhere on the site.
+  const [momentsFetchedAt, setMomentsFetchedAt] = useState<number>(0)
 
   // Reset when wallet changes
   useEffect(() => {
     setMoments([])
-    setMomentsFetched(false)
+    setMomentsFetchedAt(0)
   }, [address])
 
-  const fetchMoments = useCallback(() => {
-    if (!address || loadingMoments || momentsFetched) return
+  const fetchMoments = useCallback((opts: { force?: boolean } = {}) => {
+    if (!address || loadingMoments) return
+    // Coalesce repeated hover/click within a 5s window to one fetch.
+    // Beyond that, refetch — the previous "fetch once per session" model
+    // left the picker showing moments that had been hidden, deleted, or
+    // newly delegated since the user first opened the tab. The 30s
+    // server-side revalidate on the upstream inprocess call keeps the
+    // refetch cheap when nothing actually changed.
+    if (!opts.force && momentsFetchedAt > 0 && Date.now() - momentsFetchedAt < 5_000) {
+      return
+    }
     setLoadingMoments(true)
     // ?airdroppable=… surfaces both moments this user created AND moments
     // where they hold per-token ADMIN via a creator's "Delegate airdrop"
-    // grant. Without this, delegates would have no way to find their
-    // delegated moments in the picker even though /api/airdrop would
-    // authorize them to airdrop.
+    // grant. Both groups can airdrop client-side via Zora's adminMint;
+    // delegates without this filter would have no way to discover the
+    // moments they're authorized for.
     fetch(`/api/timeline?airdroppable=${address}&limit=100`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
       .catch(() => setMoments([]))
-      .finally(() => { setLoadingMoments(false); setMomentsFetched(true) })
-  }, [address, loadingMoments, momentsFetched])
+      .finally(() => { setLoadingMoments(false); setMomentsFetchedAt(Date.now()) })
+  }, [address, loadingMoments, momentsFetchedAt])
+
+  // Force-refetch when a moment is hidden or unhidden anywhere on the
+  // site so the picker stops showing stale rows. MomentDetailView's
+  // hide/unhide handler dispatches this event after the toggle lands.
+  useEffect(() => {
+    const onChange = () => fetchMoments({ force: true })
+    window.addEventListener('kismetart:moment-hidden-changed', onChange)
+    return () => window.removeEventListener('kismetart:moment-hidden-changed', onChange)
+  }, [fetchMoments])
 
   function handleDeployed(address: string, name: string) {
     setDeployedCollection({ address, name })
