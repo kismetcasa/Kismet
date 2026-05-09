@@ -520,6 +520,27 @@ export function CollectionView({
     return () => { cancelled = true }
   }, [address])
 
+  // Hydrate profiles for the authorized-creators panel — same cache the
+  // moment-creator avatars use, so admins recognize who they're managing.
+  // For chain-only entries (no EOA) we look up by smart wallet, which
+  // typically returns just a fallback shortAddress.
+  useEffect(() => {
+    let cancelled = false
+    for (const c of authorizedCreators) {
+      const addr = (c.eoa ?? c.smartWallet).toLowerCase()
+      if (profiles[addr]) continue
+      fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
+        if (!cancelled)
+          setProfiles((prev) =>
+            prev[addr] ? prev : { ...prev, [addr]: { name, avatarUrl } },
+          )
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [authorizedCreators, profiles])
+
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
   // our Redis cache may have a name the user registered with us. Always
@@ -795,15 +816,24 @@ export function CollectionView({
               <ul className="mt-3 flex flex-col gap-1">
                 {authorizedCreators.map((c) => {
                   // Chain-only entries (off-platform addPermission, no
-                  // KV reverse-lookup) key by smart wallet — that's the
-                  // only stable identifier we have.
-                  const rowKey = (c.eoa ?? c.smartWallet).toLowerCase()
-                  const isRevoking = revokingCreatorEoa === rowKey
+                  // KV reverse-lookup) key by smart wallet — that's
+                  // the only stable identifier we have.
+                  const profileAddr = (c.eoa ?? c.smartWallet).toLowerCase()
+                  const isRevoking = revokingCreatorEoa === profileAddr
                   const otherTxBusy = isCreatorBusy && !isRevoking
-                  const display = c.label ?? shortAddress(c.eoa ?? c.smartWallet)
+                  const profile = profiles[profileAddr]
+                  // Display priority: profile/username > ENS label > shortAddress.
+                  // profileCache returns the address-fallback when no name is
+                  // known, so reject that case and bubble up to the next tier.
+                  const profileName =
+                    profile?.name && profile.name !== shortAddress(profileAddr)
+                      ? profile.name
+                      : null
+                  const display =
+                    profileName ?? c.label ?? shortAddress(profileAddr)
                   return (
                     <li
-                      key={rowKey}
+                      key={profileAddr}
                       className={`flex items-center justify-between bg-[#111] border px-3 py-2 ${
                         c.liveOnChain ? 'border-[#2a2a2a]' : 'border-[#1a1a1a] opacity-60'
                       }`}
@@ -815,15 +845,25 @@ export function CollectionView({
                             : `Off-platform grant — smart wallet ${c.smartWallet}`
                       }
                     >
-                      <span className="text-xs font-mono text-[#888] truncate">
-                        {display}
-                        {!c.eoa && c.liveOnChain && (
-                          <span className="ml-2 text-[#555]">(unmapped)</span>
-                        )}
-                        {!c.liveOnChain && (
-                          <span className="ml-2 text-[#555]">(stale)</span>
-                        )}
-                      </span>
+                      <Link
+                        href={`/profile/${profileAddr}`}
+                        className="flex items-center gap-2.5 min-w-0 flex-1 hover:opacity-80 transition-opacity"
+                      >
+                        <ProfileAvatar
+                          address={profileAddr}
+                          avatarUrl={profile?.avatarUrl}
+                          size={24}
+                        />
+                        <span className="text-xs font-mono text-[#888] truncate">
+                          {display}
+                          {!c.eoa && c.liveOnChain && (
+                            <span className="ml-2 text-[#555]">(unmapped)</span>
+                          )}
+                          {!c.liveOnChain && (
+                            <span className="ml-2 text-[#555]">(stale)</span>
+                          )}
+                        </span>
+                      </Link>
                       <button
                         type="button"
                         onClick={() => void handleRevokeCreator(c.eoa, c.smartWallet)}
