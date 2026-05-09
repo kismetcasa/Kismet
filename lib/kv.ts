@@ -2,6 +2,15 @@ import { redis } from './redis'
 import { PLATFORM_COLLECTION } from './config'
 import { INPROCESS_API } from './inprocess'
 
+// Per-collection set of "authorized creators": addresses an admin
+// granted ADMIN to via the post-deploy panel. Stored as JSON-encoded
+// objects so we can show the original ENS / EOA the admin typed
+// (the on-chain row is the target's smart wallet — we'd otherwise
+// have no reverse lookup, since inprocess only resolves
+// EOA → smart wallet, not back).
+const keyAuthorizedCreators = (collection: string) =>
+  `kismetart:authorized-creators:${collection.toLowerCase()}`
+
 // Master tracked set — every contract Kismet has registered. Drives
 // timeline fan-out for moment lookups across all scopes.
 const KEY = 'kismetart:collections'
@@ -191,4 +200,91 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
       return image ? { ...meta, image } : meta
     }),
   )
+}
+
+export interface AuthorizedCreator {
+  /** Lowercased EOA the admin authorized (the input — 0x or resolved
+   *  from ENS). The on-chain ADMIN grant is on `smartWallet`; this
+   *  field is what we display so the admin sees what they typed. */
+  eoa: string
+  /** Lowercased inprocess smart wallet for `eoa`. Resolved at grant
+   *  time via fetchInprocessSmartWallet — this is the actual on-chain
+   *  grantee since MintForm relays through inprocess. */
+  smartWallet: string
+  /** Optional original-input label (ENS name, e.g. "vitalik.eth").
+   *  When set, the list shows this instead of `eoa`. */
+  label?: string
+  /** EOA of the admin who authorized — kept for an audit trail; the
+   *  list UI doesn't surface it today. */
+  grantedBy: string
+  /** ms epoch — sort newest first when rendering. */
+  grantedAt: number
+}
+
+export async function addAuthorizedCreator(
+  collection: string,
+  entry: AuthorizedCreator,
+): Promise<void> {
+  try {
+    await redis.sadd(keyAuthorizedCreators(collection), JSON.stringify(entry))
+  } catch (err) {
+    console.error('[kv] addAuthorizedCreator failed', {
+      collection,
+      eoa: entry.eoa,
+      err: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+export async function removeAuthorizedCreator(
+  collection: string,
+  eoa: string,
+): Promise<void> {
+  try {
+    const eoaLower = eoa.toLowerCase()
+    const members = (await redis.smembers(
+      keyAuthorizedCreators(collection),
+    )) as string[]
+    const matches = members.filter((raw) => {
+      try {
+        const parsed = JSON.parse(raw) as AuthorizedCreator
+        return parsed.eoa.toLowerCase() === eoaLower
+      } catch {
+        return false
+      }
+    })
+    if (matches.length === 0) return
+    await redis.srem(keyAuthorizedCreators(collection), ...matches)
+  } catch (err) {
+    console.error('[kv] removeAuthorizedCreator failed', {
+      collection,
+      eoa,
+      err: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+export async function getAuthorizedCreators(
+  collection: string,
+): Promise<AuthorizedCreator[]> {
+  try {
+    const members = (await redis.smembers(
+      keyAuthorizedCreators(collection),
+    )) as string[]
+    const parsed: AuthorizedCreator[] = []
+    for (const raw of members) {
+      try {
+        parsed.push(JSON.parse(raw) as AuthorizedCreator)
+      } catch {
+        // Drop malformed entries silently; the next grant will
+        // overwrite cleanly, and we'd rather show a partial list
+        // than throw on the entire collection.
+      }
+    }
+    // Newest first — admins usually want to see what they just
+    // authorized at the top of the list.
+    return parsed.sort((a, b) => b.grantedAt - a.grantedAt)
+  } catch {
+    return []
+  }
 }

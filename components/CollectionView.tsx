@@ -17,8 +17,10 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useCollectionMinters } from '@/hooks/useCollectionMinters'
+import { useAuthorizedCreators } from '@/hooks/useAuthorizedCreators'
+import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { COLLECTION_ABI } from '@/lib/collections'
-import { hasAdminBit } from '@/lib/permissions'
+import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
 import { MomentCard } from './MomentCard'
 import { ProfileAvatar } from './ProfileAvatar'
 
@@ -128,6 +130,40 @@ export function CollectionView({
   const viewerHasAdmin =
     viewerPerms !== undefined && hasAdminBit(viewerPerms as bigint)
   const canGrantHere = isCreator || viewerHasAdmin
+  // MINTER-only viewers (granted via the "Authorize minters" panel by
+  // an admin) can call adminMint directly — that's what Zora's MINTER
+  // bit unlocks. They CAN'T setupNewToken (that's ADMIN-only), so the
+  // chip routes them to the Airdrop tab where adminMint actually lives.
+  const viewerHasMinter =
+    viewerPerms !== undefined && hasMinterBit(viewerPerms as bigint)
+
+  // Resolve the *connected viewer's* inprocess smart wallet so we can
+  // surface the creator-tier chip. MintForm relays through inprocess
+  // and the actor on chain is the smart wallet, not the EOA — so a
+  // creator authorization grants ADMIN to the smart wallet, and the
+  // chip's gate has to read the smart wallet's perms (not the EOA's).
+  const { address: viewerSmartWallet } = useInprocessSmartWallet(connectedAddress)
+  const { data: viewerSmartWalletPerms } = useReadContract({
+    address: address as `0x${string}`,
+    abi: COLLECTION_ABI,
+    functionName: 'permissions',
+    args:
+      viewerSmartWallet && isAddress(viewerSmartWallet)
+        ? [0n, viewerSmartWallet as `0x${string}`]
+        : undefined,
+    query: {
+      enabled: !!viewerSmartWallet && isAddress(viewerSmartWallet),
+    },
+  })
+  const viewerSmartWalletHasAdmin =
+    viewerSmartWalletPerms !== undefined &&
+    hasAdminBit(viewerSmartWalletPerms as bigint)
+
+  // Tier resolution for the chip: creator wins over minter — ADMIN is
+  // a strict superset of MINTER for mint flows. Drop both chips for
+  // viewers who already see the full authorize panel below.
+  const showCreatorChip = !canGrantHere && viewerSmartWalletHasAdmin
+  const showMinterChip = !canGrantHere && !showCreatorChip && viewerHasMinter
 
   // Retroactive authorize flow — for collections deployed before we
   // started granting the artist's inprocess smart wallet ADMIN as a
@@ -199,6 +235,39 @@ export function CollectionView({
     loading: mintersLoading,
     refetch: refetchMinters,
   } = useCollectionMinters(canGrantHere ? (address as `0x${string}`) : undefined)
+
+  // ─── Authorized creators (ADMIN tier) ───────────────────────────────
+  // Distinct from minters: granting ADMIN to the target's smart wallet
+  // unlocks setupNewToken (mint into the collection via MintForm).
+  // MINTER bit only unlocks adminMint, which is the airdrop flow. We
+  // use a separate hook instance to keep the watchers independent —
+  // the user can fire creator + minter grants in interleaved order
+  // without one's receipt clobbering the other's.
+  const {
+    grantBatch: grantCreatorBatch,
+    revokeBatch: revokeCreatorBatch,
+    reset: resetCreatorGrant,
+    busy: creatorGranting,
+    hash: creatorHash,
+    receipt: creatorReceipt,
+  } = useGrantPermission()
+  const creatorTxPending = !!creatorHash && !creatorReceipt
+  const isCreatorBusy = creatorGranting || creatorTxPending
+  const [creatorInput, setCreatorInput] = useState('')
+  const [revokingCreatorEoa, setRevokingCreatorEoa] = useState<string | null>(null)
+  // Tracks the in-flight {EOA, smartWallet, label} so the receipt
+  // effect can call /api/collection/authorized-creators after the tx
+  // confirms. Ref vs state for the same reason as the minter ref.
+  const pendingCreatorRef = useRef<
+    | { kind: 'grant'; eoa: string; smartWallet: string; label?: string }
+    | { kind: 'revoke'; eoa: string }
+    | null
+  >(null)
+  const {
+    creators: authorizedCreators,
+    loading: creatorsLoading,
+    refetch: refetchCreators,
+  } = useAuthorizedCreators(canGrantHere ? (address as `0x${string}`) : undefined)
 
   // Mainnet client for client-side ENS resolution. Wagmi already
   // configures a mainnet transport for ENS (lib/wagmi.ts), so we reuse
@@ -304,6 +373,171 @@ export function CollectionView({
       toastError('Revoke minter', err, { id: 'authorize-minter' })
     }
   }
+
+  // ─── Authorize creators (ADMIN to smart wallet) ─────────────────────
+  async function handleAuthorizeCreator() {
+    if (isCreatorBusy) return
+    const raw = creatorInput.trim()
+    if (!raw) return
+    try {
+      toast.loading('Resolving address…', { id: 'authorize-creator' })
+      const eoa = await resolveMinterInput(raw)
+      if (!eoa) {
+        toast.error(
+          raw.endsWith('.eth')
+            ? `Could not resolve ${raw}`
+            : 'Invalid address — paste a 0x… or vitalik.eth name',
+          { id: 'authorize-creator' },
+        )
+        return
+      }
+      // Resolve the target's inprocess smart wallet — that's the
+      // actor MintForm relays through, so it's where ADMIN must land.
+      // If inprocess can't resolve it (almost never — the lookup is
+      // deterministic from the EOA), block the grant rather than
+      // ship a half-authorization that mints would silently fail on.
+      toast.loading('Resolving mint wallet…', { id: 'authorize-creator' })
+      const smartWallet = await fetchInprocessSmartWallet(eoa)
+      if (!smartWallet || !isAddress(smartWallet)) {
+        toast.error(
+          'Could not resolve a mint wallet for that address — try again in a moment',
+          { id: 'authorize-creator' },
+        )
+        return
+      }
+      const swLower = smartWallet.toLowerCase() as `0x${string}`
+      const label = raw.endsWith('.eth') ? raw : undefined
+      toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
+      const outcome = await grantCreatorBatch([
+        // ADMIN to smart wallet → unlocks setupNewToken via MintForm.
+        { collection: address as `0x${string}`, grantee: swLower, tokenId: 0n, bit: 'admin' },
+        // MINTER to EOA → unlocks adminMint from the user's own
+        // wallet, so the same authorization also works for direct
+        // airdrops without going through the inprocess relay.
+        { collection: address as `0x${string}`, grantee: eoa, tokenId: 0n, bit: 'minter' },
+      ])
+      if (outcome === 'submitted') {
+        pendingCreatorRef.current = { kind: 'grant', eoa, smartWallet: swLower, label }
+        toast.loading('Authorizing creator…', { id: 'authorize-creator' })
+        return
+      }
+      // Both bits were already set on chain. Persist the KV mapping
+      // anyway so the list shows the entry — without it, a re-grant
+      // under the same admin would never visibly land.
+      try {
+        await fetch('/api/collection/authorized-creators', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            collection: address,
+            eoa,
+            smartWallet: swLower,
+            label,
+          }),
+        })
+      } catch {
+        // KV write failure is non-fatal; the chain grant exists.
+      }
+      setCreatorInput('')
+      toast.success('Already an authorized creator', { id: 'authorize-creator' })
+      void refetchCreators()
+    } catch (err) {
+      toastError('Authorize creator', err, { id: 'authorize-creator' })
+    }
+  }
+
+  async function handleRevokeCreator(eoa: string, smartWallet: string) {
+    if (isCreatorBusy) return
+    setRevokingCreatorEoa(eoa.toLowerCase())
+    try {
+      toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
+      const outcome = await revokeCreatorBatch([
+        {
+          collection: address as `0x${string}`,
+          grantee: smartWallet as `0x${string}`,
+          tokenId: 0n,
+          bit: 'admin',
+        },
+        {
+          collection: address as `0x${string}`,
+          grantee: eoa as `0x${string}`,
+          tokenId: 0n,
+          bit: 'minter',
+        },
+      ])
+      if (outcome === 'submitted') {
+        pendingCreatorRef.current = { kind: 'revoke', eoa }
+        toast.loading('Revoking creator…', { id: 'authorize-creator' })
+        return
+      }
+      // Both bits already cleared on chain — drop the KV row directly
+      // so the UI doesn't keep showing a stale entry.
+      try {
+        await fetch(
+          `/api/collection/authorized-creators?collection=${address}&eoa=${eoa}`,
+          { method: 'DELETE' },
+        )
+      } catch {}
+      setRevokingCreatorEoa(null)
+      toast.success('Already not authorized', { id: 'authorize-creator' })
+      void refetchCreators()
+    } catch (err) {
+      setRevokingCreatorEoa(null)
+      toastError('Revoke creator', err, { id: 'authorize-creator' })
+    }
+  }
+
+  useEffect(() => {
+    if (!creatorReceipt) return
+    const action = pendingCreatorRef.current
+    if (!action) return
+    pendingCreatorRef.current = null
+    resetCreatorGrant()
+    setRevokingCreatorEoa(null)
+    if (creatorReceipt.status === 'reverted') {
+      toast.error(
+        action.kind === 'revoke' ? 'Revoke failed' : 'Authorize failed',
+        {
+          id: 'authorize-creator',
+          description:
+            'The transaction reverted on-chain — only collection admins can change creator permissions.',
+        },
+      )
+      return
+    }
+    // On success, reconcile KV so the list reflects the new state.
+    void (async () => {
+      try {
+        if (action.kind === 'grant') {
+          await fetch('/api/collection/authorized-creators', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              collection: address,
+              eoa: action.eoa,
+              smartWallet: action.smartWallet,
+              label: action.label,
+            }),
+          })
+          setCreatorInput('')
+        } else {
+          await fetch(
+            `/api/collection/authorized-creators?collection=${address}&eoa=${action.eoa}`,
+            { method: 'DELETE' },
+          )
+        }
+      } catch {
+        // KV write failure surfaces only as a stale row; the chain
+        // state is correct, and the next grant/revoke will reconcile.
+      } finally {
+        toast.success(
+          action.kind === 'revoke' ? 'Creator revoked' : 'Creator authorized',
+          { id: 'authorize-creator' },
+        )
+        void refetchCreators()
+      }
+    })()
+  }, [creatorReceipt, resetCreatorGrant, refetchCreators, address])
 
   // When the authorize tx confirms, refetch the permission read so the
   // banner hides itself without a manual reload.
@@ -516,6 +750,47 @@ export function CollectionView({
               )}
             </div>
           )}
+          {/* Authorization chip: surfaces a viewer's mint capability
+              on a collection they don't own. Two tiers, mutually
+              exclusive (creator wins). Hidden for creators / admins,
+              who already see the full Authorize panel below. */}
+          {showCreatorChip && (
+            <Link
+              href={{
+                pathname: '/mint',
+                query: {
+                  collection: address,
+                  ...(displayName ? { name: displayName } : {}),
+                },
+              }}
+              className="mt-2 inline-flex items-center gap-1.5 self-start border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 px-2.5 py-1 transition-colors"
+              title="Your mint wallet holds ADMIN here — create new moments via MintForm"
+            >
+              <ShieldCheck size={11} className="text-[#8B5CF6]" />
+              <span className="text-[10px] font-mono text-[#efefef] uppercase tracking-widest">
+                you can mint here →
+              </span>
+            </Link>
+          )}
+          {showMinterChip && (
+            <Link
+              href={{
+                pathname: '/mint',
+                query: {
+                  tab: 'airdrop',
+                  collection: address,
+                  ...(displayName ? { name: displayName } : {}),
+                },
+              }}
+              className="mt-2 inline-flex items-center gap-1.5 self-start border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 px-2.5 py-1 transition-colors"
+              title="You hold MINTER on this collection — airdrop copies via the Airdrop tab"
+            >
+              <ShieldCheck size={11} className="text-[#8B5CF6]" />
+              <span className="text-[10px] font-mono text-[#efefef] uppercase tracking-widest">
+                you can airdrop here →
+              </span>
+            </Link>
+          )}
           {description && (
             <p className="text-xs font-mono text-[#555] mt-1 line-clamp-3">{description}</p>
           )}
@@ -574,6 +849,102 @@ export function CollectionView({
           >
             {authorizing ? 'authorizing…' : 'authorize'}
           </button>
+        </div>
+      )}
+
+      {/* Authorize creators — post-deploy ADMIN grant. Two on-chain
+          writes batched via multicall: ADMIN to the target's inprocess
+          smart wallet (so MintForm relays land setupNewToken) AND
+          MINTER to their EOA (so the same authorization also enables
+          adminMint from their own wallet for direct airdrops). Display
+          rides on a KV mapping written at grant time — inprocess only
+          resolves EOA → smart wallet, so without it we'd render raw
+          contract addresses the admin doesn't recognize. */}
+      {canGrantHere && (
+        <div className="mb-4 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
+          <div className="flex items-center gap-1.5 mb-2">
+            <ShieldCheck size={12} className="text-[#888]" />
+            <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
+              Authorize creators
+            </p>
+          </div>
+          <p className="text-[11px] font-mono text-[#555] mb-3">
+            Grant another wallet permission to mint new tokens into this collection. Full ADMIN access — they can also airdrop, manage permissions, and configure sales. ENS names work.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={creatorInput}
+              onChange={(e) => setCreatorInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.preventDefault()
+                void handleAuthorizeCreator()
+              }}
+              placeholder="0x… or vitalik.eth"
+              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            />
+            <button
+              type="button"
+              onClick={() => void handleAuthorizeCreator()}
+              disabled={isCreatorBusy || !creatorInput.trim()}
+              className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
+            >
+              {isCreatorBusy && !revokingCreatorEoa ? 'authorizing…' : 'authorize'}
+            </button>
+          </div>
+          {creatorsLoading && authorizedCreators.length === 0 ? (
+            <ul className="mt-3 flex flex-col gap-1" aria-busy="true">
+              {[0, 1].map((i) => (
+                <li
+                  key={i}
+                  className="flex items-center justify-between bg-[#111] border border-[#1a1a1a] px-3 py-2 animate-pulse"
+                >
+                  <span className="h-3 w-32 bg-[#1a1a1a]" />
+                  <span className="h-3 w-3 bg-[#1a1a1a] flex-shrink-0" />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            authorizedCreators.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-1">
+                {authorizedCreators.map((c) => {
+                  const eoaLower = c.eoa.toLowerCase()
+                  const isRevoking = revokingCreatorEoa === eoaLower
+                  const otherTxBusy = isCreatorBusy && !isRevoking
+                  return (
+                    <li
+                      key={eoaLower}
+                      className={`flex items-center justify-between bg-[#111] border px-3 py-2 ${
+                        c.liveOnChain ? 'border-[#2a2a2a]' : 'border-[#1a1a1a] opacity-60'
+                      }`}
+                      title={
+                        c.liveOnChain
+                          ? `${c.label ?? c.eoa} → ${c.smartWallet}`
+                          : 'Stale — ADMIN was revoked outside this UI'
+                      }
+                    >
+                      <span className="text-xs font-mono text-[#888] truncate">
+                        {c.label ?? shortAddress(c.eoa)}
+                        {!c.liveOnChain && (
+                          <span className="ml-2 text-[#555]">(stale)</span>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleRevokeCreator(c.eoa, c.smartWallet)}
+                        disabled={otherTxBusy || isRevoking}
+                        title="Revoke creator authorization"
+                        className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )
+          )}
         </div>
       )}
 

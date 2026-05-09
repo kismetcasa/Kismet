@@ -12,11 +12,20 @@ type Tab = 'mint' | 'create' | 'airdrop'
 interface MintTabsProps {
   initialCollection?: string
   initialCollectionName?: string
+  /** Optional initial tab. Honors only valid Tab values, falls back to
+   *  'mint'. Used by CollectionView's "you can mint here" chip to drop
+   *  authorized minters straight on the Airdrop tab — adminMint is
+   *  what the MINTER bit unlocks, not setupNewToken. */
+  initialTab?: string
 }
 
-export function MintTabs({ initialCollection, initialCollectionName }: MintTabsProps = {}) {
+function isValidTab(t: string | undefined): t is Tab {
+  return t === 'mint' || t === 'create' || t === 'airdrop'
+}
+
+export function MintTabs({ initialCollection, initialCollectionName, initialTab }: MintTabsProps = {}) {
   const { address } = useAccount()
-  const [tab, setTab] = useState<Tab>('mint')
+  const [tab, setTab] = useState<Tab>(isValidTab(initialTab) ? initialTab : 'mint')
   const [deployedCollection, setDeployedCollection] = useState<{ address: string; name: string } | null>(
     initialCollection ? { address: initialCollection, name: initialCollectionName || initialCollection } : null
   )
@@ -48,16 +57,54 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
       return
     }
     setLoadingMoments(true)
-    // ?airdroppable=… surfaces both moments this user created AND moments
-    // where they hold per-token ADMIN via a creator's "Delegate airdrop"
-    // grant. Both groups can airdrop client-side via Zora's adminMint;
-    // delegates without this filter would have no way to discover the
-    // moments they're authorized for.
-    fetch(`/api/timeline?airdroppable=${address}&limit=100`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
+    // Two parallel sources, deduped on { collection, token_id }:
+    //   1. /timeline?airdroppable=… — inprocess's filter, surfaces
+    //      moments the user created OR where they hold per-token ADMIN
+    //      via a "Delegate airdrop" grant.
+    //   2. /collections/mintable — our log-scan over tracked collections,
+    //      surfaces collections where the user holds collection-wide
+    //      MINTER (or ADMIN). Inprocess's airdroppable filter misses
+    //      this case entirely. We then fan out to /timeline?collection=…
+    //      per result and merge any moments not already in (1).
+    const airdroppable = fetch(`/api/timeline?airdroppable=${address}&limit=100`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => (Array.isArray(d.moments) ? (d.moments as Moment[]) : []))
+      .catch((): Moment[] => [])
+    const mintable = fetch(`/api/collections/mintable?address=${address}`)
+      .then((r) => (r.ok ? r.json() : { collections: [] }))
+      .then(async (d: { collections?: string[] }) => {
+        const cols = Array.isArray(d.collections) ? d.collections : []
+        if (cols.length === 0) return [] as Moment[]
+        const perCollection = await Promise.all(
+          cols.map((c) =>
+            fetch(`/api/timeline?collection=${c}&limit=50`)
+              .then((r) => (r.ok ? r.json() : { moments: [] }))
+              .then((data: { moments?: Moment[] }) =>
+                Array.isArray(data.moments) ? data.moments : [],
+              )
+              .catch((): Moment[] => []),
+          ),
+        )
+        return perCollection.flat()
+      })
+      .catch((): Moment[] => [])
+    Promise.all([airdroppable, mintable])
+      .then(([primary, supplement]) => {
+        const seen = new Set<string>()
+        const out: Moment[] = []
+        for (const m of [...primary, ...supplement]) {
+          const key = `${(m.address ?? '').toLowerCase()}:${m.token_id ?? ''}`
+          if (seen.has(key) || !key) continue
+          seen.add(key)
+          out.push(m)
+        }
+        setMoments(out)
+      })
       .catch(() => setMoments([]))
-      .finally(() => { setLoadingMoments(false); setMomentsFetchedAt(Date.now()) })
+      .finally(() => {
+        setLoadingMoments(false)
+        setMomentsFetchedAt(Date.now())
+      })
   }, [address, loadingMoments, momentsFetchedAt])
 
   // Force-refetch when a moment is hidden or unhidden anywhere on the
@@ -68,6 +115,15 @@ export function MintTabs({ initialCollection, initialCollectionName }: MintTabsP
     window.addEventListener('kismetart:moment-hidden-changed', onChange)
     return () => window.removeEventListener('kismetart:moment-hidden-changed', onChange)
   }, [fetchMoments])
+
+  // Eager-load the picker when we land directly on the airdrop tab via
+  // an external link (e.g. CollectionView's "you can mint here" chip).
+  // Without this the user lands on a blank picker until they hover/click
+  // the tab, which is jarring when they got here from a CTA.
+  useEffect(() => {
+    if (tab === 'airdrop') fetchMoments()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
 
   function handleDeployed(address: string, name: string) {
     setDeployedCollection({ address, name })

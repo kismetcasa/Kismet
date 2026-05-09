@@ -8,12 +8,14 @@ import {
   useWriteContract,
 } from 'wagmi'
 import { base } from 'wagmi/chains'
+import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import {
   PERMISSION_BIT_ADMIN,
   PERMISSION_BIT_METADATA,
   PERMISSION_BIT_MINTER,
 } from '@/lib/permissions'
+import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 
 // String-keyed alias over the bigint constants in lib/permissions.ts.
@@ -45,6 +47,58 @@ export interface GrantPermissionRequest {
 }
 
 export type GrantOutcome = 'already' | 'submitted'
+
+type ReadContractClient = {
+  readContract: (args: {
+    address: `0x${string}`
+    abi: typeof COLLECTION_ABI
+    functionName: 'permissions'
+    args: readonly [bigint, `0x${string}`]
+  }) => Promise<unknown>
+}
+
+// Strip grants that would be on-chain no-ops (bit already in the
+// requested state). Reads each (collection, tokenId, grantee) once,
+// ORing per-token + collection-wide rows the same way Zora's
+// _hasAnyPermission does. Read failures fall through as "unknown" =
+// keep the grant — the chain will safely no-op a redundant write.
+async function filterRedundant(
+  client: ReadContractClient,
+  grants: GrantPermissionRequest[],
+  goal: 'set' | 'clear',
+): Promise<GrantPermissionRequest[]> {
+  const safeRead = async (
+    collection: `0x${string}`,
+    tokenId: bigint,
+    grantee: `0x${string}`,
+  ): Promise<bigint> => {
+    try {
+      return (await client.readContract({
+        address: collection,
+        abi: COLLECTION_ABI,
+        functionName: 'permissions',
+        args: [tokenId, grantee],
+      })) as bigint
+    } catch {
+      return 0n
+    }
+  }
+  const reads = await Promise.all(
+    grants.map(async (g) => {
+      const tokenPerms = await safeRead(g.collection, g.tokenId, g.grantee)
+      const collPerms =
+        g.tokenId === 0n
+          ? 0n
+          : await safeRead(g.collection, 0n, g.grantee)
+      return tokenPerms | collPerms
+    }),
+  )
+  return grants.filter((g, i) => {
+    const bit = BIT_VALUES[g.bit]
+    const isSet = (reads[i] & bit) === bit
+    return goal === 'set' ? !isSet : isSet
+  })
+}
 
 /**
  * Centralizes the on-chain `addPermission` flow that powers:
@@ -183,6 +237,93 @@ export function useGrantPermission() {
     }
   }
 
+  /**
+   * Batch grant: encode each addPermission as bytes and route through the
+   * inherited `multicall(bytes[])` entry every Zora 1155 inherits. Used
+   * by the "Authorize creators" panel to grant ADMIN to the target's
+   * smart wallet AND MINTER to their EOA in a single signature, so the
+   * authorized user can both create new tokens (via inprocess relay
+   * through their smart wallet) and airdrop copies directly from their
+   * own wallet.
+   *
+   * Skips per-grant entries whose bit is already set on chain. Returns
+   * 'already' when every entry is a no-op (no tx submitted). All grants
+   * must target the same collection.
+   */
+  async function grantBatch(
+    grants: GrantPermissionRequest[],
+  ): Promise<GrantOutcome> {
+    if (!connected) throw new Error('Wallet not connected')
+    if (!publicClient) throw new Error('No network client available')
+    if (grants.length === 0) return 'already'
+    const collection = grants[0].collection
+    if (grants.some((g) => g.collection !== collection)) {
+      throw new Error('grantBatch: all grants must target the same collection')
+    }
+    setBusy(true)
+    try {
+      const filtered = await filterRedundant(publicClient, grants, 'set')
+      if (filtered.length === 0) return 'already'
+      const calls = filtered.map((g) =>
+        encodeFunctionData({
+          abi: COLLECTION_ABI,
+          functionName: 'addPermission',
+          args: [g.tokenId, g.grantee, BIT_VALUES[g.bit]],
+        }),
+      )
+      await ensureBase()
+      const txHash = await writeContractAsync({
+        chainId: base.id,
+        address: collection,
+        abi: ZORA_MULTICALL_ABI,
+        functionName: 'multicall',
+        args: [calls],
+      })
+      setHash(txHash)
+      return 'submitted'
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Mirror of `grantBatch` for revokes. Skips entries whose bit is
+   *  already cleared on chain (no-op revoke). */
+  async function revokeBatch(
+    grants: GrantPermissionRequest[],
+  ): Promise<GrantOutcome> {
+    if (!connected) throw new Error('Wallet not connected')
+    if (!publicClient) throw new Error('No network client available')
+    if (grants.length === 0) return 'already'
+    const collection = grants[0].collection
+    if (grants.some((g) => g.collection !== collection)) {
+      throw new Error('revokeBatch: all grants must target the same collection')
+    }
+    setBusy(true)
+    try {
+      const filtered = await filterRedundant(publicClient, grants, 'clear')
+      if (filtered.length === 0) return 'already'
+      const calls = filtered.map((g) =>
+        encodeFunctionData({
+          abi: COLLECTION_ABI,
+          functionName: 'removePermission',
+          args: [g.tokenId, g.grantee, BIT_VALUES[g.bit]],
+        }),
+      )
+      await ensureBase()
+      const txHash = await writeContractAsync({
+        chainId: base.id,
+        address: collection,
+        abi: ZORA_MULTICALL_ABI,
+        functionName: 'multicall',
+        args: [calls],
+      })
+      setHash(txHash)
+      return 'submitted'
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** Clear the watched hash so the hook is ready for another grant.
    *  Callers should invoke this after acting on a receipt to release the
    *  watcher and reset state. */
@@ -192,7 +333,9 @@ export function useGrantPermission() {
 
   return {
     grant,
+    grantBatch,
     revoke,
+    revokeBatch,
     reset,
     /** True while the precheck reads or the tx submission is in flight. */
     busy,
