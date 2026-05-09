@@ -1,52 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
-import { INPROCESS_API } from '@/lib/inprocess'
+import { getAirdropsBySender } from '@/lib/airdrops'
 
 /**
- * Proxy to inprocess `GET /api/airdrops` — lists historical airdrops sent
- * by the given artist. Used by ProfileView's airdrops tab so creators can
- * audit who they've airdropped and when. Public read; rate-limited.
+ * Lists airdrops sent by the given artist for ProfileView's airdrops section.
+ * Reads from the local Redis store written by `POST /api/airdrop/notify` —
+ * Kismet airdrops are submitted client-side via Zora's `adminMint`
+ * (see hooks/useAirdrop.ts), so inprocess's own /api/airdrops never observes
+ * them. We also short-circuit calls for non-owners; this is metadata about
+ * the caller's outgoing activity and is currently rendered only on a profile
+ * the connected wallet owns.
  *
- * Inprocess response shape (per docs):
- *   [{ collectionAddress, tokenId, recipient: { address, username }, amount }]
+ * Response shape (preserved from the previous inprocess proxy so ProfileView
+ * doesn't have to branch):
+ *   { airdrops: [{ collectionAddress, tokenId, recipient: {address, username?},
+ *                   amount, txHash?, timestamp }] }
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const artist = searchParams.get('artist_address') ?? searchParams.get('artist')
   const offsetParam = searchParams.get('offset')
-  const chainIdParam = searchParams.get('chainId')
+  const limitParam = searchParams.get('limit')
 
   if (!artist || !isAddress(artist)) {
     return NextResponse.json({ error: 'Invalid artist_address' }, { status: 400 })
   }
 
   const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0
-  const chainId = chainIdParam ?? '8453'
-
-  const url = new URL(`${INPROCESS_API}/airdrops`)
-  url.searchParams.set('artist_address', artist)
-  url.searchParams.set('chainId', chainId)
-  url.searchParams.set('offset', String(offset))
+  const limit = limitParam ? Math.max(1, Math.min(200, parseInt(limitParam, 10) || 100)) : 100
 
   try {
-    const res = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 60 },
-    })
-    const text = await res.text()
-    let data: unknown
-    try {
-      data = JSON.parse(text)
-    } catch {
-      // Inprocess returns non-JSON when an artist has no airdrops yet —
-      // mirror /api/payments and degrade to an empty list rather than 502
-      // the whole panel.
-      return NextResponse.json({ airdrops: [] }, { status: 200 })
-    }
-    // Their endpoint returns a bare array per docs; normalize to
-    // { airdrops: [...] } so the client doesn't have to special-case shape.
-    const airdrops = Array.isArray(data) ? data : []
-    return NextResponse.json({ airdrops }, { status: res.status })
+    const airdrops = await getAirdropsBySender(artist, { offset, limit })
+    return NextResponse.json({ airdrops }, { status: 200 })
   } catch {
     return NextResponse.json({ airdrops: [] }, { status: 200 })
   }

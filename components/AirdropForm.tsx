@@ -186,6 +186,23 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         `Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`,
         { id: 'airdrop' },
       )
+      // Fire-and-forget the server notify so this airdrop shows up in the
+      // sender's profile airdrops section and recipients get an inbox
+      // notification. Kismet airdrops bypass inprocess's relay, so without
+      // this round-trip neither surface would ever observe the airdrop.
+      // Errors are swallowed — the on-chain mint already succeeded; UI
+      // visibility is best-effort.
+      void fetch('/api/airdrop/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender: address,
+          collectionAddress: selected.address,
+          tokenId: selected.token_id,
+          recipients: activeRecipients,
+          txHash,
+        }),
+      }).catch(() => {})
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
     } finally {
