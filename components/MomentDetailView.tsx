@@ -436,8 +436,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   function handleEditFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     if (!f) return
-    const MAX = 600 * 1024 * 1024
-    if (f.size > MAX) { toast.error('File too large', { description: 'Max 600 MB' }); return }
+    const MAX = 420 * 1024 * 1024
+    if (f.size > MAX) { toast.error('File too large', { description: 'Max 420 MB' }); return }
     if (editPreview) URL.revokeObjectURL(editPreview)
     setEditFile(f)
     setEditPreview(URL.createObjectURL(f))
