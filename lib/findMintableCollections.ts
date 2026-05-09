@@ -8,7 +8,7 @@ type GetLogsClient = {
   getLogs: (args: {
     address: Address[]
     event: typeof UPDATED_PERMISSIONS_EVENT
-    args: { tokenId: bigint; user?: Address }
+    args: { tokenId: bigint; user: Address }
     fromBlock: 'earliest' | bigint
     toBlock: 'latest' | bigint
   }) => Promise<GetLogsReturnType<typeof UPDATED_PERMISSIONS_EVENT>>
@@ -70,56 +70,6 @@ export async function findMintableCollections(
   const out: Address[] = []
   for (const [addr, { perms }] of latest.entries()) {
     if ((perms & mask) !== 0n) out.push(addr as Address)
-  }
-  return out
-}
-
-/**
- * Inverse of findMintableCollections: one collection, every user.
- * Returns every address holding ADMIN at tokenId 0, derived from the
- * latest UpdatedPermissions event per user. Lets the Authorize-creators
- * panel surface off-platform grants (etherscan, foundry, etc.) that
- * never wrote to our KV reverse-lookup.
- *
- * `exclude` filters out system addresses (the deployer's smart wallet
- * + OPERATOR_SMART_WALLET, both granted at deploy via setupActions) so
- * the returned list is exactly the "intentional" admin set.
- */
-export async function findAdminHoldersAtZero(
-  client: GetLogsClient,
-  collection: Address,
-  exclude: Address[] = [],
-): Promise<Address[]> {
-  const logs = await client.getLogs({
-    address: [collection],
-    event: UPDATED_PERMISSIONS_EVENT,
-    args: { tokenId: 0n },
-    fromBlock: 'earliest',
-    toBlock: 'latest',
-  })
-  type Latest = { perms: bigint; block: bigint; idx: number }
-  const latest = new Map<string, Latest>()
-  for (const log of logs) {
-    const user = log.args.user
-    if (!user) continue
-    const key = user.toLowerCase()
-    const block = log.blockNumber ?? 0n
-    const idx = log.logIndex ?? 0
-    const prev = latest.get(key)
-    const isNewer =
-      !prev ||
-      block > prev.block ||
-      (block === prev.block && idx > prev.idx)
-    if (!isNewer) continue
-    const perms = log.args.permissions as bigint | undefined
-    if (perms === undefined) continue
-    latest.set(key, { perms, block, idx })
-  }
-  const excludeSet = new Set(exclude.map((a) => a.toLowerCase()))
-  const out: Address[] = []
-  for (const [addr, { perms }] of latest.entries()) {
-    if (excludeSet.has(addr)) continue
-    if ((perms & PERMISSION_BIT_ADMIN) !== 0n) out.push(addr as Address)
   }
   return out
 }

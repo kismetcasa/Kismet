@@ -225,15 +225,13 @@ export interface AuthorizedCreator {
 export async function addAuthorizedCreator(
   collection: string,
   entry: AuthorizedCreator,
-): Promise<void> {
-  if (!entry.eoa) return // chain-only entries are never persisted
+): Promise<boolean> {
+  if (!entry.eoa) return false
   try {
-    // Dedupe by EOA: a re-grant (admin re-runs the tx, or our retry
-    // path posts twice) would otherwise create N JSON-distinct entries
-    // for the same address, since the Set members differ on grantedAt
-    // alone. Drop any existing rows for this EOA first so the latest
-    // grant is the single source of truth.
-    await removeAuthorizedCreator(collection, entry.eoa)
+    // Write the new row first so a partial failure can't leave us
+    // empty-handed. The dedupe step below removes any older rows for
+    // the same EOA — but only after we know the new write landed,
+    // since removing-then-failing-to-add would lose the entry.
     await redis.sadd(keyAuthorizedCreators(collection), JSON.stringify(entry))
   } catch (err) {
     console.error('[kv] addAuthorizedCreator failed', {
@@ -241,7 +239,37 @@ export async function addAuthorizedCreator(
       eoa: entry.eoa,
       err: err instanceof Error ? err.message : String(err),
     })
+    return false
   }
+  // Best-effort dedupe — if it fails, the panel may briefly show two
+  // rows for the same EOA (older + newer) until the next grant cleans
+  // them up. The new row above is already persisted at this point.
+  try {
+    const eoaLower = entry.eoa.toLowerCase()
+    const newJson = JSON.stringify(entry)
+    const members = (await redis.smembers(
+      keyAuthorizedCreators(collection),
+    )) as string[]
+    const stale = members.filter((raw) => {
+      if (raw === newJson) return false // don't drop the row we just wrote
+      try {
+        const parsed = JSON.parse(raw) as AuthorizedCreator
+        return parsed.eoa?.toLowerCase() === eoaLower
+      } catch {
+        return false
+      }
+    })
+    if (stale.length > 0) {
+      await redis.srem(keyAuthorizedCreators(collection), ...stale)
+    }
+  } catch (err) {
+    console.error('[kv] addAuthorizedCreator dedupe failed (write succeeded)', {
+      collection,
+      eoa: entry.eoa,
+      err: err instanceof Error ? err.message : String(err),
+    })
+  }
+  return true
 }
 
 export async function removeAuthorizedCreator(

@@ -222,9 +222,6 @@ export function CollectionView({
     refetch: refetchCreators,
   } = useAuthorizedCreators(
     canGrantHere ? (address as `0x${string}`) : undefined,
-    canGrantHere && defaultAdminAddress
-      ? (defaultAdminAddress as `0x${string}`)
-      : undefined,
   )
 
   // Mainnet client for client-side ENS resolution. Wagmi already

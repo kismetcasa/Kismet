@@ -23,18 +23,12 @@ export interface AuthorizedCreatorEntry {
 }
 
 /**
- * Reads every address with ADMIN on the collection, hydrated with
- * KV-stored EOA / label mappings where available. Cross-checks each
- * entry against on-chain perms so rows revoked outside the panel
- * render as stale. Pass `deployer` (the displayed creator's EOA) so
- * the server can exclude the artist's smart wallet + OPERATOR_SMART_WALLET
- * from the chain merge — both are granted ADMIN at deploy and would
- * otherwise pollute the list.
+ * Reads the EOA → smart-wallet mappings the admin recorded when
+ * authorizing creators on this collection. Cross-checks each entry
+ * against on-chain perms so a row revoked outside our UI renders as
+ * stale instead of as a live authorization.
  */
-export function useAuthorizedCreators(
-  collection: Address | undefined,
-  deployer: Address | undefined,
-) {
+export function useAuthorizedCreators(collection: Address | undefined) {
   const publicClient = usePublicClient({ chainId: base.id })
   const [creators, setCreators] = useState<AuthorizedCreatorEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -46,10 +40,9 @@ export function useAuthorizedCreators(
     }
     setLoading(true)
     try {
-      const url = deployer
-        ? `/api/collection/authorized-creators?collection=${collection}&deployer=${deployer}`
-        : `/api/collection/authorized-creators?collection=${collection}`
-      const res = await fetch(url)
+      const res = await fetch(
+        `/api/collection/authorized-creators?collection=${collection}`,
+      )
       if (!res.ok) {
         setCreators([])
         return
@@ -84,7 +77,7 @@ export function useAuthorizedCreators(
     } finally {
       setLoading(false)
     }
-  }, [collection, deployer, publicClient])
+  }, [collection, publicClient])
 
   useEffect(() => {
     void refetch()
