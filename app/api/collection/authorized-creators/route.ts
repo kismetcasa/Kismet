@@ -40,19 +40,27 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Without the deployer's SW we can't filter the deploy-time
-    // setupAction grant out of the chain scan, so the artist's own
-    // wallet would surface as a "creator" — better to fall back to
-    // KV-only than emit a misleading list.
+    // Best-effort resolve of the deployer's SW so we can exclude it
+    // from the chain scan. If inprocess is unreachable we fall through
+    // with just the EOA + operator excluded — Alice's SW may then
+    // surface as a row, which is better UX than an empty list when
+    // there are real delegated grants.
     const deployerSw = await resolveSmartWallet(deployer)
-    if (!deployerSw || !isAddress(deployerSw)) {
-      return NextResponse.json({ creators: kvCreators })
+    if (!deployerSw) {
+      console.warn(
+        '[authorized-creators GET] could not resolve deployer SW; chain merge will run without SW exclude',
+        { deployer, collection },
+      )
     }
     // Filter out the deployer (constructor-set ADMIN doesn't emit, but
     // a redundant self-addPermission could), their smart wallet
-    // (granted via setupActions), and the operator smart wallet (also
-    // setupActions). Anything left is a real delegated grant.
-    const exclude: Address[] = [deployer as Address, deployerSw as Address]
+    // (granted via setupActions when resolvable), and the operator
+    // smart wallet (also setupActions). Anything left is a real
+    // delegated grant.
+    const exclude: Address[] = [deployer as Address]
+    if (deployerSw && isAddress(deployerSw)) {
+      exclude.push(deployerSw as Address)
+    }
     if (OPERATOR_SMART_WALLET && isAddress(OPERATOR_SMART_WALLET)) {
       exclude.push(OPERATOR_SMART_WALLET as Address)
     }
