@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { base, mainnet } from 'wagmi/chains'
@@ -14,6 +14,7 @@ import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useFileUpload } from '@/hooks/useFileUpload'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
@@ -31,8 +32,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
 
-  const [coverFile, setCoverFile] = useState<File | null>(null)
-  const [coverPreview, setCoverPreview] = useState<string | null>(null)
+  const {
+    file: coverFile,
+    preview: coverPreview,
+    inputRef: fileInputRef,
+    onChange: handleFileChange,
+    onDrop: handleDrop,
+    clear: clearFile,
+  } = useFileUpload()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [royaltyBps, setRoyaltyBps] = useState('500')
@@ -52,8 +59,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [collectionAddress, setCollectionAddress] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
   const [deployedImageUri, setDeployedImageUri] = useState<string | undefined>(undefined)
-
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
@@ -354,21 +359,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     if (step !== 'done' || !collectionAddress) return
     router.push(`/collection/${collectionAddress}`)
   }, [step, collectionAddress, router])
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    if (!f) return
-    if (coverPreview) URL.revokeObjectURL(coverPreview)
-    setCoverFile(f)
-    setCoverPreview(URL.createObjectURL(f))
-  }
-
-  function clearFile() {
-    setCoverFile(null)
-    if (coverPreview) URL.revokeObjectURL(coverPreview)
-    setCoverPreview(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
-  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -757,14 +747,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         ) : (
           <div
             onClick={() => fileInputRef.current?.click()}
-            onDrop={(e) => {
-              e.preventDefault()
-              const f = e.dataTransfer.files[0]
-              if (!f) return
-              if (coverPreview) URL.revokeObjectURL(coverPreview)
-              setCoverFile(f)
-              setCoverPreview(URL.createObjectURL(f))
-            }}
+            onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
             // Empty drop zone keeps a default aspect for visual structure;
             // the box will reshape to the dropped file once a preview exists.

@@ -18,7 +18,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
-import { fetchEthEligibleTokens, fetchUsdcEligibleTokens } from '@/lib/saleConfig'
+import { fetchEligibleTokens } from '@/lib/saleConfig'
 
 // Cap on tokens we fetch per collection when computing bulk-collect
 // eligibility for the feed. Aligned with MAX_COLLECT_ALL_BATCH (20) since
@@ -105,8 +105,8 @@ async function loadCollectAllEligibility(
       .map((m) => BigInt(m.token_id as string))
     if (visibleIds.length === 0) return empty
     const [ethEligible, usdcEligible] = await Promise.all([
-      fetchEthEligibleTokens(client, address as Address, visibleIds),
-      fetchUsdcEligibleTokens(client, address as Address, visibleIds),
+      fetchEligibleTokens(client, address as Address, visibleIds, 'eth'),
+      fetchEligibleTokens(client, address as Address, visibleIds, 'usdc'),
     ])
     return {
       ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),

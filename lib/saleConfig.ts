@@ -39,8 +39,8 @@ const FPSS_SALE_ABI = [
 // Verify against the deployed contract at ZORA_ERC20_MINTER on Base by
 // reading getABIs from BaseScan or running:
 //   cast interface 0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014 --rpc-url base
-// If the on-chain ABI ever drifts, fetchUsdcEligibleTokens will return [] —
-// the ETH leg keeps working, so this fails closed (graceful degradation).
+// If the on-chain ABI ever drifts, the USDC path returns [] — the ETH leg
+// keeps working, so this fails closed (graceful degradation).
 const ERC20_MINTER_SALE_ABI = [
   {
     name: 'sale',
@@ -107,27 +107,43 @@ export interface EligibleToken {
   maxPerAddress: bigint
 }
 
+export type SaleCurrency = 'eth' | 'usdc'
+
+const STRATEGY_BY_CURRENCY = {
+  eth: { address: ZORA_FIXED_PRICE_STRATEGY, abi: FPSS_SALE_ABI },
+  usdc: { address: ZORA_ERC20_MINTER, abi: ERC20_MINTER_SALE_ABI },
+} as const
+
 // Generic over chain so callers can pass the wagmi-typed client (Base) or
 // a server-side createPublicClient without re-typing.
 type AnyClient = Client<Transport, Chain | undefined>
 
 /**
- * Filter `tokenIds` down to those currently mintable via FixedPriceSaleStrategy
- * (the ETH path) on `collection`. When `account` is provided, additionally
- * skip tokens where balance > 0 and maxPerAddress === 1 — those would revert
- * a multicall batch. Returns [] on read failure so callers stay simple.
+ * Filter `tokenIds` down to those currently mintable on `collection` via the
+ * selected strategy:
+ *   - 'eth'  → FixedPriceSaleStrategy
+ *   - 'usdc' → ERC20Minter, additionally filtering currency === USDC_BASE
  *
- * Two RPC round trips: one multicall for sale configs, one for balances.
+ * When `account` is provided, also skips tokens where balance has hit
+ * maxPerAddress — those would revert a multicall batch. Returns [] on any
+ * read failure so callers stay simple and a USDC RPC blip can't crash the
+ * ETH leg in mixed flows.
+ *
+ * Two RPC round trips: one multicall for sale configs + token info, one
+ * for balances. Fail-closed on balance reads so a single revert can't
+ * cascade an atomic EIP-5792 bundle.
  */
-export async function fetchEthEligibleTokens(
+export async function fetchEligibleTokens(
   client: AnyClient,
   collection: Address,
   tokenIds: bigint[],
+  currency: SaleCurrency,
   account?: Address,
 ): Promise<EligibleToken[]> {
   if (tokenIds.length === 0) return []
 
   const now = BigInt(Math.floor(Date.now() / 1000))
+  const strategy = STRATEGY_BY_CURRENCY[currency]
 
   // First pass: read sale config + token info for every candidate in one
   // multicall. Even-indexed slot is the sale read; odd is getTokenInfo.
@@ -136,8 +152,8 @@ export async function fetchEthEligibleTokens(
     firstPass = await multicall(client, {
       contracts: tokenIds.flatMap((id) => [
         {
-          address: ZORA_FIXED_PRICE_STRATEGY,
-          abi: FPSS_SALE_ABI,
+          address: strategy.address,
+          abi: strategy.abi,
           functionName: 'sale' as const,
           args: [collection, id] as const,
         },
@@ -164,10 +180,19 @@ export async function fetchEthEligibleTokens(
       saleEnd: bigint
       maxTokensPerAddress: bigint
       pricePerToken: bigint
+      currency?: Address
     }
     if (sale.saleEnd === 0n) continue
     if (sale.saleEnd <= now) continue
     if (sale.saleStart > now) continue
+    // ERC20Minter supports any ERC20; collect-all only knows how to handle
+    // USDC (decimals + approve target). Skip exotic currencies cleanly.
+    if (
+      currency === 'usdc' &&
+      sale.currency?.toLowerCase() !== USDC_BASE.toLowerCase()
+    ) {
+      continue
+    }
 
     // Skip sold-out tokens. allowFailure means non-Zora-1155 contracts (or
     // older versions without getTokenInfo) just opt out of this check —
@@ -195,109 +220,6 @@ export async function fetchEthEligibleTokens(
   // FAILS, we DROP the candidate rather than passing it through. On atomic
   // EIP-5792 wallets a single revert cascades the whole bundle, so it's
   // safer to under-include than to detonate the batch on an RPC blip.
-  let balanceResults
-  try {
-    balanceResults = await multicall(client, {
-      contracts: candidates.map((c) => ({
-        address: collection,
-        abi: ERC1155_BALANCE_ABI,
-        functionName: 'balanceOf' as const,
-        args: [account, c.tokenId] as const,
-      })),
-      allowFailure: true,
-    })
-  } catch {
-    // Outer multicall failure means we can't verify any balance — drop all
-    // candidates rather than risk a cascade revert.
-    return []
-  }
-
-  return candidates.filter((c, i) => {
-    const r = balanceResults[i]
-    if (r.status !== 'success') return false
-    const balance = r.result as bigint
-    return !(c.maxPerAddress > 0n && balance >= c.maxPerAddress)
-  })
-}
-
-/**
- * USDC analog of fetchEthEligibleTokens. Reads ERC20Minter.sale() per token
- * and keeps those whose currency === USDC_BASE and whose sale window is
- * currently open. Skips sold-out tokens via getTokenInfo and (when `account`
- * is provided) tokens already at maxPerAddress balance — same revert-avoidance
- * logic as the ETH path.
- *
- * Returns [] on read failure so a USDC RPC blip can't crash collect-all; the
- * ETH leg still runs in mixed flows.
- */
-export async function fetchUsdcEligibleTokens(
-  client: AnyClient,
-  collection: Address,
-  tokenIds: bigint[],
-  account?: Address,
-): Promise<EligibleToken[]> {
-  if (tokenIds.length === 0) return []
-
-  const now = BigInt(Math.floor(Date.now() / 1000))
-
-  let firstPass
-  try {
-    firstPass = await multicall(client, {
-      contracts: tokenIds.flatMap((id) => [
-        {
-          address: ZORA_ERC20_MINTER,
-          abi: ERC20_MINTER_SALE_ABI,
-          functionName: 'sale' as const,
-          args: [collection, id] as const,
-        },
-        {
-          address: collection,
-          abi: ZORA_TOKEN_INFO_ABI,
-          functionName: 'getTokenInfo' as const,
-          args: [id] as const,
-        },
-      ]),
-      allowFailure: true,
-    })
-  } catch {
-    return []
-  }
-
-  const candidates: EligibleToken[] = []
-  for (let i = 0; i < tokenIds.length; i++) {
-    const saleRes = firstPass[2 * i]
-    const infoRes = firstPass[2 * i + 1]
-    if (saleRes.status !== 'success' || !saleRes.result) continue
-    const sale = saleRes.result as {
-      saleStart: bigint
-      saleEnd: bigint
-      maxTokensPerAddress: bigint
-      pricePerToken: bigint
-      currency: Address
-    }
-    if (sale.saleEnd === 0n) continue
-    if (sale.saleEnd <= now) continue
-    if (sale.saleStart > now) continue
-    // ERC20Minter supports any ERC20; collect-all only knows how to handle
-    // USDC (decimals + approve target). Skip exotic currencies cleanly.
-    if (sale.currency.toLowerCase() !== USDC_BASE.toLowerCase()) continue
-
-    if (infoRes.status === 'success' && infoRes.result) {
-      const info = infoRes.result as { maxSupply: bigint; totalMinted: bigint }
-      if (info.maxSupply > 0n && info.totalMinted >= info.maxSupply) continue
-    }
-
-    candidates.push({
-      tokenId: tokenIds[i],
-      pricePerToken: sale.pricePerToken,
-      maxPerAddress: sale.maxTokensPerAddress,
-    })
-  }
-
-  if (!account || candidates.length === 0) return candidates
-
-  // Same fail-closed semantics as the ETH path — on balance-read failure,
-  // drop the candidate rather than risk a cascading revert in the bundle.
   let balanceResults
   try {
     balanceResults = await multicall(client, {

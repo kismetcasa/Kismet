@@ -14,6 +14,7 @@ import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
@@ -226,8 +227,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     !hasAdminBit(smartWalletPerms as bigint)
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
-  const [file, setFile] = useState<File | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
+  const {
+    file,
+    preview,
+    inputRef: fileInputRef,
+    onChange: handleFileChange,
+    onDrop: handleDrop,
+    clear: clearFile,
+  } = useFileUpload({
+    maxBytes: 420 * 1024 * 1024,
+    onTooLarge: () => toast.error('File too large', { description: 'Maximum file size is 420 MB' }),
+  })
   const [textContent, setTextContent] = useState('')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -249,7 +259,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // nulled and the helper bails before writing stale state.
   const verifyTargetRef = useRef<string | null>(null)
 
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
 
   function switchMode(mode: MintMode) {
@@ -317,34 +326,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     setSplitInput({ address: '', pct: '' })
   }
 
-  const MAX_FILE_BYTES = 420 * 1024 * 1024
   const TEXT_MAX = 5000
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    if (!f) return
-    if (f.size > MAX_FILE_BYTES) { toast.error('File too large', { description: 'Maximum file size is 420 MB' }); return }
-    if (preview) URL.revokeObjectURL(preview)
-    setFile(f)
-    setPreview(URL.createObjectURL(f))
-  }
-
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    const f = e.dataTransfer.files[0]
-    if (!f) return
-    if (f.size > MAX_FILE_BYTES) { toast.error('File too large', { description: 'Maximum file size is 420 MB' }); return }
-    if (preview) URL.revokeObjectURL(preview)
-    setFile(f)
-    setPreview(URL.createObjectURL(f))
-  }
-
-  function clearFile() {
-    setFile(null)
-    if (preview) URL.revokeObjectURL(preview)
-    setPreview(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
-  }
 
   // Builds the final splits array to send to the API. Inprocess docs require
   // integer `percentAllocation` summing to exactly 100% — every code path

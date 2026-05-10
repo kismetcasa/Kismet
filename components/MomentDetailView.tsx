@@ -14,6 +14,7 @@ import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments 
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
@@ -130,10 +131,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
-  const [editFile, setEditFile] = useState<File | null>(null)
-  const [editPreview, setEditPreview] = useState<string | null>(null)
+  const {
+    file: editFile,
+    preview: editPreview,
+    inputRef: editFileInputRef,
+    onChange: handleEditFile,
+    clear: clearEditFile,
+  } = useFileUpload({
+    maxBytes: 420 * 1024 * 1024,
+    onTooLarge: () => toast.error('File too large', { description: 'Max 420 MB' }),
+  })
   const [savingMeta, setSavingMeta] = useState(false)
-  const editFileInputRef = useRef<HTMLInputElement>(null)
   const { ensureSession } = useUploadSession()
 
   const { data: ownedBalance } = useReadContract({
@@ -383,26 +391,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (!detail) return
     setEditName(detail.metadata.name ?? '')
     setEditDesc(detail.metadata.description ?? '')
-    setEditFile(null)
-    setEditPreview(null)
+    clearEditFile()
     setEditing(true)
   }
 
   function closeEditor() {
-    if (editPreview) URL.revokeObjectURL(editPreview)
-    setEditFile(null)
-    setEditPreview(null)
+    clearEditFile()
     setEditing(false)
-  }
-
-  function handleEditFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    if (!f) return
-    const MAX = 420 * 1024 * 1024
-    if (f.size > MAX) { toast.error('File too large', { description: 'Max 420 MB' }); return }
-    if (editPreview) URL.revokeObjectURL(editPreview)
-    setEditFile(f)
-    setEditPreview(URL.createObjectURL(f))
   }
 
   async function handleSaveMetadata() {
@@ -714,12 +709,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     {editFile && (
                       <button
                         type="button"
-                        onClick={() => {
-                          if (editPreview) URL.revokeObjectURL(editPreview)
-                          setEditFile(null)
-                          setEditPreview(null)
-                          if (editFileInputRef.current) editFileInputRef.current.value = ''
-                        }}
+                        onClick={clearEditFile}
                         disabled={savingMeta}
                         className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] disabled:opacity-50"
                       >

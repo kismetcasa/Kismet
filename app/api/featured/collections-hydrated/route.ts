@@ -3,7 +3,7 @@ import { type Address } from 'viem'
 import { redis, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
 import { INPROCESS_API, type Moment } from '@/lib/inprocess'
-import { fetchEthEligibleTokens, fetchUsdcEligibleTokens } from '@/lib/saleConfig'
+import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 
@@ -85,8 +85,8 @@ export async function GET() {
         const tokenIds = previewMoments.map((m) => BigInt(m.token_id))
         const [ethEligible, usdcEligible] = tokenIds.length > 0
           ? await Promise.all([
-              fetchEthEligibleTokens(client, ref.address as Address, tokenIds),
-              fetchUsdcEligibleTokens(client, ref.address as Address, tokenIds),
+              fetchEligibleTokens(client, ref.address as Address, tokenIds, 'eth'),
+              fetchEligibleTokens(client, ref.address as Address, tokenIds, 'usdc'),
             ])
           : [[], []]
         const ethEligibleTotalWei = ethEligible

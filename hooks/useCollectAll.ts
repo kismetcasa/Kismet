@@ -8,11 +8,7 @@ import { toast } from 'sonner'
 import { encodeFunctionData, type Address, type Hex } from 'viem'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
-import {
-  fetchEthEligibleTokens,
-  fetchUsdcEligibleTokens,
-  type EligibleToken,
-} from '@/lib/saleConfig'
+import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
 import {
   ERC20_ABI,
   KISMET_REFERRAL,
@@ -132,18 +128,20 @@ export function useCollectAll(): UseCollectAllReturn {
         // bundled call would cascade on atomic wallets.
         const [ethEligible, usdcEligible] = await Promise.all([
           ethCandidateTokenIds.length > 0
-            ? fetchEthEligibleTokens(
+            ? fetchEligibleTokens(
                 publicClient,
                 collectionAddress,
                 ethCandidateTokenIds.map((s) => BigInt(s)),
+                'eth',
                 address as Address,
               )
             : Promise.resolve<EligibleToken[]>([]),
           usdcCandidateTokenIds.length > 0
-            ? fetchUsdcEligibleTokens(
+            ? fetchEligibleTokens(
                 publicClient,
                 collectionAddress,
                 usdcCandidateTokenIds.map((s) => BigInt(s)),
+                'usdc',
                 address as Address,
               )
             : Promise.resolve<EligibleToken[]>([]),

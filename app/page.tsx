@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAccount } from 'wagmi'
-import { RefreshCw } from 'lucide-react'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
 import { MarketView } from '@/components/MarketView'
+import { PaginatedGrid } from '@/components/PaginatedGrid'
 import type { Moment } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 
@@ -119,237 +119,60 @@ function TabBar({
 // ─── moment feed ─────────────────────────────────────────────────────────────
 
 function MomentFeed({
-  feedKey,
   apiUrl,
   emptyMessage = 'nothing here yet',
   header,
 }: {
-  feedKey: string
   apiUrl: string
   emptyMessage?: string
   header?: React.ReactNode
 }) {
-  const [moments, setMoments] = useState<Moment[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
-  const [refreshing, setRefreshing] = useState(false)
-
-  const fetch_ = useCallback(
-    async (p = 1, append = false) => {
-      try {
-        if (p === 1 && !append) setLoading(true)
-        else setRefreshing(true)
-
-        const url = new URL(apiUrl, location.origin)
-        url.searchParams.set('page', String(p))
-        url.searchParams.set('limit', '18')
-
-        const res = await fetch(url.toString())
-        if (!res.ok) throw new Error(`Failed (${res.status})`)
-        const data = await res.json()
-
-        setMoments((prev) => (append ? [...prev, ...data.moments] : data.moments))
-        setTotalPages(data.pagination?.total_pages ?? 1)
-        setPage(p)
-        setError(null)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load')
-      } finally {
-        setLoading(false)
-        setRefreshing(false)
-      }
-    },
-    [apiUrl],
-  )
-
-  // Reset + refetch when feedKey changes (tab switch or following toggle)
-  useEffect(() => {
-    setMoments([])
-    setPage(1)
-    fetch_(1)
-  }, [feedKey, fetch_])
-
   return (
-    <div>
-      <div className="flex items-center justify-between py-4">
-        <div>{header}</div>
-        <button
-          onClick={() => fetch_(1)}
-          disabled={loading || refreshing}
-          className="flex items-center gap-2 text-xs font-mono text-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
-        >
-          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-          refresh
-        </button>
-      </div>
-
-      {loading && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="bg-[#161616] border border-[#2a2a2a]">
-              <div className="aspect-square bg-[#1a1a1a] animate-pulse" />
-              <div className="p-4 space-y-2">
-                <div className="h-3 bg-[#1a1a1a] animate-pulse w-2/3" />
-                <div className="h-3 bg-[#1a1a1a] animate-pulse w-1/3" />
-              </div>
-            </div>
-          ))}
-        </div>
+    <PaginatedGrid<Moment>
+      apiUrl={apiUrl}
+      itemsKey="moments"
+      getKey={(m) => `${m.address}-${m.token_id}`}
+      renderItem={(m) => (
+        <MomentCard key={`${m.address}-${m.token_id}`} moment={m} />
       )}
-
-      {error && !loading && (
-        <div className="border border-red-900/50 p-6 text-center">
-          <p className="text-sm font-mono text-red-400">{error}</p>
-          <button
-            onClick={() => fetch_(1)}
-            className="mt-4 text-xs font-mono text-[#888] hover:text-[#efefef] underline"
-          >
-            try again
-          </button>
-        </div>
-      )}
-
-      {!loading && !error && moments.length === 0 && (
+      empty={
         <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-[#555]">{emptyMessage}</p>
         </div>
-      )}
-
-      {!loading && moments.length > 0 && (
-        <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {moments.map((moment) => (
-              <MomentCard key={`${moment.address}-${moment.token_id}`} moment={moment} />
-            ))}
-          </div>
-
-          {page < totalPages && (
-            <div className="mt-8 text-center">
-              <button
-                onClick={() => fetch_(page + 1, true)}
-                disabled={refreshing}
-                className="px-8 py-3 border border-[#2a2a2a] text-xs font-mono text-[#888] uppercase tracking-wider hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
-              >
-                {refreshing ? 'loading…' : 'load more'}
-              </button>
-            </div>
-          )}
-        </>
-      )}
-    </div>
+      }
+      header={header}
+    />
   )
 }
 
 // ─── collections feed (paginated grid) ───────────────────────────────────────
 
 function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
-  const [items, setItems] = useState<CollectionDisplay[]>([])
-  const [loading, setLoading] = useState(true)
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const fetchPage = useCallback(async (p = 1, append = false) => {
-    try {
-      if (p === 1 && !append) setLoading(true)
-      else setRefreshing(true)
-      const url = new URL('/api/collections', location.origin)
-      url.searchParams.set('feed', '1')
-      url.searchParams.set('page', String(p))
-      url.searchParams.set('limit', '18')
-      const res = await fetch(url.toString())
-      if (!res.ok) throw new Error(`Failed (${res.status})`)
-      const data = await res.json()
-      setItems((prev) => (append ? [...prev, ...(data.collections ?? [])] : data.collections ?? []))
-      setTotalPages(data.pagination?.total_pages ?? 1)
-      setPage(p)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load')
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-    }
-  }, [])
-
-  useEffect(() => { fetchPage(1) }, [fetchPage])
-
   const followingSet = followingAddrs
     ? new Set(followingAddrs.map((a) => a.toLowerCase()))
     : null
-  const displayItems = followingSet
-    ? items.filter((c) => {
-        const admin = (c as { default_admin?: { address?: string } }).default_admin?.address?.toLowerCase()
-        return admin ? followingSet.has(admin) : false
-      })
-    : items
-
+  const filter = followingSet
+    ? (items: CollectionDisplay[]) =>
+        items.filter((c) => {
+          const admin = (c as { default_admin?: { address?: string } }).default_admin?.address?.toLowerCase()
+          return admin ? followingSet.has(admin) : false
+        })
+    : undefined
   return (
-    <div>
-      <div className="flex items-center justify-end py-4">
-        <button
-          onClick={() => fetchPage(1)}
-          disabled={loading || refreshing}
-          className="flex items-center gap-2 text-xs font-mono text-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
-        >
-          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-          refresh
-        </button>
-      </div>
-
-      {loading && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="bg-[#161616] border border-[#2a2a2a]">
-              <div className="aspect-square bg-[#1a1a1a] animate-pulse" />
-              <div className="p-4 space-y-2">
-                <div className="h-3 bg-[#1a1a1a] animate-pulse w-2/3" />
-                <div className="h-3 bg-[#1a1a1a] animate-pulse w-1/3" />
-              </div>
-            </div>
-          ))}
-        </div>
+    <PaginatedGrid<CollectionDisplay>
+      apiUrl="/api/collections?feed=1"
+      itemsKey="collections"
+      getKey={(c) => c.contractAddress}
+      renderItem={(c) => (
+        <CollectionCard key={c.contractAddress} collection={c} />
       )}
-
-      {error && !loading && (
-        <div className="border border-red-900/50 p-6 text-center">
-          <p className="text-sm font-mono text-red-400">{error}</p>
-          <button onClick={() => fetchPage(1)} className="mt-4 text-xs font-mono text-[#888] hover:text-[#efefef] underline">
-            try again
-          </button>
-        </div>
-      )}
-
-      {!loading && !error && displayItems.length === 0 && (
+      filter={filter}
+      empty={
         <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-[#555]">no collections yet</p>
         </div>
-      )}
-
-      {!loading && displayItems.length > 0 && (
-        <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {displayItems.map((c) => (
-              <CollectionCard key={c.contractAddress} collection={c} />
-            ))}
-          </div>
-          {page < totalPages && (
-            <div className="mt-8 text-center">
-              <button
-                onClick={() => fetchPage(page + 1, true)}
-                disabled={refreshing}
-                className="px-8 py-3 border border-[#2a2a2a] text-xs font-mono text-[#888] uppercase tracking-wider hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
-              >
-                {refreshing ? 'loading…' : 'load more'}
-              </button>
-            </div>
-          )}
-        </>
-      )}
-    </div>
+      }
+    />
   )
 }
 
@@ -376,8 +199,6 @@ function MainFeed() {
   const apiUrl = followingAddrs.length
     ? `/api/timeline?scope=standalone&following=${followingAddrs.join(',')}`
     : '/api/timeline?scope=standalone'
-
-  const feedKey = `main-${followingOn ? 'following' : 'all'}-${followingAddrs.join(',')}`
 
   const subTabBar = (
     <div className="flex items-center gap-3 flex-wrap">
@@ -426,7 +247,6 @@ function MainFeed() {
 
   return (
     <MomentFeed
-      feedKey={feedKey}
       apiUrl={apiUrl}
       emptyMessage="no moments yet — be the first to mint"
       header={subTabBar}
@@ -485,7 +305,6 @@ export default function DiscoverPage() {
 
         {active === 'trending' && (
           <MomentFeed
-            feedKey="trending"
             apiUrl="/api/timeline?sort=trending&scope=standalone"
             emptyMessage="no collects recorded yet — trending appears as mints are collected"
           />
@@ -588,7 +407,6 @@ function RosterFeed() {
 
   return (
     <MomentFeed
-      feedKey={`roster-${activeSlug ?? ''}`}
       apiUrl={apiUrl}
       header={header}
       emptyMessage="no moments yet from this roster"
