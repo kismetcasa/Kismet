@@ -222,17 +222,38 @@ export interface AuthorizedCreator {
   grantedAt: number
 }
 
+// Upstash's REST SDK auto-deserializes JSON-shaped strings on read,
+// so a value written via `redis.sadd(key, JSON.stringify(obj))` comes
+// back from `smembers` as the parsed object — not the original string.
+// This helper accepts both shapes so legacy KV state and new writes
+// both round-trip correctly.
+function parseEntry(raw: unknown): AuthorizedCreator | null {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as AuthorizedCreator
+  }
+  if (typeof raw === 'string') {
+    try {
+      const obj = JSON.parse(raw)
+      return obj && typeof obj === 'object' ? (obj as AuthorizedCreator) : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
 export async function addAuthorizedCreator(
   collection: string,
   entry: AuthorizedCreator,
 ): Promise<boolean> {
   if (!entry.eoa) return false
   try {
-    // Write the new row first so a partial failure can't leave us
-    // empty-handed. The dedupe step below removes any older rows for
-    // the same EOA — but only after we know the new write landed,
-    // since removing-then-failing-to-add would lose the entry.
-    await redis.sadd(keyAuthorizedCreators(collection), JSON.stringify(entry))
+    // Pass the object directly. The Upstash SDK auto-serializes on
+    // write and auto-parses on read, so passing an object keeps SADD/
+    // SMEMBERS round-tripping in the same shape. JSON.stringify here
+    // would tee up the silent-drop bug fixed by parseEntry below for
+    // legacy data, but we don't want to write more of it.
+    await redis.sadd(keyAuthorizedCreators(collection), entry)
   } catch (err) {
     console.error('[kv] addAuthorizedCreator failed', {
       collection,
@@ -246,18 +267,21 @@ export async function addAuthorizedCreator(
   // them up. The new row above is already persisted at this point.
   try {
     const eoaLower = entry.eoa.toLowerCase()
-    const newJson = JSON.stringify(entry)
     const members = (await redis.smembers(
       keyAuthorizedCreators(collection),
-    )) as string[]
+    )) as unknown[]
     const stale = members.filter((raw) => {
-      if (raw === newJson) return false // don't drop the row we just wrote
-      try {
-        const parsed = JSON.parse(raw) as AuthorizedCreator
-        return parsed.eoa?.toLowerCase() === eoaLower
-      } catch {
+      const parsed = parseEntry(raw)
+      if (!parsed) return false
+      // Skip the row we just wrote — match by both EOA and grantedAt
+      // so concurrent grants for the same EOA don't drop each other.
+      if (
+        parsed.eoa?.toLowerCase() === eoaLower &&
+        parsed.grantedAt === entry.grantedAt
+      ) {
         return false
       }
+      return parsed.eoa?.toLowerCase() === eoaLower
     })
     if (stale.length > 0) {
       await redis.srem(keyAuthorizedCreators(collection), ...stale)
@@ -280,14 +304,10 @@ export async function removeAuthorizedCreator(
     const eoaLower = eoa.toLowerCase()
     const members = (await redis.smembers(
       keyAuthorizedCreators(collection),
-    )) as string[]
+    )) as unknown[]
     const matches = members.filter((raw) => {
-      try {
-        const parsed = JSON.parse(raw) as AuthorizedCreator
-        return parsed.eoa?.toLowerCase() === eoaLower
-      } catch {
-        return false
-      }
+      const parsed = parseEntry(raw)
+      return parsed?.eoa?.toLowerCase() === eoaLower
     })
     if (matches.length === 0) return
     await redis.srem(keyAuthorizedCreators(collection), ...matches)
@@ -306,16 +326,11 @@ export async function getAuthorizedCreators(
   try {
     const members = (await redis.smembers(
       keyAuthorizedCreators(collection),
-    )) as string[]
+    )) as unknown[]
     const parsed: AuthorizedCreator[] = []
     for (const raw of members) {
-      try {
-        parsed.push(JSON.parse(raw) as AuthorizedCreator)
-      } catch {
-        // Drop malformed entries silently; the next grant will
-        // overwrite cleanly, and we'd rather show a partial list
-        // than throw on the entire collection.
-      }
+      const entry = parseEntry(raw)
+      if (entry) parsed.push(entry)
     }
     // Newest first — admins usually want to see what they just
     // authorized at the top of the list.
