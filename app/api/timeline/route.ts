@@ -4,6 +4,7 @@ import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getSessionAddress } from '@/lib/session'
+import { getMomentMeta } from '@/lib/notifications'
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = new URL(`${INPROCESS_API}/timeline`)
@@ -130,6 +131,41 @@ export async function GET(req: NextRequest) {
       return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
     })
   }
+
+  // Stitch KV moment-meta override onto merged moments. mint-proxy
+  // writes the actual minter EOA at mint time; inprocess attributes
+  // by the collection's defaultAdmin which is wrong for delegated
+  // mints (anyone authorized via the "Authorize creators" panel).
+  // Without this override, delegated mints surface on the deployer's
+  // profile + cards instead of the actual minter's. Same trust path
+  // MomentDetailView already uses via the kvCreatorAddress fallback.
+  const metas = await Promise.all(
+    merged.map((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      if (!moment.address || !moment.token_id) return null
+      return getMomentMeta(moment.address, moment.token_id).catch(() => null)
+    }),
+  )
+  merged = merged.map((m: unknown, i: number) => {
+    const meta = metas[i]
+    if (!meta?.creator) return m
+    const moment = m as {
+      creator?: { address?: string; username?: string | null }
+    }
+    if (
+      moment.creator?.address?.toLowerCase() === meta.creator.toLowerCase()
+    ) {
+      // Inprocess already had the right creator — preserve any
+      // username it surfaced so we don't strip it.
+      return m
+    }
+    // Override the address; clear the username so the client falls
+    // back to fetchCreatorProfile and resolves the right one.
+    return {
+      ...moment,
+      creator: { address: meta.creator, username: null },
+    }
+  })
 
   // Creator filter (Featured / Profile feeds)
   if (creator) {
