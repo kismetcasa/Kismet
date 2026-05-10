@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { Star } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { isOperatorAddress } from '@/lib/config'
+import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
@@ -34,6 +36,8 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
   const name = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
   const [imgFailed, setImgFailed] = useState(false)
+  const { isAdmin, featuredCollectionAddrs, toggleFeaturedCollection } = useAdmin()
+  const isFeatured = featuredCollectionAddrs.has(c.contractAddress.toLowerCase())
 
   // `default_admin` resolves to the operator smart wallet when the
   // platform deployed on the artist's behalf. The plural endpoint
@@ -61,6 +65,21 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
           href={`/collection/${c.contractAddress}`}
           className="relative aspect-square block overflow-hidden bg-[#111] group/img"
         >
+          {isAdmin && (
+            <button
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                toggleFeaturedCollection(c.contractAddress)
+              }}
+              className={`absolute top-2 left-2 z-10 p-1 transition-colors ${
+                isFeatured ? 'text-yellow-400' : 'text-[#333] hover:text-[#888]'
+              }`}
+              title={isFeatured ? 'Unfeature' : 'Feature'}
+            >
+              <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+            </button>
+          )}
           {c.metadata?.image && !imgFailed ? (
             <MomentImage
               src={c.metadata.image}

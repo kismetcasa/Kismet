@@ -6,6 +6,7 @@ import { INPROCESS_API, type Moment } from '@/lib/inprocess'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { getCollectionMeta } from '@/lib/kv'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
 // inprocess fetches already cache 60s, so this only batches reads across
@@ -71,6 +72,24 @@ export async function GET() {
         ])
 
         const collection = collRes.ok ? await collRes.json() : {}
+        // Inprocess hasn't indexed every freshly-deployed collection — when
+        // it returns nothing useful, stitch our KV-stored record (written at
+        // create time by the mint-proxy) so the row renders the real name +
+        // cover image instead of the address fallback.
+        if (!collection.name && !collection.metadata?.name && !collection.metadata?.image) {
+          const kv = await getCollectionMeta(ref.address)
+          if (kv) {
+            collection.name = kv.name
+            collection.metadata = {
+              name: kv.name,
+              image: kv.image,
+              description: kv.description,
+            }
+            if (!collection.default_admin && kv.artist) {
+              collection.default_admin = { address: kv.artist }
+            }
+          }
+        }
         const tlData = tlRes.ok ? await tlRes.json() : { moments: [] }
         const allPreviewMoments: Moment[] = Array.isArray(tlData.moments) ? tlData.moments : []
         // Strip individually-hidden moments inside the featured collection
