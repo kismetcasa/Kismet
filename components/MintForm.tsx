@@ -969,33 +969,33 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           submission-shape fields cluster together; the picker (which can
           be left at "auto-deploy") sits below as a step-down decision. */}
       <div className="flex gap-3">
-        {!is11 && (
-          <div className="flex-1">
-            <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-              Price
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                inputMode="decimal"
-                value={price}
-                onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-                className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14"
-              />
-              <button
-                type="button"
-                onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
-                title="toggle currency"
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded"
-              >
-                {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
-              </button>
-            </div>
-            {price === '0' && (
-              <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
-            )}
+        <div className="flex-1">
+          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+            Price
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={is11 ? '0' : price}
+              disabled={is11}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <button
+              type="button"
+              onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+              disabled={is11}
+              title="toggle currency"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-[#888]"
+            >
+              {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
+            </button>
           </div>
-        )}
+          {price === '0' && !is11 && (
+            <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
+          )}
+        </div>
 
         <div className="flex-1">
           <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
