@@ -263,6 +263,19 @@ export const ERC1155_ABI = [
     ],
     outputs: [],
   },
+  {
+    name: 'safeTransferFrom',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'from', type: 'address' },
+      { name: 'to', type: 'address' },
+      { name: 'id', type: 'uint256' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'data', type: 'bytes' },
+    ],
+    outputs: [],
+  },
 ] as const
 
 export const EIP2981_ABI = [

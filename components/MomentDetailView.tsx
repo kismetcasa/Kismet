@@ -3,10 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { useAccount, useReadContract, useSignMessage } from 'wagmi'
+import { useAccount, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send } from 'lucide-react'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
@@ -136,7 +136,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const editFileInputRef = useRef<HTMLInputElement>(null)
   const { ensureSession } = useUploadSession()
 
-  const { data: ownedBalance } = useReadContract({
+  const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
@@ -145,6 +145,37 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   })
   const ownedCount = ownedBalance ? Number(ownedBalance) : 0
   const alreadyOwned = ownedCount > 0
+
+  // Send (ERC-1155 safeTransferFrom) — gated by ownership. Hardcoded to
+  // amount=1: covers 1/1 gifting and matches the airdrop pattern (one
+  // copy per recipient). Edition holders who want to send multiples can
+  // use a wallet directly; we'll add a quantity input if there's demand.
+  const [sendOpen, setSendOpen] = useState(false)
+  const [sendTo, setSendTo] = useState('')
+  const { writeContractAsync: writeSend, isPending: sending } = useWriteContract()
+  const sendToValid = /^0x[a-fA-F0-9]{40}$/.test(sendTo.trim())
+  const handleSend = async () => {
+    if (!connectedAddress || !sendToValid || sending) return
+    const to = sendTo.trim() as `0x${string}`
+    if (to.toLowerCase() === connectedAddress.toLowerCase()) {
+      toast.error('cannot send to yourself')
+      return
+    }
+    try {
+      await writeSend({
+        address: address as `0x${string}`,
+        abi: ERC1155_ABI,
+        functionName: 'safeTransferFrom',
+        args: [connectedAddress, to, BigInt(tokenId), 1n, '0x'],
+      })
+      toast.success('sent')
+      setSendOpen(false)
+      setSendTo('')
+      refetchOwnedBalance()
+    } catch (err) {
+      toastError(err, 'send failed')
+    }
+  }
 
   // Total mints = collect count for this token. Authoritative count comes
   // from on-chain totalSupply (Zora 1155 maintains it per token id), which
@@ -915,6 +946,39 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
             </button>
           </div>
+
+          {/* Owner — send (ERC-1155 safeTransferFrom from connected wallet) */}
+          {alreadyOwned && (
+            <div className="px-5 pb-4">
+              <button
+                onClick={() => setSendOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+              >
+                <Send size={12} strokeWidth={1.5} />
+                {sendOpen ? 'cancel' : 'send'}
+              </button>
+              {sendOpen && (
+                <div className="mt-2 flex gap-2">
+                  <input
+                    type="text"
+                    value={sendTo}
+                    onChange={(e) => setSendTo(e.target.value)}
+                    placeholder="0x recipient address"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555]"
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!sendToValid || sending}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-[#555] disabled:hover:border-[#2a2a2a]"
+                  >
+                    {sending ? '…' : 'confirm'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Site admin — feature/unfeature */}
           {isAdmin && (

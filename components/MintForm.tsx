@@ -426,7 +426,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       return
     }
 
-    const rawPrice = price.trim()
+    // 1/1 has no public sale (auto-mint to creator exhausts supply), so the
+    // price input is hidden in the UI — force the salesConfig price to 0 to
+    // keep on-chain state coherent regardless of any stale `price` state
+    // left over from a prior supply value.
+    const is11 = maxSupply.trim() === '1'
+    const rawPrice = is11 ? '0' : price.trim()
     const normalizedPrice = !rawPrice || rawPrice === '.' ? '0' : rawPrice.startsWith('.') ? `0${rawPrice}` : rawPrice
     // ETH: 18 decimals (parseEther). USDC: 6 decimals (parseUnits with 6).
     // erc20Mint type also requires the currency address per inprocess docs
@@ -982,33 +987,37 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
       {/* Price + Supply — placed before the Collection picker so the
           submission-shape fields cluster together; the picker (which can
-          be left at "auto-deploy") sits below as a step-down decision. */}
+          be left at "auto-deploy") sits below as a step-down decision.
+          When Supply is 1, Price collapses (no public sale possible — the
+          creator's auto-mint exhausts supply). */}
       <div className="flex gap-3">
-        <div className="flex-1">
-          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-            Price
-          </label>
-          <div className="relative">
-            <input
-              type="text"
-              inputMode="decimal"
-              value={price}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14"
-            />
-            <button
-              type="button"
-              onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
-              title="toggle currency"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded"
-            >
-              {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
-            </button>
+        {maxSupply.trim() !== '1' && (
+          <div className="flex-1">
+            <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+              Price
+            </label>
+            <div className="relative">
+              <input
+                type="text"
+                inputMode="decimal"
+                value={price}
+                onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
+                className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14"
+              />
+              <button
+                type="button"
+                onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+                title="toggle currency"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded"
+              >
+                {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
+              </button>
+            </div>
+            {price === '0' && (
+              <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
+            )}
           </div>
-          {price === '0' && (
-            <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
-          )}
-        </div>
+        )}
 
         <div className="flex-1">
           <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
@@ -1024,6 +1033,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           />
           {!maxSupply.trim() && (
             <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
+          )}
+          {maxSupply.trim() === '1' && (
+            <p className="text-xs text-[#555] font-mono mt-1">1/1 — minted to your wallet. send it from the moment page.</p>
           )}
         </div>
       </div>
