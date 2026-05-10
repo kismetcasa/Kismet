@@ -1012,7 +1012,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           {!maxSupply.trim() ? (
             <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
           ) : is11 ? (
-            <p className="text-xs text-[#555] font-mono mt-1">1/1 — minted to your wallet. send it from the moment page.</p>
+            <p className="text-xs text-[#555] font-mono mt-1">1/1 minted to your wallet</p>
           ) : null}
         </div>
       </div>
