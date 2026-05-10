@@ -122,9 +122,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [collectionName, setCollectionName] = useState<string | null>(
     initialCollectionMeta?.name ?? null,
   )
+  // Raw URI (ar://, ipfs://, https://) — MomentImage walks the gateway
+  // pool internally so a freshly-uploaded cover doesn't go missing while
+  // ipfs.io catches up.
   const [collectionImage, setCollectionImage] = useState<string | null>(
-    initialCollectionMeta?.image ? resolveUri(initialCollectionMeta.image) : null,
+    initialCollectionMeta?.image ?? null,
   )
+  const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   // Edit-metadata flow: visible only to moment admins. Pre-populated from
   // the loaded MomentDetail so they can fix typos / replace the image
   // without re-typing everything.
@@ -297,7 +301,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         const name: string | undefined = d.metadata?.name ?? d.name
         const image: string | undefined = d.metadata?.image
         if (name) setCollectionName(name)
-        if (image) setCollectionImage(resolveUri(image))
+        if (image) {
+          setCollectionImage(image)
+          setCollectionImageFailed(false)
+        }
       })
       .catch(() => {})
   }, [address])
@@ -762,14 +769,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 href={`/collection/${address}`}
                 className="flex items-center gap-2 group w-fit"
               >
-                {collectionImage && (
+                {collectionImage && !collectionImageFailed && (
                   <div className="w-[22px] h-[22px] relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
-                    <Image
+                    <MomentImage
                       src={collectionImage}
                       alt=""
                       fill
                       className="object-cover"
                       sizes="22px"
+                      onAllError={() => setCollectionImageFailed(true)}
                     />
                   </div>
                 )}

@@ -14,7 +14,8 @@ import { CuratePanel } from './CuratePanel'
 import { useAdmin } from '@/contexts/AdminContext'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
-import { shortAddress, formatPrice, resolveUri } from '@/lib/inprocess'
+import { shortAddress, formatPrice } from '@/lib/inprocess'
+import { MomentImage } from './MomentImage'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
@@ -49,6 +50,30 @@ interface AirdropRecord {
   tokenId: string
   recipient: { address: string; username?: string }
   amount: number
+}
+
+// Collection preview thumbnail with multi-gateway fallback. MomentImage
+// returns null if every gateway 404s; we wire onAllError to swap in
+// the "no preview" placeholder so the tile never renders empty.
+function CollectionPreviewImage({ src, alt }: { src?: string; alt: string }) {
+  const [failed, setFailed] = useState(false)
+  if (!src || failed) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+      </div>
+    )
+  }
+  return (
+    <MomentImage
+      src={src}
+      alt={alt}
+      fill
+      className="object-contain transition-transform duration-500 group-hover/img:scale-105"
+      sizes="(max-width: 640px) 50vw, 33vw"
+      onAllError={() => setFailed(true)}
+    />
+  )
 }
 
 // ─── section ordering / collapse ─────────────────────────────────────────────
@@ -435,24 +460,11 @@ export function ProfileView({ address }: ProfileViewProps) {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
           {artistCollections.map((c) => {
-            const imgUrl = c.metadata?.image ? resolveUri(c.metadata.image) : null
             const collectionName = c.metadata?.name || c.name
             return (
               <div key={c.contractAddress} className="flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
                 <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-[#111] block overflow-hidden group/img">
-                  {imgUrl ? (
-                    <Image
-                      src={imgUrl}
-                      alt={collectionName}
-                      fill
-                      className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-                      sizes="(max-width: 640px) 50vw, 33vw"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
-                    </div>
-                  )}
+                  <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} />
                 </Link>
                 <div className="px-3 pt-3 pb-2 flex flex-col gap-0.5">
                   <h3 className="text-sm text-[#efefef] font-mono truncate">{collectionName}</h3>

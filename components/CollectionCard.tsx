@@ -1,11 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
-import { resolveUri, shortAddress } from '@/lib/inprocess'
+import { shortAddress } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { isOperatorAddress } from '@/lib/config'
+import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
 
 /**
@@ -40,9 +40,9 @@ interface CollectionCardProps {
 
 export function CollectionCard({ collection, primaryAction }: CollectionCardProps) {
   const c = collection
-  const imgUrl = c.metadata?.image ? resolveUri(c.metadata.image) : null
   const collectionName = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
+  const [imgFailed, setImgFailed] = useState(false)
 
   // Suppress the chip when default_admin resolves to the operator smart
   // wallet (platform-deployed on behalf of an artist) — it has no Kismet
@@ -72,13 +72,14 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
         href={`/collection/${c.contractAddress}`}
         className="relative aspect-square bg-[#111] block overflow-hidden group/img"
       >
-        {imgUrl ? (
-          <Image
-            src={imgUrl}
+        {c.metadata?.image && !imgFailed ? (
+          <MomentImage
+            src={c.metadata.image}
             alt={collectionName}
             fill
             className="object-contain transition-transform duration-500 group-hover/img:scale-105"
             sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            onAllError={() => setImgFailed(true)}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">

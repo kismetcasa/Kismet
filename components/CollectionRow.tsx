@@ -1,12 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
-import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
+import { shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { isOperatorAddress } from '@/lib/config'
 import { MomentCard } from './MomentCard'
+import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
 
 export interface FeaturedCollectionRow {
@@ -31,9 +31,9 @@ interface CollectionRowProps {
 
 export function CollectionRow({ collection, primaryAction }: CollectionRowProps) {
   const c = collection
-  const imgUrl = c.metadata?.image ? resolveUri(c.metadata.image) : null
   const name = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
+  const [imgFailed, setImgFailed] = useState(false)
 
   // `default_admin` resolves to the operator smart wallet when the
   // platform deployed on the artist's behalf. The plural endpoint
@@ -61,13 +61,14 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
           href={`/collection/${c.contractAddress}`}
           className="relative aspect-square block overflow-hidden bg-[#111] group/img"
         >
-          {imgUrl ? (
-            <Image
-              src={imgUrl}
+          {c.metadata?.image && !imgFailed ? (
+            <MomentImage
+              src={c.metadata.image}
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
               sizes="(max-width: 768px) 100vw, 41vw"
+              onAllError={() => setImgFailed(true)}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
