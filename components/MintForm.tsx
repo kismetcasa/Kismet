@@ -260,6 +260,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const verifyTargetRef = useRef<string | null>(null)
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
+  // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
+  // the price input is hidden and the salesConfig price is forced to 0.
+  const is11 = maxSupply.trim() === '1'
 
   function switchMode(mode: MintMode) {
     setMintMode(mode)
@@ -408,7 +411,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       return
     }
 
-    const rawPrice = price.trim()
+    const rawPrice = is11 ? '0' : price.trim()
     const normalizedPrice = !rawPrice || rawPrice === '.' ? '0' : rawPrice.startsWith('.') ? `0${rawPrice}` : rawPrice
     // ETH: 18 decimals (parseEther). USDC: 6 decimals (parseUnits with 6).
     // erc20Mint type also requires the currency address per inprocess docs
@@ -974,20 +977,22 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             <input
               type="text"
               inputMode="decimal"
-              value={price}
+              value={is11 ? '0' : price}
+              disabled={is11}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14"
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button
               type="button"
               onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+              disabled={is11}
               title="toggle currency"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-[#888] hover:text-[#efefef] transition-colors px-1.5 py-0.5 rounded disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-[#888]"
             >
               {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
             </button>
           </div>
-          {price === '0' && (
+          {price === '0' && !is11 && (
             <p className="text-xs text-[#555] font-mono mt-1">free mint</p>
           )}
         </div>
@@ -1004,9 +1009,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             placeholder="unlimited"
             className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
           />
-          {!maxSupply.trim() && (
+          {!maxSupply.trim() ? (
             <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
-          )}
+          ) : is11 ? (
+            <p className="text-xs text-[#555] font-mono mt-1">1/1 — minted to your wallet. send it from the moment page.</p>
+          ) : null}
         </div>
       </div>
 
