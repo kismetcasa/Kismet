@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { Star, Check, X, Plus, Pencil } from 'lucide-react'
 import { isAddress } from 'viem'
 import { useAdmin } from '@/contexts/AdminContext'
+import { shortAddress } from '@/lib/inprocess'
 import { CreatorListEditor, type CreatorListShape } from './CreatorListEditor'
 
 // Accept a /moment/<addr>/<id> link, /collection/<addr> link, or bare
@@ -159,7 +160,7 @@ export function CuratePanel() {
                   rel="noopener noreferrer"
                   className="truncate hover:text-[#efefef] transition-colors"
                 >
-                  {addr.slice(0, 6)}…{addr.slice(-4)}
+                  {shortAddress(addr)}
                   <span className="text-[#444] ml-1.5">collection</span>
                 </a>
                 <button
@@ -181,7 +182,7 @@ export function CuratePanel() {
                     rel="noopener noreferrer"
                     className="truncate hover:text-[#efefef] transition-colors"
                   >
-                    {addr.slice(0, 6)}…{addr.slice(-4)} / {tokenId}
+                    {shortAddress(addr)} / {tokenId}
                   </a>
                   <button
                     onClick={() => void toggleFeatured(addr, tokenId)}
