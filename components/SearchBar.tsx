@@ -5,7 +5,8 @@ import Link from 'next/link'
 import { Search, Loader2, ExternalLink } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
-import { resolveUri, shortAddress } from '@/lib/inprocess'
+import { MomentImage } from './MomentImage'
+import { shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -16,22 +17,22 @@ interface SearchResults {
   mints: MomentSearchResult[]
 }
 
-// Resolves ar://… / ipfs://… URIs and falls back to an initial-letter chip
-// when the image is missing or fails to load — matches SearchModal's
-// behavior so dropdown thumbnails don't render as empty gray squares.
+// Walks the gateway pool via MomentImage; on full exhaustion (or missing src),
+// falls back to an initial-letter chip so dropdown rows never render empty.
 function ResultThumb({ src, alt, name }: { src?: string; alt: string; name: string }) {
   const [errored, setErrored] = useState(false)
   const showImage = !!src && !errored
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?'
   return (
-    <div className="w-5 h-5 flex-shrink-0 overflow-hidden">
+    <div className="relative w-5 h-5 flex-shrink-0 overflow-hidden">
       {showImage ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={resolveUri(src!)}
+        <MomentImage
+          src={src!}
           alt={alt}
-          className="w-full h-full object-cover"
-          onError={() => setErrored(true)}
+          fill
+          className="object-cover"
+          sizes="20px"
+          onAllError={() => setErrored(true)}
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#8B5CF6]/30 to-[#C084FC]/15">

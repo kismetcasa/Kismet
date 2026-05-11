@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import Image from 'next/image'
+import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract } from 'wagmi'
 import { base } from 'wagmi/chains'
@@ -9,7 +9,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
 import { parseEther, parseUnits, isAddress, type Address } from 'viem'
-import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
+import { shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
@@ -1076,8 +1076,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           >
             {selectedCollection?.image ? (
               <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
-                <Image
-                  src={resolveUri(selectedCollection.image)}
+                <MomentImage
+                  src={selectedCollection.image}
                   alt=""
                   fill
                   className="object-cover"
@@ -1182,7 +1182,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ) : (
               <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
                 {collectionOptions.map((c, idx) => {
-                  const img = c.image ? resolveUri(c.image) : null
                   const isSelected =
                     selectedCollection !== null &&
                     c.address.toLowerCase() === selectedCollection.address.toLowerCase()
@@ -1207,9 +1206,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                           : c.name
                       }
                     >
-                      {img ? (
-                        <Image
-                          src={img}
+                      {c.image ? (
+                        <MomentImage
+                          src={c.image}
                           alt={c.name}
                           fill
                           className="object-cover"

@@ -21,6 +21,7 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
+import { MomentVideo } from './MomentVideo'
 import { ProfileAvatar } from './ProfileAvatar'
 import { SplitsPanel } from './SplitsPanel'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -73,13 +74,11 @@ export function MomentModal({
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
 
   const meta = moment.metadata ?? {}
-  const imageUrl = meta.image ? resolveUri(meta.image) : null
   const isVideo =
     meta.content?.mime?.startsWith('video/') ||
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
   const isTextMoment = meta.content?.mime === 'text/plain'
-  const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   const creatorAddress = moment.creator.address
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
@@ -260,12 +259,11 @@ export function MomentModal({
             href={`/moment/${moment.address}/${moment.token_id}`}
             className="absolute inset-0 z-10 cursor-pointer"
           />
-          {isVideo && mediaUrl ? (
-            <video
-              src={mediaUrl}
+          {isVideo && meta.animation_url ? (
+            <MomentVideo
+              src={meta.animation_url}
+              poster={meta.image}
               className="w-full h-full object-contain"
-              autoPlay muted loop playsInline
-              poster={imageUrl ?? undefined}
             />
           ) : meta.image && !imgError ? (
             <MomentImage

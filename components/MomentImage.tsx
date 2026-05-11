@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
-import { gatewayUrls } from '@/lib/arweave/gateways'
+import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 
 interface CommonProps {
@@ -21,28 +21,6 @@ function isGifMime(mime?: string): boolean {
 // reliable signal.
 function isGifUri(url: string): boolean {
   return url.split(/[?#]/, 1)[0].toLowerCase().endsWith('.gif')
-}
-
-function isProxiable(uri: string): boolean {
-  return uri.startsWith('ar://') || uri.startsWith('ipfs://')
-}
-
-function proxyUrl(uri: string): string {
-  return `/api/img?u=${encodeURIComponent(uri)}`
-}
-
-function useFallbackUrl(uri: string, onAllError?: () => void) {
-  const urls = useMemo(() => gatewayUrls(uri), [uri])
-  const [index, setIndex] = useState(0)
-  useEffect(() => { setIndex(0) }, [uri])
-  return {
-    url: index < urls.length ? urls[index] : null,
-    onError: () => {
-      const next = index + 1
-      if (next >= urls.length) onAllError?.()
-      setIndex(next)
-    },
-  }
 }
 
 type DeliveryMode = 'optimized' | 'proxy' | 'direct'

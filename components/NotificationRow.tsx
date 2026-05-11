@@ -3,7 +3,8 @@
 import Link from 'next/link'
 import { Sparkles, Clock } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
-import { shortAddress, formatRelativeTime, formatPrice, resolveUri } from '@/lib/inprocess'
+import { MomentImage } from './MomentImage'
+import { shortAddress, formatRelativeTime, formatPrice } from '@/lib/inprocess'
 import type { Notification } from '@/lib/notifications'
 
 interface NotificationRowProps {
@@ -130,8 +131,11 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
 
   if (n.type === 'listing_expired') {
     if (n.tokenImage) {
-      // eslint-disable-next-line @next/next/no-img-element
-      return <img src={resolveUri(n.tokenImage)} alt="" className="object-cover flex-shrink-0" style={{ width: size, height: size }} />
+      return (
+        <div className="relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden" style={{ width: size, height: size }}>
+          <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} />
+        </div>
+      )
     }
     return (
       <div
@@ -148,8 +152,11 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
     return <div style={{ width: size, height: size }} className="bg-[#1a1a1a] flex-shrink-0" />
   }
 
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img src={resolveUri(n.tokenImage)} alt="" className="object-cover flex-shrink-0" style={{ width: size, height: size }} />
+  return (
+    <div className="relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden" style={{ width: size, height: size }}>
+      <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} />
+    </div>
+  )
 }
 
 export function NotificationRow({ notification, actorName, onClick, onMute }: NotificationRowProps) {
