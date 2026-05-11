@@ -69,12 +69,15 @@ export function encodeFixedPriceMinterArgs(mintTo: Address, comment: string): `0
   return encodeAbiParameters(parseAbiParameters('address, string'), [mintTo, comment ?? ''])
 }
 
-// OZ Multicall — every Zora 1155 collection inherits this. Lets us batch many
-// per-token mint() calls into one user signature for "collect all" on a
-// featured collection. Reverts atomically on any sub-call failure, so callers
-// MUST pre-filter eligibility (see lib/saleConfig.ts).
+// OZ Multicall — every Zora 1155 collection inherits this. Used for batching
+// admin operations on a single collection (permission grants, airdrops) into
+// one user signature; reverts atomically on any sub-call failure. Note: NOT
+// used for collect-all because multicall is `nonpayable` (matches Zora's
+// on-chain ABI — declared here to match so a future caller can't accidentally
+// attach `value` and get a dispatch revert). For batching value-carrying
+// mints see hooks/useCollectAll.ts and its EIP-5792 bundle.
 export const ZORA_MULTICALL_ABI = parseAbi([
-  'function multicall(bytes[] data) payable returns (bytes[] results)',
+  'function multicall(bytes[] data) returns (bytes[] results)',
 ])
 
 // Zora 1155: returns the splits contract address for a token (set as the

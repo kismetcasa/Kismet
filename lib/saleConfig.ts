@@ -125,9 +125,9 @@ type AnyClient = Client<Transport, Chain | undefined>
  *   - 'usdc' → ERC20Minter, additionally filtering currency === USDC_BASE
  *
  * When `account` is provided, also skips tokens where balance has hit
- * maxPerAddress — those would revert a multicall batch. Returns [] on any
- * read failure so callers stay simple and a USDC RPC blip can't crash the
- * ETH leg in mixed flows.
+ * maxPerAddress — those would revert inside an atomic EIP-5792 bundle and
+ * cascade the whole collect-all. Returns [] on any read failure so callers
+ * stay simple and a USDC RPC blip can't crash the ETH leg in mixed flows.
  *
  * Two RPC round trips: one multicall for sale configs + token info, one
  * for balances. Fail-closed on balance reads so a single revert can't

@@ -104,7 +104,8 @@ export function AdminDashboard() {
       <div>
         <h1 className="text-[#efefef] font-mono text-lg mb-2">Admin</h1>
         <p className="text-[#888] font-mono text-xs leading-relaxed">
-          Admin-only utilities. Every action below requires a fresh signed-message session.
+          Admin-only utilities. The first action this session will prompt
+          for a wallet signature.
         </p>
       </div>
 

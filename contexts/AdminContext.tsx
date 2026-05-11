@@ -225,13 +225,22 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   // Shared "ensure session, then call" wrapper used by every privileged
   // operation. Re-reads via ref after the async sign so a fresh login
   // settles in before the caller's fetch.
+  //
+  // The session-restore effect tears down stale markers on wallet change,
+  // but there's a brief render-commit window where sessionRef can still
+  // hold the previous wallet's marker. Validate the bound address here
+  // too so a click that races the effect cleanup doesn't perform an
+  // action under the prior wallet's auth.
   const ensureSession = useCallback(async (): Promise<AdminSession | null> => {
-    let s = sessionRef.current
-    if (s && s.expiresAt > Date.now()) return s
+    const valid = (s: AdminSession | null) =>
+      !!s &&
+      s.expiresAt > Date.now() &&
+      !!address &&
+      s.address === address.toLowerCase()
+    if (valid(sessionRef.current)) return sessionRef.current
     await startSession()
-    s = sessionRef.current
-    return s && s.expiresAt > Date.now() ? s : null
-  }, [startSession])
+    return valid(sessionRef.current) ? sessionRef.current : null
+  }, [address, startSession])
 
   const toggleFeatured = useCallback(
     async (collectionAddress: string, tokenId: string) => {

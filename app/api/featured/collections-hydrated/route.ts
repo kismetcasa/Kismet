@@ -70,11 +70,14 @@ export async function GET() {
   const collections = await Promise.all(
     refs.map(async (ref): Promise<HydratedFeaturedCollection | null> => {
       // Trust-boundary validation: refuse a featured entry whose address
-      // isn't a well-formed hex address. getAddress also normalizes to
-      // checksum so downstream comparisons stay consistent.
+      // isn't a well-formed hex address. We normalize to lowercase rather
+      // than checksum because the rest of this codebase keys by lowercase
+      // (Redis members, hidden-set membership, downstream comparisons), so
+      // returning mixed-case here would silently break case-sensitive
+      // equality checks in consumers.
       let address: Address
       try {
-        address = getAddress(ref.address)
+        address = getAddress(ref.address).toLowerCase() as Address
       } catch {
         console.error('[featured/collections-hydrated] malformed address in KV', ref.address)
         return null
