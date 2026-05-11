@@ -17,7 +17,7 @@ import { CollectAllAction } from './CollectAllAction'
 export interface CollectionDisplay {
   contractAddress: string
   name?: string
-  metadata?: { name?: string; image?: string; description?: string }
+  metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
   // inprocess `/api/collection` (singular) extras — used when present
   default_admin?: { address?: string; username?: string }
   created_at?: string
@@ -85,6 +85,7 @@ export function CollectionCard({ collection, primaryAction, priority }: Collecti
             onAllError={() => setImgFailed(true)}
             priority={priority}
             preferProxy
+            thumbhash={c.metadata.kismet_thumbhash}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">

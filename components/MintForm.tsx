@@ -11,6 +11,7 @@ import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
 import { parseEther, parseUnits, isAddress, type Address } from 'viem'
 import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
+import { generateThumbhash } from '@/lib/media/thumbhash'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -451,6 +452,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     async function trackAndVerifyAutoDeploy(
       contractAddress: string,
       imageUri: string | undefined,
+      thumbhash?: string,
     ): Promise<void> {
       verifyTargetRef.current = contractAddress
 
@@ -466,6 +468,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         image: imageUri,
         artist: address,
         source: 'auto-deploy',
+        kismet_thumbhash: thumbhash,
       })
 
       if (publicClient && smartWalletForCaller && isAddress(smartWalletForCaller)) {
@@ -602,6 +605,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('uploading-media')
         setUploadProgress(0)
         toast.loading('Uploading media to Arweave…', { id: 'mint' })
+        // Fire-and-forget — runs concurrent with the upload; we await it
+        // below right before assembling the metadata JSON. Returns null on
+        // any failure so the upload path stays unaffected.
+        const thumbhashPromise = generateThumbhash(file!)
         const mediaUri = await uploadToArweave(file!, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
@@ -619,11 +626,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('uploading-metadata')
         setUploadProgress(0)
         toast.loading('Uploading metadata…', { id: 'mint' })
+        const thumbhash = await thumbhashPromise
         const metadata = {
           name: name.trim(),
           description: description.trim(),
           image: mediaUri,
           ...(file!.type.startsWith('video/') ? { animation_url: mediaUri } : {}),
+          ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         }
         const metadataUri = await uploadJson(metadata)
         const metadataVerify = verifyArweaveAvailable(metadataUri)
@@ -639,6 +648,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             name: resolvedCollectionName,
             description: description.trim(),
             image: mediaUri,
+            ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
             createReferral: CREATE_REFERRAL,
           }
           collectionUri = await uploadJson(collectionMetadata)
@@ -712,8 +722,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // The moment's media doubles as the collection cover for
           // first-mint UX; pass mediaUri so the KV registration can
           // store it and the collection card has a non-blank image
-          // immediately.
-          void trackAndVerifyAutoDeploy(data.contractAddress, mediaUri)
+          // immediately. thumbhash piggybacks for the cover placeholder.
+          void trackAndVerifyAutoDeploy(data.contractAddress, mediaUri, thumbhash ?? undefined)
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })

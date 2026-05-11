@@ -11,6 +11,7 @@ import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
 import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions } from '@/lib/collections'
 import { CREATE_REFERRAL, OPERATOR_SMART_WALLET } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
+import { generateThumbhash } from '@/lib/media/thumbhash'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -59,6 +60,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [collectionAddress, setCollectionAddress] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
   const [deployedImageUri, setDeployedImageUri] = useState<string | undefined>(undefined)
+  // Set during the upload step so the KV write below (which races the deploy
+  // tx) can include the thumbhash on the collection's first KV entry — gives
+  // the collection page a blurDataURL placeholder on first paint.
+  const [coverThumbhash, setCoverThumbhash] = useState<string | undefined>(undefined)
 
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
@@ -341,6 +346,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         // lands at tokenId 1 deterministically. Marking it keeps the cover
         // out of every Mints feed (it lives on the collection card instead).
         coverTokenId: mintCover ? '1' : undefined,
+        kismet_thumbhash: coverThumbhash,
       })
       onDeployed?.(deployedAddress, name)
 
@@ -412,6 +418,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       setStep('uploading-image')
       setUploadProgress(0)
       toast.loading('Uploading cover image…', { id: 'create-collection' })
+      // Runs concurrent with upload; awaited just before assembling metadata.
+      const thumbhashPromise = generateThumbhash(coverFile)
       const imageUri = await uploadToArweave(coverFile, (pct) => {
         setUploadProgress(pct)
         toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
@@ -438,10 +446,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       setStep('uploading-metadata')
       toast.loading('Uploading collection metadata…', { id: 'create-collection' })
+      const thumbhash = await thumbhashPromise
+      if (thumbhash) setCoverThumbhash(thumbhash)
       const metadata: Record<string, unknown> = {
         name: name.trim(),
         description: description.trim(),
         image: imageUri,
+        ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         createReferral: CREATE_REFERRAL,
       }
       const contractURI = await uploadJson(metadata)

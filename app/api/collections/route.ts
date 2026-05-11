@@ -327,6 +327,9 @@ export async function POST(req: NextRequest) {
     // tokenId minted as the collection's cover (Create Collection form
     // only). Marked as a created-mint so it surfaces in the Mints feed.
     coverTokenId?: string
+    // Base64 thumbhash for the cover — surfaced as blurDataURL on the
+    // collection page before the Arweave metadata fetch lands.
+    kismet_thumbhash?: string
   }
   try {
     body = await req.json()
@@ -391,6 +394,7 @@ export async function POST(req: NextRequest) {
       image: body.image,
       description: body.description,
       artist: sessionAddress,
+      ...(body.kismet_thumbhash ? { kismet_thumbhash: body.kismet_thumbhash } : {}),
     },
     source,
   )

@@ -28,6 +28,7 @@ interface CollectionDetail {
     name?: string
     image?: string
     description?: string
+    kismet_thumbhash?: string
   }
 }
 
@@ -54,7 +55,7 @@ async function fetchCollectionDetail(address: string): Promise<CollectionDetail 
 
 async function fetchCollectionMeta(
   address: string
-): Promise<{ name?: string; image?: string; description?: string } | null> {
+): Promise<{ name?: string; image?: string; description?: string; kismet_thumbhash?: string } | null> {
   try {
     const url = new URL(`${INPROCESS_API}/collections`)
     url.searchParams.set('address', address)
@@ -170,6 +171,8 @@ export default async function CollectionPage({ params }: Props) {
     image: kvMeta?.image ?? meta?.image ?? detail?.metadata?.image,
     description:
       kvMeta?.description ?? meta?.description ?? detail?.metadata?.description,
+    kismet_thumbhash:
+      kvMeta?.kismet_thumbhash ?? meta?.kismet_thumbhash ?? detail?.metadata?.kismet_thumbhash,
   }
 
   const showPayout =
@@ -182,6 +185,7 @@ export default async function CollectionPage({ params }: Props) {
       address={address}
       collectionName={displayMeta?.name}
       collectionImage={displayMeta?.image}
+      collectionThumbhash={displayMeta?.kismet_thumbhash}
       collectionDescription={displayMeta?.description}
       isTracked={!!kvMeta}
       defaultAdminUsername={adminUsername}

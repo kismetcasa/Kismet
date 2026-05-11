@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
 import { gatewayUrls } from '@/lib/arweave/gateways'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 
 interface CommonProps {
   /** Raw URI: ar://, ipfs://, https://, blob:, or data: */
@@ -58,6 +59,14 @@ type NextImageProps = CommonProps & {
    * medium-or-larger display sizes where unoptimized bytes are acceptable.
    */
   preferProxy?: boolean
+  /**
+   * Base64-encoded thumbhash from the moment's metadata. When present, the
+   * decoded blurDataURL is rendered behind the image as an instant low-fi
+   * preview — replaces the skeleton overlay for moments minted with the
+   * Track B pipeline. Older moments without a thumbhash fall back to the
+   * skeleton automatically.
+   */
+  thumbhash?: string
 } & Omit<ImageProps, 'src' | 'onError'>
 
 /**
@@ -71,11 +80,12 @@ type NextImageProps = CommonProps & {
  *              proxy     → direct
  *              direct    → walk next gateway → onAllError
  */
-export function MomentImage({ src, onAllError, mime, preferProxy, priority, ...rest }: NextImageProps) {
+export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, priority, ...rest }: NextImageProps) {
   const { url, onError: walkGateway } = useFallbackUrl(src, onAllError)
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
   const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
+  const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
 
   const initialMode: DeliveryMode = skipOptimizer
     ? (proxiable ? 'proxy' : 'direct')
@@ -112,7 +122,9 @@ export function MomentImage({ src, onAllError, mime, preferProxy, priority, ...r
 
   return (
     <>
-      {!loaded && (
+      {/* Skeleton only when there's no thumbhash blur to show in its place —
+          the blur is a better-quality placeholder so it wins when available. */}
+      {!loaded && !blurDataURL && (
         <span
           aria-hidden
           className="absolute inset-0 bg-[#1a1a1a] animate-pulse pointer-events-none"
@@ -130,6 +142,8 @@ export function MomentImage({ src, onAllError, mime, preferProxy, priority, ...r
         onLoad={() => setLoaded(true)}
         decoding="async"
         priority={priority}
+        placeholder={blurDataURL ? 'blur' : 'empty'}
+        blurDataURL={blurDataURL ?? undefined}
         {...rest}
       />
     </>

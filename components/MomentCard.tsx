@@ -201,6 +201,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
               onAllError={() => setImgError(true)}
               sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
               mime={meta.content?.mime}
+              thumbhash={meta.kismet_thumbhash}
               priority={priority}
             />
           ) : isTextMoment ? (

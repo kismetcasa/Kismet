@@ -276,6 +276,7 @@ export function MomentModal({
               onAllError={() => setImgError(true)}
               sizes="(max-width: 768px) 100vw, 50vw"
               mime={meta.content?.mime}
+              thumbhash={meta.kismet_thumbhash}
               // Modal opens on click — user is actively waiting for this image,
               // so it's effectively above-the-fold even though it wasn't on
               // initial paint.

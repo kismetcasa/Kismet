@@ -30,6 +30,9 @@ export interface RegisterCollectionPayload {
   // Server flags it as a created-mint so the cover surfaces in the Mints
   // feed alongside MintForm mints.
   coverTokenId?: string
+  // Base64 thumbhash for the cover — surfaces as a blurDataURL placeholder
+  // on the collection page before Arweave metadata is fetched.
+  kismet_thumbhash?: string
 }
 
 export async function registerCollectionWithBackoff(

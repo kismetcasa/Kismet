@@ -29,6 +29,7 @@ export interface CollectionMeta {
   image?: string
   description?: string
   artist?: string // lowercased deployer address
+  kismet_thumbhash?: string
 }
 
 export type CollectionSource = 'create-form' | 'auto-deploy'

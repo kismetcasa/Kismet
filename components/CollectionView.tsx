@@ -53,6 +53,7 @@ interface CollectionViewProps {
   address: string
   collectionName?: string
   collectionImage?: string
+  collectionThumbhash?: string
   collectionDescription?: string
   // Whether this collection was deployed through our platform (KV-tracked).
   // Used to distinguish "empty — indexing" from "empty — truly nothing here".
@@ -76,6 +77,7 @@ export function CollectionView({
   address,
   collectionName,
   collectionImage,
+  collectionThumbhash,
   collectionDescription,
   isTracked = false,
   defaultAdminUsername,
@@ -605,6 +607,9 @@ export function CollectionView({
   const displayName = collectionName || shortAddress(address)
   const firstMoment = loadedMoments[0]
   const rawImgUrl = collectionImage || firstMoment?.metadata?.image
+  // Same fall-through logic as the URL: prefer collection-level thumbhash;
+  // when the cover falls back to firstMoment, use its thumbhash too.
+  const coverThumbhash = collectionImage ? collectionThumbhash : firstMoment?.metadata?.kismet_thumbhash
   const description = collectionDescription
 
   // Unique creator addresses across all loaded moments — surfaces
@@ -649,6 +654,7 @@ export function CollectionView({
               sizes="(max-width: 640px) 96px, 128px"
               priority
               preferProxy
+              thumbhash={coverThumbhash}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">

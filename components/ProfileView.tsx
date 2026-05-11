@@ -37,7 +37,7 @@ interface Payment {
 interface ArtistCollection {
   contractAddress: string
   name: string
-  metadata?: { name?: string; image?: string; description?: string }
+  metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
   createdAt?: string
 }
 
@@ -54,7 +54,7 @@ interface AirdropRecord {
 // Collection preview thumbnail with multi-gateway fallback. MomentImage
 // returns null if every gateway 404s; we wire onAllError to swap in
 // the "no preview" placeholder so the tile never renders empty.
-function CollectionPreviewImage({ src, alt }: { src?: string; alt: string }) {
+function CollectionPreviewImage({ src, alt, thumbhash }: { src?: string; alt: string; thumbhash?: string }) {
   const [failed, setFailed] = useState(false)
   if (!src || failed) {
     return (
@@ -72,6 +72,7 @@ function CollectionPreviewImage({ src, alt }: { src?: string; alt: string }) {
       sizes="(max-width: 640px) 50vw, 33vw"
       onAllError={() => setFailed(true)}
       preferProxy
+      thumbhash={thumbhash}
     />
   )
 }
@@ -464,7 +465,7 @@ export function ProfileView({ address }: ProfileViewProps) {
             return (
               <div key={c.contractAddress} className="flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
                 <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-[#111] block overflow-hidden group/img">
-                  <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} />
+                  <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} thumbhash={c.metadata?.kismet_thumbhash} />
                 </Link>
                 <div className="px-3 pt-3 pb-2 flex flex-col gap-0.5">
                   <h3 className="text-sm text-[#efefef] font-mono truncate">{collectionName}</h3>

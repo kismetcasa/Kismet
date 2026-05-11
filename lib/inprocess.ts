@@ -29,6 +29,13 @@ export interface MomentMetadataInline {
   animation_url?: string
   external_url?: string
   content?: { uri?: string; mime?: string }
+  /**
+   * Base64-encoded thumbhash (~25 bytes) generated at upload time. When
+   * present, MomentImage renders it as a blurDataURL placeholder for an
+   * instant low-fi preview while real bytes load. Custom field — namespaced
+   * to survive indexer passthrough of unknown JSON keys.
+   */
+  kismet_thumbhash?: string
 }
 
 // Moment object as returned by GET /api/timeline (metadata inlined)
@@ -108,6 +115,7 @@ export interface MomentDetail {
     image?: string
     animation_url?: string
     content?: { mime?: string; uri?: string }
+    kismet_thumbhash?: string
   }
   // Set by /api/moment from the kismetart:hidden-moments KV. True when the
   // creator has hidden the moment from public feeds. Detail page renders
