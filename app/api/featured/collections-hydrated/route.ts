@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { type Address } from 'viem'
+import { getAddress, type Address } from 'viem'
+import { isValidTokenId } from '@/lib/address'
 import { redis, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
 import { INPROCESS_API, type Moment } from '@/lib/inprocess'
@@ -56,14 +57,24 @@ export async function GET() {
 
   const collections = await Promise.all(
     refs.map(async (ref): Promise<HydratedFeaturedCollection | null> => {
+      // Trust-boundary validation: refuse a featured entry whose address
+      // isn't a well-formed hex address. getAddress also normalizes to
+      // checksum so downstream comparisons stay consistent.
+      let address: Address
+      try {
+        address = getAddress(ref.address)
+      } catch {
+        console.error('[featured/collections-hydrated] malformed address in KV', ref.address)
+        return null
+      }
       try {
         const [collRes, tlRes] = await Promise.all([
-          fetch(`${INPROCESS_API}/collection/${ref.address}`, {
+          fetch(`${INPROCESS_API}/collection/${address}`, {
             headers: { Accept: 'application/json' },
             next: { revalidate: 60 },
           }),
           fetch(
-            `${INPROCESS_API}/timeline?collection=${ref.address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=8453`,
+            `${INPROCESS_API}/timeline?collection=${address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=8453`,
             {
               headers: { Accept: 'application/json' },
               next: { revalidate: 60 },
@@ -100,12 +111,16 @@ export async function GET() {
 
         // Filter to ETH- and USDC-eligible tokens in parallel. No `account`
         // here — the per-user "skip already-owned" pass runs client-side at
-        // click time.
-        const tokenIds = previewMoments.map((m) => BigInt(m.token_id))
+        // click time. Drop non-decimal token IDs first so BigInt() can't
+        // throw on a malformed inprocess response.
+        const tokenIds = previewMoments
+          .map((m) => String(m.token_id))
+          .filter(isValidTokenId)
+          .map(BigInt)
         const [ethEligible, usdcEligible] = tokenIds.length > 0
           ? await Promise.all([
-              fetchEligibleTokens(client, ref.address as Address, tokenIds, 'eth'),
-              fetchEligibleTokens(client, ref.address as Address, tokenIds, 'usdc'),
+              fetchEligibleTokens(client, address, tokenIds, 'eth'),
+              fetchEligibleTokens(client, address, tokenIds, 'usdc'),
             ])
           : [[], []]
         const ethEligibleTotalWei = ethEligible
@@ -116,7 +131,7 @@ export async function GET() {
           .toString()
 
         return {
-          contractAddress: ref.address,
+          contractAddress: address,
           name: collection.name,
           metadata: collection.metadata,
           default_admin: collection.default_admin,
@@ -127,7 +142,10 @@ export async function GET() {
           usdcEligibleTotalUsdc,
           featuredAt: ref.featuredAt,
         }
-      } catch {
+      } catch (err) {
+        // Log with the address so partial-feed failures are diagnosable
+        // without crashing the whole hydrator response.
+        console.error('[featured/collections-hydrated] failed to hydrate', address, err)
         return null
       }
     }),

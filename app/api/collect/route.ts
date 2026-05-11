@@ -115,7 +115,16 @@ export async function POST(req: NextRequest) {
   const account = body.account?.toLowerCase()
   const amount = Number(body.amount ?? 1)
   const comment = body.comment
-  const pricePerToken = body.pricePerToken
+  // Validate price as a non-negative decimal of plausible size before storing
+  // it on the notification — otherwise a malicious client could record a
+  // fictional "9999 ETH" price to fake "big collect" social proof. 30 digits
+  // comfortably exceeds 2^96 (uint96 pricePerToken max) without imposing a
+  // semantic cap; the strict-equality on-chain check already prevents the
+  // user from actually paying anything other than the real price.
+  const pricePerToken =
+    typeof body.pricePerToken === 'string' && /^\d{1,30}$/.test(body.pricePerToken)
+      ? body.pricePerToken
+      : undefined
   const currency = body.currency === 'usdc' || body.currency === 'eth' ? body.currency : undefined
   const txHash = body.txHash
 
@@ -157,7 +166,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, idempotent: true })
   }
 
-  const safeAmount = Number.isFinite(amount) && amount > 0 ? amount : 1
+  // Bound amount to a sane ceiling — collect-all hardcodes 1, useDirectCollect
+  // accepts user input. 1000 is far above any plausible single-mint quantity
+  // and prevents a malicious client from recording absurd notification counts.
+  const safeAmount = Number.isFinite(amount) && amount > 0
+    ? Math.min(Math.floor(amount), 1000)
+    : 1
 
   await Promise.all([
     redis.zincrby('kismetart:trending', 1, `${collectionLower}:${tokenId}`).catch(() => {}),

@@ -2,10 +2,11 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { useAccount, useConfig, usePublicClient, useSendCalls, useWalletClient } from 'wagmi'
-import { waitForCallsStatus } from '@wagmi/core'
+import { getAccount, waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
-import { encodeFunctionData, parseEther, type Address, type Hex } from 'viem'
+import { encodeFunctionData, getAddress, parseEther, type Address, type Hex } from 'viem'
+import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { isUserRejection, toastError } from '@/lib/toast'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
@@ -139,7 +140,7 @@ export function useCollectAll(): UseCollectAllReturn {
 
   const collectAll = useCallback(
     async (args: CollectAllArgs) => {
-      const { collectionAddress, ethCandidateTokenIds, usdcCandidateTokenIds } = args
+      const { ethCandidateTokenIds, usdcCandidateTokenIds } = args
 
       if (!address) {
         toast.error('Connect a wallet to collect')
@@ -149,7 +150,22 @@ export function useCollectAll(): UseCollectAllReturn {
         toast.error('Network unavailable')
         return null
       }
-      if (ethCandidateTokenIds.length === 0 && usdcCandidateTokenIds.length === 0) {
+      // Defense in depth at the trust boundary: normalize and validate the
+      // collection address before any encoding uses it. The interface types
+      // it as Address, but a bad `as Address` cast upstream would otherwise
+      // slip through silently.
+      let collectionAddress: Address
+      try {
+        collectionAddress = getAddress(args.collectionAddress)
+      } catch {
+        toast.error('Invalid collection address')
+        return null
+      }
+      // Drop any non-decimal candidate IDs before BigInt() — a malformed
+      // string from upstream would throw synchronously and abort the hook.
+      const ethIds = ethCandidateTokenIds.filter(isValidTokenId)
+      const usdcIds = usdcCandidateTokenIds.filter(isValidTokenId)
+      if (ethIds.length === 0 && usdcIds.length === 0) {
         toast.info('Nothing to collect in this collection')
         return null
       }
@@ -166,22 +182,22 @@ export function useCollectAll(): UseCollectAllReturn {
         // skip tokens already at the per-account cap. A revert in any single
         // bundled call would cascade on atomic wallets.
         const [ethEligible, usdcEligible] = await Promise.all([
-          ethCandidateTokenIds.length > 0
+          ethIds.length > 0
             ? fetchEligibleTokens(
                 publicClient,
                 collectionAddress,
-                ethCandidateTokenIds.map((s) => BigInt(s)),
+                ethIds.map(BigInt),
                 'eth',
-                address as Address,
+                address,
               )
             : Promise.resolve<EligibleToken[]>([]),
-          usdcCandidateTokenIds.length > 0
+          usdcIds.length > 0
             ? fetchEligibleTokens(
                 publicClient,
                 collectionAddress,
-                usdcCandidateTokenIds.map((s) => BigInt(s)),
+                usdcIds.map(BigInt),
                 'usdc',
-                address as Address,
+                address,
               )
             : Promise.resolve<EligibleToken[]>([]),
         ])
@@ -215,7 +231,7 @@ export function useCollectAll(): UseCollectAllReturn {
           if (mintFee > MAX_REASONABLE_MINT_FEE_WEI) {
             throw new Error('Refusing to mint: protocol mint fee exceeds safety bound')
           }
-          const minterArgs = encodeFixedPriceMinterArgs(address as Address, '')
+          const minterArgs = encodeFixedPriceMinterArgs(address, '')
           for (const e of ethBatch) {
             segments.push({
               call: {
@@ -255,7 +271,7 @@ export function useCollectAll(): UseCollectAllReturn {
             address: USDC_BASE,
             abi: ERC20_ABI,
             functionName: 'allowance',
-            args: [address as Address, ZORA_ERC20_MINTER],
+            args: [address, ZORA_ERC20_MINTER],
           })
           if (currentAllowance < usdcTotal) {
             segments.push({
@@ -280,7 +296,7 @@ export function useCollectAll(): UseCollectAllReturn {
                   abi: ZORA_ERC20_MINTER_ABI,
                   functionName: 'mint',
                   args: [
-                    address as Address,
+                    address,
                     1n,
                     collectionAddress,
                     e.tokenId,
@@ -302,6 +318,15 @@ export function useCollectAll(): UseCollectAllReturn {
 
         const calls = segments.map((s) => s.call)
         const totalMints = ethBatch.length + usdcBatch.length
+
+        // Defense in depth: read fresh chain state from the wagmi store
+        // right before send. ensureBase() ran at the top, but the user
+        // could have switched networks during the eligibility re-check
+        // window. Reading via getAccount(config) bypasses any closure
+        // staleness from the hook's render-time useAccount snapshot.
+        if (getAccount(config).chainId !== base.id) {
+          throw new Error('Switched off Base — retry to continue')
+        }
 
         setStatus('minting')
         toast.loading(`Confirm in wallet — collecting ${totalMints}…`, {
@@ -439,12 +464,14 @@ export function useCollectAll(): UseCollectAllReturn {
         }
 
         if (recorded.length === 0) {
+          // Only 'failure' is a known wagmi terminal state worth surfacing
+          // verbatim. Anything else (pending, success-without-receipts,
+          // shape mismatch) collapses to a generic message rather than
+          // leaking wagmi internals to the user.
           throw new Error(
             bundleStatus === 'failure'
               ? 'Bundle reverted on-chain'
-              : bundleStatus
-                ? `Bundle ${bundleStatus}`
-                : 'No mints landed',
+              : 'Bundle did not complete on-chain',
           )
         }
 
@@ -482,10 +509,11 @@ export function useCollectAll(): UseCollectAllReturn {
           )
         } else {
           // Partial — common in sequential-fallback mode when a later
-          // sub-tx reverts (sale ended mid-bundle, slippage, etc.). Be
-          // explicit so the user knows their wallet history is correct.
+          // sub-tx reverts (sale ended mid-bundle, etc.). On-chain mints
+          // that reverted aren't charged, so reassure the user explicitly.
+          const failed = totalMints - recorded.length
           toast.warning(
-            `Collected ${recorded.length} of ${totalMints} — see your wallet for the rest`,
+            `Collected ${recorded.length} of ${totalMints} — ${failed} reverted (not charged)`,
             { id: TOAST_ID },
           )
         }

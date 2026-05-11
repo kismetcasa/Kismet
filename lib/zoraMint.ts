@@ -1,10 +1,23 @@
 import { encodeAbiParameters, parseAbi, parseAbiParameters, type Address } from 'viem'
 
 // Zora 1155 protocol — Base mainnet (chainId 8453).
-// Verified against @zoralabs/protocol-deployments and the inprocess.world
-// protocol SDK (lib/protocolSdk/constants.ts). Inprocess uses these same
-// addresses for collections deployed through their factory, so collects
-// against any inprocess-deployed token route through the same strategies.
+//
+// IMPORTANT: ZORA_FIXED_PRICE_STRATEGY is the FPSS variant inprocess.world's
+// collection factory wires onto tokens deployed through their SDK — NOT the
+// canonical Zora protocol-deployments FPSS (0x04E2516A2c207E84a1839755675dfd8eF6302F0a,
+// see @zoralabs/protocol-deployments). Both are valid Zora-protocol FPSS
+// implementations; they're independent deployments. This codebase only
+// surfaces inprocess-deployed collections in featured feeds, so this is the
+// correct strategy to read sale configs from + pass as `minter` in mint().
+//
+// If a non-inprocess Zora collection were ever featured, fetchEligibleTokens
+// would read this FPSS, get all-zeros (no sale configured here), and silently
+// filter the token out of collect-all. Fail-safe (no funds risk), but a
+// product gap to track if cross-platform features ship.
+//
+// ERC20_MINTER below is the canonical Zora ERC20Minter on Base (shared across
+// inprocess and Zora-native collections — Zora doesn't fork ERC20Minter the
+// way the FPSS deployment splits).
 export const ZORA_FIXED_PRICE_STRATEGY: Address = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
 export const ZORA_ERC20_MINTER: Address = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014'
 
