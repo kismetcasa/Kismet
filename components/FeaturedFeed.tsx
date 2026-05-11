@@ -74,12 +74,23 @@ export function FeaturedFeed({ emptyMessage }: FeaturedFeedProps) {
             key={`m-${i}`}
             className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"
           >
-            {b.items.map((m) => (
-              <MomentCard key={m.id || `${m.address}-${m.token_id}`} moment={m} />
+            {/* Prioritize the first row of moments only when it leads the
+                feed (i === 0). Subsequent moment blocks render below other
+                content and shouldn't compete with LCP. */}
+            {b.items.map((m, idx) => (
+              <MomentCard
+                key={m.id || `${m.address}-${m.token_id}`}
+                moment={m}
+                priority={i === 0 && idx < 3}
+              />
             ))}
           </div>
         ) : (
-          <CollectionRow key={`c-${b.row.contractAddress}`} collection={b.row} />
+          <CollectionRow
+            key={`c-${b.row.contractAddress}`}
+            collection={b.row}
+            priority={i === 0}
+          />
         ),
       )}
     </div>

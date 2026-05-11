@@ -622,6 +622,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   className="object-contain"
                   sizes="(max-width: 768px) 100vw, 50vw"
                   priority
+                  mime={meta.content?.mime}
                   onAllError={() => setImgError(true)}
                 />
               ) : !detail ? (

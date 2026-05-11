@@ -30,9 +30,14 @@ interface MomentCardProps {
   moment: Moment
   hidePriceSupply?: boolean
   directLink?: boolean
+  /**
+   * Above-the-fold hint. Forwards next/image priority + fetchpriority=high
+   * so the first row of a feed isn't lazy-loaded behind hydration.
+   */
+  priority?: boolean
 }
 
-export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardProps) {
+export function MomentCard({ moment, hidePriceSupply, directLink, priority }: MomentCardProps) {
   const router = useRouter()
   const [imgError, setImgError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
@@ -195,6 +200,8 @@ export function MomentCard({ moment, hidePriceSupply, directLink }: MomentCardPr
               className="object-contain transition-transform duration-500 group-hover:scale-105"
               onAllError={() => setImgError(true)}
               sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+              mime={meta.content?.mime}
+              priority={priority}
             />
           ) : isTextMoment ? (
             <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">

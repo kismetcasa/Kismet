@@ -6,6 +6,8 @@ import { RefreshCw } from 'lucide-react'
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
   remove: () => void
+  /** 0-based position; callers use this to mark above-the-fold items as priority. */
+  index: number
 }
 
 interface PaginatedGridProps<T> {
@@ -133,10 +135,11 @@ export function PaginatedGrid<T>({
       {!loading && visible.length > 0 && (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {visible.map((item) => {
+            {visible.map((item, index) => {
               const key = getKey(item)
               return renderItem(item, {
                 remove: () => setItems((prev) => prev.filter((it) => getKey(it) !== key)),
+                index,
               })
             })}
           </div>

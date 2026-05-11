@@ -132,8 +132,10 @@ function MomentFeed({
       apiUrl={apiUrl}
       itemsKey="moments"
       getKey={(m) => `${m.address}-${m.token_id}`}
-      renderItem={(m) => (
-        <MomentCard key={`${m.address}-${m.token_id}`} moment={m} />
+      renderItem={(m, { index }) => (
+        // First row at lg+ is 3 cards; prioritize those so their hero image
+        // skips lazy-loading and gets fetchpriority=high on the gateway round-trip.
+        <MomentCard key={`${m.address}-${m.token_id}`} moment={m} priority={index < 3} />
       )}
       empty={
         <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
@@ -163,8 +165,8 @@ function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
       apiUrl="/api/collections?feed=1"
       itemsKey="collections"
       getKey={(c) => c.contractAddress}
-      renderItem={(c) => (
-        <CollectionCard key={c.contractAddress} collection={c} />
+      renderItem={(c, { index }) => (
+        <CollectionCard key={c.contractAddress} collection={c} priority={index < 3} />
       )}
       filter={filter}
       empty={

@@ -29,9 +29,12 @@ interface CollectionRowProps {
   // Replaces the default cost-preview + collect-all action block. Most
   // callers leave this undefined and get the canonical bulk-collect UX.
   primaryAction?: React.ReactNode
+  // Above-the-fold hint forwarded to the cover image (and propagated to the
+  // first horizontal MomentCard so the row's LCP candidate isn't lazy-loaded).
+  priority?: boolean
 }
 
-export function CollectionRow({ collection, primaryAction }: CollectionRowProps) {
+export function CollectionRow({ collection, primaryAction, priority }: CollectionRowProps) {
   const c = collection
   const name = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
@@ -88,6 +91,7 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
               sizes="(max-width: 768px) 100vw, 41vw"
               onAllError={() => setImgFailed(true)}
+              priority={priority}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
@@ -138,12 +142,15 @@ export function CollectionRow({ collection, primaryAction }: CollectionRowProps)
             <span className="text-xs font-mono text-[#555]">no moments yet</span>
           </div>
         ) : (
-          c.moments.map((m) => (
+          c.moments.map((m, idx) => (
             <div
               key={m.id || `${m.address}-${m.token_id}`}
               className="snap-start flex-shrink-0 w-[80%] md:w-[calc(33.333%-0.5rem)]"
             >
-              <MomentCard moment={m} hidePriceSupply />
+              {/* When this row is above-the-fold, prioritize only the first
+                  visible mint in the horizontal scroller — anything past idx 0
+                  is already off-screen on mobile and barely peeks on desktop. */}
+              <MomentCard moment={m} hidePriceSupply priority={priority && idx === 0} />
             </div>
           ))
         )}

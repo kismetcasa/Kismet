@@ -275,6 +275,11 @@ export function MomentModal({
               className="object-contain"
               onAllError={() => setImgError(true)}
               sizes="(max-width: 768px) 100vw, 50vw"
+              mime={meta.content?.mime}
+              // Modal opens on click — user is actively waiting for this image,
+              // so it's effectively above-the-fold even though it wasn't on
+              // initial paint.
+              priority
             />
           ) : isTextMoment ? (
             <div className="w-full h-full flex flex-col p-6 sm:p-8 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">

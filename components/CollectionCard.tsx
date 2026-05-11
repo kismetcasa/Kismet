@@ -36,9 +36,12 @@ interface CollectionCardProps {
   // Override the action slot under "view collection". Default = bulk
   // "collect all" button when ETH-eligible tokens exist, otherwise empty.
   primaryAction?: React.ReactNode
+  // Above-the-fold hint — forwarded to the cover image so the first row's
+  // LCP target doesn't lazy-load.
+  priority?: boolean
 }
 
-export function CollectionCard({ collection, primaryAction }: CollectionCardProps) {
+export function CollectionCard({ collection, primaryAction, priority }: CollectionCardProps) {
   const c = collection
   const collectionName = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
@@ -80,6 +83,7 @@ export function CollectionCard({ collection, primaryAction }: CollectionCardProp
             className="object-contain transition-transform duration-500 group-hover/img:scale-105"
             sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
             onAllError={() => setImgFailed(true)}
+            priority={priority}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
