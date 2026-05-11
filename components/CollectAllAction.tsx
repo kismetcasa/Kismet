@@ -58,8 +58,8 @@ function statusLabel(status: ReturnType<typeof useCollectAll>['status']): string
 
 /**
  * Cost-preview chip + "collect all" button. Bundles up to MAX_COLLECT_ALL_BATCH
- * mints — across ETH (1155 multicall) and USDC (ERC20Minter calls) — into a
- * single EIP-5792 wallet_sendCalls. Atomic on supporting wallets, sequential
+ * mints — across ETH (1155.mint per token) and USDC (ERC20Minter calls) — into
+ * a single EIP-5792 wallet_sendCalls. Atomic on supporting wallets, sequential
  * fallback on others.
  *
  * Returns null when nothing's eligible at all (sale ended, sold out, exotic

@@ -18,7 +18,6 @@ import {
   ZORA_ERC20_MINTER,
   ZORA_ERC20_MINTER_ABI,
   ZORA_FIXED_PRICE_STRATEGY,
-  ZORA_MULTICALL_ABI,
   encodeFixedPriceMinterArgs,
 } from '@/lib/zoraMint'
 
@@ -52,8 +51,8 @@ interface RecordEntry {
 // Bundle calls and the record entries they're responsible for stay in
 // lockstep so that, after waitForCallsStatus returns, we can attribute
 // each receipt's success/failure back to the exact tokens it covered.
-// USDC.approve has no records (it's a setup call); ETH multicall carries
-// every ETH mint's record; USDC mints carry one record each.
+// USDC.approve has no records (it's a setup call); every mint call —
+// ETH or USDC — carries exactly one record.
 interface CallSegment {
   call: { to: Address; data: Hex; value?: bigint }
   records: RecordEntry[]
@@ -96,14 +95,17 @@ function isUnsupportedMethodError(err: unknown, depth = 0): boolean {
  * back to sequential prompts via experimental_fallback.
  *
  * Bundle layout (in order, only the legs we have eligible tokens for):
- *   1. ETH leg — one 1155.multicall(bytes[]) carrying all ETH mints
+ *   1. ETH mints — one 1155.mint(...) per token. We deliberately do NOT
+ *      wrap these in OZ's multicall(bytes[]): that path uses delegatecall,
+ *      which replicates the outer msg.value across every sub-call instead
+ *      of partitioning it (OZ advisory GHSA-7grf-83vw-6f5x). Zora's
+ *      FixedPriceSaleStrategy enforces strict ethValueSent equality and
+ *      reverts WrongValueSent for any N>1 bundle. The EIP-5792 bundle
+ *      itself gives us the atomic-batch UX one signature would.
  *   2. USDC.approve(ERC20Minter, exactBatchTotal) — only when current
  *      allowance is below batch total. Bounded to the exact total per
  *      2024+ approval security guidance (no MaxUint256).
- *   3. USDC mints — one ERC20Minter.mint(...) per token (the minter
- *      doesn't expose a verified Multicall(bytes[]) entry point, so
- *      we list each mint as its own call in the bundle and let the
- *      wallet bundle them atomically).
+ *   3. USDC mints — one ERC20Minter.mint(...) per token.
  *
  * Pre-filtering removes tokens that would revert (sale ended, sold
  * out, or the connected account already owns to maxPerAddress) so the
@@ -199,43 +201,33 @@ export function useCollectAll(): UseCollectAllReturn {
             functionName: 'mintFee',
           })
           const minterArgs = encodeFixedPriceMinterArgs(address as Address, '')
-          const ethCalls = ethBatch.map(
-            (e) =>
-              encodeFunctionData({
-                abi: ZORA_1155_MINT_ABI,
-                functionName: 'mint',
-                args: [
-                  ZORA_FIXED_PRICE_STRATEGY,
-                  e.tokenId,
-                  1n,
-                  [KISMET_REFERRAL],
-                  minterArgs,
-                ],
-              }) as Hex,
-          )
-          const ethValue = ethBatch.reduce(
-            (sum, e) => sum + mintFee + e.pricePerToken,
-            0n,
-          )
-          segments.push({
-            call: {
-              to: collectionAddress,
-              data: encodeFunctionData({
-                abi: ZORA_MULTICALL_ABI,
-                functionName: 'multicall',
-                args: [ethCalls],
-              }) as Hex,
-              value: ethValue,
-            },
-            // OZ multicall is atomic — either all sub-mints succeed or the
-            // whole call reverts — so the single ETH segment carries every
-            // ETH record. The receipt's status applies to the whole group.
-            records: ethBatch.map((e) => ({
-              tokenId: e.tokenId.toString(),
-              pricePerToken: e.pricePerToken,
-              currency: 'eth' as const,
-            })),
-          })
+          for (const e of ethBatch) {
+            segments.push({
+              call: {
+                to: collectionAddress,
+                data: encodeFunctionData({
+                  abi: ZORA_1155_MINT_ABI,
+                  functionName: 'mint',
+                  args: [
+                    ZORA_FIXED_PRICE_STRATEGY,
+                    e.tokenId,
+                    1n,
+                    [KISMET_REFERRAL],
+                    minterArgs,
+                  ],
+                }) as Hex,
+                // Per-call value: mintFee + price. Partitioned across
+                // segments so each mint sees exactly what the strategy's
+                // ethValueSent equality check expects.
+                value: mintFee + e.pricePerToken,
+              },
+              records: [{
+                tokenId: e.tokenId.toString(),
+                pricePerToken: e.pricePerToken,
+                currency: 'eth' as const,
+              }],
+            })
+          }
         }
 
         // ─── USDC leg ────────────────────────────────────────────────────
