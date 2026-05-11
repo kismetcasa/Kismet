@@ -60,11 +60,9 @@ type NextImageProps = CommonProps & {
    */
   preferProxy?: boolean
   /**
-   * Base64-encoded thumbhash from the moment's metadata. When present, the
-   * decoded blurDataURL is rendered behind the image as an instant low-fi
-   * preview — replaces the skeleton overlay for moments minted with the
-   * Track B pipeline. Older moments without a thumbhash fall back to the
-   * skeleton automatically.
+   * Base64 thumbhash from moment metadata. Decoded inline and passed as
+   * next/image's blurDataURL — paints an instant low-fi preview behind the
+   * loading image, in place of the skeleton overlay.
    */
   thumbhash?: string
 } & Omit<ImageProps, 'src' | 'onError'>
@@ -122,8 +120,7 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
 
   return (
     <>
-      {/* Skeleton only when there's no thumbhash blur to show in its place —
-          the blur is a better-quality placeholder so it wins when available. */}
+      {/* Skeleton only when there's no thumbhash blur — the blur supersedes. */}
       {!loaded && !blurDataURL && (
         <span
           aria-hidden
@@ -143,7 +140,7 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
         decoding="async"
         priority={priority}
         placeholder={blurDataURL ? 'blur' : 'empty'}
-        blurDataURL={blurDataURL ?? undefined}
+        blurDataURL={blurDataURL}
         {...rest}
       />
     </>

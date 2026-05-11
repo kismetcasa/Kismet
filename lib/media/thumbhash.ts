@@ -1,15 +1,12 @@
 import { rgbaToThumbHash, thumbHashToDataURL } from 'thumbhash'
 
-// thumbhash spec target — encoder downscales to this max dimension. Bigger
-// produces a slower encode + larger output (~25-50 bytes) without meaningful
-// quality gain at the display sizes we render placeholders at.
+// Downscale target before encoding. Past 100px the encode is slower
+// without meaningful placeholder-quality gain.
 const MAX_DIM = 100
 
 async function extractFirstFrameBitmap(file: File): Promise<ImageBitmap> {
-  // createImageBitmap decodes the first frame of animated GIFs natively, so
-  // no special path is needed for ar://*.gif uploads.
+  // createImageBitmap on a GIF Blob decodes frame 0 natively.
   if (file.type.startsWith('image/')) return createImageBitmap(file)
-  // Videos — load into a hidden <video>, seek to first frame, snapshot.
   if (file.type.startsWith('video/')) {
     const v = document.createElement('video')
     v.muted = true
@@ -56,16 +53,15 @@ export async function generateThumbhash(file: File): Promise<string | null> {
 }
 
 /**
- * Decode a base64 thumbhash to a data URL for use as next/image's
- * blurDataURL. Returns null on malformed input — caller suppresses the
- * blur placeholder and shows the skeleton instead.
+ * Decode a base64 thumbhash to a data URL for next/image's blurDataURL.
+ * Returns undefined on malformed/missing input — caller falls back to skeleton.
  */
-export function thumbhashToBlurDataURL(b64: string | undefined): string | null {
-  if (!b64) return null
+export function thumbhashToBlurDataURL(b64: string | undefined): string | undefined {
+  if (!b64) return undefined
   try {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
     return thumbHashToDataURL(bytes)
   } catch {
-    return null
+    return undefined
   }
 }

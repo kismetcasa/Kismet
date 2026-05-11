@@ -60,7 +60,7 @@ interface Props {
   // Server-side hydration for the collection chip below the title. Without
   // this the chip pops in once the client-side /api/collections fetch lands;
   // pre-loading from KV at SSR time keeps it on the first paint.
-  initialCollectionMeta?: { name?: string; image?: string; kismet_thumbhash?: string }
+  initialCollectionMeta?: { name?: string; image?: string }
   // EOA creator address from KV moment-meta (mint-proxy writes this at
   // mint time). Authoritative for Kismet-minted moments before the
   // inprocess timeline indexes them. We prefer it over momentAdmins[0]

@@ -1,8 +1,7 @@
 import type { FFmpeg } from '@ffmpeg/ffmpeg'
 
-// ~100MB cap on source size — past this, ffmpeg.wasm's memory pressure on
-// phones makes the transcode unreliable. Bigger GIFs fall back to direct
-// upload; the proxy + edge cache from earlier phases still helps.
+// Past ~100MB, ffmpeg.wasm starts OOM'ing on phones. Bigger GIFs upload
+// unchanged — proxy + edge cache still help.
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024
 
 let ffmpegPromise: Promise<FFmpeg> | null = null
@@ -10,19 +9,15 @@ let ffmpegPromise: Promise<FFmpeg> | null = null
 async function getFFmpeg(): Promise<FFmpeg> {
   if (!ffmpegPromise) {
     ffmpegPromise = (async () => {
-      // Dynamic import keeps the ~110KB ffmpeg JS wrapper out of the main
-      // bundle. The 31MB wasm is fetched on demand from /ffmpeg-core/.
+      // Dynamic-imported so the ~110KB JS + 31MB wasm only loads when a
+      // user actually picks a GIF. Self-hosted under /ffmpeg-core/ (copied
+      // out of @ffmpeg/core by scripts/copy-ffmpeg-core.mjs at install).
       const { FFmpeg } = await import('@ffmpeg/ffmpeg')
       const { toBlobURL } = await import('@ffmpeg/util')
       const ff = new FFmpeg()
-      // toBlobURL fetches the core files and wraps them in blob: URLs so
-      // the ffmpeg worker can load them without cross-origin worker issues.
-      // Self-hosted under /ffmpeg-core/ (postinstall copies them out of
-      // node_modules/@ffmpeg/core/dist/umd/).
-      const base = '/ffmpeg-core'
       await ff.load({
-        coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+        coreURL: await toBlobURL('/ffmpeg-core/ffmpeg-core.js', 'text/javascript'),
+        wasmURL: await toBlobURL('/ffmpeg-core/ffmpeg-core.wasm', 'application/wasm'),
       })
       return ff
     })()
@@ -30,12 +25,9 @@ async function getFFmpeg(): Promise<FFmpeg> {
   return ffmpegPromise
 }
 
-export function isAnimatedGifLike(file: File): boolean {
-  return file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif')
-}
-
 export function canTranscode(file: File): boolean {
-  return isAnimatedGifLike(file) && file.size <= MAX_SOURCE_BYTES
+  const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif')
+  return isGif && file.size <= MAX_SOURCE_BYTES
 }
 
 /**
@@ -67,15 +59,9 @@ export async function extractGifPoster(file: File): Promise<File> {
 }
 
 /**
- * Transcode a GIF to MP4 + extract its first frame as a JPEG poster.
- *
- * The MP4 uses H.264 baseline + yuv420p (universal browser playback),
- * `faststart` (the moov atom moves to the front of the file so the
- * `<video>` element starts playing before the full body downloads), and
- * even dimensions (H.264 requirement). No audio — GIFs don't have any.
- *
- * Throws on any ffmpeg failure; caller falls back to uploading the
- * original GIF unchanged.
+ * Transcode a GIF to MP4 (H.264 yuv420p, faststart, even dims for browser
+ * compat) + extract frame 0 as a JPEG poster. Throws on any ffmpeg
+ * failure; caller falls back to the original.
  */
 export async function transcodeGifToMp4(
   file: File,

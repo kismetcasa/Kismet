@@ -603,12 +603,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // media mode — ensure session once (cookie cached, no re-prompt)
         await ensureSession()
 
-        // Track A: GIFs get transcoded to MP4 + JPEG poster before upload.
-        // The MP4 is 10-50× smaller than the GIF and plays via the existing
-        // video render path; the poster becomes `image` so feeds render
-        // instantly without waiting for the video to download. Transcode is
-        // best-effort — any failure (load, encode, size limit) falls back
-        // to uploading the original GIF unchanged.
+        // GIFs get transcoded to MP4 + JPEG poster (10-50× smaller; plays
+        // through the existing <video> branch). Best-effort: any failure
+        // falls back to uploading the original GIF unchanged.
         let mediaFile: File = file!
         let posterFile: File | null = null
         if (canTranscode(file!)) {
@@ -624,27 +621,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             posterFile = poster
           } catch (err) {
             console.warn('[MintForm] GIF transcode failed; uploading original', err)
-            // mediaFile stays as the original; no poster.
           }
         }
 
         setStep('uploading-media')
         setUploadProgress(0)
         toast.loading('Uploading media to Arweave…', { id: 'mint' })
-        // Fire-and-forget — runs concurrent with the upload; we await it
-        // below right before assembling the metadata JSON. Returns null on
-        // any failure so the upload path stays unaffected. Generated from
-        // the poster when we have one (matches what users see in feeds);
-        // otherwise from the media itself (extractFirstFrameBitmap handles
-        // images, GIFs, and videos uniformly).
+        // Hash the poster when transcoded so the placeholder matches the
+        // static frame feeds render; otherwise the source media itself.
         const thumbhashPromise = generateThumbhash(posterFile ?? mediaFile)
         const mediaUri = await uploadToArweave(mediaFile, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
         })
-        // When we transcoded, upload the poster in parallel with verifyAvailable.
-        // The poster is small (~10-50KB) so its propagation tends to land well
-        // before the larger MP4's.
         const posterUriPromise: Promise<string | null> = posterFile
           ? uploadToArweave(posterFile).catch((err) => {
               console.warn('[MintForm] poster upload failed', err)
@@ -666,10 +655,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         toast.loading('Uploading metadata…', { id: 'mint' })
         const [thumbhash, posterUri] = await Promise.all([thumbhashPromise, posterUriPromise])
         const posterVerify = posterUri ? verifyArweaveAvailable(posterUri) : Promise.resolve(true)
-        // When transcoded: poster becomes `image` (static preview in feeds),
-        // MP4 becomes `animation_url` (kicks in via existing <video> branch).
-        // When not transcoded: original media is `image`, with animation_url
-        // only for true video uploads (matches pre-Track-A behaviour).
+        // Poster (when transcoded) wins as `image` so feeds render the
+        // static frame; the moving asset goes to animation_url.
         const isVideoMedia = mediaFile.type.startsWith('video/')
         const metadata = {
           name: name.trim(),
@@ -681,11 +668,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         const metadataUri = await uploadJson(metadata)
         const metadataVerify = verifyArweaveAvailable(metadataUri)
 
-        // For auto-deploy, the moment's media doubles as the new
-        // collection's cover image. Saves the user a second upload and
-        // gives the collection card a non-blank thumbnail immediately.
-        // When we have a poster, that wins — covers don't surface
-        // animation_url, so the static frame is what feed cards render.
+        // Auto-deploy: the moment's media doubles as the collection cover.
+        // Covers don't surface animation_url, so the poster (when present)
+        // is what feed cards actually render.
         let collectionUri: string | null = null
         let collectionVerify: Promise<boolean> = Promise.resolve(true)
         const coverImageUri = posterUri ?? mediaUri

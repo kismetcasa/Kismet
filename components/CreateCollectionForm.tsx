@@ -416,11 +416,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
       await ensureSession()
 
-      // Track A: convert animated GIF covers to a static JPEG (first frame).
-      // Collection covers render statically only — no animation_url path —
-      // so an animated GIF costs bandwidth without delivering anything the UI
-      // surfaces. Best-effort: any transcode failure falls back to uploading
-      // the original.
+      // Animated GIF covers → first-frame JPEG. Covers never render as
+      // animation, so the GIF bytes were wasted bandwidth. Best-effort.
       let imageFile: File = coverFile
       if (canTranscode(coverFile)) {
         setStep('preparing-image')
@@ -435,9 +432,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       setStep('uploading-image')
       setUploadProgress(0)
       toast.loading('Uploading cover image…', { id: 'create-collection' })
-      // Runs concurrent with upload; awaited just before assembling metadata.
-      // Generated from the (transcoded) imageFile so the thumbhash matches
-      // what eventually paints in feed cards.
       const thumbhashPromise = generateThumbhash(imageFile)
       const imageUri = await uploadToArweave(imageFile, (pct) => {
         setUploadProgress(pct)
