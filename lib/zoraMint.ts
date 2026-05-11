@@ -4,6 +4,7 @@ import {
   parseAbiParameters,
   parseEther,
   type Address,
+  type Hex,
   type PublicClient,
 } from 'viem'
 
@@ -91,6 +92,65 @@ export const ZORA_CREATOR_REWARD_RECIPIENT_ABI = parseAbi([
 // well under the wallet-preview-readable limit (~5M for 20 × ~250k each on
 // Base) so users see the full impact before signing.
 export const MAX_COLLECT_ALL_BATCH = 20
+
+// Multicall3 — the canonical universal batcher deployed at the same address
+// on every EVM chain (Arachnid CREATE2 deterministic deployment). We use it
+// for pure-ETH collect-all batches because aggregate3Value is `payable` and
+// passes EACH sub-call its OWN partitioned value — exactly what Zora's
+// FixedPriceSaleStrategy needs for its strict ethValueSent equality check.
+// Unlike Zora's inherited `multicall(bytes[])` (OZ delegatecall, nonpayable,
+// replicates msg.value across sub-calls), Multicall3 uses CALL with explicit
+// per-call `{value: val}` syntax — see github.com/mds1/multicall.
+//
+// Verified canonical on Base via @zoralabs/protocol-sdk's apis/multicall3.ts.
+export const MULTICALL3_ADDRESS: Address = '0xcA11bde05977b3631167028862bE2a173976CA11'
+
+// aggregate3Value entry: `[(target, allowFailure, value, callData)[]]` →
+// `(success, returnData)[]`. We use `allowFailure: false` so any inner
+// revert undoes the whole batch — same all-or-nothing UX as atomic EIP-5792,
+// preventing partial-charge surprises.
+export const MULTICALL3_ABI = parseAbi([
+  'struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }',
+  'struct Result { bool success; bytes returnData; }',
+  'function aggregate3Value(Call3Value[] calls) payable returns (Result[] returnData)',
+])
+
+/**
+ * Build the (abi, functionName, args, value) tuple for a Multicall3
+ * `aggregate3Value` batch. Used ONLY for pure-ETH collect-all bundles:
+ *
+ * USDC batching via Multicall3 would NOT work — the ERC20Minter pulls funds
+ * via `safeTransferFrom(msg.sender, …)` and msg.sender of each inner call
+ * here is Multicall3, which holds no USDC. The USDC path stays on EIP-5792.
+ *
+ * Recipient correctness: the user's address must already be encoded in each
+ * sub-call's calldata (Zora's `minterArguments` mintTo). msg.sender of the
+ * 1155.mint call is Multicall3, but FPSS reads mintTo from minterArguments
+ * (verified against ZoraCreatorFixedPriceSaleStrategy.sol L91-94), so the
+ * NFT is correctly delivered to the user.
+ *
+ * The Purchased(sender,…) event will record Multicall3 as `sender`; this
+ * is cosmetic — indexers should join on TransferSingle.to for "who collected".
+ *
+ * value totals are summed; Multicall3 itself asserts msg.value equals the
+ * sum at the end of aggregate3Value (its own invariant), so a mismatch here
+ * would revert at dispatch.
+ */
+export function buildMulticall3Batch(calls: readonly { to: Address; data: Hex; value: bigint }[]) {
+  return {
+    abi: MULTICALL3_ABI,
+    functionName: 'aggregate3Value',
+    args: [
+      calls.map((c) => ({
+        target: c.to,
+        allowFailure: false,
+        value: c.value,
+        callData: c.data,
+      })),
+    ],
+    value: calls.reduce((sum, c) => sum + c.value, 0n),
+  } as const
+}
 
 // Defense-in-depth sanity bound on mintFee(). Zora's protocol-wide mint fee
 // has historically been 0.000111 ETH (~$0.30); 0.01 ETH is ~90× headroom but

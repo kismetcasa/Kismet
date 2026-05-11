@@ -1,7 +1,14 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useAccount, useConfig, usePublicClient, useSendCalls, useWalletClient } from 'wagmi'
+import {
+  useAccount,
+  useConfig,
+  usePublicClient,
+  useSendCalls,
+  useWalletClient,
+  useWriteContract,
+} from 'wagmi'
 import { getAccount, waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
@@ -13,9 +20,11 @@ import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
 import {
   ERC20_ABI,
   MAX_COLLECT_ALL_BATCH,
+  MULTICALL3_ADDRESS,
   USDC_BASE,
   ZORA_ERC20_MINTER,
   buildEthMintCall,
+  buildMulticall3Batch,
   buildUsdcMintCall,
   readMintFeeWithBound,
 } from '@/lib/zoraMint'
@@ -87,29 +96,45 @@ function isUnsupportedMethodError(err: unknown, depth = 0): boolean {
 }
 
 /**
- * "Collect all" — submits one EIP-5792 wallet_sendCalls bundle covering
- * every ETH- and USDC-eligible token in a collection. Wallets that
- * support atomic batching (Coinbase Smart Wallet, MetaMask post-Pectra,
- * etc.) confirm the entire bundle in a single signature; others fall
- * back to sequential prompts via experimental_fallback.
+ * "Collect all" — bundles every ETH- and USDC-eligible token in a collection
+ * into one wallet-signed batch. Two dispatch paths, picked automatically:
  *
- * Bundle layout (in order, only the legs we have eligible tokens for):
- *   1. ETH mints — one 1155.mint(...) per token. Each segment carries
- *      its own value = mintFee + pricePerToken, matching the canonical
- *      `(mintFee + pricePerToken) * quantity` formula used by the Zora
- *      protocol-sdk's parseMintCosts. We deliberately do NOT wrap these
- *      in the inherited multicall(bytes[]) entry point: per the Zora
- *      1155 ABI that function is declared `nonpayable`, so any ETH sent
- *      through it reverts at dispatch — and even if it were payable,
- *      its OZ delegatecall pattern would replicate msg.value across
- *      every sub-call, which FixedPriceSaleStrategy.requestMint rejects
- *      with WrongValueSent (strict ethValueSent == numTokens * price).
- *      The EIP-5792 bundle gives us the single-signature UX a multicall
- *      would have, with the value correctly partitioned per call.
+ *   • Pure-ETH bundle with >= 2 mints → Multicall3.aggregate3Value: ONE tx,
+ *     one signature, works on ANY wallet (no EIP-5792 dependency). Each
+ *     inner call gets its own partitioned msg.value, satisfying the strategy's
+ *     strict equality check. allowFailure=false so any inner revert undoes
+ *     the whole batch (atomic, same UX as EIP-5792 atomic mode).
+ *
+ *   • Everything else (USDC present, mixed currencies, or N=1) → EIP-5792
+ *     wallet_sendCalls. Atomic on supporting wallets (Coinbase Smart Wallet,
+ *     MetaMask post-Pectra, etc.); falls back to sequential eth_sendTransaction
+ *     prompts via experimental_fallback for legacy wallets.
+ *
+ * Why Multicall3 only for pure-ETH: the ERC20Minter pulls funds via
+ * safeTransferFrom(msg.sender, …) and msg.sender of each inner call inside
+ * Multicall3 is Multicall3 itself, which holds no USDC. ETH mints don't have
+ * this constraint — recipient comes from the encoded minterArguments and
+ * the value is partitioned per-call by aggregate3Value.
+ *
+ * Why N >= 2: a single mint via Multicall3 adds gas overhead and shifts the
+ * Purchased event's `sender` field to the batcher with no UX gain. For N=1
+ * the existing direct mint path is simpler.
+ *
+ * Bundle layout (only the legs we have eligible tokens for):
+ *   1. ETH mints — one 1155.mint(...) per token. Each segment carries its
+ *      own value = mintFee + pricePerToken, matching the canonical formula
+ *      from Zora protocol-sdk's parseMintCosts.
  *   2. USDC.approve(ERC20Minter, exactBatchTotal) — only when current
  *      allowance is below batch total. Bounded to the exact total per
  *      2024+ approval security guidance (no MaxUint256).
  *   3. USDC mints — one ERC20Minter.mint(...) per token.
+ *
+ * REGRESSION NOTE: do NOT route ETH mints through the 1155's inherited
+ * multicall(bytes[]). It's declared `nonpayable` in Zora's on-chain ABI
+ * (verified in PublicMulticall.sol) and uses OZ delegatecall which would
+ * replicate msg.value across sub-calls, which FixedPriceSaleStrategy rejects
+ * with WrongValueSent. Multicall3 (a separate standalone contract at
+ * 0xcA11bde…6CA11) is the correct batch primitive here.
  *
  * Pre-filtering removes tokens that would revert (sale ended, sold
  * out, or the connected account already owns to maxPerAddress) so the
@@ -122,6 +147,7 @@ export function useCollectAll(): UseCollectAllReturn {
   const publicClient = usePublicClient({ chainId: base.id })
   const { sendCallsAsync } = useSendCalls()
   const { data: walletClient } = useWalletClient({ chainId: base.id })
+  const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
   const [status, setStatus] = useState<Status>('idle')
   // Synchronous re-entrance latch. setStatus is async — between the user's
@@ -311,6 +337,56 @@ export function useCollectAll(): UseCollectAllReturn {
           id: TOAST_ID,
         })
 
+        type Receipt = { transactionHash: Hex; status: 'success' | 'reverted' | 'failure' }
+        let receipts: Receipt[] = []
+        let bundleStatus: string | undefined
+
+        // Pure-ETH fast path: route the bundle through Multicall3's
+        // aggregate3Value (canonical at MULTICALL3_ADDRESS on every EVM chain
+        // including Base) to get single-signature, single-tx UX on ANY wallet
+        // — important for users on legacy MetaMask / Rabby / etc. that don't
+        // speak EIP-5792 and would otherwise fall into the sequential
+        // fallback below. allowFailure=false matches EIP-5792 atomic
+        // semantics: any inner revert undoes the whole batch, so the user
+        // is never partially charged.
+        //
+        // Restricted to pure-ETH because Multicall3 calls ERC20Minter with
+        // msg.sender = Multicall3, which holds no USDC — see buildMulticall3Batch.
+        // N >= 2 only because Multicall3 indirection has no benefit for a
+        // single mint (current EIP-5792 already lands as one tx there).
+        const useMulticall3 = ethBatch.length >= 2 && usdcBatch.length === 0
+        if (useMulticall3) {
+          // Errors (user reject, RPC blip, revert) propagate to the outer
+          // try/catch and render via toastError, same as any other path.
+          const hash = await writeContractAsync({
+            chainId: base.id,
+            address: MULTICALL3_ADDRESS,
+            ...buildMulticall3Batch(
+              segments.map((s) => ({
+                to: s.call.to,
+                data: s.call.data,
+                // Pure-ETH fast path only fires when every segment is an
+                // ETH mint, and ETH mint segments always carry `value`.
+                // The non-null assertion narrows the optional type to bigint
+                // without a runtime cost.
+                value: s.call.value!,
+              })),
+            ),
+          })
+
+          setStatus('confirming')
+          toast.loading('Confirming on-chain…', { id: TOAST_ID })
+
+          const r = await publicClient.waitForTransactionReceipt({
+            hash,
+            timeout: 300_000,
+          })
+          receipts = [{
+            transactionHash: hash,
+            status: r.status === 'success' ? 'success' : 'reverted',
+          }]
+          bundleStatus = r.status === 'success' ? 'success' : 'failure'
+        } else {
         // experimental_fallback lets wagmi-recognized non-EIP-5792 wallets
         // receive the calls as sequential eth_sendTransaction prompts. It
         // only triggers on viem's MethodNotSupportedRpcError though — some
@@ -318,9 +394,6 @@ export function useCollectAll(): UseCollectAllReturn {
         // with "this request method is not supported" instead, which slips
         // past the predicate. Catch that case and dispatch sequentially
         // ourselves below.
-        type Receipt = { transactionHash: Hex; status: 'success' | 'reverted' | 'failure' }
-        let receipts: Receipt[] = []
-        let bundleStatus: string | undefined
         try {
           const { id } = await sendCallsAsync({
             calls,
@@ -412,6 +485,7 @@ export function useCollectAll(): UseCollectAllReturn {
               }
             }
           }
+        }
         }
 
         // Walk segments[] against receipts[] to attribute success back to
@@ -521,7 +595,7 @@ export function useCollectAll(): UseCollectAllReturn {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, ensureBase],
+    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase],
   )
 
   return { collectAll, status }
