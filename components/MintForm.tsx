@@ -12,6 +12,7 @@ import { parseEther, parseUnits, isAddress, type Address } from 'viem'
 import { resolveUri, shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
+import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -248,7 +249,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
-  const [step, setStep] = useState<'idle' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
+  const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
   // Address of an auto-deployed collection where the smart wallet did
@@ -602,17 +603,54 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // media mode — ensure session once (cookie cached, no re-prompt)
         await ensureSession()
 
+        // Track A: GIFs get transcoded to MP4 + JPEG poster before upload.
+        // The MP4 is 10-50× smaller than the GIF and plays via the existing
+        // video render path; the poster becomes `image` so feeds render
+        // instantly without waiting for the video to download. Transcode is
+        // best-effort — any failure (load, encode, size limit) falls back
+        // to uploading the original GIF unchanged.
+        let mediaFile: File = file!
+        let posterFile: File | null = null
+        if (canTranscode(file!)) {
+          setStep('preparing-media')
+          setUploadProgress(0)
+          toast.loading('Optimizing animation for fast playback…', { id: 'mint' })
+          try {
+            const { mp4, poster } = await transcodeGifToMp4(file!, (pct) => {
+              setUploadProgress(pct)
+              toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
+            })
+            mediaFile = mp4
+            posterFile = poster
+          } catch (err) {
+            console.warn('[MintForm] GIF transcode failed; uploading original', err)
+            // mediaFile stays as the original; no poster.
+          }
+        }
+
         setStep('uploading-media')
         setUploadProgress(0)
         toast.loading('Uploading media to Arweave…', { id: 'mint' })
         // Fire-and-forget — runs concurrent with the upload; we await it
         // below right before assembling the metadata JSON. Returns null on
-        // any failure so the upload path stays unaffected.
-        const thumbhashPromise = generateThumbhash(file!)
-        const mediaUri = await uploadToArweave(file!, (pct) => {
+        // any failure so the upload path stays unaffected. Generated from
+        // the poster when we have one (matches what users see in feeds);
+        // otherwise from the media itself (extractFirstFrameBitmap handles
+        // images, GIFs, and videos uniformly).
+        const thumbhashPromise = generateThumbhash(posterFile ?? mediaFile)
+        const mediaUri = await uploadToArweave(mediaFile, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
         })
+        // When we transcoded, upload the poster in parallel with verifyAvailable.
+        // The poster is small (~10-50KB) so its propagation tends to land well
+        // before the larger MP4's.
+        const posterUriPromise: Promise<string | null> = posterFile
+          ? uploadToArweave(posterFile).catch((err) => {
+              console.warn('[MintForm] poster upload failed', err)
+              return null
+            })
+          : Promise.resolve(null)
         // Start propagation polling the moment each upload returns, so
         // it runs in parallel with subsequent uploads instead of
         // staircasing after them. By the time we block below, media
@@ -626,12 +664,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('uploading-metadata')
         setUploadProgress(0)
         toast.loading('Uploading metadata…', { id: 'mint' })
-        const thumbhash = await thumbhashPromise
+        const [thumbhash, posterUri] = await Promise.all([thumbhashPromise, posterUriPromise])
+        const posterVerify = posterUri ? verifyArweaveAvailable(posterUri) : Promise.resolve(true)
+        // When transcoded: poster becomes `image` (static preview in feeds),
+        // MP4 becomes `animation_url` (kicks in via existing <video> branch).
+        // When not transcoded: original media is `image`, with animation_url
+        // only for true video uploads (matches pre-Track-A behaviour).
+        const isVideoMedia = mediaFile.type.startsWith('video/')
         const metadata = {
           name: name.trim(),
           description: description.trim(),
-          image: mediaUri,
-          ...(file!.type.startsWith('video/') ? { animation_url: mediaUri } : {}),
+          image: posterUri ?? mediaUri,
+          ...(isVideoMedia ? { animation_url: mediaUri } : {}),
           ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         }
         const metadataUri = await uploadJson(metadata)
@@ -640,14 +684,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // For auto-deploy, the moment's media doubles as the new
         // collection's cover image. Saves the user a second upload and
         // gives the collection card a non-blank thumbnail immediately.
+        // When we have a poster, that wins — covers don't surface
+        // animation_url, so the static frame is what feed cards render.
         let collectionUri: string | null = null
         let collectionVerify: Promise<boolean> = Promise.resolve(true)
+        const coverImageUri = posterUri ?? mediaUri
         if (isAutoDeploy) {
           toast.loading('Uploading collection metadata…', { id: 'mint' })
           const collectionMetadata = {
             name: resolvedCollectionName,
             description: description.trim(),
-            image: mediaUri,
+            image: coverImageUri,
             ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
             createReferral: CREATE_REFERRAL,
           }
@@ -664,16 +711,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // broken moment.
         setStep('verifying-upload')
         toast.loading('Verifying Arweave propagation…', { id: 'mint' })
-        const [mediaOk, metadataOk, collectionOk] = await Promise.all([
+        const [mediaOk, metadataOk, collectionOk, posterOk] = await Promise.all([
           mediaVerify,
           metadataVerify,
           collectionVerify,
+          posterVerify,
         ])
-        if (!mediaOk || !metadataOk || !collectionOk) {
+        if (!mediaOk || !metadataOk || !collectionOk || !posterOk) {
           const failed: string[] = []
           if (!mediaOk) failed.push('media')
           if (!metadataOk) failed.push('metadata')
           if (!collectionOk) failed.push('collection metadata')
+          if (!posterOk) failed.push('poster frame')
           throw new Error(
             `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
           )
@@ -720,10 +769,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setResult(data)
         if (isAutoDeploy && data.contractAddress) {
           // The moment's media doubles as the collection cover for
-          // first-mint UX; pass mediaUri so the KV registration can
-          // store it and the collection card has a non-blank image
-          // immediately. thumbhash piggybacks for the cover placeholder.
-          void trackAndVerifyAutoDeploy(data.contractAddress, mediaUri, thumbhash ?? undefined)
+          // first-mint UX; pass the cover URI (poster when transcoded,
+          // mediaUri otherwise) so the KV registration can store it and
+          // the collection card has a non-blank image immediately.
+          // thumbhash piggybacks for the cover placeholder.
+          void trackAndVerifyAutoDeploy(data.contractAddress, coverImageUri, thumbhash ?? undefined)
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
@@ -1324,6 +1374,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
 function stepLabel(step: string, progress: number): string {
   switch (step) {
+    case 'preparing-media': return progress > 0 ? `optimizing animation… ${progress}%` : 'optimizing animation…'
     case 'uploading-media': return progress > 0 ? `uploading media… ${progress}%` : 'uploading media…'
     case 'uploading-metadata': return 'uploading metadata…'
     case 'verifying-upload': return 'verifying Arweave propagation…'

@@ -6,10 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.41.0",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@rainbow-me/rainbowkit": "^2.2.0",
     "@tanstack/react-query": "^5.56.2",
     "@upstash/redis": "^1.34.0",

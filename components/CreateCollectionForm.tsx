@@ -12,6 +12,7 @@ import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermis
 import { CREATE_REFERRAL, OPERATOR_SMART_WALLET } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
+import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -55,7 +56,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [mintCover, setMintCover] = useState(false)
   const [coverPrice, setCoverPrice] = useState('0')
   const [coverSupply, setCoverSupply] = useState('')
-  const [step, setStep] = useState<'idle' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'done'>('idle')
+  const [step, setStep] = useState<'idle' | 'preparing-image' | 'uploading-image' | 'uploading-metadata' | 'deploying' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [collectionAddress, setCollectionAddress] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
@@ -415,12 +416,30 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
       await ensureSession()
 
+      // Track A: convert animated GIF covers to a static JPEG (first frame).
+      // Collection covers render statically only — no animation_url path —
+      // so an animated GIF costs bandwidth without delivering anything the UI
+      // surfaces. Best-effort: any transcode failure falls back to uploading
+      // the original.
+      let imageFile: File = coverFile
+      if (canTranscode(coverFile)) {
+        setStep('preparing-image')
+        toast.loading('Optimizing cover for fast loading…', { id: 'create-collection' })
+        try {
+          imageFile = await extractGifPoster(coverFile)
+        } catch (err) {
+          console.warn('[CreateCollectionForm] GIF poster extraction failed; uploading original', err)
+        }
+      }
+
       setStep('uploading-image')
       setUploadProgress(0)
       toast.loading('Uploading cover image…', { id: 'create-collection' })
       // Runs concurrent with upload; awaited just before assembling metadata.
-      const thumbhashPromise = generateThumbhash(coverFile)
-      const imageUri = await uploadToArweave(coverFile, (pct) => {
+      // Generated from the (transcoded) imageFile so the thumbhash matches
+      // what eventually paints in feed cards.
+      const thumbhashPromise = generateThumbhash(imageFile)
+      const imageUri = await uploadToArweave(imageFile, (pct) => {
         setUploadProgress(pct)
         toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
       })
@@ -912,6 +931,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
 function stepLabel(step: string, progress: number): string {
   switch (step) {
+    case 'preparing-image': return 'optimizing cover…'
     case 'uploading-image': return progress > 0 ? `uploading image… ${progress}%` : 'uploading image…'
     case 'uploading-metadata': return 'uploading metadata…'
     case 'deploying': return 'deploying…'
