@@ -95,13 +95,18 @@ function isUnsupportedMethodError(err: unknown, depth = 0): boolean {
  * back to sequential prompts via experimental_fallback.
  *
  * Bundle layout (in order, only the legs we have eligible tokens for):
- *   1. ETH mints — one 1155.mint(...) per token. We deliberately do NOT
- *      wrap these in OZ's multicall(bytes[]): that path uses delegatecall,
- *      which replicates the outer msg.value across every sub-call instead
- *      of partitioning it (OZ advisory GHSA-7grf-83vw-6f5x). Zora's
- *      FixedPriceSaleStrategy enforces strict ethValueSent equality and
- *      reverts WrongValueSent for any N>1 bundle. The EIP-5792 bundle
- *      itself gives us the atomic-batch UX one signature would.
+ *   1. ETH mints — one 1155.mint(...) per token. Each segment carries
+ *      its own value = mintFee + pricePerToken, matching the canonical
+ *      `(mintFee + pricePerToken) * quantity` formula used by the Zora
+ *      protocol-sdk's parseMintCosts. We deliberately do NOT wrap these
+ *      in the inherited multicall(bytes[]) entry point: per the Zora
+ *      1155 ABI that function is declared `nonpayable`, so any ETH sent
+ *      through it reverts at dispatch — and even if it were payable,
+ *      its OZ delegatecall pattern would replicate msg.value across
+ *      every sub-call, which FixedPriceSaleStrategy.requestMint rejects
+ *      with WrongValueSent (strict ethValueSent == numTokens * price).
+ *      The EIP-5792 bundle gives us the single-signature UX a multicall
+ *      would have, with the value correctly partitioned per call.
  *   2. USDC.approve(ERC20Minter, exactBatchTotal) — only when current
  *      allowance is below batch total. Bounded to the exact total per
  *      2024+ approval security guidance (no MaxUint256).

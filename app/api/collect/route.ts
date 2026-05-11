@@ -7,9 +7,11 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 
-// Both mint paths in this app (1155.multicall(mint) and ERC20Minter.mint)
-// emit TransferSingle; we don't decode TransferBatch since we never produce
-// it. Add it here only when a code path that emits it is introduced.
+// All mint paths in this app emit ERC1155 TransferSingle: per-token
+// 1155.mint() (single + collect-all ETH legs) and ERC20Minter.mint()
+// (single + collect-all USDC legs). We don't decode TransferBatch since
+// nothing in this codebase produces it. Add it here only when a code
+// path that emits it is introduced.
 const ERC1155_TRANSFER_ABI = parseAbi([
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
 ])
