@@ -10,6 +10,7 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import { BuyButton } from './BuyButton'
+import { MomentImage } from './MomentImage'
 import Link from 'next/link'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
@@ -127,13 +128,14 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   return (
     <div className="bg-[#161616] border border-[#2a2a2a] flex flex-col">
       {/* Thumbnail */}
-      <div className="aspect-square bg-[#111] overflow-hidden">
+      <div className="relative aspect-square bg-[#111] overflow-hidden">
         {listing.image ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
+          <MomentImage
             src={listing.image}
             alt={listing.name ?? ''}
-            className="w-full h-full object-contain"
+            fill
+            className="object-contain"
+            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           />
         ) : isTextListing ? (
           <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">

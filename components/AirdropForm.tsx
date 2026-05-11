@@ -6,8 +6,8 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { Plus, X } from 'lucide-react'
-import Image from 'next/image'
-import { resolveUri, shortAddress, type Moment } from '@/lib/inprocess'
+import { shortAddress, type Moment } from '@/lib/inprocess'
+import { MomentImage } from './MomentImage'
 import { toastError } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
@@ -216,7 +216,6 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   }
 
   const selectedMeta = selected?.metadata ?? {}
-  const selectedImage = selectedMeta.image ? resolveUri(selectedMeta.image) : null
 
   return (
     <form onSubmit={handleAirdrop} className="flex flex-col gap-6">
@@ -235,9 +234,17 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         >
           {selected ? (
             <>
-              {selectedImage ? (
+              {selectedMeta.image ? (
                 <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
-                  <Image src={selectedImage} alt="" fill className="object-cover" sizes="32px" />
+                  <MomentImage
+                    src={selectedMeta.image}
+                    alt=""
+                    fill
+                    className="object-cover"
+                    sizes="32px"
+                    mime={selectedMeta.content?.mime}
+                    thumbhash={selectedMeta.kismet_thumbhash}
+                  />
                 </div>
               ) : selectedMeta.content?.mime === 'text/plain' ? (
                 <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] flex items-center justify-center">
@@ -269,7 +276,6 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
                 {moments.map((m, idx) => {
                   const meta = m.metadata ?? {}
-                  const img = meta.image ? resolveUri(meta.image) : null
                   const isSelected = selected?.address === m.address && selected?.token_id === m.token_id
                   return (
                     <button
@@ -278,8 +284,17 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                       onClick={() => { setSelected(m); setPickerOpen(false) }}
                       className={`relative aspect-square bg-[#111] overflow-hidden group ${isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''}`}
                     >
-                      {img ? (
-                        <Image src={img} alt={meta.name ?? ''} fill className="object-cover" sizes="120px" priority={idx < 6} />
+                      {meta.image ? (
+                        <MomentImage
+                          src={meta.image}
+                          alt={meta.name ?? ''}
+                          fill
+                          className="object-cover"
+                          sizes="120px"
+                          priority={idx < 6}
+                          mime={meta.content?.mime}
+                          thumbhash={meta.kismet_thumbhash}
+                        />
                       ) : meta.content?.mime === 'text/plain' ? (
                         <div className="w-full h-full flex flex-col p-2 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
                           <span className="text-[8px] font-mono text-[#555] uppercase tracking-widest mb-1">writing</span>

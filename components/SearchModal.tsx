@@ -5,7 +5,8 @@ import Link from 'next/link'
 import { Search, X, Loader2, ExternalLink } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
-import { resolveUri, shortAddress } from '@/lib/inprocess'
+import { MomentImage } from './MomentImage'
+import { shortAddress } from '@/lib/inprocess'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -36,14 +37,16 @@ function CollectionResult({ col, onClose }: { col: CollectionMeta; onClose: () =
       onClick={onClose}
       className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
     >
-      <div className="w-7 h-7 flex-shrink-0 overflow-hidden">
+      <div className="relative w-7 h-7 flex-shrink-0 overflow-hidden">
         {showImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={resolveUri(col.image!)}
+          <MomentImage
+            src={col.image!}
             alt={col.name}
-            className="w-full h-full object-cover"
-            onError={() => setErrored(true)}
+            fill
+            className="object-cover"
+            sizes="28px"
+            thumbhash={col.kismet_thumbhash}
+            onAllError={() => setErrored(true)}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#8B5CF6]/30 to-[#C084FC]/15">
@@ -176,8 +179,9 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                   className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
                 >
                   {mint.image ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={mint.image} alt={mint.name} className="w-7 h-7 object-cover flex-shrink-0" />
+                    <div className="relative w-7 h-7 flex-shrink-0 overflow-hidden">
+                      <MomentImage src={mint.image} alt={mint.name} fill className="object-cover" sizes="28px" />
+                    </div>
                   ) : (
                     <div className="w-7 h-7 bg-[#2a2a2a] flex-shrink-0" />
                   )}

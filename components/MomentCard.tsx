@@ -24,6 +24,7 @@ import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect
 import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
 import { MomentImage } from './MomentImage'
+import { MomentVideo } from './MomentVideo'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface MomentCardProps {
@@ -141,13 +142,11 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   }
   const collectReady = pricePerToken !== null && currency !== null
 
-  const imageUrl = meta.image ? resolveUri(meta.image) : null
   const isVideo =
     meta.content?.mime?.startsWith('video/') ||
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
   const isTextMoment = meta.content?.mime === 'text/plain'
-  const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   return (
     <>
@@ -183,14 +182,11 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
               <EyeOff size={10} className="text-[#555]" />
             </span>
           )}
-          {isVideo && mediaUrl ? (
-            <video
-              src={mediaUrl}
+          {isVideo && meta.animation_url ? (
+            <MomentVideo
+              src={meta.animation_url}
+              poster={meta.image}
               className="w-full h-full object-contain"
-              autoPlay
-              muted
-              loop
-              playsInline
             />
           ) : meta.image && !imgError ? (
             <MomentImage

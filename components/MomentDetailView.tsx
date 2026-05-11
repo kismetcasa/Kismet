@@ -22,6 +22,7 @@ import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
+import { MomentVideo } from './MomentVideo'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { SplitsPanel } from './SplitsPanel'
@@ -527,12 +528,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // blank for the 5-30s of indexer delay on a fresh mint.
   const meta = detail?.metadata ?? fallbackMeta ?? {}
   const isTextMoment = meta.content?.mime === 'text/plain'
-  const imageUrl = meta.image ? resolveUri(meta.image) : null
   const isVideo =
     meta.content?.mime?.startsWith('video/') ||
     meta.animation_url?.endsWith('.mp4') ||
     meta.animation_url?.endsWith('.webm')
-  const mediaUrl = isVideo && meta.animation_url ? resolveUri(meta.animation_url) : imageUrl
+  // Truthy when there's any media to show — controls the lightbox affordance.
+  const hasMedia = !!meta.image || !!(isVideo && meta.animation_url)
   const price = detail
     ? formatPrice(detail.saleConfig.pricePerToken, inferCollectCurrency(detail.saleConfig))
     : null
@@ -603,17 +604,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           ) : (
             <div
-              className={`relative aspect-square bg-[#111] ${(imageUrl || (isVideo && mediaUrl)) ? 'cursor-zoom-in' : ''}`}
-              onClick={() => { if (imageUrl || (isVideo && mediaUrl)) setLightboxOpen(true) }}
+              className={`relative aspect-square bg-[#111] ${hasMedia ? 'cursor-zoom-in' : ''}`}
+              onClick={() => { if (hasMedia) setLightboxOpen(true) }}
             >
-              {isVideo && mediaUrl ? (
-                <video
-                  src={mediaUrl}
+              {isVideo && meta.animation_url ? (
+                <MomentVideo
+                  src={meta.animation_url}
+                  poster={meta.image}
                   className="w-full h-full object-contain"
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
                 />
               ) : meta.image && !imgError ? (
                 <MomentImage
@@ -1010,11 +1008,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           >
             <X size={18} />
           </button>
-          {isVideo && mediaUrl ? (
-            <video
-              src={mediaUrl}
+          {isVideo && meta.animation_url ? (
+            <MomentVideo
+              src={meta.animation_url}
+              poster={meta.image}
               className="max-h-[95vh] max-w-[95vw] object-contain"
-              autoPlay muted loop playsInline
               onClick={(e) => e.stopPropagation()}
             />
           ) : meta.image ? (

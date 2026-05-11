@@ -1,12 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { ArrowLeft, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react'
-import { resolveUri, shortAddress } from '@/lib/inprocess'
+import { shortAddress } from '@/lib/inprocess'
+import { MomentImage } from './MomentImage'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 
@@ -15,6 +15,7 @@ interface CollectionItem {
   name: string
   image?: string
   description?: string
+  kismet_thumbhash?: string
 }
 
 /**
@@ -60,7 +61,7 @@ export function PermissionsDashboard() {
             (c: {
               contractAddress?: string
               name?: string
-              metadata?: { name?: string; image?: string; description?: string }
+              metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
             }) => {
               if (!c.contractAddress) return null
               return {
@@ -68,6 +69,7 @@ export function PermissionsDashboard() {
                 name: c.metadata?.name ?? c.name ?? shortAddress(c.contractAddress),
                 image: c.metadata?.image,
                 description: c.metadata?.description,
+                kismet_thumbhash: c.metadata?.kismet_thumbhash,
               }
             },
           )
@@ -225,13 +227,13 @@ export function PermissionsDashboard() {
             {collections.map((c) => {
               const status = perms[c.address.toLowerCase()]
               const hasAdmin = status?.hasAdmin
-              const img = c.image ? resolveUri(c.image) : null
               return (
                 <li key={c.address}>
                   <PermissionRow
                     address={c.address}
                     name={c.name}
-                    img={img}
+                    img={c.image}
+                    thumbhash={c.kismet_thumbhash}
                     description={c.description}
                     hasAdmin={hasAdmin}
                     loading={isLoading && status === undefined}
@@ -257,13 +259,15 @@ function PermissionRow({
   address,
   name,
   img,
+  thumbhash,
   description,
   hasAdmin,
   loading,
 }: {
   address: string
   name: string
-  img: string | null
+  img?: string
+  thumbhash?: string
   description?: string
   hasAdmin: boolean | null | undefined
   loading: boolean
@@ -280,7 +284,7 @@ function PermissionRow({
     <div className={`flex items-center gap-3 p-3 border ${containerClass} transition-colors`}>
       {img ? (
         <div className="w-12 h-12 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
-          <Image src={img} alt={name} fill className="object-cover" sizes="48px" />
+          <MomentImage src={img} alt={name} fill className="object-cover" sizes="48px" thumbhash={thumbhash} />
         </div>
       ) : (
         <div className="w-12 h-12 bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center">
