@@ -1,5 +1,7 @@
 import { getTrackedCollections } from './kv'
 import { resolveUri, fetchCollectionMoments } from './inprocess'
+import { getHiddenMomentsSet } from './hiddenMoments'
+import { getHiddenCollectionsSet } from './hiddenCollections'
 
 export interface MomentSearchResult {
   id: string
@@ -13,8 +15,16 @@ export interface MomentSearchResult {
 const MAX_SEARCH_COLLECTIONS = 25
 
 export async function searchMoments(query: string): Promise<MomentSearchResult[]> {
-  const allCollections = await getTrackedCollections()
-  const collections = allCollections.slice(0, MAX_SEARCH_COLLECTIONS)
+  const [allCollections, hiddenMoments, hiddenCollections] = await Promise.all([
+    getTrackedCollections(),
+    getHiddenMomentsSet(),
+    getHiddenCollectionsSet(),
+  ])
+  // Skip hidden collections at fan-out time so we don't waste upstream
+  // requests fetching moments we'd discard. Cap is applied after the skip.
+  const collections = allCollections
+    .filter((c) => !hiddenCollections.has(c.toLowerCase()))
+    .slice(0, MAX_SEARCH_COLLECTIONS)
   const all = await Promise.all(
     collections.map((c) => fetchCollectionMoments(c, { revalidate: 30 })),
   )
@@ -23,9 +33,14 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
   const results: MomentSearchResult[] = []
   for (const moment of all.flat()) {
     if (results.length >= 20) break
-    const key = `${moment.address}:${moment.token_id}`
+    const addr = moment.address.toLowerCase()
+    const key = `${addr}:${moment.token_id}`
     if (seen.has(key)) continue
     seen.add(key)
+    // Belt-and-suspenders: filter individually-hidden moments, and also
+    // hidden collections in case fetchCollectionMoments returned moments
+    // whose `address` differs from the queried collection (e.g. proxy/wrap).
+    if (hiddenMoments.has(key) || hiddenCollections.has(addr)) continue
     const name = (moment.metadata?.name ?? '').toLowerCase()
     const desc = (moment.metadata?.description ?? '').toLowerCase()
     const creator = (moment.creator?.address ?? '').toLowerCase()

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { isMomentHidden } from '@/lib/hiddenMoments'
+import { isCollectionHidden } from '@/lib/hiddenCollections'
 
 // Inprocess `/api/moment` returns `MomentDetail` whose `momentAdmins` field
 // is an unordered list (platform admins, smart wallets, the actual creator)
@@ -63,12 +64,13 @@ export async function GET(req: NextRequest) {
   url.searchParams.set('tokenId', tokenId)
   url.searchParams.set('chainId', chainId)
 
-  const [upstream, hidden, creator] = await Promise.all([
+  const [upstream, momentHidden, collectionHidden, creator] = await Promise.all([
     fetch(url.toString(), {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
     }),
     isMomentHidden(collectionAddress, tokenId),
+    isCollectionHidden(collectionAddress),
     fetchCreator(collectionAddress, tokenId, chainId),
   ])
   const text = await upstream.text()
@@ -81,5 +83,12 @@ export async function GET(req: NextRequest) {
   // Inject the hidden flag so the client can render a creator-only
   // hidden-state UI without an extra round-trip. Inject `creator` from
   // the timeline lookup so detail page can stop reading momentAdmins[0].
+  //
+  // Cascade: a moment in a hidden collection is treated the same as an
+  // individually-hidden moment. The existing MomentDetailView gate
+  // (`isHidden && !isCreator`) then keeps non-creators on the placeholder.
+  // The collection admin's unhide affordance lives on the collection page,
+  // not here — they navigate there to flip the master toggle.
+  const hidden = momentHidden || collectionHidden
   return NextResponse.json({ ...data, hidden, creator }, { status: upstream.status })
 }

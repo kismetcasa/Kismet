@@ -2,8 +2,16 @@ import { redis } from './redis'
 
 // Set of lowercase collection addresses the creator has hidden from public
 // feeds. Mirrors hiddenMoments at the collection level — a creator can hide
-// a whole collection (and every moment inside it inherits the filter via
-// /api/collections) without having to hide each moment individually.
+// a whole collection and every moment inside it inherits the filter without
+// having to hide each moment individually.
+//
+// The cascade is read-time across every surface that filters hidden moments:
+// /api/collections, /api/collections/[scope]/eligibility, /api/timeline,
+// /api/moment, /api/featured/collections-hydrated, and search (moments +
+// collections). New mints into a hidden collection are automatically hidden
+// because the filter resolves at read time; unhiding the collection
+// restores everything except moments that were independently hide-marked
+// (those keep their per-moment hide, which is treated as a stronger signal).
 const HIDDEN_KEY = 'kismetart:hidden-collections'
 
 export async function isCollectionHidden(address: string): Promise<boolean> {

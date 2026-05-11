@@ -1,6 +1,7 @@
 import { redis } from './redis'
 import { PLATFORM_COLLECTION } from './config'
 import { INPROCESS_API } from './inprocess'
+import { getHiddenCollectionsSet } from './hiddenCollections'
 
 // Per-collection set of "authorized creators": addresses an admin
 // granted ADMIN to via the post-deploy panel. Stored as JSON-encoded
@@ -177,7 +178,10 @@ async function fetchInprocessCollectionImage(address: string): Promise<string | 
 
 // Searches curated collections only; moments have their own search.
 export async function searchCollections(query: string): Promise<CollectionMeta[]> {
-  const addresses = await getUserCollections()
+  const [addresses, hiddenCollections] = await Promise.all([
+    getUserCollections(),
+    getHiddenCollectionsSet(),
+  ])
   if (!addresses.length) return []
   const keys = addresses.map(keyCollectionMeta)
   const raws = await redis.mget<(string | CollectionMeta | null)[]>(...keys)
@@ -187,6 +191,7 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
     const raw = raws[i]
     if (!raw) continue
     const address = addresses[i].toLowerCase()
+    if (hiddenCollections.has(address)) continue
     const meta: CollectionMeta = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (meta.name.toLowerCase().includes(q) || address.startsWith(q)) {
       results.push(meta)

@@ -3,6 +3,7 @@ import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope 
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMeta } from '@/lib/notifications'
 
@@ -261,29 +262,41 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Hide creator-hidden moments. On a creator's own profile feed
-  // (?creator=<their address>) they can still see their own hidden moments
-  // so they can navigate to the detail page and unhide. Everywhere else
-  // (main feed, trending, collection view, someone else's profile) hidden
-  // means hidden for everyone including the creator themselves.
-  const [hiddenSet, viewer] = await Promise.all([
+  // Hide creator-hidden moments AND moments inside hidden collections. On a
+  // creator's own profile feed (?creator=<their address>) they can still
+  // see their own hidden moments so they can navigate to the detail page
+  // and unhide. Everywhere else (main feed, trending, collection view,
+  // someone else's profile) hidden means hidden for everyone including the
+  // creator themselves.
+  //
+  // Collection-level hides cascade at read time: every moment whose parent
+  // collection is in hidden-collections is filtered exactly the same way as
+  // an individually-hidden moment. This means (a) newly-minted moments in
+  // a hidden collection are automatically hidden, and (b) unhiding the
+  // collection restores everything that wasn't separately marked
+  // moment-hidden — no bulk write needed.
+  const [hiddenSet, hiddenColls, viewer] = await Promise.all([
     getHiddenMomentsSet(),
+    getHiddenCollectionsSet(),
     getSessionAddress(req),
   ])
-  if (hiddenSet.size > 0) {
+  if (hiddenSet.size > 0 || hiddenColls.size > 0) {
     const viewerLower = viewer?.toLowerCase() ?? null
     const isOwnProfile = viewerLower !== null && creator === viewerLower
     merged = merged
       .filter((m: unknown) => {
         const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
-        const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
-        if (!hiddenSet.has(key)) return true
+        const addr = moment.address?.toLowerCase() ?? ''
+        const key = `${addr}:${moment.token_id}`
+        const isHidden = hiddenSet.has(key) || hiddenColls.has(addr)
+        if (!isHidden) return true
         return isOwnProfile && moment.creator?.address?.toLowerCase() === viewerLower
       })
       .map((m: unknown) => {
         const moment = m as { address?: string; token_id?: string }
-        const key = `${moment.address?.toLowerCase()}:${moment.token_id}`
-        if (hiddenSet.has(key)) return { ...(m as object), hidden: true }
+        const addr = moment.address?.toLowerCase() ?? ''
+        const key = `${addr}:${moment.token_id}`
+        if (hiddenSet.has(key) || hiddenColls.has(addr)) return { ...(m as object), hidden: true }
         return m
       })
   }
