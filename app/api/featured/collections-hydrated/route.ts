@@ -16,6 +16,15 @@ export const revalidate = 30
 
 const COLLECTION_PREVIEW_LIMIT = 20 // tokens fetched per featured collection
 const ROW_DISPLAY_LIMIT = 8 // moments shown in horizontal scroll
+// Cap on featured collections hydrated per request. Bounds per-call cost
+// (inprocess fetches + RPC multicalls + Vercel function-time) so latency
+// stays predictable as the curated set grows. zrange is featuredAt-desc,
+// so entries beyond the cap are silently dropped oldest-first. If the
+// featured set ever needs to grow past this, the correct architectural
+// move is background pre-warming (a cron writes hydrated rows to KV; this
+// endpoint reads from KV), not lifting the cap — the cost model here is
+// linear-in-N and the request budget is bounded.
+const MAX_HYDRATED_COLLECTIONS = 20
 
 interface HydratedFeaturedCollection {
   contractAddress: string
@@ -32,7 +41,10 @@ interface HydratedFeaturedCollection {
 
 export async function GET() {
   const [raw, hiddenCollections, hiddenMoments] = await Promise.all([
-    redis.zrange(FEATURED_COLLECTIONS_KEY, 0, -1, {
+    // Cap at the source so the Redis result + downstream Promise.all fanout
+    // are bounded. Hidden-collection filtering can shrink the working set
+    // below this; the dropped tail is just newest-N minus those hidden.
+    redis.zrange(FEATURED_COLLECTIONS_KEY, 0, MAX_HYDRATED_COLLECTIONS - 1, {
       rev: true,
       withScores: true,
     }) as Promise<(string | number)[]>,
