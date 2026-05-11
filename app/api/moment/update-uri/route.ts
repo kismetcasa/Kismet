@@ -127,29 +127,61 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const res = await fetch(`${INPROCESS_API}/moment/update-uri`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      Accept: 'application/json',
+  const upstreamBody = {
+    moment: {
+      collectionAddress,
+      tokenId,
+      chainId: body.chainId ?? 8453,
     },
-    body: JSON.stringify({
-      moment: {
-        collectionAddress,
-        tokenId,
-        chainId: body.chainId ?? 8453,
+    newUri,
+  }
+
+  let res: Response
+  try {
+    res = await fetch(`${INPROCESS_API}/moment/update-uri`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        Accept: 'application/json',
       },
-      newUri,
-    }),
-  })
+      body: JSON.stringify(upstreamBody),
+    })
+  } catch (err) {
+    console.error(
+      `[update-uri] upstream unreachable: ${err instanceof Error ? err.message : String(err)} | request: ${JSON.stringify(upstreamBody)}`,
+    )
+    return NextResponse.json(
+      { error: 'upstream unreachable', detail: err instanceof Error ? err.message : String(err) },
+      { status: 502 },
+    )
+  }
 
   const text = await res.text()
   let data: unknown
   try {
     data = JSON.parse(text)
   } catch {
-    return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
+    // Inprocess returned non-JSON (typically an HTML 5xx page from a gateway,
+    // or an empty body). Log the raw status + snippet so we can diagnose;
+    // surface the status to the client so the toast isn't a bare "upstream
+    // error" with no breadcrumb.
+    console.error(
+      `[update-uri] upstream non-JSON: status=${res.status} body=${text.slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+    )
+    return NextResponse.json(
+      { error: 'upstream error', status: res.status, detail: text.slice(0, 200) },
+      { status: 502 },
+    )
+  }
+
+  // Log non-OK upstream responses (typically the caller's API-key smart
+  // wallet isn't admin on this token, or the on-chain tx reverted). Without
+  // this, the only signal is the client-side toast — no way to diagnose.
+  if (!res.ok) {
+    console.error(
+      `[update-uri] upstream ${res.status}: ${JSON.stringify(data).slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+    )
   }
 
   // On success: refresh moment-meta KV with the new display name so
