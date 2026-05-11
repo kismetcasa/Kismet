@@ -15,6 +15,11 @@ interface AdminSession {
   // track expiresAt so UI surfaces can ask "do I have a session?" without
   // waiting for a 401 round-trip on the first request.
   expiresAt: number
+  // The address that signed this session. Stored so a wallet switch can
+  // invalidate the session locally + revoke the server cookie — otherwise
+  // a user who signs in as A then switches to B in the wallet UI would
+  // continue to act under A's auth.
+  address: string
 }
 
 interface AdminContextValue {
@@ -89,6 +94,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   // confirmed; clear otherwise. The marker is just a local expiry hint —
   // the source of truth is the HttpOnly cookie, so if a request 401s the
   // caller can re-trigger startSession() to refresh both.
+  //
+  // address is in the dep list so a wallet switch (A → B) tears down a
+  // session bound to A: the marker has parsed.address === A which won't
+  // match the new address, so we clear local state AND revoke the cookie
+  // server-side. Without this, B would silently inherit A's admin rights
+  // via the still-valid HttpOnly cookie.
   useEffect(() => {
     if (!isAdmin && !isCurator) {
       applySession(null)
@@ -98,13 +109,23 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       const raw = sessionStorage.getItem(SESSION_KEY)
       if (!raw) return
       const parsed = JSON.parse(raw) as AdminSession
-      if (parsed.expiresAt > Date.now()) {
+      const stillValid =
+        parsed.expiresAt > Date.now() &&
+        !!address &&
+        parsed.address === address.toLowerCase()
+      if (stillValid) {
         applySession(parsed)
       } else {
         sessionStorage.removeItem(SESSION_KEY)
+        // Revoke the cookie too if the marker was for a different address
+        // — covers the wallet-switch case where the cookie outlives our
+        // local marker.
+        if (parsed.address !== address?.toLowerCase()) {
+          void fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+        }
       }
     } catch {}
-  }, [isAdmin, isCurator])
+  }, [isAdmin, isCurator, address])
 
   // Fetch featured keys on mount (both moments and whole collections)
   useEffect(() => {
@@ -178,7 +199,10 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
         throw new Error(data.error ?? 'Login failed')
       }
 
-      const s: AdminSession = { expiresAt: expirationTime.getTime() }
+      const s: AdminSession = {
+        expiresAt: expirationTime.getTime(),
+        address: address.toLowerCase(),
+      }
       applySession(s)
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
     } catch (err) {
@@ -288,7 +312,11 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       value={{
         isAdmin,
         isCurator,
-        hasSession: session !== null && session.expiresAt > Date.now(),
+        hasSession:
+          session !== null &&
+          session.expiresAt > Date.now() &&
+          !!address &&
+          session.address === address.toLowerCase(),
         startSession,
         endSession,
         featuredKeys,

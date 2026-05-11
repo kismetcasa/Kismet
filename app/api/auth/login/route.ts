@@ -56,8 +56,10 @@ export async function POST(req: NextRequest) {
   // Domain binding: the message must claim the same host the request was
   // sent to. Prevents a curator's signature obtained for kismet.art from
   // being replayed on a malicious clone (CSRF / phishing protection).
-  const expectedDomain = req.headers.get('host')
-  if (!expectedDomain || domain !== expectedDomain) {
+  // Compare lowercased because the Host header is case-insensitive per
+  // HTTP, and clients (RainbowKit / browsers) can normalize differently.
+  const expectedDomain = req.headers.get('host')?.toLowerCase()
+  if (!expectedDomain || domain.toLowerCase() !== expectedDomain) {
     return NextResponse.json({ error: 'Domain mismatch' }, { status: 401 })
   }
 
