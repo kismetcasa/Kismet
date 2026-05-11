@@ -73,6 +73,7 @@ export function CollectionRow({ collection, primaryAction, priority }: Collectio
               sizes="(max-width: 768px) 100vw, 41vw"
               onAllError={() => setImgFailed(true)}
               priority={priority}
+              preferProxy
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">

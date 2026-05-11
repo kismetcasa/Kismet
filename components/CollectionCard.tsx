@@ -84,6 +84,7 @@ export function CollectionCard({ collection, primaryAction, priority }: Collecti
             sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
             onAllError={() => setImgFailed(true)}
             priority={priority}
+            preferProxy
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
