@@ -6,11 +6,7 @@ import { RefreshCw } from 'lucide-react'
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
   remove: () => void
-  /**
-   * Position in the rendered list (0-based). Items above the fold (typically
-   * the first row) use this to opt into next/image priority + fetchPriority
-   * so the largest contentful paint isn't blocked behind lazy-loaded media.
-   */
+  /** 0-based position; callers use this to mark above-the-fold items as priority. */
   index: number
 }
 

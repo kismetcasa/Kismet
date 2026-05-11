@@ -604,14 +604,8 @@ export function CollectionView({
   const loadedMoments = moments ?? []
   const displayName = collectionName || shortAddress(address)
   const firstMoment = loadedMoments[0]
-  // Raw URI (ar://, ipfs://, or https://) — MomentImage handles gateway
-  // fan-out and the GIF/optimizer bypass. We used to render with a raw
-  // <Image> against `resolveUri(rawImgUrl)`, which pinned the cover to a
-  // single gateway and broke whenever its edge cache held a stale 404.
   const rawImgUrl = collectionImage || firstMoment?.metadata?.image
-  // Surface the source mime if available so MomentImage can short-circuit
-  // the optimizer for GIFs. Only the first-moment fallback has a content
-  // shape; the collection-level image has no mime attached.
+  // Collection-level metadata has no mime; only the first-moment fallback does.
   const coverMime = collectionImage ? undefined : firstMoment?.metadata?.content?.mime
   const description = collectionDescription
 
