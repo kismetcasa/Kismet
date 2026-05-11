@@ -605,8 +605,6 @@ export function CollectionView({
   const displayName = collectionName || shortAddress(address)
   const firstMoment = loadedMoments[0]
   const rawImgUrl = collectionImage || firstMoment?.metadata?.image
-  // Collection-level metadata has no mime; only the first-moment fallback does.
-  const coverMime = collectionImage ? undefined : firstMoment?.metadata?.content?.mime
   const description = collectionDescription
 
   // Unique creator addresses across all loaded moments — surfaces
@@ -649,8 +647,8 @@ export function CollectionView({
               fill
               className="object-cover"
               sizes="(max-width: 640px) 96px, 128px"
-              mime={coverMime}
               priority
+              preferProxy
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">

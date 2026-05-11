@@ -71,6 +71,7 @@ function CollectionPreviewImage({ src, alt }: { src?: string; alt: string }) {
       className="object-contain transition-transform duration-500 group-hover/img:scale-105"
       sizes="(max-width: 640px) 50vw, 33vw"
       onAllError={() => setFailed(true)}
+      preferProxy
     />
   )
 }

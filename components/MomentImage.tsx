@@ -49,6 +49,15 @@ type DeliveryMode = 'optimized' | 'proxy' | 'direct'
 type NextImageProps = CommonProps & {
   /** Content-type hint (`content.mime`). `image/gif` routes straight to the proxy. */
   mime?: string
+  /**
+   * Skip the optimizer attempt and go straight to the proxy. For cover-style
+   * contexts where the source is typically heavy enough that the optimizer
+   * 413's anyway — saves the failed-optimizer round-trip and replaces a
+   * single-source arweave.net fetch with the proxy's parallel-gateway race.
+   * Tradeoff: forgoes AVIF/WebP transcode + downscaling, so apply only for
+   * medium-or-larger display sizes where unoptimized bytes are acceptable.
+   */
+  preferProxy?: boolean
 } & Omit<ImageProps, 'src' | 'onError'>
 
 /**
@@ -62,11 +71,11 @@ type NextImageProps = CommonProps & {
  *              proxy     → direct
  *              direct    → walk next gateway → onAllError
  */
-export function MomentImage({ src, onAllError, mime, priority, ...rest }: NextImageProps) {
+export function MomentImage({ src, onAllError, mime, preferProxy, priority, ...rest }: NextImageProps) {
   const { url, onError: walkGateway } = useFallbackUrl(src, onAllError)
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
-  const skipOptimizer = isGifMime(mime) || isGifUri(src)
+  const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
 
   const initialMode: DeliveryMode = skipOptimizer
     ? (proxiable ? 'proxy' : 'direct')
