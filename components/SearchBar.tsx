@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
-import { Search, Loader2, ExternalLink } from 'lucide-react'
+import { Search, Loader2 } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
@@ -168,18 +168,15 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             <section>
               <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Collections</p>
               {results.collections.map((col) => (
-                <a
+                <Link
                   key={col.address}
-                  href={`https://inprocess.world/collect/base:${col.address}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={`/collection/${col.address}`}
                   onClick={close}
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
                   <ResultThumb src={col.image} alt={col.name} name={col.name} />
                   <span className="text-xs text-[#efefef] font-mono truncate flex-1">{col.name}</span>
-                  <ExternalLink size={9} className="text-[#444] flex-shrink-0" />
-                </a>
+                </Link>
               ))}
             </section>
           )}
@@ -189,17 +186,15 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             <section>
               <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Mints</p>
               {results.mints.map((mint) => (
-                <a
+                <Link
                   key={mint.id}
-                  href={`https://inprocess.world/collect/base:${mint.address}/${mint.tokenId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={`/moment/${mint.address}/${mint.tokenId}`}
                   onClick={close}
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
                   <ResultThumb src={mint.image} alt={mint.name} name={mint.name} />
                   <span className="text-xs text-[#efefef] font-mono truncate">{mint.name}</span>
-                </a>
+                </Link>
               ))}
             </section>
           )}

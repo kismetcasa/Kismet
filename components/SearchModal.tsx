@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
-import { Search, X, Loader2, ExternalLink } from 'lucide-react'
+import { Search, X, Loader2 } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
@@ -171,11 +171,10 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             <section className="mb-1">
               <p className="px-4 pt-3 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Mints</p>
               {results.mints.map((mint) => (
-                <a
+                <Link
                   key={mint.id}
-                  href={`https://inprocess.world/collect/base:${mint.address}/${mint.tokenId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={`/moment/${mint.address}/${mint.tokenId}`}
+                  onClick={onClose}
                   className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
                 >
                   {mint.image ? (
@@ -191,8 +190,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                       <p className="text-xs text-[#555] font-mono">{shortAddress(mint.creatorAddress)}</p>
                     )}
                   </div>
-                  <ExternalLink size={10} className="text-[#444] flex-shrink-0" />
-                </a>
+                </Link>
               ))}
             </section>
           )}
