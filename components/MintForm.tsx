@@ -1005,7 +1005,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             onChange={(e) => setDescription(e.target.value)}
             placeholder="describe your work…"
             rows={3}
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none"
+            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-y min-h-[4.5rem] overflow-auto"
           />
         </div>
       )}
