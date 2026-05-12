@@ -37,10 +37,6 @@ interface MomentModalProps {
   initialMaxSupply?: number | null
   initialCreatorName?: string
   initialCreatorAvatar?: string
-  // Pre-resolved platform-collection metadata from MomentCard. Null when the
-  // card already determined this isn't a platform collection (auto-deploy
-  // wrapper, standalone deploy, etc.) — leaves the chip hidden without a
-  // duplicate /api/collections fetch.
   initialCollectionName?: string | null
   initialCollectionImage?: string | null
   initialOwnedBalance?: number
@@ -178,18 +174,13 @@ export function MomentModal({
     })
   }, [creatorAddress])
 
-  // Resolve the collection chip on open. The cache hits when MomentCard
-  // already looked it up, so this is free in the common case; the fetch only
-  // fires when the modal is opened before the card's resolve landed.
+  // Cache-backed — hits when MomentCard already resolved it, fires a fetch
+  // only when the modal is opened before the card's resolve landed.
   useEffect(() => {
-    let cancelled = false
     fetchCollectionChip(moment.address).then(({ name, image }) => {
-      if (cancelled) return
       setCollectionName(name)
       setCollectionImage(image)
-      setCollectionImageFailed(false)
     })
-    return () => { cancelled = true }
   }, [moment.address])
 
   // Fetch comments with shared cache — survives modal close/reopen and seeds detail page
@@ -364,15 +355,13 @@ export function MomentModal({
               </span>
             </Link>
 
-            {/* Collection — only when /api/collections recognises this as a
-                platform-created (curator-blessed) collection */}
             {collectionName && (
               <Link
                 href={`/collection/${moment.address}`}
                 onClick={onClose}
                 className="flex items-center gap-2 group w-fit"
               >
-                {collectionImage && !collectionImageFailed ? (
+                {collectionImage && !collectionImageFailed && (
                   <div className="w-5 h-5 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
                     <MomentImage
                       src={collectionImage}
@@ -383,10 +372,8 @@ export function MomentModal({
                       onAllError={() => setCollectionImageFailed(true)}
                     />
                   </div>
-                ) : (
-                  <div className="w-5 h-5 flex-shrink-0 bg-[#1a1a1a] border border-[#2a2a2a]" />
                 )}
-                <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors truncate">
+                <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
                   {collectionName}
                 </span>
               </Link>

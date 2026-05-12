@@ -54,9 +54,8 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
     () => moment.creator.username || shortAddress(moment.creator.address),
   )
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
-  // Only set when /api/collections recognises the address as a platform-created
-  // (curator-blessed) collection — auto-deploy wrappers for one-off mints come
-  // back as a stub and the chip stays hidden.
+  // Stays null for non-platform addresses (auto-deploy wrappers, unknown
+  // contracts) — keeps the chip hidden for individual mints.
   const [collectionName, setCollectionName] = useState<string | null>(null)
   const [collectionImage, setCollectionImage] = useState<string | null>(null)
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
@@ -81,14 +80,10 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   }, [moment.creator.address])
 
   useEffect(() => {
-    let cancelled = false
     fetchCollectionChip(moment.address).then(({ name, image }) => {
-      if (cancelled) return
       setCollectionName(name)
       setCollectionImage(image)
-      setCollectionImageFailed(false)
     })
-    return () => { cancelled = true }
   }, [moment.address])
 
   const { data: ownedBalance } = useReadContract({
@@ -287,7 +282,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
               className="flex items-center gap-1.5 group/collection w-fit"
               title={collectionName}
             >
-              {collectionImage && !collectionImageFailed ? (
+              {collectionImage && !collectionImageFailed && (
                 <div className="w-4 h-4 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
                   <MomentImage
                     src={collectionImage}
@@ -298,10 +293,8 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
                     onAllError={() => setCollectionImageFailed(true)}
                   />
                 </div>
-              ) : (
-                <div className="w-4 h-4 flex-shrink-0 bg-[#1a1a1a] border border-[#2a2a2a]" />
               )}
-              <span className="text-xs text-[#555] font-mono group-hover/collection:text-[#888] transition-colors truncate">
+              <span className="text-xs text-[#555] font-mono group-hover/collection:text-[#888] transition-colors">
                 {collectionName}
               </span>
             </Link>
