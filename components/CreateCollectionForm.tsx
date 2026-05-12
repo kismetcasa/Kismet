@@ -637,26 +637,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           <h3 className="text-[#efefef] font-mono text-sm mb-2">Collection deployed</h3>
           <p className="text-[#888] text-xs font-mono break-all">{collectionAddress}</p>
         </div>
-        <div className="flex flex-col gap-2">
+        {txHash && (
           <a
-            href={`https://inprocess.world/collect/base:${collectionAddress}`}
+            href={`https://basescan.org/tx/${txHash}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs font-mono accent-grad hover:underline"
+            className="text-xs font-mono text-[#555] hover:text-[#888]"
           >
-            View on in•process →
+            {txHash.slice(0, 10)}…{txHash.slice(-8)}
           </a>
-          {txHash && (
-            <a
-              href={`https://basescan.org/tx/${txHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs font-mono text-[#555] hover:text-[#888]"
-            >
-              {txHash.slice(0, 10)}…{txHash.slice(-8)}
-            </a>
-          )}
-        </div>
+        )}
         <button
           onClick={() => {
             setStep('idle')

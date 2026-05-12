@@ -782,24 +782,21 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           <h3 className="text-[#efefef] font-mono text-sm mb-2">Moment minted</h3>
           <p className="text-[#888] text-xs font-mono">Token #{result.tokenId}</p>
         </div>
-        <div className="flex flex-col gap-2">
-          <a
-            href={`https://inprocess.world/collect/base:${result.contractAddress}/${result.tokenId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs font-mono accent-grad hover:underline"
-          >
-            View on in•process →
-          </a>
-          <a
-            href={`https://basescan.org/tx/${result.hash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs font-mono text-[#555] hover:text-[#888]"
-          >
-            {result.hash.slice(0, 10)}…{result.hash.slice(-8)}
-          </a>
-        </div>
+        <button
+          type="button"
+          onClick={() => router.push(`/moment/${result.contractAddress}/${result.tokenId}`)}
+          className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent self-center"
+        >
+          Moment details →
+        </button>
+        <a
+          href={`https://basescan.org/tx/${result.hash}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs font-mono text-[#555] hover:text-[#888]"
+        >
+          {result.hash.slice(0, 10)}…{result.hash.slice(-8)}
+        </a>
         {/* Persistent warning when an auto-deploy left the smart
             wallet without ADMIN on the new contract — without it the
             user would only see the transient post-mint toast. Routes
