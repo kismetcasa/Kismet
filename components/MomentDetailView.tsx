@@ -20,6 +20,9 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
+import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { generateThumbhash } from '@/lib/media/thumbhash'
+import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
@@ -451,11 +454,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
       // Reuse the existing image URI when the creator didn't pick a new
       // file — Arweave is content-addressed so the original ar:// stays
-      // valid forever.
+      // valid forever. Preserve the existing thumbhash by default so a
+      // name/description-only edit doesn't strip the blur placeholder.
       let imageUri = detail.metadata.image
+      let thumbhash = detail.metadata.kismet_thumbhash
       if (editFile) {
         toast.loading('Uploading image…', { id: 'edit-meta' })
+        // Hash and upload in parallel — the encode is bounded by 100px
+        // downscale and finishes well before the Arweave POST does, so
+        // it's free latency. Falls back to the previous hash on encode
+        // failure rather than stripping the placeholder.
+        const thumbhashPromise = generateThumbhash(editFile)
         imageUri = await uploadToArweave(editFile)
+        thumbhash = (await thumbhashPromise) ?? thumbhash
       }
 
       // Build the new metadata JSON. Preserve animation_url + content
@@ -467,10 +478,31 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         ...(imageUri ? { image: imageUri } : {}),
         ...(detail.metadata.animation_url ? { animation_url: detail.metadata.animation_url } : {}),
         ...(detail.metadata.content ? { content: detail.metadata.content } : {}),
+        ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
       }
 
       toast.loading('Uploading metadata…', { id: 'edit-meta' })
       const newUri = await uploadJson(newMetadata)
+
+      // Fail-fast on Arweave propagation lag — same pre-commit gate
+      // MintForm uses. Without this, the on-chain URI updates to point
+      // at an unpropagated bundle and every viewer (not just the editor)
+      // sees broken metadata until the gateway pool catches up. Image
+      // budget mirrors MintForm's 90s for large uploads.
+      toast.loading('Verifying Arweave propagation…', { id: 'edit-meta' })
+      const verifies: Promise<boolean>[] = [verifyArweaveAvailable(newUri)]
+      if (editFile && imageUri?.startsWith('ar://')) {
+        verifies.push(verifyArweaveAvailable(imageUri, 90_000))
+      }
+      const [metaOk, imageOk = true] = await Promise.all(verifies)
+      if (!metaOk || !imageOk) {
+        const failed: string[] = []
+        if (!imageOk) failed.push('image')
+        if (!metaOk) failed.push('metadata')
+        throw new Error(
+          `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
+        )
+      }
 
       toast.loading('Sign update in wallet…', { id: 'edit-meta' })
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
@@ -498,9 +530,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? data.detail ?? data.message ?? 'Update failed')
 
+      // Warm /api/img's edge cache for the new image so MomentImage's
+      // proxy fallback hits cached bytes the moment the optimistic state
+      // swap below re-mounts the <Image>. Fire-and-forget — failure is
+      // a no-op, the existing fallback chain still walks the pool.
+      if (editFile && imageUri?.startsWith('ar://')) {
+        void fetch(proxyUrl(imageUri), { cache: 'no-store' }).catch(() => {})
+      }
+
       // Optimistically refresh the in-memory detail so UI reflects the
       // new metadata immediately. The proper refetch from inprocess will
-      // catch up within a poll cycle.
+      // catch up within a poll cycle. Thumbhash is included so the blur
+      // placeholder paints under the new image while it loads.
       const optimistic: MomentDetail = {
         ...detail,
         uri: newUri,
@@ -509,6 +550,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           name: editName.trim(),
           description: editDesc.trim(),
           ...(imageUri ? { image: imageUri } : {}),
+          ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         },
       }
       setCachedDetail(address, tokenId, optimistic)
