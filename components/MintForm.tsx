@@ -261,13 +261,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // nulled and the helper bails before writing stale state.
   const verifyTargetRef = useRef<string | null>(null)
 
-  // Once the moment is minted, route to its detail page — same pattern
-  // CreateCollectionForm uses to land creators on their new collection.
-  useEffect(() => {
-    if (step !== 'done' || !result?.contractAddress || !result?.tokenId) return
-    router.push(`/moment/${result.contractAddress}/${result.tokenId}`)
-  }, [step, result, router])
-
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
   // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
   // the price input is hidden and the salesConfig price is forced to 0.
@@ -789,6 +782,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           <h3 className="text-[#efefef] font-mono text-sm mb-2">Moment minted</h3>
           <p className="text-[#888] text-xs font-mono">Token #{result.tokenId}</p>
         </div>
+        <button
+          type="button"
+          onClick={() => router.push(`/moment/${result.contractAddress}/${result.tokenId}`)}
+          className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent self-center"
+        >
+          Moment details →
+        </button>
         <div className="flex flex-col gap-2">
           <a
             href={`https://inprocess.world/collect/base:${result.contractAddress}/${result.tokenId}`}
