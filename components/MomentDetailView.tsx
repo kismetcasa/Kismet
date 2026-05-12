@@ -9,6 +9,7 @@ import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, E
 import { isAddress } from 'viem'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
+import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
@@ -326,20 +327,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }, [comments])
 
   useEffect(() => {
-    if (!address) return
-    fetch(`/api/collections?address=${address}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!d) return
-        const name: string | undefined = d.metadata?.name ?? d.name
-        const image: string | undefined = d.metadata?.image
-        if (name) setCollectionName(name)
-        if (image) {
-          setCollectionImage(image)
-          setCollectionImageFailed(false)
-        }
-      })
-      .catch(() => {})
+    fetchCollectionChip(address).then(({ name, image }) => {
+      // Guards preserve the SSR-seeded values when inprocess returns
+      // a partial response during the brief post-deploy indexing window.
+      if (name) setCollectionName(name)
+      if (image) {
+        setCollectionImage(image)
+        setCollectionImageFailed(false)
+      }
+    })
   }, [address])
 
   useEffect(() => {
