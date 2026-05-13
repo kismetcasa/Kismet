@@ -3,9 +3,8 @@ import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from './inprocess'
 import { trackWallet } from './profile'
 import { checkRateLimit, getClientIp } from './ratelimit'
-import { setMomentMeta, writeNotification } from './notifications'
+import { fanoutToFollowers, setMomentMeta, writeNotification } from './notifications'
 import { setMomentContent } from './momentContent'
-import { getFollowers } from './follows'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
 import { markCreatedMint } from './kv'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
@@ -223,30 +222,13 @@ export async function proxyMintRequest(
         tokenName: displayName,
       })
 
-      // Fan-out to followers — anyone following the creator gets a "mint"
-      // notification with `actor` set to the creator. NotificationRow keys
-      // off `actor` to render "0xCREATOR minted "name"" for these.
-      void (async () => {
-        try {
-          const followers = await getFollowers(account)
-          await Promise.all(
-            followers
-              .filter((f) => f.toLowerCase() !== account.toLowerCase())
-              .map((follower) =>
-                writeNotification({
-                  type: 'mint',
-                  recipient: follower,
-                  actor: account,
-                  tokenAddress: contractAddress,
-                  tokenId,
-                  tokenName: displayName,
-                }),
-              ),
-          )
-        } catch {
-          // notifications are non-critical
-        }
-      })()
+      // Fan-out to followers — actor=creator drives the "0xCREATOR minted X" copy.
+      fanoutToFollowers(account, {
+        type: 'mint',
+        tokenAddress: contractAddress,
+        tokenId,
+        tokenName: displayName,
+      })
 
       if (splitsValidation.kind === 'ok' && splitsValidation.splits.length >= 2) {
         void setStoredSplits(contractAddress, tokenId, splitsValidation.splits).catch(

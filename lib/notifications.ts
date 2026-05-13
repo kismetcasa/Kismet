@@ -1,8 +1,31 @@
 import { redis } from './redis'
-import { isFollowing } from './follows'
+import { getFollowers, isFollowing } from './follows'
 import { randomUUID } from 'crypto'
 
-export type NotificationType = 'collect' | 'sale' | 'follow' | 'mint' | 'listing_expired' | 'airdrop'
+export const ALL_NOTIFICATION_TYPES = [
+  'collect',
+  'sale',
+  'follow',
+  'mint',
+  'listing_expired',
+  'listing_created',
+  'airdrop',
+  'payout',
+  'authorized',
+] as const
+
+export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
+
+// Money-bearing types bypass actor-mute at read time and per-type mute at
+// write time. Muting payouts is a footgun, not a preference.
+export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
+  'sale',
+  'airdrop',
+  'payout',
+])
+
+export const MUTEABLE_TYPES: readonly NotificationType[] =
+  ALL_NOTIFICATION_TYPES.filter((t) => !NON_MUTEABLE_TYPES.has(t))
 
 export interface Notification {
   id: string
@@ -27,11 +50,15 @@ type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'r
 
 const MAX_PER_USER = 200
 const FOLLOW_DEDUP_WINDOW_SECS = 7 * 24 * 60 * 60
-// A collect-all of 20 moments would otherwise produce 20 identical-shape
-// notifications in the creator's feed within seconds. 60s is short enough
-// to preserve distinct collect events from the same actor over time and
-// long enough to coalesce the entire burst from one click.
-const COLLECT_DEDUP_WINDOW_SECS = 60
+// Coalesces same-shape bursts (collect-all firing Promise.all-style, or a
+// seller listing several editions back-to-back) into one notification per
+// (recipient, actor, tokenAddress) tuple. 60s preserves distinct events
+// over time while absorbing single-click bursts.
+const BURST_DEDUP_WINDOW_SECS = 60
+const BURST_DEDUP_TYPES: ReadonlySet<NotificationType> = new Set([
+  'collect',
+  'listing_created',
+])
 const READ_IDS_TTL_SECS = 30 * 24 * 60 * 60  // 30 days
 const MUTED_TTL_SECS = 365 * 24 * 60 * 60     // 1 year
 
@@ -39,6 +66,7 @@ const keyNotif = (a: string) => `kismetart:notif:${a.toLowerCase()}`
 const keyLastRead = (a: string) => `kismetart:notif-last-read:${a.toLowerCase()}`
 const keyReadIds = (a: string) => `kismetart:notif-read-ids:${a.toLowerCase()}`
 const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
+const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const KEY_PROFILES = 'kismetart:profiles'
 
 const keyMomentMeta = (addr: string, tokenId: string) =>
@@ -59,8 +87,12 @@ async function isPriority(
   if (type === 'mint') return true
   if (type === 'listing_expired') return true
   if (type === 'airdrop') return true
+  if (type === 'payout') return true
+  if (type === 'authorized') return true
   if (type === 'follow') return true
   if (type === 'collect' && price && price !== '0') return true
+  // listing_created stays non-priority — active sellers shouldn't dominate
+  // the priority bell. The "all" tab still surfaces it for engaged followers.
   if (!actor) return false
 
   const [following, isKnown] = await Promise.all([
@@ -73,6 +105,13 @@ async function isPriority(
 export async function writeNotification(input: NotificationInput): Promise<void> {
   try {
     if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return
+
+    // Per-type mute — financial types bypass (see NON_MUTEABLE_TYPES).
+    if (!NON_MUTEABLE_TYPES.has(input.type)) {
+      try {
+        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return
+      } catch {}
+    }
 
     if (input.type === 'follow' && input.actor) {
       const cutoff = Math.floor(Date.now() / 1000) - FOLLOW_DEDUP_WINDOW_SECS
@@ -90,32 +129,16 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       if (dup) return
     }
 
-    // Collect dedup: a 20-mint collect-all fires Promise.all-style at the
-    // recording endpoint, so a scan-based dedup would race. SET NX is
-    // atomic — first write through the (recipient, actor, collection)
-    // tuple acquires the lock; concurrent and follow-up writes within the
-    // window drop silently. Per-collection scoping preserves notifications
-    // from the same collector across different creators / collections.
-    //
-    // Best-effort: Redis transient → proceed without dedup. The tradeoff
-    // here favors "always notify on Redis down" over "drop silently to
-    // avoid possible duplicates" — a missed notification is worse for
-    // creator trust than an occasional duplicate during an outage.
-    if (input.type === 'collect' && input.actor && input.tokenAddress) {
-      const lockKey = `kismetart:collect-notif-lock:${input.recipient.toLowerCase()}:${input.actor.toLowerCase()}:${input.tokenAddress.toLowerCase()}`
-      let lock: 'OK' | null
+    // Atomic SET NX lock keyed by (type, recipient, actor, tokenAddress).
+    // Best-effort: a Redis transient lets the write through rather than
+    // silently drop — a duplicate is preferable to a missed signal.
+    if (BURST_DEDUP_TYPES.has(input.type) && input.actor && input.tokenAddress) {
+      const lockKey = `kismetart:${input.type}-notif-lock:${input.recipient.toLowerCase()}:${input.actor.toLowerCase()}:${input.tokenAddress.toLowerCase()}`
+      let acquired = true
       try {
-        // Upstash's SET-with-NX returns 'OK' | null at runtime; the wider
-        // SDK type includes the value type for the GET option we're not
-        // using.
-        lock = (await redis.set(lockKey, '1', {
-          nx: true,
-          ex: COLLECT_DEDUP_WINDOW_SECS,
-        })) as 'OK' | null
-      } catch {
-        lock = 'OK'
-      }
-      if (lock !== 'OK') return
+        acquired = (await redis.set(lockKey, '1', { nx: true, ex: BURST_DEDUP_WINDOW_SECS })) === 'OK'
+      } catch {}
+      if (!acquired) return
     }
 
     const id = randomUUID()
@@ -139,6 +162,27 @@ export async function writeNotification(input: NotificationInput): Promise<void>
   } catch {
     // Notifications are non-critical — never let them break the parent operation
   }
+}
+
+// Fire-and-forget: write a notification to every follower of `source`,
+// with actor=source. writeNotification's self-check filters source==follower;
+// burst dedup runs inside writeNotification too, so callers stay minimal.
+export function fanoutToFollowers(
+  source: string,
+  payload: Omit<NotificationInput, 'recipient' | 'actor'>,
+): void {
+  void (async () => {
+    try {
+      const followers = await getFollowers(source)
+      await Promise.all(
+        followers.map((follower) =>
+          writeNotification({ ...payload, recipient: follower, actor: source }),
+        ),
+      )
+    } catch {
+      // notifications are non-critical
+    }
+  })()
 }
 
 interface NotificationListOpts {
@@ -171,7 +215,8 @@ async function loadAndAnnotate(address: string): Promise<Notification[]> {
   for (const raw of raws) {
     try {
       const n = typeof raw === 'string' ? (JSON.parse(raw) as Notification) : (raw as Notification)
-      if (n.actor && muted.has(n.actor.toLowerCase())) continue
+      // Money-bearing types bypass actor-mute (see NON_MUTEABLE_TYPES).
+      if (n.actor && muted.has(n.actor.toLowerCase()) && !NON_MUTEABLE_TYPES.has(n.type)) continue
       const read = n.timestamp <= lastReadTs || readIds.has(n.id)
       all.push({ ...n, read })
     } catch {
@@ -223,6 +268,19 @@ export async function unmuteActor(address: string, actor: string): Promise<void>
 
 export async function getMutedActors(address: string): Promise<string[]> {
   return (await redis.smembers(keyMuted(address))) as string[]
+}
+
+export async function muteType(address: string, type: NotificationType): Promise<void> {
+  await redis.sadd(keyMutedTypes(address), type)
+  void redis.expire(keyMutedTypes(address), MUTED_TTL_SECS).catch(() => {})
+}
+
+export async function unmuteType(address: string, type: NotificationType): Promise<void> {
+  await redis.srem(keyMutedTypes(address), type)
+}
+
+export async function getMutedTypes(address: string): Promise<NotificationType[]> {
+  return (await redis.smembers(keyMutedTypes(address))) as NotificationType[]
 }
 
 export async function getMomentMeta(

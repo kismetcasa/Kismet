@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getNotifications, type NotificationType } from '@/lib/notifications'
+import { ALL_NOTIFICATION_TYPES, getNotifications, type NotificationType } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionContext, slideSession } from '@/lib/session'
-
-const VALID_TYPES: NotificationType[] = ['collect', 'sale', 'follow', 'mint', 'listing_expired', 'airdrop']
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
@@ -20,7 +18,7 @@ export async function GET(req: NextRequest) {
   const tabParam = searchParams.get('tab')
   const tab = tabParam === 'priority' ? 'priority' : 'all'
   const typeParam = searchParams.get('type')
-  const type = typeParam && VALID_TYPES.includes(typeParam as NotificationType)
+  const type = typeParam && (ALL_NOTIFICATION_TYPES as readonly string[]).includes(typeParam)
     ? (typeParam as NotificationType)
     : undefined
   const limit = Math.min(Math.max(parseInt(searchParams.get('limit') ?? '20', 10) || 20, 1), 50)

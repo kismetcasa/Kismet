@@ -1,7 +1,7 @@
 import { redis } from './redis'
 import { randomUUID } from 'crypto'
 import type { SerializedOrderComponents } from './seaport'
-import { writeNotification } from './notifications'
+import { fanoutToFollowers, writeNotification } from './notifications'
 
 export interface Listing {
   id: string
@@ -71,6 +71,17 @@ export async function createListing(
     redis.set(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller), listing.id),
     redis.sadd(keyBySeller(listing.seller), listing.id),
   ])
+
+  fanoutToFollowers(listing.seller, {
+    type: 'listing_created',
+    tokenAddress: listing.collectionAddress,
+    tokenId: listing.tokenId,
+    tokenName: listing.name,
+    tokenImage: listing.image,
+    price: listing.price,
+    currency: listing.currency,
+    listingId: listing.id,
+  })
 
   return listing
 }

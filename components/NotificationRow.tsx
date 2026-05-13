@@ -1,7 +1,8 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { Sparkles, Clock } from 'lucide-react'
+import { Sparkles, Clock, Coins, Key } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress, formatRelativeTime, formatPrice } from '@/lib/inprocess'
@@ -20,11 +21,16 @@ function notificationHref(n: Notification): string {
   switch (n.type) {
     case 'follow':
       return n.actor ? `/profile/${n.actor}` : '/'
+    case 'authorized':
+      // Collection-level grant — no specific tokenId.
+      return n.tokenAddress ? `/collection/${n.tokenAddress}` : '/'
     case 'collect':
     case 'sale':
     case 'mint':
     case 'listing_expired':
+    case 'listing_created':
     case 'airdrop':
+    case 'payout':
       return n.tokenAddress && n.tokenId ? `/moment/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
@@ -112,39 +118,56 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
         </>
       )
+    case 'listing_created':
+      return (
+        <>
+          <p className="text-xs font-mono text-[#efefef] truncate">
+            {actorLabel ?? 'someone'} listed {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+          </p>
+          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+            {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} · ` : ''}{time}
+          </p>
+        </>
+      )
+    case 'payout':
+      return (
+        <>
+          <p className="text-xs font-mono text-[#efefef] truncate">
+            you received a payout from {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+          </p>
+          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+            split distributed in {(n.currency ?? 'eth').toUpperCase()} · {time}
+          </p>
+        </>
+      )
+    case 'authorized':
+      return (
+        <>
+          <p className="text-xs font-mono text-[#efefef] truncate">
+            {actorLabel ?? 'an admin'} added you as a creator on {n.tokenName ? `"${n.tokenName}"` : 'a collection'}
+          </p>
+          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
+        </>
+      )
   }
 }
 
 function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   const iconSize = Math.round(size * 0.45)
+  const badge = (icon: ReactNode) => (
+    <div
+      style={{ width: size, height: size }}
+      className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
+    >
+      {icon}
+    </div>
+  )
 
-  if (n.type === 'mint') {
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
-      >
-        <Sparkles size={iconSize} className="text-[#8B5CF6]" />
-      </div>
-    )
-  }
-
-  if (n.type === 'listing_expired') {
-    if (n.tokenImage) {
-      return (
-        <div className="relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden" style={{ width: size, height: size }}>
-          <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} />
-        </div>
-      )
-    }
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
-      >
-        <Clock size={iconSize} className="text-[#555]" />
-      </div>
-    )
+  if (n.type === 'mint') return badge(<Sparkles size={iconSize} className="text-[#8B5CF6]" />)
+  if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
+  if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-[#8B5CF6]" />)
+  if (n.type === 'listing_expired' && !n.tokenImage) {
+    return badge(<Clock size={iconSize} className="text-[#555]" />)
   }
 
   if (n.type === 'follow' || !n.tokenImage) {

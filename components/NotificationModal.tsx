@@ -11,6 +11,16 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { humanError } from '@/lib/toast'
 import { shortAddress } from '@/lib/inprocess'
 import { CopyAddress } from './CopyAddress'
+import type { NotificationType } from '@/lib/notifications'
+
+const TYPE_LABELS: Record<string, string> = {
+  collect: 'Collects',
+  follow: 'New followers',
+  mint: 'Mints by people you follow',
+  listing_expired: 'Your listings expired',
+  listing_created: 'Listings by people you follow',
+  authorized: 'Creator authorizations',
+}
 
 type ModalTab = 'feed' | 'settings'
 
@@ -23,19 +33,34 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   const [tab, setTab] = useState<ModalTab>('feed')
   const [muted, setMuted] = useState<string[] | null>(null)
   const [mutedLoading, setMutedLoading] = useState(false)
+  const [mutedTypes, setMutedTypes] = useState<NotificationType[] | null>(null)
+  const [muteableTypes, setMuteableTypes] = useState<NotificationType[]>([])
+  const [typesLoading, setTypesLoading] = useState(false)
 
   useBodyScrollLock()
   useEscapeKey(onClose)
 
-  // Fetch muted list when settings tab is first opened
+  // Fetch mute lists when settings tab is first opened
   useEffect(() => {
     if (tab !== 'settings') return
     setMutedLoading(true)
+    setTypesLoading(true)
     fetch('/api/notifications/mute', { credentials: 'same-origin' })
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMuted(Array.isArray(d.muted) ? d.muted : []))
       .catch(() => setMuted([]))
       .finally(() => setMutedLoading(false))
+    fetch('/api/notifications/mute-type', { credentials: 'same-origin' })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => {
+        setMutedTypes(Array.isArray(d.muted) ? d.muted : [])
+        setMuteableTypes(Array.isArray(d.muteable) ? d.muteable : [])
+      })
+      .catch(() => {
+        setMutedTypes([])
+        setMuteableTypes([])
+      })
+      .finally(() => setTypesLoading(false))
   }, [tab])
 
   async function handleUnmute(actor: string) {
@@ -49,11 +74,38 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actor, unmute: true }),
       })
+      // Actor-mute filters at read time, so unmuting can resurface
+      // priority rows — tell the bell to re-verify its count.
+      window.dispatchEvent(new CustomEvent('kismetart:notif-refetch'))
     } catch (err) {
       setMuted(previous)
       const description = humanError(err)
       if (description === 'Cancelled') return
       toast.error('Unmute failed', { description })
+    }
+  }
+
+  async function handleToggleType(type: NotificationType) {
+    const previous = mutedTypes
+    const wasMuted = previous?.includes(type) ?? false
+    setMutedTypes((prev) => {
+      if (!prev) return prev
+      return wasMuted ? prev.filter((t) => t !== type) : [...prev, type]
+    })
+    try {
+      await ensureSession()
+      const res = await fetch('/api/notifications/mute-type', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, unmute: wasMuted }),
+      })
+      if (!res.ok) throw new Error('request failed')
+    } catch (err) {
+      setMutedTypes(previous)
+      const description = humanError(err)
+      if (description === 'Cancelled') return
+      toast.error('Update failed', { description })
     }
   }
 
@@ -98,7 +150,45 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
           {tab === 'feed' ? (
             <NotificationFeed />
           ) : (
-            <div className="p-4 flex flex-col gap-4">
+            <div className="p-4 flex flex-col gap-6">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-widest text-[#555] mb-3">
+                  notification types
+                </p>
+                {typesLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 size={14} className="animate-spin text-[#555]" />
+                  </div>
+                ) : muteableTypes.length === 0 ? (
+                  <p className="text-xs font-mono text-[#555]">no types available</p>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {muteableTypes.map((type) => {
+                      const isMuted = mutedTypes?.includes(type) ?? false
+                      return (
+                        <div
+                          key={type}
+                          className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a]"
+                        >
+                          <span className="text-xs font-mono text-[#888]">
+                            {TYPE_LABELS[type] ?? type}
+                          </span>
+                          <button
+                            onClick={() => handleToggleType(type)}
+                            className="text-[9px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] transition-colors"
+                          >
+                            {isMuted ? 'unmute' : 'mute'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                <p className="text-[10px] font-mono text-[#444] mt-2">
+                  sales, airdrops and payouts always notify.
+                </p>
+              </div>
+
               <div>
                 <p className="text-[10px] font-mono uppercase tracking-widest text-[#555] mb-3">
                   muted accounts

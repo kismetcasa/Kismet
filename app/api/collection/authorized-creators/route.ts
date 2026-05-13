@@ -9,8 +9,10 @@ import {
   addAuthorizedCreator,
   removeAuthorizedCreator,
   getAuthorizedCreators,
+  getCollectionMeta,
   type AuthorizedCreator,
 } from '@/lib/kv'
+import { writeNotification } from '@/lib/notifications'
 
 // GET /api/collection/authorized-creators?collection=0x… — returns the
 // EOA → smart-wallet mappings recorded by our panel at grant time. KV
@@ -117,6 +119,22 @@ export async function POST(req: NextRequest) {
       { status: 502 },
     )
   }
+
+  // Click-through routes to /collection/<addr>. On-chain addPermission is a
+  // separate admin tx, so the copy hedges ("added you as a creator").
+  void (async () => {
+    try {
+      const meta = await getCollectionMeta(collection)
+      await writeNotification({
+        type: 'authorized',
+        recipient: eoa,
+        actor: viewer,
+        tokenAddress: collection,
+        tokenName: meta?.name,
+      })
+    } catch {}
+  })()
+
   return NextResponse.json({ ok: true, creator: entry })
 }
 
