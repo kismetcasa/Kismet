@@ -344,7 +344,7 @@ export function NotificationFeed() {
         )}
         {!authRequired && !fetchError && !loading && items.length === 0 && (
           <p className="text-xs font-mono text-[#555] text-center py-12">
-            no notifications yet
+            {typeFilter === 'all' ? 'no notifications yet' : 'nothing here yet'}
           </p>
         )}
         {items.map((n) => (
