@@ -147,27 +147,25 @@ export async function POST(req: NextRequest) {
   }
 
   // Fan-out payout notifications on inprocess 2xx (best-effort).
+  // writeNotification's self-check filters caller-as-recipient.
   if (res.ok) {
     void (async () => {
       try {
         const stored = await getStoredSplits(collectionAddress, tokenId)
         if (!stored.recipients.length) return
         const meta = await getMomentMeta(collectionAddress, tokenId)
-        const callerLower = callerAddress.toLowerCase()
         await Promise.all(
-          stored.recipients
-            .filter((r) => r.address.toLowerCase() !== callerLower)
-            .map((r) =>
-              writeNotification({
-                type: 'payout',
-                recipient: r.address,
-                actor: callerAddress,
-                tokenAddress: collectionAddress,
-                tokenId,
-                tokenName: meta?.name,
-                currency,
-              }),
-            ),
+          stored.recipients.map((r) =>
+            writeNotification({
+              type: 'payout',
+              recipient: r.address,
+              actor: callerAddress,
+              tokenAddress: collectionAddress,
+              tokenId,
+              tokenName: meta?.name,
+              currency,
+            }),
+          ),
         )
       } catch {}
     })()

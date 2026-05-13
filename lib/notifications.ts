@@ -109,8 +109,7 @@ export async function writeNotification(input: NotificationInput): Promise<void>
     // Per-type mute — financial types bypass (see NON_MUTEABLE_TYPES).
     if (!NON_MUTEABLE_TYPES.has(input.type)) {
       try {
-        const muted = (await redis.smembers(keyMutedTypes(input.recipient))) as string[]
-        if (muted.includes(input.type)) return
+        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return
       } catch {}
     }
 
@@ -163,6 +162,27 @@ export async function writeNotification(input: NotificationInput): Promise<void>
   } catch {
     // Notifications are non-critical — never let them break the parent operation
   }
+}
+
+// Fire-and-forget: write a notification to every follower of `source`,
+// with actor=source. writeNotification's self-check filters source==follower;
+// burst dedup runs inside writeNotification too, so callers stay minimal.
+export function fanoutToFollowers(
+  source: string,
+  payload: Omit<NotificationInput, 'recipient' | 'actor'>,
+): void {
+  void (async () => {
+    try {
+      const followers = await getFollowers(source)
+      await Promise.all(
+        followers.map((follower) =>
+          writeNotification({ ...payload, recipient: follower, actor: source }),
+        ),
+      )
+    } catch {
+      // notifications are non-critical
+    }
+  })()
 }
 
 interface NotificationListOpts {
@@ -248,30 +268,6 @@ export async function unmuteActor(address: string, actor: string): Promise<void>
 
 export async function getMutedActors(address: string): Promise<string[]> {
   return (await redis.smembers(keyMuted(address))) as string[]
-}
-
-// Fire-and-forget: write a notification to every follower of `source`,
-// with actor=source. Self-rows are filtered. Burst dedup runs inside
-// writeNotification, so callers don't need their own lock keys.
-export function fanoutToFollowers(
-  source: string,
-  payload: Omit<NotificationInput, 'recipient' | 'actor'>,
-): void {
-  void (async () => {
-    try {
-      const followers = await getFollowers(source)
-      const sourceLower = source.toLowerCase()
-      await Promise.all(
-        followers
-          .filter((f) => f.toLowerCase() !== sourceLower)
-          .map((follower) =>
-            writeNotification({ ...payload, recipient: follower, actor: source }),
-          ),
-      )
-    } catch {
-      // notifications are non-critical
-    }
-  })()
 }
 
 export async function muteType(address: string, type: NotificationType): Promise<void> {
