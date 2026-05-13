@@ -2,24 +2,30 @@ import { redis } from './redis'
 import { isFollowing } from './follows'
 import { randomUUID } from 'crypto'
 
-export type NotificationType =
-  | 'collect'
-  | 'sale'
-  | 'follow'
-  | 'mint'
-  | 'listing_expired'
-  | 'listing_created'
-  | 'airdrop'
-  | 'payout'
-  | 'authorized'
+export const ALL_NOTIFICATION_TYPES = [
+  'collect',
+  'sale',
+  'follow',
+  'mint',
+  'listing_expired',
+  'listing_created',
+  'airdrop',
+  'payout',
+  'authorized',
+] as const
+
+export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
 
 // Money-bearing types bypass actor-mute at read time and per-type mute at
-// write time. Muting "your splits payouts" is a footgun, not a preference.
+// write time. Muting payouts is a footgun, not a preference.
 export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
   'sale',
   'airdrop',
   'payout',
 ])
+
+export const MUTEABLE_TYPES: readonly NotificationType[] =
+  ALL_NOTIFICATION_TYPES.filter((t) => !NON_MUTEABLE_TYPES.has(t))
 
 export interface Notification {
   id: string
@@ -44,11 +50,15 @@ type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'r
 
 const MAX_PER_USER = 200
 const FOLLOW_DEDUP_WINDOW_SECS = 7 * 24 * 60 * 60
-// A collect-all of 20 moments would otherwise produce 20 identical-shape
-// notifications in the creator's feed within seconds. 60s is short enough
-// to preserve distinct collect events from the same actor over time and
-// long enough to coalesce the entire burst from one click.
-const COLLECT_DEDUP_WINDOW_SECS = 60
+// Coalesces same-shape bursts (collect-all firing Promise.all-style, or a
+// seller listing several editions back-to-back) into one notification per
+// (recipient, actor, tokenAddress) tuple. 60s preserves distinct events
+// over time while absorbing single-click bursts.
+const BURST_DEDUP_WINDOW_SECS = 60
+const BURST_DEDUP_TYPES: ReadonlySet<NotificationType> = new Set([
+  'collect',
+  'listing_created',
+])
 const READ_IDS_TTL_SECS = 30 * 24 * 60 * 60  // 30 days
 const MUTED_TTL_SECS = 365 * 24 * 60 * 60     // 1 year
 
@@ -96,17 +106,12 @@ export async function writeNotification(input: NotificationInput): Promise<void>
   try {
     if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return
 
-    // Per-type mute. Financial events bypass — recipients can't opt out of
-    // money signals (defense in depth; the mute-type endpoint also rejects
-    // these). Best-effort on Redis transient: proceed without short-circuit
-    // rather than drop notifications silently.
+    // Per-type mute — financial types bypass (see NON_MUTEABLE_TYPES).
     if (!NON_MUTEABLE_TYPES.has(input.type)) {
       try {
         const muted = (await redis.smembers(keyMutedTypes(input.recipient))) as string[]
         if (muted.includes(input.type)) return
-      } catch {
-        // proceed
-      }
+      } catch {}
     }
 
     if (input.type === 'follow' && input.actor) {
@@ -125,32 +130,16 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       if (dup) return
     }
 
-    // Collect dedup: a 20-mint collect-all fires Promise.all-style at the
-    // recording endpoint, so a scan-based dedup would race. SET NX is
-    // atomic — first write through the (recipient, actor, collection)
-    // tuple acquires the lock; concurrent and follow-up writes within the
-    // window drop silently. Per-collection scoping preserves notifications
-    // from the same collector across different creators / collections.
-    //
-    // Best-effort: Redis transient → proceed without dedup. The tradeoff
-    // here favors "always notify on Redis down" over "drop silently to
-    // avoid possible duplicates" — a missed notification is worse for
-    // creator trust than an occasional duplicate during an outage.
-    if (input.type === 'collect' && input.actor && input.tokenAddress) {
-      const lockKey = `kismetart:collect-notif-lock:${input.recipient.toLowerCase()}:${input.actor.toLowerCase()}:${input.tokenAddress.toLowerCase()}`
-      let lock: 'OK' | null
+    // Atomic SET NX lock keyed by (type, recipient, actor, tokenAddress).
+    // Best-effort: a Redis transient lets the write through rather than
+    // silently drop — a duplicate is preferable to a missed signal.
+    if (BURST_DEDUP_TYPES.has(input.type) && input.actor && input.tokenAddress) {
+      const lockKey = `kismetart:${input.type}-notif-lock:${input.recipient.toLowerCase()}:${input.actor.toLowerCase()}:${input.tokenAddress.toLowerCase()}`
+      let acquired = true
       try {
-        // Upstash's SET-with-NX returns 'OK' | null at runtime; the wider
-        // SDK type includes the value type for the GET option we're not
-        // using.
-        lock = (await redis.set(lockKey, '1', {
-          nx: true,
-          ex: COLLECT_DEDUP_WINDOW_SECS,
-        })) as 'OK' | null
-      } catch {
-        lock = 'OK'
-      }
-      if (lock !== 'OK') return
+        acquired = (await redis.set(lockKey, '1', { nx: true, ex: BURST_DEDUP_WINDOW_SECS })) === 'OK'
+      } catch {}
+      if (!acquired) return
     }
 
     const id = randomUUID()
@@ -206,8 +195,7 @@ async function loadAndAnnotate(address: string): Promise<Notification[]> {
   for (const raw of raws) {
     try {
       const n = typeof raw === 'string' ? (JSON.parse(raw) as Notification) : (raw as Notification)
-      // Actor-mute bypasses for money-bearing types — muting a friend should
-      // never hide that they paid you out or bought your listing.
+      // Money-bearing types bypass actor-mute (see NON_MUTEABLE_TYPES).
       if (n.actor && muted.has(n.actor.toLowerCase()) && !NON_MUTEABLE_TYPES.has(n.type)) continue
       const read = n.timestamp <= lastReadTs || readIds.has(n.id)
       all.push({ ...n, read })

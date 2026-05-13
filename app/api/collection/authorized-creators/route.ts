@@ -120,11 +120,8 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Notify the newly authorized EOA so they discover the grant in-app.
-  // Click-through links to the collection page (no tokenId — this is
-  // collection-level). The on-chain `addPermission` is a separate admin
-  // tx; copy below reads as a record of intent, which is accurate even
-  // before the chain settles.
+  // Click-through routes to /collection/<addr>. On-chain addPermission is a
+  // separate admin tx, so the copy hedges ("added you as a creator").
   void (async () => {
     try {
       const meta = await getCollectionMeta(collection)
@@ -135,9 +132,7 @@ export async function POST(req: NextRequest) {
         tokenAddress: collection,
         tokenName: meta?.name,
       })
-    } catch {
-      // notifications are non-critical
-    }
+    } catch {}
   })()
 
   return NextResponse.json({ ok: true, creator: entry })

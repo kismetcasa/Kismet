@@ -146,16 +146,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
   }
 
-  // Fan out a payout notification to every recorded split recipient. Fire on
-  // inprocess 2xx (matches the mint-proxy pre-confirmation pattern — the
-  // platform smart wallet is trusted and the hash is already in mempool).
-  // Best-effort: notification failures never block the response.
+  // Fan-out payout notifications on inprocess 2xx (best-effort).
   if (res.ok) {
     void (async () => {
       try {
-        const stored = await getStoredSplits(collectionAddress, tokenId!)
+        const stored = await getStoredSplits(collectionAddress, tokenId)
         if (!stored.recipients.length) return
-        const meta = await getMomentMeta(collectionAddress, tokenId!)
+        const meta = await getMomentMeta(collectionAddress, tokenId)
         const callerLower = callerAddress.toLowerCase()
         await Promise.all(
           stored.recipients
@@ -166,15 +163,13 @@ export async function POST(req: NextRequest) {
                 recipient: r.address,
                 actor: callerAddress,
                 tokenAddress: collectionAddress,
-                tokenId: tokenId!,
+                tokenId,
                 tokenName: meta?.name,
                 currency,
               }),
             ),
         )
-      } catch {
-        // notifications are non-critical
-      }
+      } catch {}
     })()
   }
 

@@ -44,11 +44,6 @@ const keyBySeller = (seller: string) =>
   `kismetart:listings:seller:${seller.toLowerCase()}`
 // Claim key prevents duplicate expiry notifications across concurrent requests
 const keyExpiredNotif = (id: string) => `kismetart:listing-notified:${id}`
-// Burst dedup for listing_created fan-out — coalesces rapid relist /
-// cancel-relist within a short window per (follower, seller, collection).
-const keyListingCreatedLock = (recipient: string, seller: string, collection: string) =>
-  `kismetart:listing-created-lock:${recipient.toLowerCase()}:${seller.toLowerCase()}:${collection.toLowerCase()}`
-const LISTING_CREATED_LOCK_SECS = 60
 
 export async function createListing(
   data: Omit<Listing, 'id' | 'createdAt' | 'status'>
@@ -78,11 +73,7 @@ export async function createListing(
     redis.sadd(keyBySeller(listing.seller), listing.id),
   ])
 
-  // Fan out to the seller's followers. Mirrors the mint follower-fanout in
-  // mint-proxy. Per-(follower, seller, collection) SET-NX lock coalesces
-  // bursts (e.g. a seller listing several editions back-to-back); on Redis
-  // transient we proceed without dedup — a duplicate is preferable to a
-  // missed signal here.
+  // Fan-out to seller's followers — burst dedup handled inside writeNotification.
   void (async () => {
     try {
       const followers = await getFollowers(listing.seller)
@@ -90,19 +81,8 @@ export async function createListing(
       await Promise.all(
         followers
           .filter((f) => f.toLowerCase() !== sellerLower)
-          .map(async (follower) => {
-            let lock: 'OK' | null
-            try {
-              lock = (await redis.set(
-                keyListingCreatedLock(follower, listing.seller, listing.collectionAddress),
-                '1',
-                { nx: true, ex: LISTING_CREATED_LOCK_SECS },
-              )) as 'OK' | null
-            } catch {
-              lock = 'OK'
-            }
-            if (lock !== 'OK') return
-            await writeNotification({
+          .map((follower) =>
+            writeNotification({
               type: 'listing_created',
               recipient: follower,
               actor: listing.seller,
@@ -113,8 +93,8 @@ export async function createListing(
               price: listing.price,
               currency: listing.currency,
               listingId: listing.id,
-            })
-          }),
+            }),
+          ),
       )
     } catch {
       // notifications are non-critical

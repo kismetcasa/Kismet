@@ -17,7 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   collect: 'Collects',
   follow: 'New followers',
   mint: 'Mints by people you follow',
-  listing_expired: 'Your listings expiring',
+  listing_expired: 'Your listings expired',
   listing_created: 'Listings by people you follow',
   authorized: 'Creator authorizations',
 }

@@ -1,5 +1,6 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import Link from 'next/link'
 import { Sparkles, Clock, Coins, Key } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -21,8 +22,7 @@ function notificationHref(n: Notification): string {
     case 'follow':
       return n.actor ? `/profile/${n.actor}` : '/'
     case 'authorized':
-      // Authorize grants are collection-level — there's no specific tokenId.
-      // Land the user on the collection page where they can mint into it.
+      // Collection-level grant — no specific tokenId.
       return n.tokenAddress ? `/collection/${n.tokenAddress}` : '/'
     case 'collect':
     case 'sale':
@@ -154,56 +154,20 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
 
 function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   const iconSize = Math.round(size * 0.45)
+  const badge = (icon: ReactNode) => (
+    <div
+      style={{ width: size, height: size }}
+      className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
+    >
+      {icon}
+    </div>
+  )
 
-  if (n.type === 'mint') {
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
-      >
-        <Sparkles size={iconSize} className="text-[#8B5CF6]" />
-      </div>
-    )
-  }
-
-  if (n.type === 'payout') {
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
-      >
-        <Coins size={iconSize} className="text-[#10B981]" />
-      </div>
-    )
-  }
-
-  if (n.type === 'authorized') {
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
-      >
-        <Key size={iconSize} className="text-[#8B5CF6]" />
-      </div>
-    )
-  }
-
-  if (n.type === 'listing_expired') {
-    if (n.tokenImage) {
-      return (
-        <div className="relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden" style={{ width: size, height: size }}>
-          <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} />
-        </div>
-      )
-    }
-    return (
-      <div
-        style={{ width: size, height: size }}
-        className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
-      >
-        <Clock size={iconSize} className="text-[#555]" />
-      </div>
-    )
+  if (n.type === 'mint') return badge(<Sparkles size={iconSize} className="text-[#8B5CF6]" />)
+  if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
+  if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-[#8B5CF6]" />)
+  if (n.type === 'listing_expired' && !n.tokenImage) {
+    return badge(<Clock size={iconSize} className="text-[#555]" />)
   }
 
   if (n.type === 'follow' || !n.tokenImage) {
