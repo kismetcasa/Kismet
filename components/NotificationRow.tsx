@@ -149,6 +149,12 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
         </>
       )
+    default: {
+      // Exhaustiveness: if a new NotificationType is added without a case
+      // above, TS will fail to assign `n.type` to `never` here.
+      const _exhaustive: never = n.type
+      return _exhaustive
+    }
   }
 }
 

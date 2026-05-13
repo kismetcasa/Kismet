@@ -353,7 +353,9 @@ export function NotificationFeed() {
             notification={n}
             actorName={n.actor ? actorNames[n.actor.toLowerCase()] : undefined}
             onClick={() => handleRowClick(n.id)}
-            onMute={handleMute}
+            // Financial rows bypass actor-mute server-side; hiding the
+            // button on them avoids "I muted them, why is this still here?"
+            onMute={FINANCIAL_TYPES.has(n.type) ? undefined : handleMute}
           />
         ))}
       </div>
