@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { MomentImage } from './MomentImage'
 
 type VideoAttrs = Omit<
   React.VideoHTMLAttributes<HTMLVideoElement>,
@@ -12,71 +13,141 @@ type VideoAttrs = Omit<
 interface MomentVideoProps extends VideoAttrs {
   /** Raw URI for the video media: ar://, ipfs://, or https://. */
   src: string
-  /** Optional poster URI. ar://ipfs:// routes through /api/img so it shares
-   *  the edge cache with MomentImage; https/data: passes through unchanged. */
+  /** Optional poster URI. When `showPosterLayer` is on, this renders as a
+   *  full <MomentImage> behind the video so the slot has something to
+   *  show the instant the page paints (thumbhash → AVIF/WebP poster →
+   *  video first frame) instead of waiting for video bytes to stream from
+   *  the gateway. */
   poster?: string
-  /** Base64 thumbhash from moment metadata. Decoded inline and painted as
-   *  an absolute-positioned background behind the video until the first
-   *  frame lands — same pattern as MomentImage's blurDataURL. */
+  /** Base64 thumbhash — drives the blur placeholder on the poster layer. */
   thumbhash?: string
+  /** Render the poster as a MomentImage layer behind the video. Requires
+   *  the parent to be `position: relative` with explicit dimensions (the
+   *  next/image `fill` contract). On for card/modal/detail; off for the
+   *  lightbox where the video sizes itself via max-w/max-h. */
+  showPosterLayer?: boolean
+  /** Sizes hint forwarded to the MomentImage poster layer. */
+  posterSizes?: string
+  /** Forwarded to next/image priority on the poster layer (above-the-fold). */
+  priority?: boolean
   /** Fired once every gateway has errored, so the parent can swap in a placeholder. */
   onAllError?: () => void
 }
 
 /**
- * <video> equivalent of MomentImage. Walks the gateway pool on `src` error
- * (same `useFallbackUrl` walker), routes the poster through `/api/img` when
- * proxiable, and ships sensible autoplay defaults. The body itself goes
- * direct to the gateway — large videos can exceed `/api/img`'s 60s function
- * cap, so direct-streaming is the safer default.
+ * <video> equivalent of MomentImage. Three behaviours that together make
+ * video moments feel instant:
  *
- * Layout: callers must give the wrapping element `position: relative` for
- * the thumbhash placeholder to lay behind the <video>. Matches MomentImage's
- * convention — every Moment* media surface already does this.
+ *   1. The poster renders as a full MomentImage behind the video (when
+ *      `showPosterLayer` is on) — uses next/image's AVIF/WebP transcode
+ *      and 31-day edge cache, with an inline thumbhash blur for the very
+ *      first paint. Without this, the slot stays blank for the 1-10s it
+ *      can take to stream the first video frame from a cold Arweave
+ *      gateway.
+ *
+ *   2. The video bytes lazy-load via IntersectionObserver. Only feed-card
+ *      surfaces benefit (lightbox/modal/detail opt into eager loading via
+ *      `controls` or `preload="auto"`) — it stops 30 off-screen videos
+ *      from racing the visible ones for bandwidth.
+ *
+ *   3. The gateway walker (`useFallbackUrl`) and the all-gateways-failed
+ *      fallback to the poster image still apply, matching MomentImage's
+ *      onAllError contract.
  */
-export function MomentVideo({ src, poster, thumbhash, onAllError, ...rest }: MomentVideoProps) {
+export function MomentVideo({
+  src,
+  poster,
+  thumbhash,
+  showPosterLayer,
+  posterSizes,
+  priority,
+  onAllError,
+  ...rest
+}: MomentVideoProps) {
   const { url, onError } = useFallbackUrl(src, onAllError)
-  const posterUrl = poster && isProxiable(poster) ? proxyUrl(poster) : poster
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   const videoRef = useRef<HTMLVideoElement>(null)
   const [loaded, setLoaded] = useState(false)
+  // Eager surfaces (controls or preload=auto) start fetching immediately;
+  // others defer the bytes-fetch until the element approaches the viewport.
+  const eager = !!rest.controls || rest.preload === 'auto'
+  const [shouldLoad, setShouldLoad] = useState(eager)
   useEffect(() => { setLoaded(false) }, [url])
 
-  // Pause off-screen videos so a feed with many moving moments doesn't keep
-  // every <video> decoding in the background. Skipped when the caller opted
-  // into native controls — there, the user owns play/pause and the observer
-  // would fight their input.
+  // Pause off-screen videos AND defer their initial load. Skipped on
+  // controls — the user owns play/pause there and the observer would
+  // fight their input. rootMargin gives the bytes a head start so the
+  // first frame is usually ready by the time the card is fully visible.
   useEffect(() => {
     const el = videoRef.current
     if (!el || rest.controls) return
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) el.play().catch(() => {})
-        else el.pause()
+        if (entry.isIntersecting) {
+          setShouldLoad(true)
+          el.play().catch(() => {})
+        } else {
+          el.pause()
+        }
       },
-      { threshold: 0.01 },
+      { threshold: 0.01, rootMargin: '200px' },
     )
     io.observe(el)
     return () => io.disconnect()
   }, [url, rest.controls])
 
-  // All gateways exhausted. Fall back to the poster (which routes through
-  // /api/img and so has its own multi-gateway fan-out) instead of returning
-  // null — silently disappearing media is worse than a still frame.
+  // All gateways exhausted. With showPosterLayer the MomentImage layer is
+  // already mounted — re-render it on its own so the slot still shows the
+  // poster. For the lightbox surface use a plain <img> sized by the
+  // caller's className.
   if (!url) {
-    if (!posterUrl) return null
+    if (!poster) return null
+    if (showPosterLayer) {
+      return (
+        <MomentImage
+          src={poster}
+          alt=""
+          fill
+          className={rest.className}
+          sizes={posterSizes}
+          thumbhash={thumbhash}
+          priority={priority}
+        />
+      )
+    }
+    const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={posterUrl} alt="" className={rest.className} />
+    return <img src={posterFallback} alt="" className={rest.className} />
   }
+
+  // Native `poster` attr is redundant when the image layer paints the
+  // pre-load state — skipping it avoids a duplicate poster fetch. For
+  // surfaces without the image layer (lightbox) keep the native poster so
+  // the slot isn't blank between metadata-load and first-frame.
+  const nativePoster = showPosterLayer
+    ? undefined
+    : poster && isProxiable(poster) ? proxyUrl(poster) : poster
 
   return (
     <>
-      {!loaded && blurDataURL && (
-        <span
-          aria-hidden
-          className="absolute inset-0 bg-cover bg-center pointer-events-none"
-          style={{ backgroundImage: `url(${blurDataURL})` }}
+      {showPosterLayer && poster ? (
+        <MomentImage
+          src={poster}
+          alt=""
+          fill
+          className={rest.className}
+          sizes={posterSizes}
+          thumbhash={thumbhash}
+          priority={priority}
         />
+      ) : (
+        !loaded && blurDataURL && (
+          <span
+            aria-hidden
+            className="absolute inset-0 bg-cover bg-center pointer-events-none"
+            style={{ backgroundImage: `url(${blurDataURL})` }}
+          />
+        )
       )}
       <video
         ref={videoRef}
@@ -87,8 +158,8 @@ export function MomentVideo({ src, poster, thumbhash, onAllError, ...rest }: Mom
         playsInline
         preload="metadata"
         {...rest}
-        src={url}
-        poster={posterUrl}
+        poster={nativePoster}
+        src={shouldLoad ? url : undefined}
         onError={onError}
         onLoadedData={(e) => {
           setLoaded(true)
