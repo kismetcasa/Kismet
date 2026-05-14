@@ -131,9 +131,13 @@ export function MomentVideo({
 
   // Decide what to render behind the video. Priority: MomentImage poster
   // layer (when both opt-in and a poster URI are available) > thumbhash
-  // blur (when we have one) > nothing.
+  // blur (when we have one) > nothing. Thumbhash is also gated on
+  // showPosterLayer — its `absolute inset-0` positioning needs a properly
+  // bounded `relative` parent, which the lightbox doesn't provide (the
+  // video sizes itself via max-w/max-h there, so the blur would stretch
+  // across the whole overlay).
   const showImageLayer = showPosterLayer && !!poster
-  const showThumbhashLayer = !showImageLayer && !loaded && !!blurDataURL
+  const showThumbhashLayer = showPosterLayer && !showImageLayer && !loaded && !!blurDataURL
 
   // Only hide the video while a placeholder is actually rendered behind
   // it. If there's nothing to fall back to (no poster, no thumbhash),
