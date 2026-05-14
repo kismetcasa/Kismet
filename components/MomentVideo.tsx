@@ -108,6 +108,7 @@ export function MomentVideo({
           src={poster}
           alt=""
           fill
+          preferProxy
           className={rest.className}
           sizes={posterSizes}
           thumbhash={thumbhash}
@@ -128,6 +129,14 @@ export function MomentVideo({
     ? undefined
     : poster && isProxiable(poster) ? proxyUrl(poster) : poster
 
+  // Browsers paint the <video> element as an opaque (often black) box
+  // while it's loading, which would cover the MomentImage poster layer
+  // underneath. Keep the video invisible until the first frame is decoded
+  // so the poster shows through, then fade it in.
+  const fadeIn = showPosterLayer
+    ? ` transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`
+    : ''
+
   return (
     <>
       {showPosterLayer && poster ? (
@@ -135,6 +144,12 @@ export function MomentVideo({
           src={poster}
           alt=""
           fill
+          // Skip next/image's optimizer and go straight to /api/img — the
+          // optimizer's single-source arweave.net fetch is the bottleneck
+          // on cold cache. /api/img races every gateway and edge-caches
+          // the bytes. Trade-off (no AVIF) is acceptable for a poster
+          // that's covered by the video as soon as the first frame lands.
+          preferProxy
           className={rest.className}
           sizes={posterSizes}
           thumbhash={thumbhash}
@@ -158,6 +173,7 @@ export function MomentVideo({
         playsInline
         preload="metadata"
         {...rest}
+        className={`${rest.className ?? ''}${fadeIn}`.trim()}
         poster={nativePoster}
         src={shouldLoad ? url : undefined}
         onError={onError}
