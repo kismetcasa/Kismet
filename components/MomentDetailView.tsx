@@ -27,6 +27,7 @@ import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
+import { isVideoMoment } from '@/lib/media/isVideo'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { SplitsPanel } from './SplitsPanel'
@@ -566,10 +567,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // blank for the 5-30s of indexer delay on a fresh mint.
   const meta = detail?.metadata ?? fallbackMeta ?? {}
   const isTextMoment = meta.content?.mime === 'text/plain'
-  const isVideo =
-    meta.content?.mime?.startsWith('video/') ||
-    meta.animation_url?.endsWith('.mp4') ||
-    meta.animation_url?.endsWith('.webm')
+  const isVideo = isVideoMoment(meta)
   // Truthy when there's any media to show — controls the lightbox affordance.
   const hasMedia = !!meta.image || !!(isVideo && meta.animation_url)
   const price = detail
@@ -649,6 +647,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 <MomentVideo
                   src={meta.animation_url}
                   poster={meta.image}
+                  thumbhash={meta.kismet_thumbhash}
                   className="w-full h-full object-contain"
                 />
               ) : meta.image && !imgError ? (
@@ -1050,6 +1049,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <MomentVideo
               src={meta.animation_url}
               poster={meta.image}
+              thumbhash={meta.kismet_thumbhash}
+              controls
+              preload="auto"
               className="max-h-[95vh] max-w-[95vw] object-contain"
               onClick={(e) => e.stopPropagation()}
             />

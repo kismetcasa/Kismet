@@ -26,6 +26,7 @@ import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
+import { isVideoMoment } from '@/lib/media/isVideo'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface MomentCardProps {
@@ -155,10 +156,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   }
   const collectReady = pricePerToken !== null && currency !== null
 
-  const isVideo =
-    meta.content?.mime?.startsWith('video/') ||
-    meta.animation_url?.endsWith('.mp4') ||
-    meta.animation_url?.endsWith('.webm')
+  const isVideo = isVideoMoment(meta)
   const isTextMoment = meta.content?.mime === 'text/plain'
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   return (
@@ -199,6 +197,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
             <MomentVideo
               src={meta.animation_url}
               poster={meta.image}
+              thumbhash={meta.kismet_thumbhash}
               className="w-full h-full object-contain"
             />
           ) : meta.image && !imgError ? (
