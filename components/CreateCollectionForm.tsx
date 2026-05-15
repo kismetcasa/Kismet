@@ -13,6 +13,7 @@ import { CREATE_REFERRAL, OPERATOR_SMART_WALLET } from '@/lib/config'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
+import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -418,6 +419,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       // Animated GIF covers → first-frame JPEG. Covers never render as
       // animation, so the GIF bytes were wasted bandwidth. Best-effort.
+      //
+      // Video covers (drag-and-drop bypasses the picker's image-only
+      // accept) → first-frame JPEG, same idea. If extraction fails we
+      // throw rather than uploading the video as the cover image — the
+      // contract image would render broken everywhere downstream.
       let imageFile: File = coverFile
       if (canTranscode(coverFile)) {
         setStep('preparing-image')
@@ -427,6 +433,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         } catch (err) {
           console.warn('[CreateCollectionForm] GIF poster extraction failed; uploading original', err)
         }
+      } else if (coverFile.type.startsWith('video/')) {
+        setStep('preparing-image')
+        toast.loading('Extracting poster from video…', { id: 'create-collection' })
+        const poster = await extractVideoPoster(coverFile)
+        if (!poster) {
+          throw new Error('Could not extract a poster frame from the video — upload an image instead')
+        }
+        imageFile = poster
       }
 
       setStep('uploading-image')

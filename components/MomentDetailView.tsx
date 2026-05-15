@@ -23,6 +23,7 @@ import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { generateThumbhash } from '@/lib/media/thumbhash'
+import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
@@ -456,13 +457,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       let imageUri = detail.metadata.image
       let thumbhash = detail.metadata.kismet_thumbhash
       if (editFile) {
+        // Picker accepts video/* so the creator can re-upload the
+        // moment's source video to fix a broken meta.image — extract
+        // the first frame and use that as the cover, never store the
+        // video URL itself as the image (same constraint as MintForm).
+        let uploadFile: File = editFile
+        if (editFile.type.startsWith('video/')) {
+          toast.loading('Extracting poster from video…', { id: 'edit-meta' })
+          const poster = await extractVideoPoster(editFile)
+          if (!poster) {
+            throw new Error('Could not extract a poster frame from this video — try uploading an image instead')
+          }
+          uploadFile = poster
+        }
         toast.loading('Uploading image…', { id: 'edit-meta' })
         // Hash and upload in parallel — the encode is bounded by 100px
         // downscale and finishes well before the Arweave POST does, so
         // it's free latency. Falls back to the previous hash on encode
         // failure rather than stripping the placeholder.
-        const thumbhashPromise = generateThumbhash(editFile)
-        imageUri = await uploadToArweave(editFile)
+        const thumbhashPromise = generateThumbhash(uploadFile)
+        imageUri = await uploadToArweave(uploadFile)
         thumbhash = (await thumbhashPromise) ?? thumbhash
       }
 
