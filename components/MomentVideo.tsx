@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Film } from 'lucide-react'
 import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { MomentImg } from './MomentImage'
@@ -112,15 +113,32 @@ export function MomentVideo({
     </>
   )
 
-  // All video gateways exhausted — render just the poster so the slot
-  // doesn't go blank. The lightbox case (no showPosterLayer) uses a plain
-  // <img> sized by the caller's className.
+  // Quiet "video here" placeholder for moments minted before the poster
+  // and thumbhash backfills existed — we have nothing to paint until the
+  // video bytes arrive, so the slot would otherwise look like a black
+  // empty card. Matches the styling of the text-moment placeholder in
+  // MomentCard so video-no-preview reads as a sibling state.
+  const renderIconPlaceholder = () => (
+    <div
+      aria-hidden
+      className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] pointer-events-none"
+    >
+      <Film className="text-[#333]" size={32} strokeWidth={1.5} />
+    </div>
+  )
+
+  // All video gateways exhausted. Show the poster if we have one; for
+  // showPosterLayer surfaces with neither poster nor video, fall back to
+  // the icon so the slot stays visually populated instead of returning
+  // null (which leaves a black hole in the grid).
   if (!url) {
-    if (!poster) return null
-    if (showPosterLayer) return renderPosterLayer()
-    const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={posterFallback} alt="" className={rest.className} />
+    if (poster) {
+      if (showPosterLayer) return renderPosterLayer()
+      const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
+      // eslint-disable-next-line @next/next/no-img-element
+      return <img src={posterFallback} alt="" className={rest.className} />
+    }
+    return showPosterLayer ? renderIconPlaceholder() : null
   }
 
   // Native `poster` attr is redundant when the image layer paints the
@@ -133,16 +151,17 @@ export function MomentVideo({
 
   // Decide what to render behind the video. Priority: poster image (when
   // both opt-in and a poster URI are available) > thumbhash blur (when we
-  // have one) > nothing. Thumbhash is also gated on showPosterLayer — its
+  // have one) > icon placeholder. All gated on showPosterLayer — their
   // absolute inset-0 positioning needs a bounded relative parent, which
   // the lightbox doesn't provide.
   const showImageLayer = showPosterLayer && !!poster
   const showThumbhashLayer = showPosterLayer && !showImageLayer && !loaded && !!blurDataURL
+  const showIconPlaceholder = showPosterLayer && !showImageLayer && !showThumbhashLayer && !loaded
 
-  // Only hide the video while a placeholder is actually rendered behind
-  // it. If there's nothing to fall back to (no poster, no thumbhash),
-  // the video stays visible from the start so the slot doesn't go dark.
-  const hideUntilLoaded = (showImageLayer || showThumbhashLayer) && !loaded
+  // While there's a placeholder behind it, keep the video at opacity-0
+  // so the placeholder shows through. Once loaded, the video paints over
+  // whichever placeholder we chose.
+  const hideUntilLoaded = (showImageLayer || showThumbhashLayer || showIconPlaceholder) && !loaded
     ? ' opacity-0'
     : ''
 
@@ -156,6 +175,7 @@ export function MomentVideo({
           style={{ backgroundImage: `url(${blurDataURL})` }}
         />
       )}
+      {showIconPlaceholder && renderIconPlaceholder()}
       <video
         ref={videoRef}
         key={url}
