@@ -194,7 +194,14 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
         {/* Media — click opens modal on desktop, navigates to detail page on mobile */}
         <div
           onClick={() => {
-            if (directLink || window.innerWidth < 640) {
+            // Video moments skip the modal preview and go straight to the
+            // detail page — the modal would mount a second <video>
+            // element, force a fresh load + decode (the card video
+            // already in the DOM doesn't get reused), and add a slow
+            // intermediate step before the user lands on the surface with
+            // native controls anyway. For images the modal still earns
+            // its keep as a quick-look-before-navigating preview.
+            if (directLink || window.innerWidth < 640 || isVideo) {
               router.push(`/moment/${moment.address}/${moment.token_id}`)
             } else {
               setModalOpen(true)

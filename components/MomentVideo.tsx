@@ -4,6 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Film } from 'lucide-react'
 import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import {
+  loadVideoPlaybackState,
+  saveVideoPlaybackState,
+} from '@/lib/media/videoPlaybackState'
 import { MomentImg } from './MomentImage'
 
 type VideoAttrs = Omit<
@@ -98,6 +102,32 @@ export function MomentVideo({
     io.observe(el)
     return () => io.disconnect()
   }, [url, rest.controls])
+
+  // Track playback position for cross-mount resume — only when the
+  // caller renders native controls (detail-page main view, lightbox),
+  // which is the proxy for "user is actively watching" vs. an autoplay-
+  // loop preview. timeupdate fires ~4x/sec while playing; throttle to 1s
+  // so we're not pinging the Map constantly. Also save on pause and on
+  // unmount so the final position is captured.
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el || !rest.controls) return
+    let lastSave = 0
+    const throttledSave = () => {
+      const now = Date.now()
+      if (now - lastSave < 1000) return
+      lastSave = now
+      saveVideoPlaybackState(src, el)
+    }
+    const finalSave = () => saveVideoPlaybackState(src, el)
+    el.addEventListener('timeupdate', throttledSave)
+    el.addEventListener('pause', finalSave)
+    return () => {
+      el.removeEventListener('timeupdate', throttledSave)
+      el.removeEventListener('pause', finalSave)
+      finalSave()
+    }
+  }, [src, url, rest.controls])
 
   // Poster layer used both as the placeholder behind the video AND as the
   // fallback when every video gateway has errored. MomentImg routes ar:/
@@ -200,6 +230,19 @@ export function MomentVideo({
         poster={nativePoster}
         src={shouldLoad ? url : undefined}
         onError={onError}
+        onLoadedMetadata={(e) => {
+          // Resume from the last saved position for controlled surfaces.
+          // Done on loadedmetadata (before the first frame decodes) so
+          // the browser seeks straight to the resume point rather than
+          // flashing frame 0 before jumping.
+          if (rest.controls) {
+            const saved = loadVideoPlaybackState(src)
+            if (saved && saved.currentTime > 1) {
+              try { e.currentTarget.currentTime = saved.currentTime } catch {}
+            }
+          }
+          rest.onLoadedMetadata?.(e)
+        }}
         onLoadedData={(e) => {
           setLoaded(true)
           rest.onLoadedData?.(e)

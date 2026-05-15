@@ -6,6 +6,11 @@ import { Nav } from '@/components/Nav'
 import './globals.css'
 
 export const metadata: Metadata = {
+  // Resolves relative URLs in generateMetadata across the app (og:image
+  // in particular). Override via env for preview deployments; default to
+  // the canonical custom domain so production share cards never leak the
+  // .vercel.app URL into Twitter/Discord/etc.
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.kismet.art'),
   title: 'Kismet Art',
   description: 'mint, collect, and discover art on Kismet Art',
   openGraph: {
