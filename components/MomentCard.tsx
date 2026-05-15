@@ -178,7 +178,16 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
               setModalOpen(true)
             }
           }}
-          onMouseEnter={() => { prefetchComments(); prefetchTextContent() }}
+          onMouseEnter={() => {
+            prefetchComments()
+            prefetchTextContent()
+            // Warm the detail-page route bundle so click→navigate is
+            // snappy. Especially matters for video moments after the
+            // modal-skip change (fcbb921) — every video click is now a
+            // route transition, and the user's hover is the strongest
+            // intent signal we get before they commit.
+            router.prefetch(`/moment/${moment.address}/${moment.token_id}`)
+          }}
           className="cursor-pointer relative aspect-square bg-[#111] overflow-hidden"
         >
           {isAdmin && (
