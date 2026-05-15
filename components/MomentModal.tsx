@@ -94,7 +94,7 @@ export function MomentModal({
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
   // Only query on-chain balance when card didn't pass it in
-  const { data: ownedBalance } = useReadContract({
+  const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
@@ -238,8 +238,24 @@ export function MomentModal({
     if (result) {
       setCollected(true)
       refetchTotalMinted().catch(() => {})
+      refetchOwnedBalance().catch(() => {})
     }
   }
+
+  const hasCollected = alreadyOwned || collected
+  // maxSupply == null/0 → open edition (never minted out). Only flag once
+  // totalMinted is known, otherwise we'd flash "minted out" before the read
+  // lands.
+  const mintedOut =
+    totalMinted !== undefined &&
+    displayMaxSupply != null &&
+    displayMaxSupply > 0 &&
+    totalMinted >= BigInt(displayMaxSupply)
+  const collectLabel = collecting
+    ? 'collecting…'
+    : mintedOut
+      ? hasCollected ? 'collected' : 'minted out'
+      : hasCollected ? 'collect more' : 'collect'
 
   return (
     <div
@@ -500,14 +516,14 @@ export function MomentModal({
             )}
             <button
               onClick={handleCollect}
-              disabled={collecting || alreadyOwned || collected || !collectReady}
+              disabled={collecting || mintedOut || !collectReady}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                collected || alreadyOwned
-                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                hasCollected
+                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6] hover:bg-[#8B5CF6]/20'
                   : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
               }`}
             >
-              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+              {collectLabel}
             </button>
           </div>
 

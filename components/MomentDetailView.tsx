@@ -369,8 +369,25 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // Refresh the on-chain count immediately rather than waiting for the
       // 30s poll — chain state has moved one tick at this point.
       refetchTotalMinted().catch(() => {})
+      refetchOwnedBalance().catch(() => {})
     }
   }
+
+  const hasCollected = alreadyOwned || collected
+  // maxSupply == null/0 → open edition (never minted out). Only flag once
+  // totalMinted is known, otherwise we'd flash "minted out" before the read
+  // lands.
+  const mintedOut =
+    totalMinted !== undefined &&
+    detail != null &&
+    detail.maxSupply != null &&
+    detail.maxSupply > 0 &&
+    totalMinted >= BigInt(detail.maxSupply)
+  const collectLabel = collecting
+    ? 'collecting…'
+    : mintedOut
+      ? hasCollected ? 'collected' : 'minted out'
+      : hasCollected ? 'collect more' : 'collect'
 
   async function handleDistribute() {
     if (!detail) { toast.error('Moment details still loading'); return }
@@ -989,14 +1006,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
             <button
               onClick={handleCollect}
-              disabled={collecting || alreadyOwned || collected || !detail}
+              disabled={collecting || mintedOut || !detail}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                collected || alreadyOwned
-                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+                hasCollected
+                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6] hover:bg-[#8B5CF6]/20'
                   : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
               }`}
             >
-              {collecting ? 'collecting…' : (collected || alreadyOwned) ? 'collected' : 'collect'}
+              {collectLabel}
             </button>
           </div>
 
