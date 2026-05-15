@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
-import { MomentImage } from './MomentImage'
+import { MomentImg } from './MomentImage'
 
 type VideoAttrs = Omit<
   React.VideoHTMLAttributes<HTMLVideoElement>,
@@ -13,23 +13,17 @@ type VideoAttrs = Omit<
 interface MomentVideoProps extends VideoAttrs {
   /** Raw URI for the video media: ar://, ipfs://, or https://. */
   src: string
-  /** Optional poster URI. When `showPosterLayer` is on, this renders as a
-   *  full <MomentImage> behind the video so the slot has something to
-   *  show the instant the page paints (thumbhash → AVIF/WebP poster →
-   *  video first frame) instead of waiting for video bytes to stream from
-   *  the gateway. */
+  /** Optional poster URI. When `showPosterLayer` is on, this renders as an
+   *  <img> behind the video so the slot has something to show the instant
+   *  the page paints (thumbhash → /api/img poster → video first frame). */
   poster?: string
   /** Base64 thumbhash — drives the blur placeholder on the poster layer. */
   thumbhash?: string
-  /** Render the poster as a MomentImage layer behind the video. Requires
-   *  the parent to be `position: relative` with explicit dimensions (the
-   *  next/image `fill` contract). On for card/modal/detail; off for the
-   *  lightbox where the video sizes itself via max-w/max-h. */
+  /** Render the poster as a static <img> layer behind the video. Requires
+   *  the parent to be `position: relative` with explicit dimensions. On for
+   *  card/modal/detail; off for the lightbox where the video sizes itself
+   *  via max-w/max-h. */
   showPosterLayer?: boolean
-  /** Sizes hint forwarded to the MomentImage poster layer. */
-  posterSizes?: string
-  /** Forwarded to next/image priority on the poster layer (above-the-fold). */
-  priority?: boolean
   /** Fired once every gateway has errored, so the parent can swap in a placeholder. */
   onAllError?: () => void
 }
@@ -38,12 +32,15 @@ interface MomentVideoProps extends VideoAttrs {
  * <video> equivalent of MomentImage. Three behaviours that together make
  * video moments feel instant:
  *
- *   1. The poster renders as a full MomentImage behind the video (when
- *      `showPosterLayer` is on) — uses next/image's AVIF/WebP transcode
- *      and 31-day edge cache, with an inline thumbhash blur for the very
- *      first paint. Without this, the slot stays blank for the 1-10s it
- *      can take to stream the first video frame from a cold Arweave
- *      gateway.
+ *   1. The poster renders as a static <img> behind the video (when
+ *      `showPosterLayer` is on), with an inline thumbhash blur for the
+ *      very first paint. Without this, the slot stays blank for the 1-10s
+ *      it can take to stream the first video frame from a cold Arweave
+ *      gateway. We use MomentImg (not MomentImage) here because
+ *      MomentImage's `animate-pulse` skeleton — which fires when no
+ *      thumbhash is stored — reads as a blink for moments minted before
+ *      the thumbhash backfill existed. MomentImg keeps the same /api/img
+ *      proxy + gateway-walk semantics without the skeleton.
  *
  *   2. The video bytes lazy-load via IntersectionObserver. Only feed-card
  *      surfaces benefit (lightbox/modal/detail opt into eager loading via
@@ -59,8 +56,6 @@ export function MomentVideo({
   poster,
   thumbhash,
   showPosterLayer,
-  posterSizes,
-  priority,
   onAllError,
   ...rest
 }: MomentVideoProps) {
@@ -96,26 +91,33 @@ export function MomentVideo({
     return () => io.disconnect()
   }, [url, rest.controls])
 
-  // All gateways exhausted. With showPosterLayer the MomentImage layer is
-  // already mounted — re-render it on its own so the slot still shows the
-  // poster. For the lightbox surface use a plain <img> sized by the
-  // caller's className.
+  // Poster layer used both as the placeholder behind the video AND as the
+  // fallback when every video gateway has errored. MomentImg routes ar:/
+  // ipfs: through /api/img and walks the gateway pool on proxy error.
+  // Thumbhash (when present) paints behind it as an instant placeholder.
+  const renderPosterLayer = () => (
+    <>
+      {blurDataURL && (
+        <span
+          aria-hidden
+          className="absolute inset-0 bg-cover bg-center pointer-events-none"
+          style={{ backgroundImage: `url(${blurDataURL})` }}
+        />
+      )}
+      <MomentImg
+        src={poster!}
+        alt=""
+        className={`absolute inset-0 ${rest.className ?? ''}`.trim()}
+      />
+    </>
+  )
+
+  // All video gateways exhausted — render just the poster so the slot
+  // doesn't go blank. The lightbox case (no showPosterLayer) uses a plain
+  // <img> sized by the caller's className.
   if (!url) {
     if (!poster) return null
-    if (showPosterLayer) {
-      return (
-        <MomentImage
-          src={poster}
-          alt=""
-          fill
-          preferProxy
-          className={rest.className}
-          sizes={posterSizes}
-          thumbhash={thumbhash}
-          priority={priority}
-        />
-      )
-    }
+    if (showPosterLayer) return renderPosterLayer()
     const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
     // eslint-disable-next-line @next/next/no-img-element
     return <img src={posterFallback} alt="" className={rest.className} />
@@ -129,45 +131,24 @@ export function MomentVideo({
     ? undefined
     : poster && isProxiable(poster) ? proxyUrl(poster) : poster
 
-  // Decide what to render behind the video. Priority: MomentImage poster
-  // layer (when both opt-in and a poster URI are available) > thumbhash
-  // blur (when we have one) > nothing. Thumbhash is also gated on
-  // showPosterLayer — its `absolute inset-0` positioning needs a properly
-  // bounded `relative` parent, which the lightbox doesn't provide (the
-  // video sizes itself via max-w/max-h there, so the blur would stretch
-  // across the whole overlay).
+  // Decide what to render behind the video. Priority: poster image (when
+  // both opt-in and a poster URI are available) > thumbhash blur (when we
+  // have one) > nothing. Thumbhash is also gated on showPosterLayer — its
+  // absolute inset-0 positioning needs a bounded relative parent, which
+  // the lightbox doesn't provide.
   const showImageLayer = showPosterLayer && !!poster
   const showThumbhashLayer = showPosterLayer && !showImageLayer && !loaded && !!blurDataURL
 
   // Only hide the video while a placeholder is actually rendered behind
   // it. If there's nothing to fall back to (no poster, no thumbhash),
   // the video stays visible from the start so the slot doesn't go dark.
-  // No transition — the snap from poster to first frame is invisible
-  // because they're the same image, and any fade compounds with gateway
-  // walks into a perceived flicker.
   const hideUntilLoaded = (showImageLayer || showThumbhashLayer) && !loaded
     ? ' opacity-0'
     : ''
 
   return (
     <>
-      {showImageLayer && (
-        <MomentImage
-          src={poster!}
-          alt=""
-          fill
-          // Skip next/image's optimizer and go straight to /api/img — the
-          // optimizer's single-source arweave.net fetch is the bottleneck
-          // on cold cache. /api/img races every gateway and edge-caches
-          // the bytes. Trade-off (no AVIF) is acceptable for a poster
-          // that's covered by the video as soon as the first frame lands.
-          preferProxy
-          className={rest.className}
-          sizes={posterSizes}
-          thumbhash={thumbhash}
-          priority={priority}
-        />
-      )}
+      {showImageLayer && renderPosterLayer()}
       {showThumbhashLayer && (
         <span
           aria-hidden
