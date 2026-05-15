@@ -134,7 +134,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       ...(imageUrl ? { images: [{ url: imageUrl }] } : {}),
     },
     twitter: {
-      card: imageUrl ? 'summary_large_image' : 'summary',
+      // Always summary_large_image — opengraph-image.tsx provides a
+      // branded PNG fallback for collections without a usable cover
+      // image (text-mint auto-deploys etc.), and Twitter falls back to
+      // og:image when twitter:image isn't set.
+      card: 'summary_large_image',
       title: name,
       description,
       ...(imageUrl ? { images: [imageUrl] } : {}),
