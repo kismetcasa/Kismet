@@ -64,6 +64,13 @@ export function MomentVideo({
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   const videoRef = useRef<HTMLVideoElement>(null)
   const [loaded, setLoaded] = useState(false)
+  // Tracks whether the poster URL has been confirmed unrenderable (e.g.
+  // legacy mints where meta.image was set to the video URL itself, so the
+  // browser receives video bytes and can't decode them as an <img>).
+  // Reactive — we don't pattern-match the URL, we just listen for the
+  // gateway walker to exhaust without a single successful decode.
+  const [posterFailed, setPosterFailed] = useState(false)
+  useEffect(() => { setPosterFailed(false) }, [poster])
   // Eager surfaces (controls or preload=auto) start fetching immediately;
   // others defer the bytes-fetch until the element approaches the viewport.
   const eager = !!rest.controls || rest.preload === 'auto'
@@ -96,6 +103,9 @@ export function MomentVideo({
   // fallback when every video gateway has errored. MomentImg routes ar:/
   // ipfs: through /api/img and walks the gateway pool on proxy error.
   // Thumbhash (when present) paints behind it as an instant placeholder.
+  // onAllError flips posterFailed so the renderer can drop into the
+  // thumbhash / icon-placeholder branches — catches the legacy bug where
+  // meta.image was set to the video URL itself.
   const renderPosterLayer = () => (
     <>
       {blurDataURL && (
@@ -109,6 +119,7 @@ export function MomentVideo({
         src={poster!}
         alt=""
         className={`absolute inset-0 ${rest.className ?? ''}`.trim()}
+        onAllError={() => setPosterFailed(true)}
       />
     </>
   )
@@ -127,12 +138,12 @@ export function MomentVideo({
     </div>
   )
 
-  // All video gateways exhausted. Show the poster if we have one; for
-  // showPosterLayer surfaces with neither poster nor video, fall back to
-  // the icon so the slot stays visually populated instead of returning
-  // null (which leaves a black hole in the grid).
+  // All video gateways exhausted. Show the poster if we have one (and
+  // it's still a viable image); for showPosterLayer surfaces with no
+  // viable poster, fall back to the icon so the slot stays visually
+  // populated instead of returning null (which leaves a black hole).
   if (!url) {
-    if (poster) {
+    if (poster && !posterFailed) {
       if (showPosterLayer) return renderPosterLayer()
       const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
       // eslint-disable-next-line @next/next/no-img-element
@@ -150,11 +161,11 @@ export function MomentVideo({
     : poster && isProxiable(poster) ? proxyUrl(poster) : poster
 
   // Decide what to render behind the video. Priority: poster image (when
-  // both opt-in and a poster URI are available) > thumbhash blur (when we
-  // have one) > icon placeholder. All gated on showPosterLayer — their
-  // absolute inset-0 positioning needs a bounded relative parent, which
-  // the lightbox doesn't provide.
-  const showImageLayer = showPosterLayer && !!poster
+  // available AND not known-broken) > thumbhash blur (when we have one) >
+  // icon placeholder. All gated on showPosterLayer — their absolute
+  // inset-0 positioning needs a bounded relative parent, which the
+  // lightbox doesn't provide.
+  const showImageLayer = showPosterLayer && !!poster && !posterFailed
   const showThumbhashLayer = showPosterLayer && !showImageLayer && !loaded && !!blurDataURL
   const showIconPlaceholder = showPosterLayer && !showImageLayer && !showThumbhashLayer && !loaded
 
