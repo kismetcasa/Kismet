@@ -649,8 +649,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   poster={meta.image}
                   thumbhash={meta.kismet_thumbhash}
                   showPosterLayer
-                  posterSizes="(max-width: 768px) 100vw, 50vw"
-                  priority
                   preload="auto"
                   className="w-full h-full object-contain"
                 />

@@ -199,8 +199,6 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
               poster={meta.image}
               thumbhash={meta.kismet_thumbhash}
               showPosterLayer
-              posterSizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-              priority={priority}
               className="w-full h-full object-contain"
             />
           ) : meta.image && !imgError ? (
