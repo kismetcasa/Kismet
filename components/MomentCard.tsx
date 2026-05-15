@@ -21,6 +21,7 @@ import { useTextContent, fetchTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { useAdmin } from '@/contexts/AdminContext'
 import { ERC1155_ABI } from '@/lib/seaport'
+import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
@@ -87,7 +88,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
     })
   }, [moment.address])
 
-  const { data: ownedBalance } = useReadContract({
+  const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
@@ -95,6 +96,17 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
     query: { enabled: !!connectedAddress },
   })
   const owned = ownedBalance ? Number(ownedBalance) : 0
+
+  // totalSupply per token id is maintained by Zora 1155 natively. Pairing it
+  // with maxSupply lets us flip the collect button between "collect more"
+  // (supply remaining), "collected" (owned + sold out), and "minted out"
+  // (not owned + sold out).
+  const { data: totalMinted, refetch: refetchTotalMinted } = useReadContract({
+    address: moment.address as `0x${string}`,
+    abi: ZORA_1155_MINT_ABI,
+    functionName: 'totalSupply',
+    args: [BigInt(moment.token_id)],
+  })
 
   const meta = moment.metadata ?? {}
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
@@ -152,9 +164,26 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
     })
-    if (result) setCollected(true)
+    if (result) {
+      setCollected(true)
+      refetchOwnedBalance().catch(() => {})
+      refetchTotalMinted().catch(() => {})
+    }
   }
   const collectReady = pricePerToken !== null && currency !== null
+  const hasCollected = collected || owned > 0
+  // maxSupply == null/0 → open edition (never minted out). Only flag when we
+  // know totalMinted, otherwise we'd flash "minted out" before the read lands.
+  const mintedOut =
+    totalMinted !== undefined &&
+    maxSupply != null &&
+    maxSupply > 0 &&
+    totalMinted >= BigInt(maxSupply)
+  const collectLabel = collecting
+    ? 'collecting…'
+    : mintedOut
+      ? hasCollected ? 'collected' : 'minted out'
+      : hasCollected ? 'collect more' : 'collect'
 
   const isVideo = isVideoMoment(meta)
   const isTextMoment = meta.content?.mime === 'text/plain'
@@ -331,14 +360,14 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
           )}
           <button
             onClick={handleCollect}
-            disabled={collecting || collected || owned > 0 || !collectReady}
+            disabled={collecting || mintedOut || !collectReady}
             className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-              collected || owned > 0
-                ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6]'
+              hasCollected
+                ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6] hover:bg-[#8B5CF6]/20'
                 : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
             }`}
           >
-            {collecting ? 'collecting…' : (collected || owned > 0) ? 'collected' : 'collect'}
+            {collectLabel}
           </button>
         </div>
       </article>
