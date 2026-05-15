@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Film } from 'lucide-react'
 import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import {
@@ -103,15 +102,14 @@ export function MomentVideo({
     return () => io.disconnect()
   }, [url, rest.controls])
 
-  // Track playback position for cross-mount resume — only when the
-  // caller renders native controls (detail-page main view, lightbox),
-  // which is the proxy for "user is actively watching" vs. an autoplay-
-  // loop preview. timeupdate fires ~4x/sec while playing; throttle to 1s
-  // so we're not pinging the Map constantly. Also save on pause and on
-  // unmount so the final position is captured.
+  // Track playback position for cross-mount resume. Saves continuously
+  // (throttled) for every video — including card autoplay-loop previews
+  // — so card→detail navigation can pick up from wherever the loop
+  // happened to be when the user clicked. Without this, the detail page
+  // restarts from 0:00 and the click feels like a hard reload.
   useEffect(() => {
     const el = videoRef.current
-    if (!el || !rest.controls) return
+    if (!el) return
     let lastSave = 0
     const throttledSave = () => {
       const now = Date.now()
@@ -127,15 +125,15 @@ export function MomentVideo({
       el.removeEventListener('pause', finalSave)
       finalSave()
     }
-  }, [src, url, rest.controls])
+  }, [src, url])
 
   // Poster layer used both as the placeholder behind the video AND as the
   // fallback when every video gateway has errored. MomentImg routes ar:/
   // ipfs: through /api/img and walks the gateway pool on proxy error.
   // Thumbhash (when present) paints behind it as an instant placeholder.
-  // onAllError flips posterFailed so the renderer can drop into the
-  // thumbhash / icon-placeholder branches — catches the legacy bug where
-  // meta.image was set to the video URL itself.
+  // onAllError flips posterFailed so the renderer can drop through to
+  // the thumbhash branch (or to a bare dark slot) — catches the legacy
+  // bug where meta.image was set to the video URL itself.
   const renderPosterLayer = () => (
     <>
       {blurDataURL && (
@@ -154,24 +152,10 @@ export function MomentVideo({
     </>
   )
 
-  // Quiet "video here" placeholder for moments minted before the poster
-  // and thumbhash backfills existed — we have nothing to paint until the
-  // video bytes arrive, so the slot would otherwise look like a black
-  // empty card. Matches the styling of the text-moment placeholder in
-  // MomentCard so video-no-preview reads as a sibling state.
-  const renderIconPlaceholder = () => (
-    <div
-      aria-hidden
-      className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] pointer-events-none"
-    >
-      <Film className="text-[#333]" size={32} strokeWidth={1.5} />
-    </div>
-  )
-
   // All video gateways exhausted. Show the poster if we have one (and
-  // it's still a viable image); for showPosterLayer surfaces with no
-  // viable poster, fall back to the icon so the slot stays visually
-  // populated instead of returning null (which leaves a black hole).
+  // it's still a viable image). Otherwise return null and let the
+  // parent's bg show — a static "video here" icon read as "permanently
+  // broken" even while the video was just slow to load.
   if (!url) {
     if (poster && !posterFailed) {
       if (showPosterLayer) return renderPosterLayer()
@@ -179,7 +163,7 @@ export function MomentVideo({
       // eslint-disable-next-line @next/next/no-img-element
       return <img src={posterFallback} alt="" className={rest.className} />
     }
-    return showPosterLayer ? renderIconPlaceholder() : null
+    return null
   }
 
   // Native `poster` attr is redundant when the image layer paints the
@@ -192,17 +176,19 @@ export function MomentVideo({
 
   // Decide what to render behind the video. Priority: poster image (when
   // available AND not known-broken) > thumbhash blur (when we have one) >
-  // icon placeholder. All gated on showPosterLayer — their absolute
-  // inset-0 positioning needs a bounded relative parent, which the
-  // lightbox doesn't provide.
+  // nothing (let the parent's bg show through). Gated on showPosterLayer
+  // — their absolute inset-0 positioning needs a bounded relative parent,
+  // which the lightbox doesn't provide.
   const showImageLayer = showPosterLayer && !!poster && !posterFailed
   const showThumbhashLayer = showPosterLayer && !showImageLayer && !loaded && !!blurDataURL
-  const showIconPlaceholder = showPosterLayer && !showImageLayer && !showThumbhashLayer && !loaded
 
   // While there's a placeholder behind it, keep the video at opacity-0
   // so the placeholder shows through. Once loaded, the video paints over
-  // whichever placeholder we chose.
-  const hideUntilLoaded = (showImageLayer || showThumbhashLayer || showIconPlaceholder) && !loaded
+  // whichever placeholder we chose. When there's no placeholder at all,
+  // the video stays visible from the start — the parent's bg-[#111]
+  // covers the empty <video> element until the first frame decodes,
+  // which reads as "loading" rather than "broken."
+  const hideUntilLoaded = (showImageLayer || showThumbhashLayer) && !loaded
     ? ' opacity-0'
     : ''
 
@@ -216,7 +202,6 @@ export function MomentVideo({
           style={{ backgroundImage: `url(${blurDataURL})` }}
         />
       )}
-      {showIconPlaceholder && renderIconPlaceholder()}
       <video
         ref={videoRef}
         key={url}
@@ -231,15 +216,14 @@ export function MomentVideo({
         src={shouldLoad ? url : undefined}
         onError={onError}
         onLoadedMetadata={(e) => {
-          // Resume from the last saved position for controlled surfaces.
-          // Done on loadedmetadata (before the first frame decodes) so
-          // the browser seeks straight to the resume point rather than
-          // flashing frame 0 before jumping.
-          if (rest.controls) {
-            const saved = loadVideoPlaybackState(src)
-            if (saved && saved.currentTime > 1) {
-              try { e.currentTarget.currentTime = saved.currentTime } catch {}
-            }
+          // Resume from the last saved position for any video — card,
+          // modal preview, detail page main view, lightbox. Seek happens
+          // on loadedmetadata (before the first frame decodes) so the
+          // browser jumps straight to the resume point rather than
+          // flashing frame 0.
+          const saved = loadVideoPlaybackState(src)
+          if (saved && saved.currentTime > 1) {
+            try { e.currentTarget.currentTime = saved.currentTime } catch {}
           }
           rest.onLoadedMetadata?.(e)
         }}
