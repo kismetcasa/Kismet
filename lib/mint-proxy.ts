@@ -1,4 +1,4 @@
-import { type NextRequest, NextResponse } from 'next/server'
+import { after, type NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from './inprocess'
 import { trackWallet } from './profile'
@@ -195,46 +195,41 @@ export async function proxyMintRequest(
     const tokenId = r.tokenId
 
     if (contractAddress && tokenId && account) {
-      // Positive tracking: every MintForm-mediated mint joins the
-      // created-mints set so Mints feeds can filter strictly.
-      void markCreatedMint(contractAddress, tokenId).catch(() => {})
-      void setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {})
-
-      // Mirror the raw writing body to KV so the moment page can render
-      // it during Arweave propagation lag — and as a permanent fallback
-      // if the Turbo tx ID never settles to gateways. Only the writing
-      // endpoint carries tokenContent; media mints forward
-      // tokenMetadataURI instead, so the conditional naturally scopes
-      // this to writes.
+      // Only writing moments carry tokenContent; media mints forward
+      // tokenMetadataURI instead.
       const tokenContent =
         typeof tokenObj.tokenContent === 'string' ? tokenObj.tokenContent : undefined
-      if (tokenContent) {
-        void setMomentContent(contractAddress, tokenId, tokenContent).catch(() => {})
-      }
 
-      // Self-notification for the creator. No `actor` so NotificationRow
-      // renders "your moment was created".
-      void writeNotification({
-        type: 'mint',
-        recipient: account,
-        tokenAddress: contractAddress,
-        tokenId,
-        tokenName: displayName,
+      after(async () => {
+        const tasks: Promise<unknown>[] = [
+          markCreatedMint(contractAddress, tokenId).catch(() => {}),
+          setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(() => {}),
+          writeNotification({
+            type: 'mint',
+            recipient: account,
+            tokenAddress: contractAddress,
+            tokenId,
+            tokenName: displayName,
+          }),
+          fanoutToFollowers(account, {
+            type: 'mint',
+            tokenAddress: contractAddress,
+            tokenId,
+            tokenName: displayName,
+          }),
+        ]
+        if (tokenContent) {
+          tasks.push(setMomentContent(contractAddress, tokenId, tokenContent).catch(() => {}))
+        }
+        if (splitsValidation.kind === 'ok' && splitsValidation.splits.length >= 2) {
+          tasks.push(
+            setStoredSplits(contractAddress, tokenId, splitsValidation.splits).catch(
+              (err) => console.error('[mint-proxy] setStoredSplits failed', err),
+            ),
+          )
+        }
+        await Promise.all(tasks)
       })
-
-      // Fan-out to followers — actor=creator drives the "0xCREATOR minted X" copy.
-      fanoutToFollowers(account, {
-        type: 'mint',
-        tokenAddress: contractAddress,
-        tokenId,
-        tokenName: displayName,
-      })
-
-      if (splitsValidation.kind === 'ok' && splitsValidation.splits.length >= 2) {
-        void setStoredSplits(contractAddress, tokenId, splitsValidation.splits).catch(
-          (err) => console.error('[mint-proxy] setStoredSplits failed', err),
-        )
-      }
     }
   }
 

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { decodeEventLog, parseAbi, type Address, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
@@ -228,8 +228,7 @@ export async function POST(req: NextRequest) {
   }
   const finalPrice = derivedPrice !== null ? derivedPrice.toString() : pricePerToken
 
-  // Notification is fire-and-forget — never let it gate the response.
-  void (async () => {
+  after(async () => {
     try {
       const meta = await getMomentMeta(collectionLower, tokenId)
       if (!meta) return
@@ -248,7 +247,7 @@ export async function POST(req: NextRequest) {
     } catch {
       // notifications are non-critical
     }
-  })()
+  })
 
   return NextResponse.json({ ok: true })
 }

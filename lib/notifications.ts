@@ -164,25 +164,24 @@ export async function writeNotification(input: NotificationInput): Promise<void>
   }
 }
 
-// Fire-and-forget: write a notification to every follower of `source`,
-// with actor=source. writeNotification's self-check filters source==follower;
-// burst dedup runs inside writeNotification too, so callers stay minimal.
-export function fanoutToFollowers(
+// Write a notification to every follower of `source`, with actor=source.
+// writeNotification's self-check filters source==follower; burst dedup runs
+// inside writeNotification too. Callers should schedule via `after()` so
+// the fan-out survives the response.
+export async function fanoutToFollowers(
   source: string,
   payload: Omit<NotificationInput, 'recipient' | 'actor'>,
-): void {
-  void (async () => {
-    try {
-      const followers = await getFollowers(source)
-      await Promise.all(
-        followers.map((follower) =>
-          writeNotification({ ...payload, recipient: follower, actor: source }),
-        ),
-      )
-    } catch {
-      // notifications are non-critical
-    }
-  })()
+): Promise<void> {
+  try {
+    const followers = await getFollowers(source)
+    await Promise.all(
+      followers.map((follower) =>
+        writeNotification({ ...payload, recipient: follower, actor: source }),
+      ),
+    )
+  } catch {
+    // notifications are non-critical
+  }
 }
 
 interface NotificationListOpts {

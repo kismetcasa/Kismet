@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { getListing, updateListingStatus } from '@/lib/listings'
@@ -83,21 +83,23 @@ export async function PATCH(
   await updateListingStatus(id, body.status as 'filled' | 'cancelled')
 
   if (body.status === 'filled') {
-    void writeNotification({
-      type: 'sale',
-      recipient: listing.seller,
-      actor: signer.toLowerCase(),
-      tokenAddress: listing.collectionAddress,
-      tokenId: listing.tokenId,
-      tokenName: listing.name,
-      tokenImage: listing.image,
-      price: listing.price,
-      // Without currency, NotificationRow defaults to ETH formatting and
-      // would render a USDC sale's price (in 6dp base units) as a tiny ETH
-      // amount. Pass it through so $5 stays $5.
-      currency: listing.currency,
-      listingId: listing.id,
-    })
+    after(() =>
+      writeNotification({
+        type: 'sale',
+        recipient: listing.seller,
+        actor: signer.toLowerCase(),
+        tokenAddress: listing.collectionAddress,
+        tokenId: listing.tokenId,
+        tokenName: listing.name,
+        tokenImage: listing.image,
+        price: listing.price,
+        // Without currency, NotificationRow defaults to ETH formatting and
+        // would render a USDC sale's price (in 6dp base units) as a tiny ETH
+        // amount. Pass it through so $5 stays $5.
+        currency: listing.currency,
+        listingId: listing.id,
+      }),
+    )
   }
 
   return NextResponse.json({ ok: true })

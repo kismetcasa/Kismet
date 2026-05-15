@@ -1,3 +1,4 @@
+import { after } from 'next/server'
 import { redis } from './redis'
 import { randomUUID } from 'crypto'
 import type { SerializedOrderComponents } from './seaport'
@@ -72,16 +73,18 @@ export async function createListing(
     redis.sadd(keyBySeller(listing.seller), listing.id),
   ])
 
-  fanoutToFollowers(listing.seller, {
-    type: 'listing_created',
-    tokenAddress: listing.collectionAddress,
-    tokenId: listing.tokenId,
-    tokenName: listing.name,
-    tokenImage: listing.image,
-    price: listing.price,
-    currency: listing.currency,
-    listingId: listing.id,
-  })
+  after(() =>
+    fanoutToFollowers(listing.seller, {
+      type: 'listing_created',
+      tokenAddress: listing.collectionAddress,
+      tokenId: listing.tokenId,
+      tokenName: listing.name,
+      tokenImage: listing.image,
+      price: listing.price,
+      currency: listing.currency,
+      listingId: listing.id,
+    }),
+  )
 
   return listing
 }
@@ -129,7 +132,7 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
       redis.zrem(KEY_ALL, listing.id),
     ])
 
-    void writeNotification({
+    await writeNotification({
       type: 'listing_expired',
       recipient: listing.seller,
       tokenAddress: listing.collectionAddress,
@@ -180,7 +183,7 @@ export async function getListings({
   })
 
   if (expired.length > 0) {
-    void handleExpiredListings(expired).catch(() => {})
+    after(() => handleExpiredListings(expired))
   }
   if (ghosts.length > 0) {
     redis.zrem(KEY_ALL, ...ghosts).catch(() => {})
@@ -208,7 +211,7 @@ export async function getListingsBySeller(seller: string): Promise<Listing[]> {
   })
 
   if (expired.length > 0) {
-    void handleExpiredListings(expired).catch(() => {})
+    after(() => handleExpiredListings(expired))
   }
 
   return active

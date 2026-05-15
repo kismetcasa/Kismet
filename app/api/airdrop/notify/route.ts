@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { recordAirdrop } from '@/lib/airdrops'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
@@ -82,15 +82,6 @@ export async function POST(req: NextRequest) {
 
   await Promise.all(
     validRecipients.map(async (recipient) => {
-      // Three side effects per recipient, all best-effort:
-      //   1. Append to the sender's airdrop log (powers ProfileView's Sent).
-      //   2. Insert into the recipient's collected zset so the airdropped
-      //      moment appears in their Collected tab — same key the /api/collect
-      //      route writes to, so the timeline `?collector=` filter picks it
-      //      up without any further changes.
-      //   3. Drop an inbox notification (skipped on self-airdrops; the
-      //      dedup in writeNotification already covers this but skipping
-      //      saves a Redis round-trip).
       try {
         await recordAirdrop(sender, {
           collectionAddress,
@@ -100,29 +91,33 @@ export async function POST(req: NextRequest) {
           ...(txHash ? { txHash } : {}),
           timestamp,
         })
-      } catch {
-        // best-effort
-      }
+      } catch {}
       try {
         await redis.zadd(`kismetart:collected:${recipient}`, {
           score: timestamp,
           member: `${collectionAddress}:${tokenId}`,
         })
-      } catch {
-        // best-effort
-      }
-      if (recipient === sender) return
-      void writeNotification({
-        type: 'airdrop',
-        recipient,
-        actor: sender,
-        tokenAddress: collectionAddress,
-        tokenId,
-        ...(tokenName ? { tokenName } : {}),
-        amount: 1,
-      })
+      } catch {}
     }),
   )
+
+  after(async () => {
+    await Promise.all(
+      validRecipients
+        .filter((recipient) => recipient !== sender)
+        .map((recipient) =>
+          writeNotification({
+            type: 'airdrop',
+            recipient,
+            actor: sender,
+            tokenAddress: collectionAddress,
+            tokenId,
+            ...(tokenName ? { tokenName } : {}),
+            amount: 1,
+          }),
+        ),
+    )
+  })
 
   return NextResponse.json({ ok: true, recorded: validRecipients.length })
 }

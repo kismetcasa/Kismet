@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { follow, unfollow, isFollowing, getFollowing, getFollowers, getFollowerCount, getFollowingCount } from '@/lib/follows'
@@ -77,7 +77,9 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (err) return NextResponse.json({ error: err.error }, { status: err.status })
 
   await follow(body.follower!, address)
-  void writeNotification({ type: 'follow', recipient: address, actor: body.follower! })
+  after(() =>
+    writeNotification({ type: 'follow', recipient: address, actor: body.follower! }),
+  )
   return NextResponse.json({ following: true })
 }
 

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
 
   // Click-through routes to /collection/<addr>. On-chain addPermission is a
   // separate admin tx, so the copy hedges ("added you as a creator").
-  void (async () => {
+  after(async () => {
     try {
       const meta = await getCollectionMeta(collection)
       await writeNotification({
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
         tokenName: meta?.name,
       })
     } catch {}
-  })()
+  })
 
   return NextResponse.json({ ok: true, creator: entry })
 }
