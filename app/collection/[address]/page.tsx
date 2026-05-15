@@ -2,7 +2,8 @@ import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
 import { notFound, redirect } from 'next/navigation'
 import { isAddress } from '@/lib/address'
-import { INPROCESS_API, resolveUri, shortAddress } from '@/lib/inprocess'
+import { INPROCESS_API, shortAddress } from '@/lib/inprocess'
+import { shareImageUrl } from '@/lib/media/shareImage'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
@@ -118,11 +119,26 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   ])
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
-  const imageUrl = meta?.image ? resolveUri(meta.image) : undefined
+  const description = meta?.description || 'View collection on Kismet Art'
+  // Text-mint auto-deploy stores an SVG data URI as the cover (works
+  // in-app, not in share crawlers) — shareImageUrl drops those. ar:// /
+  // ipfs:// routes through /api/img for the multi-gateway-raced edge
+  // cache; https:// passes through.
+  const imageUrl = shareImageUrl(meta?.image)
   return {
     title: `${name} — Kismet Art`,
-    description: meta?.description || `View collection on Kismet Art`,
-    openGraph: imageUrl ? { images: [imageUrl] } : undefined,
+    description,
+    openGraph: {
+      title: name,
+      description,
+      ...(imageUrl ? { images: [{ url: imageUrl }] } : {}),
+    },
+    twitter: {
+      card: imageUrl ? 'summary_large_image' : 'summary',
+      title: name,
+      description,
+      ...(imageUrl ? { images: [imageUrl] } : {}),
+    },
   }
 }
 

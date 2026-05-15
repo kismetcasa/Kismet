@@ -4,6 +4,7 @@ import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API, resolveUri, type MomentDetail } from '@/lib/inprocess'
+import { shareImageUrl } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
 import { getMomentMeta as getKvMomentMeta } from '@/lib/notifications'
@@ -122,17 +123,28 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const meta = detail?.metadata ?? fallback
   if (!meta) return { title: 'Moment — Kismet Art' }
 
-  const title = `${meta.name ?? `#${tokenId}`} — Kismet Art`
+  const name = meta.name ?? `#${tokenId}`
+  const title = `${name} — Kismet Art`
   const description = meta.description ?? 'View this moment on Kismet Art'
-  const imageUrl = meta.image ? resolveUri(meta.image) : undefined
+  // Guard the share image against the legacy "meta.image is the
+  // animation_url" bug — without this, Twitter/Discord/iMessage crawlers
+  // would fetch a multi-MB video as the thumbnail and render no preview.
+  // fallback (synthesized from KV) has no animation_url; pull from detail.
+  const imageUrl = shareImageUrl(meta.image, detail?.metadata?.animation_url)
 
   return {
     title,
     description,
     openGraph: {
-      title: meta.name ?? `#${tokenId}`,
+      title: name,
       description,
       ...(imageUrl ? { images: [{ url: imageUrl }] } : {}),
+    },
+    twitter: {
+      card: imageUrl ? 'summary_large_image' : 'summary',
+      title: name,
+      description,
+      ...(imageUrl ? { images: [imageUrl] } : {}),
     },
   }
 }
