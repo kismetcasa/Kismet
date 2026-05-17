@@ -11,7 +11,7 @@ import { INPROCESS_API, shortAddress, type MomentDetail } from '@/lib/inprocess'
 // real image as the share card — that URL appears first in the
 // metadata and crawlers prefer it.
 
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 export const size = { width: 1200, height: 630 }
 export const contentType = 'image/png'
 

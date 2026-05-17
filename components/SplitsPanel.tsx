@@ -9,8 +9,8 @@ import type { SplitRecipient } from '@/lib/splits'
 
 interface Props {
   recipients: SplitRecipient[]
-  // Optional click handler — MomentModal passes `onClose` so navigating
-  // to a recipient's profile dismisses the modal cleanly.
+  // Optional click handler — overlay surfaces pass a dismiss callback so
+  // navigating to a recipient's profile closes the overlay cleanly.
   onNavigate?: () => void
 }
 

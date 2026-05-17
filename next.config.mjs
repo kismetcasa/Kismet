@@ -34,6 +34,14 @@ const nextConfig = {
     // load, subsequent views of any moment image are served from CDN edge
     // instead of round-tripping back to Arweave.
     minimumCacheTTL: 60 * 60 * 24 * 31,
+    // Cap the on-disk optimizer cache at 5 GB. Self-hosted on Oracle (200 GB
+    // disk) the default unbounded cache would grow forever — each unique
+    // (src, width, format) tuple writes a file, and with our gateway pool +
+    // AVIF/WebP variants per breakpoint the multiplier is large. Past the
+    // cap Next.js LRU-evicts the least-recently-served entries; recompute
+    // cost is bounded because content-addressed bytes still come from the
+    // upstream HTTP cache.
+    maximumDiskCacheSize: 1024 * 1024 * 1024 * 5,
     // AVIF/WebP cut payload by 20-40% on browsers that support them.
     formats: ['image/avif', 'image/webp'],
   },

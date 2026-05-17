@@ -1,8 +1,9 @@
 import type { MomentDetail, MomentComment } from './inprocess'
 
 // ─── Detail cache ─────────────────────────────────────────────────────────────
-// Shared between MomentModal and MomentDetailView so navigating from the modal
-// to the detail page can render immediately without re-fetching.
+// Populated by feed/card renders and consumed by MomentDetailView so the
+// intercepted-route overlay (and full-page detail) can render immediately
+// without re-fetching what the feed already pulled.
 
 const detailStore = new Map<string, MomentDetail>()
 
