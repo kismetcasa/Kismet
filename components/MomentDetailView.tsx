@@ -14,7 +14,7 @@ import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -277,16 +277,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     }
   }
 
-  // Total mints = collect count for this token. Authoritative count comes
-  // from on-chain totalSupply (Zora 1155 maintains it per token id), which
-  // sidesteps any inprocess indexer lag right after a fresh collect.
-  const { data: totalMinted, refetch: refetchTotalMinted } = useReadContract({
+  // Authoritative on-chain read of {maxSupply, totalMinted} for this token.
+  // totalMinted is the lifetime mint count (drives "X collected"); maxSupply
+  // is the cap (drives the open-vs-limited badge + minted-out gate). Read
+  // from chain rather than /api/moment because inprocess's response omits
+  // maxSupply entirely. Polled every 30s so the figure stays current after
+  // a fresh collect, without waiting for the inprocess indexer.
+  const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
     address: address as `0x${string}`,
-    abi: ZORA_1155_MINT_ABI,
-    functionName: 'totalSupply',
+    abi: ZORA_1155_TOKEN_INFO_ABI,
+    functionName: 'getTokenInfo',
     args: [BigInt(tokenId)],
     query: { refetchInterval: 30_000 },
   })
+  const maxSupply = tokenInfo?.maxSupply
+  const totalMinted = tokenInfo?.totalMinted
 
   const isFeatured = featuredKeys.has(`${address.toLowerCase()}:${tokenId}`)
   // Resolution order for the moment's creator EOA:
@@ -446,23 +451,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       setCollected(true)
       setCommentText('')
       setTimeout(fetchComments, 3000)
-      // Refresh the on-chain count immediately rather than waiting for the
+      // Refresh on-chain state immediately rather than waiting for the
       // 30s poll — chain state has moved one tick at this point.
-      refetchTotalMinted().catch(() => {})
+      refetchTokenInfo().catch(() => {})
       refetchOwnedBalance().catch(() => {})
     }
   }
 
   const hasCollected = alreadyOwned || collected
-  // maxSupply == null/0 → open edition (never minted out). Only flag once
-  // totalMinted is known, otherwise we'd flash "minted out" before the read
-  // lands.
+  // Only flag once both reads have landed, otherwise we'd flash "minted out"
+  // before tokenInfo arrives. Open editions never go minted-out.
   const mintedOut =
+    maxSupply !== undefined &&
     totalMinted !== undefined &&
-    detail != null &&
-    detail.maxSupply != null &&
-    detail.maxSupply > 0 &&
-    totalMinted >= BigInt(detail.maxSupply)
+    !isOpenEdition(maxSupply) &&
+    totalMinted >= maxSupply
   const collectLabel = collecting
     ? 'collecting…'
     : mintedOut
@@ -1067,7 +1070,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               </div>
               <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
-                  {detail == null ? '…' : (detail.maxSupply == null || detail.maxSupply === 0 ? 'open' : detail.maxSupply.toLocaleString())}
+                  {maxSupply === undefined
+                    ? '…'
+                    : isOpenEdition(maxSupply)
+                      ? 'open'
+                      : maxSupply.toLocaleString()}
                 </span>
               </div>
             </div>

@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Address } from 'viem'
-import { ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
+import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
 
 // inprocess's Base Mainnet ZORA 1155 Contract Factory.
 // Source: https://github.com/sweetmantech/docs-in-process/blob/main/docs/pages/protocol-deployments.mdx
@@ -16,10 +16,6 @@ export const FACTORY_ADDRESS = '0x540C18B7f99b3b599c6FeB99964498931c211858' as c
 // stay in lockstep: the address granted MINTER permission during deploy must
 // match the one called from useDirectCollect.
 const FIXED_PRICE_STRATEGY_ADDRESS = ZORA_FIXED_PRICE_STRATEGY
-
-// Open-edition supply (max uint64) — used when no supply cap specified.
-// Matches inprocess's OPEN_EDITION_MINT_SIZE.
-const OPEN_EDITION_MINT_SIZE = 18446744073709551615n
 
 // Per Zora's PermissionsConstants: ADMIN=2, MINTER=4, SALES=8, METADATA=16,
 // FUNDS_MANAGER=32. Canonical exports live in lib/permissions.ts; this

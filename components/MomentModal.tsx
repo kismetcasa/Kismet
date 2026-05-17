@@ -15,7 +15,7 @@ import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
@@ -31,11 +31,13 @@ import { useAdmin } from '@/contexts/AdminContext'
 interface MomentModalProps {
   moment: Moment
   onClose: () => void
-  // Props pre-populated by MomentCard to avoid redundant fetches
+  // Props pre-populated by MomentCard to avoid redundant fetches. Supply is
+  // not threaded — both surfaces read getTokenInfo via wagmi, which shares
+  // a TanStack Query cache keyed on (address, abi, fn, args), so the modal
+  // gets the card's value instantly with no extra RPC.
   initialPrice?: string
   initialPricePerToken?: bigint
   initialCurrency?: CollectCurrency
-  initialMaxSupply?: number | null
   initialCreatorName?: string
   initialCreatorAvatar?: string
   initialCollectionName?: string | null
@@ -49,7 +51,6 @@ export function MomentModal({
   initialPrice,
   initialPricePerToken,
   initialCurrency,
-  initialMaxSupply,
   initialCreatorName,
   initialCreatorAvatar,
   initialCollectionName,
@@ -108,16 +109,19 @@ export function MomentModal({
         ? Number(ownedBalance) > 0
         : false
 
-  // Total mint count (Zora 1155 maintains it natively). Authoritative read so
-  // the figure is correct immediately after a fresh collect, before the
-  // inprocess indexer catches up.
-  const { data: totalMinted, refetch: refetchTotalMinted } = useReadContract({
+  // Authoritative on-chain read of {maxSupply, totalMinted}. Same query key
+  // as MomentCard's read → cache hit on modal open, no extra RPC. Polled
+  // every 30s so "X collected" updates without a remount after a fresh
+  // collect, before the inprocess indexer catches up.
+  const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
     address: moment.address as `0x${string}`,
-    abi: ZORA_1155_MINT_ABI,
-    functionName: 'totalSupply',
+    abi: ZORA_1155_TOKEN_INFO_ABI,
+    functionName: 'getTokenInfo',
     args: [BigInt(moment.token_id)],
     query: { refetchInterval: 30_000 },
   })
+  const maxSupply = tokenInfo?.maxSupply
+  const totalMinted = tokenInfo?.totalMinted
 
   // Creator-only distribute UI. Use the prop's creator (always present) so
   // the check can render before MomentDetail loads.
@@ -131,21 +135,15 @@ export function MomentModal({
     isCreator,
   })
 
-  // Derived price and supply — prefer passed-in values, fall back to fetched detail
+  // Derived price — prefer passed-in values, fall back to fetched detail.
   const pricePerToken = initialPricePerToken ?? (detail ? BigInt(detail.saleConfig.pricePerToken) : null)
   const currency = initialCurrency ?? (detail ? inferCollectCurrency(detail.saleConfig) : null)
   const price = initialPrice ?? (detail && currency ? formatPrice(detail.saleConfig.pricePerToken, currency) : null)
-  const displayMaxSupply: number | null | undefined =
-    initialMaxSupply !== undefined
-      ? initialMaxSupply
-      : detail
-        ? (detail.maxSupply ?? null)
-        : undefined
   const collectReady = pricePerToken !== null && currency !== null
 
-  // Fetch moment detail only when card didn't pass price/supply
+  // Fetch moment detail only when card didn't pass price
   useEffect(() => {
-    if (initialPrice !== undefined && initialMaxSupply !== undefined) return
+    if (initialPrice !== undefined) return
     const cached = getCachedDetail(moment.address, moment.token_id)
     if (cached) { setDetail(cached); return }
     const params = new URLSearchParams({
@@ -157,7 +155,7 @@ export function MomentModal({
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (d) { setCachedDetail(moment.address, moment.token_id, d); setDetail(d) } })
       .catch(() => {})
-  }, [moment.address, moment.token_id, initialPrice, initialMaxSupply])
+  }, [moment.address, moment.token_id, initialPrice])
 
   async function handleDistribute() {
     if (!currency) { toast.error('Sale config still loading'); return }
@@ -237,20 +235,19 @@ export function MomentModal({
     })
     if (result) {
       setCollected(true)
-      refetchTotalMinted().catch(() => {})
+      refetchTokenInfo().catch(() => {})
       refetchOwnedBalance().catch(() => {})
     }
   }
 
   const hasCollected = alreadyOwned || collected
-  // maxSupply == null/0 → open edition (never minted out). Only flag once
-  // totalMinted is known, otherwise we'd flash "minted out" before the read
-  // lands.
+  // Only flag once both reads have landed, otherwise we'd flash "minted out"
+  // before tokenInfo arrives. Open editions never go minted-out.
   const mintedOut =
+    maxSupply !== undefined &&
     totalMinted !== undefined &&
-    displayMaxSupply != null &&
-    displayMaxSupply > 0 &&
-    totalMinted >= BigInt(displayMaxSupply)
+    !isOpenEdition(maxSupply) &&
+    totalMinted >= maxSupply
   const collectLabel = collecting
     ? 'collecting…'
     : mintedOut
@@ -491,11 +488,11 @@ export function MomentModal({
                 </div>
                 <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                   <span className="text-[11px] font-mono text-[#444]">
-                    {displayMaxSupply === undefined
+                    {maxSupply === undefined
                       ? '…'
-                      : displayMaxSupply === null || displayMaxSupply === 0
+                      : isOpenEdition(maxSupply)
                         ? 'open'
-                        : displayMaxSupply.toLocaleString()}
+                        : maxSupply.toLocaleString()}
                   </span>
                 </div>
               </div>

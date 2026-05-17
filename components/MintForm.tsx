@@ -269,8 +269,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   function switchMode(mode: MintMode) {
     setMintMode(mode)
-    if (mode === 'text') clearFile()
-    else setTextContent('')
+    if (mode === 'text') {
+      clearFile()
+      // inprocess's /moment/create/writing endpoint doesn't accept
+      // `token.maxSupply` (verified against their docs) — writing moments
+      // are always open edition. Clearing the field on switch keeps the UI
+      // honest and prevents a stale "1" from triggering is11 below.
+      setMaxSupply('')
+    } else {
+      setTextContent('')
+    }
   }
 
   // Detects the auth-failure paths that come back when minting into a
@@ -556,6 +564,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // - the writing body lives at `token.tokenContent` (not "content")
         // The top-level `name` is our private hint that mint-proxy strips before
         // forwarding upstream — used to populate the moment-meta KV entry.
+        // No `maxSupply` here: inprocess's /moment/create/writing schema
+        // doesn't accept it (writing moments are always open edition). The
+        // form hides the Supply input in text mode so this branch never has
+        // a user value to drop in the first place.
         const payload = {
           title: name.trim(),
           contract: contractField,
@@ -564,7 +576,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             createReferral: CREATE_REFERRAL,
             salesConfig,
             mintToCreatorCount: 1,
-            ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
             ...(finalSplits ? {} : { payoutRecipient: address }),
           },
           name: name.trim(),
@@ -1061,24 +1072,30 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           )}
         </div>
 
-        <div className="flex-1">
-          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-            Supply
-          </label>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={maxSupply}
-            onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
-            placeholder="unlimited"
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-          />
-          {!maxSupply.trim() ? (
-            <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
-          ) : is11 ? (
-            <p className="text-xs text-[#555] font-mono mt-1">1/1 minted to your wallet</p>
-          ) : null}
-        </div>
+        {/* Supply only applies to media moments. inprocess's writing
+            endpoint doesn't accept a supply cap, so we hide the input
+            entirely in text mode rather than collect a value we'd have
+            to silently drop. */}
+        {mintMode === 'media' && (
+          <div className="flex-1">
+            <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+              Supply
+            </label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={maxSupply}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
+              placeholder="unlimited"
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            />
+            {!maxSupply.trim() ? (
+              <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
+            ) : is11 ? (
+              <p className="text-xs text-[#555] font-mono mt-1">1/1 minted to your wallet</p>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* Collections picker — optional; if the user doesn't pick one, the
