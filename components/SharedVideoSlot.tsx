@@ -1,7 +1,10 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { useSharedVideoContext } from '@/providers/SharedVideoProvider'
+import {
+  useSharedVideoContext,
+  useSharedVideoZIndex,
+} from '@/providers/SharedVideoProvider'
 
 interface Props {
   /** Canonical video URI (ar://, ipfs://, or https://). */
@@ -10,8 +13,9 @@ interface Props {
    *  page and lightbox set this to true. */
   controls?: boolean
   /** Z-index for the video element while this slot is active. Defaults
-   *  to 10 (above page content). Overlay surfaces (intercepting routes
-   *  modal) should pass a higher value to clear their backdrop. */
+   *  to 10 (above page content). Can be overridden by a parent
+   *  <SharedVideoZIndexProvider> (used by ModalOverlay to lift videos
+   *  above the overlay's z-50 backdrop). */
   zIndex?: number
   /** Fires when every gateway has errored for this src. The parent
    *  drops the slot and falls back to poster-only rendering. */
@@ -21,6 +25,8 @@ interface Props {
    *  use on the <video> directly. */
   className?: string
 }
+
+const DEFAULT_Z_INDEX = 10
 
 /**
  * Anchor for the persistent shared video element. Renders an empty div
@@ -35,12 +41,25 @@ interface Props {
 export function SharedVideoSlot({
   src,
   controls = false,
-  zIndex = 10,
+  zIndex,
   onError,
   className,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const ctx = useSharedVideoContext()
+  const overrideZIndex = useSharedVideoZIndex()
+
+  // Keep latest onError in a ref so the acquire effect doesn't re-run
+  // every time the parent re-creates the callback. Without this, an
+  // inline `onError={() => setX(true)}` in the parent would churn
+  // release+acquire on every parent render, defeating the persistence.
+  const onErrorRef = useRef(onError)
+  useEffect(() => {
+    onErrorRef.current = onError
+  })
+
+  // Resolve effective z-index: explicit prop > overlay context > default.
+  const finalZIndex = zIndex ?? overrideZIndex ?? DEFAULT_Z_INDEX
 
   useEffect(() => {
     const el = ref.current
@@ -49,8 +68,8 @@ export function SharedVideoSlot({
     const release = ctx.acquire(src, {
       ref: el,
       controls,
-      zIndex,
-      onError,
+      zIndex: finalZIndex,
+      onError: () => onErrorRef.current?.(),
     })
 
     // Reposition the video on any layout change that affects the slot.
@@ -68,7 +87,7 @@ export function SharedVideoSlot({
       window.removeEventListener('scroll', refresh)
       window.removeEventListener('resize', refresh)
     }
-  }, [ctx, src, controls, zIndex, onError])
+  }, [ctx, src, controls, finalZIndex])
 
   return <div ref={ref} className={className} aria-hidden />
 }

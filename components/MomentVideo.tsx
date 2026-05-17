@@ -6,12 +6,7 @@ import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { MomentImg } from './MomentImage'
 import { SharedVideoSlot } from './SharedVideoSlot'
 
-type VideoAttrs = Omit<
-  React.VideoHTMLAttributes<HTMLVideoElement>,
-  'src' | 'poster' | 'onError'
->
-
-interface MomentVideoProps extends VideoAttrs {
+interface MomentVideoProps {
   /** Raw URI for the video media: ar://, ipfs://, or https://. */
   src: string
   /** Optional poster URI. When `showPosterLayer` is on, this renders as
@@ -26,8 +21,19 @@ interface MomentVideoProps extends VideoAttrs {
   showPosterLayer?: boolean
   /** Z-index for the persistent video element while this surface owns
    *  it. Default (10) sits above page content; overlay surfaces should
-   *  pass a higher value to clear their backdrop. */
+   *  pass a higher value, OR wrap in <SharedVideoZIndexProvider>. */
   zIndex?: number
+  /** Show native controls — implies "committed viewing" and disables
+   *  the off-screen auto-pause behaviour. Detail page, lightbox. */
+  controls?: boolean
+  /** className for the slot placeholder (sizing + layout classes you'd
+   *  normally pass to <video> directly). */
+  className?: string
+  /** Vestigial — pool ignores caller-passed `preload`. The pool sets
+   *  preload='auto' on controlled slots, 'metadata' on previews. Kept
+   *  in the prop signature for backward-compatibility with call sites
+   *  that previously passed it; safe to omit at the callsite. */
+  preload?: 'none' | 'metadata' | 'auto'
   /** Fired once every gateway has errored for the video (separate from
    *  poster errors). Parent can swap in a placeholder. */
   onAllError?: () => void
@@ -52,8 +58,9 @@ export function MomentVideo({
   thumbhash,
   showPosterLayer,
   zIndex,
+  controls,
+  className,
   onAllError,
-  ...rest
 }: MomentVideoProps) {
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
 
@@ -70,11 +77,18 @@ export function MomentVideo({
   const [videoFailed, setVideoFailed] = useState(false)
   useEffect(() => { setVideoFailed(false) }, [src])
 
+  // Surface the catastrophic "no video AND no poster" case to the
+  // parent via onAllError. Done in an effect, not inside render, to
+  // avoid the React anti-pattern of side effects during render
+  // (matters under concurrent rendering / Strict Mode).
+  useEffect(() => {
+    if (videoFailed && (!poster || posterFailed)) onAllError?.()
+  }, [videoFailed, posterFailed, poster, onAllError])
+
   // All-gateways-exhausted fallback for video + poster: render the
   // poster directly so the surface isn't blank.
   if (videoFailed) {
     if (!poster || posterFailed) {
-      onAllError?.()
       return null
     }
     if (showPosterLayer) {
@@ -91,7 +105,7 @@ export function MomentVideo({
             src={poster}
             alt=""
             skipProxy
-            className={`absolute inset-0 ${rest.className ?? ''}`.trim()}
+            className={`absolute inset-0 ${className ?? ''}`.trim()}
             onAllError={() => setPosterFailed(true)}
           />
         </>
@@ -99,7 +113,7 @@ export function MomentVideo({
     }
     const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={posterFallback} alt="" className={rest.className} />
+    return <img src={posterFallback} alt="" className={className} />
   }
 
   const showImageLayer = showPosterLayer && !!poster && !posterFailed
@@ -122,7 +136,7 @@ export function MomentVideo({
             // skipProxy: posters route direct from gateway, not through
             // /api/img. See lib/media/shareImage.ts for the rationale.
             skipProxy
-            className={`absolute inset-0 ${rest.className ?? ''}`.trim()}
+            className={`absolute inset-0 ${className ?? ''}`.trim()}
             onAllError={() => setPosterFailed(true)}
           />
         </>
@@ -136,10 +150,10 @@ export function MomentVideo({
       )}
       <SharedVideoSlot
         src={src}
-        controls={!!rest.controls}
+        controls={!!controls}
         zIndex={zIndex}
         onError={() => setVideoFailed(true)}
-        className={rest.className}
+        className={className}
       />
     </>
   )

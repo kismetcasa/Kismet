@@ -1063,14 +1063,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <X size={18} />
           </button>
           {isVideo && meta.animation_url ? (
+            // onClick stopPropagation is no longer needed — Plan C puts
+            // the actual <video> element in document.body, not inside
+            // the lightbox tree, so clicks on the video can't bubble
+            // up to the lightbox's dismiss handler.
             <MomentVideo
               src={meta.animation_url}
               poster={meta.image}
               thumbhash={meta.kismet_thumbhash}
               controls
-              preload="auto"
               className="max-h-[95vh] max-w-[95vw] object-contain"
-              onClick={(e) => e.stopPropagation()}
             />
           ) : meta.image ? (
             <MomentImg

@@ -5,6 +5,7 @@ import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { SharedVideoZIndexProvider } from '@/providers/SharedVideoProvider'
 
 /**
  * Backdrop + close affordance + scroll container for the intercepted
@@ -19,6 +20,15 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
  *   - Click the backdrop outside the modal content
  *   - Press Escape
  *   - Click the X button
+ *
+ * Z-index layering (in document.body's stacking context):
+ *   - Backdrop:         z-50
+ *   - Shared video el:  z-55 (set via SharedVideoZIndexProvider so any
+ *                       <SharedVideoSlot> nested under us stacks
+ *                       above the backdrop)
+ *   - Close button:     z-60 (above the video, since the video is
+ *                       pointer-events: auto when in controls mode
+ *                       and would otherwise intercept the close click)
  */
 export function ModalOverlay({ children }: { children: ReactNode }) {
   const router = useRouter()
@@ -35,23 +45,35 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/85 backdrop-blur-sm"
-      onClick={(e) => {
-        // Only dismiss when the click hit the backdrop itself, not
-        // bubbled from inner content.
-        if (e.target === e.currentTarget) dismiss()
-      }}
-    >
+    <>
+      <div
+        className="fixed inset-0 overflow-y-auto bg-black/85 backdrop-blur-sm"
+        style={{ zIndex: 50 }}
+        onClick={(e) => {
+          // Only dismiss when the click hit the backdrop itself, not
+          // bubbled from inner content.
+          if (e.target === e.currentTarget) dismiss()
+        }}
+      >
+        <div className="min-h-full">
+          <SharedVideoZIndexProvider zIndex={55}>
+            {children}
+          </SharedVideoZIndexProvider>
+        </div>
+      </div>
+      {/* Close button rendered OUTSIDE the backdrop wrapper. Inside,
+          its z-index would be bounded by the backdrop's stacking
+          context; out here, it stacks at its own z-60 in body, which
+          is above any shared video element (z-55). */}
       <button
         onClick={dismiss}
         title="Close (Esc)"
         aria-label="Close"
-        className="fixed top-4 right-4 z-10 p-2 text-[#888] hover:text-[#efefef] transition-colors"
+        className="fixed top-4 right-4 p-2 text-[#888] hover:text-[#efefef] transition-colors"
+        style={{ zIndex: 60 }}
       >
         <X size={18} />
       </button>
-      <div className="min-h-full">{children}</div>
-    </div>
+    </>
   )
 }
