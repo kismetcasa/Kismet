@@ -251,14 +251,23 @@ export async function markAllRead(address: string): Promise<void> {
   ])
 }
 
+// SADD+EXPIRE in MULTI/EXEC so a dropped EXPIRE can't leave the key
+// TTL-less. Sliding TTL is intentional — active users keep their
+// read/mute state warm.
 export async function markOneRead(address: string, id: string): Promise<void> {
-  await redis.sadd(keyReadIds(address), id)
-  void redis.expire(keyReadIds(address), READ_IDS_TTL_SECS).catch(() => {})
+  await redis
+    .multi()
+    .sadd(keyReadIds(address), id)
+    .expire(keyReadIds(address), READ_IDS_TTL_SECS)
+    .exec()
 }
 
 export async function muteActor(address: string, actor: string): Promise<void> {
-  await redis.sadd(keyMuted(address), actor.toLowerCase())
-  void redis.expire(keyMuted(address), MUTED_TTL_SECS).catch(() => {})
+  await redis
+    .multi()
+    .sadd(keyMuted(address), actor.toLowerCase())
+    .expire(keyMuted(address), MUTED_TTL_SECS)
+    .exec()
 }
 
 export async function unmuteActor(address: string, actor: string): Promise<void> {
@@ -270,8 +279,11 @@ export async function getMutedActors(address: string): Promise<string[]> {
 }
 
 export async function muteType(address: string, type: NotificationType): Promise<void> {
-  await redis.sadd(keyMutedTypes(address), type)
-  void redis.expire(keyMutedTypes(address), MUTED_TTL_SECS).catch(() => {})
+  await redis
+    .multi()
+    .sadd(keyMutedTypes(address), type)
+    .expire(keyMutedTypes(address), MUTED_TTL_SECS)
+    .exec()
 }
 
 export async function unmuteType(address: string, type: NotificationType): Promise<void> {

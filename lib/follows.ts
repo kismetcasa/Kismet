@@ -3,16 +3,27 @@ import { redis } from './redis'
 const keyFollowing = (a: string) => `kismetart:following:${a.toLowerCase()}`
 const keyFollowers = (a: string) => `kismetart:followers:${a.toLowerCase()}`
 
+// MULTI/EXEC so a network failure can't half-write the graph: e.g.
+// A->following has B but B->followers is missing A, which silently
+// breaks fanoutToFollowers for that pair.
 export async function follow(follower: string, target: string): Promise<void> {
   const f = follower.toLowerCase()
   const t = target.toLowerCase()
-  await Promise.all([redis.sadd(keyFollowing(f), t), redis.sadd(keyFollowers(t), f)])
+  await redis
+    .multi()
+    .sadd(keyFollowing(f), t)
+    .sadd(keyFollowers(t), f)
+    .exec()
 }
 
 export async function unfollow(follower: string, target: string): Promise<void> {
   const f = follower.toLowerCase()
   const t = target.toLowerCase()
-  await Promise.all([redis.srem(keyFollowing(f), t), redis.srem(keyFollowers(t), f)])
+  await redis
+    .multi()
+    .srem(keyFollowing(f), t)
+    .srem(keyFollowers(t), f)
+    .exec()
 }
 
 export async function isFollowing(follower: string, target: string): Promise<boolean> {

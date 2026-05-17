@@ -17,8 +17,11 @@ const keyAuthorizedCreators = (collection: string) =>
 const KEY = 'kismetart:collections'
 // Curator-blessed positive set — Create Collection form deploys plus
 // any legacy real collection the curator manually promoted. Source
-// of truth for collection-shaped surfaces.
-const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections'
+// of truth for collection-shaped surfaces. ZSET (scored by deploy
+// timestamp) rather than SET so Discover paginates newest-first;
+// `-z` suffix is required because Redis rejects ZADD on a key that
+// already holds a SET. See scripts/migrate-created-collections-zset.mjs.
+const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections-z'
 // Mints minted via Kismet's MintForm or as a Create Collection cover.
 // Members are `<addr>:<tokenId>` strings. Source of truth for the
 // Mints feed; the timeline route filters scope=standalone by membership.
@@ -65,7 +68,9 @@ export async function getTrackedCollectionsByScope(
 // collections list, mint dropdown, search, moment-detail chip).
 export async function getUserCollections(): Promise<string[]> {
   try {
-    return (await redis.smembers(CREATED_COLLECTIONS_KEY)) as string[]
+    return (await redis.zrange(CREATED_COLLECTIONS_KEY, 0, -1, {
+      rev: true,
+    })) as string[]
   } catch {
     return []
   }
@@ -96,9 +101,16 @@ export async function addTrackedCollection(
   try {
     const ops: Promise<unknown>[] = [redis.sadd(KEY, address)]
     // Auto-deploy wrappers join only KEY — never the curator-blessed
-    // set, so they don't surface as collections.
+    // set, so they don't surface as collections. NX: re-POSTs don't
+    // bump position.
     if (source === 'create-form') {
-      ops.push(redis.sadd(CREATED_COLLECTIONS_KEY, address))
+      ops.push(
+        redis.zadd(
+          CREATED_COLLECTIONS_KEY,
+          { nx: true },
+          { score: Date.now(), member: address },
+        ),
+      )
     }
     if (meta?.name) {
       const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
