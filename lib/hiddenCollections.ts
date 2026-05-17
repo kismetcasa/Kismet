@@ -1,4 +1,5 @@
 import { redis } from './redis'
+import { memoize } from './memoCache'
 
 // Set of lowercase collection addresses the creator has hidden from public
 // feeds. Mirrors hiddenMoments at the collection level — a creator can hide
@@ -22,17 +23,23 @@ export async function isCollectionHidden(address: string): Promise<boolean> {
 
 export async function hideCollection(address: string): Promise<void> {
   await redis.sadd(HIDDEN_KEY, address.toLowerCase())
+  // Own-pod consistency: read paths that cascade hide should see the
+  // change immediately on the next request. Cross-pod TTL bounds drift.
+  getHiddenCollectionsSet.invalidate()
 }
 
 export async function unhideCollection(address: string): Promise<void> {
   await redis.srem(HIDDEN_KEY, address.toLowerCase())
+  getHiddenCollectionsSet.invalidate()
 }
 
 /**
  * Bulk lookup for filtering a collections feed. Single Redis call; returns
- * a Set of lowercase addresses for O(1) membership checks.
+ * a Set of lowercase addresses for O(1) membership checks. Memoized 60s;
+ * the set changes only on hide/unhide writes which invalidate own-pod.
  */
-export async function getHiddenCollectionsSet(): Promise<Set<string>> {
+async function _getHiddenCollectionsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
+export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 60_000)
