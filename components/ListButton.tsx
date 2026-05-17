@@ -234,7 +234,7 @@ export function ListButton({
           if (!isConnected) { openConnectModal?.(); return }
           setShowForm(true)
         }}
-        className={`w-full text-xs font-mono tracking-wider uppercase px-3 py-2.5 border border-[#2a2a2a] text-[#555] hover:border-[#8B5CF6] hover:text-[#8B5CF6] transition-colors ${buttonClassName ?? ''}`}
+        className={`w-full text-xs font-mono tracking-wider uppercase px-3 py-2.5 border border-line text-muted hover:border-accent hover:text-accent transition-colors ${buttonClassName ?? ''}`}
       >
         list
       </button>
@@ -245,14 +245,14 @@ export function ListButton({
 
   return (
     <div className="flex gap-1.5 items-center w-full">
-      <div className="flex flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] focus-within:border-[#555]">
+      <div className="flex flex-1 min-w-0 bg-surface border border-line focus-within:border-muted">
         {showToggle && (
           <button
             type="button"
             onClick={() => setCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
             disabled={isBusy}
             title="tap to switch currency"
-            className="pl-2 pr-1 text-[10px] font-mono text-[#888] hover:text-[#efefef] transition-colors disabled:opacity-40 flex-shrink-0"
+            className="pl-2 pr-1 text-[10px] font-mono text-dim hover:text-ink transition-colors disabled:opacity-40 flex-shrink-0"
           >
             {currency === 'eth' ? 'ETH' : 'USDC'}
           </button>
@@ -266,7 +266,7 @@ export function ListButton({
           onBlur={() => setInputFocused(false)}
           placeholder={showToggle ? '' : (currency === 'usdc' ? 'USDC' : 'ETH')}
           disabled={isBusy}
-          className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none disabled:opacity-50"
+          className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-ink font-mono placeholder-faint focus:outline-none disabled:opacity-50"
         />
       </div>
       <div className="flex gap-1 flex-shrink-0 ml-auto">
@@ -284,7 +284,7 @@ export function ListButton({
           type="button"
           onClick={() => { setShowForm(false); setPriceInput('') }}
           disabled={isBusy}
-          className="px-2 text-xs font-mono text-[#555] hover:text-[#888] disabled:opacity-40"
+          className="px-2 text-xs font-mono text-muted hover:text-dim disabled:opacity-40"
         >
           ✕
         </button>

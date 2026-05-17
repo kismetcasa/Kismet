@@ -98,7 +98,7 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
 
   return (
     <div>
-      <div className="flex gap-1 mb-8 border-b border-[#2a2a2a] pb-px">
+      <div className="flex gap-1 mb-8 border-b border-line pb-px">
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -106,8 +106,8 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
             onMouseEnter={() => { if (t.id === 'airdrop') fetchMoments() }}
             className={`px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px ${
               tab === t.id
-                ? 'border-[#efefef] text-[#efefef]'
-                : 'border-transparent text-[#888] hover:text-[#efefef]'
+                ? 'border-ink text-ink'
+                : 'border-transparent text-dim hover:text-ink'
             }`}
           >
             {t.label}

@@ -59,11 +59,11 @@ export function FeaturedFeed({ emptyMessage }: FeaturedFeedProps) {
   }
 
   if (loading) {
-    return <div className="py-8 text-center text-xs font-mono text-[#555]">loading…</div>
+    return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
   }
 
   if (blocks.length === 0) {
-    return <div className="py-8 text-center text-xs font-mono text-[#555]">{emptyMessage}</div>
+    return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
   }
 
   return (

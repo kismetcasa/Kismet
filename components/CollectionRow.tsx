@@ -58,12 +58,12 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
   }, [adminAddr, initialUsername])
 
   return (
-    <article className="grid grid-cols-1 md:grid-cols-12 border border-[#2a2a2a] bg-[#161616] overflow-hidden">
+    <article className="grid grid-cols-1 md:grid-cols-12 border border-line bg-[#161616] overflow-hidden">
       {/* Hero: cover + details. md+ takes 5/12, mobile stacks full width. */}
       <div className="md:col-span-5 flex flex-col">
         <Link
           href={`/collection/${c.contractAddress}`}
-          className="relative aspect-square block overflow-hidden bg-[#111] group/img"
+          className="relative aspect-square block overflow-hidden bg-surface group/img"
         >
           {isAdmin && (
             <button
@@ -73,7 +73,7 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
                 toggleFeaturedCollection(c.contractAddress)
               }}
               className={`absolute top-2 left-2 z-10 p-1 transition-colors ${
-                isFeatured ? 'text-yellow-400' : 'text-[#333] hover:text-[#888]'
+                isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
               }`}
               title={isFeatured ? 'Unfeature' : 'Feature'}
             >
@@ -94,29 +94,29 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
-              <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+              <span className="text-line font-mono text-xs">no preview</span>
             </div>
           )}
         </Link>
 
         <div className="px-4 pt-4 pb-4 flex flex-col gap-1 flex-1">
-          <h3 className="text-sm font-mono text-[#efefef] truncate">{name}</h3>
+          <h3 className="text-sm font-mono text-ink truncate">{name}</h3>
           {creatorLabel && (
             <Link
               href={adminAddr ? `/profile/${adminAddr}` : '#'}
-              className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+              className="text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
             >
               {creatorLabel}
             </Link>
           )}
           {description && (
-            <p className="text-xs font-mono text-[#555] mt-0.5 line-clamp-2">{description}</p>
+            <p className="text-xs font-mono text-muted mt-0.5 line-clamp-2">{description}</p>
           )}
 
           <div className="flex flex-col gap-1.5 mt-auto pt-3">
             <Link
               href={`/collection/${c.contractAddress}`}
-              className="w-full py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+              className="w-full py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
             >
               view collection
             </Link>
@@ -136,7 +136,7 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
       <div className="md:col-span-7 flex overflow-x-auto snap-x snap-mandatory gap-3 p-3 [-webkit-overflow-scrolling:touch]">
         {c.moments.length === 0 ? (
           <div className="flex-1 flex items-center justify-center min-h-[200px]">
-            <span className="text-xs font-mono text-[#555]">no moments yet</span>
+            <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
           c.moments.map((m, idx) => (

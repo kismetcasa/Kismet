@@ -208,7 +208,7 @@ export default async function CollectionPage({ params }: Props) {
   if (hidden && !isCreator) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-24 text-center">
-        <p className="text-sm font-mono text-[#888]">
+        <p className="text-sm font-mono text-dim">
           this collection has been hidden by the creator
         </p>
       </div>

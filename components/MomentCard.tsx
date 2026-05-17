@@ -187,7 +187,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
   const isTextMoment = meta.content?.mime === 'text/plain'
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   return (
-    <article className="group flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
+    <article className="group flex flex-col bg-[#161616] border border-line overflow-hidden">
       {/* Media — wrapped in <Link> so the click triggers Next.js's
           intercepting route at app/@modal/(.)moment/.../page.tsx. The
           feed stays mounted; the detail page renders as an overlay
@@ -208,7 +208,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
           // comments/text caches.
           router.prefetch(`/moment/${moment.address}/${moment.token_id}`)
         }}
-        className="cursor-pointer relative aspect-square bg-[#111] overflow-hidden block"
+        className="cursor-pointer relative aspect-square bg-surface overflow-hidden block"
       >
         {isAdmin && (
           <button
@@ -221,7 +221,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
               toggleFeatured(moment.address, moment.token_id)
             }}
             className={`absolute top-2 left-2 z-10 p-1 transition-colors ${
-              isFeatured ? 'text-yellow-400' : 'text-[#333] hover:text-[#888]'
+              isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
             }`}
             title={isFeatured ? 'Unfeature' : 'Feature'}
           >
@@ -229,8 +229,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
           </button>
         )}
         {moment.hidden && (
-          <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-[#2a2a2a]">
-            <EyeOff size={10} className="text-[#555]" />
+          <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
+            <EyeOff size={10} className="text-muted" />
           </span>
         )}
         {isVideo && meta.animation_url ? (
@@ -254,10 +254,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
             priority={priority}
           />
         ) : isTextMoment ? (
-          <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
-            <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-2">writing</span>
+          <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-raised to-[#0a0a0a]">
+            <span className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">writing</span>
             {meta.name && (
-              <p className="text-sm sm:text-base font-mono text-[#efefef] truncate mb-2">
+              <p className="text-sm sm:text-base font-mono text-ink truncate mb-2">
                 {meta.name}
               </p>
             )}
@@ -272,7 +272,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
           </div>
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+            <span className="text-line font-mono text-xs">no preview</span>
           </div>
         )}
       </Link>
@@ -280,13 +280,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
       {/* Info */}
       <div className="px-4 pt-4 pb-3 flex flex-col gap-1.5">
         <div className="flex items-start gap-2">
-          <h3 className="text-sm text-[#efefef] font-mono truncate flex-1 min-w-0">
+          <h3 className="text-sm text-ink font-mono truncate flex-1 min-w-0">
             {meta.name ?? `#${moment.token_id}`}
           </h3>
           <button
             onClick={handleCopyLink}
             title="copy link"
-            className="flex-shrink-0 mt-0.5 text-[#444] hover:text-[#888] transition-colors"
+            className="flex-shrink-0 mt-0.5 text-[#444] hover:text-dim transition-colors"
           >
             {linkCopied
               ? <Check size={11} className="text-[#6ee7b7]" />
@@ -300,7 +300,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
           title={moment.creator.address}
         >
           <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={16} />
-          <span className="text-xs text-[#555] font-mono group-hover/creator:text-[#888] transition-colors">{creatorName}</span>
+          <span className="text-xs text-muted font-mono group-hover/creator:text-dim transition-colors">{creatorName}</span>
         </Link>
         {collectionName && (
           <Link
@@ -310,7 +310,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
             title={collectionName}
           >
             {collectionImage && !collectionImageFailed && (
-              <div className="w-4 h-4 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+              <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
                 <MomentImage
                   src={collectionImage}
                   alt=""
@@ -321,7 +321,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
                 />
               </div>
             )}
-            <span className="text-xs text-[#555] font-mono group-hover/collection:text-[#888] transition-colors">
+            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
               {collectionName}
             </span>
           </Link>
@@ -331,11 +331,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
       {/* Actions row: [price|supply] [list] [collect] */}
       <div className="px-4 pb-4 flex gap-2 items-stretch">
         {!hidePriceSupply && owned === 0 && !collected && (
-          <div className="flex border border-[#2a2a2a] flex-none">
+          <div className="flex border border-line flex-none">
             <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
               <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
             </div>
-            <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+            <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
               <span className="text-[11px] font-mono text-[#444]">
                 {maxSupply === undefined
                   ? '…'
@@ -365,8 +365,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
           disabled={collecting || mintedOut || !collectReady}
           className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
             hasCollected
-              ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6] hover:bg-[#8B5CF6]/20'
-              : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+              ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
+              : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
           }`}
         >
           {collectLabel}

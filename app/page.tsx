@@ -86,7 +86,7 @@ function TabBar({
   const all: TabId[] = [...order, 'market']
 
   return (
-    <div className="flex items-end gap-0 border-b border-[#2a2a2a]">
+    <div className="flex items-end gap-0 border-b border-line">
       {all.map((tab, idx) => {
         const draggable = idx < order.length
         const isActive = tab === active
@@ -101,13 +101,13 @@ function TabBar({
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
               transition-colors select-none
-              ${isActive ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'}
+              ${isActive ? 'text-ink' : 'text-[#444] hover:text-dim'}
               ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}
             `}
           >
             {LABEL[tab]}
             {isActive && (
-              <span className="absolute bottom-0 left-0 right-0 h-px bg-[#efefef]" />
+              <span className="absolute bottom-0 left-0 right-0 h-px bg-ink" />
             )}
           </button>
         )
@@ -138,8 +138,8 @@ function MomentFeed({
         <MomentCard key={`${m.address}-${m.token_id}`} moment={m} priority={index < 3} />
       )}
       empty={
-        <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
-          <p className="text-sm font-mono text-[#555]">{emptyMessage}</p>
+        <div className="border border-line p-8 sm:p-16 text-center">
+          <p className="text-sm font-mono text-muted">{emptyMessage}</p>
         </div>
       }
       header={header}
@@ -170,8 +170,8 @@ function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
       )}
       filter={filter}
       empty={
-        <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
-          <p className="text-sm font-mono text-[#555]">no collections yet</p>
+        <div className="border border-line p-8 sm:p-16 text-center">
+          <p className="text-sm font-mono text-muted">no collections yet</p>
         </div>
       }
     />
@@ -208,16 +208,16 @@ function MainFeed() {
         <button
           onClick={() => setSubTab('mints')}
           className={`text-xs font-mono tracking-wider transition-colors ${
-            subTab === 'mints' ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
+            subTab === 'mints' ? 'text-ink' : 'text-[#444] hover:text-dim'
           }`}
         >
           mints
         </button>
-        <span className="text-xs font-mono text-[#2a2a2a] select-none">/</span>
+        <span className="text-xs font-mono text-line select-none">/</span>
         <button
           onClick={() => setSubTab('collections')}
           className={`text-xs font-mono tracking-wider transition-colors ${
-            subTab === 'collections' ? 'text-[#efefef]' : 'text-[#444] hover:text-[#888]'
+            subTab === 'collections' ? 'text-ink' : 'text-[#444] hover:text-dim'
           }`}
         >
           collections
@@ -228,8 +228,8 @@ function MainFeed() {
           onClick={() => setFollowingOn((v) => !v)}
           className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
             followingOn
-              ? 'border-[#8B5CF6] text-[#8B5CF6]'
-              : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
+              ? 'border-accent text-accent'
+              : 'border-line text-muted hover:border-[#444] hover:text-dim'
           }`}
         >
           following
@@ -283,13 +283,13 @@ export default function DiscoverPage() {
         {active === 'featured' && (
           <>
             {isAdmin && !hasSession && (
-              <div className="flex items-center justify-between py-4 border-b border-[#2a2a2a] mb-2">
-                <p className="text-xs font-mono text-[#555]">
+              <div className="flex items-center justify-between py-4 border-b border-line mb-2">
+                <p className="text-xs font-mono text-muted">
                   admin — sign to start curating
                 </p>
                 <button
                   onClick={startSession}
-                  className="text-xs font-mono px-3 py-1.5 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+                  className="text-xs font-mono px-3 py-1.5 border border-line text-dim hover:border-muted hover:text-ink transition-colors"
                 >
                   sign in
                 </button>
@@ -357,8 +357,8 @@ function RosterFeed() {
   // MomentFeed since there's nothing to query.
   if (listsLoaded && lists.length === 0) {
     return (
-      <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center mt-4">
-        <p className="text-sm font-mono text-[#555]">
+      <div className="border border-line p-8 sm:p-16 text-center mt-4">
+        <p className="text-sm font-mono text-muted">
           no creator rosters yet
         </p>
         <p className="text-xs font-mono text-[#444] mt-2">
@@ -383,8 +383,8 @@ function RosterFeed() {
           onClick={() => setActiveSlug(l.slug)}
           className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
             l.slug === activeSlug
-              ? 'border-[#efefef] text-[#efefef]'
-              : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888]'
+              ? 'border-ink text-ink'
+              : 'border-line text-muted hover:border-muted hover:text-dim'
           }`}
         >
           {l.name}
@@ -398,8 +398,8 @@ function RosterFeed() {
     return (
       <div>
         <div className="py-4">{header}</div>
-        <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
-          <p className="text-sm font-mono text-[#555]">
+        <div className="border border-line p-8 sm:p-16 text-center">
+          <p className="text-sm font-mono text-muted">
             {activeList ? 'this list has no creators yet' : 'select a roster'}
           </p>
         </div>

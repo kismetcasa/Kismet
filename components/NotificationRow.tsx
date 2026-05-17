@@ -46,13 +46,13 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'collect':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your moment'}
           </p>
           {n.comment && (
-            <p className="text-[10px] font-mono text-[#888] mt-0.5 truncate">&ldquo;{n.comment}&rdquo;</p>
+            <p className="text-[10px] font-mono text-dim mt-0.5 truncate">&ldquo;{n.comment}&rdquo;</p>
           )}
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.amount && n.amount > 1 ? `${n.amount} editions` : '1 edition'}
             {n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
@@ -61,10 +61,10 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'sale':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             {actorLabel ? `${actorLabel} bought your listing` : 'your listing was filled'}
           </p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
         </>
@@ -72,10 +72,10 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'follow':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'someone'} followed you
           </p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
     case 'mint':
@@ -85,17 +85,17 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       if (actorLabel) {
         return (
           <>
-            <p className="text-xs font-mono text-[#efefef] truncate">
+            <p className="text-xs font-mono text-ink truncate">
               {actorLabel} minted {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
             </p>
-            <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
+            <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
           </>
         )
       }
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">your moment was created</p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+          <p className="text-xs font-mono text-ink truncate">your moment was created</p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.tokenName ?? 'untitled'} · {time}
           </p>
         </>
@@ -103,8 +103,8 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'listing_expired':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">your listing expired</p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+          <p className="text-xs font-mono text-ink truncate">your listing expired</p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
         </>
@@ -112,19 +112,19 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'airdrop':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'someone'} airdropped you {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
           </p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
     case 'listing_created':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'someone'} listed {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
           </p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} · ` : ''}{time}
           </p>
         </>
@@ -132,10 +132,10 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'payout':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             you received a payout from {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
           </p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             split distributed in {(n.currency ?? 'eth').toUpperCase()} · {time}
           </p>
         </>
@@ -143,10 +143,10 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'authorized':
       return (
         <>
-          <p className="text-xs font-mono text-[#efefef] truncate">
+          <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'an admin'} added you as a creator on {n.tokenName ? `"${n.tokenName}"` : 'a collection'}
           </p>
-          <p className="text-[10px] font-mono text-[#555] mt-0.5 truncate">{time}</p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
     default: {
@@ -163,26 +163,26 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   const badge = (icon: ReactNode) => (
     <div
       style={{ width: size, height: size }}
-      className="bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center"
+      className="bg-raised flex-shrink-0 flex items-center justify-center"
     >
       {icon}
     </div>
   )
 
-  if (n.type === 'mint') return badge(<Sparkles size={iconSize} className="text-[#8B5CF6]" />)
+  if (n.type === 'mint') return badge(<Sparkles size={iconSize} className="text-accent" />)
   if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
-  if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-[#8B5CF6]" />)
+  if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-accent" />)
   if (n.type === 'listing_expired' && !n.tokenImage) {
-    return badge(<Clock size={iconSize} className="text-[#555]" />)
+    return badge(<Clock size={iconSize} className="text-muted" />)
   }
 
   if (n.type === 'follow' || !n.tokenImage) {
     if (n.actor) return <ProfileAvatar address={n.actor} size={size} />
-    return <div style={{ width: size, height: size }} className="bg-[#1a1a1a] flex-shrink-0" />
+    return <div style={{ width: size, height: size }} className="bg-raised flex-shrink-0" />
   }
 
   return (
-    <div className="relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden" style={{ width: size, height: size }}>
+    <div className="relative flex-shrink-0 bg-raised overflow-hidden" style={{ width: size, height: size }}>
       <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} />
     </div>
   )
@@ -199,7 +199,7 @@ export function NotificationRow({ notification, actorName, onClick, onMute }: No
         href={href}
         onClick={onClick}
         className={`flex items-start gap-2.5 px-3 py-2.5 hover:bg-[#1e1e1e] transition-colors ${
-          unread ? 'border-l-2 border-[#8B5CF6]' : 'border-l-2 border-transparent'
+          unread ? 'border-l-2 border-accent' : 'border-l-2 border-transparent'
         }`}
       >
         <div className="flex-shrink-0 mt-0.5">
@@ -209,7 +209,7 @@ export function NotificationRow({ notification, actorName, onClick, onMute }: No
           <NotificationContent n={notification} actorName={actorName} />
         </div>
         {unread && (
-          <div className="w-1.5 h-1.5 rounded-full bg-[#8B5CF6] mt-2 flex-shrink-0" aria-label="unread" />
+          <div className="w-1.5 h-1.5 rounded-full bg-accent mt-2 flex-shrink-0" aria-label="unread" />
         )}
       </Link>
 
@@ -220,7 +220,7 @@ export function NotificationRow({ notification, actorName, onClick, onMute }: No
             e.stopPropagation()
             onMute(notification.actor!)
           }}
-          className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-mono uppercase tracking-widest text-[#333] hover:text-[#888] px-1 py-0.5"
+          className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-mono uppercase tracking-widest text-faint hover:text-dim px-1 py-0.5"
           title={`Mute ${notification.actor}`}
         >
           mute

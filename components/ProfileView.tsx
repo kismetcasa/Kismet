@@ -50,7 +50,7 @@ function CollectionPreviewImage({ src, alt, thumbhash }: { src?: string; alt: st
   if (!src || failed) {
     return (
       <div className="w-full h-full flex items-center justify-center">
-        <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+        <span className="text-line font-mono text-xs">no preview</span>
       </div>
     )
   }
@@ -133,10 +133,10 @@ function FollowRow({ addr, onClose, onNameLoaded }: { addr: string; onClose: () 
     <Link
       href={`/profile/${addr}`}
       onClick={onClose}
-      className="flex items-center gap-3 px-5 py-3 border-b border-[#1a1a1a] hover:bg-[#1a1a1a] transition-colors last:border-b-0"
+      className="flex items-center gap-3 px-5 py-3 border-b border-raised hover:bg-raised transition-colors last:border-b-0"
     >
       <ProfileAvatar address={addr} avatarUrl={avatarUrl} size={28} clickable />
-      <span className="text-xs font-mono text-[#888]">{name}</span>
+      <span className="text-xs font-mono text-dim">{name}</span>
     </Link>
   )
 }
@@ -423,7 +423,7 @@ export function ProfileView({ address }: ProfileViewProps) {
   const skeleton = (n: number) => (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
       {Array.from({ length: n }).map((_, i) => (
-        <div key={i} className="aspect-square bg-[#111] animate-pulse border border-[#1a1a1a]" />
+        <div key={i} className="aspect-square bg-surface animate-pulse border border-raised" />
       ))}
     </div>
   )
@@ -448,30 +448,30 @@ export function ProfileView({ address }: ProfileViewProps) {
   const sectionContent: Record<SectionId, React.ReactNode> = {
     mints: collectionsMode ? (
       loadingCollections ? skeleton(6) : artistCollections.length === 0 ? (
-        <p className="text-[#555] font-mono text-xs">no collections yet</p>
+        <p className="text-muted font-mono text-xs">no collections yet</p>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
           {artistCollections.map((c) => {
             const collectionName = c.metadata?.name || c.name
             return (
-              <div key={c.contractAddress} className="flex flex-col bg-[#161616] border border-[#2a2a2a] overflow-hidden">
-                <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-[#111] block overflow-hidden group/img">
+              <div key={c.contractAddress} className="flex flex-col bg-[#161616] border border-line overflow-hidden">
+                <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-surface block overflow-hidden group/img">
                   <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} thumbhash={c.metadata?.kismet_thumbhash} />
                 </Link>
                 <div className="px-3 pt-3 pb-2 flex flex-col gap-0.5">
-                  <h3 className="text-sm text-[#efefef] font-mono truncate">{collectionName}</h3>
-                  <span className="text-[10px] font-mono text-[#555]">{shortAddress(c.contractAddress)}</span>
+                  <h3 className="text-sm text-ink font-mono truncate">{collectionName}</h3>
+                  <span className="text-[10px] font-mono text-muted">{shortAddress(c.contractAddress)}</span>
                 </div>
                 <div className="px-3 pb-3 flex flex-col gap-1.5">
                   <Link
                     href={`/collection/${c.contractAddress}`}
-                    className="w-full py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+                    className="w-full py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
                   >
                     view collection
                   </Link>
                   <Link
                     href={`/mint?collection=${c.contractAddress}&name=${encodeURIComponent(collectionName)}`}
-                    className="w-full py-1.5 text-center text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors"
+                    className="w-full py-1.5 text-center text-xs font-mono border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors"
                   >
                     mint all
                   </Link>
@@ -483,15 +483,15 @@ export function ProfileView({ address }: ProfileViewProps) {
       )
     ) : (
       loadingMoments ? skeleton(6) : moments.length === 0
-        ? <p className="text-[#555] font-mono text-xs">no mints yet</p>
+        ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>
     ),
     collected: loadingCollected ? skeleton(6) : collected.length === 0
-      ? <p className="text-[#555] font-mono text-xs">none collected yet</p>
+      ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{collected.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>,
     listings: loadingListings ? skeleton(3) : listings.length === 0
       ? (
-        <p className="text-[#555] font-mono text-xs">
+        <p className="text-muted font-mono text-xs">
           collect a moment on discover then{' '}
           <Link href={`/profile/${address}`} className="accent-grad hover:opacity-80 transition-opacity">list</Link>
           {' '}it here
@@ -500,15 +500,15 @@ export function ProfileView({ address }: ProfileViewProps) {
       : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{listings.map((l) => <MarketCard key={l.id} listing={l} onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))} />)}</div>,
     payments: loadingPayments ? (
       <div className="flex flex-col gap-1">
-        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
+        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-surface animate-pulse border border-raised" />)}
       </div>
     ) : payments.length === 0 ? (
-      <p className="text-[#555] font-mono text-xs">no sales yet</p>
+      <p className="text-muted font-mono text-xs">no sales yet</p>
     ) : (
-      <div className="flex flex-col divide-y divide-[#1a1a1a]">
+      <div className="flex flex-col divide-y divide-raised">
         {payments.map((p) => (
           <div key={p.id} className="flex items-center justify-between py-2.5 gap-4">
-            <span className="text-xs font-mono text-[#555]">
+            <span className="text-xs font-mono text-muted">
               {p.buyer.username || shortAddress(p.buyer.address)}
             </span>
             <span className="text-xs font-mono accent-grad flex-shrink-0">
@@ -518,7 +518,7 @@ export function ProfileView({ address }: ProfileViewProps) {
               href={`https://basescan.org/tx/${p.hash}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors flex-shrink-0"
+              className="text-[10px] font-mono text-[#444] hover:text-dim transition-colors flex-shrink-0"
             >
               {p.hash.slice(0, 8)}…
             </a>
@@ -528,23 +528,23 @@ export function ProfileView({ address }: ProfileViewProps) {
     ),
     airdrops: loadingAirdrops ? (
       <div className="flex flex-col gap-1">
-        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-[#111] animate-pulse border border-[#1a1a1a]" />)}
+        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-surface animate-pulse border border-raised" />)}
       </div>
     ) : airdrops.length === 0 ? (
-      <p className="text-[#555] font-mono text-xs">no airdrops sent yet</p>
+      <p className="text-muted font-mono text-xs">no airdrops sent yet</p>
     ) : (
-      <div className="flex flex-col divide-y divide-[#1a1a1a]">
+      <div className="flex flex-col divide-y divide-raised">
         {airdrops.map((a, i) => (
           <div key={`${a.collectionAddress}:${a.tokenId}:${a.recipient.address}:${i}`} className="flex items-center justify-between py-2.5 gap-4">
             <Link
               href={`/profile/${a.recipient.address}`}
-              className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors truncate"
+              className="text-xs font-mono text-muted hover:text-dim transition-colors truncate"
             >
               {a.recipient.username ? `@${a.recipient.username}` : shortAddress(a.recipient.address)}
             </Link>
             <Link
               href={`/moment/${a.collectionAddress}/${a.tokenId}`}
-              className="text-xs font-mono text-[#444] hover:text-[#888] transition-colors flex-shrink-0"
+              className="text-xs font-mono text-[#444] hover:text-dim transition-colors flex-shrink-0"
             >
               token #{a.tokenId}
             </Link>
@@ -582,20 +582,20 @@ export function ProfileView({ address }: ProfileViewProps) {
         <Link
           href="/permissions"
           role="alert"
-          className="border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:bg-[#8B5CF6]/10 p-3 sm:p-4 flex items-center gap-3 transition-colors"
+          className="border border-accent/40 bg-accent/5 hover:bg-accent/10 p-3 sm:p-4 flex items-center gap-3 transition-colors"
         >
-          <ShieldAlert size={14} className="text-[#8B5CF6] flex-shrink-0" />
+          <ShieldAlert size={14} className="text-accent flex-shrink-0" />
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-mono text-[#efefef]">
+            <p className="text-xs font-mono text-ink">
               {ownCollectionsMissingAdmin === 1
                 ? '1 of your collections needs authorize'
                 : `${ownCollectionsMissingAdmin} of your collections need authorize`}
             </p>
-            <p className="text-[11px] font-mono text-[#888] mt-0.5">
+            <p className="text-[11px] font-mono text-dim mt-0.5">
               Tap to review and grant Kismet ADMIN — one onchain transaction per collection.
             </p>
           </div>
-          <span className="text-[#8B5CF6] font-mono text-xs flex-shrink-0" aria-hidden>
+          <span className="text-accent font-mono text-xs flex-shrink-0" aria-hidden>
             →
           </span>
         </Link>
@@ -608,19 +608,19 @@ export function ProfileView({ address }: ProfileViewProps) {
             {!loadingProfile ? (
               <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={isOwner} onEdit={openEdit} />
             ) : (
-              <div className="w-20 h-20 rounded-full bg-[#1a1a1a] animate-pulse" />
+              <div className="w-20 h-20 rounded-full bg-raised animate-pulse" />
             )}
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1 flex-1 min-w-0">
                 {loadingProfile ? (
-                  <div className="h-4 w-28 bg-[#1a1a1a] animate-pulse rounded" />
+                  <div className="h-4 w-28 bg-raised animate-pulse rounded" />
                 ) : (
                   <>
-                    <p className="text-[#efefef] font-mono text-sm truncate">{displayName}</p>
+                    <p className="text-ink font-mono text-sm truncate">{displayName}</p>
                     {isOwner && (
-                      <button onClick={openEdit} className="flex-shrink-0 p-1 text-[#555] hover:text-[#888] transition-colors" title="Edit profile">
+                      <button onClick={openEdit} className="flex-shrink-0 p-1 text-muted hover:text-dim transition-colors" title="Edit profile">
                         <Pencil size={12} />
                       </button>
                     )}
@@ -630,7 +630,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                         setLinkCopied(true)
                         setTimeout(() => setLinkCopied(false), 1500)
                       }}
-                      className="flex-shrink-0 p-1 text-[#444] hover:text-[#888] transition-colors"
+                      className="flex-shrink-0 p-1 text-[#444] hover:text-dim transition-colors"
                       title="Copy profile link"
                     >
                       {linkCopied ? <Check size={12} className="text-[#6ee7b7]" /> : <Copy size={12} />}
@@ -644,8 +644,8 @@ export function ProfileView({ address }: ProfileViewProps) {
                   disabled={followLoading}
                   className={`flex-shrink-0 text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
                     following
-                      ? 'border-[#555] text-[#888] hover:border-red-900/50 hover:text-red-400'
-                      : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef]'
+                      ? 'border-muted text-dim hover:border-red-900/50 hover:text-red-400'
+                      : 'border-line text-muted hover:border-muted hover:text-ink'
                   }`}
                 >
                   {followLoading ? '…' : following ? 'following' : 'follow'}
@@ -659,7 +659,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                   setAddrCopied(true)
                   setTimeout(() => setAddrCopied(false), 800)
                 }}
-                className={`font-mono text-xs text-left break-all transition-colors ${addrCopied ? 'text-[#8B5CF6]' : 'text-[#555] hover:text-[#888]'}`}
+                className={`font-mono text-xs text-left break-all transition-colors ${addrCopied ? 'text-accent' : 'text-muted hover:text-dim'}`}
                 title="Copy address"
               >
                 {address}
@@ -668,16 +668,16 @@ export function ProfileView({ address }: ProfileViewProps) {
             <div className="flex items-center gap-3 mt-0.5">
               <button
                 onClick={() => openList('following')}
-                className={`text-xs font-mono transition-colors ${activeList === 'following' ? 'text-[#efefef]' : 'text-[#555] hover:text-[#888]'}`}
+                className={`text-xs font-mono transition-colors ${activeList === 'following' ? 'text-ink' : 'text-muted hover:text-dim'}`}
               >
-                <span className="text-[#efefef]">{followingCount ?? '—'}</span>{' '}following
+                <span className="text-ink">{followingCount ?? '—'}</span>{' '}following
               </button>
-              <span className="text-[#333] text-xs">·</span>
+              <span className="text-faint text-xs">·</span>
               <button
                 onClick={() => openList('followers')}
-                className={`text-xs font-mono transition-colors ${activeList === 'followers' ? 'text-[#efefef]' : 'text-[#555] hover:text-[#888]'}`}
+                className={`text-xs font-mono transition-colors ${activeList === 'followers' ? 'text-ink' : 'text-muted hover:text-dim'}`}
               >
-                <span className="text-[#efefef]">{followerCount ?? '—'}</span>{' '}followers
+                <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
           </div>
@@ -691,9 +691,9 @@ export function ProfileView({ address }: ProfileViewProps) {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
           onClick={(e) => { if (e.target === e.currentTarget) setActiveList(null) }}
         >
-          <div className="w-full max-w-sm bg-[#161616] border border-[#2a2a2a]">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a2a2a]">
-              <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
+          <div className="w-full max-w-sm bg-[#161616] border border-line">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-line">
+              <p className="text-xs font-mono text-dim uppercase tracking-wider">
                 {activeList === 'following'
                   ? `Following${followingCount !== null ? ` (${followingCount})` : ''}`
                   : `Followers${followerCount !== null ? ` (${followerCount})` : ''}`}
@@ -701,28 +701,28 @@ export function ProfileView({ address }: ProfileViewProps) {
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => { setSearchOpen((v) => !v); setSearchQuery('') }}
-                  className={`p-1 transition-colors ${searchOpen ? 'text-[#efefef]' : 'text-[#555] hover:text-[#888]'}`}
+                  className={`p-1 transition-colors ${searchOpen ? 'text-ink' : 'text-muted hover:text-dim'}`}
                   title="search"
                 >
                   <Search size={14} />
                 </button>
                 <button
                   onClick={() => setActiveList(null)}
-                  className="p-1 text-[#555] hover:text-[#888] transition-colors"
+                  className="p-1 text-muted hover:text-dim transition-colors"
                 >
                   <X size={14} />
                 </button>
               </div>
             </div>
             {searchOpen && (
-              <div className="px-5 py-2 border-b border-[#2a2a2a]">
+              <div className="px-5 py-2 border-b border-line">
                 <input
                   autoFocus
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="search…"
-                  className="w-full bg-transparent text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none"
+                  className="w-full bg-transparent text-xs font-mono text-ink placeholder-faint focus:outline-none"
                 />
               </div>
             )}
@@ -730,14 +730,14 @@ export function ProfileView({ address }: ProfileViewProps) {
               {loadingList ? (
                 <div className="flex flex-col">
                   {[0, 1, 2, 3, 4].map((i) => (
-                    <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-[#1a1a1a]">
-                      <div className="w-7 h-7 rounded-full bg-[#1a1a1a] animate-pulse flex-shrink-0" />
-                      <div className="h-3 w-28 bg-[#1a1a1a] animate-pulse rounded" />
+                    <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-raised">
+                      <div className="w-7 h-7 rounded-full bg-raised animate-pulse flex-shrink-0" />
+                      <div className="h-3 w-28 bg-raised animate-pulse rounded" />
                     </div>
                   ))}
                 </div>
               ) : listAddresses.length === 0 ? (
-                <p className="px-5 py-6 text-xs font-mono text-[#555]">no {activeList} yet</p>
+                <p className="px-5 py-6 text-xs font-mono text-muted">no {activeList} yet</p>
               ) : (() => {
                 const q = searchQuery.toLowerCase().trim()
                 const filtered = q
@@ -747,7 +747,7 @@ export function ProfileView({ address }: ProfileViewProps) {
                     )
                   : listAddresses
                 return filtered.length === 0
-                  ? <p className="px-5 py-6 text-xs font-mono text-[#555]">no results</p>
+                  ? <p className="px-5 py-6 text-xs font-mono text-muted">no results</p>
                   : (
                     <div className="flex flex-col">
                       {filtered.map((addr) => (
@@ -768,27 +768,27 @@ export function ProfileView({ address }: ProfileViewProps) {
 
       {/* Edit profile panel */}
       {editing && isOwner && (
-        <div className="border border-[#2a2a2a] p-4 flex flex-col gap-4">
-          <p className="text-xs font-mono text-[#888] uppercase tracking-wider">Edit Profile</p>
+        <div className="border border-line p-4 flex flex-col gap-4">
+          <p className="text-xs font-mono text-dim uppercase tracking-wider">Edit Profile</p>
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-mono text-[#555] uppercase tracking-wider">Display Name</label>
+            <label className="text-xs font-mono text-muted uppercase tracking-wider">Display Name</label>
             <input
               type="text"
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
               placeholder={shortAddress(address)}
               maxLength={30}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-mono text-[#555] uppercase tracking-wider">Avatar URL</label>
+            <label className="text-xs font-mono text-muted uppercase tracking-wider">Avatar URL</label>
             <input
               type="url"
               value={avatarInput}
               onChange={(e) => setAvatarInput(e.target.value)}
               placeholder="https://… (leave blank for gradient avatar)"
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
           </div>
           <div className="flex gap-3">
@@ -798,7 +798,7 @@ export function ProfileView({ address }: ProfileViewProps) {
             <button
               onClick={() => setEditing(false)}
               disabled={saving}
-              className="px-4 py-2.5 text-xs font-mono border border-[#2a2a2a] text-[#555] hover:border-[#888] hover:text-[#888] transition-colors disabled:opacity-40"
+              className="px-4 py-2.5 text-xs font-mono border border-line text-muted hover:border-dim hover:text-dim transition-colors disabled:opacity-40"
             >
               cancel
             </button>
@@ -819,7 +819,7 @@ export function ProfileView({ address }: ProfileViewProps) {
             <div
               key={section}
               onDragOver={draggable ? (e) => onDragOver(e, idx) : undefined}
-              className={`border-t border-[#2a2a2a] transition-opacity duration-150 ${draggingSection === section ? 'opacity-40' : 'opacity-100'}`}
+              className={`border-t border-line transition-opacity duration-150 ${draggingSection === section ? 'opacity-40' : 'opacity-100'}`}
             >
               <div
                 draggable={draggable}
@@ -830,9 +830,9 @@ export function ProfileView({ address }: ProfileViewProps) {
               >
                 <ChevronRight
                   size={12}
-                  className={`text-[#555] transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
+                  className={`text-muted transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
                 />
-                <h2 className="text-xs font-mono text-[#888] uppercase tracking-wider">
+                <h2 className="text-xs font-mono text-dim uppercase tracking-wider">
                   {sectionLabel[section]}{count !== null ? ` (${count})` : ''}
                 </h2>
                 {section === 'mints' && !isCollapsed && (
@@ -840,8 +840,8 @@ export function ProfileView({ address }: ProfileViewProps) {
                     onClick={(e) => { e.stopPropagation(); setCollectionsMode((v) => !v) }}
                     className={`text-xs font-mono px-2.5 py-1 border transition-colors ${
                       collectionsMode
-                        ? 'border-[#555] text-[#888] hover:border-red-900/50 hover:text-red-400'
-                        : 'border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef]'
+                        ? 'border-muted text-dim hover:border-red-900/50 hover:text-red-400'
+                        : 'border-line text-muted hover:border-muted hover:text-ink'
                     }`}
                   >
                     collections

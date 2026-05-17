@@ -35,8 +35,8 @@ function ResultThumb({ src, alt, name }: { src?: string; alt: string; name: stri
           onAllError={() => setErrored(true)}
         />
       ) : (
-        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#8B5CF6]/30 to-[#C084FC]/15">
-          <span className="text-[9px] font-mono text-[#efefef]">{initial}</span>
+        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-accent/30 to-accent/15">
+          <span className="text-[9px] font-mono text-ink">{initial}</span>
         </div>
       )}
     </div>
@@ -112,7 +112,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
     <div ref={containerRef} className="relative h-14 flex items-center">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="px-3 py-1.5 text-[#888] hover:text-[#efefef] transition-colors flex-shrink-0"
+        className="px-3 py-1.5 text-dim hover:text-ink transition-colors flex-shrink-0"
         title="Search"
       >
         <Search size={14} />
@@ -126,7 +126,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder=""
-            className="w-64 bg-white text-[#111] font-mono text-xs rounded-full px-4 py-1.5 focus:outline-none placeholder-[#999]"
+            className="w-64 bg-white text-surface font-mono text-xs rounded-full px-4 py-1.5 focus:outline-none placeholder-[#999]"
           />
           {loading && (
             <Loader2 size={11} className="absolute right-3 text-[#999] animate-spin" />
@@ -136,9 +136,9 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
 
       {/* Dropdown */}
       {showDropdown && (
-        <div className="absolute top-full right-0 w-72 bg-[#161616] border border-[#2a2a2a] z-[60] overflow-hidden">
+        <div className="absolute top-full right-0 w-72 bg-[#161616] border border-line z-[60] overflow-hidden">
           {!hasResults && !loading && (
-            <p className="px-4 py-3 text-xs font-mono text-[#555] text-center">
+            <p className="px-4 py-3 text-xs font-mono text-muted text-center">
               no results for &ldquo;{query.trim()}&rdquo;
             </p>
           )}
@@ -155,7 +155,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
                   <ProfileAvatar address={user.address} avatarUrl={user.avatarUrl} size={22} />
-                  <span className="text-xs text-[#efefef] font-mono truncate">
+                  <span className="text-xs text-ink font-mono truncate">
                     {user.username || shortAddress(user.address)}
                   </span>
                 </Link>
@@ -175,7 +175,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
                   <ResultThumb src={col.image} alt={col.name} name={col.name} />
-                  <span className="text-xs text-[#efefef] font-mono truncate flex-1">{col.name}</span>
+                  <span className="text-xs text-ink font-mono truncate flex-1">{col.name}</span>
                 </Link>
               ))}
             </section>
@@ -193,17 +193,17 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
                   <ResultThumb src={mint.image} alt={mint.name} name={mint.name} />
-                  <span className="text-xs text-[#efefef] font-mono truncate">{mint.name}</span>
+                  <span className="text-xs text-ink font-mono truncate">{mint.name}</span>
                 </Link>
               ))}
             </section>
           )}
 
           {/* See all */}
-          <div className="border-t border-[#2a2a2a] px-3 py-2 flex justify-end">
+          <div className="border-t border-line px-3 py-2 flex justify-end">
             <button
               onClick={handleSeeAll}
-              className="text-[9px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] transition-colors"
+              className="text-[9px] font-mono uppercase tracking-widest text-muted hover:text-dim transition-colors"
             >
               see all results →
             </button>

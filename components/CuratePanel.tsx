@@ -117,7 +117,7 @@ export function CuratePanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
+        <label className="text-[10px] font-mono uppercase tracking-widest text-muted">
           add to featured
         </label>
         <div className="flex gap-2">
@@ -128,12 +128,12 @@ export function CuratePanel() {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleSubmit() } }}
             placeholder="moment or collection link"
             disabled={submitting}
-            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
+            className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
           />
           <button
             onClick={() => void handleSubmit()}
             disabled={submitting || !input.trim()}
-            className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+            className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
           >
             {submitting ? '…' : <Star size={12} />}
           </button>
@@ -148,17 +148,17 @@ export function CuratePanel() {
 
       {(featuredKeys.size > 0 || featuredCollectionAddrs.size > 0) && (
         <div className="flex flex-col gap-2">
-          <p className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
+          <p className="text-[10px] font-mono uppercase tracking-widest text-muted">
             currently featured ({featuredKeys.size + featuredCollectionAddrs.size})
           </p>
           <ul className="flex flex-col gap-1">
             {Array.from(featuredCollectionAddrs).map((addr) => (
-              <li key={`coll:${addr}`} className="flex items-center justify-between gap-2 text-[11px] font-mono text-[#888]">
+              <li key={`coll:${addr}`} className="flex items-center justify-between gap-2 text-[11px] font-mono text-dim">
                 <a
                   href={`/collection/${addr}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="truncate hover:text-[#efefef] transition-colors"
+                  className="truncate hover:text-ink transition-colors"
                 >
                   {shortAddress(addr)}
                   <span className="text-[#444] ml-1.5">collection</span>
@@ -175,12 +175,12 @@ export function CuratePanel() {
             {Array.from(featuredKeys).map((key) => {
               const [addr, tokenId] = key.split(':')
               return (
-                <li key={key} className="flex items-center justify-between gap-2 text-[11px] font-mono text-[#888]">
+                <li key={key} className="flex items-center justify-between gap-2 text-[11px] font-mono text-dim">
                   <a
                     href={`/moment/${addr}/${tokenId}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="truncate hover:text-[#efefef] transition-colors"
+                    className="truncate hover:text-ink transition-colors"
                   >
                     {shortAddress(addr)} / {tokenId}
                   </a>
@@ -199,15 +199,15 @@ export function CuratePanel() {
       )}
 
       {/* Creator lists — rosters reachable from the homepage Roster tab. */}
-      <div className="flex flex-col gap-2 border-t border-[#1a1a1a] pt-4">
+      <div className="flex flex-col gap-2 border-t border-raised pt-4">
         <div className="flex items-center justify-between">
-          <p className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
+          <p className="text-[10px] font-mono uppercase tracking-widest text-muted">
             creator lists ({lists.length})
           </p>
           {editing !== '__new__' && (
             <button
               onClick={() => setEditing('__new__')}
-              className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#efefef] transition-colors"
+              className="flex items-center gap-1 text-[10px] font-mono text-muted hover:text-ink transition-colors"
             >
               <Plus size={10} />
               new list
@@ -253,17 +253,17 @@ export function CuratePanel() {
             ) : (
               <li
                 key={l.slug}
-                className="flex items-center justify-between gap-2 px-2.5 py-2 border border-[#1a1a1a] hover:border-[#2a2a2a] transition-colors"
+                className="flex items-center justify-between gap-2 px-2.5 py-2 border border-raised hover:border-line transition-colors"
               >
                 <div className="flex flex-col min-w-0">
-                  <span className="text-xs font-mono text-[#efefef] truncate">{l.name}</span>
-                  <span className="text-[10px] font-mono text-[#555]">
+                  <span className="text-xs font-mono text-ink truncate">{l.name}</span>
+                  <span className="text-[10px] font-mono text-muted">
                     {l.slug} · {l.addresses.length} {l.addresses.length === 1 ? 'creator' : 'creators'}
                   </span>
                 </div>
                 <button
                   onClick={() => setEditing(l.slug)}
-                  className="text-[#555] hover:text-[#efefef] transition-colors flex-shrink-0"
+                  className="text-muted hover:text-ink transition-colors flex-shrink-0"
                   title="edit"
                 >
                   <Pencil size={11} />

@@ -107,15 +107,15 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
   }
 
   return (
-    <div className="flex flex-col gap-3 border border-[#2a2a2a] p-3 bg-[#0a0a0a]">
+    <div className="flex flex-col gap-3 border border-line p-3 bg-[#0a0a0a]">
       <div className="flex items-center justify-between">
-        <p className="text-[10px] font-mono uppercase tracking-widest text-[#888]">
+        <p className="text-[10px] font-mono uppercase tracking-widest text-dim">
           {list ? `edit ${list.slug}` : 'new list'}
         </p>
         <button
           onClick={onClose}
           disabled={busy}
-          className="text-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
+          className="text-muted hover:text-dim transition-colors disabled:opacity-40"
           title="cancel"
         >
           <X size={12} />
@@ -123,19 +123,19 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">name</label>
+        <label className="text-[10px] font-mono uppercase tracking-widest text-muted">name</label>
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
           disabled={busy}
           placeholder="residency 2026"
-          className="bg-[#111] border border-[#2a2a2a] px-2.5 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
+          className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
         />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">
+        <label className="text-[10px] font-mono uppercase tracking-widest text-muted">
           addresses ({parsed.length}{dropped > 0 ? `, ${dropped} ignored` : ''})
         </label>
         <textarea
@@ -144,7 +144,7 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
           disabled={busy}
           rows={6}
           placeholder="0xabc...&#10;0xdef..."
-          className="bg-[#111] border border-[#2a2a2a] px-2.5 py-2 text-[11px] font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 resize-none"
+          className="bg-surface border border-line px-2.5 py-2 text-[11px] font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-none"
         />
       </div>
 
@@ -161,7 +161,7 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
           <button
             onClick={handleDelete}
             disabled={busy}
-            className="flex items-center justify-center gap-1.5 text-xs font-mono tracking-wider uppercase px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-red-900/60 hover:text-red-400 transition-colors disabled:opacity-40"
+            className="flex items-center justify-center gap-1.5 text-xs font-mono tracking-wider uppercase px-3 py-2 border border-line text-muted hover:border-red-900/60 hover:text-red-400 transition-colors disabled:opacity-40"
           >
             <Trash2 size={11} />
           </button>

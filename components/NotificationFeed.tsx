@@ -284,7 +284,7 @@ export function NotificationFeed() {
   return (
     <div className="flex flex-col">
       {/* Type filters (drag to reorder) + mark-all-read */}
-      <div className="flex items-center gap-2 px-1 py-2 border-b border-[#2a2a2a] overflow-x-auto">
+      <div className="flex items-center gap-2 px-1 py-2 border-b border-line overflow-x-auto">
         <div className="flex gap-1 flex-1">
           {tabs.map((tab, i) => {
             const draggable = i > 0
@@ -301,8 +301,8 @@ export function NotificationFeed() {
                 onClick={() => setTypeFilter(tab)}
                 className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border flex-shrink-0 select-none transition-all duration-150 ${
                   isActive
-                    ? 'border-[#8B5CF6] text-[#8B5CF6]'
-                    : 'border-[#2a2a2a] text-[#555] hover:border-[#444] hover:text-[#888]'
+                    ? 'border-accent text-accent'
+                    : 'border-line text-muted hover:border-[#444] hover:text-dim'
                 } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${
                   isDragging ? 'opacity-40' : ''
                 }`}
@@ -314,7 +314,7 @@ export function NotificationFeed() {
         </div>
         <button
           onClick={handleMarkAllRead}
-          className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#efefef] transition-colors flex-shrink-0"
+          className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink transition-colors flex-shrink-0"
         >
           mark all read
         </button>
@@ -323,22 +323,22 @@ export function NotificationFeed() {
       {/* List */}
       <div className="flex flex-col">
         {authRequired && (
-          <p className="text-xs font-mono text-[#555] text-center py-12">
+          <p className="text-xs font-mono text-muted text-center py-12">
             sign in to see notifications
           </p>
         )}
         {!authRequired && fetchError && (
-          <p className="text-xs font-mono text-[#555] text-center py-12">
+          <p className="text-xs font-mono text-muted text-center py-12">
             failed to load — try again
           </p>
         )}
         {!authRequired && !fetchError && loading && items.length === 0 && (
           <div className="flex justify-center py-12">
-            <Loader2 size={16} className="animate-spin text-[#555]" />
+            <Loader2 size={16} className="animate-spin text-muted" />
           </div>
         )}
         {!authRequired && !fetchError && !loading && items.length === 0 && (
-          <p className="text-xs font-mono text-[#555] text-center py-12">
+          <p className="text-xs font-mono text-muted text-center py-12">
             {typeFilter === 'all' ? 'no notifications yet' : 'nothing here yet'}
           </p>
         )}
@@ -357,7 +357,7 @@ export function NotificationFeed() {
 
       {/* Infinite scroll sentinel */}
       <div ref={sentinelRef} className="flex justify-center py-4">
-        {loadingMore && <Loader2 size={14} className="animate-spin text-[#555]" />}
+        {loadingMore && <Loader2 size={14} className="animate-spin text-muted" />}
       </div>
     </div>
   )

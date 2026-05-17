@@ -9,18 +9,18 @@ export default function ModalMomentLoading() {
   return (
     <ModalOverlay>
       <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16 animate-pulse">
-        <div className="md:grid md:grid-cols-2 border-b border-[#2a2a2a]">
-          <div className="border-b border-[#2a2a2a] md:border-b-0 md:border-r md:border-r-[#2a2a2a]">
-            <div className="aspect-square bg-[#111]" />
+        <div className="md:grid md:grid-cols-2 border-b border-line">
+          <div className="border-b border-line md:border-b-0 md:border-r md:border-r-line">
+            <div className="aspect-square bg-surface" />
           </div>
           <div className="flex flex-col gap-3 px-5 py-4">
-            <div className="h-4 w-2/3 bg-[#1a1a1a]" />
-            <div className="h-3 w-1/3 bg-[#1a1a1a]" />
-            <div className="h-3 w-1/2 bg-[#1a1a1a]" />
-            <div className="h-16 w-full bg-[#111] mt-2" />
+            <div className="h-4 w-2/3 bg-raised" />
+            <div className="h-3 w-1/3 bg-raised" />
+            <div className="h-3 w-1/2 bg-raised" />
+            <div className="h-16 w-full bg-surface mt-2" />
             <div className="flex gap-2 mt-4">
-              <div className="h-10 w-24 bg-[#1a1a1a]" />
-              <div className="h-10 flex-1 bg-[#1a1a1a]" />
+              <div className="h-10 w-24 bg-raised" />
+              <div className="h-10 flex-1 bg-raised" />
             </div>
           </div>
         </div>

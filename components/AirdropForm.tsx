@@ -222,20 +222,20 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
 
       {/* Moment picker */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Moment <span className="text-[#efefef]">*</span>
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+          Moment <span className="text-ink">*</span>
         </label>
 
         {/* Selected moment preview / trigger */}
         <button
           type="button"
           onClick={() => setPickerOpen((v) => !v)}
-          className="w-full flex items-center gap-3 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 hover:border-[#555] transition-colors text-left"
+          className="w-full flex items-center gap-3 bg-surface border border-line px-3 py-2.5 hover:border-muted transition-colors text-left"
         >
           {selected ? (
             <>
               {selectedMeta.image ? (
-                <div className="w-8 h-8 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+                <div className="w-8 h-8 relative flex-shrink-0 bg-raised overflow-hidden">
                   <MomentImage
                     src={selectedMeta.image}
                     alt=""
@@ -247,33 +247,33 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                   />
                 </div>
               ) : selectedMeta.content?.mime === 'text/plain' ? (
-                <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] flex items-center justify-center">
-                  <span className="text-[7px] font-mono text-[#555] uppercase tracking-widest">txt</span>
+                <div className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-raised to-[#0a0a0a] flex items-center justify-center">
+                  <span className="text-[7px] font-mono text-muted uppercase tracking-widest">txt</span>
                 </div>
               ) : null}
-              <span className="text-sm text-[#efefef] font-mono truncate flex-1">
+              <span className="text-sm text-ink font-mono truncate flex-1">
                 {selectedMeta.name ?? `#${selected.token_id}`}
               </span>
             </>
           ) : (
-            <span className="text-sm text-[#333] font-mono flex-1">
+            <span className="text-sm text-faint font-mono flex-1">
               {loadingMoments ? 'loading your moments…' : 'select a moment'}
             </span>
           )}
-          <span className="text-[#555] text-xs font-mono flex-shrink-0">
+          <span className="text-muted text-xs font-mono flex-shrink-0">
             {pickerOpen ? '▲' : '▼'}
           </span>
         </button>
 
         {/* Picker grid */}
         {pickerOpen && (
-          <div className="border border-t-0 border-[#2a2a2a] bg-[#0d0d0d] max-h-64 overflow-y-auto">
+          <div className="border border-t-0 border-line bg-[#0d0d0d] max-h-64 overflow-y-auto">
             {moments.length === 0 ? (
-              <p className="text-xs font-mono text-[#555] px-3 py-4">
+              <p className="text-xs font-mono text-muted px-3 py-4">
                 {loadingMoments ? 'loading…' : 'no minted moments found'}
               </p>
             ) : (
-              <div className="grid grid-cols-3 gap-px bg-[#2a2a2a]">
+              <div className="grid grid-cols-3 gap-px bg-line">
                 {moments.map((m, idx) => {
                   const meta = m.metadata ?? {}
                   const isSelected = selected?.address === m.address && selected?.token_id === m.token_id
@@ -282,7 +282,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                       key={`${m.address}:${m.token_id}`}
                       type="button"
                       onClick={() => { setSelected(m); setPickerOpen(false) }}
-                      className={`relative aspect-square bg-[#111] overflow-hidden group ${isSelected ? 'ring-2 ring-inset ring-[#8B5CF6]' : ''}`}
+                      className={`relative aspect-square bg-surface overflow-hidden group ${isSelected ? 'ring-2 ring-inset ring-accent' : ''}`}
                     >
                       {meta.image ? (
                         <MomentImage
@@ -296,19 +296,19 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                           thumbhash={meta.kismet_thumbhash}
                         />
                       ) : meta.content?.mime === 'text/plain' ? (
-                        <div className="w-full h-full flex flex-col p-2 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
-                          <span className="text-[8px] font-mono text-[#555] uppercase tracking-widest mb-1">writing</span>
-                          <p className="text-[9px] font-mono text-[#888] leading-tight line-clamp-5">
+                        <div className="w-full h-full flex flex-col p-2 bg-gradient-to-br from-raised to-[#0a0a0a]">
+                          <span className="text-[8px] font-mono text-muted uppercase tracking-widest mb-1">writing</span>
+                          <p className="text-[9px] font-mono text-dim leading-tight line-clamp-5">
                             {meta.name ?? `#${m.token_id}`}
                           </p>
                         </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-[#333] font-mono text-[10px]">#{m.token_id}</span>
+                          <span className="text-faint font-mono text-[10px]">#{m.token_id}</span>
                         </div>
                       )}
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                        <p className="text-[9px] font-mono text-[#efefef] truncate">{meta.name ?? `#${m.token_id}`}</p>
+                        <p className="text-[9px] font-mono text-ink truncate">{meta.name ?? `#${m.token_id}`}</p>
                       </div>
                     </button>
                   )
@@ -323,7 +323,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       <div>
         <label
           htmlFor="airdrop-recipient"
-          className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2"
+          className="block text-xs font-mono text-dim uppercase tracking-wider mb-2"
         >
           Recipients
         </label>
@@ -337,12 +337,12 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRecipient() } }}
             placeholder="0x… wallet address"
             aria-label="Recipient wallet address"
-            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
           />
           <button
             type="button"
             onClick={addRecipient}
-            className="px-3 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+            className="px-3 border border-line text-dim hover:border-muted hover:text-ink transition-colors"
           >
             <Plus size={14} />
           </button>
@@ -350,9 +350,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         {recipients.length > 0 && (
           <ul className="flex flex-col gap-1 mb-1.5">
             {recipients.map((r) => (
-              <li key={r} className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2">
-                <span className="text-xs font-mono text-[#888]">{shortAddress(r)}</span>
-                <button type="button" onClick={() => removeRecipient(r)} className="text-[#555] hover:text-[#888]">
+              <li key={r} className="flex items-center justify-between bg-surface border border-line px-3 py-2">
+                <span className="text-xs font-mono text-dim">{shortAddress(r)}</span>
+                <button type="button" onClick={() => removeRecipient(r)} className="text-muted hover:text-dim">
                   <X size={12} />
                 </button>
               </li>
@@ -360,7 +360,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           </ul>
         )}
         {recipients.length > 0 && (
-          <p className="text-xs font-mono text-[#555]">
+          <p className="text-xs font-mono text-muted">
             {recipients.length} recipient{recipients.length !== 1 ? 's' : ''}
             {' — '}each receives 1 fresh copy (minted, not transferred)
           </p>
@@ -372,7 +372,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           href={`https://basescan.org/tx/${resultHash}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+          className="text-xs font-mono text-muted hover:text-dim transition-colors"
         >
           tx: {resultHash.slice(0, 10)}…{resultHash.slice(-8)}
         </a>
@@ -384,12 +384,12 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           loading or RPC-failed so the user can still attempt and let
           the chain surface the real revert. */}
       {callerLacksMintAccess && selected && (
-        <div className="p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex items-start gap-2.5">
+        <div className="p-3 sm:p-4 border border-accent/40 bg-accent/5 flex items-start gap-2.5">
           <div className="min-w-0">
-            <p className="text-xs font-mono text-[#efefef]">
+            <p className="text-xs font-mono text-ink">
               Your wallet can&apos;t mint on this collection
             </p>
-            <p className="text-[11px] font-mono text-[#888] mt-0.5">
+            <p className="text-[11px] font-mono text-dim mt-0.5">
               Airdrops mint directly from your wallet. Switch to a wallet that holds
               ADMIN or MINTER on {shortAddress(selected.address)}, or have
               the creator authorize your address.
@@ -437,7 +437,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           form on their own session. */}
       {selected && (
         <div className="flex flex-col gap-2 pt-2">
-          <p className="text-[10px] font-mono text-[#555] uppercase tracking-wider">
+          <p className="text-[10px] font-mono text-muted uppercase tracking-wider">
             delegate airdrop
           </p>
           <p className="text-[10px] font-mono text-[#444]">
@@ -457,13 +457,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               }}
               placeholder="0x… wallet address"
               aria-label="Delegate wallet address"
-              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+              className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
             <button
               type="button"
               onClick={() => void handleDelegateAirdrop()}
               disabled={delegating || !delegateInput.trim()}
-              className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+              className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
             >
               {delegating ? '…' : '→'}
             </button>

@@ -99,14 +99,14 @@ export function NotificationBell({ address }: NotificationBellProps) {
     <div className="relative h-14 flex items-center">
       <button
         onClick={() => (modalOpen ? setModalOpen(false) : openPanel())}
-        className="relative text-[#888] hover:text-[#efefef] transition-colors p-1"
+        className="relative text-dim hover:text-ink transition-colors p-1"
         aria-label={count > 0 ? `Notifications, ${count} unread` : 'Notifications'}
       >
         <Bell size={18} />
         {count > 0 && (
           <span
             aria-hidden="true"
-            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-[#8B5CF6] text-[9px] font-mono text-white flex items-center justify-center leading-none"
+            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-accent text-[9px] font-mono text-white flex items-center justify-center leading-none"
           >
             {badge}
           </span>

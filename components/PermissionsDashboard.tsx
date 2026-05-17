@@ -110,8 +110,8 @@ export function PermissionsDashboard() {
   if (!isConnected) {
     return (
       <div className="text-center flex flex-col gap-4 items-center py-16">
-        <h1 className="text-[#efefef] font-mono text-lg">Permissions</h1>
-        <p className="text-[#888] font-mono text-xs max-w-md">
+        <h1 className="text-ink font-mono text-lg">Permissions</h1>
+        <p className="text-dim font-mono text-xs max-w-md">
           Connect your wallet to see the permission status of every collection you&apos;ve deployed.
         </p>
         <button
@@ -138,7 +138,7 @@ export function PermissionsDashboard() {
       {address && (
         <Link
           href={`/profile/${address}`}
-          className="text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors flex items-center gap-1.5 w-fit uppercase tracking-wider"
+          className="text-[10px] font-mono text-muted hover:text-dim transition-colors flex items-center gap-1.5 w-fit uppercase tracking-wider"
         >
           <ArrowLeft size={11} />
           back to profile
@@ -146,8 +146,8 @@ export function PermissionsDashboard() {
       )}
 
       <div>
-        <h1 className="text-[#efefef] font-mono text-lg mb-2">Permissions</h1>
-        <p className="text-[#888] font-mono text-xs leading-relaxed">
+        <h1 className="text-ink font-mono text-lg mb-2">Permissions</h1>
+        <p className="text-dim font-mono text-xs leading-relaxed">
           Each collection you&apos;ve deployed needs Kismet&apos;s smart wallet to hold ADMIN before it can mint via the inprocess relay. New deploys handle this automatically; legacy collections from before the upgrade may need a one-time onchain grant.
         </p>
       </div>
@@ -157,21 +157,21 @@ export function PermissionsDashboard() {
           Without this, the rows would all show ⏳ forever and the user
           wouldn't know why. */}
       {!smartWalletLoading && !smartWallet && (
-        <div className="border border-[#2a2a2a] bg-[#161616] p-4">
-          <p className="text-xs font-mono text-[#efefef] mb-1">
+        <div className="border border-line bg-[#161616] p-4">
+          <p className="text-xs font-mono text-ink mb-1">
             Could not resolve your inprocess smart wallet
           </p>
-          <p className="text-[11px] font-mono text-[#888]">
+          <p className="text-[11px] font-mono text-dim">
             Sign in to inprocess.world at least once with this address ({address ? shortAddress(address) : ''}) so it can issue your smart wallet, then reload this page.
           </p>
         </div>
       )}
 
       {smartWallet && (
-        <div className="text-[10px] font-mono text-[#555] flex items-center justify-between gap-2">
+        <div className="text-[10px] font-mono text-muted flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="flex-shrink-0">your inprocess smart wallet:</span>
-            <code className="text-[#888] truncate">{shortAddress(smartWallet)}</code>
+            <code className="text-dim truncate">{shortAddress(smartWallet)}</code>
           </div>
           {/* Global recheck — re-runs the batched permissions read so
               rows that errored ("unknown" state) get another shot
@@ -184,7 +184,7 @@ export function PermissionsDashboard() {
               type="button"
               onClick={handleRecheck}
               disabled={permsLoading || recheckCooldown}
-              className="flex-shrink-0 px-2 py-1 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] disabled:opacity-50 disabled:cursor-not-allowed transition-colors uppercase tracking-wider"
+              className="flex-shrink-0 px-2 py-1 border border-line text-dim hover:border-muted hover:text-ink disabled:opacity-50 disabled:cursor-not-allowed transition-colors uppercase tracking-wider"
               title="Re-read permissions on chain"
             >
               {permsLoading ? 'rechecking…' : 'recheck'}
@@ -194,8 +194,8 @@ export function PermissionsDashboard() {
       )}
 
       {fetched && !loadingCollections && collections.length === 0 ? (
-        <div className="border border-[#2a2a2a] bg-[#161616] p-6 text-center">
-          <p className="text-xs font-mono text-[#888]">
+        <div className="border border-line bg-[#161616] p-6 text-center">
+          <p className="text-xs font-mono text-dim">
             You haven&apos;t deployed any collections yet.
           </p>
           <Link
@@ -208,15 +208,15 @@ export function PermissionsDashboard() {
       ) : (
         <>
           {missingCount > 0 && (
-            <div className="border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 p-3 sm:p-4 flex items-start gap-2.5">
-              <ShieldAlert size={14} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
+            <div className="border border-accent/40 bg-accent/5 p-3 sm:p-4 flex items-start gap-2.5">
+              <ShieldAlert size={14} className="text-accent flex-shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-mono text-[#efefef]">
+                <p className="text-xs font-mono text-ink">
                   {missingCount === 1
                     ? '1 collection needs authorize'
                     : `${missingCount} collections need authorize`}
                 </p>
-                <p className="text-[11px] font-mono text-[#888] mt-1">
+                <p className="text-[11px] font-mono text-dim mt-1">
                   Click any row marked ⚠️ below to grant Kismet ADMIN with a single onchain transaction.
                 </p>
               </div>
@@ -277,24 +277,24 @@ function PermissionRow({
 
   const containerClass =
     status === 'needs-auth'
-      ? 'border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:bg-[#8B5CF6]/10'
-      : 'border-[#2a2a2a] bg-[#161616] hover:bg-[#1a1a1a]'
+      ? 'border-accent/40 bg-accent/5 hover:bg-accent/10'
+      : 'border-line bg-[#161616] hover:bg-raised'
 
   const RowInner = (
     <div className={`flex items-center gap-3 p-3 border ${containerClass} transition-colors`}>
       {img ? (
-        <div className="w-12 h-12 relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+        <div className="w-12 h-12 relative flex-shrink-0 bg-raised overflow-hidden">
           <MomentImage src={img} alt={name} fill className="object-cover" sizes="48px" thumbhash={thumbhash} />
         </div>
       ) : (
-        <div className="w-12 h-12 bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center">
-          <span className="text-[#333] font-mono text-[9px]">{shortAddress(address)}</span>
+        <div className="w-12 h-12 bg-raised flex-shrink-0 flex items-center justify-center">
+          <span className="text-faint font-mono text-[9px]">{shortAddress(address)}</span>
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="text-xs font-mono text-[#efefef] truncate">{name}</p>
+        <p className="text-xs font-mono text-ink truncate">{name}</p>
         {description && (
-          <p className="text-[11px] font-mono text-[#555] mt-0.5 line-clamp-1">
+          <p className="text-[11px] font-mono text-muted mt-0.5 line-clamp-1">
             {description}
           </p>
         )}
@@ -311,7 +311,7 @@ function PermissionRow({
   return (
     <Link
       href={`/collection/${address}`}
-      className="block focus:outline-none focus:ring-2 focus:ring-[#8B5CF6]"
+      className="block focus:outline-none focus:ring-2 focus:ring-accent"
     >
       {RowInner}
     </Link>
@@ -327,9 +327,9 @@ function StatusBadge({
 }) {
   if (loading || status === 'unknown') {
     return (
-      <div className="flex items-center gap-1.5 px-2 py-1 border border-[#2a2a2a] flex-shrink-0">
-        <ShieldQuestion size={11} className="text-[#555]" />
-        <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">
+      <div className="flex items-center gap-1.5 px-2 py-1 border border-line flex-shrink-0">
+        <ShieldQuestion size={11} className="text-muted" />
+        <span className="text-[10px] font-mono text-muted uppercase tracking-wider">
           {loading ? 'checking' : 'unknown'}
         </span>
       </div>
@@ -337,16 +337,16 @@ function StatusBadge({
   }
   if (status === 'ok') {
     return (
-      <div className="flex items-center gap-1.5 px-2 py-1 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex-shrink-0">
-        <ShieldCheck size={11} className="text-[#8B5CF6]" />
+      <div className="flex items-center gap-1.5 px-2 py-1 border border-accent/40 bg-accent/5 flex-shrink-0">
+        <ShieldCheck size={11} className="text-accent" />
         <span className="text-[10px] font-mono accent-grad uppercase tracking-wider">ready</span>
       </div>
     )
   }
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1 border border-[#8B5CF6]/60 bg-[#8B5CF6]/10 flex-shrink-0">
-      <ShieldAlert size={11} className="text-[#8B5CF6]" />
-      <span className="text-[10px] font-mono text-[#efefef] uppercase tracking-wider">
+    <div className="flex items-center gap-1.5 px-2 py-1 border border-accent/60 bg-accent/10 flex-shrink-0">
+      <ShieldAlert size={11} className="text-accent" />
+      <span className="text-[10px] font-mono text-ink uppercase tracking-wider">
         authorize
       </span>
     </div>

@@ -126,9 +126,9 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   }
 
   return (
-    <div className="bg-[#161616] border border-[#2a2a2a] flex flex-col">
+    <div className="bg-[#161616] border border-line flex flex-col">
       {/* Thumbnail */}
-      <div className="relative aspect-square bg-[#111] overflow-hidden">
+      <div className="relative aspect-square bg-surface overflow-hidden">
         {listing.image ? (
           <MomentImage
             src={listing.image}
@@ -138,10 +138,10 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
             sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           />
         ) : isTextListing ? (
-          <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a]">
-            <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-2">writing</span>
+          <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-raised to-[#0a0a0a]">
+            <span className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">writing</span>
             {listing.name && (
-              <p className="text-sm sm:text-base font-mono text-[#efefef] truncate mb-2">
+              <p className="text-sm sm:text-base font-mono text-ink truncate mb-2">
                 {listing.name}
               </p>
             )}
@@ -156,7 +156,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
           </div>
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+            <span className="text-line font-mono text-xs">no preview</span>
           </div>
         )}
       </div>
@@ -164,28 +164,28 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       {/* Info */}
       <div className="p-4 flex flex-col gap-3">
         <div>
-          <p className="text-sm font-mono text-[#efefef] truncate mb-1.5">
+          <p className="text-sm font-mono text-ink truncate mb-1.5">
             {listing.name ?? 'untitled'}
           </p>
           <div className="flex items-center justify-between">
             {listing.creatorAddress ? (
               <Link
                 href={`/profile/${listing.creatorAddress}`}
-                className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+                className="text-xs font-mono text-muted hover:text-dim transition-colors"
               >
                 {creatorName}
               </Link>
             ) : <span />}
             <Link
               href={`/profile/${listing.seller}`}
-              className="text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+              className="text-xs font-mono text-muted hover:text-dim transition-colors"
             >
               {sellerName}
             </Link>
           </div>
           <div className="flex items-center justify-between mt-0.5">
             {Number(listing.royaltyAmount) > 0 ? (
-              <p className="text-xs font-mono text-[#333]">{royaltyPct}% royalty</p>
+              <p className="text-xs font-mono text-faint">{royaltyPct}% royalty</p>
             ) : <span />}
             <p className="text-xs font-mono accent-grad">{priceLabel}</p>
           </div>
@@ -209,7 +209,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
             className={`w-full text-xs font-mono tracking-wider uppercase px-4 py-2.5 border transition-colors disabled:opacity-40 ${cancelling ? 'cursor-not-allowed' : ''} ${
               confirmArmed
                 ? 'border-red-700 text-red-400'
-                : 'border-[#2a2a2a] text-[#555] hover:border-red-900 hover:text-red-400'
+                : 'border-line text-muted hover:border-red-900 hover:text-red-400'
             }`}
           >
             {cancelling ? 'cancelling…' : confirmArmed ? 'tap again to confirm' : 'cancel listing'}

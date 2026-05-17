@@ -119,13 +119,13 @@ export function CollectAllAction({
 
   return (
     <div className="flex items-stretch gap-1.5">
-      <span className="px-2 py-1.5 text-xs font-mono border border-[#2a2a2a] text-[#888] whitespace-nowrap">
+      <span className="px-2 py-1.5 text-xs font-mono border border-line text-dim whitespace-nowrap">
         {costLabel}
       </span>
       <button
         onClick={handleClick}
         disabled={inFlight}
-        className="flex-1 py-1.5 text-xs font-mono border border-[#8B5CF6]/40 text-[#8B5CF6] hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 transition-colors disabled:opacity-60 disabled:cursor-wait"
+        className="flex-1 py-1.5 text-xs font-mono border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors disabled:opacity-60 disabled:cursor-wait"
       >
         {label}
       </button>

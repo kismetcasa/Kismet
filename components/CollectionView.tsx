@@ -40,10 +40,10 @@ function AvatarRow({
   return (
     <Link
       href={`/profile/${addr}`}
-      className="flex items-center gap-2.5 border border-[#2a2a2a] hover:border-[#555] px-3 py-2 transition-colors w-full sm:w-auto"
+      className="flex items-center gap-2.5 border border-line hover:border-muted px-3 py-2 transition-colors w-full sm:w-auto"
     >
       <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
-      <span className="text-xs font-mono text-[#888] truncate">
+      <span className="text-xs font-mono text-dim truncate">
         {p?.name || shortAddress(addr)}
       </span>
     </Link>
@@ -608,7 +608,7 @@ export function CollectionView({
     <div className="max-w-4xl mx-auto px-4 py-8">
       <button
         onClick={() => router.back()}
-        className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors mb-8"
+        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors mb-8"
       >
         <ArrowLeft size={12} />
         back
@@ -616,9 +616,9 @@ export function CollectionView({
 
       {/* Creator-only banner so the creator knows their collection is hidden */}
       {hidden && isCreator && (
-        <div className="px-3 py-2 mb-6 border border-[#2a2a2a] bg-[#1a1a1a] flex items-center gap-2">
-          <EyeOff size={11} className="text-[#888]" />
-          <p className="text-[10px] font-mono text-[#888] uppercase tracking-widest">
+        <div className="px-3 py-2 mb-6 border border-line bg-raised flex items-center gap-2">
+          <EyeOff size={11} className="text-dim" />
+          <p className="text-[10px] font-mono text-dim uppercase tracking-widest">
             hidden from public — only you can see this
           </p>
         </div>
@@ -626,7 +626,7 @@ export function CollectionView({
 
       {/* Collection header */}
       <div className="flex gap-5 mb-10">
-        <div className="relative w-24 h-24 sm:w-32 sm:h-32 flex-shrink-0 bg-[#111] border border-[#2a2a2a] overflow-hidden">
+        <div className="relative w-24 h-24 sm:w-32 sm:h-32 flex-shrink-0 bg-surface border border-line overflow-hidden">
           {rawImgUrl ? (
             <MomentImage
               src={rawImgUrl}
@@ -640,18 +640,18 @@ export function CollectionView({
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
-              <span className="text-[#2a2a2a] font-mono text-[10px]">no image</span>
+              <span className="text-line font-mono text-[10px]">no image</span>
             </div>
           )}
         </div>
         <div className="flex flex-col gap-1.5 min-w-0 pt-1">
-          <h1 className="text-base font-mono text-[#efefef] truncate">
+          <h1 className="text-base font-mono text-ink truncate">
             {displayName}
           </h1>
           {defaultAdminAddress ? (
             <Link
               href={`/profile/${defaultAdminAddress}`}
-              className="text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors w-fit"
+              className="text-[10px] font-mono text-[#444] hover:text-dim transition-colors w-fit"
             >
               {resolvedAdminName ?? shortAddress(defaultAdminAddress)}
             </Link>
@@ -663,14 +663,14 @@ export function CollectionView({
           {(payoutRecipient || createdAt) && (
             <div className="flex flex-wrap gap-2 mt-1.5">
               {createdAt && (
-                <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
+                <span className="text-[10px] font-mono text-muted uppercase tracking-widest">
                   created {formatCreatedDate(createdAt)}
                 </span>
               )}
               {payoutRecipient && (
                 <Link
                   href={`/profile/${payoutRecipient}`}
-                  className="text-[10px] font-mono text-[#555] hover:text-[#888] uppercase tracking-widest transition-colors"
+                  className="text-[10px] font-mono text-muted hover:text-dim uppercase tracking-widest transition-colors"
                   title="Sale proceeds route here"
                 >
                   payouts → {shortAddress(payoutRecipient)}
@@ -691,11 +691,11 @@ export function CollectionView({
                   name: displayName,
                 },
               }}
-              className="mt-2 inline-flex items-center gap-1.5 self-start border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 px-2.5 py-1 transition-colors"
+              className="mt-2 inline-flex items-center gap-1.5 self-start border border-accent/40 bg-accent/5 hover:border-accent hover:bg-accent/10 px-2.5 py-1 transition-colors"
               title="Your mint wallet holds ADMIN here — create new moments via MintForm"
             >
-              <ShieldCheck size={11} className="text-[#8B5CF6]" />
-              <span className="text-[10px] font-mono text-[#efefef] uppercase tracking-widest">
+              <ShieldCheck size={11} className="text-accent" />
+              <span className="text-[10px] font-mono text-ink uppercase tracking-widest">
                 you can mint here →
               </span>
             </Link>
@@ -710,24 +710,24 @@ export function CollectionView({
                   name: displayName,
                 },
               }}
-              className="mt-2 inline-flex items-center gap-1.5 self-start border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 hover:border-[#8B5CF6] hover:bg-[#8B5CF6]/10 px-2.5 py-1 transition-colors"
+              className="mt-2 inline-flex items-center gap-1.5 self-start border border-accent/40 bg-accent/5 hover:border-accent hover:bg-accent/10 px-2.5 py-1 transition-colors"
               title="You hold MINTER on this collection — airdrop copies via the Airdrop tab"
             >
-              <ShieldCheck size={11} className="text-[#8B5CF6]" />
-              <span className="text-[10px] font-mono text-[#efefef] uppercase tracking-widest">
+              <ShieldCheck size={11} className="text-accent" />
+              <span className="text-[10px] font-mono text-ink uppercase tracking-widest">
                 you can airdrop here →
               </span>
             </Link>
           )}
           {description && (
-            <p className="text-xs font-mono text-[#555] mt-1 line-clamp-3">{description}</p>
+            <p className="text-xs font-mono text-muted mt-1 line-clamp-3">{description}</p>
           )}
           <div className="flex items-center gap-3 mt-2">
             {isAdmin && (
               <button
                 onClick={() => toggleFeaturedCollection(address)}
                 className={`flex items-center gap-1.5 text-xs font-mono transition-colors ${
-                  isFeatured ? 'text-yellow-400' : 'text-[#555] hover:text-[#888]'
+                  isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
                 }`}
                 title={isFeatured ? 'Unfeature collection' : 'Feature collection'}
               >
@@ -740,7 +740,7 @@ export function CollectionView({
                 onClick={handleToggleHidden}
                 disabled={hidePending}
                 className={`flex items-center gap-1.5 text-xs font-mono transition-colors disabled:opacity-50 ${
-                  hidden ? 'text-[#888] hover:text-[#efefef]' : 'text-[#555] hover:text-[#888]'
+                  hidden ? 'text-dim hover:text-ink' : 'text-muted hover:text-dim'
                 }`}
                 title={hidden ? 'Show collection on public feeds' : 'Hide collection from public feeds'}
               >
@@ -758,14 +758,14 @@ export function CollectionView({
           operator who deployed on the artist's behalf), only when
           the grant is actually missing. */}
       {showAuthorize && (
-        <div className="mb-8 p-3 sm:p-4 border border-[#8B5CF6]/40 bg-[#8B5CF6]/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="mb-8 p-3 sm:p-4 border border-accent/40 bg-accent/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-start gap-2.5">
-            <ShieldCheck size={16} className="text-[#8B5CF6] flex-shrink-0 mt-0.5" />
+            <ShieldCheck size={16} className="text-accent flex-shrink-0 mt-0.5" />
             <div className="min-w-0">
-              <p className="text-xs font-mono text-[#efefef]">
+              <p className="text-xs font-mono text-ink">
                 Authorize Kismet to mint into this collection
               </p>
-              <p className="text-[11px] font-mono text-[#888] mt-0.5">
+              <p className="text-[11px] font-mono text-dim mt-0.5">
                 One-time onchain grant. Required because this collection was deployed before our minting upgrade.
               </p>
             </div>
@@ -785,14 +785,14 @@ export function CollectionView({
           wallet calls), and clears any redundant MINTER row on the
           EOA to keep the Minters list clean after an upgrade. */}
       {canGrantHere && (
-        <div className="mb-4 p-3 sm:p-4 border border-[#2a2a2a] bg-[#0d0d0d]">
+        <div className="mb-4 p-3 sm:p-4 border border-line bg-[#0d0d0d]">
           <div className="flex items-center gap-1.5 mb-2">
-            <ShieldCheck size={12} className="text-[#888]" />
-            <p className="text-xs font-mono text-[#888] uppercase tracking-wider">
+            <ShieldCheck size={12} className="text-dim" />
+            <p className="text-xs font-mono text-dim uppercase tracking-wider">
               Authorize creators
             </p>
           </div>
-          <p className="text-[11px] font-mono text-[#555] mb-3">
+          <p className="text-[11px] font-mono text-muted mb-3">
             Grant another wallet permission to mint new tokens into this collection. Full ADMIN access — they can also airdrop, manage permissions, and configure sales. ENS names work.
           </p>
           <div className="flex gap-2">
@@ -806,13 +806,13 @@ export function CollectionView({
                 void handleAuthorizeCreator()
               }}
               placeholder="0x… or vitalik.eth"
-              className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+              className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
             <button
               type="button"
               onClick={() => void handleAuthorizeCreator()}
               disabled={isCreatorBusy || !creatorInput.trim()}
-              className="px-4 text-[10px] font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
+              className="px-4 text-[10px] font-mono tracking-wider uppercase border border-line text-dim hover:border-muted hover:text-ink transition-colors disabled:opacity-50"
             >
               {isCreatorBusy && !revokingCreatorEoa ? 'authorizing…' : 'authorize'}
             </button>
@@ -822,10 +822,10 @@ export function CollectionView({
               {[0, 1].map((i) => (
                 <li
                   key={i}
-                  className="flex items-center justify-between bg-[#111] border border-[#1a1a1a] px-3 py-2 animate-pulse"
+                  className="flex items-center justify-between bg-surface border border-raised px-3 py-2 animate-pulse"
                 >
-                  <span className="h-3 w-32 bg-[#1a1a1a]" />
-                  <span className="h-3 w-3 bg-[#1a1a1a] flex-shrink-0" />
+                  <span className="h-3 w-32 bg-raised" />
+                  <span className="h-3 w-3 bg-raised flex-shrink-0" />
                 </li>
               ))}
             </ul>
@@ -852,8 +852,8 @@ export function CollectionView({
                   return (
                     <li
                       key={profileAddr}
-                      className={`flex items-center justify-between bg-[#111] border px-3 py-2 ${
-                        c.liveOnChain ? 'border-[#2a2a2a]' : 'border-[#1a1a1a] opacity-60'
+                      className={`flex items-center justify-between bg-surface border px-3 py-2 ${
+                        c.liveOnChain ? 'border-line' : 'border-raised opacity-60'
                       }`}
                       title={
                         !c.liveOnChain
@@ -872,13 +872,13 @@ export function CollectionView({
                           avatarUrl={profile?.avatarUrl}
                           size={24}
                         />
-                        <span className="text-xs font-mono text-[#888] truncate">
+                        <span className="text-xs font-mono text-dim truncate">
                           {display}
                           {!c.eoa && c.liveOnChain && (
-                            <span className="ml-2 text-[#555]">(unmapped)</span>
+                            <span className="ml-2 text-muted">(unmapped)</span>
                           )}
                           {!c.liveOnChain && (
-                            <span className="ml-2 text-[#555]">(stale)</span>
+                            <span className="ml-2 text-muted">(stale)</span>
                           )}
                         </span>
                       </Link>
@@ -887,7 +887,7 @@ export function CollectionView({
                         onClick={() => void handleRevokeCreator(c.eoa, c.smartWallet)}
                         disabled={otherTxBusy || isRevoking}
                         title="Revoke creator authorization"
-                        className="ml-2 text-[#555] hover:text-[#efefef] disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                        className="ml-2 text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                       >
                         <Trash2 size={12} />
                       </button>
@@ -903,7 +903,7 @@ export function CollectionView({
       {/* Artists */}
       {uniqueCreators.length > 0 && (
         <section className="mb-10">
-          <h2 className="text-xs font-mono text-[#555] uppercase tracking-widest mb-4">
+          <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
             {uniqueCreators.length === 1 ? 'artist' : 'artists'}
           </h2>
           <div className="flex flex-wrap gap-2">
@@ -916,22 +916,22 @@ export function CollectionView({
 
       {/* NFT grid */}
       <section>
-        <h2 className="text-xs font-mono text-[#555] uppercase tracking-widest mb-4">
+        <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
           moments{loadedMoments.length > 0 ? ` (${loadedMoments.length})` : ''}
         </h2>
         {moments === null ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="aspect-square bg-[#111] border border-[#1a1a1a] animate-pulse" />
+              <div key={i} className="aspect-square bg-surface border border-raised animate-pulse" />
             ))}
           </div>
         ) : loadedMoments.length === 0 ? (
           indexing ? (
-            <p className="text-xs font-mono text-[#888]">
+            <p className="text-xs font-mono text-dim">
               indexing your first mint… can take a few minutes. refresh to check.
             </p>
           ) : (
-            <p className="text-xs font-mono text-[#555]">no moments in this collection yet</p>
+            <p className="text-xs font-mono text-muted">no moments in this collection yet</p>
           )
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">

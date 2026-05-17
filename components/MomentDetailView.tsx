@@ -710,10 +710,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     return (
       <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
         {!inOverlay && (
-          <div className="px-4 py-3 border-b border-[#2a2a2a]">
+          <div className="px-4 py-3 border-b border-line">
             <Link
               href="/"
-              className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors"
             >
               <ArrowLeft size={12} />
               back
@@ -722,7 +722,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         )}
         <div className="flex flex-col items-center justify-center gap-3 py-24 px-6">
           <EyeOff size={20} className="text-[#444]" />
-          <p className="text-sm font-mono text-[#888]">this moment has been hidden by the creator</p>
+          <p className="text-sm font-mono text-dim">this moment has been hidden by the creator</p>
         </div>
       </div>
     )
@@ -736,10 +736,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           link that points to "/" would navigate away from the feed
           instead of just closing the overlay. */}
       {!inOverlay && (
-        <div className="px-4 py-3 border-b border-[#2a2a2a]">
+        <div className="px-4 py-3 border-b border-line">
           <Link
             href="/"
-            className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors"
           >
             <ArrowLeft size={12} />
             back
@@ -749,29 +749,29 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
       {/* Creator-only banner so the creator knows their moment is hidden */}
       {isHidden && isCreator && (
-        <div className="px-4 py-2 border-b border-[#2a2a2a] bg-[#1a1a1a] flex items-center gap-2">
-          <EyeOff size={11} className="text-[#888]" />
-          <p className="text-[10px] font-mono text-[#888] uppercase tracking-widest">
+        <div className="px-4 py-2 border-b border-line bg-raised flex items-center gap-2">
+          <EyeOff size={11} className="text-dim" />
+          <p className="text-[10px] font-mono text-dim uppercase tracking-widest">
             hidden from public — only you can see this
           </p>
         </div>
       )}
 
       {/* Two-column on desktop, stacked on mobile */}
-      <div className="md:grid md:grid-cols-2 border-b border-[#2a2a2a]">
+      <div className="md:grid md:grid-cols-2 border-b border-line">
 
         {/* Left: media — sticky on desktop */}
-        <div className="border-b border-[#2a2a2a] md:border-b-0 md:border-r md:border-r-[#2a2a2a] md:sticky md:top-14">
+        <div className="border-b border-line md:border-b-0 md:border-r md:border-r-line md:sticky md:top-14">
           {isTextMoment ? (
-            <div className="min-h-64 flex flex-col p-6 sm:p-10 bg-[#111]">
-              <span className="text-[10px] font-mono text-[#555] uppercase tracking-widest mb-3">writing</span>
-              <p className="text-sm font-mono text-[#efefef] leading-relaxed whitespace-pre-wrap">
-                {textContent ?? <span className="text-[#888]">loading from Arweave…</span>}
+            <div className="min-h-64 flex flex-col p-6 sm:p-10 bg-surface">
+              <span className="text-[10px] font-mono text-muted uppercase tracking-widest mb-3">writing</span>
+              <p className="text-sm font-mono text-ink leading-relaxed whitespace-pre-wrap">
+                {textContent ?? <span className="text-dim">loading from Arweave…</span>}
               </p>
             </div>
           ) : (
             <div
-              className={`relative aspect-square bg-[#111] ${hasMedia && !isVideo ? 'cursor-zoom-in' : ''}`}
+              className={`relative aspect-square bg-surface ${hasMedia && !isVideo ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (hasMedia && !isVideo) setLightboxOpen(true) }}
             >
               {isVideo && meta.animation_url ? (
@@ -797,11 +797,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 />
               ) : !detail ? (
                 <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-[#333] font-mono text-xs">loading…</span>
+                  <span className="text-faint font-mono text-xs">loading…</span>
                 </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
+                  <span className="text-line font-mono text-xs">no preview</span>
                 </div>
               )}
             </div>
@@ -814,7 +814,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Info: title, creator, description, comments, textarea */}
           <div className="px-5 py-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">
-              <h1 className="text-sm font-mono text-[#efefef] leading-snug">
+              <h1 className="text-sm font-mono text-ink leading-snug">
                 {meta.name ?? `#${tokenId}`}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
@@ -826,7 +826,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {isCreator && !editing && detail && (
                   <button
                     onClick={openEditor}
-                    className="flex items-center gap-1 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+                    className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
                     title="edit metadata"
                   >
                     <Pencil size={11} />
@@ -838,7 +838,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     onClick={handleToggleHidden}
                     disabled={hidePending}
                     className={`flex items-center gap-1 text-xs font-mono transition-colors disabled:opacity-50 ${
-                      isHidden ? 'text-[#888] hover:text-[#efefef]' : 'text-[#555] hover:text-[#888]'
+                      isHidden ? 'text-dim hover:text-ink' : 'text-muted hover:text-dim'
                     }`}
                     title={isHidden ? 'Show on public feeds' : 'Hide from public feeds'}
                   >
@@ -854,42 +854,42 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 in the title or description, they leave the image alone
                 and we keep the existing ar:// in the new metadata JSON. */}
             {editing && detail && (
-              <div className="flex flex-col gap-3 border border-[#2a2a2a] p-3 bg-[#0a0a0a]">
+              <div className="flex flex-col gap-3 border border-line p-3 bg-[#0a0a0a]">
                 <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-mono uppercase tracking-widest text-[#888]">edit metadata</p>
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-dim">edit metadata</p>
                   <button
                     onClick={closeEditor}
                     disabled={savingMeta}
-                    className="text-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
+                    className="text-muted hover:text-dim transition-colors disabled:opacity-40"
                     title="cancel"
                   >
                     <X size={12} />
                   </button>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">title</label>
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">title</label>
                   <input
                     type="text"
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
                     disabled={savingMeta}
                     placeholder="title"
-                    className="bg-[#111] border border-[#2a2a2a] px-2.5 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">description</label>
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">description</label>
                   <textarea
                     value={editDesc}
                     onChange={(e) => setEditDesc(e.target.value)}
                     disabled={savingMeta}
                     rows={3}
                     placeholder="description"
-                    className="bg-[#111] border border-[#2a2a2a] px-2.5 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555] disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-[#555]">image (optional)</label>
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">image (optional)</label>
                   <div className="flex items-center gap-2">
                     {/* Show whatever's currently selected: new file preview > existing on-chain image > nothing.
                         MomentImg handles both — a blob URL from the file picker passes through unchanged,
@@ -898,14 +898,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       <MomentImg
                         src={editPreview ?? meta.image ?? ''}
                         alt="preview"
-                        className="w-12 h-12 object-cover bg-[#111] border border-[#2a2a2a]"
+                        className="w-12 h-12 object-cover bg-surface border border-line"
                       />
                     )}
                     <button
                       type="button"
                       onClick={() => editFileInputRef.current?.click()}
                       disabled={savingMeta}
-                      className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] border border-[#2a2a2a] px-2.5 py-1.5 disabled:opacity-50"
+                      className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
                     >
                       {editFile ? 'replace' : 'change image'}
                     </button>
@@ -914,7 +914,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                         type="button"
                         onClick={clearEditFile}
                         disabled={savingMeta}
-                        className="text-[10px] font-mono uppercase tracking-widest text-[#555] hover:text-[#888] disabled:opacity-50"
+                        className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
                       >
                         keep current
                       </button>
@@ -939,7 +939,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   <button
                     onClick={closeEditor}
                     disabled={savingMeta}
-                    className="text-xs font-mono tracking-wider uppercase px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
+                    className="text-xs font-mono tracking-wider uppercase px-3 py-2 border border-line text-muted hover:border-muted hover:text-dim transition-colors disabled:opacity-40"
                   >
                     cancel
                   </button>
@@ -954,7 +954,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {creatorAddress && (
                   <ProfileAvatar address={creatorAddress} avatarUrl={creatorAvatar} size={22} />
                 )}
-                <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
+                <span className="text-xs font-mono text-muted group-hover:text-dim transition-colors">
                   {creatorName || shortAddress(creatorAddress)}
                 </span>
               </Link>
@@ -966,7 +966,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 className="flex items-center gap-2 group w-fit"
               >
                 {collectionImage && !collectionImageFailed && (
-                  <div className="w-[22px] h-[22px] relative flex-shrink-0 bg-[#1a1a1a] overflow-hidden">
+                  <div className="w-[22px] h-[22px] relative flex-shrink-0 bg-raised overflow-hidden">
                     <MomentImage
                       src={collectionImage}
                       alt=""
@@ -977,24 +977,24 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     />
                   </div>
                 )}
-                <span className="text-xs font-mono text-[#555] group-hover:text-[#888] transition-colors">
+                <span className="text-xs font-mono text-muted group-hover:text-dim transition-colors">
                   {collectionName}
                 </span>
               </Link>
             )}
             {meta.description && (
               <div className="flex flex-col gap-1.5">
-                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">description</p>
+                <p className="text-[10px] font-mono text-faint uppercase tracking-wider">description</p>
                 <p
                   ref={descRef}
-                  className={`text-xs font-mono text-[#888] leading-relaxed ${showFullDesc ? '' : 'line-clamp-4'}`}
+                  className={`text-xs font-mono text-dim leading-relaxed ${showFullDesc ? '' : 'line-clamp-4'}`}
                 >
                   {meta.description}
                 </p>
                 {(descOverflows || showFullDesc) && (
                   <button
                     onClick={() => setShowFullDesc(v => !v)}
-                    className="flex items-center gap-1 text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+                    className="flex items-center gap-1 text-[10px] font-mono text-muted hover:text-dim transition-colors w-fit"
                   >
                     {showFullDesc ? <><ChevronUp size={10} /> show less</> : <><ChevronDown size={10} /> show more</>}
                   </button>
@@ -1004,20 +1004,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             {hasSplits && <SplitsPanel recipients={splitRecipients} />}
             {!commentsLoading && comments.length > 0 && (
               <div className="flex flex-col gap-2">
-                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">comments</p>
+                <p className="text-[10px] font-mono text-faint uppercase tracking-wider">comments</p>
                 <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
                   {comments.map((c, i) => (
                     <div key={i} className="flex gap-2 items-baseline">
                       <Link
                         href={`/profile/${c.sender}`}
-                        className="text-[11px] font-mono text-[#555] flex-shrink-0 hover:text-[#888] transition-colors"
+                        className="text-[11px] font-mono text-muted flex-shrink-0 hover:text-dim transition-colors"
                       >
                         {commentSenderNames[c.sender.toLowerCase()] ?? shortAddress(c.sender)}
                       </Link>
-                      <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
+                      <span className="text-xs font-mono text-dim flex-1 break-words leading-relaxed">
                         {c.comment}
                       </span>
-                      <span className="text-[10px] font-mono text-[#333] flex-shrink-0">
+                      <span className="text-[10px] font-mono text-faint flex-shrink-0">
                         {formatRelativeTime(c.timestamp)}
                       </span>
                     </div>
@@ -1031,7 +1031,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               placeholder="leave a comment… (optional)"
               rows={2}
               disabled={collecting}
-              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-none disabled:opacity-50"
+              className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none disabled:opacity-50"
             />
           </div>
 
@@ -1041,11 +1041,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Distribute earnings (floats above collect) */}
           {isCreator && hasSplits && (
             <div className="px-5 pb-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">distribute earnings</p>
+              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">distribute earnings</p>
               <button
                 onClick={handleDistribute}
                 disabled={distributing || !splitAddress}
-                className="text-xs font-mono px-3 py-2 border border-[#2a2a2a] text-[#555] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+                className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
               >
                 {distributing ? 'distributing…' : splitAddress ? 'distribute' : 'loading…'}
               </button>
@@ -1054,7 +1054,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   href={`https://basescan.org/tx/${distributeHash}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[10px] font-mono text-[#555] hover:text-[#888]"
+                  className="text-[10px] font-mono text-muted hover:text-dim"
                 >
                   distributed: {distributeHash.slice(0, 10)}…{distributeHash.slice(-8)}
                 </a>
@@ -1073,7 +1073,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {detail && BigInt(detail.saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
               </p>
               {ownedCount > 0 && (
-                <p className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
+                <p className="text-[10px] font-mono text-muted uppercase tracking-widest">
                   ×{ownedCount} own
                 </p>
               )}
@@ -1082,11 +1082,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
-            <div className="flex border border-[#2a2a2a] flex-none">
+            <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
-              <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+              <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
                   {maxSupply === undefined
                     ? '…'
@@ -1114,8 +1114,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               disabled={collecting || mintedOut || !detail}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
-                  ? 'text-[#8B5CF6] bg-[#8B5CF6]/10 border-[#8B5CF6] hover:bg-[#8B5CF6]/20'
-                  : 'text-[#555] border-[#2a2a2a] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6]'
+                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
+                  : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
               }`}
             >
               {collectLabel}
@@ -1129,7 +1129,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <div className="flex items-center gap-3">
               <button
                 onClick={handleCopyLink}
-                className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
               >
                 {linkCopied
                   ? <Check size={12} className="text-[#6ee7b7]" />
@@ -1139,7 +1139,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               {alreadyOwned && (
                 <button
                   onClick={() => setSendOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
                 >
                   <Send size={12} strokeWidth={1.5} />
                   {sendOpen ? 'cancel' : 'send'}
@@ -1157,12 +1157,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     autoComplete="off"
                     autoCapitalize="off"
                     spellCheck={false}
-                    className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555]"
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted"
                   />
                   <button
                     onClick={handleSend}
                     disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-[#555] disabled:hover:border-[#2a2a2a]"
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-muted disabled:hover:border-line"
                   >
                     {sending ? '…' : 'confirm'}
                   </button>
@@ -1170,7 +1170,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {trimmedSendTo && (
                   <div className="mt-1.5 text-[10px] font-mono">
                     {resolvingSendTo ? (
-                      <span className="text-[#555]">resolving…</span>
+                      <span className="text-muted">resolving…</span>
                     ) : isSelfSend ? (
                       <span className="text-red-400">cannot send to yourself</span>
                     ) : sendToError ? (
@@ -1190,7 +1190,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <button
                 onClick={() => toggleFeatured(address, tokenId)}
                 className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                  isFeatured ? 'text-yellow-400' : 'text-[#555] hover:text-[#888]'
+                  isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
                 }`}
               >
                 <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
@@ -1210,7 +1210,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         >
           <button
             onClick={() => setLightboxOpen(false)}
-            className="absolute top-4 right-4 z-10 p-2 text-[#888] hover:text-[#efefef] transition-colors"
+            className="absolute top-4 right-4 z-10 p-2 text-dim hover:text-ink transition-colors"
           >
             <X size={18} />
           </button>

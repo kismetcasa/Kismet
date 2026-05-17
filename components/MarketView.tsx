@@ -19,16 +19,16 @@ export function MarketView() {
         )}
         header={
           <div>
-            <h1 className="text-xs font-mono text-[#888] uppercase tracking-widest">Market</h1>
-            <p className="text-xs font-mono text-[#333] mt-1">
+            <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Market</h1>
+            <p className="text-xs font-mono text-faint mt-1">
               creator royalties enforced on every sale
             </p>
           </div>
         }
         empty={
-          <div className="border border-[#2a2a2a] p-8 sm:p-16 text-center">
-            <p className="text-sm font-mono text-[#555]">no listings yet</p>
-            <p className="text-xs font-mono text-[#333] mt-2">
+          <div className="border border-line p-8 sm:p-16 text-center">
+            <p className="text-sm font-mono text-muted">no listings yet</p>
+            <p className="text-xs font-mono text-faint mt-2">
               collect a moment on{' '}
               <Link href="/" className="accent-grad hover:underline">discover</Link>
               {' '}then{' '}

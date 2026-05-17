@@ -76,7 +76,7 @@ export function WalletButton() {
       ) : (
         <button
           onClick={() => openAccountModal?.()}
-          className="text-[#888] hover:text-[#efefef] transition-colors"
+          className="text-dim hover:text-ink transition-colors"
           style={addressStyle}
         >
           {displayName ?? shortAddress(address)}

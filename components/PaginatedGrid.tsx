@@ -97,7 +97,7 @@ export function PaginatedGrid<T>({
         <button
           onClick={() => fetchPage(1)}
           disabled={loading || refreshing}
-          className="flex items-center gap-2 text-xs font-mono text-[#555] hover:text-[#888] transition-colors disabled:opacity-40"
+          className="flex items-center gap-2 text-xs font-mono text-muted hover:text-dim transition-colors disabled:opacity-40"
         >
           <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
           refresh
@@ -107,11 +107,11 @@ export function PaginatedGrid<T>({
       {loading && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="bg-[#161616] border border-[#2a2a2a]">
-              <div className="aspect-square bg-[#1a1a1a] animate-pulse" />
+            <div key={i} className="bg-[#161616] border border-line">
+              <div className="aspect-square bg-raised animate-pulse" />
               <div className="p-4 space-y-2">
-                <div className="h-3 bg-[#1a1a1a] animate-pulse w-2/3" />
-                <div className="h-3 bg-[#1a1a1a] animate-pulse w-1/3" />
+                <div className="h-3 bg-raised animate-pulse w-2/3" />
+                <div className="h-3 bg-raised animate-pulse w-1/3" />
               </div>
             </div>
           ))}
@@ -123,7 +123,7 @@ export function PaginatedGrid<T>({
           <p className="text-sm font-mono text-red-400">{error}</p>
           <button
             onClick={() => fetchPage(1)}
-            className="mt-4 text-xs font-mono text-[#888] hover:text-[#efefef] underline"
+            className="mt-4 text-xs font-mono text-dim hover:text-ink underline"
           >
             try again
           </button>
@@ -148,7 +148,7 @@ export function PaginatedGrid<T>({
               <button
                 onClick={() => fetchPage(page + 1, true)}
                 disabled={refreshing}
-                className="px-8 py-3 border border-[#2a2a2a] text-xs font-mono text-[#888] uppercase tracking-wider hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-40"
+                className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
               >
                 {refreshing ? 'loading…' : 'load more'}
               </button>

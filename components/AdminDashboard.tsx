@@ -55,8 +55,8 @@ export function AdminDashboard() {
   if (!isConnected) {
     return (
       <div className="text-center flex flex-col gap-4 items-center py-16">
-        <h1 className="text-[#efefef] font-mono text-lg">Admin</h1>
-        <p className="text-[#888] font-mono text-xs max-w-md">
+        <h1 className="text-ink font-mono text-lg">Admin</h1>
+        <p className="text-dim font-mono text-xs max-w-md">
           Connect with the admin wallet to access admin utilities.
         </p>
         <button
@@ -72,7 +72,7 @@ export function AdminDashboard() {
   if (!adminCheck.checked) {
     return (
       <div className="text-center py-16">
-        <p className="text-xs font-mono text-[#555]">checking admin status…</p>
+        <p className="text-xs font-mono text-muted">checking admin status…</p>
       </div>
     )
   }
@@ -80,9 +80,9 @@ export function AdminDashboard() {
   if (!adminCheck.isAdmin) {
     return (
       <div className="flex flex-col gap-4 items-center text-center py-16">
-        <ShieldAlert size={20} className="text-[#8B5CF6]" />
-        <h1 className="text-[#efefef] font-mono text-lg">Not authorized</h1>
-        <p className="text-[#888] font-mono text-xs max-w-md">
+        <ShieldAlert size={20} className="text-accent" />
+        <h1 className="text-ink font-mono text-lg">Not authorized</h1>
+        <p className="text-dim font-mono text-xs max-w-md">
           The connected wallet is not the admin. Switch to the admin wallet and refresh.
         </p>
       </div>
@@ -94,7 +94,7 @@ export function AdminDashboard() {
       {address && (
         <Link
           href={`/profile/${address}`}
-          className="text-[10px] font-mono text-[#555] hover:text-[#888] transition-colors flex items-center gap-1.5 w-fit uppercase tracking-wider"
+          className="text-[10px] font-mono text-muted hover:text-dim transition-colors flex items-center gap-1.5 w-fit uppercase tracking-wider"
         >
           <ArrowLeft size={11} />
           back to profile
@@ -102,8 +102,8 @@ export function AdminDashboard() {
       )}
 
       <div>
-        <h1 className="text-[#efefef] font-mono text-lg mb-2">Admin</h1>
-        <p className="text-[#888] font-mono text-xs leading-relaxed">
+        <h1 className="text-ink font-mono text-lg mb-2">Admin</h1>
+        <p className="text-dim font-mono text-xs leading-relaxed">
           Admin-only utilities. The first action this session will prompt
           for a wallet signature.
         </p>
@@ -208,10 +208,10 @@ function HideContentCard({
   }
 
   return (
-    <section className="border border-[#2a2a2a] bg-[#161616] p-4 flex flex-col gap-3">
+    <section className="border border-line bg-[#161616] p-4 flex flex-col gap-3">
       <div>
-        <h2 className="text-[#efefef] font-mono text-sm">Hide content</h2>
-        <p className="text-[11px] font-mono text-[#888] mt-1 leading-relaxed">
+        <h2 className="text-ink font-mono text-sm">Hide content</h2>
+        <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
           Paste a moment or collection link to toggle its visibility on
           public feeds. Bypasses the creator/on-chain admin gate that the
           user-facing hide actions enforce. Hiding a collection removes it
@@ -221,14 +221,14 @@ function HideContentCard({
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[10px] font-mono text-[#888] uppercase tracking-wider">
+        <label className="text-[10px] font-mono text-dim uppercase tracking-wider">
           moment or collection link
         </label>
         <input
           value={link}
           onChange={(e) => setLink(e.target.value)}
           placeholder="https://kismet.art/moment/0x…/1"
-          className="bg-[#0a0a0a] border border-[#2a2a2a] focus:border-[#555] outline-none px-2 py-1.5 text-xs font-mono text-[#efefef] placeholder:text-[#444]"
+          className="bg-[#0a0a0a] border border-line focus:border-muted outline-none px-2 py-1.5 text-xs font-mono text-ink placeholder:text-[#444]"
         />
       </div>
 
@@ -239,23 +239,23 @@ function HideContentCard({
       )}
 
       {target && (
-        <div className="border border-[#2a2a2a] bg-[#0a0a0a] p-2 text-[10px] font-mono text-[#888] flex flex-col gap-1">
+        <div className="border border-line bg-[#0a0a0a] p-2 text-[10px] font-mono text-dim flex flex-col gap-1">
           <div>
-            <span className="text-[#555] uppercase tracking-wider mr-2">type</span>
+            <span className="text-muted uppercase tracking-wider mr-2">type</span>
             {target.type}
           </div>
           <div className="break-all">
-            <span className="text-[#555] uppercase tracking-wider mr-2">address</span>
+            <span className="text-muted uppercase tracking-wider mr-2">address</span>
             {target.address}
           </div>
           {target.type === 'moment' && (
             <div>
-              <span className="text-[#555] uppercase tracking-wider mr-2">token</span>
+              <span className="text-muted uppercase tracking-wider mr-2">token</span>
               {target.tokenId}
             </div>
           )}
           <div>
-            <span className="text-[#555] uppercase tracking-wider mr-2">status</span>
+            <span className="text-muted uppercase tracking-wider mr-2">status</span>
             {currentlyHidden === null ? 'checking…' : currentlyHidden ? 'hidden' : 'visible'}
           </div>
         </div>

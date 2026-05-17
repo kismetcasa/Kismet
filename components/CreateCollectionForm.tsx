@@ -613,20 +613,20 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
   if (step === 'done' && collectionAddress) {
     return (
-      <div className="border border-[#2a2a2a] p-8 text-center flex flex-col gap-6">
-        <div className="w-12 h-12 mx-auto rounded-full bg-[#8B5CF6]/10 border border-[#8B5CF6] flex items-center justify-center">
+      <div className="border border-line p-8 text-center flex flex-col gap-6">
+        <div className="w-12 h-12 mx-auto rounded-full bg-accent/10 border border-accent flex items-center justify-center">
           <span className="text-xl accent-grad">✓</span>
         </div>
         <div>
-          <h3 className="text-[#efefef] font-mono text-sm mb-2">Collection deployed</h3>
-          <p className="text-[#888] text-xs font-mono break-all">{collectionAddress}</p>
+          <h3 className="text-ink font-mono text-sm mb-2">Collection deployed</h3>
+          <p className="text-dim text-xs font-mono break-all">{collectionAddress}</p>
         </div>
         {txHash && (
           <a
             href={`https://basescan.org/tx/${txHash}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs font-mono text-[#555] hover:text-[#888]"
+            className="text-xs font-mono text-muted hover:text-dim"
           >
             {txHash.slice(0, 10)}…{txHash.slice(-8)}
           </a>
@@ -648,7 +648,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             setCoverSupply('')
             setDeployedImageUri(undefined)
           }}
-          className="text-xs font-mono text-[#888] hover:text-[#efefef] underline"
+          className="text-xs font-mono text-dim hover:text-ink underline"
         >
           Create another
         </button>
@@ -661,8 +661,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       {/* Cover image */}
       <div>
         <div className="flex items-start justify-between gap-3 mb-2">
-          <span className="text-xs font-mono text-[#888] uppercase tracking-wider pt-1">
-            Cover Image <span className="text-[#efefef]">*</span>
+          <span className="text-xs font-mono text-dim uppercase tracking-wider pt-1">
+            Cover Image <span className="text-ink">*</span>
           </span>
           {/* Toggle + cover-mint config stacked on the right so price/supply
               live directly underneath the toggle when it's on, instead of
@@ -675,51 +675,51 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
               onClick={() => setMintCover((v) => !v)}
               className={`flex items-start gap-2 px-2 py-1 border transition-colors cursor-pointer ${
                 mintCover
-                  ? 'border-[#8B5CF6] bg-[#8B5CF6]/10 text-[#efefef]'
-                  : 'border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#bbb]'
+                  ? 'border-accent bg-accent/10 text-ink'
+                  : 'border-line text-dim hover:border-muted hover:text-[#bbb]'
               }`}
             >
               <span
                 className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors mt-px ${
-                  mintCover ? 'border-[#8B5CF6] bg-[#8B5CF6]/20' : 'border-[#444]'
+                  mintCover ? 'border-accent bg-accent/20' : 'border-[#444]'
                 }`}
               >
-                {mintCover && <Check size={11} className="text-[#8B5CF6]" />}
+                {mintCover && <Check size={11} className="text-accent" />}
               </span>
               <span className="flex flex-col text-left">
                 <span className="text-[10px] font-mono uppercase tracking-wider">
                   mint cover
                 </span>
                 {mintCover && (
-                  <span className="text-[9px] font-mono text-[#888] mt-0.5 normal-case tracking-normal">
+                  <span className="text-[9px] font-mono text-dim mt-0.5 normal-case tracking-normal">
                     first mint in collection
                   </span>
                 )}
               </span>
             </button>
             {mintCover && (
-              <div className="flex items-center gap-3 pl-2 border-l border-[#2a2a2a]">
+              <div className="flex items-center gap-3 pl-2 border-l border-line">
                 <label className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">price</span>
+                  <span className="text-[10px] font-mono text-muted uppercase tracking-wider">price</span>
                   <input
                     type="text"
                     inputMode="decimal"
                     value={coverPrice}
                     onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
                     placeholder="0"
-                    className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
                   />
-                  <span className="text-[10px] font-mono text-[#555]">eth</span>
+                  <span className="text-[10px] font-mono text-muted">eth</span>
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-mono text-[#555] uppercase tracking-wider">supply</span>
+                  <span className="text-[10px] font-mono text-muted uppercase tracking-wider">supply</span>
                   <input
                     type="text"
                     inputMode="numeric"
                     value={coverSupply}
                     onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
                     placeholder="∞"
-                    className="w-16 bg-[#111] border border-[#2a2a2a] px-2 py-0.5 text-[11px] text-[#efefef] font-mono placeholder-[#333] placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-[#555]"
+                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-faint placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-muted"
                   />
                 </label>
               </div>
@@ -731,15 +731,15 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           // at full width with auto height so the box conforms to its native
           // aspect. 1:1 stays 1:1, 16:9 stays 16:9, 9:16 stays 9:16. The
           // artist sees exactly what they dropped, no letterbox or crop.
-          <div className="relative bg-[#111] border border-[#2a2a2a] overflow-hidden">
+          <div className="relative bg-surface border border-line overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={coverPreview} alt="cover preview" className="block w-full h-auto" />
             <button
               type="button"
               onClick={clearFile}
-              className="absolute top-2 right-2 w-7 h-7 bg-[#0d0d0d]/80 border border-[#2a2a2a] flex items-center justify-center hover:border-[#888]"
+              className="absolute top-2 right-2 w-7 h-7 bg-[#0d0d0d]/80 border border-line flex items-center justify-center hover:border-dim"
             >
-              <X size={14} className="text-[#888]" />
+              <X size={14} className="text-dim" />
             </button>
           </div>
         ) : (
@@ -749,12 +749,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             onDragOver={(e) => e.preventDefault()}
             // Empty drop zone keeps a default aspect for visual structure;
             // the box will reshape to the dropped file once a preview exists.
-            className="aspect-square border border-dashed border-[#2a2a2a] flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-[#888] transition-colors bg-[#111]"
+            className="aspect-square border border-dashed border-line flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-dim transition-colors bg-surface"
           >
-            <Upload size={24} className="text-[#555]" />
+            <Upload size={24} className="text-muted" />
             <div className="text-center">
-              <p className="text-xs font-mono text-[#555]">drop image or click to upload</p>
-              <p className="text-xs font-mono text-[#333] mt-1">image, gif</p>
+              <p className="text-xs font-mono text-muted">drop image or click to upload</p>
+              <p className="text-xs font-mono text-faint mt-1">image, gif</p>
             </div>
           </div>
         )}
@@ -769,8 +769,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       {/* Collection name */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-          Collection Name <span className="text-[#efefef]">*</span>
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+          Collection Name <span className="text-ink">*</span>
         </label>
         <input
           type="text"
@@ -778,13 +778,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           onChange={(e) => setName(e.target.value)}
           placeholder="my collection"
           required
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
         />
       </div>
 
       {/* Description */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
           Description
         </label>
         <textarea
@@ -792,13 +792,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           onChange={(e) => setDescription(e.target.value)}
           placeholder="describe your collection…"
           rows={3}
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] resize-y min-h-[4.5rem] overflow-auto"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
         />
       </div>
 
       {/* Royalty */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
           Royalty (%)
         </label>
         <div className="relative">
@@ -813,16 +813,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             max="100"
             step="0.5"
             placeholder="5"
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555] pr-8"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-8"
           />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-[#555]">%</span>
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted">%</span>
         </div>
-        <p className="text-xs text-[#555] font-mono mt-1">paid to your wallet on secondary sales</p>
+        <p className="text-xs text-muted font-mono mt-1">paid to your wallet on secondary sales</p>
       </div>
 
       {/* Royalty recipient */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
           Royalty Recipient
         </label>
         <input
@@ -830,13 +830,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           value={royaltyRecipient}
           onChange={(e) => setRoyaltyRecipient(e.target.value)}
           placeholder={address ? `${shortAddress(address)} (or vitalik.eth)` : '0x… or vitalik.eth (defaults to your wallet)'}
-          className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
         />
       </div>
 
       {/* Authorized minters */}
       <div>
-        <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
           Authorized Minters
         </label>
         <div className="flex gap-2 mb-2">
@@ -850,13 +850,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
               void addMinter()
             }}
             placeholder="0x… or vitalik.eth"
-            className="flex-1 bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
           />
           <button
             type="button"
             onClick={() => void addMinter()}
             disabled={resolvingMinter || !minterInput.trim()}
-            className="px-3 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors disabled:opacity-50"
+            className="px-3 border border-line text-dim hover:border-muted hover:text-ink transition-colors disabled:opacity-50"
           >
             <Plus size={14} />
           </button>
@@ -864,14 +864,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         {minters.length > 0 && (
           <ul className="flex flex-col gap-1">
             {minters.map((m) => (
-              <li key={m.address} className="flex items-center justify-between bg-[#111] border border-[#2a2a2a] px-3 py-2">
-                <span className="text-xs font-mono text-[#888] truncate" title={m.address}>
+              <li key={m.address} className="flex items-center justify-between bg-surface border border-line px-3 py-2">
+                <span className="text-xs font-mono text-dim truncate" title={m.address}>
                   {m.display === m.address ? shortAddress(m.address) : m.display}
                 </span>
                 <button
                   type="button"
                   onClick={() => setMinters((prev) => prev.filter((x) => x.address !== m.address))}
-                  className="ml-2 text-[#555] hover:text-[#888] flex-shrink-0"
+                  className="ml-2 text-muted hover:text-dim flex-shrink-0"
                 >
                   <Trash2 size={12} />
                 </button>

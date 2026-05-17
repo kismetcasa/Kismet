@@ -102,7 +102,7 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
       {!loaded && !blurDataURL && (
         <span
           aria-hidden
-          className="absolute inset-0 bg-[#1a1a1a] animate-pulse pointer-events-none"
+          className="absolute inset-0 bg-raised animate-pulse pointer-events-none"
         />
       )}
       {/* Key includes mode-derived flags so next/image actually remounts
