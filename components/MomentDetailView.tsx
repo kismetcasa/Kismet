@@ -79,9 +79,15 @@ interface Props {
   // Server-prefetched body for text moments — warms the module-level cache
   // so the writing panel renders on first paint without a client fetch.
   initialTextContent?: string
+  // Rendered inside the intercepting-route overlay (vs the canonical
+  // full-page route). Suppresses the in-page "back" affordance because
+  // the overlay already provides three dismissal paths (X, Escape,
+  // backdrop click) and the in-page link would navigate to "/" instead
+  // of closing the overlay.
+  inOverlay?: boolean
 }
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent }: Props) {
+export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
@@ -594,15 +600,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   if (isHidden && !isCreator) {
     return (
       <div className="max-w-6xl mx-auto pb-16">
-        <div className="px-4 py-3 border-b border-[#2a2a2a]">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
-          >
-            <ArrowLeft size={12} />
-            back
-          </Link>
-        </div>
+        {!inOverlay && (
+          <div className="px-4 py-3 border-b border-[#2a2a2a]">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+            >
+              <ArrowLeft size={12} />
+              back
+            </Link>
+          </div>
+        )}
         <div className="flex flex-col items-center justify-center gap-3 py-24 px-6">
           <EyeOff size={20} className="text-[#444]" />
           <p className="text-sm font-mono text-[#888]">this moment has been hidden by the creator</p>
@@ -614,21 +622,30 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   return (
     <div className="max-w-6xl mx-auto pb-16">
 
-      {/* Back nav with owned-count callout on the right */}
-      <div className="px-4 py-3 border-b border-[#2a2a2a] flex items-center justify-between gap-3">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
-        >
-          <ArrowLeft size={12} />
-          back
-        </Link>
-        {ownedCount > 0 && (
-          <p className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
-            ×{ownedCount} owned
-          </p>
-        )}
-      </div>
+      {/* Back nav (canonical only) + owned-count callout. In the overlay
+          the X / Escape / backdrop-click triad already dismisses; rendering
+          a "back" link that points to "/" would navigate away from the
+          feed instead of just closing the overlay. */}
+      {(!inOverlay || ownedCount > 0) && (
+        <div className="px-4 py-3 border-b border-[#2a2a2a] flex items-center justify-between gap-3">
+          {!inOverlay ? (
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
+            >
+              <ArrowLeft size={12} />
+              back
+            </Link>
+          ) : (
+            <span />
+          )}
+          {ownedCount > 0 && (
+            <p className="text-[10px] font-mono text-[#555] uppercase tracking-widest">
+              ×{ownedCount} owned
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Creator-only banner so the creator knows their moment is hidden */}
       {isHidden && isCreator && (
@@ -664,7 +681,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   thumbhash={meta.kismet_thumbhash}
                   showPosterLayer
                   controls
-                  preload="auto"
                   className="w-full h-full object-contain"
                 />
               ) : meta.image && !imgError ? (

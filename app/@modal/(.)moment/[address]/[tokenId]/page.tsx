@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
+import { EyeOff } from 'lucide-react'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API, type MomentDetail } from '@/lib/inprocess'
 import { isMomentHidden } from '@/lib/hiddenMoments'
@@ -74,7 +75,8 @@ export default async function ModalMomentPage({ params }: Props) {
   if (detail?.hidden && !isCreator) {
     return (
       <ModalOverlay>
-        <div className="max-w-4xl mx-auto px-4 py-24 text-center">
+        <div className="max-w-4xl mx-auto flex flex-col items-center justify-center gap-3 py-24 px-6">
+          <EyeOff size={20} className="text-[#444]" />
           <p className="text-sm font-mono text-[#888]">
             this moment has been hidden by the creator
           </p>
@@ -89,6 +91,7 @@ export default async function ModalMomentPage({ params }: Props) {
         address={address}
         tokenId={tokenId}
         initialDetail={detail}
+        inOverlay
       />
     </ModalOverlay>
   )

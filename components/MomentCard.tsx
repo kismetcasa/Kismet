@@ -264,14 +264,16 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
                   : <Copy size={11} />}
               </button>
               {!directLink && (
-                <Link
+                <a
                   href={`/moment/${moment.address}/${moment.token_id}`}
-                  title="view page"
+                  target="_blank"
+                  rel="noopener"
+                  title="open in new tab"
                   className="text-[#444] hover:text-[#888] transition-colors"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <ExternalLink size={11} />
-                </Link>
+                </a>
               )}
             </div>
           </div>

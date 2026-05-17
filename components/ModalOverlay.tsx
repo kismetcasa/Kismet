@@ -47,6 +47,9 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
   return (
     <>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Moment detail"
         className="fixed inset-0 overflow-y-auto bg-black/85 backdrop-blur-sm"
         style={{ zIndex: 50 }}
         onClick={(e) => {
@@ -65,11 +68,15 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
           its z-index would be bounded by the backdrop's stacking
           context; out here, it stacks at its own z-60 in body, which
           is above any shared video element (z-55). */}
+      {/* Subtle dark pill behind the X keeps it visible on bright media
+          (otherwise text-[#888] disappears into a white poster). The
+          backdrop-blur softens the underlying image without a hard
+          opaque chip. */}
       <button
         onClick={dismiss}
         title="Close (Esc)"
         aria-label="Close"
-        className="fixed top-4 right-4 p-2 text-[#888] hover:text-[#efefef] transition-colors"
+        className="fixed top-4 right-4 p-2 text-[#bbb] hover:text-white bg-black/50 backdrop-blur-sm hover:bg-black/70 transition-colors rounded-full"
         style={{ zIndex: 60 }}
       >
         <X size={18} />
