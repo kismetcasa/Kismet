@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
@@ -78,7 +79,22 @@ interface Props {
 }
 
 export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
+  const router = useRouter()
   const { address: connectedAddress, isConnected } = useAccount()
+
+  // When rendered inside the IR overlay, clicks on the outer wrapper's
+  // padding regions (the breathing room around the detail card) dismiss
+  // the same way the X / Escape / backdrop click do. ModalOverlay's own
+  // handler only catches clicks on the parent scroll container — clicks
+  // on this wrapper's padding land on the wrapper itself, so the dismiss
+  // has to happen here. Target-equals-currentTarget filters out bubbled
+  // clicks from any descendant (back-nav, media, comments, etc.) so the
+  // actual content stays interactive.
+  const outerClick = inOverlay
+    ? (e: React.MouseEvent<HTMLDivElement>) => {
+        if (e.target === e.currentTarget) router.back()
+      }
+    : undefined
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
@@ -690,7 +706,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // creator's intent to hide is honored even on direct URL access.
   if (isHidden && !isCreator) {
     return (
-      <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16">
+      <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
         {!inOverlay && (
           <div className="px-4 py-3 border-b border-[#2a2a2a]">
             <Link
@@ -711,7 +727,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   return (
-    <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16">
+    <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
 
       {/* Back nav — canonical only. In the overlay the X / Escape /
           backdrop-click triad already dismisses; rendering a "back"
