@@ -178,9 +178,13 @@ export async function GET(req: NextRequest) {
   }
 
   // Discovery feed: enumerate curated collections, hydrate each from
-  // inprocess /api/collection (KV fallback when the indexer is lagging).
-  // Proxying inprocess's global feed instead would surface collections
-  // we didn't deploy and miss our freshly-deployed ones.
+  // inprocess /api/collection (KV fallback when the indexer is lagging),
+  // then sort by inprocess `created_at` desc — same pattern the Mints
+  // feed uses in app/api/timeline/route.ts. KV stores membership only;
+  // ordering lives in inprocess. Proxying inprocess's global feed
+  // instead would surface collections we didn't deploy and miss our
+  // freshly-deployed ones (those get Infinity below so they sort to
+  // the top while the indexer catches up).
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
@@ -194,11 +198,9 @@ export async function GET(req: NextRequest) {
     )
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
-    const start = (page - 1) * limit
-    const slice = visible.slice(start, start + limit)
     const client = serverBaseClient()
-    const collections = await Promise.all(
-      slice.map(async (address) => {
+    const hydrated = await Promise.all(
+      visible.map(async (address) => {
         // Hydrate metadata + bulk-collect eligibility in parallel. Mirrors
         // /api/featured/collections-hydrated so the discovery grid surfaces
         // the same one-click "collect all" UX as the featured rows.
@@ -209,6 +211,18 @@ export async function GET(req: NextRequest) {
         return { ...metaPart, ...eligibility }
       }),
     )
+    // Indexer-lagging deploys have no `created_at` (KV fallback shape) —
+    // Infinity sorts them above any indexed entry, so a just-created
+    // collection lands at the top of the feed while inprocess catches up.
+    hydrated.sort((a, b) => {
+      const aRaw = (a as { created_at?: string }).created_at
+      const bRaw = (b as { created_at?: string }).created_at
+      const aTs = aRaw ? new Date(aRaw).getTime() : Number.POSITIVE_INFINITY
+      const bTs = bRaw ? new Date(bRaw).getTime() : Number.POSITIVE_INFINITY
+      return bTs - aTs
+    })
+    const start = (page - 1) * limit
+    const collections = hydrated.slice(start, start + limit)
     // Visibility for "empty feed" reports — distinguishes "nothing tracked
     // yet" from "tracked but inprocess+KV both returned nothing".
     if (collections.length === 0) {

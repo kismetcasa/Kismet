@@ -16,15 +16,11 @@ const keyAuthorizedCreators = (collection: string) =>
 // timeline fan-out for moment lookups across all scopes.
 const KEY = 'kismetart:collections'
 // Curator-blessed positive set — Create Collection form deploys plus
-// any legacy real collection the curator manually promoted. Source
-// of truth for collection-shaped surfaces. ZSET (scored by deploy
-// timestamp) rather than SET so Discover paginates newest-first;
-// `-z` suffix is required because Redis rejects ZADD on a key that
-// already holds a SET. See scripts/migrate-created-collections-zset.mjs.
-const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections-z'
-// Legacy SET, read-only. getUserCollections dual-reads so entries
-// stranded here still surface even if the migration script never runs.
-const CREATED_COLLECTIONS_LEGACY_KEY = 'kismetart:created-collections'
+// any legacy real collection the curator manually promoted. Source of
+// truth for collection-shaped surfaces. Plain SET — chronological
+// order for the Discover feed is derived from inprocess's `created_at`
+// at hydrate time, mirroring how the Mints feed sorts by `created_at`.
+const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections'
 // Mints minted via Kismet's MintForm or as a Create Collection cover.
 // Members are `<addr>:<tokenId>` strings. Source of truth for the
 // Mints feed; the timeline route filters scope=standalone by membership.
@@ -71,23 +67,7 @@ export async function getTrackedCollectionsByScope(
 // collections list, mint dropdown, search, moment-detail chip).
 export async function getUserCollections(): Promise<string[]> {
   try {
-    // ZSET entries (chronological, newest first) come from real-time
-    // create-form writes. Legacy SET entries predate the ZSET cutover
-    // and get appended after — older content at the bottom is correct.
-    // Dedupe handles the post-migration overlap.
-    const [zsetMembers, legacyMembers] = await Promise.all([
-      redis.zrange(CREATED_COLLECTIONS_KEY, 0, -1, { rev: true }) as Promise<string[]>,
-      redis.smembers(CREATED_COLLECTIONS_LEGACY_KEY) as Promise<string[]>,
-    ])
-    const seen = new Set<string>()
-    const out: string[] = []
-    for (const addr of [...zsetMembers, ...legacyMembers]) {
-      const lower = addr.toLowerCase()
-      if (seen.has(lower)) continue
-      seen.add(lower)
-      out.push(addr)
-    }
-    return out
+    return (await redis.smembers(CREATED_COLLECTIONS_KEY)) as string[]
   } catch {
     return []
   }
@@ -118,16 +98,9 @@ export async function addTrackedCollection(
   try {
     const ops: Promise<unknown>[] = [redis.sadd(KEY, address)]
     // Auto-deploy wrappers join only KEY — never the curator-blessed
-    // set, so they don't surface as collections. NX: re-POSTs don't
-    // bump position.
+    // set, so they don't surface as collections.
     if (source === 'create-form') {
-      ops.push(
-        redis.zadd(
-          CREATED_COLLECTIONS_KEY,
-          { nx: true },
-          { score: Date.now(), member: address },
-        ),
-      )
+      ops.push(redis.sadd(CREATED_COLLECTIONS_KEY, address))
     }
     if (meta?.name) {
       const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
