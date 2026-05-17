@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import {
   useSharedVideoContext,
   useSharedVideoZIndex,
+  scrollableAncestors,
 } from '@/providers/SharedVideoProvider'
 
 interface Props {
@@ -61,11 +62,21 @@ export function SharedVideoSlot({
     const el = ref.current
     if (!el) return
 
+    // Inner-scroller awareness. Window scroll alone misses any ancestor
+    // with overflow:auto/scroll/hidden — the featured collection's
+    // mobile horizontal mints row, for example. We need the slot to
+    // re-position on those ancestors' scroll AND we need positionElement
+    // to clip-path the video to their intersected bounds. Compute the
+    // list once on mount and pass through to the pool so it doesn't
+    // re-walk + re-getComputedStyle on every refresh tick.
+    const clipAncestors = scrollableAncestors(el)
+
     const release = ctx.acquire(src, {
       ref: el,
       controls,
       zIndex: finalZIndex,
       onError: () => onErrorRef.current?.(),
+      clipAncestors,
     })
 
     // rAF-coalesce repositioning. Scroll fires per-pixel on most
@@ -84,12 +95,18 @@ export function SharedVideoSlot({
     ro.observe(el)
     window.addEventListener('scroll', scheduleRefresh, { passive: true })
     window.addEventListener('resize', scheduleRefresh)
+    for (const a of clipAncestors) {
+      a.addEventListener('scroll', scheduleRefresh, { passive: true })
+    }
 
     return () => {
       release()
       ro.disconnect()
       window.removeEventListener('scroll', scheduleRefresh)
       window.removeEventListener('resize', scheduleRefresh)
+      for (const a of clipAncestors) {
+        a.removeEventListener('scroll', scheduleRefresh)
+      }
     }
   }, [ctx, src, controls, finalZIndex])
 

@@ -58,15 +58,19 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
   }, [adminAddr, initialUsername])
 
   return (
-    <article className="border border-[#2a2a2a] bg-[#161616] overflow-hidden">
-      {/* Header: cover image + collection info side-by-side, full row
-          width. Was a 5/12 left column with the mints to the right; flipped
-          to a horizontal header so the mints grid below can use the full
-          width and lay out 10-across at readable sizes. */}
-      <div className="flex flex-col sm:flex-row gap-4 p-4 border-b border-[#2a2a2a]">
+    // Two layouts share one tree:
+    //   mobile (<sm): flex-row — cover on the left, mints scroll horizontally
+    //     to the right. Single row, no info section. Curator's call: keeps
+    //     featured rows compact in the feed instead of a tall vertical block.
+    //   sm+: block — header (cover + info) on top, mints grid below.
+    // The SharedVideoProvider clips video elements to their scrollable
+    // ancestor's bounds (see clip-path in positionElement), so the
+    // horizontal scroller doesn't leak videos past the article edge.
+    <article className="flex sm:block border border-[#2a2a2a] bg-[#161616] overflow-hidden">
+      <div className="flex-shrink-0 sm:flex sm:flex-row sm:gap-4 sm:p-4 sm:border-b sm:border-[#2a2a2a]">
         <Link
           href={`/collection/${c.contractAddress}`}
-          className="relative aspect-square w-full sm:w-40 md:w-48 flex-shrink-0 block overflow-hidden bg-[#111] group/img"
+          className="relative aspect-square w-32 sm:w-40 md:w-48 flex-shrink-0 block overflow-hidden bg-[#111] group/img"
         >
           {isAdmin && (
             <button
@@ -89,7 +93,7 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-              sizes="(max-width: 640px) 100vw, 192px"
+              sizes="(max-width: 640px) 128px, 192px"
               onAllError={() => setImgFailed(true)}
               priority={priority}
               preferProxy
@@ -100,9 +104,14 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               <span className="text-[#2a2a2a] font-mono text-xs">no preview</span>
             </div>
           )}
+          {/* Mobile-only name overlay: the sm+ info section is hidden,
+              so the collection still needs a label inside the row. */}
+          <span className="sm:hidden absolute inset-x-0 bottom-0 px-2 py-1 text-[10px] font-mono text-[#efefef] bg-gradient-to-t from-[#0d0d0d]/95 to-transparent truncate">
+            {name}
+          </span>
         </Link>
 
-        <div className="flex flex-col gap-1 min-w-0 flex-1">
+        <div className="hidden sm:flex flex-col gap-1 min-w-0 flex-1">
           <h3 className="text-base font-mono text-[#efefef] truncate">{name}</h3>
           {creatorLabel && (
             <Link
@@ -136,29 +145,22 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
         </div>
       </div>
 
-      {/* Mints grid: up to 20 moments in chronological order (oldest at
-          top-left). Static layout — was a horizontal scroller, which let
-          the SharedVideoProvider's position:fixed video element paint
-          past the article's clip into the page margin (cards scrolled
-          off-screen still had on-page slots). A static grid keeps every
-          slot inside the article so the pool can't paint outside it.
-          10-across at xl matches the curator's request; falls back to
-          fewer columns below xl so cards stay legible at narrower
-          viewports. Compact MomentCard mode keeps image + name +
-          price·supply + collect button visible at ~130px-wide cards. */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-10 gap-2 p-3">
+      {/* Mints: up to 20 in chronological order (oldest → newest, left to
+          right). Single switch between horizontal scroller and grid via
+          responsive classes — sm+ wins, mobile defaults apply below it. */}
+      <div className="flex-1 min-w-0 overflow-x-auto flex gap-2 p-2 snap-x snap-mandatory [-webkit-overflow-scrolling:touch] sm:flex-none sm:overflow-visible sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-10 sm:gap-2 sm:p-3 sm:snap-none">
         {c.moments.length === 0 ? (
-          <div className="col-span-full flex items-center justify-center min-h-[200px]">
+          <div className="flex-1 sm:col-span-full flex items-center justify-center min-h-[160px] sm:min-h-[200px]">
             <span className="text-xs font-mono text-[#555]">no moments yet</span>
           </div>
         ) : (
           c.moments.map((m, idx) => (
-            <MomentCard
+            <div
               key={m.id || `${m.address}-${m.token_id}`}
-              moment={m}
-              compact
-              priority={priority && idx === 0}
-            />
+              className="w-32 flex-shrink-0 snap-start sm:w-auto sm:flex-shrink"
+            >
+              <MomentCard moment={m} compact priority={priority && idx === 0} />
+            </div>
           ))
         )}
       </div>
