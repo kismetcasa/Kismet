@@ -33,7 +33,6 @@ interface ListButtonProps {
   // render a snippet preview instead of "no preview".
   contentUri?: string
   contentMime?: string
-  onListed?: () => void
   buttonClassName?: string
 }
 
@@ -45,7 +44,6 @@ export function ListButton({
   creatorAddress,
   contentUri,
   contentMime,
-  onListed,
   buttonClassName,
 }: ListButtonProps) {
   const { address, isConnected } = useAccount()
@@ -222,7 +220,6 @@ export function ListButton({
       toast.success('Listed for sale!', { id: 'list' })
       setShowForm(false)
       setPriceInput('')
-      onListed?.()
     } catch (err) {
       toastError('Listing', err, { id: 'list' })
     } finally {

@@ -40,7 +40,7 @@ export const USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 // A PR that silently changes this constant rotates ALL future revenue to the
 // new address. Any change must be reviewed by a treasury signer and verified
 // against the on-chain createReferral configuration on existing collections.
-export const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
+const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 
 // Zora 1155 mint() (post-v2.0.0 contracts). All inprocess and Kismet deploys
 // from the last ~year are new-style; legacy mintWithRewards() is intentionally
@@ -55,7 +55,7 @@ export const ZORA_1155_MINT_ABI = parseAbi([
 // ERC20Minter — note that mint() lives on the strategy itself, NOT on the 1155
 // (unlike the FixedPrice flow). Args are typed parameters, no minterArguments
 // bytes blob.
-export const ZORA_ERC20_MINTER_ABI = parseAbi([
+const ZORA_ERC20_MINTER_ABI = parseAbi([
   'function mint(address mintTo, uint256 quantity, address tokenAddress, uint256 tokenId, uint256 totalValue, address currency, address mintReferral, string comment)',
 ])
 
@@ -66,7 +66,7 @@ export const ERC20_ABI = parseAbi([
 
 // FixedPriceSale's mint() reads (mintTo, comment) out of an abi-encoded blob
 // passed as the minterArguments parameter on the 1155 contract.
-export function encodeFixedPriceMinterArgs(mintTo: Address, comment: string): `0x${string}` {
+function encodeFixedPriceMinterArgs(mintTo: Address, comment: string): `0x${string}` {
   return encodeAbiParameters(parseAbiParameters('address, string'), [mintTo, comment ?? ''])
 }
 
@@ -109,7 +109,7 @@ export const MULTICALL3_ADDRESS: Address = '0xcA11bde05977b3631167028862bE2a1739
 // `(success, returnData)[]`. We use `allowFailure: false` so any inner
 // revert undoes the whole batch — same all-or-nothing UX as atomic EIP-5792,
 // preventing partial-charge surprises.
-export const MULTICALL3_ABI = parseAbi([
+const MULTICALL3_ABI = parseAbi([
   'struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }',
   'struct Result { bool success; bytes returnData; }',
   'function aggregate3Value(Call3Value[] calls) payable returns (Result[] returnData)',
@@ -158,7 +158,7 @@ export function buildMulticall3Batch(calls: readonly { to: Address; data: Hex; v
 // returns a pathological value before the user signs it. Applies to every
 // ETH-priced mint path (collect-all, direct-collect) so a single source of
 // truth governs the bound.
-export const MAX_REASONABLE_MINT_FEE_WEI = parseEther('0.01')
+const MAX_REASONABLE_MINT_FEE_WEI = parseEther('0.01')
 
 /**
  * Read mintFee() from a Zora 1155 collection and assert it's within the

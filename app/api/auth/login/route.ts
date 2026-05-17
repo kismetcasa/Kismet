@@ -5,6 +5,7 @@ import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from '@/lib/config'
+import { ADMIN_SESSION_COOKIE } from '@/lib/curator'
 
 // 4 hours — matches the prior signature-TTL UX so admins/curators sign
 // once per work session. Stored server-side in Redis so we can revoke
@@ -100,7 +101,7 @@ export async function POST(req: NextRequest) {
   await redis.set(`kismetart:auth-session:${token}`, signer, { ex: SESSION_TTL_SECONDS })
 
   const res = NextResponse.json({ ok: true, address: signer })
-  res.cookies.set('kismetart-admin', token, {
+  res.cookies.set(ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',

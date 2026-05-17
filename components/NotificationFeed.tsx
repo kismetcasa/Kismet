@@ -7,7 +7,7 @@ import { NotificationRow } from './NotificationRow'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { humanError } from '@/lib/toast'
-import type { Notification, NotificationType } from '@/lib/notifications'
+import { NON_MUTEABLE_TYPES, type Notification, type NotificationType } from '@/lib/notifications'
 
 type TypeFilter = 'all' | NotificationType
 
@@ -62,11 +62,6 @@ function loadOrder(): NotificationType[] {
     return DRAGGABLE_FILTERS
   }
 }
-
-// Mirror of NON_MUTEABLE_TYPES in lib/notifications.ts — money-bearing
-// types bypass actor-mute server-side, so the client must keep them in
-// the feed when optimistically applying a mute.
-const FINANCIAL_TYPES = new Set<NotificationType>(['sale', 'airdrop', 'payout'])
 
 const POLL_INTERVAL_MS = 30_000
 
@@ -260,11 +255,11 @@ export function NotificationFeed() {
       // Only remove rows the server will actually hide — financial types
       // bypass actor-mute, so leaving them in avoids a refetch flicker.
       const removed = prev.filter(
-        (n) => n.actor?.toLowerCase() === lower && !FINANCIAL_TYPES.has(n.type),
+        (n) => n.actor?.toLowerCase() === lower && !NON_MUTEABLE_TYPES.has(n.type),
       ).length
       if (removed > 0) setTotal((t) => Math.max(0, t - removed))
       return prev.filter(
-        (n) => n.actor?.toLowerCase() !== lower || FINANCIAL_TYPES.has(n.type),
+        (n) => n.actor?.toLowerCase() !== lower || NON_MUTEABLE_TYPES.has(n.type),
       )
     })
     try {
@@ -355,7 +350,7 @@ export function NotificationFeed() {
             onClick={() => handleRowClick(n.id)}
             // Financial rows bypass actor-mute server-side; hiding the
             // button on them avoids "I muted them, why is this still here?"
-            onMute={FINANCIAL_TYPES.has(n.type) ? undefined : handleMute}
+            onMute={NON_MUTEABLE_TYPES.has(n.type) ? undefined : handleMute}
           />
         ))}
       </div>

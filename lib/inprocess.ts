@@ -8,7 +8,7 @@ export const INPROCESS_API = 'https://api.inprocess.world/api'
 // them on notifications. Defined here so frontend and backend share one source.
 export const DEFAULT_COLLECT_COMMENT = 'collected via Kismet Art'
 
-export interface SalesConfig {
+interface SalesConfig {
   type: 'fixedPrice' | 'erc20Mint'
   pricePerToken: string
   saleStart: string
@@ -16,13 +16,13 @@ export interface SalesConfig {
   currency?: string
 }
 
-export interface MomentAdmin {
+interface MomentAdmin {
   address: string
   username?: string
   hidden: boolean
 }
 
-export interface MomentMetadataInline {
+interface MomentMetadataInline {
   name?: string
   description?: string
   image?: string

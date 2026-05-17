@@ -42,7 +42,7 @@ export function isOperatorAddress(address: string | undefined | null): boolean {
 }
 
 // Admin address — single privileged wallet that passes admin-session
-// signatures (see app/api/permissions/audit/route.ts and lib/curator.ts)
+// signatures (see lib/curator.ts)
 // and is reported as `isAdmin: true` by /api/admin/me. Always
 // lowercased to match verifyMessage's recovered-signer comparison.
 // Default seeds the platform admin so a missing env var doesn't lock

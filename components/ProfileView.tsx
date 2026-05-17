@@ -13,6 +13,7 @@ import { CuratePanel } from './CuratePanel'
 import { useAdmin } from '@/contexts/AdminContext'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
+import type { AirdropRecord } from '@/lib/airdrops'
 import { shortAddress, formatPrice } from '@/lib/inprocess'
 import { MomentImage } from './MomentImage'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
@@ -39,16 +40,6 @@ interface ArtistCollection {
   name: string
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
   createdAt?: string
-}
-
-// Shape returned by inprocess GET /api/airdrops, normalized through our proxy.
-// One row per airdropped (token, recipient) pair — multiple recipients on a
-// single airdrop yield multiple rows.
-interface AirdropRecord {
-  collectionAddress: string
-  tokenId: string
-  recipient: { address: string; username?: string }
-  amount: number
 }
 
 // Collection preview thumbnail with multi-gateway fallback. MomentImage

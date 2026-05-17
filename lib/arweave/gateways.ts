@@ -13,7 +13,6 @@ const ARWEAVE_GATEWAYS = [
 const IPFS_GATEWAYS = [
   'https://ipfs.io/ipfs',
   'https://dweb.link/ipfs',
-  'https://cloudflare-ipfs.com/ipfs',
 ] as const
 
 /**

@@ -2,7 +2,13 @@ import { cookies } from 'next/headers'
 import { redis } from './redis'
 import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from './config'
 
-const SESSION_COOKIE = 'kismetart-admin'
+/**
+ * HttpOnly cookie name carrying the opaque admin/curator session token
+ * issued by POST /api/auth/login. Distinct from the user session cookie
+ * exported as SESSION_COOKIE from lib/session.ts — admin and user surfaces
+ * use independent cookies with different TTLs and authorization checks.
+ */
+export const ADMIN_SESSION_COOKIE = 'kismetart-admin'
 
 interface SessionResult {
   signer: string
@@ -30,7 +36,7 @@ interface SessionError {
  */
 export async function verifyPrivilegedSession(): Promise<SessionResult | SessionError> {
   const cookieStore = await cookies()
-  const token = cookieStore.get(SESSION_COOKIE)?.value
+  const token = cookieStore.get(ADMIN_SESSION_COOKIE)?.value
   if (!token) return { error: 'Not authenticated', status: 401 }
 
   const signer = await redis.get<string>(`kismetart:auth-session:${token}`).catch(() => null)
