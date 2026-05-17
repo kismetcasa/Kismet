@@ -1,140 +1,87 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
+import { useEffect, useMemo, useState } from 'react'
+import { isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
-import {
-  loadVideoPlaybackState,
-  saveVideoPlaybackState,
-} from '@/lib/media/videoPlaybackState'
 import { MomentImg } from './MomentImage'
+import { SharedVideoSlot } from './SharedVideoSlot'
 
-type VideoAttrs = Omit<
-  React.VideoHTMLAttributes<HTMLVideoElement>,
-  'src' | 'poster' | 'onError'
->
-
-interface MomentVideoProps extends VideoAttrs {
+interface MomentVideoProps {
   /** Raw URI for the video media: ar://, ipfs://, or https://. */
   src: string
-  /** Optional poster URI. When `showPosterLayer` is on, this renders as an
-   *  <img> behind the video so the slot has something to show the instant
-   *  the page paints (thumbhash → /api/img poster → video first frame). */
+  /** Optional poster URI. When `showPosterLayer` is on, this renders as
+   *  an <img> behind the video slot so the surface paints content the
+   *  instant it mounts (thumbhash → /api/img poster → video first frame). */
   poster?: string
   /** Base64 thumbhash — drives the blur placeholder on the poster layer. */
   thumbhash?: string
-  /** Render the poster as a static <img> layer behind the video. Requires
-   *  the parent to be `position: relative` with explicit dimensions. On for
-   *  card/modal/detail; off for the lightbox where the video sizes itself
-   *  via max-w/max-h. */
+  /** Render the poster as a static <img> layer behind the video slot.
+   *  On for card/modal/detail surfaces; off for the lightbox where the
+   *  video sizes itself via max-w/max-h with no relative parent. */
   showPosterLayer?: boolean
-  /** Fired once every gateway has errored, so the parent can swap in a placeholder. */
+  /** Z-index for the persistent video element while this surface owns
+   *  it. Default (10) sits above page content; overlay surfaces should
+   *  pass a higher value, OR wrap in <SharedVideoZIndexProvider>. */
+  zIndex?: number
+  /** Show native controls — implies "committed viewing" and disables
+   *  the off-screen auto-pause behaviour. Detail page, lightbox. */
+  controls?: boolean
+  /** className for the slot placeholder (sizing + layout classes you'd
+   *  normally pass to <video> directly). */
+  className?: string
+  /** Fired once every gateway has errored for the video (separate from
+   *  poster errors). Parent can swap in a placeholder. */
   onAllError?: () => void
 }
 
 /**
- * <video> equivalent of MomentImage. Three behaviours that together make
- * video moments feel instant:
+ * Per-surface "view" of a video moment. Composes:
+ *   - Poster image layer (MomentImg, per-surface, cheap to re-mount)
+ *   - Thumbhash blur layer (per-surface, instant on paint)
+ *   - SharedVideoSlot — anchor for the persistent video element that
+ *     lives in the root layout's SharedVideoProvider pool
  *
- *   1. The poster renders as a static <img> behind the video (when
- *      `showPosterLayer` is on), with an inline thumbhash blur for the
- *      very first paint. Without this, the slot stays blank for the 1-10s
- *      it can take to stream the first video frame from a cold Arweave
- *      gateway. We use MomentImg (not MomentImage) here because
- *      MomentImage's `animate-pulse` skeleton — which fires when no
- *      thumbhash is stored — reads as a blink for moments minted before
- *      the thumbhash backfill existed. MomentImg keeps the same /api/img
- *      proxy + gateway-walk semantics without the skeleton.
- *
- *   2. The video bytes lazy-load via IntersectionObserver. Only feed-card
- *      surfaces benefit (lightbox/modal/detail opt into eager loading via
- *      `controls` or `preload="auto"`) — it stops 30 off-screen videos
- *      from racing the visible ones for bandwidth.
- *
- *   3. The gateway walker (`useFallbackUrl`) and the all-gateways-failed
- *      fallback to the poster image still apply, matching MomentImage's
- *      onAllError contract.
+ * The slot pattern means the actual <video> element survives across
+ * route transitions (Plan C). Surfaces unmount; the element doesn't.
+ * On the next surface that registers a slot for the same src, the
+ * element CSS-positions to overlay the new slot. Same element, same
+ * decoder, no re-decode flicker, currentTime preserved natively.
  */
 export function MomentVideo({
   src,
   poster,
   thumbhash,
   showPosterLayer,
+  zIndex,
+  controls,
+  className,
   onAllError,
-  ...rest
 }: MomentVideoProps) {
-  const { url, onError } = useFallbackUrl(src, onAllError)
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const [loaded, setLoaded] = useState(false)
-  // Tracks whether the poster URL has been confirmed unrenderable (e.g.
-  // legacy mints where meta.image was set to the video URL itself, so the
-  // browser receives video bytes and can't decode them as an <img>).
-  // Reactive — we don't pattern-match the URL, we just listen for the
-  // gateway walker to exhaust without a single successful decode.
+
+  // Per-surface poster degradation. If MomentImg walks all gateways
+  // without successfully rendering the URL as an image (e.g. legacy
+  // bug where meta.image was set to the video URL itself), drop the
+  // image layer and fall through to thumbhash / bare slot.
   const [posterFailed, setPosterFailed] = useState(false)
   useEffect(() => { setPosterFailed(false) }, [poster])
-  // Eager surfaces (controls or preload=auto) start fetching immediately;
-  // others defer the bytes-fetch until the element approaches the viewport.
-  const eager = !!rest.controls || rest.preload === 'auto'
-  const [shouldLoad, setShouldLoad] = useState(eager)
-  useEffect(() => { setLoaded(false) }, [url])
 
-  // Pause off-screen videos AND defer their initial load. Skipped on
-  // controls — the user owns play/pause there and the observer would
-  // fight their input. rootMargin gives the bytes a head start so the
-  // first frame is usually ready by the time the card is fully visible.
+  // Per-surface video failure. The pool walks gateways internally; when
+  // all are exhausted it fires onError on the active slot.
+  const [videoFailed, setVideoFailed] = useState(false)
+  useEffect(() => { setVideoFailed(false) }, [src])
+
+  // Surface the catastrophic "no video AND no poster" case to the
+  // parent via onAllError. Done in an effect to avoid a side effect
+  // during render.
   useEffect(() => {
-    const el = videoRef.current
-    if (!el || rest.controls) return
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setShouldLoad(true)
-          el.play().catch(() => {})
-        } else {
-          el.pause()
-        }
-      },
-      { threshold: 0.01, rootMargin: '200px' },
-    )
-    io.observe(el)
-    return () => io.disconnect()
-  }, [url, rest.controls])
+    if (videoFailed && (!poster || posterFailed)) onAllError?.()
+  }, [videoFailed, posterFailed, poster, onAllError])
 
-  // Track playback position for cross-mount resume. Saves continuously
-  // (throttled) for every video — including card autoplay-loop previews
-  // — so card→detail navigation can pick up from wherever the loop
-  // happened to be when the user clicked. Without this, the detail page
-  // restarts from 0:00 and the click feels like a hard reload.
-  useEffect(() => {
-    const el = videoRef.current
-    if (!el) return
-    let lastSave = 0
-    const throttledSave = () => {
-      const now = Date.now()
-      if (now - lastSave < 1000) return
-      lastSave = now
-      saveVideoPlaybackState(src, el)
-    }
-    const finalSave = () => saveVideoPlaybackState(src, el)
-    el.addEventListener('timeupdate', throttledSave)
-    el.addEventListener('pause', finalSave)
-    return () => {
-      el.removeEventListener('timeupdate', throttledSave)
-      el.removeEventListener('pause', finalSave)
-      finalSave()
-    }
-  }, [src, url])
-
-  // Poster layer used both as the placeholder behind the video AND as the
-  // fallback when every video gateway has errored. MomentImg routes ar:/
-  // ipfs: through /api/img and walks the gateway pool on proxy error.
-  // Thumbhash (when present) paints behind it as an instant placeholder.
-  // onAllError flips posterFailed so the renderer can drop through to
-  // the thumbhash branch (or to a bare dark slot) — catches the legacy
-  // bug where meta.image was set to the video URL itself.
-  const renderPosterLayer = () => (
+  // Shared poster + thumbhash layer used by both the main render and
+  // the videoFailed fallback. Extracted to keep the two render paths
+  // from drifting.
+  const posterLayer = (posterSrc: string) => (
     <>
       {blurDataURL && (
         <span
@@ -144,108 +91,44 @@ export function MomentVideo({
         />
       )}
       <MomentImg
-        src={poster!}
+        src={posterSrc}
         alt=""
-        // skipProxy: posters render on every video moment, every feed
-        // load. Routing through /api/img would stream those bytes
-        // through our server on every cold-cache hit. Direct gateway
-        // URL keeps the bytes path browser → arweave.net, and
-        // gateway-walking on error still works via useFallbackUrl.
+        // skipProxy: posters route direct from gateway, not through
+        // /api/img. See lib/media/shareImage.ts for the rationale.
         skipProxy
-        className={`absolute inset-0 ${rest.className ?? ''}`.trim()}
+        className={`absolute inset-0 ${className ?? ''}`.trim()}
         onAllError={() => setPosterFailed(true)}
       />
     </>
   )
 
-  // All video gateways exhausted. Show the poster if we have one (and
-  // it's still a viable image). Otherwise return null and let the
-  // parent's bg show — a static "video here" icon read as "permanently
-  // broken" even while the video was just slow to load.
-  if (!url) {
-    if (poster && !posterFailed) {
-      if (showPosterLayer) return renderPosterLayer()
-      const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
-      // eslint-disable-next-line @next/next/no-img-element
-      return <img src={posterFallback} alt="" className={rest.className} />
-    }
-    return null
+  if (videoFailed) {
+    if (!poster || posterFailed) return null
+    if (showPosterLayer) return posterLayer(poster)
+    const posterFallback = isProxiable(poster) ? proxyUrl(poster) : poster
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={posterFallback} alt="" className={className} />
   }
 
-  // Native `poster` attr is redundant when the image layer paints the
-  // pre-load state — skipping it avoids a duplicate poster fetch. For
-  // surfaces without the image layer (lightbox) keep the native poster so
-  // the slot isn't blank between metadata-load and first-frame.
-  const nativePoster = showPosterLayer
-    ? undefined
-    : poster && isProxiable(poster) ? proxyUrl(poster) : poster
-
-  // Decide what to render behind the video. Priority: poster image (when
-  // available AND not known-broken) > thumbhash blur (when we have one) >
-  // nothing (let the parent's bg show through). Gated on showPosterLayer
-  // — their absolute inset-0 positioning needs a bounded relative parent,
-  // which the lightbox doesn't provide.
   const showImageLayer = showPosterLayer && !!poster && !posterFailed
-  const showThumbhashLayer = showPosterLayer && !showImageLayer && !loaded && !!blurDataURL
-
-  // While there's a placeholder behind it, keep the video at opacity-0
-  // so the placeholder shows through. Once loaded, the video paints over
-  // whichever placeholder we chose. When there's no placeholder at all,
-  // the video stays visible from the start — the parent's bg-[#111]
-  // covers the empty <video> element until the first frame decodes,
-  // which reads as "loading" rather than "broken."
-  const hideUntilLoaded = (showImageLayer || showThumbhashLayer) && !loaded
-    ? ' opacity-0'
-    : ''
+  const showThumbhashLayer = showPosterLayer && !showImageLayer && !!blurDataURL
 
   return (
     <>
-      {showImageLayer && renderPosterLayer()}
-      {showThumbhashLayer && (
+      {showImageLayer && posterLayer(poster!)}
+      {showThumbhashLayer && blurDataURL && (
         <span
           aria-hidden
           className="absolute inset-0 bg-cover bg-center pointer-events-none"
           style={{ backgroundImage: `url(${blurDataURL})` }}
         />
       )}
-      <video
-        ref={videoRef}
-        key={url}
-        autoPlay
-        muted
-        loop
-        playsInline
-        preload="metadata"
-        {...rest}
-        // `relative z-10` puts the <video> above the absolute-positioned
-        // poster/thumbhash layers in the same stacking context. Without
-        // it, positioned-auto siblings (the placeholder MomentImg) paint
-        // above non-positioned ones (the <video>), so the poster covers
-        // the video forever even once it's playing.
-        className={`${rest.className ?? ''} relative z-10${hideUntilLoaded}`.trim()}
-        poster={nativePoster}
-        src={shouldLoad ? url : undefined}
-        onError={onError}
-        onLoadedMetadata={(e) => {
-          // Resume from the last saved position — but only on controlled
-          // surfaces (detail page, lightbox). Cards always start fresh
-          // from the beginning of the loop; otherwise re-visiting the
-          // feed after watching the detail page would have cards plop
-          // into the middle of long videos. Threshold dropped to >0 so
-          // short looping videos (~3s, where any in-loop position is
-          // legitimately the resume point) actually get the seek.
-          if (rest.controls) {
-            const saved = loadVideoPlaybackState(src)
-            if (saved && saved.currentTime > 0) {
-              try { e.currentTarget.currentTime = saved.currentTime } catch {}
-            }
-          }
-          rest.onLoadedMetadata?.(e)
-        }}
-        onLoadedData={(e) => {
-          setLoaded(true)
-          rest.onLoadedData?.(e)
-        }}
+      <SharedVideoSlot
+        src={src}
+        controls={!!controls}
+        zIndex={zIndex}
+        onError={() => setVideoFailed(true)}
+        className={className}
       />
     </>
   )

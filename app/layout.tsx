@@ -18,7 +18,16 @@ export const metadata: Metadata = {
   },
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+  modal,
+}: {
+  children: React.ReactNode
+  // Parallel slot — populated by the @modal route tree when an
+  // intercepting route matches. See app/@modal/default.tsx for the
+  // null fallback when no intercepted route is active.
+  modal: React.ReactNode
+}) {
   return (
     <html lang="en">
       <head>
@@ -38,6 +47,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <main className="pt-14 min-h-screen bg-[#0d0d0d]">
             {children}
           </main>
+          {/* Intercepted routes render here as an overlay over the
+              still-mounted {children} below. The feed stays alive
+              underneath, scroll position preserved, card videos still
+              playing — combined with SharedVideoProvider, the same
+              video element CSS-transitions from card to overlay. */}
+          {modal}
           <Toaster
             position="bottom-center"
             offset={{ bottom: 16 }}

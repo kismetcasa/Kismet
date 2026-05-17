@@ -24,9 +24,9 @@ interface SplitsState {
 }
 
 /**
- * Bundles the splits state shared between MomentModal and MomentDetailView:
- * the stored recipient list (rendered for every viewer in the splits panel)
- * plus the creator-only distribute flow.
+ * Bundles the splits state for MomentDetailView: the stored recipient list
+ * (rendered for every viewer in the splits panel) plus the creator-only
+ * distribute flow.
  *
  * `splitAddress` is gated on `isCreator && hasSplits` because only the
  * distribute UI uses it. `currency` is injected by the caller — inprocess

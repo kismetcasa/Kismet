@@ -3,47 +3,21 @@ import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { INPROCESS_API, resolveUri, type MomentDetail } from '@/lib/inprocess'
+import { resolveUri } from '@/lib/inprocess'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
 import { getMomentMeta as getKvMomentMeta } from '@/lib/notifications'
-import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
+import { fetchMomentDetail } from '@/lib/momentDetail'
+import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { MomentDetailView } from '@/components/MomentDetailView'
 
 interface Props {
   params: Promise<{ address: string; tokenId: string }>
 }
-
-// React.cache dedupes within a single request so generateMetadata and
-// MomentPage share results — without it each render makes two upstream
-// inprocess fetches plus two Redis reads each for hidden + KV fallback.
-const fetchDetail = cache(async (address: string, tokenId: string): Promise<MomentDetail | null> => {
-  try {
-    const url = new URL(`${INPROCESS_API}/moment`)
-    url.searchParams.set('collectionAddress', address)
-    url.searchParams.set('tokenId', tokenId)
-    url.searchParams.set('chainId', '8453')
-    // 60s cache so a freshly-minted token isn't stuck rendering null for an
-    // hour while inprocess catches up. Same window used by the collection
-    // page's moments fetch. Hidden state is read uncached from KV alongside
-    // and injected into the returned shape — the /api/moment proxy does the
-    // same thing so the client cache and the server-rendered initialDetail
-    // stay consistent on first paint and on refresh.
-    const [res, hidden] = await Promise.all([
-      fetch(url.toString(), { next: { revalidate: 60 } }),
-      isMomentHidden(address, tokenId),
-    ])
-    if (!res.ok) return null
-    const data = (await res.json()) as MomentDetail
-    return { ...data, hidden }
-  } catch {
-    return null
-  }
-})
 
 // For the cover token (tokenId='1') of a kismet-tracked collection we have
 // the same metadata in KV that we wrote at deploy time. Synthesize a minimal
@@ -117,7 +91,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return { title: 'Moment — Kismet Art' }
   }
   const [detail, fallback] = await Promise.all([
-    fetchDetail(address, tokenId),
+    fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
   ])
   const meta = detail?.metadata ?? fallback
@@ -170,7 +144,7 @@ export default async function MomentPage({ params }: Props) {
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
   const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress] = await Promise.all([
-    fetchDetail(address, tokenId),
+    fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
     getInitialCollectionMeta(address),
     getKvCreatorAddress(address, tokenId),
@@ -184,7 +158,7 @@ export default async function MomentPage({ params }: Props) {
   const creator =
     detail?.creator?.address?.toLowerCase() ??
     kvCreatorAddress?.toLowerCase() ??
-    detail?.momentAdmins?.[0]?.toLowerCase()
+    pickFirstNonOperatorAdmin(detail?.momentAdmins)?.toLowerCase()
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator
 
