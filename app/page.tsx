@@ -275,8 +275,15 @@ export default function DiscoverPage() {
     try { localStorage.setItem(ORDER_KEY, JSON.stringify(next)) } catch {}
   }
 
+  // Featured runs at the wider 88rem cap (same as the moment detail
+  // overlay) so each featured collection's preview can lay its mints
+  // out 10-across at a readable ~130px per card. Other tabs stay at
+  // max-w-6xl — they're standard moment / collection grids that read
+  // fine at the narrower width.
+  const widerTab = active === 'featured'
+
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6">
+    <div className={`${widerTab ? 'max-w-[88rem]' : 'max-w-6xl'} mx-auto px-4 py-6`}>
       <TabBar order={order} active={active} onSelect={setActive} onReorder={handleReorder} />
 
       <div className="mt-2">

@@ -2,14 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Star, EyeOff } from 'lucide-react'
+import { Star } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { isOperatorAddress } from '@/lib/config'
 import { useAdmin } from '@/contexts/AdminContext'
-import { isVideoMoment } from '@/lib/media/isVideo'
+import { MomentCard } from './MomentCard'
 import { MomentImage } from './MomentImage'
-import { MomentVideo } from './MomentVideo'
 import { CollectAllAction } from './CollectAllAction'
 
 export interface FeaturedCollectionRow {
@@ -28,7 +27,7 @@ export interface FeaturedCollectionRow {
 interface CollectionRowProps {
   collection: FeaturedCollectionRow
   // Above-the-fold hint forwarded to the cover image (and propagated to the
-  // first mint tile so the row's LCP candidate isn't lazy-loaded).
+  // first mint card so the row's LCP candidate isn't lazy-loaded).
   priority?: boolean
 }
 
@@ -59,12 +58,15 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
   }, [adminAddr, initialUsername])
 
   return (
-    <article className="grid grid-cols-1 md:grid-cols-12 border border-[#2a2a2a] bg-[#161616] overflow-hidden">
-      {/* Hero: cover + details. md+ takes 5/12, mobile stacks full width. */}
-      <div className="md:col-span-5 flex flex-col">
+    <article className="border border-[#2a2a2a] bg-[#161616] overflow-hidden">
+      {/* Header: cover image + collection info side-by-side, full row
+          width. Was a 5/12 left column with the mints to the right; flipped
+          to a horizontal header so the mints grid below can use the full
+          width and lay out 10-across at readable sizes. */}
+      <div className="flex flex-col sm:flex-row gap-4 p-4 border-b border-[#2a2a2a]">
         <Link
           href={`/collection/${c.contractAddress}`}
-          className="relative aspect-square block overflow-hidden bg-[#111] group/img"
+          className="relative aspect-square w-full sm:w-40 md:w-48 flex-shrink-0 block overflow-hidden bg-[#111] group/img"
         >
           {isAdmin && (
             <button
@@ -87,7 +89,7 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-              sizes="(max-width: 768px) 100vw, 41vw"
+              sizes="(max-width: 640px) 100vw, 192px"
               onAllError={() => setImgFailed(true)}
               priority={priority}
               preferProxy
@@ -100,8 +102,8 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
           )}
         </Link>
 
-        <div className="px-4 pt-4 pb-4 flex flex-col gap-1 flex-1">
-          <h3 className="text-sm font-mono text-[#efefef] truncate">{name}</h3>
+        <div className="flex flex-col gap-1 min-w-0 flex-1">
+          <h3 className="text-base font-mono text-[#efefef] truncate">{name}</h3>
           {creatorLabel && (
             <Link
               href={adminAddr ? `/profile/${adminAddr}` : '#'}
@@ -111,46 +113,50 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
             </Link>
           )}
           {description && (
-            <p className="text-xs font-mono text-[#555] mt-0.5 line-clamp-2">{description}</p>
+            <p className="text-xs font-mono text-[#555] mt-1 line-clamp-3">{description}</p>
           )}
 
-          <div className="flex flex-col gap-1.5 mt-auto pt-3">
+          <div className="flex flex-wrap gap-2 mt-auto pt-3">
             <Link
               href={`/collection/${c.contractAddress}`}
-              className="w-full py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
+              className="px-4 py-1.5 text-center text-xs font-mono border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-[#efefef] transition-colors"
             >
               view collection
             </Link>
-            <CollectAllAction
-              collectionAddress={c.contractAddress}
-              ethEligibleTokenIds={c.ethEligibleTokenIds}
-              ethEligibleTotalWei={c.ethEligibleTotalWei}
-              usdcEligibleTokenIds={c.usdcEligibleTokenIds}
-              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
-            />
+            <div className="flex-1 min-w-[10rem]">
+              <CollectAllAction
+                collectionAddress={c.contractAddress}
+                ethEligibleTokenIds={c.ethEligibleTokenIds}
+                ethEligibleTotalWei={c.ethEligibleTotalWei}
+                usdcEligibleTokenIds={c.usdcEligibleTokenIds}
+                usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
+              />
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Mints grid. md+ takes 7/12 and lays out up to 20 mints in
-          chronological order — oldest at top-left, newest at bottom-right.
-          Was a horizontal scroller; cards past the viewport edge would
-          drag the SharedVideoProvider's position:fixed video element
-          outside the article's overflow-hidden boundary (paints into
-          the page margin). A static grid keeps every slot inside the
-          article, so the pool can't paint past it. Compact tiles
-          (image-only, click → moment detail) keep cards readable at
-          5-across without cramming a full MomentCard into ~130px. */}
-      <div className="md:col-span-7 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 p-3">
+      {/* Mints grid: up to 20 moments in chronological order (oldest at
+          top-left). Static layout — was a horizontal scroller, which let
+          the SharedVideoProvider's position:fixed video element paint
+          past the article's clip into the page margin (cards scrolled
+          off-screen still had on-page slots). A static grid keeps every
+          slot inside the article so the pool can't paint outside it.
+          10-across at xl matches the curator's request; falls back to
+          fewer columns below xl so cards stay legible at narrower
+          viewports. Compact MomentCard mode keeps image + name +
+          price·supply + collect button visible at ~130px-wide cards. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-10 gap-2 p-3">
         {c.moments.length === 0 ? (
           <div className="col-span-full flex items-center justify-center min-h-[200px]">
             <span className="text-xs font-mono text-[#555]">no moments yet</span>
           </div>
         ) : (
           c.moments.map((m, idx) => (
-            <MomentTile
+            <MomentCard
               key={m.id || `${m.address}-${m.token_id}`}
               moment={m}
+              compact
               priority={priority && idx === 0}
             />
           ))
@@ -159,79 +165,3 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
     </article>
   )
 }
-
-// Compact preview tile used inside a featured collection row. Full
-// MomentCard has too much chrome (creator chip, collection chip, action
-// row) to fit a 5-per-row grid — the collection chip would just repeat
-// the parent row's label anyway. The tile renders the image (or video,
-// via the shared element pool) and surfaces admin/hidden affordances;
-// click opens the moment detail page exactly like clicking the image
-// on the full card does.
-function MomentTile({ moment, priority }: { moment: Moment; priority?: boolean }) {
-  const [imgError, setImgError] = useState(false)
-  const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
-  const meta = moment.metadata ?? {}
-  const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
-  const isVideo = isVideoMoment(meta)
-  return (
-    <Link
-      href={`/moment/${moment.address}/${moment.token_id}`}
-      title={meta.name ?? `#${moment.token_id}`}
-      className="group/tile relative aspect-square bg-[#111] border border-[#2a2a2a] overflow-hidden block"
-    >
-      {isAdmin && (
-        <button
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            toggleFeatured(moment.address, moment.token_id)
-          }}
-          className={`absolute top-1 left-1 z-10 p-1 transition-colors ${
-            isFeatured ? 'text-yellow-400' : 'text-[#333] hover:text-[#888]'
-          }`}
-          title={isFeatured ? 'Unfeature' : 'Feature'}
-        >
-          <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-        </button>
-      )}
-      {moment.hidden && (
-        <span className="absolute top-1 right-1 z-10 p-1 bg-[#0d0d0d]/80 border border-[#2a2a2a]">
-          <EyeOff size={9} className="text-[#555]" />
-        </span>
-      )}
-      {isVideo && meta.animation_url ? (
-        <MomentVideo
-          src={meta.animation_url}
-          poster={meta.image}
-          thumbhash={meta.kismet_thumbhash}
-          showPosterLayer
-          className="w-full h-full object-contain"
-        />
-      ) : meta.image && !imgError ? (
-        <MomentImage
-          src={meta.image}
-          alt={meta.name ?? 'moment'}
-          fill
-          className="object-contain transition-transform duration-500 group-hover/tile:scale-105"
-          onAllError={() => setImgError(true)}
-          sizes="(max-width: 640px) 33vw, (max-width: 1024px) 18vw, 12vw"
-          mime={meta.content?.mime}
-          thumbhash={meta.kismet_thumbhash}
-          priority={priority}
-        />
-      ) : (
-        <div className="w-full h-full flex items-center justify-center">
-          <span className="text-[#2a2a2a] font-mono text-[10px]">no preview</span>
-        </div>
-      )}
-      {meta.name && (
-        <span
-          className="absolute inset-x-0 bottom-0 px-1.5 py-1 text-[10px] font-mono text-[#efefef] bg-gradient-to-t from-[#0d0d0d]/95 to-transparent opacity-0 group-hover/tile:opacity-100 transition-opacity truncate"
-        >
-          {meta.name}
-        </span>
-      )}
-    </Link>
-  )
-}
-
