@@ -129,6 +129,19 @@ export async function getListingForToken(
   return listing
 }
 
+// Periodic sweep — called by lib/backgroundTasks so expiry is claimed
+// once per cycle instead of per /api/listings request. The request-time
+// check in getListings stays as a safety net for between-sweep gaps.
+export async function sweepExpiredListings(): Promise<void> {
+  const ids = (await redis.zrange(KEY_ALL, 0, MAX_LISTINGS_SCAN - 1, { rev: true })) as string[]
+  if (ids.length === 0) return
+  const now = Date.now()
+  const expired = (await getListingsBatch(ids)).filter(
+    (l): l is Listing => l !== null && l.status === 'active' && l.expiresAt <= now,
+  )
+  if (expired.length > 0) await handleExpiredListings(expired)
+}
+
 // Mark expired listings as expired in Redis and fire a notification for each.
 // A claim key (NX) ensures exactly one notification per listing even under concurrency.
 async function handleExpiredListings(listings: Listing[]): Promise<void> {

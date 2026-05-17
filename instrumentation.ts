@@ -21,4 +21,28 @@ export async function register() {
       err instanceof Error ? (err.stack ?? err.message) : String(err),
     )
   }
+
+  // Warm the L1 caches every read-side route hits so the first request
+  // after boot finds them hot. Non-fatal — per-getter try/catch returns
+  // safe defaults if Redis is transiently down.
+  try {
+    await Promise.all([
+      import('@/lib/kv').then((m) =>
+        Promise.all([m.getTrackedCollections(), m.getUserCollections(), m.getCreatedMintsSet()]),
+      ),
+      import('@/lib/hiddenMoments').then((m) => m.getHiddenMomentsSet()),
+      import('@/lib/hiddenCollections').then((m) => m.getHiddenCollectionsSet()),
+    ])
+  } catch (err) {
+    console.error('[instrumentation] cache warmup failed (non-fatal):', err)
+  }
+
+  // Periodic Redis cleanup (expired listings, old notifications, trending
+  // zset trim) — only viable now on a long-running Node process.
+  try {
+    const { startBackgroundTasks } = await import('@/lib/backgroundTasks')
+    startBackgroundTasks()
+  } catch (err) {
+    console.error('[instrumentation] background tasks failed to start (non-fatal):', err)
+  }
 }
