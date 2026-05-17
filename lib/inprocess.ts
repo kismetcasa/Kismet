@@ -97,11 +97,8 @@ export function resolveUri(uri: string): string {
   return uri
 }
 
-// `maxSupply` is intentionally NOT on this interface: inprocess's GET
-// /api/moment response omits it (verified against their docs and live API),
-// so consumers must read it on-chain via getTokenInfo(tokenId) instead.
-// Declaring it here previously caused every moment to display as "open" —
-// the field was always undefined, falling through to the open-edition branch.
+// No `maxSupply` field — /api/moment doesn't return one. Read on-chain
+// via getTokenInfo(tokenId) instead.
 export interface MomentDetail {
   uri: string
   owner: string

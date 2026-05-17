@@ -31,10 +31,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 interface MomentModalProps {
   moment: Moment
   onClose: () => void
-  // Props pre-populated by MomentCard to avoid redundant fetches. Supply is
-  // not threaded — both surfaces read getTokenInfo via wagmi, which shares
-  // a TanStack Query cache keyed on (address, abi, fn, args), so the modal
-  // gets the card's value instantly with no extra RPC.
+  // Props pre-populated by MomentCard to avoid redundant fetches
   initialPrice?: string
   initialPricePerToken?: bigint
   initialCurrency?: CollectCurrency
@@ -109,10 +106,8 @@ export function MomentModal({
         ? Number(ownedBalance) > 0
         : false
 
-  // Authoritative on-chain read of {maxSupply, totalMinted}. Same query key
-  // as MomentCard's read → cache hit on modal open, no extra RPC. Polled
-  // every 30s so "X collected" updates without a remount after a fresh
-  // collect, before the inprocess indexer catches up.
+  // Polled so "X collected" updates after a fresh collect without waiting
+  // for the inprocess indexer.
   const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ZORA_1155_TOKEN_INFO_ABI,
@@ -135,13 +130,11 @@ export function MomentModal({
     isCreator,
   })
 
-  // Derived price — prefer passed-in values, fall back to fetched detail.
   const pricePerToken = initialPricePerToken ?? (detail ? BigInt(detail.saleConfig.pricePerToken) : null)
   const currency = initialCurrency ?? (detail ? inferCollectCurrency(detail.saleConfig) : null)
   const price = initialPrice ?? (detail && currency ? formatPrice(detail.saleConfig.pricePerToken, currency) : null)
   const collectReady = pricePerToken !== null && currency !== null
 
-  // Fetch moment detail only when card didn't pass price
   useEffect(() => {
     if (initialPrice !== undefined) return
     const cached = getCachedDetail(moment.address, moment.token_id)
@@ -241,8 +234,8 @@ export function MomentModal({
   }
 
   const hasCollected = alreadyOwned || collected
-  // Only flag once both reads have landed, otherwise we'd flash "minted out"
-  // before tokenInfo arrives. Open editions never go minted-out.
+  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // before tokenInfo lands.
   const mintedOut =
     maxSupply !== undefined &&
     totalMinted !== undefined &&

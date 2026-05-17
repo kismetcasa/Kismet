@@ -96,11 +96,6 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   })
   const owned = ownedBalance ? Number(ownedBalance) : 0
 
-  // Authoritative on-chain read of {maxSupply, totalMinted} for this token.
-  // Pairs the cap with the lifetime mint count so we can flip the collect
-  // button between "collect more" (supply remaining), "collected" (owned +
-  // sold out), and "minted out" (not owned + sold out). Used in lieu of
-  // inprocess's /api/moment because that endpoint never returns maxSupply.
   const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ZORA_1155_TOKEN_INFO_ABI,
@@ -113,10 +108,8 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   const meta = moment.metadata ?? {}
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
-  // Fetch sale config for price + currency (drives the on-chain mint call).
-  // hidePriceSupply only controls whether we show the badges, not whether
-  // we fetch — otherwise collect would be permanently disabled in compact
-  // contexts. Supply does NOT come from here (see tokenInfo above).
+  // hidePriceSupply only controls badge rendering — compact contexts
+  // still need price + currency to drive collect.
   useEffect(() => {
     const params = new URLSearchParams({
       collectionAddress: moment.address,
@@ -173,9 +166,8 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   }
   const collectReady = pricePerToken !== null && currency !== null
   const hasCollected = collected || owned > 0
-  // Only flag once both reads have landed, otherwise we'd flash "minted out"
-  // before tokenInfo arrives. Open editions (maxSupply == 0 or == max uint64)
-  // never go minted-out.
+  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // before tokenInfo lands.
   const mintedOut =
     maxSupply !== undefined &&
     totalMinted !== undefined &&

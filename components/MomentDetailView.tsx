@@ -277,12 +277,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     }
   }
 
-  // Authoritative on-chain read of {maxSupply, totalMinted} for this token.
-  // totalMinted is the lifetime mint count (drives "X collected"); maxSupply
-  // is the cap (drives the open-vs-limited badge + minted-out gate). Read
-  // from chain rather than /api/moment because inprocess's response omits
-  // maxSupply entirely. Polled every 30s so the figure stays current after
-  // a fresh collect, without waiting for the inprocess indexer.
+  // Polled so "X collected" updates after a fresh collect without waiting
+  // for the inprocess indexer.
   const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
     address: address as `0x${string}`,
     abi: ZORA_1155_TOKEN_INFO_ABI,
@@ -459,8 +455,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   const hasCollected = alreadyOwned || collected
-  // Only flag once both reads have landed, otherwise we'd flash "minted out"
-  // before tokenInfo arrives. Open editions never go minted-out.
+  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // before tokenInfo lands.
   const mintedOut =
     maxSupply !== undefined &&
     totalMinted !== undefined &&

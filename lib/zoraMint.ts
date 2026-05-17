@@ -52,12 +52,9 @@ export const ZORA_1155_MINT_ABI = parseAbi([
   'function totalSupply(uint256 id) view returns (uint256)',
 ])
 
-// ZoraCreator1155Impl.getTokenInfo(tokenId) — single read returns the token's
-// metadata URI, supply cap, and lifetime mint count. We use it for display
-// (supply badge + "X collected") and for the minted-out gate. Lifetime
-// `totalMinted` is what mint() enforces against `maxSupply` on-chain, so it's
-// the authoritative source for both — strictly more correct than totalSupply
-// (which decreases on burn) for the cap check.
+// Returns {uri, maxSupply, totalMinted}. Prefer `totalMinted` over
+// `totalSupply` for cap checks — mint() compares against the former, and
+// totalSupply decreases on burn.
 export const ZORA_1155_TOKEN_INFO_ABI = [
   {
     name: 'getTokenInfo',
@@ -77,12 +74,9 @@ export const ZORA_1155_TOKEN_INFO_ABI = [
   },
 ] as const
 
-// Open-edition supply marker. Two equivalent representations exist on-chain:
-//   - 0: Zora's protocol convention — mint() skips the cap check entirely.
-//   - max uint64: inprocess's SDK explicitly writes this when calling
-//     setupNewToken for an open-edition token (our buildCoverTokenSetupActions
-//     mirrors that).
-// Treat both as "no cap" for display + minted-out logic.
+// Two equivalent on-chain forms mean "no cap": 0 (Zora's mint() skips the
+// check) and max uint64 (what inprocess's SDK writes on setupNewToken for
+// opens). Treat both the same.
 export const OPEN_EDITION_MINT_SIZE = 18446744073709551615n
 export function isOpenEdition(maxSupply: bigint): boolean {
   return maxSupply === 0n || maxSupply >= OPEN_EDITION_MINT_SIZE
