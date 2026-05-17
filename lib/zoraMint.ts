@@ -52,6 +52,36 @@ export const ZORA_1155_MINT_ABI = parseAbi([
   'function totalSupply(uint256 id) view returns (uint256)',
 ])
 
+// Returns {uri, maxSupply, totalMinted}. Prefer `totalMinted` over
+// `totalSupply` for cap checks — mint() compares against the former, and
+// totalSupply decreases on burn.
+export const ZORA_1155_TOKEN_INFO_ABI = [
+  {
+    name: 'getTokenInfo',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [
+      {
+        type: 'tuple',
+        components: [
+          { name: 'uri', type: 'string' },
+          { name: 'maxSupply', type: 'uint256' },
+          { name: 'totalMinted', type: 'uint256' },
+        ],
+      },
+    ],
+  },
+] as const
+
+// Two equivalent on-chain forms mean "no cap": 0 (Zora's mint() skips the
+// check) and max uint64 (what inprocess's SDK writes on setupNewToken for
+// opens). Treat both the same.
+export const OPEN_EDITION_MINT_SIZE = 18446744073709551615n
+export function isOpenEdition(maxSupply: bigint): boolean {
+  return maxSupply === 0n || maxSupply >= OPEN_EDITION_MINT_SIZE
+}
+
 // ERC20Minter — note that mint() lives on the strategy itself, NOT on the 1155
 // (unlike the FixedPrice flow). Args are typed parameters, no minterArguments
 // bytes blob.

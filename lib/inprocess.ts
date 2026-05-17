@@ -97,10 +97,11 @@ export function resolveUri(uri: string): string {
   return uri
 }
 
+// No `maxSupply` field — /api/moment doesn't return one. Read on-chain
+// via getTokenInfo(tokenId) instead.
 export interface MomentDetail {
   uri: string
   owner: string
-  maxSupply?: number
   saleConfig: {
     type?: 'fixedPrice' | 'erc20Mint'
     pricePerToken: string

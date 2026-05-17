@@ -1,6 +1,12 @@
 import type { Address, Chain, Client, Transport } from 'viem'
 import { getBlock, multicall, readContract } from 'viem/actions'
-import { USDC_BASE, ZORA_ERC20_MINTER, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
+import {
+  USDC_BASE,
+  ZORA_1155_TOKEN_INFO_ABI,
+  ZORA_ERC20_MINTER,
+  ZORA_FIXED_PRICE_STRATEGY,
+  isOpenEdition,
+} from './zoraMint'
 
 // FixedPriceSaleStrategy.sale(target, tokenId) — the canonical view returning
 // the SalesConfig struct (see zora protocol-deployments). Tokens whose sale
@@ -79,28 +85,6 @@ const ERC1155_BALANCE_ABI = [
   },
 ] as const
 
-// ZoraCreator1155Impl.getTokenInfo(tokenId) — used to filter out tokens whose
-// totalMinted has hit maxSupply (mint() would revert). maxSupply === 0 is
-// Zora's convention for "unlimited".
-const ZORA_TOKEN_INFO_ABI = [
-  {
-    name: 'getTokenInfo',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'tokenId', type: 'uint256' }],
-    outputs: [
-      {
-        type: 'tuple',
-        components: [
-          { name: 'uri', type: 'string' },
-          { name: 'maxSupply', type: 'uint256' },
-          { name: 'totalMinted', type: 'uint256' },
-        ],
-      },
-    ],
-  },
-] as const
-
 export interface EligibleToken {
   tokenId: bigint
   pricePerToken: bigint
@@ -171,7 +155,7 @@ export async function fetchEligibleTokens(
         },
         {
           address: collection,
-          abi: ZORA_TOKEN_INFO_ABI,
+          abi: ZORA_1155_TOKEN_INFO_ABI,
           functionName: 'getTokenInfo' as const,
           args: [id] as const,
         },
@@ -211,7 +195,7 @@ export async function fetchEligibleTokens(
     // the mint will revert at submit time as a fallback.
     if (infoRes.status === 'success' && infoRes.result) {
       const info = infoRes.result as { maxSupply: bigint; totalMinted: bigint }
-      if (info.maxSupply > 0n && info.totalMinted >= info.maxSupply) continue
+      if (!isOpenEdition(info.maxSupply) && info.totalMinted >= info.maxSupply) continue
     }
 
     candidates.push({

@@ -21,7 +21,7 @@ import { useTextContent, fetchTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { useAdmin } from '@/contexts/AdminContext'
 import { ERC1155_ABI } from '@/lib/seaport'
-import { ZORA_1155_MINT_ABI } from '@/lib/zoraMint'
+import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { MomentModal } from './MomentModal'
@@ -47,7 +47,6 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   const [price, setPrice] = useState<string | null>(null)
   const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
   const [currency, setCurrency] = useState<CollectCurrency | null>(null)
-  const [maxSupply, setMaxSupply] = useState<number | null | undefined>(undefined)
   // Seed with the inprocess-provided username when available so we never
   // flash a raw address for users who set their name on inprocess but not
   // on Kismet. Falls back to shortAddress until Kismet's profile cache
@@ -97,24 +96,20 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
   })
   const owned = ownedBalance ? Number(ownedBalance) : 0
 
-  // totalSupply per token id is maintained by Zora 1155 natively. Pairing it
-  // with maxSupply lets us flip the collect button between "collect more"
-  // (supply remaining), "collected" (owned + sold out), and "minted out"
-  // (not owned + sold out).
-  const { data: totalMinted, refetch: refetchTotalMinted } = useReadContract({
+  const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
     address: moment.address as `0x${string}`,
-    abi: ZORA_1155_MINT_ABI,
-    functionName: 'totalSupply',
+    abi: ZORA_1155_TOKEN_INFO_ABI,
+    functionName: 'getTokenInfo',
     args: [BigInt(moment.token_id)],
   })
+  const maxSupply = tokenInfo?.maxSupply
+  const totalMinted = tokenInfo?.totalMinted
 
   const meta = moment.metadata ?? {}
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
-  // Fetch sale config: needed for both display (price + supply) AND collect
-  // (price + currency drive the on-chain mint call). hidePriceSupply only
-  // controls whether we show the badges, not whether we fetch — otherwise
-  // collect would be permanently disabled in compact contexts.
+  // hidePriceSupply only controls badge rendering — compact contexts
+  // still need price + currency to drive collect.
   useEffect(() => {
     const params = new URLSearchParams({
       collectionAddress: moment.address,
@@ -128,7 +123,6 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
         setPrice(formatPrice(detail.saleConfig.pricePerToken, cur))
         setPricePerToken(BigInt(detail.saleConfig.pricePerToken))
         setCurrency(cur)
-        setMaxSupply(detail.maxSupply ?? null)
       })
       .catch(() => {})
   }, [moment.address, moment.token_id])
@@ -167,18 +161,18 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
     if (result) {
       setCollected(true)
       refetchOwnedBalance().catch(() => {})
-      refetchTotalMinted().catch(() => {})
+      refetchTokenInfo().catch(() => {})
     }
   }
   const collectReady = pricePerToken !== null && currency !== null
   const hasCollected = collected || owned > 0
-  // maxSupply == null/0 → open edition (never minted out). Only flag when we
-  // know totalMinted, otherwise we'd flash "minted out" before the read lands.
+  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // before tokenInfo lands.
   const mintedOut =
+    maxSupply !== undefined &&
     totalMinted !== undefined &&
-    maxSupply != null &&
-    maxSupply > 0 &&
-    totalMinted >= BigInt(maxSupply)
+    !isOpenEdition(maxSupply) &&
+    totalMinted >= maxSupply
   const collectLabel = collecting
     ? 'collecting…'
     : mintedOut
@@ -353,7 +347,7 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
-              {maxSupply !== null && maxSupply !== undefined && maxSupply > 0 && (
+              {maxSupply !== undefined && !isOpenEdition(maxSupply) && (
                 <div className="border-l border-[#2a2a2a] px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                   <span className="text-[11px] font-mono text-[#444]">{maxSupply.toLocaleString()}</span>
                 </div>
@@ -395,7 +389,6 @@ export function MomentCard({ moment, hidePriceSupply, directLink, priority }: Mo
           initialPrice={price ?? undefined}
           initialPricePerToken={pricePerToken ?? undefined}
           initialCurrency={currency ?? undefined}
-          initialMaxSupply={maxSupply !== undefined ? maxSupply : undefined}
           initialCreatorName={creatorName}
           initialCreatorAvatar={creatorAvatar}
           initialCollectionName={collectionName}
