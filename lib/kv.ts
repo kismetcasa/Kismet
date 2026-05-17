@@ -22,6 +22,9 @@ const KEY = 'kismetart:collections'
 // `-z` suffix is required because Redis rejects ZADD on a key that
 // already holds a SET. See scripts/migrate-created-collections-zset.mjs.
 const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections-z'
+// Legacy SET, read-only. getUserCollections dual-reads so entries
+// stranded here still surface even if the migration script never runs.
+const CREATED_COLLECTIONS_LEGACY_KEY = 'kismetart:created-collections'
 // Mints minted via Kismet's MintForm or as a Create Collection cover.
 // Members are `<addr>:<tokenId>` strings. Source of truth for the
 // Mints feed; the timeline route filters scope=standalone by membership.
@@ -68,9 +71,23 @@ export async function getTrackedCollectionsByScope(
 // collections list, mint dropdown, search, moment-detail chip).
 export async function getUserCollections(): Promise<string[]> {
   try {
-    return (await redis.zrange(CREATED_COLLECTIONS_KEY, 0, -1, {
-      rev: true,
-    })) as string[]
+    // ZSET entries (chronological, newest first) come from real-time
+    // create-form writes. Legacy SET entries predate the ZSET cutover
+    // and get appended after — older content at the bottom is correct.
+    // Dedupe handles the post-migration overlap.
+    const [zsetMembers, legacyMembers] = await Promise.all([
+      redis.zrange(CREATED_COLLECTIONS_KEY, 0, -1, { rev: true }) as Promise<string[]>,
+      redis.smembers(CREATED_COLLECTIONS_LEGACY_KEY) as Promise<string[]>,
+    ])
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const addr of [...zsetMembers, ...legacyMembers]) {
+      const lower = addr.toLowerCase()
+      if (seen.has(lower)) continue
+      seen.add(lower)
+      out.push(addr)
+    }
+    return out
   } catch {
     return []
   }
