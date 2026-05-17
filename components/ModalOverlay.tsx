@@ -53,7 +53,19 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
           if (e.target === e.currentTarget) dismiss()
         }}
       >
-        <div className="min-h-full">
+        {/* Inner scroll container also dismisses on click. Without this
+            handler the side-gutters on wide screens (auto-margins of the
+            child's max-w wrapper) and the empty space below short content
+            only land on this div — not on the outer backdrop — and the
+            outer handler's target-equals-currentTarget check would skip
+            them. Same dismiss path as the X / Escape / backdrop click,
+            so the four feel interchangeable. */}
+        <div
+          className="min-h-full"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) dismiss()
+          }}
+        >
           <SharedVideoZIndexProvider zIndex={Z_VIDEO}>
             {children}
           </SharedVideoZIndexProvider>

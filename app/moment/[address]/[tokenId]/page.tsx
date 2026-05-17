@@ -150,14 +150,17 @@ export default async function MomentPage({ params }: Props) {
     getKvCreatorAddress(address, tokenId),
   ])
 
-  // Prefer the dedicated `creator` field injected by /api/moment from the
-  // timeline lookup, then KV moment-meta (Kismet-deployed moments — set
-  // synchronously at mint time so it's there even before inprocess
-  // indexes), then fall back to momentAdmins[0] for moments minted
-  // outside the Kismet flow.
+  // Prefer KV moment-meta (the EOA mint-proxy wrote at mint time) so
+  // Kismet-minted moments resolve to the actual creator EOA. Inprocess
+  // often returns the platform smart wallet as creator.address for
+  // mint-proxy moments — without this priority the viewer's EOA would
+  // never match `creator` and the creator would be locked out of their
+  // own hidden moment. detail.creator.address is the fallback for
+  // moments minted outside the Kismet flow (no KV entry); momentAdmins
+  // is the last-resort signal when neither is populated.
   const creator =
-    detail?.creator?.address?.toLowerCase() ??
     kvCreatorAddress?.toLowerCase() ??
+    detail?.creator?.address?.toLowerCase() ??
     pickFirstNonOperatorAdmin(detail?.momentAdmins)?.toLowerCase()
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator

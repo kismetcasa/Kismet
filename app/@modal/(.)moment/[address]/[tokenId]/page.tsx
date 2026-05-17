@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { EyeOff } from 'lucide-react'
@@ -5,6 +6,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { fetchMomentDetail } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
+import { getMomentMeta as getKvMomentMeta } from '@/lib/notifications'
 import { MomentDetailView } from '@/components/MomentDetailView'
 import { ModalOverlay } from '@/components/ModalOverlay'
 
@@ -37,23 +39,46 @@ async function resolveViewer(): Promise<string | null> {
   return sessionToken ? await verifySession(sessionToken) : null
 }
 
+// EOA address recorded by the mint proxy in KV at mint time. The
+// inprocess /moment response often returns the platform smart wallet
+// as creator.address for Kismet-minted moments, and Kismet profiles
+// are keyed by EOA — without this fallthrough, MomentDetailView would
+// look up the wrong address and the creator chip would stay stuck on
+// shortAddress instead of the user's display name. The canonical
+// page hydrates the same value; the overlay needs it too for parity.
+const getKvCreatorAddress = cache(async (
+  address: string,
+  tokenId: string,
+): Promise<string | undefined> => {
+  try {
+    const meta = await getKvMomentMeta(address, tokenId)
+    return meta?.creator
+  } catch {
+    return undefined
+  }
+})
+
 export default async function ModalMomentPage({ params }: Props) {
   const { address, tokenId } = await params
   if (!isAddress(address) || !isValidTokenId(tokenId)) notFound()
 
-  // Detail fetch + viewer resolution are independent — run them in
-  // parallel so the overlay's TTFB isn't gated on session verify.
-  const [detail, viewer] = await Promise.all([
+  // Detail fetch + viewer resolution + KV creator lookup are
+  // independent — run them in parallel so the overlay's TTFB isn't
+  // gated on session verify or the extra Redis read.
+  const [detail, viewer, kvCreatorAddress] = await Promise.all([
     fetchMomentDetail(address, tokenId),
     resolveViewer(),
+    getKvCreatorAddress(address, tokenId),
   ])
 
-  // Hidden-moment privacy gate. Creator-resolution chain matches the
-  // client-side check in MomentDetailView so the two never disagree
-  // — without pickFirstNonOperatorAdmin, the operator smart wallet
-  // could land as `momentAdmins[0]` and lock the real creator out of
-  // their own hidden moment.
+  // Hidden-moment privacy gate. Same EOA-first priority as the
+  // canonical page + MomentDetailView, so the three never disagree.
+  // KV wins because inprocess reports the platform smart wallet as
+  // creator.address for Kismet-minted moments — looking up the
+  // session's EOA against that would never match and the creator
+  // would be locked out of their own hidden moment.
   const creator =
+    kvCreatorAddress?.toLowerCase() ??
     detail?.creator?.address?.toLowerCase() ??
     pickFirstNonOperatorAdmin(detail?.momentAdmins)?.toLowerCase()
   const isCreator =
@@ -78,6 +103,7 @@ export default async function ModalMomentPage({ params }: Props) {
         address={address}
         tokenId={tokenId}
         initialDetail={detail}
+        kvCreatorAddress={kvCreatorAddress}
         inOverlay
       />
     </ModalOverlay>

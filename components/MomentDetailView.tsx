@@ -105,10 +105,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Seed from the inprocess-provided username (or short address) up front so
   // we don't flash a raw address before fetchCreatorProfile resolves —
   // matches the seeding MomentCard already does on the discover grid.
+  // Same EOA-preferring resolution as creatorAddress below: KV first so
+  // Kismet-minted moments display the real EOA short-address (and the
+  // profile lookup hits a real Kismet profile) instead of the platform
+  // smart wallet that inprocess returns as creator.address.
   const [creatorName, setCreatorName] = useState(() => {
     const seedAddr =
-      initialDetail?.creator?.address
-      ?? kvCreatorAddress
+      kvCreatorAddress
+      ?? initialDetail?.creator?.address
       ?? pickFirstNonOperatorAdmin(initialDetail?.momentAdmins)
       ?? ''
     return initialDetail?.creator?.username || (seedAddr ? shortAddress(seedAddr) : '')
@@ -288,20 +292,22 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   const isFeatured = featuredKeys.has(`${address.toLowerCase()}:${tokenId}`)
   // Resolution order for the moment's creator EOA:
-  //   1. detail.creator.address — inprocess timeline's dedicated creator
-  //      field (preferred when indexed).
-  //   2. kvCreatorAddress — the EOA mint-proxy wrote to KV moment-meta
-  //      at mint time. Available immediately for Kismet-minted moments,
-  //      so we don't degrade to (3) during the brief window before
-  //      inprocess catches up.
+  //   1. kvCreatorAddress — the EOA mint-proxy wrote to KV moment-meta
+  //      at mint time. For Kismet-minted moments inprocess often
+  //      reports the platform smart wallet as creator.address (the
+  //      on-chain msg.sender of the mint), which has no Kismet
+  //      profile and breaks the display-name / avatar / profile-link
+  //      chain. KV is authoritative for who actually minted.
+  //   2. detail.creator.address — inprocess timeline's dedicated
+  //      creator field. Used for moments not minted through Kismet's
+  //      proxy (no KV entry) — there inprocess is the only signal.
   //   3. first non-operator entry in detail.momentAdmins — last-resort
   //      fallback. The list is unordered and may contain the operator
-  //      smart wallet (filtered out here) or a 0xSplits contract; kept
-  //      for moments minted outside the Kismet flow where neither (1)
-  //      nor (2) is populated.
+  //      smart wallet (filtered out here) or a 0xSplits contract;
+  //      kept for moments where neither (1) nor (2) is populated.
   const creatorAddress =
-    detail?.creator?.address
-    ?? kvCreatorAddress
+    kvCreatorAddress
+    ?? detail?.creator?.address
     ?? pickFirstNonOperatorAdmin(detail?.momentAdmins)
     ?? ''
   const isHidden = detail?.hidden === true
@@ -796,10 +802,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {meta.name ?? `#${tokenId}`}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
-                {/* Edit metadata — admin-only. Pencil icon lives next to
-                    share so the visual weight stays light; expanding into
-                    a full inline panel below the title preserves spatial
-                    locality (you edit what you're looking at). */}
+                {/* Edit metadata — admin-only. Pencil icon expands into a
+                    full inline panel below the title to preserve spatial
+                    locality (you edit what you're looking at). Share +
+                    send moved to a single row beneath the action panel
+                    so secondary actions group together visually. */}
                 {isCreator && !editing && detail && (
                   <button
                     onClick={openEditor}
@@ -823,13 +830,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     {isHidden ? 'hidden' : 'hide'}
                   </button>
                 )}
-                <button
-                  onClick={handleCopyLink}
-                  className="flex items-center gap-1 text-xs font-mono text-[#555] hover:text-[#888] transition-colors"
-                >
-                  {linkCopied ? <Check size={11} className="text-[#6ee7b7]" /> : <Copy size={11} />}
-                  {linkCopied ? 'copied' : 'share'}
-                </button>
               </div>
             </div>
 
@@ -1106,53 +1106,67 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {alreadyOwned && (
-            <div className="px-5 pb-4">
+          {/* Secondary actions row: share + (send when owned). Share
+              always renders so every viewer has a one-click way to copy
+              the moment link; send sits to its right for holders only. */}
+          <div className="px-5 pb-4">
+            <div className="flex items-center gap-3">
               <button
-                onClick={() => setSendOpen((v) => !v)}
+                onClick={handleCopyLink}
                 className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
               >
-                <Send size={12} strokeWidth={1.5} />
-                {sendOpen ? 'cancel' : 'send'}
+                {linkCopied
+                  ? <Check size={12} className="text-[#6ee7b7]" />
+                  : <Copy size={12} strokeWidth={1.5} />}
+                {linkCopied ? 'copied' : 'share'}
               </button>
-              {sendOpen && (
-                <div className="mt-2">
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={sendTo}
-                      onChange={(e) => setSendTo(e.target.value)}
-                      placeholder="0x address or name.eth"
-                      autoComplete="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555]"
-                    />
-                    <button
-                      onClick={handleSend}
-                      disabled={!sendToValid || sending}
-                      className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-[#555] disabled:hover:border-[#2a2a2a]"
-                    >
-                      {sending ? '…' : 'confirm'}
-                    </button>
-                  </div>
-                  {trimmedSendTo && (
-                    <div className="mt-1.5 text-[10px] font-mono">
-                      {resolvingSendTo ? (
-                        <span className="text-[#555]">resolving…</span>
-                      ) : isSelfSend ? (
-                        <span className="text-red-400">cannot send to yourself</span>
-                      ) : sendToError ? (
-                        <span className="text-red-400">{sendToError}</span>
-                      ) : resolvedSendTo && looksLikeEns ? (
-                        <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
+              {alreadyOwned && (
+                <button
+                  onClick={() => setSendOpen((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-mono text-[#555] hover:text-[#888] transition-colors w-fit"
+                >
+                  <Send size={12} strokeWidth={1.5} />
+                  {sendOpen ? 'cancel' : 'send'}
+                </button>
               )}
             </div>
-          )}
+            {alreadyOwned && sendOpen && (
+              <div className="mt-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={sendTo}
+                    onChange={(e) => setSendTo(e.target.value)}
+                    placeholder="0x address or name.eth"
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555]"
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!sendToValid || sending}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-[#555] disabled:hover:border-[#2a2a2a]"
+                  >
+                    {sending ? '…' : 'confirm'}
+                  </button>
+                </div>
+                {trimmedSendTo && (
+                  <div className="mt-1.5 text-[10px] font-mono">
+                    {resolvingSendTo ? (
+                      <span className="text-[#555]">resolving…</span>
+                    ) : isSelfSend ? (
+                      <span className="text-red-400">cannot send to yourself</span>
+                    ) : sendToError ? (
+                      <span className="text-red-400">{sendToError}</span>
+                    ) : resolvedSendTo && looksLikeEns ? (
+                      <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Site admin — feature/unfeature */}
           {isAdmin && (
