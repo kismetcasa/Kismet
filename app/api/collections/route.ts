@@ -177,14 +177,11 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Discovery feed: enumerate curated collections, hydrate each from
-  // inprocess /api/collection (KV fallback when the indexer is lagging),
-  // then sort by inprocess `created_at` desc — same pattern the Mints
-  // feed uses in app/api/timeline/route.ts. KV stores membership only;
-  // ordering lives in inprocess. Proxying inprocess's global feed
-  // instead would surface collections we didn't deploy and miss our
-  // freshly-deployed ones (those get Infinity below so they sort to
-  // the top while the indexer catches up).
+  // Discovery feed: hydrate each curated address from inprocess
+  // /api/collection (KV fallback on indexer lag), sort by `created_at`
+  // desc. Same membership-then-sort split as the Mints feed in
+  // app/api/timeline/route.ts. Proxying inprocess's global collections
+  // endpoint instead would surface collections we didn't deploy.
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))

@@ -16,10 +16,9 @@ const keyAuthorizedCreators = (collection: string) =>
 // timeline fan-out for moment lookups across all scopes.
 const KEY = 'kismetart:collections'
 // Curator-blessed positive set — Create Collection form deploys plus
-// any legacy real collection the curator manually promoted. Source of
-// truth for collection-shaped surfaces. Plain SET — chronological
-// order for the Discover feed is derived from inprocess's `created_at`
-// at hydrate time, mirroring how the Mints feed sorts by `created_at`.
+// any legacy real collection the curator manually promoted. Source
+// of truth for collection-shaped surfaces. Plain SET; the Discover
+// feed sorts by inprocess `created_at` (mirrors the Mints pattern).
 const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections'
 // Mints minted via Kismet's MintForm or as a Create Collection cover.
 // Members are `<addr>:<tokenId>` strings. Source of truth for the
