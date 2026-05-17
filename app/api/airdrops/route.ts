@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { getAirdropsBySender } from '@/lib/airdrops'
+import { errorResponse } from '@/lib/apiResponse'
 
 /**
  * Lists airdrops sent by the given artist for ProfileView's airdrops section.
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
   const limitParam = searchParams.get('limit')
 
   if (!artist || !isAddress(artist)) {
-    return NextResponse.json({ error: 'Invalid artist_address' }, { status: 400 })
+    return errorResponse(400, 'Invalid artist_address')
   }
 
   const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0

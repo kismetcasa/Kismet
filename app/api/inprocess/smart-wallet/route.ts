@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
+import { errorResponse } from '@/lib/apiResponse'
 
 /**
  * Returns the inprocess platform smart wallet address bound to a given
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const artistWallet = searchParams.get('artist_wallet')
   if (!artistWallet || !isAddress(artistWallet)) {
-    return NextResponse.json({ error: 'artist_wallet required' }, { status: 400 })
+    return errorResponse(400, 'artist_wallet required')
   }
 
   const address = await resolveSmartWallet(artistWallet)
@@ -43,7 +44,7 @@ export async function GET(req: NextRequest) {
     console.error(
       `[inprocess/smart-wallet] could not resolve smart wallet for artist=${artistWallet}`,
     )
-    return NextResponse.json({ error: 'could not resolve smart wallet' }, { status: 502 })
+    return errorResponse(502, 'could not resolve smart wallet')
   }
   return NextResponse.json({ address })
 }

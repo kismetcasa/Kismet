@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { randomBytes } from 'crypto'
 import { redis } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { errorResponse } from '@/lib/apiResponse'
 
 // 5 minutes is long enough for any reasonable wallet signing flow and
 // short enough that a leaked nonce can't be exploited later. Nonces are
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`auth-nonce:${ip}`, 30, 60)
   if (!allowed) {
-    return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+    return errorResponse(429, 'Too many requests')
   }
 
   const nonce = randomBytes(16).toString('hex')

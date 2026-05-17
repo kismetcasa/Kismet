@@ -3,6 +3,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
+import { errorResponse } from '@/lib/apiResponse'
 
 // Inprocess `/api/moment` returns `MomentDetail` whose `momentAdmins` field
 // is an unordered list (platform admins, smart wallets, the actual creator)
@@ -50,13 +51,13 @@ export async function GET(req: NextRequest) {
   const chainId = searchParams.get('chainId') ?? '8453'
 
   if (!collectionAddress || !tokenId) {
-    return NextResponse.json({ error: 'collectionAddress and tokenId are required' }, { status: 400 })
+    return errorResponse(400, 'collectionAddress and tokenId are required')
   }
   if (!isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+    return errorResponse(400, 'Invalid collectionAddress')
   }
   if (!isValidTokenId(tokenId)) {
-    return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+    return errorResponse(400, 'Invalid tokenId')
   }
 
   const url = new URL(`${INPROCESS_API}/moment`)

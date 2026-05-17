@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { getStoredSplits } from '@/lib/splits'
+import { errorResponse } from '@/lib/apiResponse'
 
 // Returns { hasSplits, recipients } for a single moment.
 // `hasSplits` gates the creator-only distribute UI in useMomentSplits.
@@ -12,13 +13,13 @@ export async function GET(req: NextRequest) {
   const tokenId = searchParams.get('tokenId')
 
   if (!collectionAddress || !tokenId) {
-    return NextResponse.json({ error: 'collectionAddress and tokenId required' }, { status: 400 })
+    return errorResponse(400, 'collectionAddress and tokenId required')
   }
   if (!isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+    return errorResponse(400, 'Invalid collectionAddress')
   }
   if (!isValidTokenId(tokenId)) {
-    return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+    return errorResponse(400, 'Invalid tokenId')
   }
 
   const stored = await getStoredSplits(collectionAddress, tokenId).catch(() => ({

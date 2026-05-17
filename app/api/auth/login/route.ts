@@ -6,6 +6,7 @@ import { serverBaseClient } from '@/lib/rpc'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from '@/lib/config'
 import { ADMIN_SESSION_COOKIE } from '@/lib/curator'
+import { errorResponse } from '@/lib/apiResponse'
 
 // 4 hours — matches the prior signature-TTL UX so admins/curators sign
 // once per work session. Stored server-side in Redis so we can revoke
@@ -28,17 +29,17 @@ export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`auth-login:${ip}`, 20, 60)
   if (!allowed) {
-    return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+    return errorResponse(429, 'Too many requests')
   }
 
   const body = (await req.json().catch(() => null)) as
     | { message?: unknown; signature?: unknown }
     | null
   if (!body || typeof body.message !== 'string' || typeof body.signature !== 'string') {
-    return NextResponse.json({ error: 'message and signature required' }, { status: 400 })
+    return errorResponse(400, 'message and signature required')
   }
   if (!/^0x[0-9a-fA-F]+$/.test(body.signature)) {
-    return NextResponse.json({ error: 'Invalid signature shape' }, { status: 400 })
+    return errorResponse(400, 'Invalid signature shape')
   }
 
   // Parse first so we can bind verification to the message's own nonce +
@@ -47,11 +48,11 @@ export async function POST(req: NextRequest) {
   try {
     parsed = parseSiweMessage(body.message)
   } catch {
-    return NextResponse.json({ error: 'Invalid SIWE message' }, { status: 400 })
+    return errorResponse(400, 'Invalid SIWE message')
   }
   const { address, nonce, domain } = parsed
   if (!address || !nonce || !domain) {
-    return NextResponse.json({ error: 'SIWE message missing required fields' }, { status: 400 })
+    return errorResponse(400, 'SIWE message missing required fields')
   }
 
   // Domain binding: the message must claim the same host the request was
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
   // HTTP, and clients (RainbowKit / browsers) can normalize differently.
   const expectedDomain = req.headers.get('host')?.toLowerCase()
   if (!expectedDomain || domain.toLowerCase() !== expectedDomain) {
-    return NextResponse.json({ error: 'Domain mismatch' }, { status: 401 })
+    return errorResponse(401, 'Domain mismatch')
   }
 
   // Verify signature against the message, with viem also asserting the
@@ -73,7 +74,7 @@ export async function POST(req: NextRequest) {
     nonce,
   })
   if (!verified) {
-    return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+    return errorResponse(401, 'Signature verification failed')
   }
 
   // Privilege check after signature verification so we don't leak whether
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
   const isAdmin = signer === ADMIN_ADDRESS
   const isCurator = CURATOR_ADDRESSES.includes(signer)
   if (!isAdmin && !isCurator) {
-    return NextResponse.json({ error: 'Not authorized' }, { status: 403 })
+    return errorResponse(403, 'Not authorized')
   }
 
   // Consume the nonce atomically. DEL returns the number of keys removed —
@@ -91,7 +92,7 @@ export async function POST(req: NextRequest) {
   // attempt doesn't burn the nonce (the legitimate user can retry).
   const consumed = await redis.del(`kismetart:auth-nonce:${nonce}`).catch(() => 0)
   if (consumed !== 1) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+    return errorResponse(401, 'Invalid or expired nonce')
   }
 
   // Issue an opaque session token. 32 random bytes = 256 bits, well beyond

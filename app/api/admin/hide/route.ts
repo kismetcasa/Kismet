@@ -3,6 +3,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { verifyAdminSession } from '@/lib/curator'
 import { hideCollection, unhideCollection } from '@/lib/hiddenCollections'
 import { hideMoment, unhideMoment } from '@/lib/hiddenMoments'
+import { errorResponse } from '@/lib/apiResponse'
 
 interface HideBody {
   type?: 'moment' | 'collection'
@@ -21,25 +22,25 @@ interface HideBody {
  */
 export async function POST(req: NextRequest) {
   const auth = await verifyAdminSession()
-  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  if ('error' in auth) return errorResponse(auth.status, auth.error)
 
   const body = (await req.json().catch(() => null)) as HideBody | null
-  if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
+  if (!body) return errorResponse(400, 'Invalid body')
 
   const { type, address, tokenId, hidden } = body
   if (type !== 'moment' && type !== 'collection') {
-    return NextResponse.json({ error: 'type must be "moment" or "collection"' }, { status: 400 })
+    return errorResponse(400, 'type must be "moment" or "collection"')
   }
   if (!address || !isAddress(address)) {
-    return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+    return errorResponse(400, 'Invalid address')
   }
   if (typeof hidden !== 'boolean') {
-    return NextResponse.json({ error: 'hidden must be a boolean' }, { status: 400 })
+    return errorResponse(400, 'hidden must be a boolean')
   }
 
   if (type === 'moment') {
     if (!isValidTokenId(tokenId)) {
-      return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+      return errorResponse(400, 'Invalid tokenId')
     }
     if (hidden) await hideMoment(address, tokenId)
     else await unhideMoment(address, tokenId)

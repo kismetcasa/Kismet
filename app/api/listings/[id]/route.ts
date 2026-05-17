@@ -5,6 +5,7 @@ import { getListing, updateListingStatus } from '@/lib/listings'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { writeNotification } from '@/lib/notifications'
+import { errorResponse } from '@/lib/apiResponse'
 
 export async function PATCH(
   req: NextRequest,
@@ -12,7 +13,7 @@ export async function PATCH(
 ) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`listings-patch:${ip}`, 20, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const { id } = await params
   const body = await req.json() as {
@@ -23,15 +24,15 @@ export async function PATCH(
   }
 
   if (body.status !== 'filled' && body.status !== 'cancelled') {
-    return NextResponse.json({ error: 'status must be filled or cancelled' }, { status: 400 })
+    return errorResponse(400, 'status must be filled or cancelled')
   }
 
   const listing = await getListing(id)
   if (!listing) {
-    return NextResponse.json({ error: 'Listing not found' }, { status: 404 })
+    return errorResponse(404, 'Listing not found')
   }
   if (listing.status !== 'active') {
-    return NextResponse.json({ error: 'Listing is already inactive' }, { status: 409 })
+    return errorResponse(409, 'Listing is already inactive')
   }
 
   // Both branches require a signed message tied to the listing id + signer +
@@ -40,12 +41,12 @@ export async function PATCH(
   // can't be the seller per fulfillOrder semantics).
   const { signature, nonce, signer } = body
   if (!signature || !nonce || !signer || !isAddress(signer)) {
-    return NextResponse.json({ error: 'signature, nonce, and signer required' }, { status: 400 })
+    return errorResponse(400, 'signature, nonce, and signer required')
   }
 
   if (body.status === 'cancelled') {
     if (signer.toLowerCase() !== listing.seller.toLowerCase()) {
-      return NextResponse.json({ error: 'Only the seller can cancel this listing' }, { status: 403 })
+      return errorResponse(403, 'Only the seller can cancel this listing')
     }
     const message = `Cancel Kismet Art listing\nListing: ${id}\nSeller: ${signer.toLowerCase()}\nNonce: ${nonce}`
     const verified = await verifyMessage({
@@ -54,16 +55,16 @@ export async function PATCH(
       signature: signature as `0x${string}`,
     })
     if (!verified) {
-      return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+      return errorResponse(401, 'Signature verification failed')
     }
     const valid = await consumeNonce(signer, nonce)
     if (!valid) {
-      return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+      return errorResponse(401, 'Invalid or expired nonce')
     }
   } else {
     // status === 'filled' — must be the buyer.
     if (signer.toLowerCase() === listing.seller.toLowerCase()) {
-      return NextResponse.json({ error: 'Seller cannot mark own listing filled' }, { status: 403 })
+      return errorResponse(403, 'Seller cannot mark own listing filled')
     }
     const message = `Mark Kismet Art listing filled\nListing: ${id}\nBuyer: ${signer.toLowerCase()}\nNonce: ${nonce}`
     const verified = await verifyMessage({
@@ -72,11 +73,11 @@ export async function PATCH(
       signature: signature as `0x${string}`,
     })
     if (!verified) {
-      return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+      return errorResponse(401, 'Signature verification failed')
     }
     const valid = await consumeNonce(signer, nonce)
     if (!valid) {
-      return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+      return errorResponse(401, 'Invalid or expired nonce')
     }
   }
 

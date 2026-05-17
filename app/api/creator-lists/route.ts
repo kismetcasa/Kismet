@@ -6,6 +6,7 @@ import {
   deleteCreatorList,
   slugify,
 } from '@/lib/creatorLists'
+import { errorResponse } from '@/lib/apiResponse'
 
 // Public — anyone can read which curated rosters exist. Lists never carry
 // private data (just lowercased EOA addresses already on the public chain),
@@ -23,25 +24,25 @@ export async function GET() {
 // Auth is via HttpOnly session cookie set by /api/auth/login.
 export async function POST(req: NextRequest) {
   const auth = await verifyPrivilegedSession()
-  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  if ('error' in auth) return errorResponse(auth.status, auth.error)
 
   const body = (await req.json().catch(() => null)) as {
     slug?: string
     name?: string
     addresses?: unknown[]
   } | null
-  if (!body) return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  if (!body) return errorResponse(400, 'Invalid request body')
 
   if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
-    return NextResponse.json({ error: 'name required' }, { status: 400 })
+    return errorResponse(400, 'name required')
   }
   if (!Array.isArray(body.addresses)) {
-    return NextResponse.json({ error: 'addresses[] required' }, { status: 400 })
+    return errorResponse(400, 'addresses[] required')
   }
 
   let slug = body.slug?.trim() || slugify(body.name)
   if (!slug) {
-    return NextResponse.json({ error: 'name produces an empty slug' }, { status: 400 })
+    return errorResponse(400, 'name produces an empty slug')
   }
   // Sanitize an explicitly-passed slug too — accepts whatever the curator
   // typed only after running it through the same normalization the
@@ -54,10 +55,7 @@ export async function POST(req: NextRequest) {
   if (!body.slug) {
     const all = await getAllCreatorLists()
     if (all.some((l) => l.slug === slug)) {
-      return NextResponse.json(
-        { error: 'A list with that name already exists. Pass slug to update.' },
-        { status: 409 },
-      )
+      return errorResponse(409, 'A list with that name already exists. Pass slug to update.')
     }
   }
 
@@ -70,10 +68,10 @@ export async function POST(req: NextRequest) {
 // in server logs. Auth via HttpOnly session cookie.
 export async function DELETE(req: NextRequest) {
   const auth = await verifyPrivilegedSession()
-  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  if ('error' in auth) return errorResponse(auth.status, auth.error)
 
   const slug = new URL(req.url).searchParams.get('slug')
-  if (!slug) return NextResponse.json({ error: 'slug required' }, { status: 400 })
+  if (!slug) return errorResponse(400, 'slug required')
 
   const removed = await deleteCreatorList(slug)
   return NextResponse.json({ removed })

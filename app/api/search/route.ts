@@ -3,12 +3,13 @@ import { searchProfiles } from '@/lib/profile'
 import { searchCollections } from '@/lib/kv'
 import { searchMoments } from '@/lib/search'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { errorResponse } from '@/lib/apiResponse'
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`search:${ip}`, 30, 60)
   if (!allowed) {
-    return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+    return errorResponse(429, 'Too many requests')
   }
 
   const q = new URL(req.url).searchParams.get('q')?.trim() ?? ''

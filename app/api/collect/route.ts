@@ -8,6 +8,7 @@ import { recordCollected } from '@/lib/collected'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
+import { errorResponse } from '@/lib/apiResponse'
 
 // All mint paths in this app emit ERC1155 TransferSingle: per-token
 // 1155.mint() (single + collect-all ETH legs) and ERC20Minter.mint()
@@ -98,7 +99,7 @@ export async function POST(req: NextRequest) {
   // the headroom, a legitimate batch consumes the cap and blocks shared-IP
   // peers (offices, mobile networks) for ~60s.
   const allowed = await checkRateLimit(`collect:${ip}`, 60, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const body = (await req.json().catch(() => null)) as {
     moment?: { collectionAddress?: string; tokenId?: string }
@@ -110,7 +111,7 @@ export async function POST(req: NextRequest) {
     txHash?: string
   } | null
 
-  if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
+  if (!body) return errorResponse(400, 'Invalid body')
 
   const collectionAddress = body.moment?.collectionAddress
   const rawTokenId = body.moment?.tokenId
@@ -138,10 +139,10 @@ export async function POST(req: NextRequest) {
   const txHash = body.txHash
 
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+    return errorResponse(400, 'Invalid collectionAddress')
   }
   if (!rawTokenId || !/^\d+$/.test(String(rawTokenId))) {
-    return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+    return errorResponse(400, 'Invalid tokenId')
   }
   // Canonicalize the tokenId to its base-10 minimal form. The regex accepts
   // leading zeros ("01", "0000001"), and all such strings are BigInt-equal —
@@ -152,20 +153,17 @@ export async function POST(req: NextRequest) {
   // idempotency lock to inflate trending or flood notifications.
   const tokenId = BigInt(rawTokenId).toString()
   if (!account || !isAddress(account)) {
-    return NextResponse.json({ error: 'Invalid account' }, { status: 400 })
+    return errorResponse(400, 'Invalid account')
   }
   if (!txHash || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    return NextResponse.json({ error: 'Invalid txHash' }, { status: 400 })
+    return errorResponse(400, 'Invalid txHash')
   }
 
   const collectionLower = collectionAddress.toLowerCase()
 
   const verified = await verifyMintOnChain(txHash as Hex, collectionLower, tokenId, account)
   if (!verified) {
-    return NextResponse.json(
-      { error: 'Mint not verified on-chain' },
-      { status: 403 },
-    )
+    return errorResponse(403, 'Mint not verified on-chain')
   }
 
   // Idempotency gate. SET NX returns 'OK' on first claim, null when the key
@@ -190,7 +188,7 @@ export async function POST(req: NextRequest) {
     })) as 'OK' | null
   } catch (err) {
     console.error('[collect] idempotency-lock failed', { txHash, err })
-    return NextResponse.json({ error: 'Recording temporarily unavailable' }, { status: 503 })
+    return errorResponse(503, 'Recording temporarily unavailable')
   }
   if (acquired !== 'OK') {
     return NextResponse.json({ ok: true, idempotent: true })

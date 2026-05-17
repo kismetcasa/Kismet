@@ -4,6 +4,7 @@ import { isAddress } from '@/lib/address'
 import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
 import { getProfile, upsertProfile, consumeNonce } from '@/lib/profile'
+import { errorResponse } from '@/lib/apiResponse'
 
 // Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
 // the public default. MAINNET_RPC_URL is the server-only override; falls
@@ -44,7 +45,7 @@ export async function GET(
 ) {
   const { address } = await params
   if (!isAddress(address)) {
-    return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+    return errorResponse(400, 'Invalid address')
   }
   const profile = await getProfile(address)
   if (!profile.username) {
@@ -64,22 +65,22 @@ export async function PUT(
 ) {
   const { address } = await params
   if (!isAddress(address)) {
-    return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+    return errorResponse(400, 'Invalid address')
   }
 
   let body: { username?: string; avatarUrl?: string; signature?: string; nonce?: string }
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   if (!body.signature || !body.nonce) {
-    return NextResponse.json({ error: 'signature and nonce required' }, { status: 400 })
+    return errorResponse(400, 'signature and nonce required')
   }
 
   if (body.avatarUrl && !body.avatarUrl.startsWith('https://')) {
-    return NextResponse.json({ error: 'avatarUrl must be an https URL' }, { status: 400 })
+    return errorResponse(400, 'avatarUrl must be an https URL')
   }
 
   // Verify the signature proves ownership of the address
@@ -91,13 +92,13 @@ export async function PUT(
   })
 
   if (!verified) {
-    return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+    return errorResponse(401, 'Signature verification failed')
   }
 
   // Consume the nonce only after signature is confirmed valid
   const valid = await consumeNonce(address, body.nonce)
   if (!valid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+    return errorResponse(401, 'Invalid or expired nonce')
   }
 
   const username = body.username?.trim().slice(0, 30) || undefined

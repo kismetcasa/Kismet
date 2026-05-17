@@ -5,6 +5,7 @@ import { follow, unfollow, isFollowing, getFollowing, getFollowers, getFollowerC
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { writeNotification } from '@/lib/notifications'
+import { errorResponse } from '@/lib/apiResponse'
 
 type Params = { params: Promise<{ address: string }> }
 
@@ -14,7 +15,7 @@ type Params = { params: Promise<{ address: string }> }
 // GET /api/follow/[address]?count=1         → { followingCount: number, followerCount: number }
 export async function GET(req: NextRequest, { params }: Params) {
   const { address } = await params
-  if (!isAddress(address)) return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+  if (!isAddress(address)) return errorResponse(400, 'Invalid address')
 
   const { searchParams } = new URL(req.url)
 
@@ -66,15 +67,15 @@ async function verifyFollowSignature(
 // POST /api/follow/[address] — follow (requires wallet signature)
 export async function POST(req: NextRequest, { params }: Params) {
   const { address } = await params
-  if (!isAddress(address)) return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+  if (!isAddress(address)) return errorResponse(400, 'Invalid address')
 
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`follow:${ip}`, 20, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const body = await req.json() as { follower?: string; signature?: string; nonce?: string }
   const err = await verifyFollowSignature('Follow', address, body)
-  if (err) return NextResponse.json({ error: err.error }, { status: err.status })
+  if (err) return errorResponse(err.status, err.error)
 
   await follow(body.follower!, address)
   after(() =>
@@ -86,15 +87,15 @@ export async function POST(req: NextRequest, { params }: Params) {
 // DELETE /api/follow/[address] — unfollow (requires wallet signature)
 export async function DELETE(req: NextRequest, { params }: Params) {
   const { address } = await params
-  if (!isAddress(address)) return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+  if (!isAddress(address)) return errorResponse(400, 'Invalid address')
 
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`follow:${ip}`, 20, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const body = await req.json() as { follower?: string; signature?: string; nonce?: string }
   const err = await verifyFollowSignature('Unfollow', address, body)
-  if (err) return NextResponse.json({ error: err.error }, { status: err.status })
+  if (err) return errorResponse(err.status, err.error)
 
   await unfollow(body.follower!, address)
   return NextResponse.json({ following: false })

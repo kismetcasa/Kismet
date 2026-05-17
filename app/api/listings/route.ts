@@ -8,6 +8,7 @@ import {
   deserializeOrder,
   type SerializedOrderComponents,
 } from '@/lib/seaport'
+import { errorResponse } from '@/lib/apiResponse'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -18,10 +19,10 @@ export async function GET(req: NextRequest) {
   const seller = searchParams.get('seller') ?? undefined
 
   if (collection && !isAddress(collection)) {
-    return NextResponse.json({ error: 'Invalid collection address' }, { status: 400 })
+    return errorResponse(400, 'Invalid collection address')
   }
   if (seller && !isAddress(seller)) {
-    return NextResponse.json({ error: 'Invalid seller address' }, { status: 400 })
+    return errorResponse(400, 'Invalid seller address')
   }
 
   // Single-token lookup — requires seller to identify which listing
@@ -77,22 +78,22 @@ export async function POST(req: NextRequest) {
     const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
 
     if (!isAddress(collectionAddress)) {
-      return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+      return errorResponse(400, 'Invalid collectionAddress')
     }
     if (!tokenId || !seller || !price || !signature || !orderComponents) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+      return errorResponse(400, 'Missing required fields')
     }
     if (!isAddress(seller)) {
-      return NextResponse.json({ error: 'Invalid seller address' }, { status: 400 })
+      return errorResponse(400, 'Invalid seller address')
     }
     if (!isValidTokenId(tokenId)) {
-      return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+      return errorResponse(400, 'Invalid tokenId')
     }
     if (BigInt(price) <= 0n) {
-      return NextResponse.json({ error: 'Price must be greater than 0' }, { status: 400 })
+      return errorResponse(400, 'Price must be greater than 0')
     }
     if (orderComponents.offerer.toLowerCase() !== seller.toLowerCase()) {
-      return NextResponse.json({ error: 'Seller must match order offerer' }, { status: 400 })
+      return errorResponse(400, 'Seller must match order offerer')
     }
 
     // Verify the EIP-712 signature is from the offerer. Without this anyone
@@ -122,10 +123,10 @@ export async function POST(req: NextRequest) {
         signature: signature as `0x${string}`,
       })
     } catch {
-      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+      return errorResponse(401, 'Invalid signature')
     }
     if (!sigValid) {
-      return NextResponse.json({ error: 'Signature does not match seller' }, { status: 401 })
+      return errorResponse(401, 'Signature does not match seller')
     }
 
     const listing = await createListing({
@@ -151,6 +152,6 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to create listing'
     const status = message.includes('already exists') ? 409 : 500
-    return NextResponse.json({ error: message }, { status })
+    return errorResponse(status, message)
   }
 }

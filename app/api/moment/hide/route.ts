@@ -4,6 +4,7 @@ import { getSessionAddress } from '@/lib/session'
 import { getMomentMeta } from '@/lib/notifications'
 import { hideMoment, unhideMoment, isMomentHidden } from '@/lib/hiddenMoments'
 import { INPROCESS_API } from '@/lib/inprocess'
+import { errorResponse } from '@/lib/apiResponse'
 
 interface HideBody {
   collectionAddress?: string
@@ -17,25 +18,25 @@ interface HideBody {
 export async function POST(req: NextRequest) {
   const viewer = await getSessionAddress(req)
   if (!viewer) {
-    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+    return errorResponse(401, 'Sign in to continue')
   }
 
   let body: HideBody
   try {
     body = (await req.json()) as HideBody
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   const { collectionAddress, tokenId, hidden } = body
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+    return errorResponse(400, 'Invalid collectionAddress')
   }
   if (!isValidTokenId(tokenId)) {
-    return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+    return errorResponse(400, 'Invalid tokenId')
   }
   if (typeof hidden !== 'boolean') {
-    return NextResponse.json({ error: 'hidden must be a boolean' }, { status: 400 })
+    return errorResponse(400, 'hidden must be a boolean')
   }
 
   // Authorize against the local moment-meta record first (fast path —
@@ -79,13 +80,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (!creatorLower) {
-    return NextResponse.json(
-      { error: 'Cannot verify creator for this moment' },
-      { status: 403 },
-    )
+    return errorResponse(403, 'Cannot verify creator for this moment')
   }
   if (creatorLower !== viewer.toLowerCase()) {
-    return NextResponse.json({ error: 'Only the creator can hide this moment' }, { status: 403 })
+    return errorResponse(403, 'Only the creator can hide this moment')
   }
 
   if (hidden) {
@@ -104,7 +102,7 @@ export async function GET(req: NextRequest) {
   const collectionAddress = searchParams.get('collectionAddress')
   const tokenId = searchParams.get('tokenId')
   if (!collectionAddress || !isAddress(collectionAddress) || !isValidTokenId(tokenId)) {
-    return NextResponse.json({ error: 'Invalid query params' }, { status: 400 })
+    return errorResponse(400, 'Invalid query params')
   }
   const hidden = await isMomentHidden(collectionAddress, tokenId)
   return NextResponse.json({ hidden })

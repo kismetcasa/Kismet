@@ -11,6 +11,7 @@ import {
 import { consumeNonce } from '@/lib/profile'
 import { setMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
+import { errorResponse } from '@/lib/apiResponse'
 
 /**
  * Caller must hold ADMIN (2) or METADATA (16) permission on the token —
@@ -51,10 +52,10 @@ async function canUpdateUri(
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`update-uri:${ip}`, 10, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const apiKey = process.env.INPROCESS_API_KEY
-  if (!apiKey) return NextResponse.json({ error: 'INPROCESS_API_KEY not configured' }, { status: 500 })
+  if (!apiKey) return errorResponse(500, 'INPROCESS_API_KEY not configured')
 
   let body: {
     collectionAddress?: string
@@ -71,27 +72,27 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   const { collectionAddress, tokenId, newUri, callerAddress, signature, nonce } = body
 
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+    return errorResponse(400, 'Invalid collectionAddress')
   }
   if (!tokenId || !/^\d+$/.test(String(tokenId))) {
-    return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+    return errorResponse(400, 'Invalid tokenId')
   }
   // newUri must be a content URI we recognize. Restricting to ar:// and
   // https:// closes the surface (no data:, no javascript:, no file://).
   if (!newUri || (!newUri.startsWith('ar://') && !newUri.startsWith('https://'))) {
-    return NextResponse.json({ error: 'newUri must be ar:// or https://' }, { status: 400 })
+    return errorResponse(400, 'newUri must be ar:// or https://')
   }
   if (!callerAddress || !isAddress(callerAddress)) {
-    return NextResponse.json({ error: 'callerAddress required' }, { status: 401 })
+    return errorResponse(401, 'callerAddress required')
   }
   if (!signature || !nonce) {
-    return NextResponse.json({ error: 'signature and nonce required' }, { status: 401 })
+    return errorResponse(401, 'signature and nonce required')
   }
 
   // Sign ALL fields the user is consenting to — including newUri so an
@@ -105,14 +106,14 @@ export async function POST(req: NextRequest) {
       signature: signature as `0x${string}`,
     })
   } catch {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    return errorResponse(401, 'Invalid signature')
   }
-  if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+  if (!sigValid) return errorResponse(401, 'Signature verification failed')
 
   // Verify-then-consume: failed sigs leave the nonce reusable.
   const nonceValid = await consumeNonce(callerAddress, nonce)
   if (!nonceValid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+    return errorResponse(401, 'Invalid or expired nonce')
   }
 
   // Pre-flight admin check — saves a sponsored-tx revert (and the gas
@@ -121,10 +122,7 @@ export async function POST(req: NextRequest) {
   // isn't admin, but rejecting early is cleaner UX + no wasted budget.
   const authorized = await canUpdateUri(collectionAddress, tokenId, callerAddress)
   if (!authorized) {
-    return NextResponse.json(
-      { error: 'Caller is not admin of this token' },
-      { status: 403 },
-    )
+    return errorResponse(403, 'Caller is not admin of this token')
   }
 
   const upstreamBody = {

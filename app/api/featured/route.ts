@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
 import { verifyPrivilegedSession } from '@/lib/curator'
+import { errorResponse } from '@/lib/apiResponse'
 
 // GET /api/featured — public, returns both featured moments + collections
 // ordered by recency. Existing consumers reading `featured` keep working;
@@ -39,7 +40,7 @@ export async function GET() {
 // by /api/auth/login.
 export async function POST(req: NextRequest) {
   const auth = await verifyPrivilegedSession()
-  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  if ('error' in auth) return errorResponse(auth.status, auth.error)
 
   const body = (await req.json().catch(() => null)) as {
     type?: 'moment' | 'collection'
@@ -47,10 +48,10 @@ export async function POST(req: NextRequest) {
     tokenId?: string
   } | null
 
-  if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
+  if (!body) return errorResponse(400, 'Invalid body')
   const { collectionAddress } = body
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'collectionAddress required' }, { status: 400 })
+    return errorResponse(400, 'collectionAddress required')
   }
 
   if (body.type === 'collection') {
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (!body.tokenId) {
-    return NextResponse.json({ error: 'tokenId required' }, { status: 400 })
+    return errorResponse(400, 'tokenId required')
   }
   const member = `${collectionAddress.toLowerCase()}:${body.tokenId}`
   await redis.zadd(FEATURED_KEY, { score: Date.now(), member })
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
 // DELETE /api/featured — admin-only. Mirrors POST shape.
 export async function DELETE(req: NextRequest) {
   const auth = await verifyPrivilegedSession()
-  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  if ('error' in auth) return errorResponse(auth.status, auth.error)
 
   const body = (await req.json().catch(() => null)) as {
     type?: 'moment' | 'collection'
@@ -80,10 +81,10 @@ export async function DELETE(req: NextRequest) {
     tokenId?: string
   } | null
 
-  if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
+  if (!body) return errorResponse(400, 'Invalid body')
   const { collectionAddress } = body
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'collectionAddress required' }, { status: 400 })
+    return errorResponse(400, 'collectionAddress required')
   }
 
   if (body.type === 'collection') {
@@ -92,7 +93,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   if (!body.tokenId) {
-    return NextResponse.json({ error: 'tokenId required' }, { status: 400 })
+    return errorResponse(400, 'tokenId required')
   }
   const member = `${collectionAddress.toLowerCase()}:${body.tokenId}`
   await redis.zrem(FEATURED_KEY, member)

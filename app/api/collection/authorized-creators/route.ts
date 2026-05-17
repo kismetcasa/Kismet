@@ -13,6 +13,7 @@ import {
   type AuthorizedCreator,
 } from '@/lib/kv'
 import { writeNotification } from '@/lib/notifications'
+import { errorResponse } from '@/lib/apiResponse'
 
 // GET /api/collection/authorized-creators?collection=0x… — returns the
 // EOA → smart-wallet mappings recorded by our panel at grant time. KV
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collection = searchParams.get('collection')
   if (!collection || !isAddress(collection)) {
-    return NextResponse.json({ error: 'Invalid collection address' }, { status: 400 })
+    return errorResponse(400, 'Invalid collection address')
   }
   const creators = await getAuthorizedCreators(collection)
   return NextResponse.json({ creators })
@@ -52,25 +53,25 @@ interface PostBody {
 export async function POST(req: NextRequest) {
   const viewer = await getSessionAddress(req)
   if (!viewer) {
-    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+    return errorResponse(401, 'Sign in to continue')
   }
 
   let body: PostBody
   try {
     body = (await req.json()) as PostBody
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   const { collection, eoa, smartWallet, label } = body
   if (!collection || !isAddress(collection)) {
-    return NextResponse.json({ error: 'Invalid collection address' }, { status: 400 })
+    return errorResponse(400, 'Invalid collection address')
   }
   if (!eoa || !isAddress(eoa)) {
-    return NextResponse.json({ error: 'Invalid eoa' }, { status: 400 })
+    return errorResponse(400, 'Invalid eoa')
   }
   if (!smartWallet || !isAddress(smartWallet)) {
-    return NextResponse.json({ error: 'Invalid smartWallet' }, { status: 400 })
+    return errorResponse(400, 'Invalid smartWallet')
   }
 
   // 1. Caller must hold ADMIN on the collection.
@@ -83,26 +84,17 @@ export async function POST(req: NextRequest) {
       viewer as Address,
     )
     if (!hasAdminBit(perms)) {
-      return NextResponse.json(
-        { error: 'Only a collection admin can authorize creators' },
-        { status: 403 },
-      )
+      return errorResponse(403, 'Only a collection admin can authorize creators')
     }
   } catch {
-    return NextResponse.json(
-      { error: 'Could not verify collection admin on-chain' },
-      { status: 502 },
-    )
+    return errorResponse(502, 'Could not verify collection admin on-chain')
   }
 
   // 2. Re-resolve the smart wallet for the supplied EOA — refuse if the
   //    client supplied a different smartWallet than inprocess returns.
   const expected = await resolveSmartWallet(eoa)
   if (!expected || expected.toLowerCase() !== smartWallet.toLowerCase()) {
-    return NextResponse.json(
-      { error: 'eoa / smartWallet mismatch — re-resolve and retry' },
-      { status: 400 },
-    )
+    return errorResponse(400, 'eoa / smartWallet mismatch — re-resolve and retry')
   }
 
   const entry: AuthorizedCreator = {
@@ -114,10 +106,7 @@ export async function POST(req: NextRequest) {
   }
   const ok = await addAuthorizedCreator(collection, entry)
   if (!ok) {
-    return NextResponse.json(
-      { error: 'Failed to persist authorized-creator mapping; check server logs' },
-      { status: 502 },
-    )
+    return errorResponse(502, 'Failed to persist authorized-creator mapping; check server logs')
   }
 
   // Click-through routes to /collection/<addr>. On-chain addPermission is a
@@ -146,16 +135,16 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const viewer = await getSessionAddress(req)
   if (!viewer) {
-    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+    return errorResponse(401, 'Sign in to continue')
   }
   const { searchParams } = new URL(req.url)
   const collection = searchParams.get('collection')
   const eoa = searchParams.get('eoa')
   if (!collection || !isAddress(collection)) {
-    return NextResponse.json({ error: 'Invalid collection address' }, { status: 400 })
+    return errorResponse(400, 'Invalid collection address')
   }
   if (!eoa || !isAddress(eoa)) {
-    return NextResponse.json({ error: 'Invalid eoa' }, { status: 400 })
+    return errorResponse(400, 'Invalid eoa')
   }
   try {
     const client = serverBaseClient()
@@ -166,16 +155,10 @@ export async function DELETE(req: NextRequest) {
       viewer as Address,
     )
     if (!hasAdminBit(perms)) {
-      return NextResponse.json(
-        { error: 'Only a collection admin can revoke creators' },
-        { status: 403 },
-      )
+      return errorResponse(403, 'Only a collection admin can revoke creators')
     }
   } catch {
-    return NextResponse.json(
-      { error: 'Could not verify collection admin on-chain' },
-      { status: 502 },
-    )
+    return errorResponse(502, 'Could not verify collection admin on-chain')
   }
   await removeAuthorizedCreator(collection, eoa)
   return NextResponse.json({ ok: true })

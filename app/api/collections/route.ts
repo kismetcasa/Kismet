@@ -19,6 +19,7 @@ import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
+import { errorResponse } from '@/lib/apiResponse'
 
 // Cap on tokens we fetch per collection when computing bulk-collect
 // eligibility for the feed. Aligned with MAX_COLLECT_ALL_BATCH (20) since
@@ -135,7 +136,7 @@ export async function GET(req: NextRequest) {
   // render a header.
   if (singleAddress) {
     if (!isAddress(singleAddress)) {
-      return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+      return errorResponse(400, 'Invalid address')
     }
     const lowerAddr = singleAddress.toLowerCase()
     const platformLower = PLATFORM_COLLECTION.toLowerCase()
@@ -235,7 +236,7 @@ export async function GET(req: NextRequest) {
 
   if (artist) {
     if (!isAddress(artist)) {
-      return NextResponse.json({ error: 'Invalid artist address' }, { status: 400 })
+      return errorResponse(400, 'Invalid artist address')
     }
     const url = new URL(`${INPROCESS_API}/collections`)
     url.searchParams.set('artist', artist)
@@ -324,12 +325,12 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`collections:${ip}`, 5, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   // Authenticated caller — Kismet Art session cookie required.
   const sessionAddress = await getSessionAddress(req)
   if (!sessionAddress) {
-    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+    return errorResponse(401, 'Sign in to continue')
   }
 
   let body: {
@@ -351,15 +352,15 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   if (!body.address || !isAddress(body.address)) {
-    return NextResponse.json({ error: 'valid address required' }, { status: 400 })
+    return errorResponse(400, 'valid address required')
   }
   // Caller must claim themselves as the artist (no spoofing).
   if (!body.artist || body.artist.toLowerCase() !== sessionAddress) {
-    return NextResponse.json({ error: 'artist must match session address' }, { status: 403 })
+    return errorResponse(403, 'artist must match session address')
   }
 
   // Caller must hold ADMIN on chain (tokenId 0 = collection-wide row).
@@ -397,10 +398,7 @@ export async function POST(req: NextRequest) {
       caller: sessionAddress,
       err: lastErr instanceof Error ? lastErr.message : String(lastErr),
     })
-    return NextResponse.json(
-      { error: 'Could not verify collection admin on-chain' },
-      { status: 502 },
-    )
+    return errorResponse(502, 'Could not verify collection admin on-chain')
   }
 
   const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'

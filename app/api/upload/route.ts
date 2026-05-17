@@ -3,6 +3,7 @@ import { TurboFactory } from '@ardrive/turbo-sdk'
 import { getPaidBy } from '@/lib/arweave/paidBy'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
+import { errorResponse } from '@/lib/apiResponse'
 
 export const runtime = 'nodejs'
 
@@ -22,37 +23,37 @@ function getTurbo() {
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`upload:${ip}`, 30, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const address = await getSessionAddress(req)
   if (!address) {
-    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+    return errorResponse(401, 'Sign in to continue')
   }
 
   const contentLength = Number(req.headers.get('content-length') ?? 0)
   if (contentLength > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: 'Payload too large' }, { status: 413 })
+    return errorResponse(413, 'Payload too large')
   }
 
   const contentType = req.headers.get('content-type') ?? ''
   if (!contentType.includes('application/json')) {
-    return NextResponse.json({ error: 'Unsupported content type' }, { status: 415 })
+    return errorResponse(415, 'Unsupported content type')
   }
 
   let body: { json?: object }
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return errorResponse(400, 'Invalid JSON')
   }
 
-  if (!body.json) return NextResponse.json({ error: 'Missing json' }, { status: 400 })
+  if (!body.json) return errorResponse(400, 'Missing json')
 
   // Re-stringify and re-check size — defends against missing/forged
   // content-length and against payloads that decode larger than they appear.
   const serialized = JSON.stringify(body.json)
   if (Buffer.byteLength(serialized) > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: 'Payload too large' }, { status: 413 })
+    return errorResponse(413, 'Payload too large')
   }
 
   try {
@@ -69,6 +70,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ uri: `ar://${id}` })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Upload failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+    return errorResponse(500, message)
   }
 }

@@ -4,6 +4,7 @@ import { recordAirdrop } from '@/lib/airdrops'
 import { recordCollected } from '@/lib/collected'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { errorResponse } from '@/lib/apiResponse'
 
 /**
  * Records an airdrop after the on-chain tx submitted by the user's wallet
@@ -25,7 +26,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`airdrop-notify:${ip}`, 30, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const body = (await req.json().catch(() => null)) as {
     sender?: string
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest) {
     txHash?: string
   } | null
 
-  if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
+  if (!body) return errorResponse(400, 'Invalid body')
 
   const sender = body.sender?.toLowerCase()
   const collectionAddress = body.collectionAddress?.toLowerCase()
@@ -44,32 +45,32 @@ export async function POST(req: NextRequest) {
   const txHash = body.txHash
 
   if (!sender || !isAddress(sender)) {
-    return NextResponse.json({ error: 'Invalid sender' }, { status: 400 })
+    return errorResponse(400, 'Invalid sender')
   }
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'Invalid collectionAddress' }, { status: 400 })
+    return errorResponse(400, 'Invalid collectionAddress')
   }
   if (!tokenId || !/^\d+$/.test(tokenId)) {
-    return NextResponse.json({ error: 'Invalid tokenId' }, { status: 400 })
+    return errorResponse(400, 'Invalid tokenId')
   }
   if (recipients.length === 0) {
-    return NextResponse.json({ error: 'No recipients' }, { status: 400 })
+    return errorResponse(400, 'No recipients')
   }
   // Cap to the form's UX ceiling — way more than any real airdrop, but stops
   // a malicious caller from flooding a single sender's log via this endpoint.
   if (recipients.length > 200) {
-    return NextResponse.json({ error: 'Too many recipients' }, { status: 400 })
+    return errorResponse(400, 'Too many recipients')
   }
   // Optional but sanity-check the shape so we don't store garbage.
   if (txHash && !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    return NextResponse.json({ error: 'Invalid txHash' }, { status: 400 })
+    return errorResponse(400, 'Invalid txHash')
   }
 
   const validRecipients = recipients
     .filter((r): r is string => typeof r === 'string' && isAddress(r))
     .map((r) => r.toLowerCase())
   if (validRecipients.length === 0) {
-    return NextResponse.json({ error: 'No valid recipients' }, { status: 400 })
+    return errorResponse(400, 'No valid recipients')
   }
 
   // tokenName lookup is best-effort — kept off the critical path so a meta

@@ -2,17 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import { ALL_NOTIFICATION_TYPES, getNotifications, type NotificationType } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionContext, slideSession } from '@/lib/session'
+import { errorResponse } from '@/lib/apiResponse'
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`notif-list:${ip}`, 60, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   // Notification feeds are private — anyone with a valid session cookie can
   // only read their own notifications. Comments + actor metadata can carry
   // social signal we don't want to leak across users by address-guessing.
   const ctx = await getSessionContext(req)
-  if (!ctx) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+  if (!ctx) return errorResponse(401, 'Sign in to continue')
 
   const { searchParams } = new URL(req.url)
   const tabParam = searchParams.get('tab')

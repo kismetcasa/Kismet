@@ -9,6 +9,7 @@ import {
   unhideCollection,
   isCollectionHidden,
 } from '@/lib/hiddenCollections'
+import { errorResponse } from '@/lib/apiResponse'
 
 interface HideBody {
   address?: string
@@ -22,22 +23,22 @@ interface HideBody {
 export async function POST(req: NextRequest) {
   const viewer = await getSessionAddress(req)
   if (!viewer) {
-    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+    return errorResponse(401, 'Sign in to continue')
   }
 
   let body: HideBody
   try {
     body = (await req.json()) as HideBody
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   const { address, hidden } = body
   if (!address || !isAddress(address)) {
-    return NextResponse.json({ error: 'Invalid collection address' }, { status: 400 })
+    return errorResponse(400, 'Invalid collection address')
   }
   if (typeof hidden !== 'boolean') {
-    return NextResponse.json({ error: 'hidden must be a boolean' }, { status: 400 })
+    return errorResponse(400, 'hidden must be a boolean')
   }
 
   try {
@@ -47,16 +48,10 @@ export async function POST(req: NextRequest) {
     const client = serverBaseClient()
     const perms = await readPermissions(client, address as Address, 0n, viewer as Address)
     if (!hasAdminBit(perms)) {
-      return NextResponse.json(
-        { error: 'Only a collection admin can hide it' },
-        { status: 403 },
-      )
+      return errorResponse(403, 'Only a collection admin can hide it')
     }
   } catch {
-    return NextResponse.json(
-      { error: 'Could not verify collection admin on-chain' },
-      { status: 502 },
-    )
+    return errorResponse(502, 'Could not verify collection admin on-chain')
   }
 
   if (hidden) {
@@ -74,7 +69,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const address = searchParams.get('address')
   if (!address || !isAddress(address)) {
-    return NextResponse.json({ error: 'Invalid query params' }, { status: 400 })
+    return errorResponse(400, 'Invalid query params')
   }
   const hidden = await isCollectionHidden(address)
   return NextResponse.json({ hidden })

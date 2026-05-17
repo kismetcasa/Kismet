@@ -7,6 +7,7 @@ import { consumeNonce } from '@/lib/profile'
 import { getStoredSplits, hasRegisteredSplits } from '@/lib/splits'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
+import { errorResponse } from '@/lib/apiResponse'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
@@ -21,11 +22,11 @@ import { getMomentMeta, writeNotification } from '@/lib/notifications'
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`distribute:${ip}`, 20, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const apiKey = process.env.INPROCESS_API_KEY
   if (!apiKey) {
-    return NextResponse.json({ error: 'INPROCESS_API_KEY not configured' }, { status: 500 })
+    return errorResponse(500, 'INPROCESS_API_KEY not configured')
   }
 
   let body: {
@@ -45,26 +46,26 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
 
   const { splitAddress, collectionAddress, tokenId, callerAddress, signature, nonce } = body
   const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
 
   if (!splitAddress || !isAddress(splitAddress)) {
-    return NextResponse.json({ error: 'valid splitAddress required' }, { status: 400 })
+    return errorResponse(400, 'valid splitAddress required')
   }
   if (!collectionAddress || !isAddress(collectionAddress)) {
-    return NextResponse.json({ error: 'valid collectionAddress required' }, { status: 400 })
+    return errorResponse(400, 'valid collectionAddress required')
   }
   if (!isValidTokenId(tokenId)) {
-    return NextResponse.json({ error: 'valid tokenId required' }, { status: 400 })
+    return errorResponse(400, 'valid tokenId required')
   }
   if (!callerAddress || !isAddress(callerAddress)) {
-    return NextResponse.json({ error: 'callerAddress required' }, { status: 401 })
+    return errorResponse(401, 'callerAddress required')
   }
   if (!signature || !nonce) {
-    return NextResponse.json({ error: 'signature and nonce required' }, { status: 401 })
+    return errorResponse(401, 'signature and nonce required')
   }
 
   // Currency is part of the signed message so an attacker can't substitute
@@ -78,20 +79,20 @@ export async function POST(req: NextRequest) {
       signature: signature as `0x${string}`,
     })
   } catch {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    return errorResponse(401, 'Invalid signature')
   }
-  if (!sigValid) return NextResponse.json({ error: 'Signature verification failed' }, { status: 401 })
+  if (!sigValid) return errorResponse(401, 'Signature verification failed')
 
   // Verify-then-consume: failed sigs leave the nonce reusable.
   const nonceValid = await consumeNonce(callerAddress, nonce)
   if (!nonceValid) {
-    return NextResponse.json({ error: 'Invalid or expired nonce' }, { status: 401 })
+    return errorResponse(401, 'Invalid or expired nonce')
   }
 
   // Token must have splits registered via our mint flow. Without this gate
   // anyone could trigger distribute on arbitrary contract addresses.
   if (!(await hasRegisteredSplits(collectionAddress, tokenId))) {
-    return NextResponse.json({ error: 'No splits registered for this token' }, { status: 403 })
+    return errorResponse(403, 'No splits registered for this token')
   }
 
   // Caller must be creator or admin of the moment per inprocess.
@@ -105,7 +106,7 @@ export async function POST(req: NextRequest) {
     momentUrl.searchParams.set('chainId', '8453')
     const momentRes = await fetch(momentUrl.toString(), { headers: { Accept: 'application/json' } })
     if (!momentRes.ok) {
-      return NextResponse.json({ error: 'Could not verify moment creator' }, { status: 403 })
+      return errorResponse(403, 'Could not verify moment creator')
     }
     const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
     const callerLower = callerAddress.toLowerCase()
@@ -115,10 +116,10 @@ export async function POST(req: NextRequest) {
           .map((a) => a.toLowerCase())
       : []
     if (!adminsLower.includes(callerLower)) {
-      return NextResponse.json({ error: 'Only the moment creator or an admin may distribute' }, { status: 403 })
+      return errorResponse(403, 'Only the moment creator or an admin may distribute')
     }
   } catch {
-    return NextResponse.json({ error: 'Could not verify moment creator' }, { status: 502 })
+    return errorResponse(502, 'Could not verify moment creator')
   }
 
   // Forward only the specific fields inprocess expects — never relay arbitrary
