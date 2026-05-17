@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
+import { mainnet } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send } from 'lucide-react'
@@ -170,20 +171,97 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Edition holders sending multiples can use a wallet directly.
   const [sendOpen, setSendOpen] = useState(false)
   const [sendTo, setSendTo] = useState('')
+  // Resolved 0x for the recipient. For a raw address this matches the
+  // input; for an ENS name this is the mainnet resolver's answer. We
+  // gate the send button on this so users can't fire the tx until the
+  // .eth name actually resolves — otherwise an unresolved ENS would
+  // either revert or, worse, send to an unintended address.
+  const [resolvedSendTo, setResolvedSendTo] = useState<`0x${string}` | null>(null)
+  const [resolvingSendTo, setResolvingSendTo] = useState(false)
+  const [sendToError, setSendToError] = useState<string | null>(null)
   const { writeContractAsync: writeSend, isPending: sending } = useWriteContract()
   const publicClient = usePublicClient()
+  // Mainnet client for ENS resolution. Wagmi already configures a
+  // mainnet transport in lib/wagmi.ts purely for ENS, so we reuse it
+  // here instead of standing up a duplicate viem client.
+  const mainnetClient = usePublicClient({ chainId: mainnet.id })
   const trimmedSendTo = sendTo.trim()
-  const sendToValid = isAddress(trimmedSendTo)
-    && trimmedSendTo.toLowerCase() !== connectedAddress?.toLowerCase()
+  const looksLikeEns = trimmedSendTo.toLowerCase().endsWith('.eth') && trimmedSendTo.length > 4
+  // Resolve recipient input (0x or ENS) as the user types, debounced so
+  // we don't hammer the mainnet RPC on every keystroke. Effect is keyed
+  // on `trimmedSendTo` and bails via `cancelled` on each re-run so a
+  // late-arriving response from a stale query can't overwrite a fresher
+  // resolution.
+  useEffect(() => {
+    if (!trimmedSendTo) {
+      setResolvedSendTo(null)
+      setResolvingSendTo(false)
+      setSendToError(null)
+      return
+    }
+    if (isAddress(trimmedSendTo)) {
+      setResolvedSendTo(trimmedSendTo.toLowerCase() as `0x${string}`)
+      setResolvingSendTo(false)
+      setSendToError(null)
+      return
+    }
+    if (!looksLikeEns) {
+      setResolvedSendTo(null)
+      setResolvingSendTo(false)
+      setSendToError(null)
+      return
+    }
+    if (!mainnetClient) {
+      // Wagmi mounts the mainnet client async; treat the gap as
+      // "still resolving" rather than a hard error so the brief
+      // hydration window doesn't flash a misleading message. The
+      // effect re-runs when mainnetClient becomes defined.
+      setResolvedSendTo(null)
+      setResolvingSendTo(true)
+      setSendToError(null)
+      return
+    }
+    let cancelled = false
+    setResolvingSendTo(true)
+    setResolvedSendTo(null)
+    setSendToError(null)
+    const handle = setTimeout(async () => {
+      try {
+        const resolved = await mainnetClient.getEnsAddress({ name: trimmedSendTo.toLowerCase() })
+        if (cancelled) return
+        if (!resolved) {
+          setResolvedSendTo(null)
+          setSendToError('Name does not resolve')
+        } else {
+          setResolvedSendTo(resolved.toLowerCase() as `0x${string}`)
+          setSendToError(null)
+        }
+      } catch {
+        if (cancelled) return
+        setResolvedSendTo(null)
+        setSendToError('ENS lookup failed')
+      } finally {
+        if (!cancelled) setResolvingSendTo(false)
+      }
+    }, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [trimmedSendTo, looksLikeEns, mainnetClient])
+  const isSelfSend = !!resolvedSendTo
+    && !!connectedAddress
+    && resolvedSendTo.toLowerCase() === connectedAddress.toLowerCase()
+  const sendToValid = !!resolvedSendTo && !isSelfSend && !resolvingSendTo
   const handleSend = async () => {
-    if (!connectedAddress || !sendToValid || sending || !publicClient) return
+    if (!connectedAddress || !resolvedSendTo || !sendToValid || sending || !publicClient) return
     try {
       toast.loading('Confirm in wallet…', { id: 'send' })
       const hash = await writeSend({
         address: address as `0x${string}`,
         abi: ERC1155_ABI,
         functionName: 'safeTransferFrom',
-        args: [connectedAddress, trimmedSendTo as `0x${string}`, BigInt(tokenId), 1n, '0x'],
+        args: [connectedAddress, resolvedSendTo, BigInt(tokenId), 1n, '0x'],
       })
       toast.loading('Sending…', { id: 'send' })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
@@ -191,6 +269,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       toast.success('Sent', { id: 'send' })
       setSendOpen(false)
       setSendTo('')
+      setResolvedSendTo(null)
+      setSendToError(null)
       refetchOwnedBalance()
     } catch (err) {
       toastError('Send', err, { id: 'send' })
@@ -1027,23 +1107,39 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {sendOpen ? 'cancel' : 'send'}
               </button>
               {sendOpen && (
-                <div className="mt-2 flex gap-2">
-                  <input
-                    type="text"
-                    value={sendTo}
-                    onChange={(e) => setSendTo(e.target.value)}
-                    placeholder="0x recipient address"
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555]"
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-[#555] disabled:hover:border-[#2a2a2a]"
-                  >
-                    {sending ? '…' : 'confirm'}
-                  </button>
+                <div className="mt-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={sendTo}
+                      onChange={(e) => setSendTo(e.target.value)}
+                      placeholder="0x address or name.eth"
+                      autoComplete="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      className="flex-1 min-w-0 bg-[#111] border border-[#2a2a2a] px-3 py-2 text-xs font-mono text-[#efefef] placeholder-[#333] focus:outline-none focus:border-[#555]"
+                    />
+                    <button
+                      onClick={handleSend}
+                      disabled={!sendToValid || sending}
+                      className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-[#2a2a2a] text-[#555] hover:bg-gradient-to-r hover:from-[#8B5CF6] hover:to-[#C084FC] hover:text-white hover:border-[#8B5CF6] transition-all disabled:opacity-50 disabled:hover:bg-none disabled:hover:text-[#555] disabled:hover:border-[#2a2a2a]"
+                    >
+                      {sending ? '…' : 'confirm'}
+                    </button>
+                  </div>
+                  {trimmedSendTo && (
+                    <div className="mt-1.5 text-[10px] font-mono">
+                      {resolvingSendTo ? (
+                        <span className="text-[#555]">resolving…</span>
+                      ) : isSelfSend ? (
+                        <span className="text-red-400">cannot send to yourself</span>
+                      ) : sendToError ? (
+                        <span className="text-red-400">{sendToError}</span>
+                      ) : resolvedSendTo && looksLikeEns ? (
+                        <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
