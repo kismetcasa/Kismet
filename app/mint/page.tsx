@@ -1,8 +1,8 @@
 import { MintTabs } from '@/components/MintTabs'
 
 export const metadata = {
-  title: 'mint — Kismet Art',
-  description: 'mint moments and create collections on Kismet Art',
+  title: 'mint — Kismet',
+  description: 'mint moments and create collections on Kismet',
 }
 
 interface Props {

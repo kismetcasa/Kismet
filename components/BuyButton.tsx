@@ -127,7 +127,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
       if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
       if (!nonce) throw new Error('Could not fetch nonce')
-      const message = `Mark Kismet Art listing filled\nListing: ${listing.id}\nBuyer: ${address.toLowerCase()}\nNonce: ${nonce}`
+      const message = `Mark Kismet listing filled\nListing: ${listing.id}\nBuyer: ${address.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
 
       await fetch(`/api/listings/${listing.id}`, {

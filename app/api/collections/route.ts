@@ -322,7 +322,7 @@ export async function POST(req: NextRequest) {
   const allowed = await checkRateLimit(`collections:${ip}`, 5, 60)
   if (!allowed) return errorResponse(429, 'Too many requests')
 
-  // Authenticated caller — Kismet Art session cookie required.
+  // Authenticated caller — Kismet session cookie required.
   const sessionAddress = await getSessionAddress(req)
   if (!sessionAddress) {
     return errorResponse(401, 'Sign in to continue')

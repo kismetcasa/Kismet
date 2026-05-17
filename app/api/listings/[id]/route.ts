@@ -48,7 +48,7 @@ export async function PATCH(
     if (signer.toLowerCase() !== listing.seller.toLowerCase()) {
       return errorResponse(403, 'Only the seller can cancel this listing')
     }
-    const message = `Cancel Kismet Art listing\nListing: ${id}\nSeller: ${signer.toLowerCase()}\nNonce: ${nonce}`
+    const message = `Cancel Kismet listing\nListing: ${id}\nSeller: ${signer.toLowerCase()}\nNonce: ${nonce}`
     const verified = await verifyMessage({
       address: signer as `0x${string}`,
       message,
@@ -66,7 +66,7 @@ export async function PATCH(
     if (signer.toLowerCase() === listing.seller.toLowerCase()) {
       return errorResponse(403, 'Seller cannot mark own listing filled')
     }
-    const message = `Mark Kismet Art listing filled\nListing: ${id}\nBuyer: ${signer.toLowerCase()}\nNonce: ${nonce}`
+    const message = `Mark Kismet listing filled\nListing: ${id}\nBuyer: ${signer.toLowerCase()}\nNonce: ${nonce}`
     const verified = await verifyMessage({
       address: signer as `0x${string}`,
       message,

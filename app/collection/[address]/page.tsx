@@ -112,14 +112,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   ])
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
-  const description = meta?.description || 'View collection on Kismet Art'
+  const description = meta?.description || 'View collection on Kismet'
   // Text-mint auto-deploy stores an SVG data URI as the cover (works
   // in-app, not in share crawlers) — shareImageUrl drops those. ar:// /
   // ipfs:// routes through /api/img for the multi-gateway-raced edge
   // cache; https:// passes through.
   const imageUrl = shareImageUrl(meta?.image)
   return {
-    title: `${name} — Kismet Art`,
+    title: `${name} — Kismet`,
     description,
     openGraph: {
       title: name,

@@ -1,7 +1,7 @@
 import { PermissionsDashboard } from '@/components/PermissionsDashboard'
 
 export const metadata = {
-  title: 'permissions — Kismet Art',
+  title: 'permissions — Kismet',
   description:
     'View permission status for every collection you have deployed and authorize legacy collections that need a one-time grant before they can mint via Kismet.',
 }

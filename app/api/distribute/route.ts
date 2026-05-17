@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
 
   // Currency is part of the signed message so an attacker can't substitute
   // a different distribution token after the fact (replay protection).
-  const message = `Distribute Kismet Art split\nCollection: ${collectionAddress.toLowerCase()}\nToken: ${tokenId}\nSplit: ${splitAddress.toLowerCase()}\nCurrency: ${currency}\nAddress: ${callerAddress.toLowerCase()}\nNonce: ${nonce}`
+  const message = `Distribute Kismet split\nCollection: ${collectionAddress.toLowerCase()}\nToken: ${tokenId}\nSplit: ${splitAddress.toLowerCase()}\nCurrency: ${currency}\nAddress: ${callerAddress.toLowerCase()}\nNonce: ${nonce}`
   let sigValid = false
   try {
     sigValid = await verifyMessage({

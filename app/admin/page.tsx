@@ -1,7 +1,7 @@
 import { AdminDashboard } from '@/components/AdminDashboard'
 
 export const metadata = {
-  title: 'admin — Kismet Art',
+  title: 'admin — Kismet',
   description: 'Admin-only utilities.',
   robots: { index: false, follow: false },
 }

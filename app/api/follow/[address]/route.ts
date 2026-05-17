@@ -51,7 +51,7 @@ async function verifyFollowSignature(
   if (!body.follower || !isAddress(body.follower) || !body.signature || !body.nonce) {
     return { error: 'follower, signature, and nonce required', status: 400 }
   }
-  const message = `${action} ${target.toLowerCase()} on Kismet Art\nAddress: ${body.follower.toLowerCase()}\nNonce: ${body.nonce}`
+  const message = `${action} ${target.toLowerCase()} on Kismet\nAddress: ${body.follower.toLowerCase()}\nNonce: ${body.nonce}`
   const verified = await verifyMessage({
     address: body.follower as `0x${string}`,
     message,

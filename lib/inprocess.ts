@@ -25,7 +25,7 @@ export function inprocessUrl(
 // Default comment sent on collect when the user leaves the textarea blank.
 // Used by the collect route to filter out non-meaningful comments before storing
 // them on notifications. Defined here so frontend and backend share one source.
-export const DEFAULT_COLLECT_COMMENT = 'collected via Kismet Art'
+export const DEFAULT_COLLECT_COMMENT = 'collected via Kismet'
 
 interface SalesConfig {
   type: 'fixedPrice' | 'erc20Mint'

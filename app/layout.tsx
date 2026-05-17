@@ -10,11 +10,11 @@ export const metadata: Metadata = {
   // other non-prod hosts; default to the canonical custom domain so
   // share cards always point at production.
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.kismet.art'),
-  title: 'Kismet Art',
-  description: 'mint, collect, and discover art on Kismet Art',
+  title: 'Kismet',
+  description: 'mint, collect, and discover art on Kismet',
   openGraph: {
-    title: 'Kismet Art',
-    description: 'mint, collect, and discover art on Kismet Art',
+    title: 'Kismet',
+    description: 'mint, collect, and discover art on Kismet',
   },
 }
 

@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'signature and nonce required')
   }
 
-  const message = `Sign in to Kismet Art\nAddress: ${body.address.toLowerCase()}\nNonce: ${body.nonce}`
+  const message = `Sign in to Kismet\nAddress: ${body.address.toLowerCase()}\nNonce: ${body.nonce}`
   let sigValid = false
   try {
     sigValid = await verifyMessage({

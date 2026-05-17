@@ -4,7 +4,7 @@ import { useCallback } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
 
 /**
- * Ensures the wallet has a valid Kismet Art session, prompting one wallet
+ * Ensures the wallet has a valid Kismet session, prompting one wallet
  * signature if not. Auth state lives in an httpOnly session cookie
  * set by `POST /api/session`; the client never sees the token, so an XSS
  * can't exfiltrate it. Server-controlled TTL via cookie Max-Age — no
@@ -58,7 +58,7 @@ export function useUploadSession() {
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
       if (!nonce) throw new Error('Could not fetch nonce')
 
-      const message = `Sign in to Kismet Art\nAddress: ${lower}\nNonce: ${nonce}`
+      const message = `Sign in to Kismet\nAddress: ${lower}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
 
       const res = await fetch('/api/session', {

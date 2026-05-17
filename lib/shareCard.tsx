@@ -45,7 +45,7 @@ export function shareCard({ label, title, creator }: ShareCardProps) {
         }}
       >
         <div style={{ fontSize: 28, letterSpacing: 6, color: '#666' }}>
-          KISMET ART
+          KISMET
         </div>
         <div style={{ fontSize: 20, letterSpacing: 4, color: '#444' }}>
           {label}

@@ -17,7 +17,7 @@ if (!projectId) {
 }
 
 export const wagmiConfig = getDefaultConfig({
-  appName: 'Kismet Art',
+  appName: 'Kismet',
   projectId: projectId ?? 'placeholder-build-only',
   chains: [base, mainnet],
   transports: {

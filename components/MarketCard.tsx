@@ -106,7 +106,7 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
       if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = await nonceRes.json()
-      const message = `Cancel Kismet Art listing\nListing: ${listing.id}\nSeller: ${address.toLowerCase()}\nNonce: ${nonce}`
+      const message = `Cancel Kismet listing\nListing: ${listing.id}\nSeller: ${address.toLowerCase()}\nNonce: ${nonce}`
       toast.loading('Sign cancellation in wallet…', { id: 'cancel' })
       const signature = await signMessageAsync({ message })
 

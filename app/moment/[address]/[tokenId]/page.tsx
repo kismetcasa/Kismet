@@ -68,18 +68,18 @@ const getInitialCollectionMeta = cache(async (
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address, tokenId } = await params
   if (!isAddress(address) || !isValidTokenId(tokenId)) {
-    return { title: 'Moment — Kismet Art' }
+    return { title: 'Moment — Kismet' }
   }
   const [detail, fallback] = await Promise.all([
     fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
   ])
   const meta = detail?.metadata ?? fallback
-  if (!meta) return { title: 'Moment — Kismet Art' }
+  if (!meta) return { title: 'Moment — Kismet' }
 
   const name = meta.name ?? `#${tokenId}`
-  const title = `${name} — Kismet Art`
-  const description = meta.description ?? 'View this moment on Kismet Art'
+  const title = `${name} — Kismet`
+  const description = meta.description ?? 'View this moment on Kismet'
   // Guard the share image against the legacy "meta.image is the
   // animation_url" bug — without this, Twitter/Discord/iMessage crawlers
   // would fetch a multi-MB video as the thumbnail and render no preview.

@@ -84,7 +84,7 @@ export async function PUT(
   }
 
   // Verify the signature proves ownership of the address
-  const message = `Update Kismet Art profile\nAddress: ${address.toLowerCase()}\nNonce: ${body.nonce}`
+  const message = `Update Kismet profile\nAddress: ${address.toLowerCase()}\nNonce: ${body.nonce}`
   const verified = await verifyMessage({
     address: address as `0x${string}`,
     message,

@@ -176,7 +176,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       const message = createSiweMessage({
         domain: window.location.host,
         address: address as `0x${string}`,
-        statement: 'Sign in to Kismet Art admin.',
+        statement: 'Sign in to Kismet admin.',
         uri: window.location.origin,
         version: '1',
         chainId: base.id,

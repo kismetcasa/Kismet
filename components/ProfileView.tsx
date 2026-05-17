@@ -373,7 +373,7 @@ export function ProfileView({ address }: ProfileViewProps) {
     try {
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
       const { nonce } = await nonceRes.json()
-      const message = `Update Kismet Art profile\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
+      const message = `Update Kismet profile\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
       const res = await fetch(`/api/profile/${address}`, {
         method: 'PUT',
@@ -399,7 +399,7 @@ export function ProfileView({ address }: ProfileViewProps) {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
       const { nonce } = await nonceRes.json()
       const action = following ? 'Unfollow' : 'Follow'
-      const message = `${action} ${address.toLowerCase()} on Kismet Art\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
+      const message = `${action} ${address.toLowerCase()} on Kismet\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
       const res = await fetch(`/api/follow/${address}`, {
         method: following ? 'DELETE' : 'POST',

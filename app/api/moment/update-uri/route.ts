@@ -97,7 +97,7 @@ export async function POST(req: NextRequest) {
 
   // Sign ALL fields the user is consenting to — including newUri so an
   // attacker can't replay a stale signature with a different URI.
-  const message = `Update Kismet Art metadata\nCollection: ${collectionAddress.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${callerAddress.toLowerCase()}\nNonce: ${nonce}`
+  const message = `Update Kismet metadata\nCollection: ${collectionAddress.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${callerAddress.toLowerCase()}\nNonce: ${nonce}`
   let sigValid = false
   try {
     sigValid = await verifyMessage({
