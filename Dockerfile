@@ -44,6 +44,11 @@ COPY . .
 RUN node scripts/copy-ffmpeg-core.mjs
 
 ENV NEXT_TELEMETRY_DISABLED=1
+# Headroom for the type-checker and compilation passes — sharp's
+# extensive type definitions plus next build's bundler push memory
+# usage well above the default ~2 GB Node heap on a typical
+# resource-constrained Coolify host.
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN npm run build
 
 # ─── runtime stage ───────────────────────────────────────────────────

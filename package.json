@@ -10,6 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },
   "dependencies": {
