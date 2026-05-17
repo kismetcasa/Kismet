@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { decodeEventLog, parseAbi, type Address, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
-import { redis } from '@/lib/redis'
+import { redis, TRENDING_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { recordCollected } from '@/lib/collected'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
@@ -202,7 +202,7 @@ export async function POST(req: NextRequest) {
     : 1
 
   await Promise.all([
-    redis.zincrby('kismetart:trending', 1, `${collectionLower}:${tokenId}`).catch(() => {}),
+    redis.zincrby(TRENDING_KEY, 1, `${collectionLower}:${tokenId}`).catch(() => {}),
     recordCollected(account, collectionLower, tokenId).catch(() => {}),
   ])
 

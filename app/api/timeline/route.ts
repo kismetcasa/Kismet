@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
-import { redis, FEATURED_KEY } from '@/lib/redis'
+import { redis, FEATURED_KEY, TRENDING_KEY } from '@/lib/redis'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -235,7 +235,7 @@ export async function GET(req: NextRequest) {
     // (every collect is an unbounded ZINCRBY). Moments past the cap fall back
     // to score 0 via scoreMap.get's undefined → 0 coalesce below, putting them
     // at the bottom of trending sort — same effective ordering as fetching all.
-    const raw = (await redis.zrange('kismetart:trending', 0, 9999, {
+    const raw = (await redis.zrange(TRENDING_KEY, 0, 9999, {
       rev: true,
       withScores: true,
     })) as (string | number)[]

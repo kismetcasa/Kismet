@@ -22,3 +22,4 @@ export const redis = new Redis({
 
 export const FEATURED_KEY = 'kismetart:featured'
 export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
+export const TRENDING_KEY = 'kismetart:trending'
