@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { recordAirdrop } from '@/lib/airdrops'
+import { recordCollected } from '@/lib/collected'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import { redis } from '@/lib/redis'
 
 /**
  * Records an airdrop after the on-chain tx submitted by the user's wallet
@@ -93,10 +93,7 @@ export async function POST(req: NextRequest) {
         })
       } catch {}
       try {
-        await redis.zadd(`kismetart:collected:${recipient}`, {
-          score: timestamp,
-          member: `${collectionAddress}:${tokenId}`,
-        })
+        await recordCollected(recipient, collectionAddress, tokenId, timestamp)
       } catch {}
     }),
   )

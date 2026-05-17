@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { redis, FEATURED_KEY } from '@/lib/redis'
+import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getSessionAddress } from '@/lib/session'
@@ -70,9 +71,7 @@ export async function GET(req: NextRequest) {
   let collectedSet: Set<string> | null = null
   let collectedCollections: string[] = []
   if (collector) {
-    const pairs = (await redis
-      .zrange(`kismetart:collected:${collector}`, 0, -1, { rev: true })
-      .catch(() => [])) as string[]
+    const pairs = await getCollectedMembers(collector)
     collectedSet = new Set(pairs)
     const fromZset = new Set<string>()
     for (const pair of pairs) {
