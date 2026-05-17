@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { redis } from '@/lib/redis'
-
-const SESSION_COOKIE = 'kismetart-admin'
+import { ADMIN_SESSION_COOKIE } from '@/lib/curator'
 
 /**
  * Revoke the caller's admin session. Deletes the token from Redis (so any
@@ -11,11 +10,11 @@ const SESSION_COOKIE = 'kismetart-admin'
  */
 export async function POST() {
   const cookieStore = await cookies()
-  const token = cookieStore.get(SESSION_COOKIE)?.value
+  const token = cookieStore.get(ADMIN_SESSION_COOKIE)?.value
   if (token) {
     await redis.del(`kismetart:auth-session:${token}`).catch(() => {})
   }
   const res = NextResponse.json({ ok: true })
-  res.cookies.delete(SESSION_COOKIE)
+  res.cookies.delete(ADMIN_SESSION_COOKIE)
   return res
 }

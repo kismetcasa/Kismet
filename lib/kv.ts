@@ -2,6 +2,15 @@ import { redis } from './redis'
 import { PLATFORM_COLLECTION } from './config'
 import { INPROCESS_API } from './inprocess'
 import { getHiddenCollectionsSet } from './hiddenCollections'
+import { memoize } from './memoCache'
+
+// In-memory TTL for the hot collection-set getters below. These read
+// SMEMBERS on every request from a wide range of routes (timeline,
+// search, featured, collections feed) but the underlying sets change
+// rarely — a new collection deploy is once-a-day at most. 60s is short
+// enough to be invisible to users (cross-pod, worst case) and the
+// per-write invalidators below make own-pod consistency immediate.
+const SET_CACHE_TTL_MS = 60_000
 
 // Per-collection set of "authorized creators": addresses an admin
 // granted ADMIN to via the post-deploy panel. Stored as JSON-encoded
@@ -40,7 +49,7 @@ export type CollectionScope = 'standalone' | 'collections' | 'all'
 const keyCollectionMeta = (address: string) =>
   `kismetart:collection-meta:${address.toLowerCase()}`
 
-export async function getTrackedCollections(): Promise<string[]> {
+async function _getTrackedCollections(): Promise<string[]> {
   try {
     const stored = (await redis.smembers(KEY)) as string[]
     const all = new Set([PLATFORM_COLLECTION, ...stored])
@@ -49,6 +58,7 @@ export async function getTrackedCollections(): Promise<string[]> {
     return [PLATFORM_COLLECTION]
   }
 }
+export const getTrackedCollections = memoize(_getTrackedCollections, SET_CACHE_TTL_MS)
 
 // 'collections' returns curated only; 'standalone' and 'all' both
 // fan-out to every tracked contract. The timeline route narrows
@@ -64,15 +74,16 @@ export async function getTrackedCollectionsByScope(
 // "user collections" = the curator-blessed positive set. Used by
 // every collection-shaped surface (Collections feed, profile
 // collections list, mint dropdown, search, moment-detail chip).
-export async function getUserCollections(): Promise<string[]> {
+async function _getUserCollections(): Promise<string[]> {
   try {
     return (await redis.smembers(CREATED_COLLECTIONS_KEY)) as string[]
   } catch {
     return []
   }
 }
+export const getUserCollections = memoize(_getUserCollections, SET_CACHE_TTL_MS)
 
-export async function getCreatedMintsSet(): Promise<Set<string>> {
+async function _getCreatedMintsSet(): Promise<Set<string>> {
   try {
     const members = (await redis.smembers(CREATED_MINTS_KEY)) as string[]
     return new Set(members.map((m) => m.toLowerCase()))
@@ -80,10 +91,15 @@ export async function getCreatedMintsSet(): Promise<Set<string>> {
     return new Set()
   }
 }
+export const getCreatedMintsSet = memoize(_getCreatedMintsSet, SET_CACHE_TTL_MS)
 
 export async function markCreatedMint(address: string, tokenId: string): Promise<void> {
   try {
     await redis.sadd(CREATED_MINTS_KEY, `${address.toLowerCase()}:${tokenId}`)
+    // Own-pod consistency: a creator who just minted should see their
+    // moment on the next Mints-feed read from the same pod immediately,
+    // not 60s later. Other pods will catch up on their own TTL expiry.
+    getCreatedMintsSet.invalidate()
   } catch (err) {
     console.error('[kv] markCreatedMint failed', { address, tokenId, err })
   }
@@ -106,6 +122,11 @@ export async function addTrackedCollection(
       ops.push(redis.set(keyCollectionMeta(address), JSON.stringify(data)))
     }
     await Promise.all(ops)
+    // Own-pod consistency: the artist who just deployed should see their
+    // collection on the next collections-feed read from the same pod
+    // immediately. Cross-pod pods catch up on TTL expiry.
+    getTrackedCollections.invalidate()
+    if (source === 'create-form') getUserCollections.invalidate()
   } catch (err) {
     // Log instead of swallow — silent KV write failure means the
     // collection never appears in any feed despite a green-toast UI.

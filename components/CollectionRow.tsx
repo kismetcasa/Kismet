@@ -26,15 +26,12 @@ export interface FeaturedCollectionRow {
 
 interface CollectionRowProps {
   collection: FeaturedCollectionRow
-  // Replaces the default cost-preview + collect-all action block. Most
-  // callers leave this undefined and get the canonical bulk-collect UX.
-  primaryAction?: React.ReactNode
   // Above-the-fold hint forwarded to the cover image (and propagated to the
   // first horizontal MomentCard so the row's LCP candidate isn't lazy-loaded).
   priority?: boolean
 }
 
-export function CollectionRow({ collection, primaryAction, priority }: CollectionRowProps) {
+export function CollectionRow({ collection, priority }: CollectionRowProps) {
   const c = collection
   const name = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
@@ -123,15 +120,13 @@ export function CollectionRow({ collection, primaryAction, priority }: Collectio
             >
               view collection
             </Link>
-            {primaryAction ?? (
-              <CollectAllAction
-                collectionAddress={c.contractAddress}
-                ethEligibleTokenIds={c.ethEligibleTokenIds}
-                ethEligibleTotalWei={c.ethEligibleTotalWei}
-                usdcEligibleTokenIds={c.usdcEligibleTokenIds}
-                usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
-              />
-            )}
+            <CollectAllAction
+              collectionAddress={c.contractAddress}
+              ethEligibleTokenIds={c.ethEligibleTokenIds}
+              ethEligibleTotalWei={c.ethEligibleTotalWei}
+              usdcEligibleTokenIds={c.usdcEligibleTokenIds}
+              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
+            />
           </div>
         </div>
       </div>

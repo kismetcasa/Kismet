@@ -43,7 +43,7 @@ const COLLECTION_PERMISSIONS_ABI = [
  * error, so `readPermissions` can fail fast instead of burning its retry
  * budget on a failure that won't resolve.
  */
-export class NonBigIntPermsError extends Error {
+class NonBigIntPermsError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'NonBigIntPermsError'

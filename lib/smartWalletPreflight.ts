@@ -29,9 +29,9 @@ const COLLECTION_PERMISSIONS_ABI = [
  *     RPC shouldn't deny a user whose state on chain is actually
  *     fine. Inprocess's own gas estimation will catch a real failure.
  */
-export type PreflightStatus = 'authorized' | 'unauthorized' | 'unknown'
+type PreflightStatus = 'authorized' | 'unauthorized' | 'unknown'
 
-export interface PreflightDiagnostic {
+interface PreflightDiagnostic {
   status: PreflightStatus
   /** Inprocess smart wallet resolved for the caller's EOA. Undefined
    *  when status='unknown' due to lookup failure. Surfaced to the

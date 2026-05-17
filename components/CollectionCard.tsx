@@ -33,15 +33,12 @@ export interface CollectionDisplay {
 
 interface CollectionCardProps {
   collection: CollectionDisplay
-  // Override the action slot under "view collection". Default = bulk
-  // "collect all" button when ETH-eligible tokens exist, otherwise empty.
-  primaryAction?: React.ReactNode
   // Above-the-fold hint — forwarded to the cover image so the first row's
   // LCP target doesn't lazy-load.
   priority?: boolean
 }
 
-export function CollectionCard({ collection, primaryAction, priority }: CollectionCardProps) {
+export function CollectionCard({ collection, priority }: CollectionCardProps) {
   const c = collection
   const collectionName = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
@@ -116,17 +113,15 @@ export function CollectionCard({ collection, primaryAction, priority }: Collecti
         >
           view collection
         </Link>
-        {primaryAction ?? (
-          (c.ethEligibleTokenIds && c.ethEligibleTokenIds.length > 0) ||
-          (c.usdcEligibleTokenIds && c.usdcEligibleTokenIds.length > 0) ? (
-            <CollectAllAction
-              collectionAddress={c.contractAddress}
-              ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
-              ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
-              usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
-              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc ?? '0'}
-            />
-          ) : null
+        {((c.ethEligibleTokenIds && c.ethEligibleTokenIds.length > 0) ||
+          (c.usdcEligibleTokenIds && c.usdcEligibleTokenIds.length > 0)) && (
+          <CollectAllAction
+            collectionAddress={c.contractAddress}
+            ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
+            ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
+            usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
+            usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc ?? '0'}
+          />
         )}
       </div>
     </article>

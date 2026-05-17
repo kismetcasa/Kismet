@@ -594,20 +594,6 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // subsequent token created via /api/mint.
       const setupActions = [...minterActions, ...inprocessAdminAction, ...coverActions]
 
-      // Telemetry: log the cover-mint state and the count of cover actions
-      // baked into the deploy tx, so if a user reports "I had cover mint on
-      // but no cover token was minted" we can confirm whether the toggle was
-      // actually true at click time. mintCover=false here ⇒ user toggled off
-      // (or never on); coverActions.length=0 with mintCover=true ⇒ a build bug.
-      console.log('[CreateCollectionForm] deploy submitted', {
-        mintCover,
-        coverActionsCount: coverActions.length,
-        coverPrice: mintCover ? coverPrice : undefined,
-        coverSupply: mintCover ? coverSupply : undefined,
-        mintersCount: minterActions.length,
-        inprocessAdminGranted: inprocessAdminAction.length > 0,
-      })
-
       const hash = await writeContractAsync({
         chainId: base.id,
         address: FACTORY_ADDRESS,

@@ -31,7 +31,6 @@ interface AdminContextValue {
   isCurator: boolean
   hasSession: boolean
   startSession: () => Promise<void>
-  endSession: () => Promise<void>
   featuredKeys: Set<string>
   featuredCollectionAddrs: Set<string>
   toggleFeatured: (collectionAddress: string, tokenId: string) => Promise<void>
@@ -49,7 +48,6 @@ const AdminContext = createContext<AdminContextValue>({
   isCurator: false,
   hasSession: false,
   startSession: async () => {},
-  endSession: async () => {},
   featuredKeys: new Set(),
   featuredCollectionAddrs: new Set(),
   toggleFeatured: async () => {},
@@ -210,18 +208,6 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     }
   }, [address, isAdmin, isCurator, signMessageAsync])
 
-  const endSession = useCallback(async () => {
-    try {
-      await fetch('/api/auth/logout', { method: 'POST' })
-    } catch {
-      // Logout endpoint failure shouldn't block local-state cleanup.
-    }
-    applySession(null)
-    try {
-      sessionStorage.removeItem(SESSION_KEY)
-    } catch {}
-  }, [])
-
   // Shared "ensure session, then call" wrapper used by every privileged
   // operation. Re-reads via ref after the async sign so a fresh login
   // settles in before the caller's fetch.
@@ -327,7 +313,6 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           !!address &&
           session.address === address.toLowerCase(),
         startSession,
-        endSession,
         featuredKeys,
         featuredCollectionAddrs,
         toggleFeatured,

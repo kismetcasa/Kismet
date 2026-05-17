@@ -13,7 +13,6 @@ export interface CollectionPermStatus {
    * - `null`  → still loading or read errored (treat as "unknown")
    */
   hasAdmin: boolean | null
-  perms?: bigint
 }
 
 export interface UseCollectionsPermissionsResult {
@@ -77,9 +76,8 @@ export function useCollectionsPermissions(
       byAddress[addr] = { hasAdmin: null }
       continue
     }
-    const perms = raw
-    const hasAdmin = hasAdminBit(perms)
-    byAddress[addr] = { hasAdmin, perms }
+    const hasAdmin = hasAdminBit(raw)
+    byAddress[addr] = { hasAdmin }
     if (!hasAdmin) missingCount += 1
   }
 

@@ -9,7 +9,11 @@ const compat = new FlatCompat({ baseDirectory: __dirname })
 
 const config = [
   {
-    ignores: ['.next/**', 'node_modules/**', 'next-env.d.ts'],
+    // `public/ffmpeg-core/*` is the @ffmpeg/core UMD bundle copied in
+    // by scripts/copy-ffmpeg-core.mjs at install time — third-party
+    // generated code, not ours to clean up. Same reason we don't lint
+    // `.next/**` or `node_modules/**`.
+    ignores: ['.next/**', 'node_modules/**', 'public/**', 'next-env.d.ts'],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
   {

@@ -125,7 +125,7 @@ export function useGrantPermission() {
 
   const [busy, setBusy] = useState(false)
   const [hash, setHash] = useState<`0x${string}` | undefined>(undefined)
-  const { data: receipt, error: receiptError } = useWaitForTransactionReceipt({
+  const { data: receipt } = useWaitForTransactionReceipt({
     hash,
     query: { enabled: !!hash },
   })
@@ -200,9 +200,5 @@ export function useGrantPermission() {
     hash,
     /** Receipt object once the tx confirms; undefined while pending. */
     receipt,
-    /** Set when the receipt watcher itself failed (network drop, tx
-     *  never found). Distinct from `receipt.status === 'reverted'`,
-     *  which means the tx confirmed but failed on-chain. */
-    receiptError,
   }
 }

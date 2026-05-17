@@ -10,6 +10,13 @@ const nextConfig = {
   // server.js` directly so SIGTERM reaches Node for graceful shutdown.
   output: 'standalone',
 
+  // Skip lint + type check in the Docker build — they OOM on a
+  // resource-constrained Coolify builder once sharp's type definitions
+  // are loaded. Caught locally via `npm run check` before merge.
+  // (See package.json scripts.)
+  typescript: { ignoreBuildErrors: true },
+  eslint: { ignoreDuringBuilds: true },
+
   // Keep Node.js Turbo SDK external so /api/upload and /api/sign run natively
   serverExternalPackages: ['@ardrive/turbo-sdk'],
 
@@ -31,8 +38,6 @@ const nextConfig = {
       { protocol: 'https', hostname: '*.ipfs.io' },
       { protocol: 'https', hostname: 'dweb.link' },
       { protocol: 'https', hostname: '*.dweb.link' },
-      { protocol: 'https', hostname: 'cloudflare-ipfs.com' },
-      { protocol: 'https', hostname: 'ipfs.decentralized-content.com' },
     ],
     // Arweave + IPFS are content-addressed (URL contains a hash), so the
     // bytes at any given URL never change — safe to cache aggressively.

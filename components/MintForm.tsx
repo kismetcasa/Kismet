@@ -265,7 +265,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
   // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
   // the price input is hidden and the salesConfig price is forced to 0.
-  const is11 = maxSupply.trim() === '1'
+  // Media-only — text mode hides Supply, so a stale `1` from a prior
+  // media session can't sneak through.
+  const is11 = mintMode === 'media' && maxSupply.trim() === '1'
 
   function switchMode(mode: MintMode) {
     setMintMode(mode)
@@ -554,6 +556,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // Writing-moment payload per inprocess docs (moment/create/writing.mdx):
         // - `title` lives at the top level (not inside token, and not aliased as "name")
         // - the writing body lives at `token.tokenContent` (not "content")
+        // - no `maxSupply` — the writing endpoint doesn't accept it
         // The top-level `name` is our private hint that mint-proxy strips before
         // forwarding upstream — used to populate the moment-meta KV entry.
         const payload = {
@@ -564,7 +567,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             createReferral: CREATE_REFERRAL,
             salesConfig,
             mintToCreatorCount: 1,
-            ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
             ...(finalSplits ? {} : { payoutRecipient: address }),
           },
           name: name.trim(),
@@ -1061,24 +1063,26 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           )}
         </div>
 
-        <div className="flex-1">
-          <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
-            Supply
-          </label>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={maxSupply}
-            onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
-            placeholder="unlimited"
-            className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
-          />
-          {!maxSupply.trim() ? (
-            <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
-          ) : is11 ? (
-            <p className="text-xs text-[#555] font-mono mt-1">1/1 minted to your wallet</p>
-          ) : null}
-        </div>
+        {mintMode === 'media' && (
+          <div className="flex-1">
+            <label className="block text-xs font-mono text-[#888] uppercase tracking-wider mb-2">
+              Supply
+            </label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={maxSupply}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
+              placeholder="unlimited"
+              className="w-full bg-[#111] border border-[#2a2a2a] px-3 py-2.5 text-sm text-[#efefef] font-mono placeholder-[#333] focus:outline-none focus:border-[#555]"
+            />
+            {!maxSupply.trim() ? (
+              <p className="text-xs text-[#555] font-mono mt-1">open edition</p>
+            ) : is11 ? (
+              <p className="text-xs text-[#555] font-mono mt-1">1/1 minted to your wallet</p>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* Collections picker — optional; if the user doesn't pick one, the
