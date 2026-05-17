@@ -17,6 +17,14 @@
 # postinstall hook (copy-ffmpeg-core.mjs) runs as part of `npm ci`.
 FROM node:20-alpine AS deps
 WORKDIR /app
+
+# Build toolchain for native modules. `bufferutil` (transitive via ws →
+# wagmi/walletconnect) ships prebuilt binaries for most targets but NOT
+# for linux-musl-arm64 (Alpine on ARM, i.e. Oracle Ampere), so npm has
+# to compile it from source. These packages stay in the deps stage and
+# never reach the runtime image.
+RUN apk add --no-cache python3 make g++
+
 COPY package.json package-lock.json ./
 COPY scripts ./scripts
 RUN npm ci --no-audit --no-fund
