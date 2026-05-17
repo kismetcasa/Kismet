@@ -176,18 +176,31 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
       clearTimeout(video.releaseTimer)
       video.releaseTimer = null
     }
-    video.lastActiveAt = Date.now()
-    // Apply the morph transition for this one re-position (route-change
-    // case: card slot → overlay slot). Cleared on a timer so subsequent
-    // scroll-driven positionElement calls snap instantly instead of
-    // dragging behind the slot.
-    video.el.style.transition =
-      'top 0.18s ease, left 0.18s ease, width 0.18s ease, height 0.18s ease'
-    if (video.transitionTimer !== null) clearTimeout(video.transitionTimer)
-    video.transitionTimer = window.setTimeout(() => {
-      video.el.style.transition = 'none'
+    if (video.transitionTimer !== null) {
+      clearTimeout(video.transitionTimer)
       video.transitionTimer = null
-    }, 220)
+    }
+    video.lastActiveAt = Date.now()
+    // Apply the morph only when re-positioning an already-visible
+    // element (the card→overlay route-transition case). Fresh mounts
+    // and re-acquires after the element was hidden snap straight to
+    // the new position — otherwise the first paint would tween from
+    // wherever the element happened to be sitting before, and every
+    // card appearing in the feed would open a 220ms window during
+    // which scrolls drag instead of snap.
+    if (video.el.style.visibility === 'visible') {
+      video.el.style.transition =
+        'top 0.18s ease, left 0.18s ease, width 0.18s ease, height 0.18s ease'
+      video.transitionTimer = window.setTimeout(() => {
+        video.el.style.transition = 'none'
+        video.transitionTimer = null
+      }, 220)
+    } else {
+      // Defensive: a rapid acquire/release/acquire cycle within 220ms
+      // could leave the prior morph's transition still set. Reset
+      // explicitly so the snap path stays snappy.
+      video.el.style.transition = 'none'
+    }
     positionElement(video, slot)
 
     // Replace any prior IntersectionObserver. Controlled surfaces
