@@ -1,4 +1,5 @@
 import { redis } from './redis'
+import { bestEffort } from './bestEffort'
 import { randomUUID } from 'crypto'
 import type { NextRequest, NextResponse } from 'next/server'
 
@@ -66,7 +67,8 @@ export async function getSessionContext(req: NextRequest): Promise<{ address: st
  */
 export async function slideSession(res: NextResponse, token: string): Promise<void> {
   setSessionCookie(res, token)
-  await redis.expire(key(token), SESSION_TTL_SECONDS).catch(() => {})
+  // No context — token is sensitive (it's the session identifier itself).
+  await bestEffort(redis.expire(key(token), SESSION_TTL_SECONDS), 'session.slide')
 }
 
 /**

@@ -1,5 +1,6 @@
 import { after } from 'next/server'
 import { redis } from './redis'
+import { bestEffort } from './bestEffort'
 import { randomUUID } from 'crypto'
 import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
@@ -213,7 +214,11 @@ export async function getListings({
     after(() => handleExpiredListings(expired))
   }
   if (ghosts.length > 0) {
-    redis.zrem(KEY_ALL, ...ghosts).catch(() => {})
+    bestEffort(
+      redis.zrem(KEY_ALL, ...ghosts),
+      'listings.sweepGhosts',
+      { count: ghosts.length },
+    )
   }
 
   const total = active.length
