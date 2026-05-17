@@ -1,4 +1,5 @@
 import type { MomentDetail, MomentComment } from './inprocess'
+import { LRUCache } from './lruCache'
 
 // ─── Detail cache ─────────────────────────────────────────────────────────────
 // Module-level store written + read by MomentDetailView so reopening a
@@ -6,8 +7,9 @@ import type { MomentDetail, MomentComment } from './inprocess'
 // back → re-open) renders instantly with the last-known detail while the
 // background fetch revalidates. Hide/unhide and comment-post flows write
 // the optimistic result here too so the next surface sees the update.
+// Bounded to 100 entries (~500KB) so a long session doesn't pin memory.
 
-const detailStore = new Map<string, MomentDetail>()
+const detailStore = new LRUCache<string, MomentDetail>(100)
 
 function detailKey(address: string, tokenId: string) {
   return `${address.toLowerCase()}:${tokenId}`
@@ -30,7 +32,9 @@ interface CommentsEntry {
   ts: number
 }
 
-const commentsStore = new Map<string, CommentsEntry>()
+// Bounded — TTL alone (60s) doesn't bound size between expiries, so a busy
+// session could pin every visited moment's comments in memory.
+const commentsStore = new LRUCache<string, CommentsEntry>(50)
 
 export function getCachedComments(address: string, tokenId: string): MomentComment[] | undefined {
   const entry = commentsStore.get(detailKey(address, tokenId))

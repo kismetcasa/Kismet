@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from 'react'
 import { resolveUri } from './inprocess'
+import { LRUCache } from './lruCache'
 
 // Module-level cache so a writing moment's body fetched in the feed card is
 // reused by the modal and detail page without refetching. Keyed by the raw
 // content uri (e.g. ar://…) so callers don't need to resolve before lookup.
-const cache = new Map<string, string>()
+// Bounded — content-addressed entries are immutable but a long browsing
+// session can accumulate many.
+const cache = new LRUCache<string, string>(100)
 
 export async function fetchTextContent(uri: string): Promise<string> {
   const cached = cache.get(uri)

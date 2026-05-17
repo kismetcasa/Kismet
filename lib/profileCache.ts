@@ -1,4 +1,5 @@
 import { shortAddress } from './inprocess'
+import { LRUCache } from './lruCache'
 
 interface ProfileEntry {
   name: string
@@ -7,7 +8,9 @@ interface ProfileEntry {
   resolved: boolean
 }
 
-const cache = new Map<string, ProfileEntry>()
+// Bounded — every visited profile would otherwise stay cached for the
+// whole session. 200 covers feeds + profile detail visits comfortably.
+const cache = new LRUCache<string, ProfileEntry>(200)
 const TTL_RESOLVED = 5 * 60 * 1000
 const TTL_FALLBACK = 30 * 1000
 

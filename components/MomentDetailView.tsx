@@ -279,7 +279,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     abi: ZORA_1155_TOKEN_INFO_ABI,
     functionName: 'getTokenInfo',
     args: [BigInt(tokenId)],
-    query: { refetchInterval: 30_000 },
+    // Pause poll when tab hidden; refetchOnWindowFocus (TanStack default)
+    // gets a fresh value the moment focus returns.
+    query: { refetchInterval: 30_000, refetchIntervalInBackground: false },
   })
   const maxSupply = tokenInfo?.maxSupply
   const totalMinted = tokenInfo?.totalMinted

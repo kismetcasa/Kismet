@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { createSiweMessage } from 'viem/siwe'
@@ -302,25 +302,32 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     [address, isAdmin, isCurator, ensureSession, featuredCollectionAddrs],
   )
 
-  return (
-    <AdminContext.Provider
-      value={{
-        isAdmin,
-        isCurator,
-        hasSession:
-          session !== null &&
-          session.expiresAt > Date.now() &&
-          !!address &&
-          session.address === address.toLowerCase(),
-        startSession,
-        featuredKeys,
-        featuredCollectionAddrs,
-        toggleFeatured,
-        toggleFeaturedCollection,
-        withSession,
-      }}
-    >
-      {children}
-    </AdminContext.Provider>
+  // Memoized so useAdmin() consumers only re-render when these fields
+  // change — without it, every AdminProvider render hands children a
+  // fresh object literal and forces a re-render across the tree.
+  const value = useMemo(
+    () => ({
+      isAdmin,
+      isCurator,
+      hasSession:
+        session !== null &&
+        session.expiresAt > Date.now() &&
+        !!address &&
+        session.address === address.toLowerCase(),
+      startSession,
+      featuredKeys,
+      featuredCollectionAddrs,
+      toggleFeatured,
+      toggleFeaturedCollection,
+      withSession,
+    }),
+    [
+      isAdmin, isCurator, session, address,
+      startSession,
+      featuredKeys, featuredCollectionAddrs,
+      toggleFeatured, toggleFeaturedCollection, withSession,
+    ],
   )
+
+  return <AdminContext.Provider value={value}>{children}</AdminContext.Provider>
 }

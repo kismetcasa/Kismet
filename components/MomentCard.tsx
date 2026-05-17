@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Star, Copy, Check, EyeOff } from 'lucide-react'
@@ -39,8 +39,15 @@ interface MomentCardProps {
   priority?: boolean
 }
 
-export function MomentCard({ moment, hidePriceSupply, priority }: MomentCardProps) {
+// Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
+// parent re-render would otherwise re-run them all. Default shallow
+// compare works: `moment` is stable across renders (held in parent
+// useState arrays); other props are primitives.
+function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) {
   const router = useRouter()
+  // Dedups onMouseEnter prefetches per card identity — without this every
+  // re-entry refires comments + text + route prefetches.
+  const prefetchedRef = useRef<string>('')
   const [imgError, setImgError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
   const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
@@ -191,6 +198,9 @@ export function MomentCard({ moment, hidePriceSupply, priority }: MomentCardProp
       <Link
         href={`/moment/${moment.address}/${moment.token_id}`}
         onMouseEnter={() => {
+          const key = `${moment.address}:${moment.token_id}`
+          if (prefetchedRef.current === key) return
+          prefetchedRef.current = key
           prefetchComments()
           prefetchTextContent()
           // Link auto-prefetches on hover (in production) but the
@@ -365,3 +375,5 @@ export function MomentCard({ moment, hidePriceSupply, priority }: MomentCardProp
     </article>
   )
 }
+
+export const MomentCard = memo(MomentCardImpl)

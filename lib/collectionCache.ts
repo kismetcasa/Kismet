@@ -1,15 +1,18 @@
+import { LRUCache } from './lruCache'
+
 // Shared cache for /api/collections?address={address}. The endpoint returns
 // the rich shape for platform-created (curator-blessed) collections and a
 // stub for everything else, so `name === null` means "don't render the chip".
 // Cards on the same feed often share a collection — without this they each
-// fire their own lookup.
+// fire their own lookup. Bounded so a long session doesn't accumulate every
+// visited collection in memory.
 
 interface ChipMeta {
   name: string | null
   image: string | null
 }
 
-const cache = new Map<string, ChipMeta & { ts: number }>()
+const cache = new LRUCache<string, ChipMeta & { ts: number }>(50)
 const TTL = 5 * 60 * 1000
 
 export async function fetchCollectionChip(address: string): Promise<ChipMeta> {
