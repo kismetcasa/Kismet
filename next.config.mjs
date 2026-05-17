@@ -25,8 +25,6 @@ const nextConfig = {
       { protocol: 'https', hostname: '*.ipfs.io' },
       { protocol: 'https', hostname: 'dweb.link' },
       { protocol: 'https', hostname: '*.dweb.link' },
-      { protocol: 'https', hostname: 'cloudflare-ipfs.com' },
-      { protocol: 'https', hostname: 'ipfs.decentralized-content.com' },
     ],
     // Arweave + IPFS are content-addressed (URL contains a hash), so the
     // bytes at any given URL never change — safe to cache aggressively.
