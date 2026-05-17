@@ -303,6 +303,50 @@ export async function getMomentMeta(
   return typeof raw === 'string' ? JSON.parse(raw) : raw
 }
 
+/**
+ * Bulk fetch of moment-meta records. One MGET in place of N parallel GETs.
+ * Returns the same index-aligned `(MomentMeta | null)[]` Promise.all would
+ * have produced — null where the pair is invalid, the key is missing, or
+ * the stored JSON is corrupt; null for every entry on MGET failure (matches
+ * the prior per-call `.catch(() => null)` shape).
+ */
+export async function getMomentMetaBatch(
+  pairs: { address?: string; tokenId?: string }[],
+): Promise<(MomentMeta | null)[]> {
+  const out: (MomentMeta | null)[] = pairs.map(() => null)
+  if (pairs.length === 0) return out
+
+  // Compact the valid pairs into a parallel array of keys so MGET only sees
+  // well-formed inputs. The `compactIdx` lookup table re-aligns results
+  // back to the original positions.
+  const compactKeys: string[] = []
+  const compactIdx: number[] = []
+  for (let i = 0; i < pairs.length; i++) {
+    const { address, tokenId } = pairs[i]
+    if (!address || !tokenId) continue
+    compactIdx.push(i)
+    compactKeys.push(keyMomentMeta(address, tokenId))
+  }
+  if (compactKeys.length === 0) return out
+
+  let raws: (string | MomentMeta | null)[]
+  try {
+    raws = await redis.mget<(string | MomentMeta | null)[]>(...compactKeys)
+  } catch {
+    return out
+  }
+  for (let j = 0; j < compactIdx.length; j++) {
+    const raw = raws[j]
+    if (!raw) continue
+    try {
+      out[compactIdx[j]] = typeof raw === 'string' ? (JSON.parse(raw) as MomentMeta) : raw
+    } catch {
+      // Leave null — a single corrupt entry shouldn't poison the page.
+    }
+  }
+  return out
+}
+
 export async function setMomentMeta(
   contractAddress: string,
   tokenId: string,

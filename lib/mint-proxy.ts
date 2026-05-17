@@ -30,7 +30,7 @@ export async function proxyMintRequest(
   endpoint: string,
 ): Promise<Response> {
   const ip = getClientIp(req)
-  const allowed = await checkRateLimit(`${rateLimitKey}:${ip}`, 10, 60)
+  const allowed = await checkRateLimit(`${rateLimitKey}:${ip}`, 20, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
   let body: Record<string, unknown>

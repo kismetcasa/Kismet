@@ -5,7 +5,6 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
 
 // Hard cap on uploaded JSON metadata size. Mirrors the client-side 50 MB cap
 // in MintForm, but enforced server-side too — a direct caller with a valid
@@ -22,7 +21,7 @@ function getTurbo() {
 
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
-  const allowed = await checkRateLimit(`upload:${ip}`, 10, 60)
+  const allowed = await checkRateLimit(`upload:${ip}`, 30, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
   const address = await getSessionAddress(req)

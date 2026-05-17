@@ -20,7 +20,7 @@ import { getMomentMeta, writeNotification } from '@/lib/notifications'
  */
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
-  const allowed = await checkRateLimit(`distribute:${ip}`, 5, 60)
+  const allowed = await checkRateLimit(`distribute:${ip}`, 20, 60)
   if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
   const apiKey = process.env.INPROCESS_API_KEY

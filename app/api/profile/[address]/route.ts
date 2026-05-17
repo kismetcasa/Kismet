@@ -5,10 +5,13 @@ import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
 import { getProfile, upsertProfile, consumeNonce } from '@/lib/profile'
 
-// Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on the public default
+// Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
+// the public default. MAINNET_RPC_URL is the server-only override; falls
+// back to NEXT_PUBLIC_MAINNET_RPC_URL (shared with the client-side ENS
+// lookup in lib/wagmi.ts) when unset, then to viem's public default.
 const mainnetClient = createPublicClient({
   chain: mainnet,
-  transport: http(process.env.MAINNET_RPC_URL),
+  transport: http(process.env.MAINNET_RPC_URL ?? process.env.NEXT_PUBLIC_MAINNET_RPC_URL),
 })
 
 const ENS_TTL = 3600      // 1 hour for resolved names

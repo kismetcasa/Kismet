@@ -4,6 +4,12 @@ const require = createRequire(import.meta.url)
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Emit a self-contained `.next/standalone/server.js` plus a traced
+  // minimal node_modules tree. Cuts the Docker runtime image from
+  // ~700MB (full node_modules) to ~200MB, and lets us run `node
+  // server.js` directly so SIGTERM reaches Node for graceful shutdown.
+  output: 'standalone',
+
   // Keep Node.js Turbo SDK external so /api/upload and /api/sign run natively
   serverExternalPackages: ['@ardrive/turbo-sdk'],
 
