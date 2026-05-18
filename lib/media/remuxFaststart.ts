@@ -1,14 +1,10 @@
 import { getFFmpeg } from './transcodeGif'
 
-// Skip on anything large enough to OOM ffmpeg.wasm on phones (same
-// ceiling the GIF transcoder uses).
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024
 
-// Only attempt the lossless `-c copy` remux on containers whose codecs
-// are guaranteed to be MP4-compatible (H.264/HEVC + AAC). WebM (VP8/VP9
-// + Opus/Vorbis) is excluded — `-c copy` to .mp4 fails for those, and
-// re-encoding belongs to a future, heavier transcode path. AVI/MKV
-// similarly skipped: too variable to assume codec compatibility.
+// `-c copy` to .mp4 only works when the source codecs are MP4-compatible
+// (H.264/HEVC + AAC). WebM (VP8/VP9 + Opus) and AVI/MKV are excluded;
+// remuxing those would require a real re-encode.
 const REMUXABLE_TYPES = new Map<string, string>([
   ['video/mp4', 'mp4'],
   ['video/quicktime', 'mov'],
@@ -16,22 +12,12 @@ const REMUXABLE_TYPES = new Map<string, string>([
 ])
 
 /**
- * Lossless container rewrite — moves the moov atom from the end of the
- * file to the front (`-movflags +faststart`) so a browser can begin
- * playback after the first few KB of download instead of byte-range
- * probing the whole file to find metadata. Critical on Safari, which
- * does the probe sequentially and visibly stalls the first paint when
- * the moov is at the end.
- *
- * `-c copy` means no re-encode: video + audio bitstreams are copied
- * byte-for-byte, so quality is preserved exactly and the operation
- * completes in seconds (vs. minutes for a re-encode). Bails to null
- * on any failure — unsupported codec combo, ffmpeg error, OOM —
- * so the caller can fall back to uploading the source unchanged.
- *
- * Note: only helps videos uploaded AFTER this ships. Existing Arweave
- * videos are immutable and stuck with whatever moov ordering their
- * source encoder produced.
+ * Lossless container rewrite that moves the moov atom to the file start
+ * (`-movflags +faststart`) so the browser can begin playback after a few
+ * KB rather than probing the whole file for metadata. `-c copy` skips
+ * any bitstream re-encode, so the operation completes in seconds and
+ * quality is preserved exactly. Returns null on any failure so the
+ * caller can fall back to uploading the source unchanged.
  */
 export async function remuxToFaststartMp4(file: File): Promise<File | null> {
   if (file.size > MAX_SOURCE_BYTES) return null

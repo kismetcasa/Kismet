@@ -196,17 +196,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
   const isTextMoment = meta.content?.mime === 'text/plain'
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   return (
-    // content-visibility:auto lets the browser skip style/layout/paint
-    // for cards that aren't on or near the screen — works in every modern
-    // engine (Chrome 85+, Safari 18+, Firefox 125+) and is ignored as
-    // unknown CSS on older versions, so no fallback needed. The companion
-    // contain-intrinsic-size reserves a placeholder box (the `auto`
-    // keyword tells the browser to remember the rendered size after
-    // first paint; 500px is the pre-measurement estimate based on a
-    // square image + ~100px of metadata at typical column widths).
-    // useEffect-driven data fetches in the card still fire on mount —
-    // this only skips the browser-side rendering work, which is what
-    // costs frames during scroll.
+    // content-visibility:auto skips browser-side render work for cards
+    // off-screen; useEffects still run, so data fetches aren't deferred.
+    // contain-intrinsic-size reserves the placeholder box pre-paint;
+    // `auto` lets the browser remember the real size after first layout.
     <article
       className="group flex flex-col bg-[#161616] border border-line overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_500px]"
     >
