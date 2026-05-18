@@ -1,5 +1,5 @@
 import { redis } from './redis'
-import { getFarcasterProfileByAddress, getFarcasterProfileByFid } from './farcasterProfile'
+import { getFarcasterProfileByAddress } from './farcasterProfile'
 import {
   ALL_NOTIFICATION_TYPES,
   isActorMuted,
@@ -10,13 +10,13 @@ import {
 
 // Farcaster native push notifications, layered on top of the in-app bell.
 //
-// When a user adds Kismet inside a Farcaster host, the host POSTs a
-// JFS-signed webhook to /api/farcaster/webhook with a (token, url) pair.
-// We store those tokens keyed by FID. Whenever writeNotification fires,
-// we look up the recipient's FID, check whether they've opted-in to push
-// for this notification type, and POST to the host's notification URL
-// so the user receives a native FC push that opens the Mini App at the
-// relevant page when tapped.
+// When a user adds Kismet inside a Farcaster host (or enables notifications
+// for it later), the host POSTs a JFS-signed webhook to /api/farcaster/webhook
+// with a (token, url) pair. We store those tokens keyed by FID. Whenever
+// writeNotification fires, we look up the recipient's FID, check the master
+// toggle + per-type opt-in, and POST to the host's notification URL so the
+// user receives a native FC push that opens the Mini App at the relevant
+// page when tapped.
 //
 // Identity model:
 //   - In-app bell is keyed by Ethereum address (existing behavior).
@@ -24,10 +24,14 @@ import {
 //   - One FID can have multiple tokens (mobile FC + web FC = two clients
 //     of the same user). We send to every token the FID has registered.
 //
-// Opt-in policy (per-type, persisted per-FID):
-//   - On first registration (notifications_enabled webhook), we seed
-//     the opt-in set with just {'collect'}. Everything else off by default.
-//   - User can flip the rest on via the settings tab in NotificationModal.
+// Opt-in policy (persisted per-FID, see keyPushSeeded for the one-shot
+// gate that prevents these defaults from clobbering user choices on churn):
+//   - Master toggle: 'off' by default, auto-set to 'on' on first-ever
+//     registration so the prompt's promise survives without a settings detour.
+//   - Per-type opt-in: seeded with {'collect'} on first-ever registration —
+//     applies whether the first event is miniapp_added (with details) or
+//     notifications_enabled.
+//   - User can flip both via the settings tab in NotificationModal.
 //
 // Failure model:
 //   - This is non-critical infrastructure. Every entry point swallows
@@ -156,8 +160,8 @@ export async function registerToken(fid: number, details: NotificationToken): Pr
   }
 }
 
-/** Drop a single token (host invalidated it, or remove webhook for a known token). */
-export async function unregisterToken(fid: number, details: NotificationToken): Promise<void> {
+/** Drop a single token. Internal: used by dispatch to GC tokens the host reports as invalid. */
+async function unregisterToken(fid: number, details: NotificationToken): Promise<void> {
   const member = JSON.stringify({ url: details.url, token: details.token })
   await redis.srem(keyTokens(fid), member)
 }
@@ -167,7 +171,7 @@ export async function clearTokens(fid: number): Promise<void> {
   await redis.del(keyTokens(fid))
 }
 
-export async function getTokens(fid: number): Promise<NotificationToken[]> {
+async function getTokens(fid: number): Promise<NotificationToken[]> {
   let raws: string[] = []
   try {
     raws = (await redis.smembers(keyTokens(fid))) as string[]
@@ -612,6 +616,3 @@ export async function hasAnyToken(fid: number): Promise<boolean> {
     return false
   }
 }
-
-// Re-export to keep imports tidy at call sites.
-export { getFarcasterProfileByFid }
