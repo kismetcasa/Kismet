@@ -133,11 +133,10 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
    *  through the proxy add up across the user base. Gateway walking
    *  still happens via `useFallbackUrl` on error. */
   skipProxy?: boolean
-  /** Above-the-fold hint — when true, render with loading="eager" and
-   *  fetchPriority="high" so the browser pulls the bytes ahead of
-   *  lazy-loaded images further down. When false, defaults to
-   *  loading="lazy" (browser default is eager, so we have to set lazy
-   *  explicitly for off-screen posters). */
+  /** Above-the-fold hint — eager + fetchPriority="high" when true,
+   *  loading="lazy" when false. Default-lazy means callers showing an
+   *  image as soon as it mounts (lightbox, modals) need to pass true
+   *  explicitly. */
   priority?: boolean
 }
 

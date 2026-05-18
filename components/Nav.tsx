@@ -28,11 +28,9 @@ export function Nav() {
 
   return (
     <>
-      {/* No backdrop-filter on the nav: it sits fixed over the feed, and
-          Safari recomputes the blur of everything behind it on every
-          scroll frame — over playing video frames that's a per-frame GPU
-          cost that compounds with everything else. Bumping the bg from
-          /90 → /95 keeps the visual nearly identical on a dark site. */}
+      {/* No backdrop-filter: Safari recomputes the blur every scroll
+          frame over the playing-video feed behind this fixed bar, and
+          the GPU cost shows up as jank. Solid /95 stays visually flat. */}
       <header className="fixed top-0 left-0 right-0 z-50 border-b border-line bg-[#0d0d0d]/95">
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3 sm:gap-8">

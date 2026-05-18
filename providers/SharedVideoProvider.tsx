@@ -140,11 +140,9 @@ const RELEASE_GRACE_MS = 1000
 // Pool entries with no active slot for this long get destroyed.
 const IDLE_EVICT_MS = 5 * 60 * 1000
 
-// Hard cap on pool size. Past this, idle entries get evicted on next acquire.
-// Larger pool = more decoder warmth on scroll-back (currentTime + buffered
-// ranges survive across the in-pool window). Per-element memory cost is real
-// but well within budget on modern hardware, and Safari's actual bottleneck
-// is concurrent playback / connection contention rather than idle pool size.
+// Hard cap on pool size. Past this, idle entries get evicted on next
+// acquire. Larger pool = more decoder warmth on scroll-back (currentTime
+// and buffered ranges survive while the entry is pooled).
 const MAX_POOL_SIZE = 12
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -192,11 +190,9 @@ function computeClipRect(ancestors: HTMLElement[]): DOMRect | null {
 export function SharedVideoProvider({ children }: { children: ReactNode }) {
   const poolRef = useRef<Map<string, ManagedVideo>>(new Map())
 
-  /** Read the slot + clipping-ancestor geometry in one pass. Split out
-   *  so the batched scroll handler can do all reads before any writes
-   *  across every video — fastdom pattern. Interleaving reads and writes
-   *  per video forces a synchronous reflow per video per frame on Safari
-   *  (Blink mostly absorbs this; WebKit doesn't). */
+  /** Split from `applySlotGeometry` so the batched scroll handler can
+   *  do every read across the pool before any write — fastdom pattern;
+   *  interleaving forces a sync reflow per video per frame on WebKit. */
   function readSlotGeometry(slot: Slot) {
     return {
       rect: slot.ref.getBoundingClientRect(),
@@ -204,7 +200,6 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  /** Apply the pre-read geometry. Pure writes — no DOM reads inside. */
   function applySlotGeometry(
     video: ManagedVideo,
     slot: Slot,
@@ -212,12 +207,9 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     clip: DOMRect | null,
   ) {
     const el = video.el
-    // Position via `transform: translate3d` (GPU-composited on every
-    // engine) rather than `top`/`left` (which force layout per frame on
-    // Safari). Size still needs width/height — animating those triggers
-    // layout, but only during the 220ms morph and only when the slot
-    // actually resizes. Scroll ticks usually change position only, so
-    // the hot path stays GPU-only.
+    // translate3d is GPU-composited; top/left would force layout per
+    // scroll frame on WebKit. width/height still trigger layout when
+    // they change, but only during the 220ms morph.
     const positionChanged =
       rect.top !== video.lastTop || rect.left !== video.lastLeft
     const sizeChanged =
@@ -272,8 +264,6 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     if (video.loaded) el.style.visibility = 'visible'
   }
 
-  /** Single-video reposition entry point (acquire/resize paths). The
-   *  batched scroll handler uses the split read/apply helpers directly. */
   function positionElement(video: ManagedVideo, slot: Slot) {
     const { rect, clip } = readSlotGeometry(slot)
     applySlotGeometry(video, slot, rect, clip)
@@ -333,11 +323,9 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
             video.el.pause()
           }
         },
-        // rootMargin was 200px (pre-warm videos a card-height above/below
-        // the viewport) — fine on Blink but on WebKit it kept 5-10 video
-        // decoders running concurrently, which is the dominant cause of
-        // playback + scroll jank on Safari. 50px keeps a small prefetch
-        // window without saturating the decoder budget.
+        // Tight margin keeps the simultaneous-decoder count close to
+        // "what's actually visible" — wider values let WebKit pile up
+        // concurrent decoders fast enough to jank scroll.
         { threshold: 0.01, rootMargin: '50px' },
       )
       io.observe(slot.ref)
@@ -379,11 +367,6 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
   }
 
   function createVideo(src: string): ManagedVideo {
-    // gateways[0] is arweave.net (canonical, most reliable in practice);
-    // earlier rotation regressed Chrome because ~75% of videos started
-    // on a non-canonical gateway, and slow-but-not-failing alternates
-    // produced loading stalls that the <video> element's onerror
-    // handler can't detect.
     const gateways = gatewayUrls(src)
     const el = document.createElement('video')
     el.autoplay = true
@@ -511,31 +494,18 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const pool = poolRef.current
 
-    // ─── Batched window scroll/resize handler ──────────────────────────
-    //
-    // Previously every SharedVideoSlot attached its own window scroll
-    // listener — N slots = N listeners + N rAFs per scroll event, each
-    // doing its own read→write→read pass against the DOM. Safari paid
-    // the layout-flush cost N times per frame and stuttered visibly.
-    //
-    // Consolidating to one listener at the provider lets us do a
-    // fastdom-style pass: collect every active slot's geometry in a
-    // single read phase, then apply every video's styles in a single
-    // write phase. Zero forced reflows during the write phase because
-    // we never read DOM geometry again until the next frame. Chrome was
-    // never bottlenecked here so this doesn't change its behaviour; on
-    // WebKit it cuts per-frame cost from O(N²) reflows to O(N) writes.
-    //
-    // Per-slot ancestor scroll listeners stay in SharedVideoSlot (each
-    // slot's clip ancestors are specific to it; bubbling those up would
-    // require tracking ancestor→slot maps and isn't worth the complexity).
+    // One window-scroll/resize listener for the whole pool, fastdom
+    // style: read every active slot's geometry in one pass, then apply
+    // every video's styles. Interleaving reads and writes would force
+    // a synchronous reflow per video per frame on WebKit. Per-slot
+    // ancestor-scroll listeners stay in SharedVideoSlot since ancestor
+    // sets vary per slot.
     let rafPending = false
     const flushAll = () => {
       if (rafPending) return
       rafPending = true
       requestAnimationFrame(() => {
         rafPending = false
-        // Read phase — pure DOM reads, no writes interleaved.
         const updates: Array<{
           video: ManagedVideo
           slot: Slot
@@ -548,7 +518,6 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
           const { rect, clip } = readSlotGeometry(slot)
           updates.push({ video, slot, rect, clip })
         })
-        // Write phase — pure style writes.
         for (const { video, slot, rect, clip } of updates) {
           applySlotGeometry(video, slot, rect, clip)
         }

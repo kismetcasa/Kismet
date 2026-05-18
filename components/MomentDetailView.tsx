@@ -1228,9 +1228,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               alt={meta.name ?? 'moment'}
               className="max-h-[95vh] max-w-[95vw] object-contain"
               onClick={(e) => e.stopPropagation()}
-              // User-initiated full-size view — load eagerly. Without
-              // this MomentImg defaults to loading="lazy", which would
-              // defer the fetch through the modal's open transition.
+              // MomentImg defaults to loading="lazy"; the lightbox
+              // mounts already-visible so we need eager.
               priority
             />
           )}

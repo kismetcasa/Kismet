@@ -636,12 +636,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         } else if (file!.type.startsWith('video/')) {
           setStep('preparing-media')
           toast.loading('Optimizing video for fast playback…', { id: 'mint' })
-          // Lossless remux to faststart MP4 — moves moov atom to file
-          // start so browsers (esp. Safari) can begin playback after
-          // a few KB of download rather than probing the whole file
-          // for metadata. Best-effort: null return falls through to
-          // the original file. Doesn't help videos already on Arweave
-          // (immutable), but every new mint benefits from this point on.
+          // Best-effort lossless remux to faststart MP4. Null falls
+          // through to the source unchanged.
           try {
             const remuxed = await remuxToFaststartMp4(file!)
             if (remuxed) mediaFile = remuxed

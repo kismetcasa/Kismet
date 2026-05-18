@@ -42,22 +42,7 @@ const DEFAULT_Z_INDEX = 10
  * Per-slot we attach a ResizeObserver (for slot size changes) and scroll
  * listeners on each clipping ancestor — those aren't covered by the
  * provider's centralised window-scroll handler since ancestor sets are
- * slot-specific. Window scroll/resize repositioning is handled at the
- * provider level (one batched listener, all videos updated in a single
- * read-then-write pass).
- *
- * Earlier in this branch we experimented with deferring `ctx.acquire()`
- * behind an IntersectionObserver ("lazy acquire") to bound concurrent
- * Arweave fetches at page load. The architectural protection didn't
- * meaningfully translate to better Safari perf in practice — the actual
- * Safari bottlenecks (transform-based positioning, backdrop-blur over
- * playing video, fastdom-style scroll handler) are addressed elsewhere
- * in this branch — and it regressed Chrome's pre-buffer behaviour
- * because cards on a long feed no longer warmed their decoders ahead
- * of scroll. Reverted to eager mount-time acquire. If concurrent-fetch
- * pressure ever becomes the real bottleneck again, the right fix is
- * HTTP/2 multiplexing at the CDN layer, not application-level lazy
- * mounting.
+ * slot-specific.
  */
 export function SharedVideoSlot({
   src,
