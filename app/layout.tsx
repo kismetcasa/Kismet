@@ -1,21 +1,41 @@
 import type { Metadata } from 'next'
 import { Toaster } from 'sonner'
 import { Providers } from '@/providers/WagmiProvider'
+import { FarcasterProvider } from '@/providers/FarcasterProvider'
 import { Nav } from '@/components/Nav'
+import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import './globals.css'
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://kismet.art'
 
 export const metadata: Metadata = {
   // Resolves relative URLs in generateMetadata across the app (og:image
   // in particular). Override via NEXT_PUBLIC_SITE_URL for staging or
-  // other non-prod hosts; default to the canonical custom domain so
+  // other non-prod hosts; default to the canonical apex domain so
   // share cards always point at production.
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.kismet.art'),
+  metadataBase: new URL(SITE_URL),
   title: 'Kismet Art',
   description: 'mint, collect, and discover art on Kismet Art',
   openGraph: {
     title: 'Kismet Art',
     description: 'mint, collect, and discover art on Kismet Art',
   },
+  // Farcaster Mini App embed for the homepage. When the apex URL is
+  // shared in a cast, this is the rich card that renders + launches the
+  // Mini App. Per-route embeds (moment, collection, profile) are added
+  // in their own generateMetadata in Phase 4.
+  other: buildFarcasterEmbed({
+    imageUrl:
+      process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
+    buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Open Kismet',
+    action: {
+      url: SITE_URL,
+      name: process.env.NEXT_PUBLIC_FARCASTER_APP_NAME ?? 'Kismet Art',
+      splashImageUrl:
+        process.env.NEXT_PUBLIC_FARCASTER_SPLASH_URL ?? `${SITE_URL}/splash.png`,
+      splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#0d0d0d',
+    },
+  }),
 }
 
 export default function RootLayout({
@@ -43,31 +63,33 @@ export default function RootLayout({
       </head>
       <body>
         <Providers>
-          <Nav />
-          <main className="pt-14 min-h-screen bg-[#0d0d0d]">
-            {children}
-          </main>
-          {/* Intercepted routes render here as an overlay over the
-              still-mounted {children} below. The feed stays alive
-              underneath, scroll position preserved, card videos still
-              playing — combined with SharedVideoProvider, the same
-              video element CSS-transitions from card to overlay. */}
-          {modal}
-          <Toaster
-            position="bottom-center"
-            offset={{ bottom: 16 }}
-            theme="dark"
-            toastOptions={{
-              style: {
-                background: '#161616',
-                border: '1px solid #2a2a2a',
-                color: '#efefef',
-                borderRadius: 0,
-                fontFamily: 'var(--font-mono)',
-                fontSize: '12px',
-              },
-            }}
-          />
+          <FarcasterProvider>
+            <Nav />
+            <main className="pt-14 min-h-screen bg-[#0d0d0d]">
+              {children}
+            </main>
+            {/* Intercepted routes render here as an overlay over the
+                still-mounted {children} below. The feed stays alive
+                underneath, scroll position preserved, card videos still
+                playing — combined with SharedVideoProvider, the same
+                video element CSS-transitions from card to overlay. */}
+            {modal}
+            <Toaster
+              position="bottom-center"
+              offset={{ bottom: 16 }}
+              theme="dark"
+              toastOptions={{
+                style: {
+                  background: '#161616',
+                  border: '1px solid #2a2a2a',
+                  color: '#efefef',
+                  borderRadius: 0,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '12px',
+                },
+              }}
+            />
+          </FarcasterProvider>
         </Providers>
       </body>
     </html>
