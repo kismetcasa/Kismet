@@ -63,8 +63,16 @@ function statusLabel(status: ReturnType<typeof useCollectAll>['status']): string
  * fallback on others.
  *
  * Returns null when nothing's eligible at all (sale ended, sold out, exotic
- * non-USDC currency). Mixed-currency collections show "Ξ X + $Y" so the
- * cost is unambiguous.
+ * non-USDC currency).
+ *
+ * Chip display policy (display-only — the action still bundles both
+ * currencies, the wallet's confirmation step is the source of truth on
+ * what gets charged):
+ *   - all-ETH or mixed → Ξ total (USDC items ignored by the chip in mixed)
+ *   - all-USDC         → $ total
+ * Keeps the chip in a single currency so it reads at a glance. A later
+ * pass can align the action with the chip if mixed-currency surprises
+ * become an issue in the wallet flow.
  */
 export function CollectAllAction({
   collectionAddress,
@@ -87,18 +95,14 @@ export function CollectAllAction({
   const ethTotalWei = BigInt(ethEligibleTotalWei)
   const usdcTotalUsdc = BigInt(usdcEligibleTotalUsdc)
 
-  // Cost label: combine when both legs have value, otherwise show just the
-  // active currency. "free" is reserved for the (rare) case where every
-  // eligible token is priced at 0.
+  // USDC chip only when the collection is 100% USDC-priced; any ETH
+  // presence flips to the ETH chip (mixed → ETH).
+  const usdcOnly = ethCount === 0
   let costLabel: string
-  if (ethTotalWei === 0n && usdcTotalUsdc === 0n) {
-    costLabel = 'free'
-  } else if (ethTotalWei > 0n && usdcTotalUsdc > 0n) {
-    costLabel = `Ξ ${formatEthChip(ethTotalWei)} + $${formatUsdcChip(usdcTotalUsdc)}`
-  } else if (ethTotalWei > 0n) {
-    costLabel = `Ξ ${formatEthChip(ethTotalWei)}`
+  if (usdcOnly) {
+    costLabel = usdcTotalUsdc > 0n ? `$${formatUsdcChip(usdcTotalUsdc)}` : 'free'
   } else {
-    costLabel = `$${formatUsdcChip(usdcTotalUsdc)}`
+    costLabel = ethTotalWei > 0n ? `Ξ ${formatEthChip(ethTotalWei)}` : 'free'
   }
 
   function handleClick() {
