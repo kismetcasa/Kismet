@@ -9,7 +9,10 @@ import { INPROCESS_API, shortAddress } from '@/lib/inprocess'
 // without a cover ever set). When a real cover exists, generateMetadata
 // puts it first in openGraph.images and crawlers prefer it.
 
-export const size = { width: 1200, height: 630 }
+// 1200x800 is 3:2 — exact match for the Farcaster Mini App embed image
+// spec. See moment/[address]/[tokenId]/opengraph-image.tsx for the
+// rationale on serving the same image to FC + OG crawlers.
+export const size = { width: 1200, height: 800 }
 export const contentType = 'image/png'
 
 interface Props {

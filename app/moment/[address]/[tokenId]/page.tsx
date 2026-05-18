@@ -13,7 +13,10 @@ import { PLATFORM_COLLECTION } from '@/lib/config'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { fetchMomentDetail } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
+import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { MomentDetailView } from '@/components/MomentDetailView'
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://kismet.art'
 
 interface Props {
   params: Promise<{ address: string; tokenId: string }>
@@ -106,6 +109,27 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // fallback (synthesized from KV) has no animation_url; pull from detail.
   const imageUrl = shareImageUrl(meta.image, detail?.metadata?.animation_url)
 
+  // Farcaster Mini App embed. When this URL is shared in a cast, hosts
+  // render a rich card and the button launches Kismet directly into
+  // this moment's page (action.url) rather than the homepage. The image
+  // is the same one OG crawlers use — opengraph-image.tsx serves it at
+  // 1200x800 (3:2), exactly the FC spec ratio.
+  //
+  // Prefer the moment's own poster (if FC's crawler can fetch it without
+  // CDN gating); fall back to our branded opengraph-image route which
+  // is always reachable. Either URL must be absolute — `other` meta
+  // tags aren't resolved against metadataBase.
+  const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
+  const embedImageUrl = imageUrl ?? `${canonicalUrl}/opengraph-image`
+  const fcEmbed = buildFarcasterEmbed({
+    imageUrl: embedImageUrl,
+    buttonTitle: 'collect',
+    action: {
+      url: canonicalUrl,
+      name: title,
+    },
+  })
+
   return {
     title,
     description,
@@ -125,6 +149,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       description,
       ...(imageUrl ? { images: [imageUrl] } : {}),
     },
+    other: fcEmbed,
   }
 }
 

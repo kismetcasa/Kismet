@@ -11,7 +11,11 @@ import { INPROCESS_API, shortAddress, type MomentDetail } from '@/lib/inprocess'
 // real image as the share card — that URL appears first in the
 // metadata and crawlers prefer it.
 
-export const size = { width: 1200, height: 630 }
+// 1200x800 is 3:2 — exact match for the Farcaster Mini App embed image
+// spec (3:2 ratio, 600x400 min, 3000x2000 max). Twitter / Facebook /
+// Discord all accept any aspect ratio and crop client-side, so this
+// works for both surfaces without a separate route.
+export const size = { width: 1200, height: 800 }
 export const contentType = 'image/png'
 
 interface Props {
@@ -63,7 +67,7 @@ export default async function Image({ params }: Props) {
     }
   }
 
-  // Truncate to keep within the 1200x630 frame at our chosen font size.
+  // Truncate to keep within the 1200x800 frame at our chosen font size.
   // Satori doesn't handle text-overflow gracefully; we cap up front.
   const displayName = name.length > 50 ? `${name.slice(0, 47)}…` : name
 
