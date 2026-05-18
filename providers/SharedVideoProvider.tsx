@@ -141,7 +141,12 @@ const RELEASE_GRACE_MS = 1000
 const IDLE_EVICT_MS = 5 * 60 * 1000
 
 // Hard cap on pool size. Past this, idle entries get evicted on next acquire.
-const MAX_POOL_SIZE = 10
+// Smaller on purpose — every pool entry holds a decoder + buffered range cache,
+// and Safari is memory-sensitive under sustained autoplay. With lazy-acquire
+// releasing slots as soon as a card scrolls beyond the IO margin, idle entries
+// accumulate quickly during long scrolls; a tighter cap means they get reclaimed
+// faster instead of sitting around for IDLE_EVICT_MS.
+const MAX_POOL_SIZE = 5
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -187,6 +192,16 @@ function computeClipRect(ancestors: HTMLElement[]): DOMRect | null {
 
 export function SharedVideoProvider({ children }: { children: ReactNode }) {
   const poolRef = useRef<Map<string, ManagedVideo>>(new Map())
+  // Rotates which gateway a freshly-created <video> element starts on.
+  // Browsers cap connections at ~6 per host; without rotation every
+  // video on the homepage hits arweave.net first, queues past the
+  // limit, and the 7th+ video stalls in the HTTP queue waiting for an
+  // earlier one to finish (the "videos past first 6 don't load on
+  // Safari" symptom). Spreading the primary gateway across the pool
+  // gives ~6 connections per gateway × 4 gateways = 24 effective
+  // parallel slots without changing any single-video fallback chain
+  // (errors still walk through the rotated list in order).
+  const gatewayCursorRef = useRef(0)
 
   /** Read the slot + clipping-ancestor geometry in one pass. Split out
    *  so the batched scroll handler can do all reads before any writes
@@ -375,7 +390,17 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
   }
 
   function createVideo(src: string): ManagedVideo {
-    const gateways = gatewayUrls(src)
+    const baseGateways = gatewayUrls(src)
+    // Rotate the gateway order so each freshly-created video starts on
+    // a different host (see gatewayCursorRef comment above). Errors still
+    // walk forward through the rotated list, so resilience is unchanged.
+    const gateways =
+      baseGateways.length > 1
+        ? (() => {
+            const offset = gatewayCursorRef.current++ % baseGateways.length
+            return [...baseGateways.slice(offset), ...baseGateways.slice(0, offset)]
+          })()
+        : baseGateways
     const el = document.createElement('video')
     el.autoplay = true
     el.muted = true

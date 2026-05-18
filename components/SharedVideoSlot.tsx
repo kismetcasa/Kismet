@@ -131,19 +131,21 @@ export function SharedVideoSlot({
     if (controls) {
       doAcquire()
     } else {
-      // 300px is wider than the provider's play-IO (50px) so the video
-      // element exists and has had time to start fetching metadata by
-      // the time the play-IO fires intersecting. The IO fires inside
-      // any content-visibility:auto ancestor too — modern engines
-      // un-skip an element's contents as soon as observation requires
-      // it, so this works transparently with the card-level
-      // content-visibility optimisation.
+      // 1500px (~2 screen heights) is wide enough that Chrome can
+      // resume its eager pre-load behaviour — videos within ~2 screens
+      // of viewport start fetching metadata, so by the time the user
+      // scrolls to them the bytes are ready and play() is instant. At
+      // 300px the prior margin was too aggressive: it cut Chrome's
+      // pre-buffer to a thin sliver and introduced a perceptible
+      // fetch+decode delay on cards approaching the fold. Still
+      // bounded — pages a long way down the infinite-scroll feed
+      // don't fetch until they're within ~2 screens.
       acquireIo = new IntersectionObserver(
         ([entry]) => {
           if (entry.isIntersecting) doAcquire()
           else doRelease()
         },
-        { rootMargin: '300px' },
+        { rootMargin: '1500px' },
       )
       acquireIo.observe(el)
     }
