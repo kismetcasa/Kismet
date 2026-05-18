@@ -77,10 +77,10 @@ input[type='number'] {
 }
 
 /* Apply the brand gradient as TEXT via background-clip — used wherever
- * the old solid purple text appeared (wordmark, prices, badges,
- * checkmarks). Single-color surfaces (borders / rings / opacity-tinted
- * backgrounds) use the tailwind `accent` token (#bf81f2 — first stop
- * of the gradient) since CSS can't render gradients in those properties. */
+ * a single-color text accent would otherwise read as flat. Single-color
+ * surfaces (borders / rings / opacity-tinted backgrounds) use the
+ * tailwind `accent` token (#ff87ce, the gradient's middle stop) since
+ * CSS can't render gradients in those properties. */
 .accent-grad {
   background: var(--accent-grad);
   -webkit-background-clip: text;
@@ -99,12 +99,12 @@ input[type='number'] {
   color: #0d0d0d;
 }
 
-/* Outlined button. Resting state: violet (accent token) border + text
+/* Outlined button. Resting state: magenta (accent token) border + text
  * so it harmonizes with `border-accent`/`text-accent` surfaces. Hover
  * fills with the full brand gradient + dark text. */
 .btn-accent {
-  border: 1px solid #bf81f2;
-  color: #bf81f2;
+  border: 1px solid #ff87ce;
+  color: #ff87ce;
   transition: all 0.15s ease;
 }
 

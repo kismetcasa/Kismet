@@ -20,11 +20,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <RainbowKitProvider
           initialChain={base}
           theme={darkTheme({
-            // Match Kismet's brand accent (logo violet, also the first
-            // stop of .accent-grad). Keeps RainbowKit's connect-wallet
-            // modal in the same palette as the rest of the app. Dark
-            // foreground still has ample contrast on this pastel violet.
-            accentColor: '#bf81f2',
+            // Match the Kismet brand accent (magenta — middle stop of
+            // .accent-grad). Keeps RainbowKit's connect-wallet modal in
+            // the same palette as the rest of the app. Dark foreground
+            // gets ~9:1 contrast on this pastel.
+            accentColor: '#ff87ce',
             accentColorForeground: '#0d0d0d',
             borderRadius: 'none',
             fontStack: 'system',

@@ -20,14 +20,15 @@ const config: Config = {
         dim: '#888',
         muted: '#555',
         faint: '#333',
-        // Single-color representative of the wordmark gradient. Used by
+        // Single-color representative of the brand gradient, used by
         // every `bg-accent`/`text-accent`/`border-accent`/`ring-accent`
-        // and their `/opacity` variants. Picked as the first stop of the
-        // brand gradient (logo's top-left petal violet) — sits at a
-        // similar hue position to the historical purple #6B3FA0, so
-        // existing UI rhythm (cards, badges, focus rings) stays
-        // perceptually anchored while shifting to the logo's palette.
-        accent: '#bf81f2',
+        // and their `/opacity` variants. Picked as the gradient's
+        // middle stop — the most "Kismet pink", distinctly not purple.
+        // CSS can't render gradients in single-color properties
+        // (borders, rings, opacity-tinted backgrounds), so they sit on
+        // this color while text + button-fill surfaces use the full
+        // gradient via .accent-grad / .accent-grad-hover.
+        accent: '#ff87ce',
       },
     },
   },
