@@ -65,6 +65,11 @@ export async function GET() {
     // declaring it would only cause hosts that lack it to wrongly
     // refuse our app.
     requiredCapabilities: ['wallet.getEthereumProvider'],
+    // Webhook endpoint for the four lifecycle events (miniapp_added,
+    // miniapp_removed, notifications_enabled, notifications_disabled).
+    // Host POSTs a JFS-signed payload — see app/api/farcaster/webhook
+    // for signature verification + token storage.
+    webhookUrl: `${SITE_URL}/api/farcaster/webhook`,
     // Manifest-level imageUrl and buttonTitle are deprecated as of SDK
     // 0.0.35 (April 2025) — per-page embeds (see lib/farcasterEmbed.ts
     // + each page's generateMetadata) carry the image and button text
