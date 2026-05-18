@@ -16,7 +16,7 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 export function Nav() {
   const pathname = usePathname()
   const { address, isConnected } = useAccount()
-  const { identity: fcIdentity } = useFarcaster()
+  const { identity: fcIdentity, isInMiniApp } = useFarcaster()
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
   const [searchOpen, setSearchOpen] = useState(false)
   const [modalQuery, setModalQuery] = useState('')
@@ -61,17 +61,32 @@ export function Nav() {
           <div className="flex items-center gap-3 sm:gap-8">
             <Link
               href="/"
+              aria-label="Kismet"
               className="flex items-center gap-2 text-sm font-mono tracking-widest uppercase accent-grad"
             >
-              <Image
-                src="/logo.png"
-                alt=""
-                width={24}
-                height={24}
-                className="object-contain"
-                priority
-              />
-              <span>Kismet</span>
+              <span className="flex items-center justify-center w-8 h-8 rounded-full bg-white">
+                <Image
+                  src="/logo.png"
+                  alt=""
+                  width={22}
+                  height={22}
+                  className="object-contain"
+                  priority
+                />
+              </span>
+              {/* Wordmark visibility:
+                   - Mini App: always hidden — user is implicitly signed in,
+                     real estate is at a premium, the logo carries the brand.
+                   - Mobile web logged-in: hidden so the avatar/notif row
+                     doesn't get clipped at narrow widths.
+                   - Mobile web signed-out: shown — first-time visitors
+                     need the wordmark for orientation.
+                   - Desktop: always shown. */}
+              {!isInMiniApp && (
+                <span className={effectiveSignedIn ? 'hidden sm:inline' : ''}>
+                  Kismet
+                </span>
+              )}
             </Link>
             <nav className="flex items-center gap-0.5 sm:gap-1">
               <Link
