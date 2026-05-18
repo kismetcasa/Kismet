@@ -111,13 +111,35 @@ export function WalletButton() {
         </button>
       ) : (
         <button
-          // Mini App: no RainbowKit UI ever — the user is signed in via
-          // Farcaster, not a wallet modal. Clicking the name is a no-op
-          // and the connection state is managed entirely by the host.
-          // Web: open RainbowKit's account modal so the user can see /
-          // disconnect / switch the actual wagmi-connected wallet, even
-          // when the display label is showing their FC primary.
-          onClick={() => isInMiniApp ? undefined : openAccountModal?.()}
+          // Click semantics by surface + wagmi state:
+          //
+          //   Mini App + wagmi connected (normal Farcaster.xyz / FC iOS path):
+          //     no-op. The host owns the wallet UX — the FC connector is
+          //     wired up and signing flows through it. A RainbowKit
+          //     modal here would be redundant and confusing.
+          //
+          //   Mini App + wagmi NOT connected (Base App, hosts whose
+          //   eth_accounts handoff doesn't fire reliably):
+          //     fall through to openConnectModal. Without this, the
+          //     user sees their FC name (from Quick Auth) but can't
+          //     actually mint/collect because wagmi has no signer —
+          //     an inescapable broken state. The connect modal gives
+          //     them an explicit retry path (host's injected provider,
+          //     WalletConnect, etc).
+          //
+          //   Web + connected: openAccountModal (disconnect / switch).
+          //   Web + disconnected: handled by the "connect" branch above.
+          onClick={() => {
+            if (isInMiniApp) {
+              if (!isConnected) openConnectModal?.()
+              return
+            }
+            openAccountModal?.()
+          }}
+          // Tooltip hints at the fallback action when wagmi never
+          // connected — most discoverable thing we can do without
+          // jamming an extra "(connect)" label into the nav.
+          title={isInMiniApp && !isConnected ? 'tap to connect a signing wallet' : undefined}
           className="text-dim hover:text-ink transition-colors"
           style={addressStyle}
         >
