@@ -1,18 +1,18 @@
 'use client'
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
-import { useConnect } from 'wagmi'
+import { useAccount, useConnect } from 'wagmi'
 
 export type FarcasterIdentity = {
-  /** Numeric Farcaster ID — comes from `sdk.context.user.fid` and the verified JWT. */
+  /** Numeric Farcaster ID — from `sdk.context.user.fid` (Mini App) or a /api/profile reverse lookup (web). */
   fid: number
-  /** Username (`@alice`) from the host context, when set. */
+  /** Username (`@alice`) from the FC profile, when set. */
   username: string | null
-  /** Free-text display name from the host context, when set. */
+  /** Free-text display name from the FC profile, when set. */
   displayName: string | null
-  /** Profile picture URL from the host context, when set. */
+  /** Profile picture URL from the FC profile, when set. */
   pfpUrl: string | null
-  /** Server-resolved primary Ethereum address bound to this FID. */
+  /** FC primary verified Ethereum address bound to this FID. */
   address: string | null
 }
 
@@ -264,6 +264,75 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
     // re-render (which happens on every account state change).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Web-side FC identity lookup: when the user connects a wallet on
+  // regular web (no Mini App), check whether that wallet is verified
+  // to a Farcaster account. If yes, populate identity with the FID's
+  // primary address — making the FC primary the canonical Kismet
+  // identity regardless of which of the user's wallets they connected
+  // with. The wagmi-connected wallet remains the transaction signer
+  // (exposed via useAccount in components that need it); identity is
+  // purely for UI routing — profile URL, nav avatar, display name.
+  //
+  // Skipped entirely inside a Mini App: the bootstrap effect above
+  // already populates identity from the verified Quick Auth JWT, which
+  // is the authoritative source there.
+  const { address: wagmiAddress } = useAccount()
+  useEffect(() => {
+    if (isPotentialMiniAppEnv()) return
+
+    if (!wagmiAddress) {
+      setState((prev) => (prev.identity ? { ...prev, identity: null } : prev))
+      return
+    }
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/profile/${wagmiAddress}`)
+        if (!res.ok || cancelled) return
+        const data = (await res.json()) as {
+          profile?: {
+            farcaster?: {
+              fid?: number
+              username?: string | null
+              displayName?: string | null
+              avatarUrl?: string | null
+              primaryAddress?: string | null
+            }
+          }
+        }
+        if (cancelled) return
+        const fc = data.profile?.farcaster
+        if (fc?.fid && fc?.primaryAddress) {
+          setState((prev) => ({
+            ...prev,
+            identity: {
+              fid: fc.fid as number,
+              username: fc.username ?? null,
+              displayName: fc.displayName ?? null,
+              pfpUrl: fc.avatarUrl ?? null,
+              address: (fc.primaryAddress as string).toLowerCase(),
+            },
+          }))
+        } else {
+          // Wallet has no FC linkage — keep behavior identical to a
+          // non-FC user. Clearing handles the wallet-switch case where
+          // the previous wallet had an identity.
+          setState((prev) =>
+            prev.identity ? { ...prev, identity: null } : prev,
+          )
+        }
+      } catch {
+        // Best-effort; on network error leave identity unchanged so a
+        // transient blip doesn't reset the UI.
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [wagmiAddress])
 
   return (
     <FarcasterContext.Provider value={state}>{children}</FarcasterContext.Provider>

@@ -15,16 +15,22 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 export function Nav() {
   const pathname = usePathname()
   const { address, isConnected } = useAccount()
-  const { isInMiniApp, identity: fcIdentity } = useFarcaster()
+  const { identity: fcIdentity } = useFarcaster()
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
   const [searchOpen, setSearchOpen] = useState(false)
   const [modalQuery, setModalQuery] = useState('')
 
-  // Inside a Mini App, treat the Farcaster-authed user as the signed-in
-  // user for nav purposes — avatar, profile link, notification bell.
-  // Regular web continues to read from wagmi (RainbowKit session).
-  const effectiveAddress = isInMiniApp ? fcIdentity?.address ?? address : address
-  const effectiveSignedIn = isInMiniApp ? !!fcIdentity?.address : isConnected
+  // FC primary is the canonical Kismet identity whenever it's available:
+  //   - Mini App: identity comes from the verified Quick Auth JWT
+  //   - Web with an FC-verified wallet: identity comes from the reverse
+  //     lookup in FarcasterProvider (works for any of the user's verified
+  //     wallets — primary or sibling)
+  //   - Web with a non-FC wallet: falls back to wagmi address
+  // Profile link, avatar, and notification scope all key off this so the
+  // user sees the same Kismet identity regardless of which of their
+  // wallets they happen to have connected.
+  const effectiveAddress = fcIdentity?.address ?? address
+  const effectiveSignedIn = !!fcIdentity?.address || isConnected
 
   useEffect(() => {
     if (!effectiveAddress) { setAvatarUrl(undefined); return }
