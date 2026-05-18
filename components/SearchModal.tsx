@@ -76,18 +76,33 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
     const q = query.trim()
     if (q.length < 2) { setResults(null); return }
     setLoading(true)
+    // AbortController so a new keystroke cancels the previous in-flight
+    // request. Without this, fast typing stacks N fetches against the
+    // server's 30-req/min ratelimit AND saturates the webview's
+    // per-host connection pool — both contribute to perceived freeze
+    // on mobile.
+    const controller = new AbortController()
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, {
+          signal: controller.signal,
+        })
         if (!res.ok) throw new Error('Search failed')
         setResults(await res.json())
-      } catch {
+      } catch (err) {
+        // AbortError is the expected path when the effect cleanup
+        // cancels us — don't blank the results, the next effect run is
+        // about to populate them.
+        if ((err as Error)?.name === 'AbortError') return
         setResults({ users: [], collections: [], mints: [] })
       } finally {
-        setLoading(false)
+        if (!controller.signal.aborted) setLoading(false)
       }
     }, 300)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
   }, [query])
 
   const hasResults = results && (
@@ -97,10 +112,19 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-sm flex items-start justify-center pt-16 sm:pt-24 px-4"
+      // backdrop-blur removed: it's GPU-expensive in mobile webviews
+      // and visibly janks the keyboard slide-in animation in Mini App
+      // hosts. Solid /85 reads as a strong-enough overlay without the
+      // perf cost. Use --safe-top so the modal clears device chrome
+      // on Mini App; falls back to 0 (=> pt-16) on regular web.
+      className="fixed inset-0 z-[100] bg-black/85 flex items-start justify-center px-4"
+      style={{ paddingTop: 'calc(4rem + var(--safe-top))' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="w-full max-w-lg flex flex-col bg-[#161616] border border-line max-h-[70vh]">
+      {/* max-h-[70dvh]: dynamic viewport height shrinks when the
+          iOS keyboard appears (vh doesn't), so the modal stays fully
+          visible above the keyboard instead of running under it. */}
+      <div className="w-full max-w-lg flex flex-col bg-[#161616] border border-line max-h-[70dvh]">
         {/* Input row */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-line">
           <Search size={15} className="text-muted flex-shrink-0" />
@@ -109,7 +133,22 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="search mints, collections, users…"
-            className="flex-1 bg-transparent text-sm text-ink font-mono placeholder-faint focus:outline-none"
+            // type=search gives mobile keyboards a "search" action key.
+            // enterKeyHint is the modern equivalent that Safari iOS
+            // also respects.
+            type="search"
+            enterKeyHint="search"
+            // autoCapitalize=none + autoCorrect=off: search queries
+            // are rarely sentences — turning these off prevents the
+            // first-keystroke jank where iOS shows a correction bar.
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            // 16px font on the input is the iOS-WebKit threshold that
+            // disables auto-zoom-on-focus. Below 16, focusing the
+            // input zooms the viewport — combined with the keyboard
+            // slide-in it reads as a "freeze". Tailwind text-base = 1rem.
+            className="flex-1 bg-transparent text-base sm:text-sm text-ink font-mono placeholder-faint focus:outline-none"
           />
           {loading && <Loader2 size={14} className="text-muted animate-spin flex-shrink-0" />}
           <button onClick={onClose} className="text-muted hover:text-dim flex-shrink-0 transition-colors">
