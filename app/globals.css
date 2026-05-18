@@ -61,25 +61,19 @@ input[type='number'] {
   -moz-appearance: textfield;
 }
 
-/* Brand accent utilities — solid #6B3FA0. .accent-grad keeps the
- * gradient text-clip trick so an accent-colored gradient effect is still
- * available if reintroduced later; today both stops are the same color
- * for a flat fill. */
-.accent-grad {
-  background: linear-gradient(to right, #6B3FA0, #6B3FA0);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* Wordmark gradient — sampled directly from public/logo.png (clockwise
+/* Brand gradient — sampled directly from public/logo.png (clockwise
  * petal sweep). The stops trace the same hues that read across the logo
  * left-to-right: violet (top-left petal) → cyan (top) → pink/magenta
  * (top-right) → coral (bottom-right) → orange (bottom-left). All five
- * stops sit at L≈0.75 so contrast against the always-dark nav stays
- * comfortably above 4.5:1. Kept separate from .accent-grad so the
- * rainbow doesn't bleed onto price labels, checkmarks, etc. */
-.brand-grad {
+ * stops sit at L≈0.75 so contrast against the always-dark UI stays
+ * comfortably above 4.5:1.
+ *
+ * Applied to text via background-clip: text — used everywhere the old
+ * solid purple text appeared (wordmark, prices, badges, checkmarks).
+ * Single-color surfaces (borders / rings / opacity-tinted backgrounds)
+ * use the tailwind `accent` token (#bf81f2 — first stop of this
+ * gradient) since CSS can't render gradients in those properties. */
+.accent-grad {
   background: linear-gradient(
     to right,
     #9692f6 0%,
@@ -93,14 +87,26 @@ input[type='number'] {
   background-clip: text;
 }
 
+/* Outlined button. Resting state: violet (accent token) border + text
+ * so it harmonizes with `border-accent`/`text-accent` surfaces. Hover
+ * fills with the full brand gradient + white text for a strong reveal —
+ * the gradient feels intentional on the active surface rather than as
+ * stationary chrome. */
 .btn-accent {
-  border: 1px solid #6B3FA0;
-  color: #6B3FA0;
+  border: 1px solid #bf81f2;
+  color: #bf81f2;
   transition: all 0.15s ease;
 }
 
 .btn-accent:hover:not(:disabled) {
-  background: #6B3FA0;
+  background: linear-gradient(
+    to right,
+    #9692f6 0%,
+    #9bd6f5 25%,
+    #ff87ce 55%,
+    #ff7c80 80%,
+    #ffb375 100%
+  );
   border-color: transparent;
   color: white;
 }

@@ -83,7 +83,7 @@ export function Nav() {
                      need the wordmark for orientation.
                    - Desktop: always shown. */}
               {!isInMiniApp && (
-                <span className={`brand-grad${effectiveSignedIn ? ' hidden sm:inline' : ''}`}>
+                <span className={`accent-grad${effectiveSignedIn ? ' hidden sm:inline' : ''}`}>
                   Kismet
                 </span>
               )}
