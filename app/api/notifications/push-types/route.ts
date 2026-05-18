@@ -8,19 +8,26 @@ import {
   setPushTypeEnabled,
   getFidForAddress,
   hasAnyToken,
+  getPushMaster,
+  setPushMaster,
 } from '@/lib/farcasterNotifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionContext, slideSession } from '@/lib/session'
 
-// GET → { enabled: NotificationType[], all: NotificationType[], hasTokens: boolean, fid: number | null }
-// PATCH { type, enabled } → { ok: true }
+// GET → { enabled, all, hasTokens, fid, master }
+//   master: 'on' | 'off'   (default-off when never set; surfaced as 'off'
+//                           so the UI shows a consistent boolean state)
 //
-// Per-type FC push opt-in. Mirrors /api/notifications/mute-type's shape
-// but with inverted semantics: this is OPT-IN (defaults to {collect}),
+// PATCH { type, enabled }   → flip one type's opt-in
+// PATCH { master: boolean } → flip the master toggle
+//
+// Per-type FC push opt-in plus the master gate. Mirrors
+// /api/notifications/mute-type's GET/PATCH shape but with inverted
+// semantics: this is OPT-IN (defaults to {collect}, master default-off),
 // the mute endpoint is opt-OUT (defaults to {}).
 //
 // `hasTokens` and `fid` let the settings UI render context:
-//   - fid == null  → user has no FC identity ("connect FC to enable push")
+//   - fid == null     → user has no FC identity ("connect FC to enable push")
 //   - hasTokens false → user has FC but hasn't added Kismet
 //                       ("add Kismet inside Farcaster to enable push")
 //   - hasTokens true  → toggles are functional
@@ -34,12 +41,24 @@ export async function GET(req: NextRequest) {
   if (!ctx) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
 
   const fid = await getFidForAddress(ctx.address)
-  const [enabled, tokens] = fid
-    ? await Promise.all([getEnabledPushTypes(fid), hasAnyToken(fid)])
-    : [[] as NotificationType[], false]
+  const [enabled, tokens, master] = fid
+    ? await Promise.all([
+        getEnabledPushTypes(fid),
+        hasAnyToken(fid),
+        getPushMaster(fid),
+      ])
+    : [[] as NotificationType[], false, null]
 
   const res = NextResponse.json(
-    { enabled, all: ALL_NOTIFICATION_TYPES, hasTokens: tokens, fid },
+    {
+      enabled,
+      all: ALL_NOTIFICATION_TYPES,
+      hasTokens: tokens,
+      fid,
+      // Surface as a boolean to keep the UI dead simple. null (never set)
+      // collapses to 'off' here so the toggle renders consistently.
+      master: master === 'on',
+    },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
   await slideSession(res, ctx.token)
@@ -55,14 +74,32 @@ export async function PATCH(req: NextRequest) {
   if (!ctx) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
 
   const body = (await req.json().catch(() => null)) as
-    | { type?: string; enabled?: boolean }
+    | { type?: string; enabled?: boolean; master?: boolean }
     | null
-  const type = body?.type as NotificationType | undefined
-  if (!type || !(ALL_NOTIFICATION_TYPES as readonly string[]).includes(type)) {
-    return NextResponse.json({ error: 'Unknown notification type' }, { status: 400 })
+
+  // Disambiguate the two mutations by shape, not by a separate path,
+  // so the toggle UI doesn't have to know about endpoint variants.
+  const isMaster = typeof body?.master === 'boolean'
+  const isType =
+    typeof body?.type === 'string' && typeof body?.enabled === 'boolean'
+
+  if (!isMaster && !isType) {
+    return NextResponse.json(
+      { error: 'Provide either { master: boolean } or { type, enabled }' },
+      { status: 400 },
+    )
   }
-  if (typeof body?.enabled !== 'boolean') {
-    return NextResponse.json({ error: 'Missing `enabled`' }, { status: 400 })
+  if (isMaster && isType) {
+    return NextResponse.json(
+      { error: 'Provide exactly one of master/type in a single request' },
+      { status: 400 },
+    )
+  }
+  if (isType) {
+    const type = body!.type as NotificationType
+    if (!(ALL_NOTIFICATION_TYPES as readonly string[]).includes(type)) {
+      return NextResponse.json({ error: 'Unknown notification type' }, { status: 400 })
+    }
   }
 
   const fid = await getFidForAddress(ctx.address)
@@ -76,7 +113,12 @@ export async function PATCH(req: NextRequest) {
     return res
   }
 
-  await setPushTypeEnabled(fid, type, body.enabled)
+  if (isMaster) {
+    await setPushMaster(fid, body!.master as boolean)
+  } else {
+    await setPushTypeEnabled(fid, body!.type as NotificationType, body!.enabled as boolean)
+  }
+
   const res = NextResponse.json({ ok: true, fid })
   await slideSession(res, ctx.token)
   return res

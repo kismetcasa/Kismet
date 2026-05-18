@@ -1,6 +1,12 @@
 import { redis } from './redis'
 import { getFarcasterProfileByAddress, getFarcasterProfileByFid } from './farcasterProfile'
-import { ALL_NOTIFICATION_TYPES, type Notification, type NotificationType } from './notifications'
+import {
+  ALL_NOTIFICATION_TYPES,
+  isActorMuted,
+  NON_MUTEABLE_TYPES,
+  type Notification,
+  type NotificationType,
+} from './notifications'
 
 // Farcaster native push notifications, layered on top of the in-app bell.
 //
@@ -38,12 +44,23 @@ export interface NotificationToken {
 
 const keyTokens = (fid: number) => `kismetart:fc:tokens:${fid}`
 const keyPushTypes = (fid: number) => `kismetart:fc:push-types:${fid}`
+const keyPushMaster = (fid: number) => `kismetart:fc:push-master:${fid}`
 const keyIdempotency = (fid: number, notificationId: string) =>
   `kismetart:fc:notif-sent:${fid}:${notificationId}`
 
 const IDEMPOTENCY_TTL_SECS = 24 * 60 * 60
 const TOKENS_TTL_SECS = 365 * 24 * 60 * 60
 const PUSH_TYPES_TTL_SECS = 365 * 24 * 60 * 60
+const PUSH_MASTER_TTL_SECS = 365 * 24 * 60 * 60
+
+// Master toggle: 'on' | 'off' | (absent = default off). Default-off is
+// the conservative posture asked for in design — no surprise pushes.
+// One narrow exception: on FIRST registration (notifications_enabled
+// webhook with no prior token state), we set master='on' so the
+// "Add Kismet for collect alerts" prompt actually delivers what it
+// promised. Subsequent registrations preserve whatever the user has
+// explicitly set in Kismet settings.
+type MasterState = 'on' | 'off' | null
 
 // On first notification grant, only 'collect' is on. Other types must be
 // opted into explicitly via settings. Keeps the post-add experience
@@ -52,11 +69,28 @@ const DEFAULT_ENABLED_PUSH_TYPES: ReadonlySet<NotificationType> = new Set(['coll
 
 /**
  * Persist a notification token for an FID. Idempotent — duplicate (url, token)
- * pairs are stored once. Seeds the per-type opt-in set with the default if
- * this is the FID's first token (i.e. they just added Kismet for the first
- * time).
+ * pairs are stored once.
+ *
+ * First-registration seeding:
+ *   - Per-type opt-in set: seeded with DEFAULT_ENABLED_PUSH_TYPES ({collect})
+ *     so the prompt's "collect alerts" promise is honored.
+ *   - Master toggle: set to 'on' ONLY when the FID has zero prior tokens AND
+ *     no explicit master setting. After that, the user's Kismet-level
+ *     master setting (if any) is respected through add/remove churn.
  */
 export async function registerToken(fid: number, details: NotificationToken): Promise<void> {
+  // Check first-registration state BEFORE the SADD that would change it.
+  // SCARD on a missing key returns 0 — distinguishes truly-new from
+  // existing-but-empty.
+  let isFirstRegistration = false
+  try {
+    isFirstRegistration = (await redis.scard(keyTokens(fid))) === 0
+  } catch {
+    // If we can't tell, conservatively assume NOT a first registration
+    // so we don't auto-enable master for an existing user on a hiccup.
+    isFirstRegistration = false
+  }
+
   const member = JSON.stringify({ url: details.url, token: details.token })
   await redis
     .multi()
@@ -64,8 +98,9 @@ export async function registerToken(fid: number, details: NotificationToken): Pr
     .expire(keyTokens(fid), TOKENS_TTL_SECS)
     .exec()
 
-  // Seed defaults only if push-types set is empty (first registration).
-  // Re-adds after a remove/add cycle should not re-seed — keep user prefs.
+  if (!isFirstRegistration) return
+
+  // Seed per-type defaults only when the user has nothing on record yet.
   try {
     const existing = await redis.scard(keyPushTypes(fid))
     if (existing === 0) {
@@ -82,6 +117,18 @@ export async function registerToken(fid: number, details: NotificationToken): Pr
   } catch {
     // Best-effort — if seed fails the user just has zero push types until
     // they toggle one on, which is a safe degradation.
+  }
+
+  // Auto-enable master on first registration only when the user has
+  // never explicitly set it. Existing 'off' settings are preserved.
+  try {
+    const current = (await redis.get<string>(keyPushMaster(fid))) as MasterState
+    if (current !== 'on' && current !== 'off') {
+      await redis.set(keyPushMaster(fid), 'on', { ex: PUSH_MASTER_TTL_SECS })
+    }
+  } catch {
+    // Non-critical — falls through to default-off, which the user can
+    // flip on themselves in settings.
   }
 }
 
@@ -152,6 +199,35 @@ async function isPushTypeEnabled(fid: number, type: NotificationType): Promise<b
   }
 }
 
+// ---------- Master toggle ----------
+
+/** Read the user's master setting. Returns null when never set (= default off). */
+export async function getPushMaster(fid: number): Promise<MasterState> {
+  try {
+    const v = (await redis.get<string>(keyPushMaster(fid))) as MasterState
+    return v === 'on' || v === 'off' ? v : null
+  } catch {
+    return null
+  }
+}
+
+/** Set the master toggle explicitly. Persists with a 1y TTL like the rest. */
+export async function setPushMaster(fid: number, enabled: boolean): Promise<void> {
+  await redis.set(keyPushMaster(fid), enabled ? 'on' : 'off', { ex: PUSH_MASTER_TTL_SECS })
+}
+
+/**
+ * Effective master state for dispatch. Maps the tri-state into a boolean:
+ *   on              → true
+ *   off | null      → false  (null = never set = default off)
+ *
+ * The auto-enable in registerToken means a freshly-added user with no
+ * settings churn will read 'on' here, so the prompt promise still works.
+ */
+async function isPushMasterOn(fid: number): Promise<boolean> {
+  return (await getPushMaster(fid)) === 'on'
+}
+
 // ---------- Composition ----------
 
 // FC notification spec caps: title 32 chars, body 128 chars. We compose
@@ -179,10 +255,20 @@ interface ComposedPush {
   targetUrl: string
 }
 
+function formatPushPrice(price: string, currency?: 'eth' | 'usdc'): string {
+  return currency === 'usdc' ? `$${price}` : `${price} ETH`
+}
+
+// Composition mirrors components/NotificationRow.tsx so the push and the
+// in-app row read identically — including the actor-absent variants
+// ("your moment was created", "your listing was filled", "an admin added
+// you as creator"). When the row says one thing and the push says
+// another, users feel like two notification systems rather than one.
 async function compose(n: Notification): Promise<ComposedPush | null> {
-  // Look up actor display name when applicable. Web users without FC
-  // profile fall back to short-hex; we never block on this.
-  let actorName = 'someone'
+  // Actor display name. NotificationRow falls back to the shortened
+  // hex address; we match that, then fall back further to 'someone'
+  // only when the actor field is genuinely absent (self-actions).
+  let actorName: string | null = null
   if (n.actor) {
     try {
       const profile = await getFarcasterProfileByAddress(n.actor)
@@ -192,79 +278,133 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
     }
   }
 
-  const tokenName = n.tokenName?.trim() || 'a piece'
+  const tokenName = n.tokenName?.trim() || null
   const momentUrl =
     n.tokenAddress && n.tokenId ? `${SITE_URL}/moment/${n.tokenAddress}/${n.tokenId}` : SITE_URL
 
   switch (n.type) {
     case 'collect': {
       const priceLabel = n.price && n.price !== '0'
-        ? n.currency === 'usdc' ? ` for $${n.price}` : ` for ${n.price} ETH`
+        ? ` for ${formatPushPrice(n.price, n.currency)}`
         : ''
+      const subject = tokenName ? `"${tokenName}"` : 'your moment'
+      const who = actorName ?? 'someone'
+      // Surface the buyer's optional comment so the push carries the
+      // same context the in-app row does. The full-body truncate at
+      // the end handles the case where comment + name + price overflow.
+      const commentSuffix = n.comment?.trim() ? ` — "${n.comment.trim()}"` : ''
       return {
         title: truncate('New collect', TITLE_MAX),
-        body: truncate(`${actorName} collected "${tokenName}"${priceLabel}`, BODY_MAX),
+        body: truncate(`${who} collected ${subject}${priceLabel}${commentSuffix}`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }
     case 'sale': {
-      const priceLabel = n.price
-        ? n.currency === 'usdc' ? ` for $${n.price}` : ` for ${n.price} ETH`
-        : ''
+      const priceLabel = n.price ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
+      const subject = tokenName ?? 'untitled'
       return {
         title: truncate('Sale on Kismet', TITLE_MAX),
-        body: truncate(`${actorName} bought "${tokenName}"${priceLabel}`, BODY_MAX),
+        body: truncate(
+          actorName
+            ? `${actorName} bought "${subject}"${priceLabel}`
+            : `your listing was filled — "${subject}"${priceLabel}`,
+          BODY_MAX,
+        ),
         targetUrl: momentUrl,
       }
     }
-    case 'mint':
+    case 'mint': {
+      // Self-mint confirmation (no actor) vs follower-fanout (actor set).
+      // Matches NotificationRow's two branches exactly.
+      if (!actorName) {
+        return {
+          title: truncate('Moment created', TITLE_MAX),
+          body: truncate(
+            tokenName ? `Your moment "${tokenName}" is live` : 'Your moment was created',
+            BODY_MAX,
+          ),
+          targetUrl: momentUrl,
+        }
+      }
       return {
-        title: truncate(`New mint from ${actorName}`, TITLE_MAX),
-        body: truncate(`${actorName} minted "${tokenName}"`, BODY_MAX),
+        title: truncate(`${actorName} minted`, TITLE_MAX),
+        body: truncate(
+          tokenName ? `${actorName} minted "${tokenName}"` : `${actorName} minted a new moment`,
+          BODY_MAX,
+        ),
         targetUrl: momentUrl,
       }
-    case 'airdrop':
+    }
+    case 'airdrop': {
+      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const who = actorName ?? 'someone'
       return {
-        title: truncate('You got an airdrop', TITLE_MAX),
-        body: truncate(`${actorName} sent you "${tokenName}"`, BODY_MAX),
+        title: truncate('Airdrop received', TITLE_MAX),
+        body: truncate(`${who} airdropped you ${subject}`, BODY_MAX),
         targetUrl: momentUrl,
       }
+    }
     case 'follow':
+      // Actor absent on follow would be a write-side bug — surface a
+      // safe fallback rather than the awkward "someone followed you".
       return {
         title: truncate('New follower', TITLE_MAX),
-        body: truncate(`${actorName} followed you`, BODY_MAX),
+        body: truncate(
+          actorName ? `${actorName} followed you` : 'someone followed you',
+          BODY_MAX,
+        ),
         targetUrl: n.actor ? `${SITE_URL}/profile/${n.actor}` : SITE_URL,
       }
     case 'payout': {
-      const priceLabel = n.price
-        ? n.currency === 'usdc' ? `$${n.price}` : `${n.price} ETH`
-        : 'a payout'
+      // In-app row links to the moment, not the profile — payouts are
+      // moment-scoped (one split distribution per moment). Match that.
+      const currencyLabel = (n.currency ?? 'eth').toUpperCase()
+      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const amountLabel = n.price ? `${formatPushPrice(n.price, n.currency)} ` : ''
       return {
         title: truncate('Payout received', TITLE_MAX),
-        body: truncate(`You received ${priceLabel}`, BODY_MAX),
-        targetUrl: `${SITE_URL}/profile/${n.recipient}`,
+        body: truncate(
+          `You received ${amountLabel}from ${subject} (${currencyLabel})`,
+          BODY_MAX,
+        ),
+        targetUrl: momentUrl,
       }
     }
-    case 'authorized':
+    case 'authorized': {
+      const subject = tokenName ? `"${tokenName}"` : 'a collection'
+      const who = actorName ?? 'an admin'
       return {
         title: truncate('Mint access granted', TITLE_MAX),
-        body: truncate(`${actorName} gave you mint access on "${tokenName}"`, BODY_MAX),
+        body: truncate(`${who} added you as a creator on ${subject}`, BODY_MAX),
         targetUrl: n.tokenAddress ? `${SITE_URL}/collection/${n.tokenAddress}` : SITE_URL,
       }
-    case 'listing_created':
+    }
+    case 'listing_created': {
+      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const who = actorName ?? 'someone'
+      const priceLabel = n.price ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
       return {
         title: truncate('New listing', TITLE_MAX),
-        body: truncate(`${actorName} listed "${tokenName}"`, BODY_MAX),
+        body: truncate(`${who} listed ${subject}${priceLabel}`, BODY_MAX),
         targetUrl: momentUrl,
       }
-    case 'listing_expired':
+    }
+    case 'listing_expired': {
+      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const priceLabel = n.price ? ` (${formatPushPrice(n.price, n.currency)})` : ''
       return {
         title: truncate('Listing expired', TITLE_MAX),
-        body: truncate(`Your listing on "${tokenName}" expired`, BODY_MAX),
+        body: truncate(`Your listing on ${subject} expired${priceLabel}`, BODY_MAX),
         targetUrl: momentUrl,
       }
-    default:
+    }
+    default: {
+      // Exhaustiveness — TS errors if NotificationType grows without a
+      // new case here. Matches NotificationRow's same guard.
+      const _exhaustive: never = n.type
+      void _exhaustive
       return null
+    }
   }
 }
 
@@ -304,25 +444,54 @@ async function sendOne(
  * write succeeds. Never throws — Farcaster push is a parallel transport,
  * the in-app bell is always authoritative.
  *
- * Lifecycle per call:
- *   1. Resolve recipient address → FID (fast, cached).
- *   2. Check user's per-type opt-in (skip if off).
- *   3. SETNX an idempotency key (skip if duplicate within 24h).
- *   4. POST to every distinct host URL the FID has tokens for, batching
- *      the tokens for that URL into a single call (the host accepts
- *      arrays per the spec).
- *   5. Drop any tokens the host reports as `invalidTokens` so we stop
- *      sending to them. `rateLimitedTokens` are left in place — the host
- *      will accept them again after the limit window.
+ * Gates (in order — cheap-to-expensive, short-circuit on first fail):
+ *   1. Recipient address present.
+ *   2. Actor not muted by recipient (reconciles with the in-app
+ *      muted-accounts list — muting silences both transports).
+ *   3. Recipient has a Farcaster identity at all.
+ *   4. Master push toggle is on (default off; auto-enabled on first
+ *      registration so the "Add Kismet" prompt promise survives).
+ *   5. Per-type opt-in includes this notification type.
+ *   6. Recipient has at least one notification token.
+ *   7. SETNX (fid, notificationId) idempotency key — survives webhook
+ *      retries and any accidental duplicate dispatch from call sites.
+ *
+ * After all gates pass, the body is composed (mirrors NotificationRow's
+ * copy so push and feed read identically), then POSTed to every distinct
+ * host URL the FID has tokens for. Tokens the host reports as
+ * `invalidTokens` are GC'd; `rateLimitedTokens` are left in place — the
+ * host will accept them again after the limit window.
  */
 export async function dispatchFarcasterPush(n: Notification): Promise<void> {
   try {
     if (!n.recipient) return
 
+    // Actor-mute reconciliation: the in-app feed hides notifications
+    // from muted actors at read time. If the user muted someone, we
+    // should also suppress the FC push — otherwise muting in feed
+    // leaves a louder transport untouched, breaking the user's
+    // expectation that "mute X" silences X everywhere. Financial types
+    // bypass actor-mute here for the same reason loadAndAnnotate does:
+    // money-bearing events must reach the user regardless of mutes.
+    // Address-keyed (matches muteActor/unmuteActor), not FID-keyed —
+    // a user might mute another address that has no FC identity.
+    if (
+      n.actor &&
+      !NON_MUTEABLE_TYPES.has(n.type) &&
+      (await isActorMuted(n.recipient, n.actor))
+    ) {
+      return
+    }
+
     const profile = await getFarcasterProfileByAddress(n.recipient)
     if (!profile) return
 
     const fid = profile.fid
+
+    // Master toggle is the outermost FC-push gate. When off (or never
+    // set, which is the default-off posture), no pushes fire regardless
+    // of per-type opt-ins.
+    if (!(await isPushMasterOn(fid))) return
 
     if (!(await isPushTypeEnabled(fid, n.type))) return
 

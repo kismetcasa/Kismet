@@ -59,6 +59,11 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   const [pushHasTokens, setPushHasTokens] = useState<boolean>(false)
   const [pushHasFid, setPushHasFid] = useState<boolean>(false)
   const [pushLoading, setPushLoading] = useState(false)
+  // Master toggle (default off). Gates all push regardless of per-type.
+  // Auto-flipped on by the server during the user's first
+  // notifications_enabled webhook so the "Add Kismet" prompt's promise
+  // still works without an extra trip to settings.
+  const [pushMaster, setPushMaster] = useState<boolean>(false)
 
   useBodyScrollLock()
   useEscapeKey(onClose)
@@ -92,12 +97,14 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
         setPushAllTypes(Array.isArray(d.all) ? d.all : [])
         setPushHasTokens(!!d.hasTokens)
         setPushHasFid(typeof d.fid === 'number' && d.fid > 0)
+        setPushMaster(!!d.master)
       })
       .catch(() => {
         setPushEnabled([])
         setPushAllTypes([])
         setPushHasTokens(false)
         setPushHasFid(false)
+        setPushMaster(false)
       })
       .finally(() => setPushLoading(false))
   }, [tab])
@@ -172,6 +179,27 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
     }
   }
 
+  async function handleToggleMaster() {
+    const previous = pushMaster
+    const next = !previous
+    setPushMaster(next)
+    try {
+      await ensureSession()
+      const res = await fetch('/api/notifications/push-types', {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ master: next }),
+      })
+      if (!res.ok) throw new Error('request failed')
+    } catch (err) {
+      setPushMaster(previous)
+      const description = humanError(err)
+      if (description === 'Cancelled') return
+      toast.error('Update failed', { description })
+    }
+  }
+
   return (
     <>
       {/* Backdrop — covers page below nav, click to close */}
@@ -220,7 +248,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                 </p>
                 <p className="text-[10px] font-mono text-[#444] mb-3">
                   {pushHasTokens
-                    ? 'native farcaster push, opt-in per type.'
+                    ? 'native farcaster push. master toggle gates everything below.'
                     : pushHasFid
                       ? 'add kismet inside farcaster to enable mobile push.'
                       : 'connect a farcaster-linked wallet to enable mobile push.'}
@@ -230,10 +258,18 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                     <Loader2 size={14} className="animate-spin text-[#555]" />
                   </div>
                 ) : !pushHasTokens ? (
-                  // Render the list anyway, in a disabled state, so users can
-                  // see what's available — but every toggle is locked off
-                  // until they actually have a token to fire against.
+                  // Locked state: no tokens means no surface to push to.
+                  // Render the list disabled so users see what's coming
+                  // once they add Kismet, but every toggle is inert.
                   <div className="flex flex-col gap-1.5 opacity-50">
+                    <div className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a]">
+                      <span className="text-xs font-mono text-[#efefef]">
+                        All mobile push notifications
+                      </span>
+                      <span className="text-[9px] font-mono uppercase tracking-widest text-[#444]">
+                        off
+                      </span>
+                    </div>
                     {pushAllTypes.map((type) => (
                       <div
                         key={type}
@@ -250,31 +286,63 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-1.5">
-                    {pushAllTypes.map((type) => {
-                      const isOn = pushEnabled?.includes(type) ?? false
-                      return (
-                        <div
-                          key={type}
-                          className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a]"
-                        >
-                          <span className="text-xs font-mono text-[#888]">
-                            {PUSH_TYPE_LABELS[type] ?? type}
-                          </span>
-                          <button
-                            onClick={() => handleTogglePush(type)}
-                            className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
-                              isOn
-                                ? 'text-[#efefef] hover:text-[#888]'
-                                : 'text-[#555] hover:text-[#efefef]'
-                            }`}
+                    {/* Master row: visually distinct (brighter label, no
+                        sub-row indent) so users see this gates everything. */}
+                    <div className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a] bg-[#141414]">
+                      <span className="text-xs font-mono text-[#efefef]">
+                        All mobile push notifications
+                      </span>
+                      <button
+                        onClick={handleToggleMaster}
+                        className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
+                          pushMaster
+                            ? 'text-[#efefef] hover:text-[#888]'
+                            : 'text-[#555] hover:text-[#efefef]'
+                        }`}
+                      >
+                        {pushMaster ? 'on' : 'off'}
+                      </button>
+                    </div>
+                    {/* Per-type list. Visually inert (and effectively
+                        inert on the server) when master is off, so the
+                        user never sees a toggle they think works but
+                        actually doesn't. */}
+                    <div
+                      className={`flex flex-col gap-1.5 transition-opacity ${
+                        pushMaster ? '' : 'opacity-40 pointer-events-none select-none'
+                      }`}
+                      aria-disabled={!pushMaster}
+                    >
+                      {pushAllTypes.map((type) => {
+                        const isOn = pushEnabled?.includes(type) ?? false
+                        return (
+                          <div
+                            key={type}
+                            className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a]"
                           >
-                            {isOn ? 'on' : 'off'}
-                          </button>
-                        </div>
-                      )
-                    })}
+                            <span className="text-xs font-mono text-[#888]">
+                              {PUSH_TYPE_LABELS[type] ?? type}
+                            </span>
+                            <button
+                              onClick={() => handleTogglePush(type)}
+                              disabled={!pushMaster}
+                              className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
+                                isOn
+                                  ? 'text-[#efefef] hover:text-[#888]'
+                                  : 'text-[#555] hover:text-[#efefef]'
+                              }`}
+                            >
+                              {isOn ? 'on' : 'off'}
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
+                <p className="text-[10px] font-mono text-[#444] mt-2">
+                  muting a type or account below also silences its push.
+                </p>
               </div>
 
               <div>

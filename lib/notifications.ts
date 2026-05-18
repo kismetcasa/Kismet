@@ -276,6 +276,20 @@ export async function markOneRead(address: string, id: string): Promise<void> {
     .exec()
 }
 
+/**
+ * True iff `address` has muted `actor`. Used by dispatchFarcasterPush
+ * so muting in the feed also blocks FC push — the user perceives one
+ * mute setting, not two. Key shape stays internal to this module so
+ * callers can't drift from the storage helpers above.
+ */
+export async function isActorMuted(address: string, actor: string): Promise<boolean> {
+  try {
+    return (await redis.sismember(keyMuted(address), actor.toLowerCase())) === 1
+  } catch {
+    return false
+  }
+}
+
 export async function muteActor(address: string, actor: string): Promise<void> {
   await redis
     .multi()
