@@ -9,7 +9,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send } from 'lucide-react'
 import { isAddress } from 'viem'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
@@ -113,7 +113,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [commentsLoading, setCommentsLoading] = useState(
     () => getCachedComments(address, tokenId) === undefined
   )
-  const [commentSenderNames, setCommentSenderNames] = useState<Record<string, string>>({})
+  const [commentSenderProfiles, setCommentSenderProfiles] = useState<Record<string, { name: string; avatarUrl?: string }>>({})
   const [commentText, setCommentText] = useState('')
   const [collected, setCollected] = useState(false)
   const { collect, status: collectStatus } = useDirectCollect()
@@ -415,16 +415,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   useEffect(() => { fetchComments() }, [fetchComments])
 
-  // Batch-resolve comment sender display names via shared profile cache
+  // Batch-resolve activity-row sender profiles (name + avatar) via shared cache
   useEffect(() => {
     if (comments.length === 0) return
     let cancelled = false
     const senders = Array.from(new Set(comments.map((c) => c.sender.toLowerCase())))
     Promise.all(senders.map((a) => fetchCreatorProfile(a))).then((profiles) => {
       if (cancelled) return
-      setCommentSenderNames((prev) => {
+      setCommentSenderProfiles((prev) => {
         const next = { ...prev }
-        for (let i = 0; i < senders.length; i++) next[senders[i]] = profiles[i].name
+        for (let i = 0; i < senders.length; i++) {
+          next[senders[i]] = { name: profiles[i].name, avatarUrl: profiles[i].avatarUrl }
+        }
         return next
       })
     })
@@ -1004,24 +1006,37 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             {hasSplits && <SplitsPanel recipients={splitRecipients} />}
             {!commentsLoading && comments.length > 0 && (
               <div className="flex flex-col gap-2">
-                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">comments</p>
+                <p className="text-[10px] font-mono text-[#333] uppercase tracking-wider">activity</p>
                 <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
-                  {comments.map((c, i) => (
-                    <div key={i} className="flex gap-2 items-baseline">
-                      <Link
-                        href={`/profile/${c.sender}`}
-                        className="text-[11px] font-mono text-[#555] flex-shrink-0 hover:text-[#888] transition-colors"
-                      >
-                        {commentSenderNames[c.sender.toLowerCase()] ?? shortAddress(c.sender)}
-                      </Link>
-                      <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
-                        {c.comment}
-                      </span>
-                      <span className="text-[10px] font-mono text-[#333] flex-shrink-0">
-                        {formatRelativeTime(c.timestamp)}
-                      </span>
-                    </div>
-                  ))}
+                  {comments.map((c, i) => {
+                    const profile = commentSenderProfiles[c.sender.toLowerCase()]
+                    const displayName = profile?.name ?? shortAddress(c.sender)
+                    const isDefault = isPlatformCollectComment(c.comment)
+                    return (
+                      <div key={i} className="flex gap-2 items-center">
+                        <Link href={`/profile/${c.sender}`} className="flex-shrink-0">
+                          <ProfileAvatar
+                            address={c.sender}
+                            avatarUrl={profile?.avatarUrl}
+                            size={20}
+                            clickable
+                          />
+                        </Link>
+                        <Link
+                          href={`/profile/${c.sender}`}
+                          className="text-[11px] font-mono text-[#555] flex-shrink-0 hover:text-[#888] transition-colors"
+                        >
+                          {displayName}
+                        </Link>
+                        <span className="text-xs font-mono text-[#888] flex-1 break-words leading-relaxed">
+                          {isDefault ? 'collected on kismet' : c.comment}
+                        </span>
+                        <span className="text-[10px] font-mono text-[#333] flex-shrink-0">
+                          {formatRelativeTime(c.timestamp)}
+                        </span>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}

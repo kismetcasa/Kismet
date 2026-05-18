@@ -17,6 +17,7 @@ import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { isUserRejection, toastError } from '@/lib/toast'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
+import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import {
   ERC20_ABI,
   MAX_COLLECT_ALL_BATCH,
@@ -250,7 +251,7 @@ export function useCollectAll(): UseCollectAllReturn {
               quantity: 1n,
               mintFee,
               pricePerToken: e.pricePerToken,
-              comment: '',
+              comment: DEFAULT_COLLECT_COMMENT,
             })
             segments.push({
               call: {
@@ -304,7 +305,7 @@ export function useCollectAll(): UseCollectAllReturn {
               mintTo: address,
               quantity: 1n,
               pricePerToken: e.pricePerToken,
-              comment: '',
+              comment: DEFAULT_COLLECT_COMMENT,
             })
             segments.push({
               call: {
@@ -550,7 +551,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 },
                 account: address,
                 amount: 1,
-                comment: '',
+                comment: DEFAULT_COLLECT_COMMENT,
                 pricePerToken: entry.pricePerToken.toString(),
                 currency: entry.currency,
                 txHash,
