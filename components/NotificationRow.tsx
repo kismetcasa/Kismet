@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { Sparkles, Clock, Coins, Key } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
-import { shortAddress, formatRelativeTime, formatPrice } from '@/lib/inprocess'
+import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment } from '@/lib/inprocess'
 import type { Notification } from '@/lib/notifications'
 
 interface NotificationRowProps {
@@ -49,7 +49,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your moment'}
           </p>
-          {n.comment && (
+          {n.comment && !isPlatformCollectComment(n.comment) && (
             <p className="text-[10px] font-mono text-dim mt-0.5 truncate">&ldquo;{n.comment}&rdquo;</p>
           )}
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
