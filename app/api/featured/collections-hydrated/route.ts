@@ -15,7 +15,7 @@ import { getCollectionMeta } from '@/lib/kv'
 export const revalidate = 30
 
 const COLLECTION_PREVIEW_LIMIT = 20 // tokens fetched per featured collection
-const ROW_DISPLAY_LIMIT = 8 // moments shown in horizontal scroll
+const ROW_DISPLAY_LIMIT = 10 // moments shown inside the featured collection row
 // Cap on featured collections hydrated per request. Bounds per-call cost
 // (inprocess fetches + RPC multicalls + total server-time) so latency
 // stays predictable as the curated set grows. zrange is featuredAt-desc,
@@ -119,10 +119,15 @@ export async function GET() {
         const tlData = tlRes.ok ? await tlRes.json() : { moments: [] }
         const allPreviewMoments: Moment[] = Array.isArray(tlData.moments) ? tlData.moments : []
         // Strip individually-hidden moments inside the featured collection
-        // so they don't appear in the row's horizontal scroll preview.
-        const previewMoments: Moment[] = allPreviewMoments.filter(
-          (m) => !hiddenMoments.has(`${m.address?.toLowerCase()}:${m.token_id}`),
-        )
+        // so they don't appear in the row's preview grid.
+        // Sort ascending by created_at so the grid reads chronologically
+        // (oldest minted at top-left, newest at bottom-right). Inprocess
+        // doesn't guarantee any particular order on its side, and the
+        // /timeline wrapper sorts newest-first by default — neither
+        // matches what the featured row wants, so we own the sort here.
+        const previewMoments: Moment[] = allPreviewMoments
+          .filter((m) => !hiddenMoments.has(`${m.address?.toLowerCase()}:${m.token_id}`))
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
 
         // Filter to ETH- and USDC-eligible tokens in parallel. No `account`
         // here — the per-user "skip already-owned" pass runs client-side at

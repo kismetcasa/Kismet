@@ -74,6 +74,11 @@ interface Slot {
   /** Fired when every gateway has errored — caller drops the slot and
    *  shows the poster-only fallback. */
   onError?: () => void
+  /** Clipping ancestors (overflow auto/scroll/hidden) above the slot.
+   *  Cached on mount by SharedVideoSlot so positionElement doesn't
+   *  walk the parent chain + call getComputedStyle on every refresh
+   *  during a scroll (60Hz on most devices). */
+  clipAncestors: HTMLElement[]
 }
 
 interface ManagedVideo {
@@ -138,6 +143,46 @@ const IDLE_EVICT_MS = 5 * 60 * 1000
 // Hard cap on pool size. Past this, idle entries get evicted on next acquire.
 const MAX_POOL_SIZE = 10
 
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+/** Walk up the parent chain collecting any ancestor with overflow set
+ *  to auto / scroll / hidden on either axis. Used by SharedVideoSlot
+ *  to attach scroll listeners (so the fixed-position video tracks the
+ *  slot when an inner scroller scrolls) and by positionElement to
+ *  derive the clip-path that confines the video to those clipping
+ *  ancestors' visible bounds. */
+export function scrollableAncestors(el: HTMLElement): HTMLElement[] {
+  const out: HTMLElement[] = []
+  let node: HTMLElement | null = el.parentElement
+  while (node && node !== document.body) {
+    const style = getComputedStyle(node)
+    const overflows = `${style.overflow} ${style.overflowX} ${style.overflowY}`
+    if (/(auto|scroll|hidden)/.test(overflows)) out.push(node)
+    node = node.parentElement
+  }
+  return out
+}
+
+/** Intersect every clipping-ancestor's content rect to derive the
+ *  visible-bounds rectangle the slot lives inside. Returns null when
+ *  there are no clipping ancestors (slot can paint to the viewport
+ *  freely). */
+function computeClipRect(ancestors: HTMLElement[]): DOMRect | null {
+  if (ancestors.length === 0) return null
+  let top = -Infinity
+  let left = -Infinity
+  let bottom = Infinity
+  let right = Infinity
+  for (const a of ancestors) {
+    const r = a.getBoundingClientRect()
+    if (r.top > top) top = r.top
+    if (r.left > left) left = r.left
+    if (r.bottom < bottom) bottom = r.bottom
+    if (r.right < right) right = r.right
+  }
+  return new DOMRect(left, top, Math.max(0, right - left), Math.max(0, bottom - top))
+}
+
 // ─── Provider ────────────────────────────────────────────────────────
 
 export function SharedVideoProvider({ children }: { children: ReactNode }) {
@@ -168,6 +213,36 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     // so the browser buffers aggressively; "metadata" on previews so a
     // grid of cards doesn't saturate bandwidth simultaneously.
     el.preload = slot.controls ? 'auto' : 'metadata'
+
+    // Clip the element to its nearest clipping ancestor. position:fixed
+    // ignores the ancestor's overflow, so a slot inside a horizontal
+    // scroller (e.g. featured collection's mobile mints row) would
+    // otherwise paint the video outside the scroller's bounds when
+    // scrolled past the edge. clip-path keeps the element's bounds
+    // visible only where the slot itself is visible.
+    const clip = computeClipRect(slot.clipAncestors)
+    if (clip) {
+      const top = Math.max(0, clip.top - rect.top)
+      const right = Math.max(0, rect.right - clip.right)
+      const bottom = Math.max(0, rect.bottom - clip.bottom)
+      const left = Math.max(0, clip.left - rect.left)
+      const fullyOutside =
+        rect.right <= clip.left ||
+        rect.left >= clip.right ||
+        rect.bottom <= clip.top ||
+        rect.top >= clip.bottom
+      if (fullyOutside) {
+        // Belt: clip-path inset to 100% reduces paint area to zero.
+        // Suspenders: visibility:hidden so the element doesn't even
+        // participate in the next compositor pass.
+        el.style.clipPath = 'inset(100%)'
+        el.style.visibility = 'hidden'
+        return
+      }
+      el.style.clipPath = `inset(${top}px ${right}px ${bottom}px ${left}px)`
+    } else {
+      el.style.clipPath = ''
+    }
     if (video.loaded) el.style.visibility = 'visible'
   }
 

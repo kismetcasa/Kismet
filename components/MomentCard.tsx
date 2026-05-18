@@ -37,13 +37,22 @@ interface MomentCardProps {
    * so the first row of a feed isn't lazy-loaded behind hydration.
    */
   priority?: boolean
+  /**
+   * Compact mode for tight grids (featured collection row's 10×2 mints
+   * preview). Drops the creator chip, collection chip, and copy-link
+   * button — at ~130px wide there's no room and the creator+collection
+   * already appear on the parent surface. Action row stacks vertically
+   * with price·supply inline above the collect button, so the price/
+   * supply box's 56px min-width doesn't force horizontal overflow.
+   */
+  compact?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCardProps) {
   const router = useRouter()
   // Dedups onMouseEnter prefetches per card identity — without this every
   // re-entry refires comments + text + route prefetches.
@@ -278,65 +287,73 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
       </Link>
 
       {/* Info */}
-      <div className="px-4 pt-4 pb-3 flex flex-col gap-1.5">
+      <div className={`${compact ? 'px-2 pt-2 pb-1.5 gap-1' : 'px-4 pt-4 pb-3 gap-1.5'} flex flex-col`}>
         <div className="flex items-start gap-2">
-          <h3 className="text-sm text-ink font-mono truncate flex-1 min-w-0">
+          <h3 className={`${compact ? 'text-[11px]' : 'text-sm'} text-ink font-mono truncate flex-1 min-w-0`}>
             {meta.name ?? `#${moment.token_id}`}
           </h3>
-          <button
-            onClick={handleCopyLink}
-            title="copy link"
-            className="flex-shrink-0 mt-0.5 text-[#444] hover:text-dim transition-colors"
-          >
-            {linkCopied
-              ? <Check size={11} className="text-[#6ee7b7]" />
-              : <Copy size={11} />}
-          </button>
+          {!compact && (
+            <button
+              onClick={handleCopyLink}
+              title="copy link"
+              className="flex-shrink-0 mt-0.5 text-[#444] hover:text-dim transition-colors"
+            >
+              {linkCopied
+                ? <Check size={11} className="text-[#6ee7b7]" />
+                : <Copy size={11} />}
+            </button>
+          )}
         </div>
-        <Link
-          href={`/profile/${moment.creator.address}`}
-          onClick={(e) => e.stopPropagation()}
-          className="flex items-center gap-1.5 group/creator w-fit"
-          title={moment.creator.address}
-        >
-          <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={16} />
-          <span className="text-xs text-muted font-mono group-hover/creator:text-dim transition-colors">{creatorName}</span>
-        </Link>
-        {collectionName && (
-          <Link
-            href={`/collection/${moment.address}`}
-            onClick={(e) => e.stopPropagation()}
-            className="flex items-center gap-1.5 group/collection w-fit"
-            title={collectionName}
-          >
-            {collectionImage && !collectionImageFailed && (
-              <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
-                <MomentImage
-                  src={collectionImage}
-                  alt=""
-                  fill
-                  className="object-cover"
-                  sizes="16px"
-                  onAllError={() => setCollectionImageFailed(true)}
-                />
-              </div>
+        {!compact && (
+          <>
+            <Link
+              href={`/profile/${moment.creator.address}`}
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center gap-1.5 group/creator w-fit"
+              title={moment.creator.address}
+            >
+              <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={16} />
+              <span className="text-xs text-muted font-mono group-hover/creator:text-dim transition-colors">{creatorName}</span>
+            </Link>
+            {collectionName && (
+              <Link
+                href={`/collection/${moment.address}`}
+                onClick={(e) => e.stopPropagation()}
+                className="flex items-center gap-1.5 group/collection w-fit"
+                title={collectionName}
+              >
+                {collectionImage && !collectionImageFailed && (
+                  <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
+                    <MomentImage
+                      src={collectionImage}
+                      alt=""
+                      fill
+                      className="object-cover"
+                      sizes="16px"
+                      onAllError={() => setCollectionImageFailed(true)}
+                    />
+                  </div>
+                )}
+                <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
+                  {collectionName}
+                </span>
+              </Link>
             )}
-            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
-              {collectionName}
-            </span>
-          </Link>
+          </>
         )}
       </div>
 
-      {/* Actions row: [price|supply] [list] [collect] */}
-      <div className="px-4 pb-4 flex gap-2 items-stretch">
-        {!hidePriceSupply && owned === 0 && !collected && (
-          <div className="flex border border-line flex-none">
-            <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-              <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
-            </div>
-            <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-              <span className="text-[11px] font-mono text-[#444]">
+      {/* Actions row. Default: [price|supply] [list] [collect] in one flex
+          row. Compact: stacked — [price · supply] inline above the collect
+          button — because the price/supply box's 56px min-widths combined
+          (112px) overflow a ~130px-wide compact card. */}
+      {compact ? (
+        <div className="px-2 pb-2 flex flex-col gap-1">
+          {!hidePriceSupply && owned === 0 && !collected && (
+            <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
+              <span className="text-[10px] font-mono accent-grad truncate">{price ?? '…'}</span>
+              <span className="text-[10px] font-mono text-faint">·</span>
+              <span className="text-[10px] font-mono text-[#444] truncate">
                 {maxSupply === undefined
                   ? '…'
                   : isOpenEdition(maxSupply)
@@ -344,10 +361,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
                     : maxSupply.toLocaleString()}
               </span>
             </div>
-          </div>
-        )}
-        {owned > 0 && (
-          <div className="flex-1 min-w-0">
+          )}
+          {owned > 0 ? (
             <ListButton
               collectionAddress={moment.address}
               tokenId={moment.token_id}
@@ -356,22 +371,66 @@ function MomentCardImpl({ moment, hidePriceSupply, priority }: MomentCardProps) 
               creatorAddress={moment.creator?.address}
               contentUri={meta.content?.uri}
               contentMime={meta.content?.mime}
-              buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
             />
-          </div>
-        )}
-        <button
-          onClick={handleCollect}
-          disabled={collecting || mintedOut || !collectReady}
-          className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-            hasCollected
-              ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-              : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
-          }`}
-        >
-          {collectLabel}
-        </button>
-      </div>
+          ) : (
+            <button
+              onClick={handleCollect}
+              disabled={collecting || mintedOut || !collectReady}
+              className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+                hasCollected
+                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
+                  : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
+              }`}
+            >
+              {collectLabel}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="px-4 pb-4 flex gap-2 items-stretch">
+          {!hidePriceSupply && owned === 0 && !collected && (
+            <div className="flex border border-line flex-none">
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+              </div>
+              <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-[#444]">
+                  {maxSupply === undefined
+                    ? '…'
+                    : isOpenEdition(maxSupply)
+                      ? 'open'
+                      : maxSupply.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          )}
+          {owned > 0 && (
+            <div className="flex-1 min-w-0">
+              <ListButton
+                collectionAddress={moment.address}
+                tokenId={moment.token_id}
+                name={meta.name}
+                image={meta.image ? resolveUri(meta.image) : undefined}
+                creatorAddress={moment.creator?.address}
+                contentUri={meta.content?.uri}
+                contentMime={meta.content?.mime}
+                buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
+              />
+            </div>
+          )}
+          <button
+            onClick={handleCollect}
+            disabled={collecting || mintedOut || !collectReady}
+            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+              hasCollected
+                ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
+                : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
+            }`}
+          >
+            {collectLabel}
+          </button>
+        </div>
+      )}
     </article>
   )
 }

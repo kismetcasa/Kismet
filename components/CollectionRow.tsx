@@ -27,7 +27,7 @@ export interface FeaturedCollectionRow {
 interface CollectionRowProps {
   collection: FeaturedCollectionRow
   // Above-the-fold hint forwarded to the cover image (and propagated to the
-  // first horizontal MomentCard so the row's LCP candidate isn't lazy-loaded).
+  // first mint card so the row's LCP candidate isn't lazy-loaded).
   priority?: boolean
 }
 
@@ -58,12 +58,21 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
   }, [adminAddr, initialUsername])
 
   return (
-    <article className="grid grid-cols-1 md:grid-cols-12 border border-line bg-[#161616] overflow-hidden">
-      {/* Hero: cover + details. md+ takes 5/12, mobile stacks full width. */}
-      <div className="md:col-span-5 flex flex-col">
+    // Single flex-row tree at all breakpoints — cover on the left, mints
+    // on the right.
+    //   <lg: cover is just the 128px square (name overlaid at the bottom);
+    //     mints scroll horizontally (single visual row).
+    //   lg+: cover widens, info section appears below it; mints become a
+    //     2-row × 5-col grid with grid-auto-flow:column so chronological
+    //     reading goes top → bottom of each column, then right (1@top-left,
+    //     2 directly below it, 3 top of the next column, etc.).
+    // SharedVideoProvider's clip-path keeps the position:fixed video
+    // elements from painting past the horizontal scroller's edges on <lg.
+    <article className="flex border border-line bg-[#161616] overflow-hidden">
+      <div className="flex-shrink-0 w-32 lg:w-64 xl:w-72 lg:flex lg:flex-col lg:border-r lg:border-line">
         <Link
           href={`/collection/${c.contractAddress}`}
-          className="relative aspect-square block overflow-hidden bg-surface group/img"
+          className="relative aspect-square w-full block overflow-hidden bg-surface group/img"
         >
           {isAdmin && (
             <button
@@ -86,7 +95,7 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-              sizes="(max-width: 768px) 100vw, 41vw"
+              sizes="(max-width: 1024px) 128px, 288px"
               onAllError={() => setImgFailed(true)}
               priority={priority}
               preferProxy
@@ -97,10 +106,15 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               <span className="text-line font-mono text-xs">no preview</span>
             </div>
           )}
+          {/* <lg name overlay: the info section is hidden on smaller
+              screens, so the collection still needs a label inside the row. */}
+          <span className="lg:hidden absolute inset-x-0 bottom-0 px-2 py-1 text-[10px] font-mono text-ink bg-gradient-to-t from-[#0d0d0d]/95 to-transparent truncate">
+            {name}
+          </span>
         </Link>
 
-        <div className="px-4 pt-4 pb-4 flex flex-col gap-1 flex-1">
-          <h3 className="text-sm font-mono text-ink truncate">{name}</h3>
+        <div className="hidden lg:flex flex-col gap-1 p-4 min-w-0 flex-1">
+          <h3 className="text-base font-mono text-ink truncate">{name}</h3>
           {creatorLabel && (
             <Link
               href={adminAddr ? `/profile/${adminAddr}` : '#'}
@@ -110,13 +124,13 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
             </Link>
           )}
           {description && (
-            <p className="text-xs font-mono text-muted mt-0.5 line-clamp-2">{description}</p>
+            <p className="text-xs font-mono text-muted mt-1 line-clamp-3">{description}</p>
           )}
 
-          <div className="flex flex-col gap-1.5 mt-auto pt-3">
+          <div className="flex flex-col gap-2 mt-auto pt-3">
             <Link
               href={`/collection/${c.contractAddress}`}
-              className="w-full py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
+              className="w-full px-3 py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
             >
               view collection
             </Link>
@@ -131,23 +145,18 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
         </div>
       </div>
 
-      {/* Horizontal scroll mints. md+ takes 7/12. Mobile shows ~80% width
-          per card so the next card peeks as a swipe affordance. */}
-      <div className="md:col-span-7 flex overflow-x-auto snap-x snap-mandatory gap-3 p-3 [-webkit-overflow-scrolling:touch]">
+      <div className="flex-1 min-w-0 overflow-x-auto flex gap-2 p-2 snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:overflow-visible lg:flex-none lg:grid lg:grid-cols-5 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3 lg:snap-none">
         {c.moments.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center min-h-[200px]">
+          <div className="flex-1 lg:col-span-full lg:row-span-full flex items-center justify-center min-h-[160px]">
             <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
           c.moments.map((m, idx) => (
             <div
               key={m.id || `${m.address}-${m.token_id}`}
-              className="snap-start flex-shrink-0 w-[80%] md:w-[calc(33.333%-0.5rem)]"
+              className="w-32 flex-shrink-0 snap-start lg:w-auto lg:flex-shrink"
             >
-              {/* When this row is above-the-fold, prioritize only the first
-                  visible mint in the horizontal scroller — anything past idx 0
-                  is already off-screen on mobile and barely peeks on desktop. */}
-              <MomentCard moment={m} hidePriceSupply priority={priority && idx === 0} />
+              <MomentCard moment={m} compact priority={priority && idx === 0} />
             </div>
           ))
         )}
@@ -155,4 +164,3 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
     </article>
   )
 }
-
