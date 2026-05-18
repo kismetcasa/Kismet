@@ -67,7 +67,7 @@ export function CollectionCard({ collection, priority }: CollectionCardProps) {
   }, [adminAddr, initialUsername])
 
   return (
-    <article className="flex flex-col bg-[#161616] border border-line overflow-hidden">
+    <article className="flex flex-col bg-[#161616] border border-line overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
       <Link
         href={`/collection/${c.contractAddress}`}
         className="relative aspect-square bg-surface block overflow-hidden group/img"

@@ -47,7 +47,7 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
         role="dialog"
         aria-modal="true"
         aria-label="Moment detail"
-        className="fixed inset-0 overflow-y-auto bg-black/85 backdrop-blur-sm"
+        className="fixed inset-0 overflow-y-auto bg-black/90"
         style={{ zIndex: Z_BACKDROP }}
         onClick={(e) => {
           if (e.target === e.currentTarget) dismiss()

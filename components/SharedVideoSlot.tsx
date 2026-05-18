@@ -79,9 +79,13 @@ export function SharedVideoSlot({
       clipAncestors,
     })
 
-    // rAF-coalesce repositioning. Scroll fires per-pixel on most
-    // browsers; without coalescing every tick triggers a getBoundingClientRect
-    // + style writes per slot per frame — N×forced-layout on a feed.
+    // rAF-coalesce repositioning. The window scroll/resize path is
+    // centralised in SharedVideoProvider (one listener batches every
+    // active video in a fastdom read-then-write pass); slots only own
+    // their per-element refresh triggers — ResizeObserver for slot
+    // size changes, and scroll listeners on each clipping ancestor
+    // (which the provider doesn't know about, since ancestor sets vary
+    // per slot).
     let rafPending = false
     const scheduleRefresh = () => {
       if (rafPending) return
@@ -93,8 +97,6 @@ export function SharedVideoSlot({
     }
     const ro = new ResizeObserver(scheduleRefresh)
     ro.observe(el)
-    window.addEventListener('scroll', scheduleRefresh, { passive: true })
-    window.addEventListener('resize', scheduleRefresh)
     for (const a of clipAncestors) {
       a.addEventListener('scroll', scheduleRefresh, { passive: true })
     }
@@ -102,8 +104,6 @@ export function SharedVideoSlot({
     return () => {
       release()
       ro.disconnect()
-      window.removeEventListener('scroll', scheduleRefresh)
-      window.removeEventListener('resize', scheduleRefresh)
       for (const a of clipAncestors) {
         a.removeEventListener('scroll', scheduleRefresh)
       }
