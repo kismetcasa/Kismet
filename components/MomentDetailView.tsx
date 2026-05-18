@@ -1025,14 +1025,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </div>
               </div>
             )}
-            <textarea
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-              placeholder="leave a comment… (optional)"
-              rows={2}
-              disabled={collecting}
-              className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none disabled:opacity-50"
-            />
+            {/* Comment goes with the collect — hide the textarea once the
+                token is minted out, since there's no further collect to
+                attach the comment to. */}
+            {!mintedOut && (
+              <textarea
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                placeholder="leave a comment… (optional)"
+                rows={2}
+                disabled={collecting}
+                className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none disabled:opacity-50"
+              />
+            )}
           </div>
 
           {/* Spacer — pushes bottom group down when content is short */}
