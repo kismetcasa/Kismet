@@ -377,30 +377,20 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     positionElement(video, slot)
     applyPreload(video, slot)
 
-    // Re-acquire path for an already-loaded long-form video where the
-    // pool entry survived but the browser flushed buffered bytes while
-    // offscreen (WebKit does this aggressively to paused, hidden
-    // <video>s). currentTime on the element itself usually survives,
-    // but if a prior eviction cycle left a stale value in
-    // currentTimeMemory and the element was destroyed and recreated,
-    // restore from there. seek-while-buffering is cheap; the only
-    // visible cost is a brief Range-fetch round-trip at the saved
-    // position.
-    if (video.isLongForm) {
-      const saved = currentTimeMemory.get(video.src)
-      if (
-        saved !== undefined &&
-        saved > 0 &&
-        Math.abs(video.el.currentTime - saved) > 0.5
-      ) {
-        try {
-          video.el.currentTime = saved
-        } catch {
-          // Some browsers reject seek before loadedmetadata; the
-          // metadata handler will retry once duration is known.
-        }
-      }
-    }
+    // Force mute on uncontrolled surfaces (feed cards, modals). The
+    // muted attribute survives in the pool — if the user unmutes via
+    // native controls on the detail page and then navigates back, the
+    // element re-acquires on a feed slot and would otherwise play
+    // audio out of a card UI that shows no audio affordance.
+    // Controlled surfaces keep whatever the user set so unmute
+    // persists across pause/resume within the same viewing session.
+    if (!slot.controls) video.el.muted = true
+
+    // currentTime restoration is handled exclusively by the
+    // loadedmetadata handler, which fires on fresh createVideo and on
+    // gateway-fallback src reassignment. Restoring here would rewind
+    // the user when a re-acquire happens on an already-playing pool
+    // element (stale currentTimeMemory vs. live el.currentTime).
 
     setupIntersectionObserver(video, slot)
   }
@@ -503,6 +493,17 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
       if (video.destroyed) return
       const next = video.gatewayIndex + 1
       if (next < video.gateways.length) {
+        // Mid-stream gateway fallback: assigning el.src resets
+        // currentTime to 0, so on a long video that errored after
+        // minutes of playback the user would silently restart from
+        // the beginning. Snapshot first; the loadedmetadata handler
+        // for the new gateway will pick up the saved value and seek
+        // back. Only persist meaningful positions — a zero or
+        // pre-metadata read is just noise.
+        if (video.isLongForm) {
+          const t = el.currentTime
+          if (Number.isFinite(t) && t > 0) currentTimeMemory.set(src, t)
+        }
         video.gatewayIndex = next
         el.src = video.gateways[next]!
       } else {
@@ -522,8 +523,8 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     el.addEventListener('loadedmetadata', () => {
       if (video.destroyed) return
       // Promote to long-form once we know duration. Drives preload
-      // upgrade (metadata → auto), IO margin widening, and the
-      // longer idle-retention window.
+      // upgrade (metadata → auto), IO margin widening, the longer
+      // idle-retention window, and the loop-off behaviour below.
       const duration = el.duration
       if (
         Number.isFinite(duration) &&
@@ -531,6 +532,11 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
         !video.isLongForm
       ) {
         video.isLongForm = true
+        // loop=true is the right default for short ambient clips; for
+        // a multi-minute video it overwrites the natural "ended"
+        // state and re-pollutes currentTimeMemory with 0 on the next
+        // eviction cycle, defeating the resume-on-scroll-back work.
+        el.loop = false
         const active = video.slots[0]
         if (active) {
           applyPreload(video, active)
@@ -540,10 +546,12 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
           setupIntersectionObserver(video, active)
         }
       }
-      // Restore saved position if a prior eviction cycle stashed one.
-      // currentTime assignment is valid post-loadedmetadata, so this
-      // is the canonical seek point even if a synchronous attempt in
-      // activateSlot was rejected.
+      // Consume any saved position from a prior eviction or
+      // gateway-fallback cycle. Deleted after read so a subsequent
+      // loadedmetadata (next gateway fallback during this same
+      // playback) doesn't re-restore over the user's live progress.
+      // The error handler re-writes the entry if another fallback
+      // happens, so the round-trip stays correct.
       const saved = currentTimeMemory.get(src)
       if (
         saved !== undefined &&
@@ -554,6 +562,7 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
       ) {
         try { el.currentTime = saved } catch { /* noop */ }
       }
+      currentTimeMemory.delete(src)
     }, { signal: abort.signal })
 
     el.addEventListener('loadeddata', () => {
@@ -656,6 +665,39 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     window.addEventListener('scroll', flushAll, { passive: true })
     window.addEventListener('resize', flushAll)
 
+    // Pause every active video when the tab backgrounds; re-play the
+    // ones whose IO would otherwise have them playing (slot is
+    // intersected, no controls) when the tab returns. Browser
+    // background-tab handling is inconsistent (Chrome throttles, iOS
+    // Safari sometimes pauses, Firefox varies) — explicit handling
+    // makes the behaviour predictable, frees mobile decoders during
+    // backgrounding, and prevents queued IO play() resolutions from
+    // resuming audio underneath whatever the user navigated to.
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        pool.forEach((video) => {
+          if (!video.el.paused) video.el.pause()
+        })
+        return
+      }
+      // Resume only entries with an active slot whose IO would have
+      // had them playing. Controlled surfaces don't autoplay back —
+      // the user owns play/pause there and we don't want to fight a
+      // deliberate pause they left in place before backgrounding.
+      pool.forEach((video) => {
+        const slot = video.slots[0]
+        if (!slot || slot.controls) return
+        const rect = slot.ref.getBoundingClientRect()
+        const intersecting =
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < window.innerHeight &&
+          rect.left < window.innerWidth
+        if (intersecting) video.el.play().catch(() => {})
+      })
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
     const interval = window.setInterval(() => {
       const now = Date.now()
       pool.forEach((video, src) => {
@@ -672,6 +714,7 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     return () => {
       window.removeEventListener('scroll', flushAll)
       window.removeEventListener('resize', flushAll)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       clearInterval(interval)
       // Defensive: destroy all videos on provider unmount so they
       // don't outlive the React tree as orphan DOM nodes.
