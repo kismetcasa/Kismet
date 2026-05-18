@@ -200,16 +200,26 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
     }
   }
 
+  // Nav is h-14 + safe-top tall — anchor backdrop + panel to clear it.
+  // Bottom of the panel extends to the screen edge; the scrollable body
+  // below pads itself by --safe-bottom so the last row clears the home
+  // indicator without leaving an unstyled gap below the panel chrome.
+  const topOffset = { top: 'calc(3.5rem + var(--safe-top))' }
+
   return (
     <>
       {/* Backdrop — covers page below nav, click to close */}
       <div
-        className="fixed inset-x-0 top-14 bottom-0 z-[59] bg-black/50"
+        className="fixed inset-x-0 bottom-0 z-[59] bg-black/50"
+        style={topOffset}
         onClick={onClose}
       />
 
       {/* Drawer panel */}
-      <div className="fixed right-0 top-14 bottom-0 z-[60] w-full max-w-[440px] bg-[#0d0d0d] border-l border-[#2a2a2a] flex flex-col">
+      <div
+        className="fixed right-0 bottom-0 z-[60] w-full max-w-[440px] bg-[#0d0d0d] border-l border-[#2a2a2a] flex flex-col"
+        style={topOffset}
+      >
 
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a2a] flex-shrink-0">
@@ -236,8 +246,9 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
           </div>
         </div>
 
-        {/* Scrollable body */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Scrollable body — pad the bottom so the last visible row clears
+            the device's home indicator on mobile FC. 0 on web. */}
+        <div className="flex-1 overflow-y-auto" style={{ paddingBottom: 'var(--safe-bottom)' }}>
           {tab === 'feed' ? (
             <NotificationFeed />
           ) : (

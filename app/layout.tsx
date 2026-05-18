@@ -67,7 +67,13 @@ export default function RootLayout({
         <Providers>
           <FarcasterProvider>
             <Nav />
-            <main className="pt-14 min-h-screen bg-[#0d0d0d]">
+            <main
+              // Push content below the nav, which is h-14 + safe-top tall.
+              // 3.5rem = h-14 in Tailwind. Equivalent to the old `pt-14`
+              // when --safe-top is 0 (regular web).
+              className="min-h-screen bg-[#0d0d0d]"
+              style={{ paddingTop: 'calc(3.5rem + var(--safe-top))' }}
+            >
               {children}
             </main>
             {/* Intercepted routes render here as an overlay over the

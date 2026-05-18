@@ -45,7 +45,14 @@ export function Nav() {
 
   return (
     <>
-      <header className="fixed top-0 left-0 right-0 z-50 border-b border-[#2a2a2a] bg-[#0d0d0d]/90 backdrop-blur-sm">
+      <header
+        className="fixed top-0 left-0 right-0 z-50 border-b border-[#2a2a2a] bg-[#0d0d0d]/90 backdrop-blur-sm"
+        // Pad the header by --safe-top so the dark background extends
+        // through the device's notch / status bar while the actual nav
+        // content (h-14 below) sits in the visible area. On web, --safe-top
+        // is 0 and nothing changes.
+        style={{ paddingTop: 'var(--safe-top)' }}
+      >
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3 sm:gap-8">
             <Link href="/" className="text-sm font-mono tracking-widest uppercase accent-grad">

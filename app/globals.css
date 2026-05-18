@@ -4,6 +4,16 @@
 
 :root {
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  /* Device chrome insets — defaulted to 0 for web/desktop. Overridden by
+     FarcasterProvider when sdk.context.client.safeAreaInsets reports
+     non-zero values on mobile Mini App hosts (notch, Dynamic Island,
+     home indicator, curved edges). Referenced by Nav, layout main, and
+     NotificationModal where edge-fixed surfaces would otherwise sit
+     behind device chrome. */
+  --safe-top: 0px;
+  --safe-bottom: 0px;
+  --safe-left: 0px;
+  --safe-right: 0px;
 }
 
 html {

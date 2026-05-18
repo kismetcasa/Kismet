@@ -266,6 +266,23 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           identity: hostIdentity,
         })
 
+        // Device chrome insets — notch, Dynamic Island, home indicator,
+        // curved edges. The host pushes exact pixel values via context
+        // because CSS env(safe-area-inset-*) is unreliable inside WebViews
+        // (the host controls the viewport, not us). Setting them as CSS
+        // custom properties on :root means every consumer (Nav, layout
+        // <main>, NotificationModal) reads them via var() without prop
+        // drilling or re-renders. Defaults stay at 0 in globals.css for
+        // web users — those `var()`s evaluate to 0 and nothing shifts.
+        const insets = ctx?.client?.safeAreaInsets
+        if (insets) {
+          const root = document.documentElement
+          root.style.setProperty('--safe-top', `${insets.top}px`)
+          root.style.setProperty('--safe-bottom', `${insets.bottom}px`)
+          root.style.setProperty('--safe-left', `${insets.left}px`)
+          root.style.setProperty('--safe-right', `${insets.right}px`)
+        }
+
         // addMiniApp prompt: only on the user's 2nd confirmed open, and
         // only when they haven't already added or enabled notifications.
         // Fires as a non-modal sonner toast so it can't interfere with
