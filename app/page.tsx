@@ -5,14 +5,13 @@ import { useAccount } from 'wagmi'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
-import { MarketView } from '@/components/MarketView'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
 import type { Moment } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
-type TabId = 'featured' | 'trending' | 'main' | 'roster' | 'market'
+type TabId = 'featured' | 'trending' | 'main' | 'roster'
 
 const DRAGGABLE: TabId[] = ['main', 'featured', 'trending', 'roster']
 const LABEL: Record<TabId, string> = {
@@ -20,7 +19,6 @@ const LABEL: Record<TabId, string> = {
   trending: 'trending',
   main: 'main',
   roster: 'artists',
-  market: 'market',
 }
 
 const ORDER_KEY = 'kismetart:tab-order'
@@ -80,29 +78,22 @@ function TabBar({
     dragIdx.current = null
   }
 
-  // Market is pinned to the right and not draggable; everything in `order`
-  // (whose length tracks DRAGGABLE) is. Computing the cutoff from order
-  // length keeps this honest if more draggable tabs are added later.
-  const all: TabId[] = [...order, 'market']
-
   return (
     <div className="flex items-end gap-0 border-b border-line">
-      {all.map((tab, idx) => {
-        const draggable = idx < order.length
+      {order.map((tab, idx) => {
         const isActive = tab === active
         return (
           <button
             key={tab}
-            draggable={draggable}
-            onDragStart={draggable ? () => onDragStart(idx) : undefined}
-            onDragOver={draggable ? (e) => onDragOver(e, idx) : undefined}
-            onDragEnd={draggable ? onDragEnd : undefined}
+            draggable
+            onDragStart={() => onDragStart(idx)}
+            onDragOver={(e) => onDragOver(e, idx)}
+            onDragEnd={onDragEnd}
             onClick={() => onSelect(tab)}
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
-              transition-colors select-none
+              transition-colors select-none cursor-grab active:cursor-grabbing
               ${isActive ? 'text-ink' : 'text-[#444] hover:text-dim'}
-              ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}
             `}
           >
             {LABEL[tab]}
@@ -322,12 +313,6 @@ export default function DiscoverPage() {
         {active === 'main' && <MainFeed />}
 
         {active === 'roster' && <RosterFeed />}
-
-        {active === 'market' && (
-          <div className="pt-4">
-            <MarketView />
-          </div>
-        )}
       </div>
     </div>
   )

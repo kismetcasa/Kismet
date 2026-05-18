@@ -4,17 +4,103 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { useAccount } from 'wagmi'
-import { useEffect, useState } from 'react'
-import { Search } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Search, ChevronDown } from 'lucide-react'
 import { WalletButton } from './WalletButton'
 import { ProfileAvatar } from './ProfileAvatar'
 import { SearchBar } from './SearchBar'
 import { SearchModal } from './SearchModal'
 import { NotificationBell } from './NotificationBell'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
-export function Nav() {
+// Nav destinations. Order is meaningful — Market is intentionally LAST
+// so it always sits at the bottom of the dropdown when it isn't the
+// current page. Enjoy / Mint pop ahead of it when one of those is
+// active.
+const NAV_PAGES = [
+  { id: 'enjoy',  label: 'Enjoy',  href: '/' },
+  { id: 'mint',   label: 'Mint',   href: '/mint' },
+  { id: 'market', label: 'Market', href: '/market' },
+] as const
+
+type NavPageId = (typeof NAV_PAGES)[number]['id']
+
+function navPageForPath(pathname: string): NavPageId {
+  if (pathname === '/mint' || pathname.startsWith('/mint/')) return 'mint'
+  if (pathname === '/market' || pathname.startsWith('/market/')) return 'market'
+  // Default to Enjoy for `/` AND for every non-nav route (profile,
+  // moment, collection detail, etc.). The logo always links back to
+  // `/` so users on a detail page still have an explicit Enjoy route.
+  return 'enjoy'
+}
+
+function NavDropdown() {
   const pathname = usePathname()
+  const currentId = navPageForPath(pathname)
+  const current = NAV_PAGES.find((p) => p.id === currentId)!
+  // Drop only the current page from the list — preserves source order,
+  // which keeps Market in the last slot when it isn't the current page.
+  const others = NAV_PAGES.filter((p) => p.id !== currentId)
+
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEscapeKey(() => setOpen(false))
+
+  // Outside-click closes.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 px-2 sm:px-3 py-1.5 text-xs font-mono tracking-wider uppercase text-ink hover:text-ink transition-colors"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span>{current.label}</span>
+        <ChevronDown
+          size={12}
+          // Slightly muted vs the label so the affordance reads as
+          // secondary chrome, not equal billing with the page name.
+          className={`text-dim transition-transform ${open ? 'rotate-180' : ''}`}
+          strokeWidth={2}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute top-full left-0 mt-1 min-w-[8rem] border border-line bg-[#0d0d0d]/95 z-[60] flex flex-col"
+        >
+          {others.map((p) => (
+            <Link
+              key={p.id}
+              href={p.href}
+              onClick={() => setOpen(false)}
+              className="px-3 py-2 text-xs font-mono tracking-wider uppercase text-dim hover:text-ink hover:bg-[#1e1e1e] transition-colors"
+              role="menuitem"
+            >
+              {p.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function Nav() {
   const { address, isConnected } = useAccount()
   const { identity: fcIdentity, isInMiniApp } = useFarcaster()
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
@@ -83,24 +169,8 @@ export function Nav() {
                 </span>
               )}
             </Link>
-            <nav className="flex items-center gap-0.5 sm:gap-1">
-              <Link
-                href="/"
-                className={`px-2 sm:px-3 py-1.5 text-xs font-mono tracking-wider uppercase transition-colors ${
-                  pathname === '/' ? 'text-dim font-bold' : 'text-dim hover:text-ink'
-                }`}
-              >
-                <span className="sm:hidden">enjoy</span>
-                <span className="hidden sm:inline">Discover</span>
-              </Link>
-              <Link
-                href="/mint"
-                className={`px-2 sm:px-3 py-1.5 text-xs font-mono tracking-wider uppercase transition-colors ${
-                  pathname === '/mint' ? 'text-dim font-bold' : 'text-dim hover:text-ink'
-                }`}
-              >
-                Mint
-              </Link>
+            <nav className="flex items-center gap-1 sm:gap-3">
+              <NavDropdown />
               <div className="hidden sm:block">
                 <SearchBar onOpenModal={(q) => { setModalQuery(q); setSearchOpen(true) }} />
               </div>
