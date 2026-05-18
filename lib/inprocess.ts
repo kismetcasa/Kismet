@@ -6,7 +6,23 @@ export const INPROCESS_API = 'https://api.inprocess.world/api'
 // Default comment sent on collect when the user leaves the textarea blank.
 // Used by the collect route to filter out non-meaningful comments before storing
 // them on notifications. Defined here so frontend and backend share one source.
-export const DEFAULT_COLLECT_COMMENT = 'collected via Kismet Art'
+export const DEFAULT_COLLECT_COMMENT = 'collected on kismet'
+
+// Legacy default-comment strings still present in historical on-chain data
+// and the upstream comments feed: pre-rename ("collected via Kismet Art") and
+// the post-brand-rename interim ("collected via Kismet"). Used by the activity
+// renderer so old rows show the same standardized label as new ones.
+const LEGACY_DEFAULT_COLLECT_COMMENTS = [
+  'collected via kismet art',
+  'collected via kismet',
+] as const
+
+export function isPlatformCollectComment(comment: string): boolean {
+  const c = comment.trim().toLowerCase()
+  if (!c) return true
+  if (c === DEFAULT_COLLECT_COMMENT) return true
+  return LEGACY_DEFAULT_COLLECT_COMMENTS.includes(c as typeof LEGACY_DEFAULT_COLLECT_COMMENTS[number])
+}
 
 interface SalesConfig {
   type: 'fixedPrice' | 'erc20Mint'

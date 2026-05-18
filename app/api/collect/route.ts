@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { decodeEventLog, parseAbi, type Address, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
-import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
+import { isPlatformCollectComment } from '@/lib/inprocess'
 import { redis } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { recordCollected } from '@/lib/collected'
@@ -238,7 +238,7 @@ export async function POST(req: NextRequest) {
         amount: safeAmount,
         ...(finalPrice ? { price: finalPrice } : {}),
         ...(currency ? { currency } : {}),
-        ...(comment && comment !== DEFAULT_COLLECT_COMMENT ? { comment } : {}),
+        ...(comment && !isPlatformCollectComment(comment) ? { comment } : {}),
       })
     } catch {
       // notifications are non-critical

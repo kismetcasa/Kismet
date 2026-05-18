@@ -1,5 +1,6 @@
 import { redis } from './redis'
 import { getFarcasterProfileByAddress } from './farcasterProfile'
+import { isPlatformCollectComment } from './inprocess'
 import {
   ALL_NOTIFICATION_TYPES,
   isActorMuted,
@@ -318,9 +319,16 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       const subject = tokenName ? `"${tokenName}"` : 'your moment'
       const who = actorName ?? 'someone'
       // Surface the buyer's optional comment so the push carries the
-      // same context the in-app row does. The full-body truncate at
-      // the end handles the case where comment + name + price overflow.
-      const commentSuffix = n.comment?.trim() ? ` — "${n.comment.trim()}"` : ''
+      // same context the in-app row does. Platform-default comments are
+      // filtered out here too — matches NotificationRow's render-time
+      // filter so historical rows that pre-date the write-time strip in
+      // /api/collect don't push "@bob collected — collected on kismet".
+      // The full-body truncate at the end handles the case where
+      // comment + name + price overflow.
+      const commentSuffix =
+        n.comment?.trim() && !isPlatformCollectComment(n.comment)
+          ? ` — "${n.comment.trim()}"`
+          : ''
       return {
         title: truncate('New collect', TITLE_MAX),
         body: truncate(`${who} collected ${subject}${priceLabel}${commentSuffix}`, BODY_MAX),
