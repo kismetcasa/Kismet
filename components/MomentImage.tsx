@@ -133,6 +133,12 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
    *  through the proxy add up across the user base. Gateway walking
    *  still happens via `useFallbackUrl` on error. */
   skipProxy?: boolean
+  /** Above-the-fold hint — when true, render with loading="eager" and
+   *  fetchPriority="high" so the browser pulls the bytes ahead of
+   *  lazy-loaded images further down. When false, defaults to
+   *  loading="lazy" (browser default is eager, so we have to set lazy
+   *  explicitly for off-screen posters). */
+  priority?: boolean
 }
 
 /**
@@ -147,7 +153,7 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
  * own server (CPU + egress on every fetch) outweighs the proxy's
  * resilience benefit.
  */
-export function MomentImg({ src, onAllError, skipProxy, ...rest }: ImgProps) {
+export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: ImgProps) {
   const { url: walkedUrl, onError: walkGateway } = useFallbackUrl(src, onAllError)
   const proxiable = isProxiable(src) && !skipProxy
   const [proxyFailed, setProxyFailed] = useState(false)
@@ -160,6 +166,16 @@ export function MomentImg({ src, onAllError, skipProxy, ...rest }: ImgProps) {
   const handleError = useProxy ? () => setProxyFailed(true) : walkGateway
 
   // alt comes through ...rest.
-  // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
-  return <img key={renderUrl} src={renderUrl} onError={handleError} decoding="async" {...rest} />
+  return (
+    // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
+    <img
+      key={renderUrl}
+      src={renderUrl}
+      onError={handleError}
+      decoding="async"
+      loading={priority ? 'eager' : 'lazy'}
+      fetchPriority={priority ? 'high' : undefined}
+      {...rest}
+    />
+  )
 }

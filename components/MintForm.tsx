@@ -14,6 +14,7 @@ import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
+import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -634,6 +635,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           }
         } else if (file!.type.startsWith('video/')) {
           setStep('preparing-media')
+          toast.loading('Optimizing video for fast playback…', { id: 'mint' })
+          // Lossless remux to faststart MP4 — moves moov atom to file
+          // start so browsers (esp. Safari) can begin playback after
+          // a few KB of download rather than probing the whole file
+          // for metadata. Best-effort: null return falls through to
+          // the original file. Doesn't help videos already on Arweave
+          // (immutable), but every new mint benefits from this point on.
+          try {
+            const remuxed = await remuxToFaststartMp4(file!)
+            if (remuxed) mediaFile = remuxed
+          } catch (err) {
+            console.warn('[MintForm] faststart remux failed; uploading original', err)
+          }
           toast.loading('Extracting poster from video…', { id: 'mint' })
           try {
             posterFile = await extractVideoPoster(file!)

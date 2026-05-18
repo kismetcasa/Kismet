@@ -6,7 +6,12 @@ const MAX_SOURCE_BYTES = 100 * 1024 * 1024
 
 let ffmpegPromise: Promise<FFmpeg> | null = null
 
-async function getFFmpeg(): Promise<FFmpeg> {
+/** Lazy singleton — load + initialize ffmpeg.wasm once and share across
+ *  every media operation in the upload flow (GIF transcode, video
+ *  faststart remux, future variants). The instance is single-threaded;
+ *  concurrent callers must serialise via the upload pipeline (MintForm
+ *  already does this — only one branch runs per submission). */
+export async function getFFmpeg(): Promise<FFmpeg> {
   if (!ffmpegPromise) {
     ffmpegPromise = (async () => {
       // Dynamic-imported so the ~110KB JS + 31MB wasm only loads when a

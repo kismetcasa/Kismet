@@ -262,6 +262,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
             thumbhash={meta.kismet_thumbhash}
             showPosterLayer
             className="w-full h-full object-contain"
+            priority={priority}
           />
         ) : meta.image && !imgError ? (
           <MomentImage
