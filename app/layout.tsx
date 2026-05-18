@@ -13,11 +13,11 @@ export const metadata: Metadata = {
   // other non-prod hosts; default to the canonical apex domain so
   // share cards always point at production.
   metadataBase: new URL(SITE_URL),
-  title: 'Kismet Art',
-  description: 'mint, collect, and discover art on Kismet Art',
+  title: 'Kismet',
+  description: 'Artists and collectors converge on Kismet',
   openGraph: {
-    title: 'Kismet Art',
-    description: 'mint, collect, and discover art on Kismet Art',
+    title: 'Kismet',
+    description: 'Artists and collectors converge on Kismet',
   },
   // Farcaster Mini App embed for the homepage. When the apex URL is
   // shared in a cast, this is the rich card that renders + launches the
@@ -26,10 +26,10 @@ export const metadata: Metadata = {
   other: buildFarcasterEmbed({
     imageUrl:
       process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
-    buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Open Kismet',
+    buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Create Kismet',
     action: {
       url: SITE_URL,
-      name: process.env.NEXT_PUBLIC_FARCASTER_APP_NAME ?? 'Kismet Art',
+      name: process.env.NEXT_PUBLIC_FARCASTER_APP_NAME ?? 'Kismet',
       splashImageUrl:
         process.env.NEXT_PUBLIC_FARCASTER_SPLASH_URL ?? `${SITE_URL}/splash.png`,
       splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#0d0d0d',

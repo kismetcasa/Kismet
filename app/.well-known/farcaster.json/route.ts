@@ -35,7 +35,7 @@ export async function GET() {
 
   const miniapp = {
     version: '1',
-    name: envOrDefault('NEXT_PUBLIC_FARCASTER_APP_NAME', 'Kismet Art'),
+    name: envOrDefault('NEXT_PUBLIC_FARCASTER_APP_NAME', 'Kismet'),
     iconUrl: envOrDefault('NEXT_PUBLIC_FARCASTER_ICON_URL', `${SITE_URL}/icon.png`),
     homeUrl: SITE_URL,
     splashImageUrl: envOrDefault(
@@ -48,10 +48,10 @@ export async function GET() {
     ),
     description: envOrDefault(
       'NEXT_PUBLIC_FARCASTER_DESCRIPTION',
-      'mint, collect, and discover art on Kismet Art',
+      'Artists and collectors converge on Kismet',
     ),
-    subtitle: envOrDefault('NEXT_PUBLIC_FARCASTER_SUBTITLE', 'Art on Base'),
-    tagline: envOrDefault('NEXT_PUBLIC_FARCASTER_TAGLINE', 'mint, collect, discover'),
+    subtitle: envOrDefault('NEXT_PUBLIC_FARCASTER_SUBTITLE', 'Onchain Art'),
+    tagline: envOrDefault('NEXT_PUBLIC_FARCASTER_TAGLINE', 'mint, discover, collect'),
     primaryCategory: envOrDefault('NEXT_PUBLIC_FARCASTER_CATEGORY', 'art-creativity'),
     // Base only — matches lib/wagmi.ts. Hosts that don't support Base will
     // refuse to render rather than failing mid-transaction.
