@@ -17,6 +17,7 @@
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.41.0",
     "@farcaster/miniapp-sdk": "^0.1.0",
+    "@farcaster/quick-auth": "^0.0.8",
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",

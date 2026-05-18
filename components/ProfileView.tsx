@@ -120,7 +120,7 @@ function FollowRow({ addr, onClose, onNameLoaded }: { addr: string; onClose: () 
     fetch(`/api/profile/${addr}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => {
-        const n = d.profile?.username || d.profile?.ensName
+        const n = d.profile?.displayName || d.profile?.username || d.profile?.ensName
         if (n) { setName(n); onNameLoaded?.(addr, n) }
         if (d.profile?.avatarUrl) setAvatarUrl(d.profile.avatarUrl)
       })
@@ -152,6 +152,9 @@ interface Profile {
   username?: string
   ensName?: string
   avatarUrl?: string
+  // Server-computed: collapses the username → farcaster → ens fallback
+  // chain into a single field. See app/api/profile/[address]/route.ts.
+  displayName?: string | null
   updatedAt: number
 }
 
@@ -572,7 +575,8 @@ export function ProfileView({ address }: ProfileViewProps) {
 
   // ─── render ───────────────────────────────────────────────────────────────
 
-  const displayName = profile?.username || profile?.ensName || shortAddress(address)
+  const displayName =
+    profile?.displayName || profile?.username || profile?.ensName || shortAddress(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">

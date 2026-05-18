@@ -55,6 +55,9 @@ export default function RootLayout({
             hit it from the browser). dns-prefetch covers the AR.IO + IPFS
             pool we walk through on proxy failure. */}
         <link rel="preconnect" href="https://arweave.net" crossOrigin="anonymous" />
+        {/* Quick Auth token acquisition runs on every Mini App reload —
+            preconnect shaves the TLS handshake off the critical path. */}
+        <link rel="preconnect" href="https://auth.farcaster.xyz" />
         <link rel="dns-prefetch" href="https://permagate.io" />
         <link rel="dns-prefetch" href="https://g8way.io" />
         <link rel="dns-prefetch" href="https://ar-io.dev" />

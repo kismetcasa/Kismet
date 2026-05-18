@@ -10,21 +10,32 @@ import { ProfileAvatar } from './ProfileAvatar'
 import { SearchBar } from './SearchBar'
 import { SearchModal } from './SearchModal'
 import { NotificationBell } from './NotificationBell'
+import { useFarcaster } from '@/providers/FarcasterProvider'
 
 export function Nav() {
   const pathname = usePathname()
   const { address, isConnected } = useAccount()
+  const { isInMiniApp, identity: fcIdentity } = useFarcaster()
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
   const [searchOpen, setSearchOpen] = useState(false)
   const [modalQuery, setModalQuery] = useState('')
 
+  // Inside a Mini App, treat the Farcaster-authed user as the signed-in
+  // user for nav purposes — avatar, profile link, notification bell.
+  // Regular web continues to read from wagmi (RainbowKit session).
+  const effectiveAddress = isInMiniApp ? fcIdentity?.address ?? address : address
+  const effectiveSignedIn = isInMiniApp ? !!fcIdentity?.address : isConnected
+
   useEffect(() => {
-    if (!address) { setAvatarUrl(undefined); return }
-    fetch(`/api/profile/${address}`)
+    if (!effectiveAddress) { setAvatarUrl(undefined); return }
+    // Seed instantly with the FC pfp from host context so the avatar
+    // doesn't flash a blockie before the /api/profile round-trip lands.
+    if (fcIdentity?.pfpUrl) setAvatarUrl(fcIdentity.pfpUrl)
+    fetch(`/api/profile/${effectiveAddress}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setAvatarUrl(d.profile?.avatarUrl))
       .catch(() => {})
-  }, [address])
+  }, [effectiveAddress, fcIdentity?.pfpUrl])
 
   return (
     <>
@@ -66,11 +77,11 @@ export function Nav() {
             >
               <Search size={18} />
             </button>
-            {isConnected && address && <NotificationBell address={address} />}
+            {effectiveSignedIn && effectiveAddress && <NotificationBell address={effectiveAddress} />}
             <WalletButton />
-            {isConnected && address && (
-              <Link href={`/profile/${address}`} className="flex-shrink-0">
-                <ProfileAvatar address={address} avatarUrl={avatarUrl} size={32} clickable />
+            {effectiveSignedIn && effectiveAddress && (
+              <Link href={`/profile/${effectiveAddress}`} className="flex-shrink-0">
+                <ProfileAvatar address={effectiveAddress} avatarUrl={avatarUrl} size={32} clickable />
               </Link>
             )}
           </div>
