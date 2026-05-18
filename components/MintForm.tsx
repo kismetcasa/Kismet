@@ -586,9 +586,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
           const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
-          // The userOp-revert path replaces the toast with an actionable
-          // one (button → collection's authorize banner) and bails out;
-          // anything else falls through to the generic toastError below.
           if (maybeHandleAuthError(raw, data)) return
           throw new Error(raw)
         }
@@ -778,9 +775,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
           const raw = (data.detail ?? data.error ?? data.message ?? 'Mint failed') + errors
-          // The userOp-revert path replaces the toast with an actionable
-          // one (button → collection's authorize banner) and bails out;
-          // anything else falls through to the generic toastError below.
           if (maybeHandleAuthError(raw, data)) return
           throw new Error(raw)
         }

@@ -143,7 +143,6 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             </p>
           )}
 
-          {/* Users */}
           {results && results.users.length > 0 && (
             <section>
               <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Users</p>
@@ -163,7 +162,6 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             </section>
           )}
 
-          {/* Collections */}
           {results && results.collections.length > 0 && (
             <section>
               <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Collections</p>
@@ -181,7 +179,6 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             </section>
           )}
 
-          {/* Mints */}
           {results && results.mints.length > 0 && (
             <section>
               <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Mints</p>
@@ -199,7 +196,6 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
             </section>
           )}
 
-          {/* See all */}
           <div className="border-t border-line px-3 py-2 flex justify-end">
             <button
               onClick={handleSeeAll}

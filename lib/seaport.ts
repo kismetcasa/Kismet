@@ -352,7 +352,6 @@ export function buildSellOrder({
     })
   }
 
-  // Random salt
   const saltBytes = new Uint8Array(16)
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
     crypto.getRandomValues(saltBytes)

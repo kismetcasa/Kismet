@@ -286,15 +286,6 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     // wherever the element happened to be sitting before, and every
     // card appearing in the feed would open a 220ms window during
     // which scrolls drag instead of snap.
-    //
-    // FUTURE: "fun mode" toggle that keeps the morph transition
-    // permanently active (the original behaviour — transition was set
-    // once in createVideo and never cleared) so videos trail behind
-    // the slot on scroll. Reads as a liquid/floaty motion when many
-    // cards are visible at once. Could extend to gifs (which render
-    // through MomentImage today and would need their own
-    // slot/anchor pattern, but the visual idea is the same). Gate
-    // behind a user setting.
     if (video.el.style.visibility === 'visible') {
       video.el.style.transition =
         'transform 0.18s ease, width 0.18s ease, height 0.18s ease'

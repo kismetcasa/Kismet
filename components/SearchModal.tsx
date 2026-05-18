@@ -131,7 +131,6 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             </p>
           )}
 
-          {/* Users */}
           {results && results.users.length > 0 && (
             <section>
               <p className="px-4 pt-3 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Users</p>
@@ -156,7 +155,6 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             </section>
           )}
 
-          {/* Collections */}
           {results && results.collections.length > 0 && (
             <section>
               <p className="px-4 pt-3 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Collections</p>
@@ -166,7 +164,6 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
             </section>
           )}
 
-          {/* Mints */}
           {results && results.mints.length > 0 && (
             <section className="mb-1">
               <p className="px-4 pt-3 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Mints</p>
