@@ -14,14 +14,17 @@ import { NotificationBell } from './NotificationBell'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
-// Nav destinations. Order is meaningful — Market is intentionally LAST
-// so it always sits at the bottom of the dropdown when it isn't the
-// current page. Enjoy / Mint pop ahead of it when one of those is
-// active.
+// Nav destinations. URLs are canonical so `label` (desktop) and
+// `mobileLabel` (mobile / Mini App dropdown) are purely cosmetic
+// re-skins — the same /, /mint, /market routes back both.
+//
+// Order is meaningful — Market is intentionally LAST so it always
+// sits at the bottom of the mobile dropdown when it isn't the
+// current page.
 const NAV_PAGES = [
-  { id: 'enjoy',  label: 'Enjoy',  href: '/' },
-  { id: 'mint',   label: 'Mint',   href: '/mint' },
-  { id: 'market', label: 'Market', href: '/market' },
+  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Enjoy',  href: '/' },
+  { id: 'mint',   label: 'Mint',     mobileLabel: 'Create', href: '/mint' },
+  { id: 'market', label: 'Market',   mobileLabel: 'Trade',  href: '/market' },
 ] as const
 
 type NavPageId = (typeof NAV_PAGES)[number]['id']
@@ -35,6 +38,10 @@ function navPageForPath(pathname: string): NavPageId {
   return 'enjoy'
 }
 
+// Mobile / Mini App dropdown — one page label at a time with a
+// chevron, click to reveal the other two destinations. Used at < sm
+// breakpoints where three inline buttons + search + bell + wallet +
+// avatar overrun the viewport.
 function NavDropdown() {
   const pathname = usePathname()
   const currentId = navPageForPath(pathname)
@@ -48,7 +55,6 @@ function NavDropdown() {
 
   useEscapeKey(() => setOpen(false))
 
-  // Outside-click closes.
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -64,15 +70,13 @@ function NavDropdown() {
     <div ref={containerRef} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 px-2 sm:px-3 py-1.5 text-xs font-mono tracking-wider uppercase text-ink hover:text-ink transition-colors"
+        className="flex items-center gap-1 px-2 py-1.5 text-xs font-mono tracking-wider uppercase text-ink transition-colors"
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <span>{current.label}</span>
+        <span>{current.mobileLabel}</span>
         <ChevronDown
           size={12}
-          // Slightly muted vs the label so the affordance reads as
-          // secondary chrome, not equal billing with the page name.
           className={`text-dim transition-transform ${open ? 'rotate-180' : ''}`}
           strokeWidth={2}
         />
@@ -91,11 +95,37 @@ function NavDropdown() {
               className="px-3 py-2 text-xs font-mono tracking-wider uppercase text-dim hover:text-ink hover:bg-[#1e1e1e] transition-colors"
               role="menuitem"
             >
-              {p.label}
+              {p.mobileLabel}
             </Link>
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Desktop nav — three inline links with canonical labels and an
+// active-state highlight. The space is there at sm: and up, no
+// reason to hide it behind a dropdown.
+function NavInline() {
+  const pathname = usePathname()
+  const currentId = navPageForPath(pathname)
+  return (
+    <div className="flex items-center gap-1">
+      {NAV_PAGES.map((p) => {
+        const isActive = p.id === currentId
+        return (
+          <Link
+            key={p.id}
+            href={p.href}
+            className={`px-3 py-1.5 text-xs font-mono tracking-wider uppercase transition-colors ${
+              isActive ? 'text-ink font-bold' : 'text-dim hover:text-ink'
+            }`}
+          >
+            {p.label}
+          </Link>
+        )
+      })}
     </div>
   )
 }
@@ -170,7 +200,12 @@ export function Nav() {
               )}
             </Link>
             <nav className="flex items-center gap-1 sm:gap-3">
-              <NavDropdown />
+              <div className="sm:hidden">
+                <NavDropdown />
+              </div>
+              <div className="hidden sm:block">
+                <NavInline />
+              </div>
               <div className="hidden sm:block">
                 <SearchBar onOpenModal={(q) => { setModalQuery(q); setSearchOpen(true) }} />
               </div>
