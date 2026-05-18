@@ -27,6 +27,8 @@ import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+import { maybeOfferAddMiniApp } from '@/lib/farcasterPrompt'
 
 type PriceCurrency = 'eth' | 'usdc'
 
@@ -96,6 +98,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+  const { shouldPromptAddMiniApp, promptAddMiniApp } = useFarcaster()
   // For post-auto-deploy permission verification — reads
   // permissions(0, smartWallet) on the freshly-deployed contract so we
   // can surface a one-shot Authorize CTA if the smart wallet didn't
@@ -601,6 +604,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        maybeOfferAddMiniApp('mint', shouldPromptAddMiniApp, promptAddMiniApp)
 
       } else {
         // media mode — ensure session once (cookie cached, no re-prompt)
@@ -786,6 +790,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        maybeOfferAddMiniApp('mint', shouldPromptAddMiniApp, promptAddMiniApp)
       }
     } catch (err) {
       setStep('idle')

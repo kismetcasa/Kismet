@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAccount, useConnect } from 'wagmi'
 
 export type FarcasterIdentity = {
@@ -23,12 +23,51 @@ type FarcasterContextValue = {
   ready: boolean
   /** Populated after Quick Auth completes; null on regular web or before bootstrap. */
   identity: FarcasterIdentity | null
+  /**
+   * True when sdk.context.client reports the user has already added the
+   * Mini App. Used to suppress addMiniApp prompts so we never nag users
+   * who've already opted in.
+   */
+  added: boolean
+  /**
+   * True when the host reports notificationDetails on the current
+   * context — i.e. the user has notifications enabled for Kismet. This
+   * is the stronger signal than `added`: a user can add the app but
+   * decline notifications, in which case `added=true` and
+   * `notificationsEnabled=false`. Tokens flow via the webhook, not this
+   * client-side flag, so this is purely a prompt-suppression signal.
+   */
+  notificationsEnabled: boolean
+  /**
+   * Prompt the user to add the Mini App. Short-circuits silently when
+   *   - not running inside a Mini App host
+   *   - the user has already added (sdk.context.client.added)
+   *   - notifications are already enabled
+   *   - we've shown the prompt within the cooldown window (30d)
+   *   - another modal/dialog is currently open
+   * Callers pass a `surface` so the cooldown is per-trigger (mint and
+   * follow can each show the prompt once, not blocked by the other).
+   * Stamps the cooldown when called — so a user who dismisses the
+   * host's consent sheet still uses their one shot.
+   */
+  promptAddMiniApp: (opts: { surface: 'mint' | 'follow' }) => Promise<void>
+  /**
+   * Sync sibling of promptAddMiniApp: returns true iff all the same
+   * gates pass right now. Used by trigger sites to decide whether to
+   * SHOW the "Add Kismet for X" affordance at all, so we don't render
+   * a button that immediately no-ops on click.
+   */
+  shouldPromptAddMiniApp: (surface: 'mint' | 'follow') => boolean
 }
 
 const FarcasterContext = createContext<FarcasterContextValue>({
   isInMiniApp: false,
   ready: false,
   identity: null,
+  added: false,
+  notificationsEnabled: false,
+  promptAddMiniApp: async () => {},
+  shouldPromptAddMiniApp: () => false,
 })
 
 export const useFarcaster = () => useContext(FarcasterContext)
@@ -109,12 +148,44 @@ function installFetchInterceptor(getToken: () => Promise<string | null>): () => 
   }
 }
 
+// Cooldown window between addMiniApp prompts on a given surface. 30d is
+// long enough that we won't nag a user who declined once, short enough
+// that a churned user returning months later gets re-offered if they
+// take the same action again.
+const PROMPT_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
+const promptCooldownKey = (surface: string) => `kismetart:addapp-prompt:${surface}`
+
+// Has another dialog claimed the screen? CSS selectors over data-state
+// (Radix), aria-modal (generic a11y), or role=dialog cover every modal
+// we render plus most third-party ones (RainbowKit, etc).
+function isAnotherDialogOpen(): boolean {
+  if (typeof document === 'undefined') return false
+  return !!document.querySelector(
+    '[data-state="open"][role="dialog"], [aria-modal="true"], [role="alertdialog"]',
+  )
+}
+
 export function FarcasterProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<FarcasterContextValue>({
+  // Only the data fields of the context live in state; the two callback
+  // fields are derived per-render via useCallback so trigger sites get
+  // a stable identity without re-creating state when their dep-free
+  // closures haven't changed.
+  type StateShape = Omit<
+    FarcasterContextValue,
+    'promptAddMiniApp' | 'shouldPromptAddMiniApp'
+  >
+  const [state, setState] = useState<StateShape>({
     isInMiniApp: false,
     ready: false,
     identity: null,
+    added: false,
+    notificationsEnabled: false,
   })
+  // SDK reference for promptAddMiniApp — populated by the bootstrap
+  // effect, read by the callback below. useRef so the callback identity
+  // is stable across renders (no React refresh thrashing in trigger
+  // sites that depend on `promptAddMiniApp` as an effect dep).
+  const sdkRef = useRef<typeof import('@farcaster/miniapp-sdk').sdk | null>(null)
 
   // wagmi auto-reconnects to the Farcaster connector when it's first in
   // the connectors array (see lib/wagmi.ts) and its `isAuthorized()`
@@ -150,6 +221,10 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // preview that isn't actually a Farcaster host).
         const confirmed = await sdk.isInMiniApp()
         if (cancelled || !confirmed) return
+
+        // Stash the SDK reference for promptAddMiniApp. Done here (and
+        // not at module scope) so the SDK chunk only loads inside hosts.
+        sdkRef.current = sdk
 
         // CRITICAL: without this call the host shows its splash screen
         // forever. Has to come after the rest of the React tree has
@@ -214,14 +289,22 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
             }
           : null
 
+        // Add + notifications status from the host context. Tokens
+        // themselves arrive via the webhook (server-side); we use these
+        // flags only to gate the addMiniApp prompt.
+        const added = ctx?.client?.added === true
+        const notificationsEnabled = !!ctx?.client?.notificationDetails
+
         // Set partial identity immediately so UI can paint with username +
         // pfp from host context. The address comes from a server round-trip
         // (FID → primary address resolution) and is filled in below.
-        if (hostIdentity) {
-          setState({ isInMiniApp: true, ready: true, identity: hostIdentity })
-        } else {
-          setState({ isInMiniApp: true, ready: true, identity: null })
-        }
+        setState({
+          isInMiniApp: true,
+          ready: true,
+          identity: hostIdentity,
+          added,
+          notificationsEnabled,
+        })
 
         // Resolve the address server-side. We can't do this from the
         // client (the JWT carries only the FID, not the address) and we
@@ -233,11 +316,13 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
             if (me.ok) {
               const body = (await me.json()) as { address?: string }
               if (!cancelled && body.address && hostIdentity) {
-                setState({
+                const address = body.address
+                setState((prev) => ({
+                  ...prev,
                   isInMiniApp: true,
                   ready: true,
-                  identity: { ...hostIdentity, address: body.address },
-                })
+                  identity: { ...hostIdentity, address },
+                }))
               }
             }
           } catch {
@@ -334,7 +419,71 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
     }
   }, [wagmiAddress])
 
+  // Live-state ref so the callbacks below read fresh `added` /
+  // `notificationsEnabled` flags without needing them in their dep list.
+  // setState mirrors into the ref synchronously via a side-effect below.
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  // Sync gate checker shared by both the toast-side
+  // `shouldPromptAddMiniApp` and the click-side `promptAddMiniApp`.
+  // Encapsulates the four gates so the boolean returned to trigger
+  // sites is exactly the predicate the call-site path applies.
+  const checkGates = useCallback((surface: 'mint' | 'follow'): boolean => {
+    const s = stateRef.current
+    if (!s.isInMiniApp) return false
+    if (s.added) return false
+    if (s.notificationsEnabled) return false
+    if (isAnotherDialogOpen()) return false
+    try {
+      const lastRaw = localStorage.getItem(promptCooldownKey(surface))
+      const last = lastRaw ? Number(lastRaw) : 0
+      if (Number.isFinite(last) && Date.now() - last < PROMPT_COOLDOWN_MS) return false
+    } catch {
+      // localStorage unavailable — proceed (don't hide the prompt).
+    }
+    return true
+  }, [])
+
+  // Sync sibling — same gates, no side effects. Suitable to call from
+  // render or right before firing a sonner toast with an action.
+  const shouldPromptAddMiniApp = useCallback(
+    (surface: 'mint' | 'follow') => checkGates(surface),
+    [checkGates],
+  )
+
+  // Stable callback identity (no deps) so trigger sites can safely
+  // include `promptAddMiniApp` in their effect deps. Reads context state
+  // via setState's callback form to avoid stale closures over `state`.
+  const promptAddMiniApp = useCallback(
+    async ({ surface }: { surface: 'mint' | 'follow' }) => {
+      try {
+        if (!checkGates(surface)) return
+        const sdk = sdkRef.current
+        if (!sdk) return
+
+        // Stamp the cooldown BEFORE firing the action so a host that
+        // dismisses without resolving still counts toward the window.
+        // The host owns the actual consent sheet; we hand off and stop
+        // caring about the result.
+        try {
+          localStorage.setItem(promptCooldownKey(surface), String(Date.now()))
+        } catch {}
+
+        await sdk.actions.addMiniApp()
+      } catch {
+        // Host errors (user dismissed, capability missing) are not our
+        // problem — the next trigger after the cooldown will retry.
+      }
+    },
+    [checkGates],
+  )
+
   return (
-    <FarcasterContext.Provider value={state}>{children}</FarcasterContext.Provider>
+    <FarcasterContext.Provider
+      value={{ ...state, promptAddMiniApp, shouldPromptAddMiniApp }}
+    >
+      {children}
+    </FarcasterContext.Provider>
   )
 }

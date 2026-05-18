@@ -22,6 +22,21 @@ const TYPE_LABELS: Record<string, string> = {
   authorized: 'Creator authorizations',
 }
 
+// Labels used in the FC push section. We surface every type here (the
+// mute section omits non-muteable ones) because push opt-in is the
+// inverse: financial types default to OFF and the user opts INTO them.
+const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
+  collect: 'Someone collects your work',
+  sale: 'Sales of your listings',
+  follow: 'New followers',
+  mint: 'New mints from people you follow',
+  listing_expired: 'Your listings expire',
+  listing_created: 'New listings from people you follow',
+  airdrop: 'Airdrops you receive',
+  payout: 'Splits and payouts',
+  authorized: 'Creator authorizations',
+}
+
 type ModalTab = 'feed' | 'settings'
 
 interface NotificationModalProps {
@@ -36,15 +51,24 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   const [mutedTypes, setMutedTypes] = useState<NotificationType[] | null>(null)
   const [muteableTypes, setMuteableTypes] = useState<NotificationType[]>([])
   const [typesLoading, setTypesLoading] = useState(false)
+  // FC push: enabled = set of types the user has opted IN to push for.
+  // pushAllTypes mirrors ALL_NOTIFICATION_TYPES sent by the server so
+  // the order/labels don't drift if we add a type later.
+  const [pushEnabled, setPushEnabled] = useState<NotificationType[] | null>(null)
+  const [pushAllTypes, setPushAllTypes] = useState<NotificationType[]>([])
+  const [pushHasTokens, setPushHasTokens] = useState<boolean>(false)
+  const [pushHasFid, setPushHasFid] = useState<boolean>(false)
+  const [pushLoading, setPushLoading] = useState(false)
 
   useBodyScrollLock()
   useEscapeKey(onClose)
 
-  // Fetch mute lists when settings tab is first opened
+  // Fetch mute lists + push prefs when settings tab is first opened
   useEffect(() => {
     if (tab !== 'settings') return
     setMutedLoading(true)
     setTypesLoading(true)
+    setPushLoading(true)
     fetch('/api/notifications/mute', { credentials: 'same-origin' })
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMuted(Array.isArray(d.muted) ? d.muted : []))
@@ -61,6 +85,21 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
         setMuteableTypes([])
       })
       .finally(() => setTypesLoading(false))
+    fetch('/api/notifications/push-types', { credentials: 'same-origin' })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => {
+        setPushEnabled(Array.isArray(d.enabled) ? d.enabled : [])
+        setPushAllTypes(Array.isArray(d.all) ? d.all : [])
+        setPushHasTokens(!!d.hasTokens)
+        setPushHasFid(typeof d.fid === 'number' && d.fid > 0)
+      })
+      .catch(() => {
+        setPushEnabled([])
+        setPushAllTypes([])
+        setPushHasTokens(false)
+        setPushHasFid(false)
+      })
+      .finally(() => setPushLoading(false))
   }, [tab])
 
   async function handleUnmute(actor: string) {
@@ -103,6 +142,30 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
       if (!res.ok) throw new Error('request failed')
     } catch (err) {
       setMutedTypes(previous)
+      const description = humanError(err)
+      if (description === 'Cancelled') return
+      toast.error('Update failed', { description })
+    }
+  }
+
+  async function handleTogglePush(type: NotificationType) {
+    const previous = pushEnabled
+    const wasEnabled = previous?.includes(type) ?? false
+    setPushEnabled((prev) => {
+      if (!prev) return prev
+      return wasEnabled ? prev.filter((t) => t !== type) : [...prev, type]
+    })
+    try {
+      await ensureSession()
+      const res = await fetch('/api/notifications/push-types', {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, enabled: !wasEnabled }),
+      })
+      if (!res.ok) throw new Error('request failed')
+    } catch (err) {
+      setPushEnabled(previous)
       const description = humanError(err)
       if (description === 'Cancelled') return
       toast.error('Update failed', { description })
@@ -152,8 +215,71 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
           ) : (
             <div className="p-4 flex flex-col gap-6">
               <div>
+                <p className="text-[10px] font-mono uppercase tracking-widest text-[#555] mb-1">
+                  mobile push (farcaster)
+                </p>
+                <p className="text-[10px] font-mono text-[#444] mb-3">
+                  {pushHasTokens
+                    ? 'native farcaster push, opt-in per type.'
+                    : pushHasFid
+                      ? 'add kismet inside farcaster to enable mobile push.'
+                      : 'connect a farcaster-linked wallet to enable mobile push.'}
+                </p>
+                {pushLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 size={14} className="animate-spin text-[#555]" />
+                  </div>
+                ) : !pushHasTokens ? (
+                  // Render the list anyway, in a disabled state, so users can
+                  // see what's available — but every toggle is locked off
+                  // until they actually have a token to fire against.
+                  <div className="flex flex-col gap-1.5 opacity-50">
+                    {pushAllTypes.map((type) => (
+                      <div
+                        key={type}
+                        className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a]"
+                      >
+                        <span className="text-xs font-mono text-[#888]">
+                          {PUSH_TYPE_LABELS[type] ?? type}
+                        </span>
+                        <span className="text-[9px] font-mono uppercase tracking-widest text-[#444]">
+                          off
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {pushAllTypes.map((type) => {
+                      const isOn = pushEnabled?.includes(type) ?? false
+                      return (
+                        <div
+                          key={type}
+                          className="flex items-center justify-between px-3 py-2 border border-[#2a2a2a]"
+                        >
+                          <span className="text-xs font-mono text-[#888]">
+                            {PUSH_TYPE_LABELS[type] ?? type}
+                          </span>
+                          <button
+                            onClick={() => handleTogglePush(type)}
+                            className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
+                              isOn
+                                ? 'text-[#efefef] hover:text-[#888]'
+                                : 'text-[#555] hover:text-[#efefef]'
+                            }`}
+                          >
+                            {isOn ? 'on' : 'off'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div>
                 <p className="text-[10px] font-mono uppercase tracking-widest text-[#555] mb-3">
-                  notification types
+                  hide from feed
                 </p>
                 {typesLoading ? (
                   <div className="flex justify-center py-4">
