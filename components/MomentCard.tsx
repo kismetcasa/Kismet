@@ -346,6 +346,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           </h3>
           {!compact && (
             <div className="flex-shrink-0 mt-0.5 flex items-center gap-2">
+              <button
+                onClick={handleCopyLink}
+                title="copy link"
+                className="text-[#444] hover:text-dim transition-colors flex items-center"
+              >
+                {linkCopied
+                  ? <Check size={11} className="text-[#6ee7b7]" />
+                  : <Copy size={11} />}
+              </button>
               {/* Hard-nav anchor so the click bypasses the @modal
                   intercepting route and lands on the canonical full-page
                   detail route — sibling to the copy affordance, same
@@ -357,15 +366,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               >
                 <ArrowUpRight size={11} />
               </a>
-              <button
-                onClick={handleCopyLink}
-                title="copy link"
-                className="text-[#444] hover:text-dim transition-colors flex items-center"
-              >
-                {linkCopied
-                  ? <Check size={11} className="text-[#6ee7b7]" />
-                  : <Copy size={11} />}
-              </button>
             </div>
           )}
         </div>
