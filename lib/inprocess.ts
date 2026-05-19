@@ -84,6 +84,20 @@ export interface Moment {
   // Set to true by the timeline API when a hidden moment is returned to its
   // creator on their own profile feed, so the UI can show the hidden badge.
   hidden?: boolean
+  // Server-stitched by /api/timeline so MomentCard doesn't have to fire
+  // a follow-up /api/moment per card (N+1 client round-trips eliminated).
+  // Optional because (a) other callers of MomentCard pass moments from
+  // sources that don't enrich, (b) the per-moment upstream fetch may
+  // legitimately fail without poisoning the whole timeline response —
+  // MomentCard's existing per-card fetch is the fallback in both cases.
+  // Shape matches MomentDetail.saleConfig for trivial assignability.
+  saleConfig?: {
+    type?: 'fixedPrice' | 'erc20Mint'
+    pricePerToken: string
+    saleStart?: string
+    saleEnd?: string
+    currency?: string
+  }
 }
 
 export interface Split {

@@ -121,9 +121,28 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
   const meta = moment.metadata ?? {}
   const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
-  // hidePriceSupply only controls badge rendering — compact contexts
-  // still need price + currency to drive collect.
+  // Price + currency. hidePriceSupply only controls badge rendering —
+  // compact contexts still need these state values to drive collect.
+  //
+  // Two paths:
+  //   1. Fast path: /api/timeline now enriches each moment with its
+  //      saleConfig server-side. When present, populate state directly
+  //      and skip the round-trip entirely — the discover feed paints
+  //      with prices already in place instead of popcorning them in.
+  //   2. Fallback: callers that pass moments from sources that don't
+  //      enrich (FeaturedFeed inputs from non-timeline routes, third-
+  //      party usages, or a timeline call where the per-moment upstream
+  //      fetch happened to fail) still get correct behavior via the
+  //      per-card /api/moment fetch — exact same logic that was here
+  //      before, just gated on absence.
   useEffect(() => {
+    if (moment.saleConfig) {
+      const cur = inferCollectCurrency(moment.saleConfig)
+      setPrice(formatPrice(moment.saleConfig.pricePerToken, cur))
+      setPricePerToken(BigInt(moment.saleConfig.pricePerToken))
+      setCurrency(cur)
+      return
+    }
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
@@ -138,7 +157,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
         setCurrency(cur)
       })
       .catch(() => {})
-  }, [moment.address, moment.token_id])
+  }, [moment.address, moment.token_id, moment.saleConfig])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
