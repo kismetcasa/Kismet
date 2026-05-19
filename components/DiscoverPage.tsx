@@ -318,12 +318,24 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredKeys, featuredCollectionAddrs } = useAdmin()
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
+  // Defer the first tab-content render until we've reconciled with
+  // localStorage. Without the gate, we'd mount the default 'main' feed
+  // (firing its /api/timeline?scope=standalone fetch from PaginatedGrid's
+  // useQuery on mount) and then immediately unmount it the moment the
+  // effect below flips active to the user's saved leftmost tab — the
+  // wasted fetch races the new tab's fetches against the Mini App
+  // webview's already-constrained connection pool, dragging out
+  // time-to-content. One paint cycle of "loading…" is the cost; on
+  // mobile (drag-reorder disabled, saved == default) the gate clears
+  // synchronously enough that no skeleton replacement is visible.
+  const [hydrated, setHydrated] = useState(false)
 
   // Hydrate from localStorage after mount; activate leftmost tab
   useEffect(() => {
     const saved = loadOrder()
     setOrder(saved)
     setActive(saved[0])
+    setHydrated(true)
   }, [])
 
   function handleReorder(next: TabId[]) {
@@ -358,7 +370,10 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
       />
 
       <div className="mt-2">
-        {active === 'featured' && (
+        {!hydrated && (
+          <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
+        )}
+        {hydrated && active === 'featured' && (
           <>
             {isAdmin && !hasSession && (
               <div className="flex items-center justify-between py-4 border-b border-line mb-2">
@@ -384,7 +399,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
           </>
         )}
 
-        {active === 'trending' && (
+        {hydrated && active === 'trending' && (
           <MomentFeed
             apiUrl="/api/timeline?sort=trending&scope=standalone"
             emptyMessage="no collects recorded yet — trending appears as mints are collected"
@@ -392,9 +407,9 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
           />
         )}
 
-        {active === 'main' && <MainFeed />}
+        {hydrated && active === 'main' && <MainFeed />}
 
-        {active === 'roster' && <RosterFeed />}
+        {hydrated && active === 'roster' && <RosterFeed />}
       </div>
     </div>
     </LazyMountCtx.Provider>
