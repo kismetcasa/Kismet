@@ -38,19 +38,18 @@ interface MomentCardProps {
    */
   priority?: boolean
   /**
-   * Compact mode for tight grids (featured collection row's 10×2 mints
-   * preview). Drops the creator chip, collection chip, and copy-link
-   * button — at ~130px wide there's no room and the creator+collection
-   * already appear on the parent surface. Action row stacks vertically
-   * with price·supply inline above the collect button, so the price/
-   * supply box's 56px min-width doesn't force horizontal overflow.
+   * Compact mode for tight grids — the featured-collection-row's 10×2
+   * mints preview (~130px wide) and the discover/trending/market grid
+   * view (~150-200px wide at lg+). Drops the collection chip and
+   * copy-link button; action row stacks price·supply inline above the
+   * collect button so the 56px min-width chip doesn't overflow.
    */
   compact?: boolean
   /**
-   * Force the creator chip on/off independent of `compact`. Used by the
-   * horizontal grid-view swiper, where cards are ~180px wide (wider than
-   * the featured row's ~130px) so the creator chip fits and adds
-   * identity that the parent surface doesn't already convey.
+   * Force the creator chip on/off independent of `compact`. The grid
+   * view passes true (cards are wide enough to fit the chip); the
+   * featured-collection-row leaves it unset so its compact cards stay
+   * chip-free (the row's parent surface already shows the creator).
    */
   showCreator?: boolean
 }
@@ -303,10 +302,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             fill
             className="object-contain transition-transform duration-500 group-hover:scale-105"
             onAllError={() => setImgError(true)}
-            // Compact mode (profile grids, swiper grid view) packs cards
-            // 2-6 across — at ~16vw on desktop the default tuned for
-            // feed-mode (33vw) made the browser fetch 2x larger images
-            // than rendered. Each branch is the actual rendered width.
+            // Compact mode packs cards 2-6 across (profile grids and the
+            // discover grid view). At ~16vw on desktop the feed-mode
+            // default (33vw) would have the browser fetch 2x larger
+            // images than rendered. Each branch is the actual width.
             sizes={compact
               ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
               : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}

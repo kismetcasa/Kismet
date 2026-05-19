@@ -22,7 +22,6 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
-import { useFinePointer } from '@/hooks/useFinePointer'
 import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
 
@@ -87,6 +86,14 @@ type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops' | 
 // it shouldn't.
 const DEFAULT_ORDER: SectionId[] = ['mints', 'collected', 'listings', 'payments', 'airdrops']
 const SECTIONS_KEY = 'kismetart:profile-sections'
+
+// Section drag thresholds — see the same constants in DiscoverPage for
+// the matching tab-bar gesture. 250ms is the iOS-Home-Screen feel; 8px
+// of pre-drag movement on touch resolves to "user is scrolling, not
+// reordering"; 5px on mouse instantly commits to drag.
+const SECTION_LONG_PRESS_MS = 250
+const SECTION_SCROLL_INTENT_PX = 8
+const SECTION_MOUSE_DRAG_THRESHOLD_PX = 5
 
 interface SectionsConfig {
   order: SectionId[]
@@ -180,10 +187,6 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
   const { isCurator } = useAdmin()
-  // Section reordering is desktop-only — HTML5 draggable breaks tap on
-  // touch (taps to expand/collapse a section register seconds late, if
-  // at all). See hooks/useFinePointer.
-  const allowDrag = useFinePointer()
 
   // Owner via wagmi (web + Mini App) OR via FC identity (Mini App users
   // whose wagmi wallet is currently a different sibling). Without the
@@ -235,7 +238,21 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const [sectionOrder, setSectionOrder] = useState<SectionId[]>(DEFAULT_ORDER)
   const [sectionCollapsed, setSectionCollapsed] = useState<Partial<Record<SectionId, boolean>>>({})
   const [draggingSection, setDraggingSection] = useState<SectionId | null>(null)
-  const dragIdx = useRef<number | null>(null)
+  const [sectionDragOffsetY, setSectionDragOffsetY] = useState(0)
+  const sectionContainerRef = useRef<HTMLDivElement>(null)
+  const sectionDragRef = useRef<{
+    pointerId: number
+    startSection: SectionId
+    startX: number
+    startY: number
+    anchorY: number
+    longPressTimer: number | null
+    phase: 'pending' | 'dragging'
+  } | null>(null)
+  // Order ref so the high-frequency pointermove handler doesn't need to
+  // close over a stale snapshot of sectionOrder.
+  const sectionOrderRef = useRef(sectionOrder)
+  sectionOrderRef.current = sectionOrder
 
   useEffect(() => {
     const config = loadSectionsConfig()
@@ -336,36 +353,121 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     try { localStorage.setItem(SECTIONS_KEY, JSON.stringify({ order, collapsed })) } catch {}
   }
 
-  function onDragStart(idx: number) {
-    dragIdx.current = idx
-    setDraggingSection(sectionOrder[idx])
-  }
-
-  function onDragOver(e: React.DragEvent, idx: number) {
-    e.preventDefault()
-    if (dragIdx.current === null || dragIdx.current === idx) return
-    // Only swap once the cursor crosses the midpoint of the target section
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const mid = rect.top + rect.height / 2
-    if (dragIdx.current < idx && e.clientY < mid) return
-    if (dragIdx.current > idx && e.clientY > mid) return
-    const next = [...sectionOrder]
-    const [moved] = next.splice(dragIdx.current, 1)
-    next.splice(idx, 0, moved)
-    dragIdx.current = idx
-    setSectionOrder(next)
-    persistSections(next, sectionCollapsed)
-  }
-
-  function onDragEnd() {
-    dragIdx.current = null
-    setDraggingSection(null)
-  }
-
   function toggleCollapsed(section: SectionId) {
     const next = { ...sectionCollapsed, [section]: !sectionCollapsed[section] }
     setSectionCollapsed(next)
     persistSections(sectionOrder, next)
+  }
+
+  // Section drag-to-reorder — mirrors TabBar's gesture model: pointerdown
+  // opens a "pending" window that resolves to either a drag (long-press on
+  // touch / pointer moves past a small threshold on mouse) or a tap
+  // (pointerup before committing → toggleCollapsed). HTML5 draggable was
+  // avoided here for the same reason as TabBar — it hijacks tap-and-hold
+  // and breaks the section collapse tap on touch.
+  function startSectionDrag() {
+    const state = sectionDragRef.current
+    if (!state) return
+    state.phase = 'dragging'
+    setDraggingSection(state.startSection)
+    if ('vibrate' in navigator) {
+      try { navigator.vibrate(10) } catch {}
+    }
+  }
+
+  function endSectionDrag(asTap: boolean) {
+    const state = sectionDragRef.current
+    if (!state) return
+    if (state.longPressTimer) clearTimeout(state.longPressTimer)
+    if (asTap && state.phase === 'pending') toggleCollapsed(state.startSection)
+    setDraggingSection(null)
+    setSectionDragOffsetY(0)
+    sectionDragRef.current = null
+  }
+
+  function handleSectionPointerDown(e: React.PointerEvent<HTMLDivElement>, section: SectionId) {
+    // `curate` is pinned to the bottom and not reorderable.
+    if (section === 'curate') return
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    sectionDragRef.current = {
+      pointerId: e.pointerId,
+      startSection: section,
+      startX: e.clientX,
+      startY: e.clientY,
+      anchorY: e.clientY,
+      longPressTimer: e.pointerType === 'touch'
+        ? window.setTimeout(startSectionDrag, SECTION_LONG_PRESS_MS)
+        : null,
+      phase: 'pending',
+    }
+  }
+
+  function handleSectionPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const state = sectionDragRef.current
+    if (!state || e.pointerId !== state.pointerId) return
+
+    if (state.phase === 'pending') {
+      const dx = e.clientX - state.startX
+      const dy = e.clientY - state.startY
+      if (e.pointerType === 'touch') {
+        // Movement before the long-press fires → user is scrolling
+        // the profile. Abandon so the browser keeps scrolling natively.
+        if (Math.abs(dx) > SECTION_SCROLL_INTENT_PX || Math.abs(dy) > SECTION_SCROLL_INTENT_PX) {
+          if (state.longPressTimer) clearTimeout(state.longPressTimer)
+          sectionDragRef.current = null
+        }
+        return
+      }
+      // Mouse: pick up after a small drag delta — matches the
+      // HTML5-native feel desktop users had before.
+      if (Math.abs(dx) < SECTION_MOUSE_DRAG_THRESHOLD_PX && Math.abs(dy) < SECTION_MOUSE_DRAG_THRESHOLD_PX) return
+      startSectionDrag()
+    }
+
+    if (state.phase !== 'dragging') return
+    e.preventDefault()
+    setSectionDragOffsetY(e.clientY - state.anchorY)
+
+    // Midpoint crossing on any *non-curate* section's outer bbox
+    // triggers a swap. Curate is selector-excluded so the user can't
+    // accidentally push a section past it.
+    const container = sectionContainerRef.current
+    if (!container) return
+    const sectionEls = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-section]:not([data-section="curate"])'),
+    )
+    const currentOrder = sectionOrderRef.current
+    const currentIdx = currentOrder.indexOf(state.startSection)
+    if (currentIdx < 0) return
+    let targetIdx = currentIdx
+    for (let i = 0; i < sectionEls.length; i++) {
+      const rect = sectionEls[i].getBoundingClientRect()
+      const mid = rect.top + rect.height / 2
+      if (e.clientY < mid) { targetIdx = i; break }
+      targetIdx = i
+    }
+    if (targetIdx !== currentIdx) {
+      const next = [...currentOrder]
+      const [moved] = next.splice(currentIdx, 1)
+      next.splice(targetIdx, 0, moved)
+      setSectionOrder(next)
+      persistSections(next, sectionCollapsed)
+      // Re-anchor so the dragged header stays near the finger after
+      // the slot moves; without this it races away from the pointer.
+      state.anchorY = e.clientY
+      setSectionDragOffsetY(0)
+    }
+  }
+
+  function handleSectionPointerEnd(e: React.PointerEvent<HTMLDivElement>) {
+    if (!sectionDragRef.current || e.pointerId !== sectionDragRef.current.pointerId) return
+    endSectionDrag(/* asTap */ true)
+  }
+
+  function handleSectionPointerCancel(e: React.PointerEvent<HTMLDivElement>) {
+    if (!sectionDragRef.current || e.pointerId !== sectionDragRef.current.pointerId) return
+    endSectionDrag(/* asTap */ false)
   }
 
   // ─── follow / list helpers ────────────────────────────────────────────────
@@ -456,10 +558,10 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
 
   // Profile uses the compact card density everywhere — keeps each section
   // glance-able even when a user has hundreds of mints/collected/listings.
-  // Grid is 2/3/4/6 across breakpoints (mirrors CardSwiper's progression);
-  // max-h caps the section at roughly 3 rows tall and the remainder
-  // scrolls inside the box. Skeleton uses the same shell so the loading
-  // state doesn't visually flip when content arrives.
+  // Grid is 2/3/4/6 across breakpoints (same density PaginatedGrid uses
+  // for its grid view); max-h caps the section at roughly 3 rows tall
+  // and the remainder scrolls inside the box. Skeleton uses the same
+  // shell so the loading state doesn't visually flip when content arrives.
   const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
   // ~3 rows worth of compact cards across breakpoints — a single value
   // is approximate (row height varies with card width) but lands close
@@ -904,23 +1006,49 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       {/* Draggable / collapsible sections. The optional `curate` section is
           appended last for the curator on their own profile and is not
           drag-reorderable — it stays pinned to the bottom. */}
-      <div className="flex flex-col">
-        {(showCurate ? [...sectionOrder, 'curate' as const] : sectionOrder).map((section, idx) => {
+      <div ref={sectionContainerRef} className="flex flex-col">
+        {(showCurate ? [...sectionOrder, 'curate' as const] : sectionOrder).map((section) => {
           const isCollapsed = sectionCollapsed[section] ?? false
           const count = sectionCount[section]
-          const sectionDraggable = section !== 'curate' && allowDrag
+          const isReorderable = section !== 'curate'
+          const isDragging = draggingSection === section
           return (
             <div
               key={section}
-              onDragOver={sectionDraggable ? (e) => onDragOver(e, idx) : undefined}
-              className={`border-t border-line transition-opacity duration-150 ${draggingSection === section ? 'opacity-40' : 'opacity-100'}`}
+              data-section={section}
+              className={`border-t border-line transition-opacity duration-150 ${isDragging ? 'opacity-40' : 'opacity-100'}`}
+              style={isDragging ? { transform: `translateY(${sectionDragOffsetY}px)`, position: 'relative', zIndex: 10 } : undefined}
             >
               <div
-                draggable={sectionDraggable}
-                onDragStart={sectionDraggable ? () => onDragStart(idx) : undefined}
-                onDragEnd={sectionDraggable ? onDragEnd : undefined}
-                onClick={() => toggleCollapsed(section)}
-                className={`flex items-center gap-2 py-4 select-none ${sectionDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+                onPointerDown={isReorderable ? (e) => handleSectionPointerDown(e, section) : undefined}
+                onPointerMove={isReorderable ? handleSectionPointerMove : undefined}
+                onPointerUp={isReorderable ? handleSectionPointerEnd : undefined}
+                onPointerCancel={isReorderable ? handleSectionPointerCancel : undefined}
+                // For the non-reorderable curate row, `onClick` is fine —
+                // no pointer-tap path competing with it. Reorderable rows
+                // fire toggleCollapsed from handleSectionPointerEnd when
+                // the gesture resolves as a tap.
+                onClick={isReorderable ? undefined : () => toggleCollapsed(section)}
+                // Enter / Space activation lives outside the pointer path,
+                // matching the TabBar treatment. `e.target === e.currentTarget`
+                // ensures bubbled keydown from the inner "collections"
+                // button doesn't also toggle the section.
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    toggleCollapsed(section)
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-expanded={!isCollapsed}
+                // touch-action: pan-y pre-drag so the user can scroll
+                // the profile past the header by swiping vertically.
+                // Once a drag is committed (long-press fires) we flip
+                // to touch-none so the gesture is ours.
+                style={isReorderable && isDragging ? { touchAction: 'none' } : undefined}
+                className={`flex items-center gap-2 py-4 select-none ${isReorderable ? 'touch-pan-y cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
               >
                 <ChevronRight
                   size={12}
@@ -932,6 +1060,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 {section === 'mints' && !isCollapsed && (
                   <button
                     onClick={(e) => { e.stopPropagation(); setCollectionsMode((v) => !v) }}
+                    onPointerDown={(e) => e.stopPropagation()}
                     className={`text-xs font-mono px-2.5 py-1 border transition-colors ${
                       collectionsMode
                         ? 'border-muted text-dim hover:border-red-900/50 hover:text-red-400'

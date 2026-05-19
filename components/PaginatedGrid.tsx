@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
-import { CardSwiper, CardSwiperItem } from './CardSwiper'
 import { LazyMount, EAGER_MOUNT_COUNT } from './LazyMount'
 
 interface ItemHelpers {
@@ -11,15 +10,14 @@ interface ItemHelpers {
   remove: () => void
   /** 0-based position; callers use this to mark above-the-fold items as priority. */
   index: number
-  /**
-   * Active layout mode. Callers branch their render — e.g. MomentCard
-   * switches to `compact showCreator` in grid mode. Always 'feed' when
-   * the parent doesn't pass `viewMode`.
-   */
-  viewMode: ViewMode
 }
 
 type ViewMode = 'feed' | 'grid'
+
+// Hoisted so the skeleton and the live grid use the same column
+// classes — keeping them in sync was a maintenance hazard before.
+const GRID_FEED = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'
+const GRID_GRID = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
 
 interface PaginatedGridProps<T> {
   /** Base URL; the component appends `?page=N&limit=…`. Changing this resets + refetches. */
@@ -38,10 +36,11 @@ interface PaginatedGridProps<T> {
   filter?: (items: T[]) => T[]
   pageLimit?: number
   /**
-   * 'feed' (default) renders the existing vertical grid (1/2/3 cols).
-   * 'grid' renders a horizontal snap-scroller with cards at 2/3/4/6/8
-   * visible per row across breakpoints. Callers wire this to
-   * `useViewMode`; the toggle button itself is rendered separately
+   * 'feed' (default) renders the spacious vertical grid (1/2/3 cols).
+   * 'grid' renders a denser vertical grid (2/3/4/6 cols) with compact
+   * cards. Both modes scroll vertically with a "load more" button at
+   * the bottom — only the column density changes. Callers wire this
+   * to `useViewMode`; the toggle button itself is rendered separately
    * (e.g. inside the `header` slot, beside other filter pills).
    */
   viewMode?: ViewMode
@@ -55,10 +54,6 @@ interface PaginatedGridProps<T> {
    * HTML and the lazy/eager render tree never changes after hydration.
    * Don't toggle this client-side per render: it would cause LazyMount
    * components to remount when the toggle flips, defeating the point.
-   *
-   * Applies to both view modes — the IntersectionObserver fires on
-   * horizontal scroll too, so swiper cards beyond the eager window
-   * still defer mount until swiped near.
    */
   lazy?: boolean
 }
@@ -215,17 +210,13 @@ export function PaginatedGrid<T>({
   const refreshing = firstFetching && !!firstPage
   const error = firstError?.message ?? null
 
-  // Single source of truth for "wrap with LazyMount or not". Used in
-  // both layouts so the eager/lazy split stays consistent: items above
-  // EAGER_MOUNT_COUNT (or any item when lazy=false) render directly;
-  // items past the threshold defer until in-viewport.
+  // Eager up to EAGER_MOUNT_COUNT, then LazyMount past it when `lazy`
+  // is on. Inlining the lazy decision next to the render so the eager/
+  // lazy split is one obvious branch.
+  const gridClass = viewMode === 'grid' ? GRID_GRID : GRID_FEED
   function renderEntry(item: T, index: number): ReactElement {
     const key = getKey(item)
-    const node = renderItem(item, {
-      remove: () => removeItem(key),
-      index,
-      viewMode,
-    })
+    const node = renderItem(item, { remove: () => removeItem(key), index })
     if (!lazy || index < EAGER_MOUNT_COUNT) return node
     return <LazyMount key={key}>{() => node}</LazyMount>
   }
@@ -245,11 +236,11 @@ export function PaginatedGrid<T>({
       </div>
 
       {loading && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => (
+        <div className={gridClass}>
+          {Array.from({ length: viewMode === 'grid' ? 12 : 6 }).map((_, i) => (
             <div key={i} className="bg-[#161616] border border-line">
               <div className="aspect-square bg-raised animate-pulse" />
-              <div className="p-4 space-y-2">
+              <div className={viewMode === 'grid' ? 'p-2 space-y-1.5' : 'p-4 space-y-2'}>
                 <div className="h-3 bg-raised animate-pulse w-2/3" />
                 <div className="h-3 bg-raised animate-pulse w-1/3" />
               </div>
@@ -274,47 +265,19 @@ export function PaginatedGrid<T>({
 
       {!loading && visible.length > 0 && (
         <>
-          {viewMode === 'grid' ? (
-            <CardSwiper>
-              {visible.map((item, index) => (
-                <CardSwiperItem key={getKey(item)}>
-                  {renderEntry(item, index)}
-                </CardSwiperItem>
-              ))}
-              {currentPage < totalPages && (
-                // "Load more" sits at the end of the swipe path — once the
-                // user scrolls to the right edge they tap to append the
-                // next page, mirroring the feed mode's bottom-of-list
-                // button. Matches each card's responsive width so it
-                // snaps into a card-shaped slot.
-                <CardSwiperItem>
-                  <button
-                    onClick={loadMore}
-                    disabled={loadingMore}
-                    className="w-full h-full border border-line text-[10px] font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
-                  >
-                    {loadingMore ? 'loading…' : 'load more →'}
-                  </button>
-                </CardSwiperItem>
-              )}
-            </CardSwiper>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {visible.map((item, index) => renderEntry(item, index))}
-              </div>
-              {currentPage < totalPages && (
-                <div className="mt-8 text-center">
-                  <button
-                    onClick={loadMore}
-                    disabled={loadingMore}
-                    className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
-                  >
-                    {loadingMore ? 'loading…' : 'load more'}
-                  </button>
-                </div>
-              )}
-            </>
+          <div className={gridClass}>
+            {visible.map((item, index) => renderEntry(item, index))}
+          </div>
+          {currentPage < totalPages && (
+            <div className="mt-8 text-center">
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+              >
+                {loadingMore ? 'loading…' : 'load more'}
+              </button>
+            </div>
           )}
         </>
       )}

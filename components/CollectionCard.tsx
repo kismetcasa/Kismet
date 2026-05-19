@@ -37,10 +37,10 @@ interface CollectionCardProps {
   // LCP target doesn't lazy-load.
   priority?: boolean
   /**
-   * Compact mode for the grid-view horizontal swiper. Drops the
-   * description and collapses to a single action button (collect-all
-   * when eligible, otherwise view-collection) so the card fits ~180px
-   * wide alongside other compact cards in the same scroller.
+   * Compact mode for the dense grid view. Drops the description and
+   * collapses to a single action button (collect-all when eligible,
+   * otherwise view-collection) so the card fits at ~180px wide
+   * alongside other compact cards in the same row.
    */
   compact?: boolean
   /**
@@ -132,7 +132,7 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
 
       {/* Actions. Compact: single action — collect-all when eligible,
           otherwise view-collection — to keep the card at the same height
-          as compact moment cards in the swiper. Non-compact: view + (optional)
+          as compact moment cards beside it. Non-compact: view + optional
           collect-all stacked. */}
       {compact ? (
         <div className="px-2 pb-2 mt-auto">

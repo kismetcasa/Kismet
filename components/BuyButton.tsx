@@ -18,9 +18,9 @@ interface BuyButtonProps {
   onBought?: () => void
   className?: string
   /**
-   * Compact sizing for the grid-view swiper — shrinks text, padding, and
-   * label so the button fits a ~180px wide compact MarketCard alongside
-   * the price chip and creator chip.
+   * Compact sizing for the grid view — shrinks text, padding, and label
+   * so the button fits a ~180px wide compact MarketCard alongside the
+   * price chip and creator chip.
    */
   compact?: boolean
 }
