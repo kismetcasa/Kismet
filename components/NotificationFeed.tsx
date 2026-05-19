@@ -296,14 +296,24 @@ export function NotificationFeed() {
                     setTypeFilter(tab)
                   }
                 }}
+                // touch-pan-y on draggable filter chips — drag axis is
+                // horizontal, so we let the browser handle vertical page
+                // scroll but claim horizontal swipes for the drag. Without
+                // this, the parent's overflow-x-auto would race the
+                // long-press timer and the drag never commits on Mini App.
                 style={isDragging
-                  ? { transform: `translateX(${filterDragOffsetX}px)`, zIndex: 10, touchAction: 'none' }
+                  ? {
+                      transform: `translate3d(${filterDragOffsetX}px, 0, 0) scale(1.05)`,
+                      zIndex: 10,
+                      touchAction: 'none',
+                      boxShadow: '0 6px 16px rgba(0, 0, 0, 0.45)',
+                    }
                   : undefined}
                 className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border flex-shrink-0 select-none transition-colors duration-150 ${
                   isActive
                     ? 'border-accent text-accent'
                     : 'border-line text-muted hover:border-[#444] hover:text-dim'
-                } ${isDraggable ? 'cursor-grab active:cursor-grabbing' : ''} ${
+                } ${isDraggable ? 'touch-pan-y cursor-grab active:cursor-grabbing' : ''} ${
                   isDragging ? 'opacity-70' : ''
                 }`}
               >

@@ -932,7 +932,12 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
               key={section}
               data-section={section}
               className={`border-t border-line transition-opacity duration-150 ${isDragging ? 'opacity-40' : 'opacity-100'}`}
-              style={isDragging ? { transform: `translateY(${sectionDragOffsetY}px)`, position: 'relative', zIndex: 10 } : undefined}
+              style={isDragging ? {
+                transform: `translate3d(0, ${sectionDragOffsetY}px, 0) scale(1.02)`,
+                position: 'relative',
+                zIndex: 10,
+                boxShadow: '0 6px 16px rgba(0, 0, 0, 0.45)',
+              } : undefined}
             >
               <div
                 {...(isReorderable

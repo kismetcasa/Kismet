@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type RefObject, type PointerEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type RefObject, type PointerEvent } from 'react'
 
 // Long-press window before a touch becomes a drag. 250ms matches the
 // iOS Home-Screen / common reorder-UI feel — long enough that a
@@ -87,6 +87,14 @@ export function useLongPressDrag<TId>({
   orderRef.current = order
   const [draggingId, setDraggingId] = useState<TId | null>(null)
   const [dragOffset, setDragOffset] = useState(0)
+  // FLIP buffer: rects captured immediately before a swap so the
+  // post-render useLayoutEffect can animate neighbors from their old
+  // positions to their new ones instead of snapping. Only the FIRST
+  // pre-swap capture per render is kept (if pointermove fires multiple
+  // swaps before React re-renders, intermediate states aren't visually
+  // shown anyway — we want the animation from what the user actually
+  // saw last to what they see now).
+  const flipRectsRef = useRef<Map<TId, DOMRect> | null>(null)
 
   const coordOf = (e: { clientX: number; clientY: number }) =>
     axis === 'x' ? e.clientX : e.clientY
@@ -170,6 +178,20 @@ export function useLongPressDrag<TId>({
       targetIdx = i
     }
     if (targetIdx !== currentIdx) {
+      // Capture pre-swap rects so the post-render FLIP knows where
+      // each item used to be. First-write-wins: if multiple swaps
+      // batch into one render, we keep the rects from the FIRST
+      // (= last user-visible state), not the most recent in-memory
+      // one. Map keys are item ids resolved via the DOM order, which
+      // matches `currentOrder` because callers render via order.map.
+      if (!flipRectsRef.current) {
+        const pre = new Map<TId, DOMRect>()
+        els.forEach((el, i) => {
+          const id = currentOrder[i]
+          if (id !== undefined) pre.set(id, el.getBoundingClientRect())
+        })
+        flipRectsRef.current = pre
+      }
       const next = [...currentOrder]
       const [moved] = next.splice(currentIdx, 1)
       next.splice(targetIdx, 0, moved)
@@ -200,6 +222,46 @@ export function useLongPressDrag<TId>({
       onPointerCancel,
     }
   }
+
+  // FLIP — when `order` changes mid-drag, neighbors snap to their new
+  // slot positions. Without this hook, that snap is visually jarring;
+  // with it, each displaced item appears (briefly) at its old position
+  // and animates to the new one. The dragged item itself is excluded
+  // because its translate is managed by the move handler above.
+  useLayoutEffect(() => {
+    const oldRects = flipRectsRef.current
+    if (!oldRects) return
+    flipRectsRef.current = null
+    const container = containerRef.current
+    if (!container) return
+    const els = Array.from(container.querySelectorAll<HTMLElement>(itemSelector))
+    const newOrder = orderRef.current
+    const liftedId = dragRef.current?.startId ?? null
+    els.forEach((el, i) => {
+      const id = newOrder[i]
+      if (id === undefined) return
+      // Skip the lifted item — its style.transform is owned by the
+      // drag handler. Letting FLIP touch it fights the React render
+      // and produces a one-frame glitch as the finger keeps moving.
+      if (id === liftedId) return
+      const oldRect = oldRects.get(id)
+      if (!oldRect) return
+      const newRect = el.getBoundingClientRect()
+      const dx = oldRect.left - newRect.left
+      const dy = oldRect.top - newRect.top
+      // Sub-pixel deltas aren't worth a transition — they tend to come
+      // from font-rendering jitter, not actual position changes.
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+      // Apply the inverse offset first (item appears in old position),
+      // commit that to layout, then transition transform back to 0.
+      el.style.transition = 'none'
+      el.style.transform = `translate(${dx}px, ${dy}px)`
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform 200ms cubic-bezier(0.2, 0, 0, 1)'
+        el.style.transform = ''
+      })
+    })
+  }, [order, containerRef, itemSelector])
 
   return { draggingId, dragOffset, bindItem }
 }
