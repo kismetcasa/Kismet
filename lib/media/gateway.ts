@@ -31,3 +31,30 @@ export function isProxiable(uri: string): boolean {
 export function proxyUrl(uri: string): string {
   return `/api/img?u=${encodeURIComponent(uri)}`
 }
+
+/**
+ * True on Safari (desktop + iOS) and any other WebKit-only context — Chrome
+ * iOS (CriOS), Mini App iOS WKWebView, etc. False on Chromium-based browsers
+ * (Chrome, Edge, Brave, Opera) which all include "Chrome" in their UA.
+ *
+ * Used to short-circuit the 'direct' gateway-walk fallback in MomentImage /
+ * MomentImg: on WebKit, a stalled-but-not-yet-failed gateway request holds a
+ * connection in the per-host pool for the browser's full ~30s timeout, and
+ * stacked-up timeouts across a feed of cards can starve the entire UI (the
+ * symptom: nav unresponsive, Safari "can barely inspect element" reports).
+ * Chromium handles the same scenario gracefully — it parallelises + cancels
+ * stalled fetches more aggressively — so we leave its path unchanged.
+ *
+ * The proxy already races every gateway server-side; if it failed there's
+ * almost no chance the client-side walk through the same gateways succeeds.
+ * Skipping the walk on WebKit trades a near-zero-yield resilience layer for
+ * not melting the UI.
+ *
+ * UA-sniffing is a last-resort tactic — used here because there's no clean
+ * feature test for "stalls hard on a saturated HTTP/2 host pool".
+ */
+export function isWebKitOnly(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent
+  return ua.includes('AppleWebKit') && !ua.includes('Chrome') && !ua.includes('Chromium')
+}
