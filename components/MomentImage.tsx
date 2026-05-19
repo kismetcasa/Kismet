@@ -127,6 +127,22 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
 
   return (
     <>
+      {/* Persistent blur background. Next/image's placeholder="blur"
+          paints during the initial load and is then removed when the
+          image fires onLoad — leaving nothing underneath if iOS
+          WebKit later evicts the decoded image bytes under memory
+          pressure (typical on Mini App webview during fast scroll
+          back-and-forth). This <span> renders the same thumbhash as
+          a CSS background that survives eviction, so the user sees
+          the low-fi blur instead of an empty card. Mirrors the
+          poster-layer pattern already used in MomentVideo. */}
+      {blurDataURL && (
+        <span
+          aria-hidden
+          className="absolute inset-0 bg-cover bg-center pointer-events-none"
+          style={{ backgroundImage: `url(${blurDataURL})` }}
+        />
+      )}
       {/* Skeleton only when there's no thumbhash blur — the blur supersedes. */}
       {!loaded && !blurDataURL && (
         <span
