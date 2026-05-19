@@ -98,7 +98,9 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
             alt={collectionName}
             fill
             className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            sizes={compact
+              ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
+              : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
             onAllError={() => setImgFailed(true)}
             priority={priority}
             preferProxy

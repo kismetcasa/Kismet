@@ -49,7 +49,7 @@ interface ArtistCollection {
 // Collection preview thumbnail with multi-gateway fallback. MomentImage
 // returns null if every gateway 404s; we wire onAllError to swap in
 // the "no preview" placeholder so the tile never renders empty.
-function CollectionPreviewImage({ src, alt, thumbhash }: { src?: string; alt: string; thumbhash?: string }) {
+function CollectionPreviewImage({ src, alt, thumbhash, priority }: { src?: string; alt: string; thumbhash?: string; priority?: boolean }) {
   const [failed, setFailed] = useState(false)
   if (!src || failed) {
     return (
@@ -64,10 +64,13 @@ function CollectionPreviewImage({ src, alt, thumbhash }: { src?: string; alt: st
       alt={alt}
       fill
       className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-      sizes="(max-width: 640px) 50vw, 33vw"
+      // Same compact-density sizes as the compact MomentCard/CollectionCard
+      // since this card sits in the same 2/3/4/6 grid on profile.
+      sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw"
       onAllError={() => setFailed(true)}
       preferProxy
       thumbhash={thumbhash}
+      priority={priority}
     />
   )
 }
@@ -482,12 +485,14 @@ export function ProfileView({ address }: ProfileViewProps) {
   // Single layout for all card-based sections: compact vertical grid
   // inside a scroll-clipped box. The box's max-h kicks in only when
   // content exceeds it — short sections render their natural height
-  // with no scrollbar.
-  function renderCardCollection<T>(items: T[], renderCard: (item: T) => React.ReactNode, getItemKey: (item: T) => string) {
+  // with no scrollbar. `index` is passed to renderCard so callers can
+  // flag the first row's worth of cards (one row at lg+ = 6 cards) as
+  // priority loads — those are above the fold and shouldn't lazy-load.
+  function renderCardCollection<T>(items: T[], renderCard: (item: T, index: number) => React.ReactNode, getItemKey: (item: T) => string) {
     return (
       <div className={SCROLL_BOX_CLASSES}>
         <div className={GRID_CLASSES}>
-          {items.map((it) => <div key={getItemKey(it)}>{renderCard(it)}</div>)}
+          {items.map((it, index) => <div key={getItemKey(it)}>{renderCard(it, index)}</div>)}
         </div>
       </div>
     )
@@ -499,12 +504,12 @@ export function ProfileView({ address }: ProfileViewProps) {
         <p className="text-muted font-mono text-xs">no collections yet</p>
       ) : renderCardCollection(
         artistCollections,
-        (c) => {
+        (c, index) => {
           const collectionName = c.metadata?.name || c.name
           return (
             <div className="flex flex-col bg-[#161616] border border-line overflow-hidden">
               <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-surface block overflow-hidden group/img">
-                <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} thumbhash={c.metadata?.kismet_thumbhash} />
+                <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} thumbhash={c.metadata?.kismet_thumbhash} priority={index < 6} />
               </Link>
               <div className="px-2 pt-2 pb-1 gap-0.5 flex flex-col">
                 <h3 className="text-[11px] text-ink font-mono truncate">{collectionName}</h3>
@@ -534,7 +539,7 @@ export function ProfileView({ address }: ProfileViewProps) {
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : renderCardCollection(
             moments,
-            (m) => <MomentCard moment={m} hidePriceSupply compact showCreator />,
+            (m, index) => <MomentCard moment={m} hidePriceSupply compact showCreator priority={index < 6} />,
             (m) => m.id ?? `${m.address}-${m.token_id}`,
           )
     ),
@@ -542,7 +547,7 @@ export function ProfileView({ address }: ProfileViewProps) {
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           collected,
-          (m) => <MomentCard moment={m} hidePriceSupply compact showCreator />,
+          (m, index) => <MomentCard moment={m} hidePriceSupply compact showCreator priority={index < 6} />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : listings.length === 0
@@ -555,12 +560,13 @@ export function ProfileView({ address }: ProfileViewProps) {
       )
       : renderCardCollection(
           listings,
-          (l) => (
+          (l, index) => (
             <MarketCard
               listing={l}
               onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))}
               compact
               showCreator
+              priority={index < 6}
             />
           ),
           (l) => l.id,

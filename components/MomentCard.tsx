@@ -303,7 +303,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             fill
             className="object-contain transition-transform duration-500 group-hover:scale-105"
             onAllError={() => setImgError(true)}
-            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            // Compact mode (profile grids, swiper grid view) packs cards
+            // 2-6 across — at ~16vw on desktop the default tuned for
+            // feed-mode (33vw) made the browser fetch 2x larger images
+            // than rendered. Each branch is the actual rendered width.
+            sizes={compact
+              ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
+              : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
             mime={meta.content?.mime}
             thumbhash={meta.kismet_thumbhash}
             priority={priority}

@@ -30,9 +30,14 @@ interface MarketCardProps {
    * view passes true; non-compact mode renders it by default.
    */
   showCreator?: boolean
+  /**
+   * Above-the-fold hint. Forwards next/image priority so the first
+   * row of a market grid doesn't lazy-load behind hydration.
+   */
+  priority?: boolean
 }
 
-export function MarketCard({ listing, onRemove, compact, showCreator }: MarketCardProps) {
+export function MarketCard({ listing, onRemove, compact, showCreator, priority }: MarketCardProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
@@ -149,7 +154,10 @@ export function MarketCard({ listing, onRemove, compact, showCreator }: MarketCa
             alt={listing.name ?? ''}
             fill
             className="object-contain"
-            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            sizes={compact
+              ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
+              : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
+            priority={priority}
           />
         ) : isTextListing ? (
           <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-raised to-[#0a0a0a]">
