@@ -74,6 +74,11 @@ interface Slot {
   /** Fired when every gateway has errored — caller drops the slot and
    *  shows the poster-only fallback. */
   onError?: () => void
+  /** Fired when the pool destroys this slot's video to free a pool entry
+   *  for another src (B's safety-net eviction). Slot is expected to bump
+   *  a render token so its acquire effect re-fires and grabs a fresh
+   *  pool entry on the next render. */
+  onEvicted?: () => void
   /** Clipping ancestors (overflow auto/scroll/hidden) above the slot.
    *  Cached on mount by SharedVideoSlot so positionElement doesn't
    *  walk the parent chain + call getComputedStyle on every refresh
@@ -106,6 +111,11 @@ interface ManagedVideo {
    *  cross the threshold twice in <200ms; without debounce each pair
    *  triggers a play()→pause() round-trip with real decoder cost. */
   intentTimer: number | null
+  /** Schedules the C-path: after the slot has been non-intersecting for
+   *  RELEASE_HOLD_MS, remove it from slots[] so the pool entry becomes
+   *  idle and is reclaimable by evictIdleIfOverCap. Cancelled if the
+   *  slot re-intersects (user scrolls back inside the hold window). */
+  releaseHoldTimer: number | null
   gateways: string[]
   gatewayIndex: number
   loaded: boolean
@@ -155,6 +165,14 @@ export function useSharedVideoContext(): ContextValue {
 // Grace window after a slot releases — long enough for the next surface
 // to claim the element on a route transition without re-creating it.
 const RELEASE_GRACE_MS = 1000
+
+// How long the slot must stay non-intersecting before we voluntarily
+// remove it from the pool entry's `slots[]` (the C-path: lets eviction
+// reclaim entries whose only slot is in a hidden tab or scrolled off
+// the viewport). 2s tolerates scrub-and-back without churn but reclaims
+// fast enough that a tab swap frees decoder slots before the user's
+// finger has finished the gesture.
+const RELEASE_HOLD_MS = 2000
 
 // Idle-eviction windows. Short loops cycle fast and re-fetch cheaply,
 // so the original 5min is enough. Long-form videos cost minutes of
@@ -330,6 +348,13 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       clearTimeout(video.intentTimer)
       video.intentTimer = null
     }
+    // Cancel any pending C-path release scheduled against the previous
+    // slot — re-setup means a new slot is active and the prior release
+    // is moot.
+    if (video.releaseHoldTimer !== null) {
+      clearTimeout(video.releaseHoldTimer)
+      video.releaseHoldTimer = null
+    }
     // Controlled surfaces (detail page, lightbox) skip IO entirely —
     // the user owns play/pause there.
     if (slot.controls) return
@@ -344,21 +369,51 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
         video.intentTimer = window.setTimeout(() => {
           video.intentTimer = null
           if (video.destroyed) return
-          // Slot may have been pre-empted by a new acquire during the
-          // debounce window — bail if no longer active to avoid
-          // positioning against a stale ref.
-          if (video.slots[0] !== slot) return
           if (targetIntersecting) {
+            // Cancel any pending C-path release (user scrolled back in).
+            if (video.releaseHoldTimer !== null) {
+              clearTimeout(video.releaseHoldTimer)
+              video.releaseHoldTimer = null
+            }
+            // C-path re-acquire: slot was released while non-intersecting
+            // but its IO is still observing the same DOM ref. Push it
+            // back to slots[0] and re-activate. Bail if the React
+            // component unmounted in the interim (ref no longer in DOM).
+            if (!video.slots.includes(slot)) {
+              if (!slot.ref.isConnected) return
+              video.slots.unshift(slot)
+              activateSlot(video, slot)
+              return
+            }
+            // Slot may have been pre-empted by a new acquire during the
+            // debounce window — bail if no longer active to avoid
+            // positioning against a stale ref.
+            if (video.slots[0] !== slot) return
             video.isIntersecting = true
             // Slot moved during debounce; re-position before un-hide.
             positionElement(video, slot)
             video.el.play().catch(() => {})
           } else {
+            if (video.slots[0] !== slot) return
             video.isIntersecting = false
             // Hide before flushAll starts skipping: a non-updated
             // position:fixed element would appear stuck mid-viewport.
             video.el.style.visibility = 'hidden'
             video.el.pause()
+            // C-path: after RELEASE_HOLD_MS of sustained non-intersect,
+            // remove this slot so the pool entry can be reclaimed.
+            if (video.releaseHoldTimer === null) {
+              video.releaseHoldTimer = window.setTimeout(() => {
+                video.releaseHoldTimer = null
+                if (video.destroyed) return
+                const idx = video.slots.indexOf(slot)
+                if (idx === -1) return
+                video.slots.splice(idx, 1)
+                if (video.slots.length === 0) {
+                  video.lastActiveAt = Date.now()
+                }
+              }, RELEASE_HOLD_MS)
+            }
           }
         }, 100)
       },
@@ -449,6 +504,7 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     if (video.releaseTimer !== null) clearTimeout(video.releaseTimer)
     if (video.transitionTimer !== null) clearTimeout(video.transitionTimer)
     if (video.intentTimer !== null) clearTimeout(video.intentTimer)
+    if (video.releaseHoldTimer !== null) clearTimeout(video.releaseHoldTimer)
     video.abort.abort()
     video.el.pause()
     video.el.removeAttribute('src')
@@ -458,21 +514,44 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
 
   function evictIdleIfOverCap() {
     if (poolRef.current.size <= maxPoolSize) return
-    // Two-pass LRU. Short loops cycle fast and rebuild cheaply;
-    // long-form costs minutes of buffered bytes to re-fetch. So we
-    // exhaust idle short-loop entries before touching long-form,
-    // and only fall through to long-form if every idle slot in the
-    // pool is long-form (the rare all-long-form feed case).
+    // Four tiers, evicted in order. Short loops cycle fast and rebuild
+    // cheaply; long-form costs minutes of buffered bytes. "Idle" =
+    // slots.length === 0 (C's natural release path drained them). "Stale"
+    // = slots exist but all are non-intersecting non-controls (their
+    // tab is hidden via keep-alive, or they're off-viewport but haven't
+    // hit RELEASE_HOLD_MS yet) — B's safety net so keep-alive can't
+    // pin the pool past cap. Controls slots (detail page, lightbox)
+    // are excluded — the user is actively viewing them.
     const shortIdle: Array<{ src: string; video: ManagedVideo }> = []
     const longIdle: Array<{ src: string; video: ManagedVideo }> = []
+    const shortStale: Array<{ src: string; video: ManagedVideo }> = []
+    const longStale: Array<{ src: string; video: ManagedVideo }> = []
     poolRef.current.forEach((video, src) => {
-      if (video.slots.length !== 0) return
-      ;(video.isLongForm ? longIdle : shortIdle).push({ src, video })
+      if (video.slots.length === 0) {
+        ;(video.isLongForm ? longIdle : shortIdle).push({ src, video })
+        return
+      }
+      const hasControls = video.slots.some((s) => s.controls)
+      if (!hasControls && video.isIntersecting === false) {
+        ;(video.isLongForm ? longStale : shortStale).push({ src, video })
+      }
     })
-    const tier = shortIdle.length > 0 ? shortIdle : longIdle
+    const tier =
+      shortIdle.length > 0 ? shortIdle
+      : longIdle.length > 0 ? longIdle
+      : shortStale.length > 0 ? shortStale
+      : longStale
     tier.sort((a, b) => a.video.lastActiveAt - b.video.lastActiveAt)
     const oldest = tier[0]
     if (oldest) {
+      // Stale-tier evictions still have live slot refs — notify them
+      // so their acquire effect re-fires and grabs a fresh pool entry
+      // the next time they re-intersect (or immediately, if they're
+      // visible). Clear slots[] first so destroyVideo's downstream
+      // cleanups don't double-notify.
+      const slotsToNotify = oldest.video.slots
+      oldest.video.slots = []
+      slotsToNotify.forEach((s) => s.onEvicted?.())
       destroyVideo(oldest.video)
       poolRef.current.delete(oldest.src)
     }
@@ -509,6 +588,7 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       observer: null,
       isIntersecting: null,
       intentTimer: null,
+      releaseHoldTimer: null,
       gateways,
       gatewayIndex: 0,
       loaded: false,
