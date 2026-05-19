@@ -1,6 +1,14 @@
 'use client'
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+
+/**
+ * How many items at the start of a list mount eagerly when lazy mode
+ * is active. Cards beyond this index defer mount until their placeholder
+ * enters the viewport. 6 covers two rows of three on desktop AND a few
+ * viewport heights of scrollable content on mobile.
+ */
+export const EAGER_MOUNT_COUNT = 6
 
 interface LazyMountProps {
   /** Render-prop: only invoked once the placeholder enters the IO window.
@@ -85,4 +93,32 @@ export function LazyMount({
       {placeholder}
     </div>
   )
+}
+
+/**
+ * Conditional lazy-mount wrapper for use inside grid maps that aren't
+ * paginated (ProfileView, CollectionView). When `lazy` is false (every
+ * desktop caller), renders children inline as a Fragment — zero overhead.
+ * When `lazy` is true AND index is beyond EAGER_MOUNT_COUNT, wraps in
+ * LazyMount.
+ *
+ * Caller MUST set `key` on this component itself, not on the inner
+ * element — both branches render different React types, so the key has
+ * to live on the outer position to stay stable across mount/unmount.
+ */
+export function MaybeLazy({
+  index,
+  lazy,
+  children,
+  placeholder,
+}: {
+  index: number
+  lazy: boolean
+  children: () => ReactNode
+  placeholder?: ReactNode
+}) {
+  if (!lazy || index < EAGER_MOUNT_COUNT) {
+    return <Fragment>{children()}</Fragment>
+  }
+  return <LazyMount placeholder={placeholder}>{children}</LazyMount>
 }

@@ -6,7 +6,7 @@ import { MarketCard } from '@/components/MarketCard'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
 import type { Listing } from '@/lib/listings'
 
-export function MarketView() {
+export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
   const { address } = useAccount()
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
@@ -14,6 +14,11 @@ export function MarketView() {
         apiUrl="/api/listings"
         itemsKey="listings"
         getKey={(l) => l.id}
+        // Mobile: lazy-mount listings beyond EAGER_MOUNT_COUNT so the
+        // /market route doesn't pay the full N-card mount cost on
+        // every navigation in. Desktop: lazy=false (default), eager
+        // for everyone, same as before this prop existed.
+        lazy={isMobile}
         renderItem={(l, helpers) => (
           <MarketCard key={l.id} listing={l} onRemove={helpers.remove} />
         )}

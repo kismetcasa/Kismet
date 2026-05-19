@@ -23,6 +23,7 @@ import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { useFinePointer } from '@/hooks/useFinePointer'
+import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
 
 interface Payment {
@@ -149,6 +150,14 @@ function FollowRow({ addr, onClose, onNameLoaded }: { addr: string; onClose: () 
 
 interface ProfileViewProps {
   address: string
+  /**
+   * Set by the server-component wrapper (app/profile/[address]/page.tsx)
+   * based on request UA. When true, MomentCard / MarketCard grids
+   * beyond EAGER_MOUNT_COUNT items defer mount via LazyMount.
+   * Default false — every desktop request and any legacy caller gets
+   * eager rendering exactly as before this prop existed.
+   */
+  isMobile?: boolean
 }
 
 interface Profile {
@@ -162,7 +171,7 @@ interface Profile {
   updatedAt: number
 }
 
-export function ProfileView({ address }: ProfileViewProps) {
+export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
@@ -506,11 +515,19 @@ export function ProfileView({ address }: ProfileViewProps) {
     ) : (
       loadingMoments ? skeleton(6) : moments.length === 0
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
-        : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>
+        : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{moments.map((m, i) => (
+            <MaybeLazy key={m.id} index={i} lazy={isMobile}>
+              {() => <MomentCard moment={m} hidePriceSupply />}
+            </MaybeLazy>
+          ))}</div>
     ),
     collected: loadingCollected ? skeleton(6) : collected.length === 0
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
-      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{collected.map((m) => <MomentCard key={m.id} moment={m} hidePriceSupply />)}</div>,
+      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{collected.map((m, i) => (
+          <MaybeLazy key={m.id} index={i} lazy={isMobile}>
+            {() => <MomentCard moment={m} hidePriceSupply />}
+          </MaybeLazy>
+        ))}</div>,
     listings: loadingListings ? skeleton(3) : listings.length === 0
       ? (
         <p className="text-muted font-mono text-xs">
@@ -519,7 +536,11 @@ export function ProfileView({ address }: ProfileViewProps) {
           {' '}it here
         </p>
       )
-      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{listings.map((l) => <MarketCard key={l.id} listing={l} onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))} />)}</div>,
+      : <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">{listings.map((l, i) => (
+          <MaybeLazy key={l.id} index={i} lazy={isMobile}>
+            {() => <MarketCard listing={l} onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))} />}
+          </MaybeLazy>
+        ))}</div>,
     payments: loadingPayments ? (
       <div className="flex flex-col gap-1">
         {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-surface animate-pulse border border-raised" />)}

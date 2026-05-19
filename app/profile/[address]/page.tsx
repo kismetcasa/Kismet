@@ -5,6 +5,7 @@ import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 import { shortAddress } from '@/lib/inprocess'
+import { isMobileUA } from '@/lib/serverDevice'
 import { ProfileView } from '@/components/ProfileView'
 
 interface Props {
@@ -77,6 +78,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ProfilePage({ params }: Props) {
   const { address } = await params
   if (!isAddress(address)) notFound()
-
-  return <ProfileView address={address} />
+  // Server-side UA detection so the lazy-mount decision is baked into
+  // the SSR HTML. ProfileView renders multiple grids of MomentCards
+  // directly (no PaginatedGrid wrapper) — on mobile we wrap items
+  // beyond EAGER_MOUNT_COUNT in LazyMount so heavy profile pages
+  // don't re-pay the full mount cost on every click-through.
+  const isMobile = await isMobileUA()
+  return <ProfileView address={address} isMobile={isMobile} />
 }
