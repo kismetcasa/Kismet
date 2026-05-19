@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
+import { CardSwiper, CardSwiperItem } from './CardSwiper'
 import { LazyMount, EAGER_MOUNT_COUNT } from './LazyMount'
 
 interface ItemHelpers {
@@ -10,7 +11,15 @@ interface ItemHelpers {
   remove: () => void
   /** 0-based position; callers use this to mark above-the-fold items as priority. */
   index: number
+  /**
+   * Active layout mode. Callers branch their render — e.g. MomentCard
+   * switches to `compact showCreator` in grid mode. Always 'feed' when
+   * the parent doesn't pass `viewMode`.
+   */
+  viewMode: ViewMode
 }
+
+type ViewMode = 'feed' | 'grid'
 
 interface PaginatedGridProps<T> {
   /** Base URL; the component appends `?page=N&limit=…`. Changing this resets + refetches. */
@@ -29,6 +38,14 @@ interface PaginatedGridProps<T> {
   filter?: (items: T[]) => T[]
   pageLimit?: number
   /**
+   * 'feed' (default) renders the existing vertical grid (1/2/3 cols).
+   * 'grid' renders a horizontal snap-scroller with cards at 2/3/4/6/8
+   * visible per row across breakpoints. Callers wire this to
+   * `useViewMode`; the toggle button itself is rendered separately
+   * (e.g. inside the `header` slot, beside other filter pills).
+   */
+  viewMode?: ViewMode
+  /**
    * When `true`, items beyond EAGER_MOUNT_COUNT defer mount until the
    * placeholder enters the viewport (via LazyMount). Default `false`
    * preserves the original eager-everywhere behavior.
@@ -38,6 +55,10 @@ interface PaginatedGridProps<T> {
    * HTML and the lazy/eager render tree never changes after hydration.
    * Don't toggle this client-side per render: it would cause LazyMount
    * components to remount when the toggle flips, defeating the point.
+   *
+   * Applies to both view modes — the IntersectionObserver fires on
+   * horizontal scroll too, so swiper cards beyond the eager window
+   * still defer mount until swiped near.
    */
   lazy?: boolean
 }
@@ -64,6 +85,7 @@ export function PaginatedGrid<T>({
   header,
   filter,
   pageLimit = 18,
+  viewMode = 'feed',
   lazy = false,
 }: PaginatedGridProps<T>) {
   const queryClient = useQueryClient()
@@ -193,6 +215,21 @@ export function PaginatedGrid<T>({
   const refreshing = firstFetching && !!firstPage
   const error = firstError?.message ?? null
 
+  // Single source of truth for "wrap with LazyMount or not". Used in
+  // both layouts so the eager/lazy split stays consistent: items above
+  // EAGER_MOUNT_COUNT (or any item when lazy=false) render directly;
+  // items past the threshold defer until in-viewport.
+  function renderEntry(item: T, index: number): ReactElement {
+    const key = getKey(item)
+    const node = renderItem(item, {
+      remove: () => removeItem(key),
+      index,
+      viewMode,
+    })
+    if (!lazy || index < EAGER_MOUNT_COUNT) return node
+    return <LazyMount key={key}>{() => node}</LazyMount>
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between py-4">
@@ -237,42 +274,47 @@ export function PaginatedGrid<T>({
 
       {!loading && visible.length > 0 && (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {visible.map((item, index) => {
-              const key = getKey(item)
-              // Eager path: when lazy is false (every desktop caller),
-              // OR when the card is above the lazy threshold. Server
-              // sets `lazy` based on UA so desktop SSR HTML is always
-              // eager — no hydration window where LazyMount briefly
-              // exists on desktop.
-              if (!lazy || index < EAGER_MOUNT_COUNT) {
-                return renderItem(item, {
-                  remove: () => removeItem(key),
-                  index,
-                })
-              }
-              return (
-                <LazyMount key={key}>
-                  {() =>
-                    renderItem(item, {
-                      remove: () => removeItem(key),
-                      index,
-                    })
-                  }
-                </LazyMount>
-              )
-            })}
-          </div>
-          {currentPage < totalPages && (
-            <div className="mt-8 text-center">
-              <button
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
-              >
-                {loadingMore ? 'loading…' : 'load more'}
-              </button>
-            </div>
+          {viewMode === 'grid' ? (
+            <CardSwiper>
+              {visible.map((item, index) => (
+                <CardSwiperItem key={getKey(item)}>
+                  {renderEntry(item, index)}
+                </CardSwiperItem>
+              ))}
+              {currentPage < totalPages && (
+                // "Load more" sits at the end of the swipe path — once the
+                // user scrolls to the right edge they tap to append the
+                // next page, mirroring the feed mode's bottom-of-list
+                // button. Matches each card's responsive width so it
+                // snaps into a card-shaped slot.
+                <CardSwiperItem>
+                  <button
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    className="w-full h-full border border-line text-[10px] font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+                  >
+                    {loadingMore ? 'loading…' : 'load more →'}
+                  </button>
+                </CardSwiperItem>
+              )}
+            </CardSwiper>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {visible.map((item, index) => renderEntry(item, index))}
+              </div>
+              {currentPage < totalPages && (
+                <div className="mt-8 text-center">
+                  <button
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+                  >
+                    {loadingMore ? 'loading…' : 'load more'}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </>
       )}

@@ -58,18 +58,16 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
   }, [adminAddr, initialUsername])
 
   return (
-    // Single flex-row tree at all breakpoints — cover on the left, mints
-    // on the right.
-    //   <lg: cover is just the 128px square (name overlaid at the bottom);
-    //     mints scroll horizontally (single visual row).
-    //   lg+: cover widens, info section appears below it; mints become a
-    //     2-row × 5-col grid with grid-auto-flow:column so chronological
-    //     reading goes top → bottom of each column, then right (1@top-left,
-    //     2 directly below it, 3 top of the next column, etc.).
-    // SharedVideoProvider's clip-path keeps the position:fixed video
-    // elements from painting past the horizontal scroller's edges on <lg.
-    <article className="flex border border-line bg-[#161616] overflow-hidden">
-      <div className="flex-shrink-0 w-32 lg:w-64 xl:w-72 lg:flex lg:flex-col lg:border-r lg:border-line">
+    // Two layouts share a single tree, picked by responsive utilities:
+    //   <lg: stacked — full-width cover, view-collection + collect-all
+    //     stacked underneath, then a horizontal-scrolling row of
+    //     full-feature moment cards (320px each, ~1.3 visible on phone).
+    //   lg+: side-by-side — cover + info column on the left, 5×2 column-
+    //     major grid of compact moment cards on the right.
+    // SharedVideoProvider's clip-path keeps position:fixed video elements
+    // from painting past the horizontal scroller's edges on <lg.
+    <article className="flex flex-col lg:flex-row border border-line bg-[#161616] overflow-hidden">
+      <div className="flex flex-col lg:flex-shrink-0 lg:w-64 xl:w-72 lg:border-r lg:border-line">
         <Link
           href={`/collection/${c.contractAddress}`}
           className="relative aspect-square w-full block overflow-hidden bg-surface group/img"
@@ -95,7 +93,7 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-              sizes="(max-width: 1024px) 128px, 288px"
+              sizes="(max-width: 1024px) 100vw, 288px"
               onAllError={() => setImgFailed(true)}
               priority={priority}
               preferProxy
@@ -106,13 +104,32 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               <span className="text-line font-mono text-xs">no preview</span>
             </div>
           )}
-          {/* <lg name overlay: the info section is hidden on smaller
-              screens, so the collection still needs a label inside the row. */}
-          <span className="lg:hidden absolute inset-x-0 bottom-0 px-2 py-1 text-[10px] font-mono text-ink bg-gradient-to-t from-[#0d0d0d]/95 to-transparent truncate">
+          {/* <lg name overlay — desktop has a full info section below the
+              cover so the overlay is redundant there. */}
+          <span className="lg:hidden absolute inset-x-0 bottom-0 px-3 py-1.5 text-xs font-mono text-ink bg-gradient-to-t from-[#0d0d0d]/95 to-transparent truncate">
             {name}
           </span>
         </Link>
 
+        {/* Mobile-only minimal action stack — view-collection button on top,
+            price chip + collect-all on the row beneath it. */}
+        <div className="flex flex-col gap-2 p-3 lg:hidden">
+          <Link
+            href={`/collection/${c.contractAddress}`}
+            className="w-full px-3 py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
+          >
+            view collection
+          </Link>
+          <CollectAllAction
+            collectionAddress={c.contractAddress}
+            ethEligibleTokenIds={c.ethEligibleTokenIds}
+            ethEligibleTotalWei={c.ethEligibleTotalWei}
+            usdcEligibleTokenIds={c.usdcEligibleTokenIds}
+            usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
+          />
+        </div>
+
+        {/* lg+ info: name, creator, description, view + collect-all */}
         <div className="hidden lg:flex flex-col gap-1 p-4 min-w-0 flex-1">
           <h3 className="text-base font-mono text-ink truncate">{name}</h3>
           {creatorLabel && (
@@ -145,19 +162,41 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
         </div>
       </div>
 
-      <div className="flex-1 min-w-0 overflow-x-auto flex gap-2 p-2 snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:overflow-visible lg:flex-none lg:grid lg:grid-cols-5 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3 lg:snap-none">
+      {/* <lg moments — horizontal scroll, non-compact cards at ~320px so
+          the creator/collection chips and full action row fit, ~1.3
+          visible at once invites the scroll. */}
+      <div className="overflow-x-auto flex gap-3 p-3 snap-x snap-mandatory [-webkit-overflow-scrolling:touch] border-t border-line lg:hidden">
         {c.moments.length === 0 ? (
-          <div className="flex-1 lg:col-span-full lg:row-span-full flex items-center justify-center min-h-[160px]">
+          <div className="flex-1 flex items-center justify-center min-h-[160px]">
             <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
           c.moments.map((m, idx) => (
             <div
               key={m.id || `${m.address}-${m.token_id}`}
-              className="w-32 flex-shrink-0 snap-start lg:w-auto lg:flex-shrink"
+              className="w-80 flex-shrink-0 snap-start"
             >
-              <MomentCard moment={m} compact priority={priority && idx === 0} />
+              <MomentCard moment={m} priority={priority && idx === 0} />
             </div>
+          ))
+        )}
+      </div>
+
+      {/* lg+ moments — 5×2 column-major grid of compact cards, reading
+          top → bottom of each column then right. */}
+      <div className="hidden lg:flex-1 lg:min-w-0 lg:grid lg:grid-cols-5 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
+        {c.moments.length === 0 ? (
+          <div className="col-span-full row-span-full flex items-center justify-center min-h-[160px]">
+            <span className="text-xs font-mono text-muted">no moments yet</span>
+          </div>
+        ) : (
+          c.moments.map((m, idx) => (
+            <MomentCard
+              key={m.id || `${m.address}-${m.token_id}`}
+              moment={m}
+              compact
+              priority={priority && idx === 0}
+            />
           ))
         )}
       </div>

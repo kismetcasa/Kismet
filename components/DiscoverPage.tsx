@@ -6,7 +6,9 @@ import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
+import { ViewModeToggle } from '@/components/ViewModeToggle'
 import { useFinePointer } from '@/hooks/useFinePointer'
+import { useViewMode } from '@/hooks/useViewMode'
 import type { Moment } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 
@@ -126,37 +128,70 @@ function MomentFeed({
   apiUrl,
   emptyMessage = 'nothing here yet',
   header,
+  withViewToggle = false,
 }: {
   apiUrl: string
   emptyMessage?: string
   header?: React.ReactNode
+  /**
+   * Renders a `<ViewModeToggle>` inline with `header`. The view-mode
+   * value itself is read from the global `useViewMode` hook regardless —
+   * the toggle is just UI placement. Leave false when a parent already
+   * renders the toggle elsewhere (e.g. MainFeed shares one toggle across
+   * its mints + collections sub-tabs).
+   */
+  withViewToggle?: boolean
 }) {
   const lazy = useContext(LazyMountCtx)
+  const [viewMode, setViewMode] = useViewMode()
+
+  const headerWithToggle = withViewToggle ? (
+    <div className="flex items-center gap-3 flex-wrap">
+      <ViewModeToggle mode={viewMode} onChange={setViewMode} />
+      {header}
+    </div>
+  ) : header
+
   return (
     <PaginatedGrid<Moment>
       apiUrl={apiUrl}
       itemsKey="moments"
       getKey={(m) => `${m.address}-${m.token_id}`}
-      renderItem={(m, { index }) => (
-        // First row at lg+ is 3 cards; prioritize those so their hero image
-        // skips lazy-loading and gets fetchpriority=high on the gateway round-trip.
-        <MomentCard key={`${m.address}-${m.token_id}`} moment={m} priority={index < 3} />
+      viewMode={viewMode}
+      lazy={lazy}
+      renderItem={(m, { index, viewMode: vm }) => (
+        // Feed: 3 visible above-the-fold on lg+ — prioritize first 3.
+        // Grid: 6-8 visible above-the-fold on lg+/xl — prioritize first 6
+        // so the swiper paints its initial frame without lazy-loading.
+        <MomentCard
+          key={`${m.address}-${m.token_id}`}
+          moment={m}
+          compact={vm === 'grid'}
+          showCreator={vm === 'grid'}
+          priority={vm === 'grid' ? index < 6 : index < 3}
+        />
       )}
       empty={
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">{emptyMessage}</p>
         </div>
       }
-      header={header}
-      lazy={lazy}
+      header={headerWithToggle}
     />
   )
 }
 
 // ─── collections feed (paginated grid) ───────────────────────────────────────
 
-function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
+function CollectionsFeed({
+  followingAddrs,
+  header,
+}: {
+  followingAddrs?: string[]
+  header?: React.ReactNode
+}) {
   const lazy = useContext(LazyMountCtx)
+  const [viewMode] = useViewMode()
   const followingSet = followingAddrs
     ? new Set(followingAddrs.map((a) => a.toLowerCase()))
     : null
@@ -172,16 +207,24 @@ function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
       apiUrl="/api/collections?feed=1"
       itemsKey="collections"
       getKey={(c) => c.contractAddress}
-      renderItem={(c, { index }) => (
-        <CollectionCard key={c.contractAddress} collection={c} priority={index < 3} />
+      viewMode={viewMode}
+      lazy={lazy}
+      renderItem={(c, { index, viewMode: vm }) => (
+        <CollectionCard
+          key={c.contractAddress}
+          collection={c}
+          compact={vm === 'grid'}
+          showCreator={vm === 'grid'}
+          priority={vm === 'grid' ? index < 6 : index < 3}
+        />
       )}
       filter={filter}
+      header={header}
       empty={
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">no collections yet</p>
         </div>
       }
-      lazy={lazy}
     />
   )
 }
@@ -195,6 +238,7 @@ function MainFeed() {
   const [subTab, setSubTab] = useState<MainSubTab>('mints')
   const [followingOn, setFollowingOn] = useState(false)
   const [followingAddrs, setFollowingAddrs] = useState<string[]>([])
+  const [viewMode, setViewMode] = useViewMode()
 
   useEffect(() => {
     if (!address || !followingOn) { setFollowingAddrs([]); return }
@@ -210,8 +254,12 @@ function MainFeed() {
     ? `/api/timeline?scope=standalone&following=${followingAddrs.join(',')}`
     : '/api/timeline?scope=standalone'
 
+  // Single toggle controls both sub-tabs — switching mints↔collections
+  // preserves the active layout instead of forcing a re-toggle. The
+  // toggle sits leftmost in the bar per the design spec.
   const subTabBar = (
     <div className="flex items-center gap-3 flex-wrap">
+      <ViewModeToggle mode={viewMode} onChange={setViewMode} />
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => setSubTab('mints')}
@@ -248,10 +296,10 @@ function MainFeed() {
 
   if (subTab === 'collections') {
     return (
-      <div>
-        <div className="pt-4">{subTabBar}</div>
-        <CollectionsFeed followingAddrs={followingOn && followingAddrs.length > 0 ? followingAddrs : undefined} />
-      </div>
+      <CollectionsFeed
+        followingAddrs={followingOn && followingAddrs.length > 0 ? followingAddrs : undefined}
+        header={subTabBar}
+      />
     )
   }
 
@@ -340,6 +388,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
           <MomentFeed
             apiUrl="/api/timeline?sort=trending&scope=standalone"
             emptyMessage="no collects recorded yet — trending appears as mints are collected"
+            withViewToggle
           />
         )}
 
@@ -438,6 +487,7 @@ function RosterFeed() {
       apiUrl={apiUrl}
       header={header}
       emptyMessage="no moments yet from this roster"
+      withViewToggle
     />
   )
 }

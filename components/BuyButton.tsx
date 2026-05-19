@@ -17,11 +17,17 @@ interface BuyButtonProps {
   listing: Listing
   onBought?: () => void
   className?: string
+  /**
+   * Compact sizing for the grid-view swiper — shrinks text, padding, and
+   * label so the button fits a ~180px wide compact MarketCard alongside
+   * the price chip and creator chip.
+   */
+  compact?: boolean
 }
 
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as Hex
 
-export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps) {
+export function BuyButton({ listing, onBought, className = '', compact = false }: BuyButtonProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
@@ -150,7 +156,7 @@ export function BuyButton({ listing, onBought, className = '' }: BuyButtonProps)
     <button
       onClick={handleBuy}
       disabled={loading || bought}
-      className={`text-xs font-mono tracking-wider uppercase px-4 py-2.5 border transition-colors disabled:opacity-50 ${loading ? 'cursor-not-allowed' : ''} ${
+      className={`${compact ? 'text-[10px] px-2 py-1.5' : 'text-xs px-4 py-2.5'} font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${loading ? 'cursor-not-allowed' : ''} ${
         bought
           ? 'border-accent text-accent bg-accent/10'
           : 'border-line text-dim hover:border-accent hover:text-accent'

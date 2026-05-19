@@ -3,7 +3,7 @@
 import { memo, useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Star, Copy, Check, EyeOff } from 'lucide-react'
+import { Star, Copy, Check, EyeOff, ArrowUpRight } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import {
@@ -46,13 +46,23 @@ interface MomentCardProps {
    * supply box's 56px min-width doesn't force horizontal overflow.
    */
   compact?: boolean
+  /**
+   * Force the creator chip on/off independent of `compact`. Used by the
+   * horizontal grid-view swiper, where cards are ~180px wide (wider than
+   * the featured row's ~130px) so the creator chip fits and adds
+   * identity that the parent surface doesn't already convey.
+   */
+  showCreator?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator }: MomentCardProps) {
+  // Default: creator chip follows compact mode (visible non-compact,
+  // hidden compact). `showCreator` overrides either direction.
+  const renderCreator = showCreator ?? !compact
   const router = useRouter()
   // Dedups onMouseEnter prefetches per card identity — without this every
   // re-entry refires comments + text + route prefetches.
@@ -329,53 +339,69 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
             {meta.name ?? `#${moment.token_id}`}
           </h3>
           {!compact && (
-            <button
-              onClick={handleCopyLink}
-              title="copy link"
-              className="flex-shrink-0 mt-0.5 text-[#444] hover:text-dim transition-colors"
-            >
-              {linkCopied
-                ? <Check size={11} className="text-[#6ee7b7]" />
-                : <Copy size={11} />}
-            </button>
+            <div className="flex-shrink-0 mt-0.5 flex items-center gap-2">
+              {/* Hard-nav anchor so the click bypasses the @modal
+                  intercepting route and lands on the canonical full-page
+                  detail route — sibling to the copy affordance, same
+                  visual weight. */}
+              <a
+                href={`/moment/${moment.address}/${moment.token_id}`}
+                title="open full details page"
+                className="text-[#444] hover:text-dim transition-colors flex items-center"
+              >
+                <ArrowUpRight size={11} />
+              </a>
+              <button
+                onClick={handleCopyLink}
+                title="copy link"
+                className="text-[#444] hover:text-dim transition-colors flex items-center"
+              >
+                {linkCopied
+                  ? <Check size={11} className="text-[#6ee7b7]" />
+                  : <Copy size={11} />}
+              </button>
+            </div>
           )}
         </div>
-        {!compact && (
-          <>
-            <Link
-              href={`/profile/${moment.creator.address}`}
-              onClick={(e) => e.stopPropagation()}
-              className="flex items-center gap-1.5 group/creator w-fit"
-              title={moment.creator.address}
-            >
-              <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={16} />
-              <span className="text-xs text-muted font-mono group-hover/creator:text-dim transition-colors">{creatorName}</span>
-            </Link>
-            {collectionName && (
-              <Link
-                href={`/collection/${moment.address}`}
-                onClick={(e) => e.stopPropagation()}
-                className="flex items-center gap-1.5 group/collection w-fit"
-                title={collectionName}
-              >
-                {collectionImage && !collectionImageFailed && (
-                  <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
-                    <MomentImage
-                      src={collectionImage}
-                      alt=""
-                      fill
-                      className="object-cover"
-                      sizes="16px"
-                      onAllError={() => setCollectionImageFailed(true)}
-                    />
-                  </div>
-                )}
-                <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
-                  {collectionName}
-                </span>
-              </Link>
+        {renderCreator && (
+          <Link
+            href={`/profile/${moment.creator.address}`}
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-1.5 group/creator max-w-full"
+            title={moment.creator.address}
+          >
+            <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
+            {/* min-w-0 is what lets `truncate` actually clip — without it
+                a flex child takes its natural width and overflows. Matters
+                in grid view where cards are ~180px wide. */}
+            <span className={`${compact ? 'text-[10px]' : 'text-xs'} text-muted font-mono group-hover/creator:text-dim transition-colors truncate min-w-0`}>
+              {creatorName}
+            </span>
+          </Link>
+        )}
+        {!compact && collectionName && (
+          <Link
+            href={`/collection/${moment.address}`}
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-1.5 group/collection w-fit"
+            title={collectionName}
+          >
+            {collectionImage && !collectionImageFailed && (
+              <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
+                <MomentImage
+                  src={collectionImage}
+                  alt=""
+                  fill
+                  className="object-cover"
+                  sizes="16px"
+                  onAllError={() => setCollectionImageFailed(true)}
+                />
+              </div>
             )}
-          </>
+            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
+              {collectionName}
+            </span>
+          </Link>
         )}
       </div>
 

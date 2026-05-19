@@ -817,7 +817,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           <div className="px-5 py-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-sm font-mono text-ink leading-snug">
-                {meta.name ?? `#${tokenId}`}
+                {inOverlay ? (
+                  // Hard-nav anchor (not <Link>) so the click bypasses the
+                  // intercepting route at app/@modal/(.)moment and lands on
+                  // the canonical full-page detail route instead of just
+                  // re-opening the overlay we're already in.
+                  <a
+                    href={`/moment/${address}/${tokenId}`}
+                    title="open full details page"
+                    className="hover:text-dim transition-colors"
+                  >
+                    {meta.name ?? `#${tokenId}`}
+                  </a>
+                ) : (
+                  meta.name ?? `#${tokenId}`
+                )}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Edit metadata — admin-only. Pencil icon expands into a

@@ -4,30 +4,43 @@ import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { MarketCard } from '@/components/MarketCard'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
+import { ViewModeToggle } from '@/components/ViewModeToggle'
+import { useViewMode } from '@/hooks/useViewMode'
 import type { Listing } from '@/lib/listings'
 
 export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
   const { address } = useAccount()
+  const [viewMode, setViewMode] = useViewMode()
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       <PaginatedGrid<Listing>
         apiUrl="/api/listings"
         itemsKey="listings"
         getKey={(l) => l.id}
+        viewMode={viewMode}
         // Mobile: lazy-mount listings beyond EAGER_MOUNT_COUNT so the
         // /market route doesn't pay the full N-card mount cost on
         // every navigation in. Desktop: lazy=false (default), eager
         // for everyone, same as before this prop existed.
         lazy={isMobile}
-        renderItem={(l, helpers) => (
-          <MarketCard key={l.id} listing={l} onRemove={helpers.remove} />
+        renderItem={(l, { remove, viewMode: vm }) => (
+          <MarketCard
+            key={l.id}
+            listing={l}
+            onRemove={remove}
+            compact={vm === 'grid'}
+            showCreator={vm === 'grid'}
+          />
         )}
         header={
-          <div>
-            <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Market</h1>
-            <p className="text-xs font-mono text-faint mt-1">
-              creator royalties enforced on every sale
-            </p>
+          <div className="flex items-center gap-3">
+            <ViewModeToggle mode={viewMode} onChange={setViewMode} />
+            <div>
+              <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Market</h1>
+              <p className="text-xs font-mono text-faint mt-1">
+                creator royalties enforced on every sale
+              </p>
+            </div>
           </div>
         }
         empty={
