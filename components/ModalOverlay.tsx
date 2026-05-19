@@ -78,7 +78,7 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
         onClick={dismiss}
         title="Close (Esc)"
         aria-label="Close"
-        className="fixed top-4 right-4 p-2 text-[#bbb] hover:text-white bg-black/50 backdrop-blur-sm hover:bg-black/70 transition-colors rounded-full"
+        className="fixed top-4 right-4 p-2 text-[#bbb] hover:text-white bg-black/70 hover:bg-black/85 transition-colors rounded-full"
         style={{ zIndex: Z_CHROME }}
       >
         <X size={18} />

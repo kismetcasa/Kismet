@@ -1132,7 +1132,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || !detail}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-all disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
                   : 'text-muted border-line accent-grad-hover'
@@ -1182,7 +1182,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   <button
                     onClick={handleSend}
                     disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-all disabled:opacity-50"
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
                   >
                     {sending ? '…' : 'confirm'}
                   </button>

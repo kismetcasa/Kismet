@@ -299,7 +299,7 @@ export function NotificationFeed() {
                 onDragOver={draggable ? (e) => onDragOver(e, orderIdx) : undefined}
                 onDragEnd={draggable ? onDragEnd : undefined}
                 onClick={() => setTypeFilter(tab)}
-                className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border flex-shrink-0 select-none transition-all duration-150 ${
+                className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border flex-shrink-0 select-none transition-colors duration-150 ${
                   isActive
                     ? 'border-accent text-accent'
                     : 'border-line text-muted hover:border-[#444] hover:text-dim'
