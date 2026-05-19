@@ -164,15 +164,9 @@ const RELEASE_GRACE_MS = 1000
 const SHORT_LOOP_IDLE_EVICT_MS = 5 * 60 * 1000
 const LONG_FORM_IDLE_EVICT_MS = 30 * 60 * 1000
 
-// Hard cap on pool size. Past this, idle entries get evicted on next
-// acquire. Larger pool = more decoder warmth on scroll-back (currentTime
-// and buffered ranges survive while the entry is pooled). Desktop
-// Chromium handles 18 concurrent decoded videos comfortably; iOS WebKit
-// (Safari, Mini App webview) has a much smaller hardware-decoder budget
-// (~4-8 on shipping devices) and starts recycling decoder slots
-// mid-scroll past that, producing the "video appears in wrong slot /
-// cards go blank" symptom. The provider takes an `isMobile` prop and
-// picks the mobile cap when set, leaving desktop unchanged.
+// Pool cap — past this, idle entries evict on next acquire. iOS WebKit's
+// hardware decoder budget (~4-8) is much smaller than Chromium's, so
+// mobile caps lower to avoid mid-scroll slot recycling.
 const MAX_POOL_SIZE_DESKTOP = 18
 const MAX_POOL_SIZE_MOBILE = 6
 

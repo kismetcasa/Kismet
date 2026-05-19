@@ -27,13 +27,10 @@ export interface FeaturedCollectionRow {
 
 interface CollectionRowProps {
   collection: FeaturedCollectionRow
-  // Above-the-fold hint forwarded to the cover image (and propagated to the
-  // first mint card so the row's LCP candidate isn't lazy-loaded).
+  // LCP hint — propagated to the cover image and the first visible
+  // moment card so they aren't lazy-loaded.
   priority?: boolean
-  // Lazy-mount cards beyond the first in the mobile horizontal scroller.
-  // The row shows ~1.3 cards at 320px each on a phone, so cards 2+ are
-  // off-screen until the user swipes — no reason to pay their mount cost
-  // (2 wagmi reads + 3 fetches each) up front.
+  // Lazy-mount off-screen cards in the mobile horizontal scroller.
   isMobile?: boolean
 }
 
@@ -122,17 +119,10 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
   )
 
   return (
-    // Two layouts share a single tree, picked by responsive utilities:
-    //   <lg: a single horizontal-scrolling row — the cover-card (cover
-    //     image + name + view + collect-all) sits leftmost, followed by
-    //     ~320px moment cards. Reads as "this collection's contents" in
-    //     one swipeable surface rather than a stacked header + carousel.
-    //   lg+: side-by-side — cover + info column on the left, 5×2 column-
-    //     major grid of compact moment cards on the right.
-    // SharedVideoProvider's clip-path keeps position:fixed video elements
-    // from painting past the horizontal scroller's edges on <lg.
+    // <lg: single horizontal scroll (cover-card first, then ~320px
+    // moment cards). lg+: cover-left + grid-right. SharedVideoProvider's
+    // clip-path keeps position:fixed videos inside the mobile scroller.
     <article className="flex flex-col lg:flex-row border border-line bg-[#161616] overflow-hidden">
-      {/* lg+ left column — cover + info + actions */}
       <div className="hidden lg:flex flex-col lg:flex-shrink-0 lg:w-64 xl:w-72 lg:border-r lg:border-line">
         <Link
           href={`/collection/${c.contractAddress}`}
@@ -204,9 +194,6 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         </div>
       </div>
 
-      {/* <lg moments — single horizontal scroll: cover-card first, then
-          moment cards. snap-mandatory keeps swipes aligned to card
-          boundaries; ~1.3 cards visible on phone invites the scroll. */}
       <div className="overflow-x-auto flex gap-3 p-3 snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:hidden">
         <div className="w-80 flex-shrink-0 snap-start">
           {coverCard}
@@ -233,8 +220,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         )}
       </div>
 
-      {/* lg+ moments — 5×2 column-major grid of compact cards, reading
-          top → bottom of each column then right. */}
+      {/* lg+ moments — 5×2 column-major grid (top→bottom, then right). */}
       <div className="hidden lg:flex-1 lg:min-w-0 lg:grid lg:grid-cols-5 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
         {c.moments.length === 0 ? (
           <div className="col-span-full row-span-full flex items-center justify-center min-h-[160px]">

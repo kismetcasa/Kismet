@@ -99,9 +99,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
 
   useEffect(() => {
-    // Stitched username + avatarUrl already in state via the initializer;
-    // only fall through to the resolver when either is missing (FC-only
-    // creators rely on this path to pick up the FC pfp).
+    // Skip when the server stitched both fields. FC-only creators
+    // (no Kismet KV) fall through so fetchCreatorProfile can resolve
+    // their FC pfp client-side.
     if (moment.creator.username && moment.creator.avatarUrl) return
     fetchCreatorProfile(moment.creator.address).then(({ name, avatarUrl }) => {
       // Only overwrite when Kismet returned an actual resolved name —

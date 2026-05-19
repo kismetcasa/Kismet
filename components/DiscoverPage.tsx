@@ -483,21 +483,14 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   // reorder (long-press) can produce a saved order on either platform.
   const [hydrated, setHydrated] = useState(false)
 
-  // Keep-alive: once a tab has been visited, its content stays mounted
-  // and we toggle visibility via `hidden` instead of unmount/remount.
-  // Pattern is the mobile-tab standard (Twitter/X, Reddit, Instagram,
-  // React Native bottom tabs): return visits are instant, scroll +
-  // already-loaded cards survive tab switches, and the Mini App webview
-  // doesn't pay the 40-50-MomentCard teardown + remount on every tap.
-  // First visit to a tab still mounts normally (fetch fires, cards
-  // render); subsequent visits show what's already in the DOM.
+  // Keep-alive: visited tabs stay mounted, hidden via `hidden` on
+  // switch (instant returns, scroll preserved). Set-during-render keeps
+  // the active tab in the set across the hydration flip without a
+  // follow-up effect; functional updater so concurrent-mode can't drop
+  // an active value if a render is interrupted and replayed.
   const [visitedTabs, setVisitedTabs] = useState<Set<TabId>>(() => new Set([DRAGGABLE[0]]))
-  // Set-during-render keeps the active tab in the visited set even
-  // across the hydration flip (when `active` jumps from DRAGGABLE[0] to
-  // the saved tab) so the saved tab paints on the very first frame after
-  // hydration — no waiting on a follow-up useEffect to add it.
   if (!visitedTabs.has(active)) {
-    setVisitedTabs(new Set([...visitedTabs, active]))
+    setVisitedTabs((prev) => prev.has(active) ? prev : new Set([...prev, active]))
   }
 
   useEffect(() => {
@@ -545,9 +538,6 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
         {!hydrated && (
           <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
         )}
-        {/* Mount each tab once visited; hide via the `hidden` attribute
-            (display:none) on switches. Tabs that were never visited
-            don't mount at all — no upfront fetch storm on page load. */}
         {hydrated && visitedTabs.has('featured') && (
           <div hidden={active !== 'featured'}>
             {isAdmin && !hasSession && (

@@ -5,7 +5,6 @@ import { useAccount } from 'wagmi'
 import { useAccountModal, useConnectModal } from '@rainbow-me/rainbowkit'
 import { shortAddress } from '@/lib/inprocess'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { useHydrated } from '@/hooks/useHydrated'
 
 const connectStyle: React.CSSProperties = {
   borderRadius: '9999px',
@@ -33,7 +32,10 @@ const addressStyle: React.CSSProperties = {
 }
 
 export function WalletButton() {
-  const mounted = useHydrated()
+  // Gate post-hydration state to avoid mismatch between SSR (no wallet
+  // info available) and the first client render.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
   const { address, isConnected, status } = useAccount()
   const { openAccountModal } = useAccountModal()
   const { openConnectModal } = useConnectModal()

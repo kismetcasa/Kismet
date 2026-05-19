@@ -22,9 +22,8 @@ interface FeaturedFeedProps {
 }
 
 export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedProps) {
-  // null = pending, [] = resolved-empty. Tracked per-endpoint so the
-  // moments grid paints the instant /api/timeline returns instead of
-  // waiting on the slower /api/featured/collections-hydrated.
+  // Per-endpoint state so the moments grid paints when /api/timeline
+  // returns, not when both endpoints have. null = pending, [] = empty.
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
 
@@ -73,8 +72,8 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     }
   }
 
-  // Wait for collections to settle before declaring empty, otherwise the
-  // tab flashes the empty state while collections is still loading.
+  // Wait for collections too before showing empty — otherwise the tab
+  // flashes "empty" between moments resolving empty and collections done.
   if (blocks.length === 0 && collections !== null) {
     return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
   }

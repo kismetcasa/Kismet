@@ -2,16 +2,10 @@ import type { Moment } from './inprocess'
 import { getProfileBatch } from './profile'
 import { getCollectionMetaBatch } from './kv'
 
-/**
- * Stitch Kismet KV creator + collection chip metadata into a moment list
- * so MomentCard can skip the per-card /api/profile and /api/collections
- * fetches it would otherwise fire on mount. Two Redis MGETs total — local
- * KV only, no inprocess or Farcaster fan-out, so the cost stays under
- * ~10ms (see the abandoned saleConfig fan-out at app/api/timeline/route.ts
- * for why that ceiling matters). Creators with no KV record fall through
- * to MomentCard's client-side resolver, where the FC pfp + ENS chain
- * still runs.
- */
+// Stitch Kismet KV creator + collection chip metadata so MomentCard
+// can skip the per-card /api/profile + /api/collections fetches. Two
+// Redis MGETs total; no external fan-out, so cost stays bounded. FC-
+// only creators (no KV record) fall through to the client resolver.
 export async function enrichMomentsWithKismetMeta<T extends Moment>(
   moments: T[],
 ): Promise<T[]> {
