@@ -691,9 +691,32 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
     window.addEventListener('scroll', flushAll, { passive: true })
     window.addEventListener('resize', flushAll)
 
+    // Eviction sweep. Walks the pool, drops entries whose slot count
+    // hit zero longer than the tier-appropriate window ago. Guarded
+    // on document.hidden so a backgrounded Mini App doesn't burn CPU
+    // doing eviction nobody will see — the visibilitychange handler
+    // below catches up the moment the user returns.
+    const sweep = () => {
+      if (document.hidden) return
+      const now = Date.now()
+      pool.forEach((video, src) => {
+        if (video.slots.length !== 0) return
+        const window_ = video.isLongForm
+          ? LONG_FORM_IDLE_EVICT_MS
+          : SHORT_LOOP_IDLE_EVICT_MS
+        if (now - video.lastActiveAt > window_) {
+          destroyVideo(video)
+          pool.delete(src)
+        }
+      })
+    }
+    const interval = window.setInterval(sweep, 60_000)
+
     // Browser background-tab handling is inconsistent across engines.
     // Explicit pause-on-hide / resume-on-return normalises behaviour
-    // and frees mobile decoders during backgrounding.
+    // and frees mobile decoders during backgrounding. Trailing sweep
+    // on return clears any entries that aged past their window while
+    // the tab was hidden.
     const onVisibilityChange = () => {
       if (document.hidden) {
         pool.forEach((video) => {
@@ -720,22 +743,9 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
           video.el.play().catch(() => {})
         }
       })
+      sweep()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
-
-    const interval = window.setInterval(() => {
-      const now = Date.now()
-      pool.forEach((video, src) => {
-        if (video.slots.length !== 0) return
-        const window_ = video.isLongForm
-          ? LONG_FORM_IDLE_EVICT_MS
-          : SHORT_LOOP_IDLE_EVICT_MS
-        if (now - video.lastActiveAt > window_) {
-          destroyVideo(video)
-          pool.delete(src)
-        }
-      })
-    }, 60_000)
     return () => {
       window.removeEventListener('scroll', flushAll)
       window.removeEventListener('resize', flushAll)

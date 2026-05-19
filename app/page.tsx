@@ -6,6 +6,7 @@ import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
+import { useFinePointer } from '@/hooks/useFinePointer'
 import type { Moment } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 
@@ -59,6 +60,9 @@ function TabBar({
   onReorder: (o: TabId[]) => void
 }) {
   const dragIdx = useRef<number | null>(null)
+  // Drag-to-reorder is desktop-only — see hooks/useFinePointer for
+  // rationale (HTML5 draggable breaks tap on touch).
+  const allowDrag = useFinePointer()
 
   function onDragStart(idx: number) {
     dragIdx.current = idx
@@ -85,15 +89,16 @@ function TabBar({
         return (
           <button
             key={tab}
-            draggable
-            onDragStart={() => onDragStart(idx)}
-            onDragOver={(e) => onDragOver(e, idx)}
-            onDragEnd={onDragEnd}
+            draggable={allowDrag}
+            onDragStart={allowDrag ? () => onDragStart(idx) : undefined}
+            onDragOver={allowDrag ? (e) => onDragOver(e, idx) : undefined}
+            onDragEnd={allowDrag ? onDragEnd : undefined}
             onClick={() => onSelect(tab)}
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
-              transition-colors select-none cursor-grab active:cursor-grabbing
+              transition-colors select-none
               ${isActive ? 'text-ink' : 'text-[#444] hover:text-dim'}
+              ${allowDrag ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}
             `}
           >
             {LABEL[tab]}

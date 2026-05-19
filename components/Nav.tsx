@@ -82,24 +82,37 @@ function NavDropdown() {
         />
       </button>
 
-      {open && (
-        <div
-          role="menu"
-          className="absolute top-full left-0 mt-1 min-w-[8rem] border border-line bg-[#0d0d0d]/95 z-[60] flex flex-col"
-        >
-          {others.map((p) => (
-            <Link
-              key={p.id}
-              href={p.href}
-              onClick={() => setOpen(false)}
-              className="px-3 py-2 text-xs font-mono tracking-wider uppercase text-dim hover:text-ink hover:bg-[#1e1e1e] transition-colors"
-              role="menuitem"
-            >
-              {p.mobileLabel}
-            </Link>
-          ))}
-        </div>
-      )}
+      {/* Always render the menu DOM so the first click is a CSS-only
+          show/hide, not a React mount-and-paint. The freeze users saw
+          on first tap was the React tree mounting the menu + the
+          Links' prefetch logic firing at the same time the Mini App
+          bootstrap was finishing — both contending for the main
+          thread. Hidden via Tailwind `hidden` so it's invisible to
+          screen readers when closed. */}
+      <div
+        role="menu"
+        aria-hidden={!open}
+        className={`absolute top-full left-0 mt-1 min-w-[8rem] border border-line bg-[#0d0d0d]/95 z-[60] flex flex-col ${
+          open ? '' : 'hidden'
+        }`}
+      >
+        {others.map((p) => (
+          <Link
+            key={p.id}
+            href={p.href}
+            onClick={() => setOpen(false)}
+            // prefetch=false: skip Next.js's route prefetch on the
+            // dropdown items. Mini App users navigate rarely; the
+            // prefetch cost on a slow connection is more friction than
+            // it saves.
+            prefetch={false}
+            className="px-3 py-2 text-xs font-mono tracking-wider uppercase text-dim hover:text-ink hover:bg-[#1e1e1e] transition-colors"
+            role="menuitem"
+          >
+            {p.mobileLabel}
+          </Link>
+        ))}
+      </div>
     </div>
   )
 }

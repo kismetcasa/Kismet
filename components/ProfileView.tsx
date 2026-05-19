@@ -22,6 +22,8 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
+import { useFinePointer } from '@/hooks/useFinePointer'
+import { WalletsPanel } from './WalletsPanel'
 
 interface Payment {
   id: string
@@ -164,10 +166,21 @@ export function ProfileView({ address }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
-  const { isInMiniApp } = useFarcaster()
+  const { isInMiniApp, identity: fcIdentity } = useFarcaster()
   const { isCurator } = useAdmin()
+  // Section reordering is desktop-only — HTML5 draggable breaks tap on
+  // touch (taps to expand/collapse a section register seconds late, if
+  // at all). See hooks/useFinePointer.
+  const allowDrag = useFinePointer()
 
-  const isOwner = connectedAddress?.toLowerCase() === address.toLowerCase()
+  // Owner via wagmi (web + Mini App) OR via FC identity (Mini App users
+  // whose wagmi wallet is currently a different sibling). Without the
+  // FC-identity branch, an FC user visiting their own canonical
+  // /profile/<chosen> would see the non-owner view whenever their
+  // wagmi-connected wallet was a sibling.
+  const isOwner =
+    connectedAddress?.toLowerCase() === address.toLowerCase() ||
+    fcIdentity?.address?.toLowerCase() === address.toLowerCase()
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
@@ -780,6 +793,10 @@ export function ProfileView({ address }: ProfileViewProps) {
       {editing && isOwner && (
         <div className="border border-line p-4 flex flex-col gap-4">
           <p className="text-xs font-mono text-dim uppercase tracking-wider">Edit Profile</p>
+          {/* Mini-App-only wallet picker. Renders nothing on web or when
+              the user has < 2 verified FC wallets — sized to zero so
+              the layout below stays stable when it's absent. */}
+          <WalletsPanel />
           <div className="flex flex-col gap-1">
             <label className="text-xs font-mono text-muted uppercase tracking-wider">Display Name</label>
             <input
@@ -824,19 +841,19 @@ export function ProfileView({ address }: ProfileViewProps) {
         {(showCurate ? [...sectionOrder, 'curate' as const] : sectionOrder).map((section, idx) => {
           const isCollapsed = sectionCollapsed[section] ?? false
           const count = sectionCount[section]
-          const draggable = section !== 'curate'
+          const sectionDraggable = section !== 'curate' && allowDrag
           return (
             <div
               key={section}
-              onDragOver={draggable ? (e) => onDragOver(e, idx) : undefined}
+              onDragOver={sectionDraggable ? (e) => onDragOver(e, idx) : undefined}
               className={`border-t border-line transition-opacity duration-150 ${draggingSection === section ? 'opacity-40' : 'opacity-100'}`}
             >
               <div
-                draggable={draggable}
-                onDragStart={draggable ? () => onDragStart(idx) : undefined}
-                onDragEnd={draggable ? onDragEnd : undefined}
+                draggable={sectionDraggable}
+                onDragStart={sectionDraggable ? () => onDragStart(idx) : undefined}
+                onDragEnd={sectionDraggable ? onDragEnd : undefined}
                 onClick={() => toggleCollapsed(section)}
-                className={`flex items-center gap-2 py-4 select-none ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+                className={`flex items-center gap-2 py-4 select-none ${sectionDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
               >
                 <ChevronRight
                   size={12}

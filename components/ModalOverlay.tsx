@@ -78,7 +78,15 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
         onClick={dismiss}
         title="Close (Esc)"
         aria-label="Close"
-        className="fixed top-4 right-4 p-2 text-[#bbb] hover:text-white bg-black/70 hover:bg-black/85 transition-colors rounded-full"
+        // backdrop-blur dropped (main also dropped this): same iOS
+        // WebKit GPU-jank issue SearchModal had. Solid /70→/85 on
+        // hover is plenty visible over the underlying video.
+        // min-w/h=44 enforces the iOS HIG touch target — the 18px X
+        // inside p-2 alone gave a ~34×34 hit area that missed often.
+        // transition-colors (not transition-all) per main's button
+        // perf pass; active:scale-95 snaps synchronously without a
+        // transform transition, which is the right press feedback.
+        className="fixed top-4 right-4 min-w-[44px] min-h-[44px] flex items-center justify-center text-[#bbb] hover:text-white bg-black/70 hover:bg-black/85 transition-colors active:scale-95 rounded-full"
         style={{ zIndex: Z_CHROME }}
       >
         <X size={18} />

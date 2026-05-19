@@ -99,7 +99,10 @@ export function NotificationBell({ address }: NotificationBellProps) {
     <div className="relative h-14 flex items-center">
       <button
         onClick={() => (modalOpen ? setModalOpen(false) : openPanel())}
-        className="relative text-dim hover:text-ink transition-colors p-1"
+        // min-w/h-10 (40px) enforces a near-iOS-HIG touch target around
+        // the 18px Bell — p-1 alone gave a ~26px tappable region that
+        // missed often on mobile.
+        className="relative text-dim hover:text-ink transition-colors flex items-center justify-center min-w-10 min-h-10"
         aria-label={count > 0 ? `Notifications, ${count} unread` : 'Notifications'}
       >
         <Bell size={18} />

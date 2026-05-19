@@ -235,7 +235,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
               e.stopPropagation()
               toggleFeatured(moment.address, moment.token_id)
             }}
-            className={`absolute top-2 left-2 z-10 p-1 transition-colors ${
+            className={`absolute top-1.5 left-1.5 z-10 min-w-10 min-h-10 flex items-center justify-center transition-colors ${
               isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
             }`}
             title={isFeatured ? 'Unfeature' : 'Feature'}

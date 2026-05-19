@@ -32,7 +32,7 @@ export const metadata: Metadata = {
       name: process.env.NEXT_PUBLIC_FARCASTER_APP_NAME ?? 'Kismet',
       splashImageUrl:
         process.env.NEXT_PUBLIC_FARCASTER_SPLASH_URL ?? `${SITE_URL}/splash.png`,
-      splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#ff87ce',
+      splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#ffffff',
     },
   }),
 }
