@@ -249,10 +249,16 @@ function TabBar({
                 onSelect(tab)
               }
             }}
-            style={isDragging ? { transform: `translateX(${dragOffsetX}px)`, zIndex: 10 } : undefined}
+            // touch-action: pan-y pre-drag — the user can still scroll
+            // the page past the tab bar by swiping vertically. Drag
+            // commit (long-press fires) flips to touch-none so the
+            // horizontal swap gesture isn't lost to the browser.
+            style={isDragging
+              ? { transform: `translateX(${dragOffsetX}px)`, zIndex: 10, touchAction: 'none' }
+              : undefined}
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
-              transition-colors select-none touch-none
+              transition-colors select-none touch-pan-y
               ${isActive ? 'text-ink' : 'text-[#444] hover:text-dim'}
               ${isDragging ? 'opacity-70 cursor-grabbing' : 'cursor-grab'}
             `}
