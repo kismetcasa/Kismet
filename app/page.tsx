@@ -472,6 +472,7 @@ function RosterFeed() {
       apiUrl={apiUrl}
       header={header}
       emptyMessage="no moments yet from this roster"
+      withViewToggle
     />
   )
 }
