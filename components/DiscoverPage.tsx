@@ -24,7 +24,10 @@ const LazyMountCtx = createContext(false)
 
 type TabId = 'featured' | 'trending' | 'main' | 'roster'
 
-const DRAGGABLE: TabId[] = ['main', 'featured', 'trending', 'roster']
+// Default order — featured leads so a first-time visitor lands on the
+// curated tab. Existing users who reordered keep their saved positions
+// (see loadOrder), so changing this only affects fresh installs.
+const DRAGGABLE: TabId[] = ['featured', 'trending', 'main', 'roster']
 const LABEL: Record<TabId, string> = {
   featured: 'featured',
   trending: 'trending',
@@ -33,6 +36,7 @@ const LABEL: Record<TabId, string> = {
 }
 
 const ORDER_KEY = 'kismetart:tab-order'
+const ACTIVE_KEY = 'kismetart:active-tab'
 
 // Reconcile a stored tab order with the current DRAGGABLE list: keep
 // recognized entries in their saved positions, drop unknowns, and append
@@ -54,6 +58,19 @@ function loadOrder(): TabId[] {
   } catch {
     return DRAGGABLE
   }
+}
+
+// Load the user's last-active tab, falling back to the leftmost tab in
+// the resolved order. Validates against `order` so a stale saved value
+// (e.g. tab was removed in a future release) doesn't strand the user
+// on a non-existent tab.
+function loadActiveTab(order: TabId[]): TabId {
+  if (typeof window === 'undefined') return order[0]
+  try {
+    const raw = localStorage.getItem(ACTIVE_KEY)
+    if (raw && order.includes(raw as TabId)) return raw as TabId
+  } catch {}
+  return order[0]
 }
 
 // ─── tab bar ─────────────────────────────────────────────────────────────────
@@ -321,17 +338,32 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
 
-  // Hydrate from localStorage after mount; activate leftmost tab
+  // Hydrate from localStorage after mount. Order + last-active tab are
+  // independent keys so reordering doesn't reset the active tab and vice
+  // versa. If the saved active tab isn't in the (reconciled) order, fall
+  // back to the leftmost tab — handled inside loadActiveTab.
   useEffect(() => {
-    const saved = loadOrder()
-    setOrder(saved)
-    setActive(saved[0])
+    const savedOrder = loadOrder()
+    setOrder(savedOrder)
+    setActive(loadActiveTab(savedOrder))
   }, [])
 
   function handleReorder(next: TabId[]) {
     setOrder(next)
     try { localStorage.setItem(ORDER_KEY, JSON.stringify(next)) } catch {}
   }
+
+  const handleSelect = useCallback((tab: TabId) => {
+    // startTransition lets React's concurrent scheduler keep the
+    // tap-feedback (button color flip, chevron rotate) at high
+    // priority while the heavy tab-content swap (unmount old feed,
+    // mount new feed, fire fetches) runs at lower priority. On
+    // slow Mini App webviews this is the difference between
+    // "tap registers instantly" and "tap appears stuck while
+    // the new content fights for the main thread".
+    startTransition(() => setActive(tab))
+    try { localStorage.setItem(ACTIVE_KEY, tab) } catch {}
+  }, [])
 
   // Featured runs at the wider 88rem cap (same as the moment detail
   // overlay) so each featured collection's preview can lay its mints
@@ -346,16 +378,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
       <TabBar
         order={order}
         active={active}
-        // startTransition lets React's concurrent scheduler keep the
-        // tap-feedback (button color flip, chevron rotate) at high
-        // priority while the heavy tab-content swap (unmount old feed,
-        // mount new feed, fire fetches) runs at lower priority. On
-        // slow Mini App webviews this is the difference between
-        // "tap registers instantly" and "tap appears stuck while
-        // the new content fights for the main thread".
-        onSelect={useCallback((tab: TabId) => {
-          startTransition(() => setActive(tab))
-        }, [])}
+        onSelect={handleSelect}
         onReorder={handleReorder}
       />
 
