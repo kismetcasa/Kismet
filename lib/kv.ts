@@ -154,6 +154,29 @@ export async function getCollectionMeta(
   }
 }
 
+// Batch variant. Missing addresses (auto-deploy wrappers, non-platform
+// contracts) are omitted from the returned map.
+export async function getCollectionMetaBatch(
+  addresses: string[],
+): Promise<Map<string, CollectionMeta>> {
+  const out = new Map<string, CollectionMeta>()
+  if (addresses.length === 0) return out
+  const unique = Array.from(new Set(addresses.map((a) => a.toLowerCase())))
+  try {
+    const raws = await redis.mget<(string | CollectionMeta | null)[]>(
+      ...unique.map(keyCollectionMeta),
+    )
+    for (let i = 0; i < unique.length; i++) {
+      const raw = raws[i]
+      if (!raw) continue
+      const parsed: CollectionMeta =
+        typeof raw === 'string' ? JSON.parse(raw) : raw
+      out.set(unique[i], parsed)
+    }
+  } catch {}
+  return out
+}
+
 // Profile-page fallback when inprocess hasn't indexed a fresh deploy.
 // Walks curated only — auto-deploy wrappers belong in the artist's Mints.
 export async function getCollectionsByArtist(

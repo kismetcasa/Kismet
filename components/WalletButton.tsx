@@ -5,6 +5,7 @@ import { useAccount } from 'wagmi'
 import { useAccountModal, useConnectModal } from '@rainbow-me/rainbowkit'
 import { shortAddress } from '@/lib/inprocess'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+import { useHydrated } from '@/hooks/useHydrated'
 
 const connectStyle: React.CSSProperties = {
   borderRadius: '9999px',
@@ -32,7 +33,7 @@ const addressStyle: React.CSSProperties = {
 }
 
 export function WalletButton() {
-  const [mounted, setMounted] = useState(false)
+  const mounted = useHydrated()
   const { address, isConnected, status } = useAccount()
   const { openAccountModal } = useAccountModal()
   const { openConnectModal } = useConnectModal()
@@ -45,8 +46,6 @@ export function WalletButton() {
   // primary after the FC identity lookup completes — a name was already
   // there, so we don't need to gate the UI on the re-fetch.
   const hasResolvedAtLeastOnce = useRef(false)
-
-  useEffect(() => { setMounted(true) }, [])
 
   // FC primary is the canonical identity here too — see Nav.tsx for the
   // rationale. Display label and shortAddress fallback both key off this

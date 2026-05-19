@@ -23,6 +23,29 @@ export async function getProfile(address: string): Promise<Profile> {
   return { ...base, ...parsed }
 }
 
+// Batch lookup keyed by lowercase address. Missing entries are omitted
+// from the returned map; consumers fall back to their own resolvers.
+export async function getProfileBatch(
+  addresses: string[],
+): Promise<Map<string, Profile>> {
+  const out = new Map<string, Profile>()
+  if (addresses.length === 0) return out
+  const unique = Array.from(new Set(addresses.map((a) => a.toLowerCase())))
+  try {
+    const raws = await redis.mget<(string | Profile | null)[]>(
+      ...unique.map(keyByAddress),
+    )
+    for (let i = 0; i < unique.length; i++) {
+      const raw = raws[i]
+      if (!raw) continue
+      const parsed: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
+      // Force lowercase to match the rest of the codebase's keying.
+      out.set(unique[i], { ...parsed, address: unique[i] })
+    }
+  } catch {}
+  return out
+}
+
 export async function upsertProfile(
   address: string,
   data: Partial<Pick<Profile, 'username' | 'avatarUrl'>>

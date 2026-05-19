@@ -10,6 +10,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
+import { LazyMount } from './LazyMount'
 
 export interface FeaturedCollectionRow {
   contractAddress: string
@@ -29,9 +30,14 @@ interface CollectionRowProps {
   // Above-the-fold hint forwarded to the cover image (and propagated to the
   // first mint card so the row's LCP candidate isn't lazy-loaded).
   priority?: boolean
+  // Lazy-mount cards beyond the first in the mobile horizontal scroller.
+  // The row shows ~1.3 cards at 320px each on a phone, so cards 2+ are
+  // off-screen until the user swipes — no reason to pay their mount cost
+  // (2 wagmi reads + 3 fetches each) up front.
+  isMobile?: boolean
 }
 
-export function CollectionRow({ collection, priority }: CollectionRowProps) {
+export function CollectionRow({ collection, priority, isMobile }: CollectionRowProps) {
   const c = collection
   const name = c.metadata?.name || c.name || shortAddress(c.contractAddress)
   const description = c.metadata?.description
@@ -176,7 +182,13 @@ export function CollectionRow({ collection, priority }: CollectionRowProps) {
               key={m.id || `${m.address}-${m.token_id}`}
               className="w-80 flex-shrink-0 snap-start"
             >
-              <MomentCard moment={m} priority={priority && idx === 0} />
+              {isMobile && idx > 0 ? (
+                <LazyMount placeholderClassName="block w-full bg-[#161616] border border-line overflow-hidden">
+                  {() => <MomentCard moment={m} priority={false} />}
+                </LazyMount>
+              ) : (
+                <MomentCard moment={m} priority={priority && idx === 0} />
+              )}
             </div>
           ))
         )}

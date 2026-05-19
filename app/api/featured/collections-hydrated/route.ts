@@ -8,6 +8,7 @@ import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getCollectionMeta } from '@/lib/kv'
+import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
 // inprocess fetches already cache 60s, so this only batches reads across
@@ -137,12 +138,13 @@ export async function GET() {
           .map((m) => String(m.token_id))
           .filter(isValidTokenId)
           .map(BigInt)
-        const [ethEligible, usdcEligible] = tokenIds.length > 0
-          ? await Promise.all([
-              fetchEligibleTokens(client, address, tokenIds, 'eth'),
-              fetchEligibleTokens(client, address, tokenIds, 'usdc'),
-            ])
-          : [[], []]
+        // Overlap the Redis MGETs in enrichMomentsWithKismetMeta with
+        // the two RPC eligibility calls — they share no state.
+        const [ethEligible, usdcEligible, displayMoments] = await Promise.all([
+          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'eth') : [],
+          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'usdc') : [],
+          enrichMomentsWithKismetMeta(previewMoments.slice(0, ROW_DISPLAY_LIMIT)),
+        ])
         const ethEligibleTotalWei = ethEligible
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()
@@ -155,7 +157,7 @@ export async function GET() {
           name: collection.name,
           metadata: collection.metadata,
           default_admin: collection.default_admin,
-          moments: previewMoments.slice(0, ROW_DISPLAY_LIMIT),
+          moments: displayMoments,
           ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
           ethEligibleTotalWei,
           usdcEligibleTokenIds: usdcEligible.map((e) => e.tokenId.toString()),

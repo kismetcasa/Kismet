@@ -77,11 +77,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [creatorName, setCreatorName] = useState(
     () => moment.creator.username || shortAddress(moment.creator.address),
   )
-  const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
+  const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(
+    () => moment.creator.avatarUrl,
+  )
   // Stays null for non-platform addresses (auto-deploy wrappers, unknown
   // contracts) — keeps the chip hidden for individual mints.
-  const [collectionName, setCollectionName] = useState<string | null>(null)
-  const [collectionImage, setCollectionImage] = useState<string | null>(null)
+  const [collectionName, setCollectionName] = useState<string | null>(
+    () => moment.kismetCollection?.name ?? null,
+  )
+  const [collectionImage, setCollectionImage] = useState<string | null>(
+    () => moment.kismetCollection?.image ?? null,
+  )
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -92,6 +98,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
 
   useEffect(() => {
+    // Stitched username + avatarUrl already in state via the initializer;
+    // only fall through to the resolver when either is missing (FC-only
+    // creators rely on this path to pick up the FC pfp).
+    if (moment.creator.username && moment.creator.avatarUrl) return
     fetchCreatorProfile(moment.creator.address).then(({ name, avatarUrl }) => {
       // Only overwrite when Kismet returned an actual resolved name —
       // otherwise the seeded inprocess username (or shortAddress fallback)
@@ -100,14 +110,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       if (resolved) setCreatorName(name)
       setCreatorAvatar(avatarUrl)
     })
-  }, [moment.creator.address])
+  }, [moment.creator.address, moment.creator.username, moment.creator.avatarUrl])
 
   useEffect(() => {
+    // `kismetCollection` defined (even with null name/image) signals
+    // the server attempted enrichment — no need to re-confirm null.
+    if (moment.kismetCollection !== undefined) return
     fetchCollectionChip(moment.address).then(({ name, image }) => {
       setCollectionName(name)
       setCollectionImage(image)
     })
-  }, [moment.address])
+  }, [moment.address, moment.kismetCollection])
 
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: moment.address as `0x${string}`,

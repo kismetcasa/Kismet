@@ -50,6 +50,9 @@ interface MomentAdmin {
   address: string
   username?: string
   hidden: boolean
+  // Server-stitched from Kismet KV. Absent for FC-only creators —
+  // MomentCard's resolver handles those.
+  avatarUrl?: string
 }
 
 interface MomentMetadataInline {
@@ -97,6 +100,13 @@ export interface Moment {
     saleStart?: string
     saleEnd?: string
     currency?: string
+  }
+  // Server-stitched chip metadata. `name: null` means "known contract,
+  // no chip" (don't re-fetch). Field undefined means the route didn't
+  // enrich, and MomentCard falls back to fetchCollectionChip.
+  kismetCollection?: {
+    name: string | null
+    image: string | null
   }
 }
 
