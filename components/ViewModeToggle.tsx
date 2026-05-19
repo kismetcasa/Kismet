@@ -20,7 +20,11 @@ export function ViewModeToggle({ mode, onChange }: ViewModeToggleProps) {
     <button
       type="button"
       onClick={() => onChange(next)}
-      className="flex items-center justify-center w-7 h-7 border border-line text-muted hover:border-muted hover:text-dim transition-colors"
+      // Hidden below md (768px) — grid view is desktop-only. `useViewMode`
+      // also gates the value itself at the same breakpoint, so even if a
+      // mobile-only render path bypassed this CSS the layout would still
+      // stay in feed mode.
+      className="hidden md:flex items-center justify-center w-7 h-7 border border-line text-muted hover:border-muted hover:text-dim transition-colors"
       title={mode === 'feed' ? 'switch to grid view' : 'switch to feed view'}
       aria-label={mode === 'feed' ? 'switch to grid view' : 'switch to feed view'}
     >

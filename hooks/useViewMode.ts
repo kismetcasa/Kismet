@@ -13,18 +13,33 @@ const STORAGE_KEY = 'kismetart:view-mode'
 // stays in the old layout. update() dispatches this event so every
 // instance's listener re-runs setMode in lockstep.
 const SYNC_EVENT = 'kismetart:view-mode-changed'
+// Grid mode is desktop-only. Below this width we always return 'feed'
+// regardless of stored preference, and update() is a no-op so the
+// preference can't be changed from a mobile context. Matches Tailwind's
+// `md:` breakpoint that the ViewModeToggle uses to hide itself.
+const DESKTOP_MQ = '(min-width: 768px)'
 
-// SSR-safe init: defer the localStorage read until after mount to avoid
-// hydration mismatches. Toggle persists per-device and applies globally
-// across every feed that opts in via <PaginatedGrid viewMode>.
+// SSR-safe init: defer the localStorage and matchMedia reads until
+// after mount to avoid hydration mismatches. Both default to false /
+// 'feed' on the server so the initial paint always matches the
+// mobile/feed-mode tree; desktop users with a stored 'grid' preference
+// see a one-frame swap to grid after hydration.
 //
 // All view-mode-aware feeds share the same storage key, so flipping
 // the toggle once carries the preference to the next feed the user
 // opens (main mints → trending stays in grid mode).
 export function useViewMode(): [ViewMode, (next: ViewMode) => void] {
   const [mode, setMode] = useState<ViewMode>('feed')
+  const [allowGrid, setAllowGrid] = useState(false)
 
   useEffect(() => {
+    const mql = window.matchMedia(DESKTOP_MQ)
+    const onMqChange = (e: MediaQueryListEvent | MediaQueryList) => {
+      setAllowGrid(e.matches)
+    }
+    onMqChange(mql)
+    mql.addEventListener('change', onMqChange)
+
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw === 'grid' || raw === 'feed') setMode(raw)
@@ -43,18 +58,25 @@ export function useViewMode(): [ViewMode, (next: ViewMode) => void] {
     window.addEventListener('storage', onStorage)
     window.addEventListener(SYNC_EVENT, onSync)
     return () => {
+      mql.removeEventListener('change', onMqChange)
       window.removeEventListener('storage', onStorage)
       window.removeEventListener(SYNC_EVENT, onSync)
     }
   }, [])
 
+  // Below the desktop breakpoint, always feed — regardless of stored
+  // value, and even if a desktop user resizes their window narrow.
+  // The stored value is preserved so resizing back restores grid.
+  const effectiveMode: ViewMode = allowGrid ? mode : 'feed'
+
   const update = useCallback((next: ViewMode) => {
+    if (!allowGrid) return
     setMode(next)
     try { localStorage.setItem(STORAGE_KEY, next) } catch {}
     // Notify every other hook instance in this window. The originating
     // instance's setMode above handles its own update.
     window.dispatchEvent(new CustomEvent<ViewMode>(SYNC_EVENT, { detail: next }))
-  }, [])
+  }, [allowGrid])
 
-  return [mode, update]
+  return [effectiveMode, update]
 }
