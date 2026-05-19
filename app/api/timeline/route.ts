@@ -363,10 +363,18 @@ export async function GET(req: NextRequest) {
   // MomentCard's own /api/moment fetch (still present, just usually
   // a no-op now) covers the gap. No upstream blip can break the
   // timeline response itself.
+  // Per-call timeout bound — 2.5s matches the per-collection budget
+  // used in lib/search.ts. inprocess /moment with a warm cache returns
+  // in ~50-200ms; cold ~500ms. 2.5s gives comfortable headroom for
+  // legitimately-slow calls while bounding the worst case so a single
+  // hung upstream can't pin the whole timeline response.
+  const ENRICH_TIMEOUT_MS = 2500
   const moments = await Promise.all(
     page_moments.map(async (m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
       if (!moment.address || !moment.token_id) return m
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), ENRICH_TIMEOUT_MS)
       try {
         const url = inprocessUrl('/moment', {
           collectionAddress: moment.address,
@@ -376,13 +384,19 @@ export async function GET(req: NextRequest) {
         const res = await fetch(url, {
           headers: { Accept: 'application/json' },
           next: { revalidate: 60 },
+          signal: controller.signal,
         })
         if (!res.ok) return m
         const detail = (await res.json()) as { saleConfig?: unknown }
         if (!detail.saleConfig) return m
         return { ...(m as object), saleConfig: detail.saleConfig }
       } catch {
+        // AbortError, network error, JSON parse error — all collapse
+        // to "return moment unchanged". MomentCard's per-card fetch
+        // covers the gap on the client.
         return m
+      } finally {
+        clearTimeout(timer)
       }
     }),
   )

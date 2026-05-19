@@ -137,10 +137,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
   //      before, just gated on absence.
   useEffect(() => {
     if (moment.saleConfig) {
-      const cur = inferCollectCurrency(moment.saleConfig)
-      setPrice(formatPrice(moment.saleConfig.pricePerToken, cur))
-      setPricePerToken(BigInt(moment.saleConfig.pricePerToken))
-      setCurrency(cur)
+      // Match the fetch path's implicit error swallowing (the .catch
+      // below covers the same setters). Without this, a malformed
+      // pricePerToken string in an enriched timeline response would
+      // throw out of BigInt() and bubble as an unhandled effect error
+      // instead of letting the card render with un-set price state.
+      try {
+        const cur = inferCollectCurrency(moment.saleConfig)
+        setPrice(formatPrice(moment.saleConfig.pricePerToken, cur))
+        setPricePerToken(BigInt(moment.saleConfig.pricePerToken))
+        setCurrency(cur)
+      } catch {}
       return
     }
     const params = new URLSearchParams({
