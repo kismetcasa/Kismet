@@ -10,9 +10,6 @@ import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import { CuratePanel } from './CuratePanel'
-import { ViewModeToggle } from './ViewModeToggle'
-import { CardSwiper, CardSwiperItem } from './CardSwiper'
-import { useViewMode } from '@/hooks/useViewMode'
 import { useAdmin } from '@/contexts/AdminContext'
 import type { Listing } from '@/lib/listings'
 import type { Moment } from '@/lib/inprocess'
@@ -187,11 +184,6 @@ export function ProfileView({ address }: ProfileViewProps) {
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
-  // Global view-mode toggle — shared with discover/trending/market via the
-  // 'kismetart:view-mode' localStorage key. One toggle in the profile
-  // header flips every grid section at once (mints, collected, listings,
-  // and the mints>collections sub-mode).
-  const [viewMode, setViewMode] = useViewMode()
 
   const [profile, setProfile] = useState<Profile | null>(null)
   const [moments, setMoments] = useState<Moment[]>([])
@@ -450,19 +442,20 @@ export function ProfileView({ address }: ProfileViewProps) {
 
   // ─── section content map ──────────────────────────────────────────────────
 
-  // Skeleton mirrors the active layout — feed mode shows a 2/3-col grid
-  // of square placeholders, grid mode shows the same swiper density so
-  // the loading state doesn't visually flip when content arrives.
-  const skeleton = (n: number) => viewMode === 'grid' ? (
-    <CardSwiper>
-      {Array.from({ length: n }).map((_, i) => (
-        <CardSwiperItem key={i}>
-          <div className="aspect-square bg-surface animate-pulse border border-raised" />
-        </CardSwiperItem>
-      ))}
-    </CardSwiper>
-  ) : (
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+  // Profile uses the compact card density everywhere — keeps each section
+  // glance-able even when a user has hundreds of mints/collected/listings.
+  // Grid is 2/3/4/6 across breakpoints (mirrors CardSwiper's progression);
+  // max-h caps the section at roughly 3 rows tall and the remainder
+  // scrolls inside the box. Skeleton uses the same shell so the loading
+  // state doesn't visually flip when content arrives.
+  const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
+  // ~3 rows worth of compact cards across breakpoints — a single value
+  // is approximate (row height varies with card width) but lands close
+  // enough that users see ~3 rows on mobile and ~3 rows on desktop.
+  const SCROLL_BOX_CLASSES = 'max-h-[52rem] overflow-y-auto'
+
+  const skeleton = (n: number) => (
+    <div className={GRID_CLASSES}>
       {Array.from({ length: n }).map((_, i) => (
         <div key={i} className="aspect-square bg-surface animate-pulse border border-raised" />
       ))}
@@ -486,25 +479,16 @@ export function ProfileView({ address }: ProfileViewProps) {
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
   }
-  // Grid-section layouts are mirrored across the three card-based
-  // sections (mints, collected, listings). Wrap each item in the active
-  // container — CardSwiper for grid view, the existing 2/3-col grid
-  // otherwise — and apply compact + showCreator to the card body in
-  // grid mode so the chips fit inside ~180px wide tiles.
-  const isGrid = viewMode === 'grid'
+  // Single layout for all card-based sections: compact vertical grid
+  // inside a scroll-clipped box. The box's max-h kicks in only when
+  // content exceeds it — short sections render their natural height
+  // with no scrollbar.
   function renderCardCollection<T>(items: T[], renderCard: (item: T) => React.ReactNode, getItemKey: (item: T) => string) {
-    if (isGrid) {
-      return (
-        <CardSwiper>
-          {items.map((it) => (
-            <CardSwiperItem key={getItemKey(it)}>{renderCard(it)}</CardSwiperItem>
-          ))}
-        </CardSwiper>
-      )
-    }
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        {items.map((it) => <div key={getItemKey(it)}>{renderCard(it)}</div>)}
+      <div className={SCROLL_BOX_CLASSES}>
+        <div className={GRID_CLASSES}>
+          {items.map((it) => <div key={getItemKey(it)}>{renderCard(it)}</div>)}
+        </div>
       </div>
     )
   }
@@ -522,20 +506,20 @@ export function ProfileView({ address }: ProfileViewProps) {
               <Link href={`/collection/${c.contractAddress}`} className="relative aspect-square bg-surface block overflow-hidden group/img">
                 <CollectionPreviewImage src={c.metadata?.image} alt={collectionName} thumbhash={c.metadata?.kismet_thumbhash} />
               </Link>
-              <div className={`${isGrid ? 'px-2 pt-2 pb-1 gap-0.5' : 'px-3 pt-3 pb-2 gap-0.5'} flex flex-col`}>
-                <h3 className={`${isGrid ? 'text-[11px]' : 'text-sm'} text-ink font-mono truncate`}>{collectionName}</h3>
-                <span className={`${isGrid ? 'text-[9px]' : 'text-[10px]'} font-mono text-muted truncate`}>{shortAddress(c.contractAddress)}</span>
+              <div className="px-2 pt-2 pb-1 gap-0.5 flex flex-col">
+                <h3 className="text-[11px] text-ink font-mono truncate">{collectionName}</h3>
+                <span className="text-[9px] font-mono text-muted truncate">{shortAddress(c.contractAddress)}</span>
               </div>
-              <div className={`${isGrid ? 'px-2 pb-2 gap-1' : 'px-3 pb-3 gap-1.5'} flex flex-col mt-auto`}>
+              <div className="px-2 pb-2 gap-1 flex flex-col mt-auto">
                 <Link
                   href={`/collection/${c.contractAddress}`}
-                  className={`w-full text-center font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors ${isGrid ? 'py-1 text-[10px]' : 'py-1.5 text-xs'}`}
+                  className="w-full text-center font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors py-1 text-[10px]"
                 >
                   view
                 </Link>
                 <Link
                   href={`/mint?collection=${c.contractAddress}&name=${encodeURIComponent(collectionName)}`}
-                  className={`w-full text-center font-mono border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors ${isGrid ? 'py-1 text-[10px]' : 'py-1.5 text-xs'}`}
+                  className="w-full text-center font-mono border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors py-1 text-[10px]"
                 >
                   mint all
                 </Link>
@@ -550,7 +534,7 @@ export function ProfileView({ address }: ProfileViewProps) {
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : renderCardCollection(
             moments,
-            (m) => <MomentCard moment={m} hidePriceSupply compact={isGrid} showCreator={isGrid} />,
+            (m) => <MomentCard moment={m} hidePriceSupply compact showCreator />,
             (m) => m.id ?? `${m.address}-${m.token_id}`,
           )
     ),
@@ -558,7 +542,7 @@ export function ProfileView({ address }: ProfileViewProps) {
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           collected,
-          (m) => <MomentCard moment={m} hidePriceSupply compact={isGrid} showCreator={isGrid} />,
+          (m) => <MomentCard moment={m} hidePriceSupply compact showCreator />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : listings.length === 0
@@ -575,8 +559,8 @@ export function ProfileView({ address }: ProfileViewProps) {
             <MarketCard
               listing={l}
               onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))}
-              compact={isGrid}
-              showCreator={isGrid}
+              compact
+              showCreator
             />
           ),
           (l) => l.id,
@@ -735,9 +719,6 @@ export function ProfileView({ address }: ProfileViewProps) {
                   {followLoading ? '…' : following ? 'following' : 'follow'}
                 </button>
               )}
-              {/* Global view-mode toggle — affects every grid section
-                  below (mints, collected, listings, mints>collections). */}
-              <ViewModeToggle mode={viewMode} onChange={setViewMode} />
             </div>
             <div className="flex items-center gap-1.5">
               <button
