@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
-import { useFallbackUrl, isProxiable, proxyUrl } from '@/lib/media/gateway'
+import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 
 interface CommonProps {
@@ -62,6 +62,9 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
   const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
+  // Memoized once at mount — sniffing UA on every error would be wasteful.
+  // See isWebKitOnly() for why we skip the direct-walk on WebKit specifically.
+  const skipDirectWalk = useMemo(() => isWebKitOnly(), [])
 
   const initialMode: DeliveryMode = skipOptimizer
     ? (proxiable ? 'proxy' : 'direct')
@@ -84,12 +87,26 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
     if (mode === 'optimized') {
       // Optimizer 413'd or refused the format. Prefer proxy (edge-caches the
       // bytes); fall back to unoptimized direct for non-proxiable sources.
+      // On WebKit + non-proxiable source we have to walk direct — no proxy
+      // path available — but at least skipDirectWalk doesn't apply here
+      // because there's no proxy attempt to short-circuit out of.
       setMode(proxiable ? 'proxy' : 'direct')
       return
     }
     if (mode === 'proxy') {
       // Proxy already raced every gateway; direct is mostly defensive,
       // handles a proxy-only outage (deploy in flight, etc.).
+      //
+      // EXCEPT on WebKit: stalled-but-not-yet-failed direct fetches hold
+      // per-host HTTP/2 connections for the browser's full timeout window
+      // (~30s) and stacked timeouts across a feed of cards saturate the
+      // pool, freezing the whole UI (nav included). Skip straight to
+      // onAllError on WebKit — the poster placeholder is a better outcome
+      // than a frozen browser.
+      if (skipDirectWalk) {
+        onAllError?.()
+        return
+      }
       setMode('direct')
       return
     }
@@ -157,12 +174,29 @@ export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: Img
   const proxiable = isProxiable(src) && !skipProxy
   const [proxyFailed, setProxyFailed] = useState(false)
   useEffect(() => { setProxyFailed(false) }, [src])
+  // Same WebKit short-circuit as MomentImage's proxy→direct transition.
+  // See lib/media/gateway.ts isWebKitOnly() for the why.
+  const skipDirectWalk = useMemo(() => isWebKitOnly(), [])
 
   const useProxy = proxiable && !proxyFailed
   const renderUrl = useProxy ? proxyUrl(src) : walkedUrl
   if (!renderUrl) return null
 
-  const handleError = useProxy ? () => setProxyFailed(true) : walkGateway
+  const handleError = useProxy
+    ? () => {
+        // Proxy failed: on WebKit, surrender to the poster fallback
+        // instead of starting a direct-mode gateway walk that's likely
+        // to stall the browser's connection pool. See gateway.ts.
+        // skipProxy=true paths intentionally bypass proxy entirely and
+        // walk directly — those callers (video posters etc.) accept
+        // the trade-off knowingly and we don't override them.
+        if (skipDirectWalk) {
+          onAllError?.()
+          return
+        }
+        setProxyFailed(true)
+      }
+    : walkGateway
 
   // alt comes through ...rest.
   return (

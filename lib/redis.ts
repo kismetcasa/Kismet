@@ -9,7 +9,14 @@ const token = process.env.UPSTASH_REDIS_REST_TOKEN
 // would kill the build; a placeholder lets it complete, and any actual
 // Redis call at runtime will surface the misconfig via Upstash's own
 // error path.
-if (!url || !token) {
+//
+// Guard the warn to server-only (typeof window === 'undefined'): if a
+// client component imports this module transitively, the env vars are
+// stripped from the client bundle (no NEXT_PUBLIC_ prefix) and the
+// warn fires every page load — which doesn't reflect anything broken
+// (the server has the env vars, that's where Redis actually runs) and
+// just pollutes diagnostic consoles for users trying to debug the app.
+if (typeof window === 'undefined' && (!url || !token)) {
   console.warn(
     '[redis] UPSTASH_REDIS_REST_URL/TOKEN not set — Redis calls will fail at runtime',
   )
