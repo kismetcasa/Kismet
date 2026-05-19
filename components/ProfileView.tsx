@@ -1043,12 +1043,14 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 role="button"
                 tabIndex={0}
                 aria-expanded={!isCollapsed}
-                // touch-action: pan-y pre-drag so the user can scroll
-                // the profile past the header by swiping vertically.
-                // Once a drag is committed (long-press fires) we flip
-                // to touch-none so the gesture is ours.
-                style={isReorderable && isDragging ? { touchAction: 'none' } : undefined}
-                className={`flex items-center gap-2 py-4 select-none ${isReorderable ? 'touch-pan-y cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+                // touch-action: none on reorderable headers — the drag
+                // axis is vertical, and so is the page's natural scroll,
+                // so `pan-y` here would let the browser claim the gesture
+                // before our long-press timer could fire (the symptom
+                // was unresponsive drag on Mini App webviews). Headers
+                // are short (~3rem); users still have the whole section
+                // body below for normal page scrolling.
+                className={`flex items-center gap-2 py-4 select-none ${isReorderable ? 'touch-none cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
               >
                 <ChevronRight
                   size={12}
