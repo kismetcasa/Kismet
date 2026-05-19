@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAccount, useConnect } from 'wagmi'
 import { toast } from 'sonner'
 
@@ -24,12 +24,20 @@ type FarcasterContextValue = {
   ready: boolean
   /** Populated after Quick Auth completes; null on regular web or before bootstrap. */
   identity: FarcasterIdentity | null
+  /**
+   * Re-fetch /api/me and update the cached identity. Called by the
+   * wallet picker after the user changes their chosen Kismet address —
+   * pushes the new address through Nav, ProfileView, etc. without a
+   * full page reload.
+   */
+  refreshIdentity: () => Promise<void>
 }
 
 const FarcasterContext = createContext<FarcasterContextValue>({
   isInMiniApp: false,
   ready: false,
   identity: null,
+  refreshIdentity: async () => {},
 })
 
 export const useFarcaster = () => useContext(FarcasterContext)
@@ -136,12 +144,35 @@ function bumpAndReadOpenCount(): number {
   }
 }
 
+type FarcasterState = Omit<FarcasterContextValue, 'refreshIdentity'>
+
 export function FarcasterProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<FarcasterContextValue>({
+  const [state, setState] = useState<FarcasterState>({
     isInMiniApp: false,
     ready: false,
     identity: null,
   })
+
+  // Re-read /api/me and merge any address change into the cached
+  // identity. Called by the wallet picker (and any future flow that
+  // can change the user's chosen Kismet address) so consumers like
+  // Nav re-render immediately without a page reload. Best-effort —
+  // a network blip just leaves the cached state in place.
+  const refreshIdentity = useCallback(async () => {
+    try {
+      const res = await fetch('/api/me')
+      if (!res.ok) return
+      const body = (await res.json()) as { address?: string }
+      if (!body.address) return
+      setState((prev) =>
+        prev.identity
+          ? { ...prev, identity: { ...prev.identity, address: body.address as string } }
+          : prev,
+      )
+    } catch {
+      // No-op — stale identity is preferable to a half-applied update.
+    }
+  }, [])
 
   // wagmi auto-reconnects to the Farcaster connector when it's first in
   // the connectors array (see lib/wagmi.ts) and its `isAuthorized()`
@@ -427,7 +458,13 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
     }
   }, [wagmiAddress])
 
+  // Memoize so refreshIdentity (stable) doesn't force a re-render
+  // every time `state` changes for unrelated reasons.
+  const value = useMemo<FarcasterContextValue>(
+    () => ({ ...state, refreshIdentity }),
+    [state, refreshIdentity],
+  )
   return (
-    <FarcasterContext.Provider value={state}>{children}</FarcasterContext.Provider>
+    <FarcasterContext.Provider value={value}>{children}</FarcasterContext.Provider>
   )
 }
