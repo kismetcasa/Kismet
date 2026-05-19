@@ -296,11 +296,13 @@ export function NotificationFeed() {
                     setTypeFilter(tab)
                   }
                 }}
-                // touch-pan-y on draggable filter chips — drag axis is
-                // horizontal, so we let the browser handle vertical page
-                // scroll but claim horizontal swipes for the drag. Without
-                // this, the parent's overflow-x-auto would race the
-                // long-press timer and the drag never commits on Mini App.
+                // No `touch-pan-y` here — the parent's overflow-x-auto
+                // owns the horizontal swipe gesture pre-long-press so
+                // users can browse the full filter row by swiping. The
+                // 8px scroll-intent cancel inside useLongPressDrag bails
+                // cleanly when the user is swiping, not reordering;
+                // long-press commits trigger the inline `touchAction:
+                // none` below to lock the gesture once it's ours.
                 style={isDragging
                   ? {
                       transform: `translate3d(${filterDragOffsetX}px, 0, 0) scale(1.05)`,
@@ -313,7 +315,7 @@ export function NotificationFeed() {
                   isActive
                     ? 'border-accent text-accent'
                     : 'border-line text-muted hover:border-[#444] hover:text-dim'
-                } ${isDraggable ? 'touch-pan-y cursor-grab active:cursor-grabbing' : ''} ${
+                } ${isDraggable ? 'cursor-grab active:cursor-grabbing' : ''} ${
                   isDragging ? 'opacity-70' : ''
                 }`}
               >

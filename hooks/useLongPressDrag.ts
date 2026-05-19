@@ -14,6 +14,14 @@ const SCROLL_INTENT_PX = 8
 // Mouse skips the long-press entirely and picks up after this much
 // pointer movement. Matches the immediacy of HTML5 native drag.
 const MOUSE_DRAG_THRESHOLD_PX = 5
+// Edge zone within the container that triggers auto-scroll while
+// dragging — wider than a chip's halo so the user can deliberately
+// "park" the finger near the edge without overshooting the row.
+const AUTO_SCROLL_EDGE_PX = 40
+// Per-frame scroll step. 8px × 60fps ≈ 480 px/s, comfortable enough to
+// reach the far end of a 9-chip overflow row in ~1s without feeling
+// runaway.
+const AUTO_SCROLL_PX_PER_FRAME = 8
 
 type Axis = 'x' | 'y'
 
@@ -95,11 +103,54 @@ export function useLongPressDrag<TId>({
   // shown anyway — we want the animation from what the user actually
   // saw last to what they see now).
   const flipRectsRef = useRef<Map<TId, DOMRect> | null>(null)
+  // Edge-auto-scroll: when the dragged item nears either edge of the
+  // container's scrollable axis we step the container's scrollLeft/Top
+  // each frame. Lets the user reorder past chips that are clipped by
+  // overflow (e.g. the 9-deep notification filter row on a narrow
+  // phone). No-op when the container isn't scrollable — desktop tabs
+  // and profile sections live in non-overflowing containers, so the
+  // rAF loop never spins for them.
+  const autoScrollRafRef = useRef<number | null>(null)
+  const autoScrollDirRef = useRef<-1 | 0 | 1>(0)
 
   const coordOf = (e: { clientX: number; clientY: number }) =>
     axis === 'x' ? e.clientX : e.clientY
   const centerOf = (rect: DOMRect) =>
     axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2
+
+  function stopAutoScroll() {
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current)
+      autoScrollRafRef.current = null
+    }
+    autoScrollDirRef.current = 0
+  }
+
+  function tickAutoScroll() {
+    const container = containerRef.current
+    const dir = autoScrollDirRef.current
+    if (!container || dir === 0) { autoScrollRafRef.current = null; return }
+    if (axis === 'x') container.scrollLeft += dir * AUTO_SCROLL_PX_PER_FRAME
+    else container.scrollTop += dir * AUTO_SCROLL_PX_PER_FRAME
+    autoScrollRafRef.current = requestAnimationFrame(tickAutoScroll)
+  }
+
+  function updateAutoScroll(coord: number) {
+    const container = containerRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const nearStart = axis === 'x' ? rect.left : rect.top
+    const nearEnd = axis === 'x' ? rect.right : rect.bottom
+    let dir: -1 | 0 | 1 = 0
+    if (coord < nearStart + AUTO_SCROLL_EDGE_PX) dir = -1
+    else if (coord > nearEnd - AUTO_SCROLL_EDGE_PX) dir = 1
+    if (dir === autoScrollDirRef.current) return
+    autoScrollDirRef.current = dir
+    if (dir === 0) stopAutoScroll()
+    else if (autoScrollRafRef.current === null) {
+      autoScrollRafRef.current = requestAnimationFrame(tickAutoScroll)
+    }
+  }
 
   function commitDrag() {
     const state = dragRef.current
@@ -118,6 +169,7 @@ export function useLongPressDrag<TId>({
     if (!state) return
     if (state.longPressTimer) clearTimeout(state.longPressTimer)
     if (tapped && state.phase === 'pending') onTap(state.startId)
+    stopAutoScroll()
     setDraggingId(null)
     setDragOffset(0)
     dragRef.current = null
@@ -163,6 +215,7 @@ export function useLongPressDrag<TId>({
     e.preventDefault()
     const coord = coordOf(e)
     setDragOffset(coord - state.anchor)
+    updateAutoScroll(coord)
 
     // Midpoint crossing on a sibling = swap. Pinned items must be
     // excluded by `itemSelector` so we can't push a draggable past one.
