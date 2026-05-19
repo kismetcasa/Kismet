@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
-import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly } from '@/lib/media/gateway'
+import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly, isInIframe } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 
 interface CommonProps {
@@ -63,8 +63,20 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   // Memoized once at mount — sniffing UA on every error would be wasteful.
-  // See isWebKitOnly() for why we skip the direct-walk on WebKit specifically.
-  const skipDirectWalk = useMemo(() => isWebKitOnly(), [])
+  // Skip the direct-gateway-walk fallback on:
+  //   - WebKit (Safari + iOS Mini App webview): stalls Safari's connection
+  //     pool, see isWebKitOnly() in lib/media/gateway.ts
+  //   - Any iframe context (Mini App on Farcaster web, Base App web,
+  //     etc.): the iframe shares the parent page's HTTP/2 connection
+  //     pool with Farcaster's own analytics + wallet + CDN calls, so
+  //     even Chromium-in-iframe sees the same stalls — symptom: the
+  //     console fills with permagate.io timeouts on desktop Mini App
+  //     even though desktop Chrome standalone is fine.
+  //
+  // Top-level Chrome (kismet.art opened directly) is neither WebKit
+  // nor in an iframe — `skipDirectWalk` is false and the existing
+  // direct-walk fallback runs unchanged.
+  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
 
   const initialMode: DeliveryMode = skipOptimizer
     ? (proxiable ? 'proxy' : 'direct')
@@ -174,9 +186,10 @@ export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: Img
   const proxiable = isProxiable(src) && !skipProxy
   const [proxyFailed, setProxyFailed] = useState(false)
   useEffect(() => { setProxyFailed(false) }, [src])
-  // Same WebKit short-circuit as MomentImage's proxy→direct transition.
-  // See lib/media/gateway.ts isWebKitOnly() for the why.
-  const skipDirectWalk = useMemo(() => isWebKitOnly(), [])
+  // Same gateway-walk short-circuit as MomentImage's proxy→direct
+  // transition. Skip on WebKit OR in any iframe context — both share
+  // the connection-pool-stall failure mode. See lib/media/gateway.ts.
+  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
 
   const useProxy = proxiable && !proxyFailed
   const renderUrl = useProxy ? proxyUrl(src) : walkedUrl
