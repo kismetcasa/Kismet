@@ -242,6 +242,47 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const [draggingSection, setDraggingSection] = useState<SectionId | null>(null)
   const dragIdx = useRef<number | null>(null)
 
+  // Cold profile load fires nine independent fetches off the address
+  // change. On the Mini App webview's ~6-connection-per-host pool, three
+  // immediately queue and the header data the user is staring at gets
+  // stuck behind below-the-fold section fetches it has no reason to wait
+  // for. Tier the fetches so the visible-first data goes first.
+  //   - Tier 1 fires on mount: profile + mints (header + first section)
+  //   - Tier 2 fires one rAF later: follow status, follow count,
+  //     collected, artist collections (visible just below the header,
+  //     but not the LCP candidates)
+  //   - Tier 3 fires on idle: listings, payments, airdrops (deep below
+  //     the fold and empty for most non-artist profiles)
+  // Tier flags are intentionally non-resetting per address change — they
+  // only need to gate the cold-load burst. Subsequent navigations between
+  // profiles re-trigger the dependent useEffects regardless.
+  const [tier2Ready, setTier2Ready] = useState(false)
+  const [tier3Ready, setTier3Ready] = useState(false)
+  useEffect(() => {
+    // rAF defers past the first paint commit — once the browser has
+    // pushed the Tier-1 paint to screen, the connection pool has free
+    // slots for Tier 2's fetches.
+    const rafId = requestAnimationFrame(() => setTier2Ready(true))
+    // requestIdleCallback when available; setTimeout fallback for
+    // Safari/iOS WebView which still lacks it. 100ms is conservative —
+    // far enough out that Tier-2 fetches have a head start, close
+    // enough that scroll-down users don't see "loading" placeholders
+    // for non-empty sections.
+    type Ric = (cb: IdleRequestCallback, opts?: IdleRequestOptions) => number
+    const w = window as Window & { requestIdleCallback?: Ric; cancelIdleCallback?: (h: number) => void }
+    const ricHandle = w.requestIdleCallback
+      ? w.requestIdleCallback(() => setTier3Ready(true), { timeout: 1000 })
+      : window.setTimeout(() => setTier3Ready(true), 100)
+    return () => {
+      cancelAnimationFrame(rafId)
+      if (w.cancelIdleCallback && typeof ricHandle === 'number') {
+        w.cancelIdleCallback(ricHandle)
+      } else {
+        clearTimeout(ricHandle)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     const config = loadSectionsConfig()
     setSectionOrder(config.order)
@@ -261,24 +302,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     if (!isOwner) setEditing(false)
   }, [isOwner])
 
-  useEffect(() => {
-    if (!connectedAddress || isOwner) { setFollowing(false); return }
-    fetch(`/api/follow/${address}?follower=${connectedAddress}`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setFollowing(d.following === true))
-      .catch(() => {})
-  }, [address, connectedAddress, isOwner])
-
-  useEffect(() => {
-    fetch(`/api/follow/${address}?count=1`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => {
-        setFollowingCount(d.followingCount ?? 0)
-        setFollowerCount(d.followerCount ?? 0)
-      })
-      .catch(() => { setFollowingCount(0); setFollowerCount(0) })
-  }, [address])
-
+  // Tier 1 — profile + mints, fire on mount.
   useEffect(() => {
     fetch(`/api/profile/${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
@@ -295,45 +319,77 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       .finally(() => setLoadingMoments(false))
   }, [address])
 
+  // Tier 2 — visible-just-below-the-header data. Waits one frame past
+  // Tier 1's paint so it doesn't compete for connection-pool slots
+  // during the initial cold-load burst.
   useEffect(() => {
+    if (!tier2Ready) return
+    if (!connectedAddress || isOwner) { setFollowing(false); return }
+    fetch(`/api/follow/${address}?follower=${connectedAddress}`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setFollowing(d.following === true))
+      .catch(() => {})
+  }, [address, connectedAddress, isOwner, tier2Ready])
+
+  useEffect(() => {
+    if (!tier2Ready) return
+    fetch(`/api/follow/${address}?count=1`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => {
+        setFollowingCount(d.followingCount ?? 0)
+        setFollowerCount(d.followerCount ?? 0)
+      })
+      .catch(() => { setFollowingCount(0); setFollowerCount(0) })
+  }, [address, tier2Ready])
+
+  useEffect(() => {
+    if (!tier2Ready) return
     fetch(`/api/timeline?collector=${address}&limit=50`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setCollected(Array.isArray(d.moments) ? d.moments : []))
       .catch(() => setCollected([]))
       .finally(() => setLoadingCollected(false))
-  }, [address])
+  }, [address, tier2Ready])
 
   useEffect(() => {
-    fetch(`/api/listings?seller=${address}&limit=50`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setListings(Array.isArray(d.listings) ? d.listings.filter((l: Listing) => l.status === 'active') : []))
-      .catch(() => setListings([]))
-      .finally(() => setLoadingListings(false))
-  }, [address])
-
-  useEffect(() => {
-    fetch(`/api/payments?artist=${address}`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
-      .catch(() => setPayments([]))
-      .finally(() => setLoadingPayments(false))
-  }, [address])
-
-  useEffect(() => {
-    fetch(`/api/airdrops?artist_address=${address}`)
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setAirdrops(Array.isArray(d.airdrops) ? d.airdrops : []))
-      .catch(() => setAirdrops([]))
-      .finally(() => setLoadingAirdrops(false))
-  }, [address])
-
-  useEffect(() => {
+    if (!tier2Ready) return
     fetch(`/api/collections?artist=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setArtistCollections(Array.isArray(d.collections) ? d.collections : []))
       .catch(() => setArtistCollections([]))
       .finally(() => setLoadingCollections(false))
-  }, [address])
+  }, [address, tier2Ready])
+
+  // Tier 3 — deep below the fold, almost always empty for non-artist
+  // viewers. Deferred to requestIdleCallback (or a 100ms fallback) so
+  // the main thread + connection pool stay clear of these until after
+  // Tier 1 + 2 have settled.
+  useEffect(() => {
+    if (!tier3Ready) return
+    fetch(`/api/listings?seller=${address}&limit=50`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setListings(Array.isArray(d.listings) ? d.listings.filter((l: Listing) => l.status === 'active') : []))
+      .catch(() => setListings([]))
+      .finally(() => setLoadingListings(false))
+  }, [address, tier3Ready])
+
+  useEffect(() => {
+    if (!tier3Ready) return
+    fetch(`/api/payments?artist=${address}`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
+      .catch(() => setPayments([]))
+      .finally(() => setLoadingPayments(false))
+  }, [address, tier3Ready])
+
+  useEffect(() => {
+    if (!tier3Ready) return
+    fetch(`/api/airdrops?artist_address=${address}`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setAirdrops(Array.isArray(d.airdrops) ? d.airdrops : []))
+      .catch(() => setAirdrops([]))
+      .finally(() => setLoadingAirdrops(false))
+  }, [address, tier3Ready])
 
   // ─── section drag / collapse ──────────────────────────────────────────────
 
