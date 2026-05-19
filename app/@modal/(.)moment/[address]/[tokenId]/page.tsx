@@ -63,9 +63,17 @@ export default async function ModalMomentPage({ params }: Props) {
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator
 
+  // Key the overlay on the moment URL so navigating from moment A
+  // through a profile/collection page into moment B forces a fresh
+  // mount — without it React would reuse the existing ModalOverlay
+  // instance (same route segment, new params) and the pathname
+  // snapshot inside would still point at /moment/A, leaving the
+  // overlay stuck rendering null over moment B's content.
+  const overlayKey = `${address}/${tokenId}`
+
   if (detail?.hidden && !isCreator) {
     return (
-      <ModalOverlay>
+      <ModalOverlay key={overlayKey}>
         <div className="max-w-4xl mx-auto flex flex-col items-center justify-center gap-3 py-24 px-6">
           <EyeOff size={20} className="text-[#444]" />
           <p className="text-sm font-mono text-dim">
@@ -77,7 +85,7 @@ export default async function ModalMomentPage({ params }: Props) {
   }
 
   return (
-    <ModalOverlay>
+    <ModalOverlay key={overlayKey}>
       <MomentDetailView
         address={address}
         tokenId={tokenId}
