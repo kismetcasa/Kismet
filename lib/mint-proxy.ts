@@ -1,6 +1,7 @@
 import { after, type NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from './inprocess'
+import { CREATE_REFERRAL } from './config'
 import { trackWallet } from './profile'
 import { checkRateLimit, getClientIp } from './ratelimit'
 import { bestEffort } from './bestEffort'
@@ -9,6 +10,9 @@ import { setMomentContent } from './momentContent'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
 import { markCreatedMint } from './kv'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
+import { hasGateAccess, isPlatformPausedFor } from './gate'
+import { isBlacklisted } from './blacklist'
+import { recordPlatformTx } from './pass-validity'
 
 type SplitsValidation =
   | { kind: 'absent' }
@@ -82,16 +86,52 @@ export async function proxyMintRequest(
     )
   }
 
+  // Platform-policy gates (additive on top of main's existing on-chain Zora
+  // ADMIN check below). Run in parallel — three independent reads. Skipped
+  // when no caller account is given (smart-wallet preflight handles those).
+  // For new-deploy (hasNameAndUri without address) we use a sentinel zero
+  // target — the gate's pass-collection-target rejection branch doesn't
+  // fire there, so the check reduces to "does this caller have a valid Pass".
+  // Default-disabled: gate.enabled defaults false → hasGateAccess returns true.
+  if (account) {
+    const targetForGate =
+      typeof contractField?.address === 'string'
+        ? contractField.address
+        : '0x0000000000000000000000000000000000000000'
+    const [blocked, paused, gateOk] = await Promise.all([
+      isBlacklisted(account),
+      isPlatformPausedFor(account),
+      hasGateAccess(targetForGate, account),
+    ])
+    if (blocked) {
+      return NextResponse.json({ error: 'Address is blocked from minting' }, { status: 403 })
+    }
+    if (paused) {
+      return NextResponse.json({ error: 'Platform is temporarily paused', paused: true }, { status: 503 })
+    }
+    if (!gateOk) {
+      return NextResponse.json({ error: 'Kismet Creator pass required to mint' }, { status: 403 })
+    }
+  }
+
   // body.name is our private hint for moment-meta; never forward to InProcess.
   // For writing moments inprocess uses `title` at top level — fall back to
   // that so we still capture a display name even if `name` is omitted.
   // Replace splits with the normalized (sorted, deduped) version when present
   // so downstream gets a SplitMain-compatible array regardless of client state.
+  // token.createReferral is server-overwritten with CREATE_REFERRAL — without
+  // this, a Pass-holder bypassing the form could supply their own address
+  // there and capture the Zora protocol mint-fee referral on every collect
+  // of their moment. Always inject the platform's value server-side.
   const { name: bodyName, splits: _droppedSplits, ...rest } = body
-  const forwardBody: Record<string, unknown> =
-    splitsValidation.kind === 'ok'
-      ? { ...rest, splits: splitsValidation.splits }
-      : rest
+  const sanitizedToken = {
+    ...(tokenObj as Record<string, unknown>),
+    createReferral: CREATE_REFERRAL,
+  }
+  const forwardBody: Record<string, unknown> = {
+    ...(splitsValidation.kind === 'ok' ? { ...rest, splits: splitsValidation.splits } : rest),
+    token: sanitizedToken,
+  }
   const bodyTitle = typeof body?.title === 'string' ? body.title : undefined
   const displayName =
     (typeof bodyName === 'string' && bodyName) ||
@@ -191,9 +231,10 @@ export async function proxyMintRequest(
   }
 
   if (upstream.ok) {
-    const r = data as { contractAddress?: string; tokenId?: string }
+    const r = data as { contractAddress?: string; tokenId?: string; hash?: string }
     const contractAddress = r.contractAddress
     const tokenId = r.tokenId
+    const txHash = r.hash
 
     if (contractAddress && tokenId && account) {
       // Only writing moments carry tokenContent; media mints forward
@@ -226,6 +267,19 @@ export async function proxyMintRequest(
           tasks.push(
             setStoredSplits(contractAddress, tokenId, splitsValidation.splits).catch(
               (err) => console.error('[mint-proxy] setStoredSplits failed', err),
+            ),
+          )
+        }
+        // Flag this tx as platform-originated so the Pass-transfer webhook
+        // credits the recipient with validity when the Transfer event arrives.
+        // No-op (writes an unused Redis flag) when the target isn't the
+        // configured Pass collection — the webhook filters by passCollection.
+        // Without this, admin minting Passes via /api/mint would silently
+        // deny the recipient validity and force a manual /admin/pass grant.
+        if (txHash) {
+          tasks.push(
+            recordPlatformTx(txHash).catch(
+              bestEffort('mint-proxy.recordPlatformTx', { txHash }),
             ),
           )
         }
