@@ -8,11 +8,11 @@ interface ViewModeToggleProps {
   onChange: (next: ViewMode) => void
 }
 
-// Two-state icon button: Rows3 reads as the current spacious vertical
-// feed, LayoutGrid as the denser horizontal swiper. Click flips between
-// them. Sits inline with the filter pills (mints/collections, list
-// selectors, etc.) so it appears on the same line as the feed's other
-// controls.
+// Two-state icon button: Rows3 reads as the spacious 1/2/3-col feed
+// layout, LayoutGrid as the denser 2/3/4/6-col grid. Click flips
+// between them. Sits inline with the filter pills (mints/collections,
+// list selectors, etc.) so it appears on the same line as the feed's
+// other controls.
 export function ViewModeToggle({ mode, onChange }: ViewModeToggleProps) {
   const next: ViewMode = mode === 'feed' ? 'grid' : 'feed'
   const Icon = mode === 'feed' ? Rows3 : LayoutGrid

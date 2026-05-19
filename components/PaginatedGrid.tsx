@@ -10,15 +10,14 @@ interface ItemHelpers {
   remove: () => void
   /** 0-based position; callers use this to mark above-the-fold items as priority. */
   index: number
-  /**
-   * Active layout mode. Callers branch their render — e.g. MomentCard
-   * switches to `compact showCreator` in grid mode. Always 'feed' when
-   * the parent doesn't pass `viewMode`.
-   */
-  viewMode: ViewMode
 }
 
 type ViewMode = 'feed' | 'grid'
+
+// Hoisted so the skeleton and the live grid use the same column
+// classes — keeping them in sync was a maintenance hazard before.
+const GRID_FEED = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'
+const GRID_GRID = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
 
 interface PaginatedGridProps<T> {
   /** Base URL; the component appends `?page=N&limit=…`. Changing this resets + refetches. */
@@ -211,17 +210,13 @@ export function PaginatedGrid<T>({
   const refreshing = firstFetching && !!firstPage
   const error = firstError?.message ?? null
 
-  // Single source of truth for "wrap with LazyMount or not". Used in
-  // both layouts so the eager/lazy split stays consistent: items above
-  // EAGER_MOUNT_COUNT (or any item when lazy=false) render directly;
-  // items past the threshold defer until in-viewport.
+  // Eager up to EAGER_MOUNT_COUNT, then LazyMount past it when `lazy`
+  // is on. Single helper so the threshold stays consistent across any
+  // future layout split.
+  const gridClass = viewMode === 'grid' ? GRID_GRID : GRID_FEED
   function renderEntry(item: T, index: number): ReactElement {
     const key = getKey(item)
-    const node = renderItem(item, {
-      remove: () => removeItem(key),
-      index,
-      viewMode,
-    })
+    const node = renderItem(item, { remove: () => removeItem(key), index })
     if (!lazy || index < EAGER_MOUNT_COUNT) return node
     return <LazyMount key={key}>{() => node}</LazyMount>
   }
@@ -241,11 +236,7 @@ export function PaginatedGrid<T>({
       </div>
 
       {loading && (
-        <div
-          className={viewMode === 'grid'
-            ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
-            : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'}
-        >
+        <div className={gridClass}>
           {Array.from({ length: viewMode === 'grid' ? 12 : 6 }).map((_, i) => (
             <div key={i} className="bg-[#161616] border border-line">
               <div className="aspect-square bg-raised animate-pulse" />
@@ -274,15 +265,7 @@ export function PaginatedGrid<T>({
 
       {!loading && visible.length > 0 && (
         <>
-          {/* Grid mode: denser 2/3/4/6 col layout with compact cards.
-              Feed mode: spacious 1/2/3 col layout with full cards.
-              Both scroll vertically; only the column count and gap
-              differ. */}
-          <div
-            className={viewMode === 'grid'
-              ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
-              : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'}
-          >
+          <div className={gridClass}>
             {visible.map((item, index) => renderEntry(item, index))}
           </div>
           {currentPage < totalPages && (

@@ -20,14 +20,14 @@ interface MarketCardProps {
   listing: Listing
   onRemove?: () => void
   /**
-   * Compact mode for the grid-view horizontal swiper. Drops seller chip
-   * and royalty % so only creator + price + buy/cancel remain — keeps
+   * Compact mode for the dense grid view. Drops seller chip and
+   * royalty % so only creator + price + buy/cancel remain — keeps
    * the card visually consistent with compact MomentCards beside it.
    */
   compact?: boolean
   /**
-   * Force the creator chip on/off independent of `compact`. The grid
-   * view passes true; non-compact mode renders it by default.
+   * Force the creator chip on/off independent of `compact`. Grid view
+   * passes true; non-compact mode renders it by default.
    */
   showCreator?: boolean
   /**

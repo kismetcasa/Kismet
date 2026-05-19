@@ -11,6 +11,7 @@ import type { Listing } from '@/lib/listings'
 export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
   const { address } = useAccount()
   const [viewMode, setViewMode] = useViewMode()
+  const isGrid = viewMode === 'grid'
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       <PaginatedGrid<Listing>
@@ -23,13 +24,13 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
         // every navigation in. Desktop: lazy=false (default), eager
         // for everyone, same as before this prop existed.
         lazy={isMobile}
-        renderItem={(l, { remove, viewMode: vm }) => (
+        renderItem={(l, { remove }) => (
           <MarketCard
             key={l.id}
             listing={l}
             onRemove={remove}
-            compact={vm === 'grid'}
-            showCreator={vm === 'grid'}
+            compact={isGrid}
+            showCreator={isGrid}
           />
         )}
         header={

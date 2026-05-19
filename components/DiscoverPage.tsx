@@ -152,6 +152,9 @@ function MomentFeed({
     </div>
   ) : header
 
+  // One row above-the-fold: 3 cards on feed (lg+), 6 cards on grid (lg+).
+  const isGrid = viewMode === 'grid'
+  const eagerCount = isGrid ? 6 : 3
   return (
     <PaginatedGrid<Moment>
       apiUrl={apiUrl}
@@ -159,16 +162,13 @@ function MomentFeed({
       getKey={(m) => `${m.address}-${m.token_id}`}
       viewMode={viewMode}
       lazy={lazy}
-      renderItem={(m, { index, viewMode: vm }) => (
-        // Feed: 3 visible above-the-fold on lg+ — prioritize first 3.
-        // Grid: 6-8 visible above-the-fold on lg+/xl — prioritize first 6
-        // so the swiper paints its initial frame without lazy-loading.
+      renderItem={(m, { index }) => (
         <MomentCard
           key={`${m.address}-${m.token_id}`}
           moment={m}
-          compact={vm === 'grid'}
-          showCreator={vm === 'grid'}
-          priority={vm === 'grid' ? index < 6 : index < 3}
+          compact={isGrid}
+          showCreator={isGrid}
+          priority={index < eagerCount}
         />
       )}
       empty={
@@ -202,6 +202,8 @@ function CollectionsFeed({
           return admin ? followingSet.has(admin) : false
         })
     : undefined
+  const isGrid = viewMode === 'grid'
+  const eagerCount = isGrid ? 6 : 3
   return (
     <PaginatedGrid<CollectionDisplay>
       apiUrl="/api/collections?feed=1"
@@ -209,13 +211,13 @@ function CollectionsFeed({
       getKey={(c) => c.contractAddress}
       viewMode={viewMode}
       lazy={lazy}
-      renderItem={(c, { index, viewMode: vm }) => (
+      renderItem={(c, { index }) => (
         <CollectionCard
           key={c.contractAddress}
           collection={c}
-          compact={vm === 'grid'}
-          showCreator={vm === 'grid'}
-          priority={vm === 'grid' ? index < 6 : index < 3}
+          compact={isGrid}
+          showCreator={isGrid}
+          priority={index < eagerCount}
         />
       )}
       filter={filter}
