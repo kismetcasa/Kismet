@@ -314,7 +314,27 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // CRITICAL: without ready() the host shows its splash forever.
         // Called LAST in the pre-paint phase so everything above has
         // settled before the user sees the page.
-        await sdk.actions.ready()
+        //
+        // disableNativeGestures: true tells the host we own every
+        // touch gesture in our viewport. Kismet has lots of conflicting
+        // gestures — vertical-scrolling feeds, swipeable modals,
+        // sub-tab bars, draggable section headers — and without this
+        // flag the host's swipe-down-to-close detector intercepts
+        // start-of-scroll on the feed, begins to animate the modal
+        // away, then aborts when our content actually responds. The
+        // side effects of that aborted animation (iframe transform,
+        // mid-animation resize events) fire our SharedVideoProvider's
+        // scroll/resize handlers against half-resolved geometry,
+        // producing the "video positioned over wrong card / blank
+        // white space below the nav" glitches that appear ONLY in
+        // Mini App and NOT in mobile web. Per the canonical SDK
+        // (@farcaster/miniapp-core/src/actions/Ready.ts), this is
+        // the documented mechanism for apps in our category.
+        //
+        // Trade-off: users can no longer swipe-down to dismiss the
+        // Mini App — they use the host's X button. Acceptable for an
+        // app with this much scrollable + interactive surface.
+        await sdk.actions.ready({ disableNativeGestures: true })
         if (cancelled) return
 
         // --- Post-paint bootstrap ---
