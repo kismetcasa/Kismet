@@ -116,9 +116,15 @@ function TabBar({
             }}
             // touch-pan-y pre-drag keeps vertical page scroll past the
             // bar working; the inline `touchAction: none` during drag
-            // locks the horizontal swap from the browser.
+            // locks the horizontal swap from the browser. scale + shadow
+            // give a clear "lifted" cue beyond the opacity drop alone.
             style={isDragging
-              ? { transform: `translateX(${dragOffset}px)`, zIndex: 10, touchAction: 'none' }
+              ? {
+                  transform: `translate3d(${dragOffset}px, 0, 0) scale(1.05)`,
+                  zIndex: 10,
+                  touchAction: 'none',
+                  boxShadow: '0 6px 16px rgba(0, 0, 0, 0.45)',
+                }
               : undefined}
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase

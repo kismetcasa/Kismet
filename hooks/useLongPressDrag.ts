@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type RefObject, type PointerEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type RefObject, type PointerEvent } from 'react'
 
 // Long-press window before a touch becomes a drag. 250ms matches the
 // iOS Home-Screen / common reorder-UI feel — long enough that a
@@ -14,6 +14,14 @@ const SCROLL_INTENT_PX = 8
 // Mouse skips the long-press entirely and picks up after this much
 // pointer movement. Matches the immediacy of HTML5 native drag.
 const MOUSE_DRAG_THRESHOLD_PX = 5
+// Edge zone within the container that triggers auto-scroll while
+// dragging — wider than a chip's halo so the user can deliberately
+// "park" the finger near the edge without overshooting the row.
+const AUTO_SCROLL_EDGE_PX = 40
+// Per-frame scroll step. 8px × 60fps ≈ 480 px/s, comfortable enough to
+// reach the far end of a 9-chip overflow row in ~1s without feeling
+// runaway.
+const AUTO_SCROLL_PX_PER_FRAME = 8
 
 type Axis = 'x' | 'y'
 
@@ -87,11 +95,62 @@ export function useLongPressDrag<TId>({
   orderRef.current = order
   const [draggingId, setDraggingId] = useState<TId | null>(null)
   const [dragOffset, setDragOffset] = useState(0)
+  // FLIP buffer: rects captured immediately before a swap so the
+  // post-render useLayoutEffect can animate neighbors from their old
+  // positions to their new ones instead of snapping. Only the FIRST
+  // pre-swap capture per render is kept (if pointermove fires multiple
+  // swaps before React re-renders, intermediate states aren't visually
+  // shown anyway — we want the animation from what the user actually
+  // saw last to what they see now).
+  const flipRectsRef = useRef<Map<TId, DOMRect> | null>(null)
+  // Edge-auto-scroll: when the dragged item nears either edge of the
+  // container's scrollable axis we step the container's scrollLeft/Top
+  // each frame. Lets the user reorder past chips that are clipped by
+  // overflow (e.g. the 9-deep notification filter row on a narrow
+  // phone). No-op when the container isn't scrollable — desktop tabs
+  // and profile sections live in non-overflowing containers, so the
+  // rAF loop never spins for them.
+  const autoScrollRafRef = useRef<number | null>(null)
+  const autoScrollDirRef = useRef<-1 | 0 | 1>(0)
 
   const coordOf = (e: { clientX: number; clientY: number }) =>
     axis === 'x' ? e.clientX : e.clientY
   const centerOf = (rect: DOMRect) =>
     axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2
+
+  function stopAutoScroll() {
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current)
+      autoScrollRafRef.current = null
+    }
+    autoScrollDirRef.current = 0
+  }
+
+  function tickAutoScroll() {
+    const container = containerRef.current
+    const dir = autoScrollDirRef.current
+    if (!container || dir === 0) { autoScrollRafRef.current = null; return }
+    if (axis === 'x') container.scrollLeft += dir * AUTO_SCROLL_PX_PER_FRAME
+    else container.scrollTop += dir * AUTO_SCROLL_PX_PER_FRAME
+    autoScrollRafRef.current = requestAnimationFrame(tickAutoScroll)
+  }
+
+  function updateAutoScroll(coord: number) {
+    const container = containerRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const nearStart = axis === 'x' ? rect.left : rect.top
+    const nearEnd = axis === 'x' ? rect.right : rect.bottom
+    let dir: -1 | 0 | 1 = 0
+    if (coord < nearStart + AUTO_SCROLL_EDGE_PX) dir = -1
+    else if (coord > nearEnd - AUTO_SCROLL_EDGE_PX) dir = 1
+    if (dir === autoScrollDirRef.current) return
+    autoScrollDirRef.current = dir
+    if (dir === 0) stopAutoScroll()
+    else if (autoScrollRafRef.current === null) {
+      autoScrollRafRef.current = requestAnimationFrame(tickAutoScroll)
+    }
+  }
 
   function commitDrag() {
     const state = dragRef.current
@@ -110,6 +169,7 @@ export function useLongPressDrag<TId>({
     if (!state) return
     if (state.longPressTimer) clearTimeout(state.longPressTimer)
     if (tapped && state.phase === 'pending') onTap(state.startId)
+    stopAutoScroll()
     setDraggingId(null)
     setDragOffset(0)
     dragRef.current = null
@@ -155,6 +215,7 @@ export function useLongPressDrag<TId>({
     e.preventDefault()
     const coord = coordOf(e)
     setDragOffset(coord - state.anchor)
+    updateAutoScroll(coord)
 
     // Midpoint crossing on a sibling = swap. Pinned items must be
     // excluded by `itemSelector` so we can't push a draggable past one.
@@ -170,6 +231,20 @@ export function useLongPressDrag<TId>({
       targetIdx = i
     }
     if (targetIdx !== currentIdx) {
+      // Capture pre-swap rects so the post-render FLIP knows where
+      // each item used to be. First-write-wins: if multiple swaps
+      // batch into one render, we keep the rects from the FIRST
+      // (= last user-visible state), not the most recent in-memory
+      // one. Map keys are item ids resolved via the DOM order, which
+      // matches `currentOrder` because callers render via order.map.
+      if (!flipRectsRef.current) {
+        const pre = new Map<TId, DOMRect>()
+        els.forEach((el, i) => {
+          const id = currentOrder[i]
+          if (id !== undefined) pre.set(id, el.getBoundingClientRect())
+        })
+        flipRectsRef.current = pre
+      }
       const next = [...currentOrder]
       const [moved] = next.splice(currentIdx, 1)
       next.splice(targetIdx, 0, moved)
@@ -200,6 +275,46 @@ export function useLongPressDrag<TId>({
       onPointerCancel,
     }
   }
+
+  // FLIP — when `order` changes mid-drag, neighbors snap to their new
+  // slot positions. Without this hook, that snap is visually jarring;
+  // with it, each displaced item appears (briefly) at its old position
+  // and animates to the new one. The dragged item itself is excluded
+  // because its translate is managed by the move handler above.
+  useLayoutEffect(() => {
+    const oldRects = flipRectsRef.current
+    if (!oldRects) return
+    flipRectsRef.current = null
+    const container = containerRef.current
+    if (!container) return
+    const els = Array.from(container.querySelectorAll<HTMLElement>(itemSelector))
+    const newOrder = orderRef.current
+    const liftedId = dragRef.current?.startId ?? null
+    els.forEach((el, i) => {
+      const id = newOrder[i]
+      if (id === undefined) return
+      // Skip the lifted item — its style.transform is owned by the
+      // drag handler. Letting FLIP touch it fights the React render
+      // and produces a one-frame glitch as the finger keeps moving.
+      if (id === liftedId) return
+      const oldRect = oldRects.get(id)
+      if (!oldRect) return
+      const newRect = el.getBoundingClientRect()
+      const dx = oldRect.left - newRect.left
+      const dy = oldRect.top - newRect.top
+      // Sub-pixel deltas aren't worth a transition — they tend to come
+      // from font-rendering jitter, not actual position changes.
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+      // Apply the inverse offset first (item appears in old position),
+      // commit that to layout, then transition transform back to 0.
+      el.style.transition = 'none'
+      el.style.transform = `translate(${dx}px, ${dy}px)`
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform 200ms cubic-bezier(0.2, 0, 0, 1)'
+        el.style.transform = ''
+      })
+    })
+  }, [order, containerRef, itemSelector])
 
   return { draggingId, dragOffset, bindItem }
 }

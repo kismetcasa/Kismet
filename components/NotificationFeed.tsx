@@ -296,8 +296,20 @@ export function NotificationFeed() {
                     setTypeFilter(tab)
                   }
                 }}
+                // No `touch-pan-y` here — the parent's overflow-x-auto
+                // owns the horizontal swipe gesture pre-long-press so
+                // users can browse the full filter row by swiping. The
+                // 8px scroll-intent cancel inside useLongPressDrag bails
+                // cleanly when the user is swiping, not reordering;
+                // long-press commits trigger the inline `touchAction:
+                // none` below to lock the gesture once it's ours.
                 style={isDragging
-                  ? { transform: `translateX(${filterDragOffsetX}px)`, zIndex: 10, touchAction: 'none' }
+                  ? {
+                      transform: `translate3d(${filterDragOffsetX}px, 0, 0) scale(1.05)`,
+                      zIndex: 10,
+                      touchAction: 'none',
+                      boxShadow: '0 6px 16px rgba(0, 0, 0, 0.45)',
+                    }
                   : undefined}
                 className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border flex-shrink-0 select-none transition-colors duration-150 ${
                   isActive
