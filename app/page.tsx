@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, startTransition } from 'react'
 import { useAccount } from 'wagmi'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
@@ -280,7 +280,21 @@ export default function DiscoverPage() {
 
   return (
     <div className={`${widerTab ? 'max-w-[88rem]' : 'max-w-6xl'} mx-auto px-4 py-6`}>
-      <TabBar order={order} active={active} onSelect={setActive} onReorder={handleReorder} />
+      <TabBar
+        order={order}
+        active={active}
+        // startTransition lets React's concurrent scheduler keep the
+        // tap-feedback (button color flip, chevron rotate) at high
+        // priority while the heavy tab-content swap (unmount old feed,
+        // mount new feed, fire fetches) runs at lower priority. On
+        // slow Mini App webviews this is the difference between
+        // "tap registers instantly" and "tap appears stuck while
+        // the new content fights for the main thread".
+        onSelect={useCallback((tab: TabId) => {
+          startTransition(() => setActive(tab))
+        }, [])}
+        onReorder={handleReorder}
+      />
 
       <div className="mt-2">
         {active === 'featured' && (

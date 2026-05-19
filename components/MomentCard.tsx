@@ -222,12 +222,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
   const isTextMoment = meta.content?.mime === 'text/plain'
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   return (
-    // content-visibility:auto skips browser-side render work for cards
-    // off-screen; useEffects still run, so data fetches aren't deferred.
-    // contain-intrinsic-size reserves the placeholder box pre-paint;
-    // `auto` lets the browser remember the real size after first layout.
+    // content-visibility / contain-intrinsic-size were here originally
+    // to skip render work for off-screen cards. Removed because on iOS
+    // WebKit (the Mini App webview engine) the heuristic doesn't
+    // un-skip reliably as cards scroll into view — users see long
+    // blank gaps in the feed instead of card content. The render-time
+    // savings on the desktop browsers that DO honour the property
+    // aren't worth the visible breakage on the primary mobile path.
     <article
-      className="group flex flex-col bg-[#161616] border border-line overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_500px]"
+      className="group flex flex-col bg-[#161616] border border-line overflow-hidden"
     >
       {/* Media — wrapped in <Link> so the click triggers Next.js's
           intercepting route at app/@modal/(.)moment/.../page.tsx. The

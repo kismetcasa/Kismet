@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, type ReactElement, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 
 interface ItemHelpers {
@@ -28,6 +29,19 @@ interface PaginatedGridProps<T> {
   pageLimit?: number
 }
 
+// Shape of a paginated JSON response. itemsKey is dynamic per caller,
+// so we leave the items array un-typed here and narrow per-call.
+interface PageResponse {
+  pagination?: { total_pages?: number }
+  [key: string]: unknown
+}
+
+async function fetchPageJson(url: string): Promise<PageResponse> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Failed (${res.status})`)
+  return res.json()
+}
+
 export function PaginatedGrid<T>({
   apiUrl,
   itemsKey,
@@ -38,65 +52,140 @@ export function PaginatedGrid<T>({
   filter,
   pageLimit = 18,
 }: PaginatedGridProps<T>) {
-  const [items, setItems] = useState<T[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
-  const [refreshing, setRefreshing] = useState(false)
-  // Monotonic request id — when apiUrl changes mid-fetch, the older fetch can
-  // resolve after the newer one and stomp `items` with stale data. Drop any
-  // result whose id is no longer the latest.
-  const reqIdRef = useRef(0)
+  const queryClient = useQueryClient()
 
-  const fetchPage = useCallback(
-    async (p = 1, append = false) => {
-      const reqId = ++reqIdRef.current
-      try {
-        if (p === 1 && !append) setLoading(true)
-        else setRefreshing(true)
-        const url = new URL(apiUrl, location.origin)
-        url.searchParams.set('page', String(p))
-        url.searchParams.set('limit', String(pageLimit))
-        const res = await fetch(url.toString())
-        if (reqId !== reqIdRef.current) return
-        if (!res.ok) throw new Error(`Failed (${res.status})`)
-        const data = await res.json()
-        if (reqId !== reqIdRef.current) return
-        const next: T[] = Array.isArray(data[itemsKey]) ? data[itemsKey] : []
-        setItems((prev) => (append ? [...prev, ...next] : next))
-        setTotalPages(data.pagination?.total_pages ?? 1)
-        setPage(p)
-        setError(null)
-      } catch (err) {
-        if (reqId !== reqIdRef.current) return
-        setError(err instanceof Error ? err.message : 'Failed to load')
-      } finally {
-        if (reqId === reqIdRef.current) {
-          setLoading(false)
-          setRefreshing(false)
-        }
-      }
-    },
-    [apiUrl, itemsKey, pageLimit],
+  // First page goes through react-query's cache → tab-switching back
+  // within the staleTime window renders instantly from cache instead
+  // of refetching. The QueryClient is already mounted globally by
+  // WagmiProvider (wagmi requires it), so this adds no bundle weight
+  // and no provider boilerplate.
+  //
+  // The queryKey is the EXACT URL (apiUrl + pageLimit) so two callers
+  // requesting the same data dedupe automatically, and a filter
+  // toggle (apiUrl changes) cleanly switches to a different cache
+  // entry without invalidating the previous one — meaning toggling
+  // back is also instant.
+  const firstPageUrl = useMemo(() => {
+    const sep = apiUrl.includes('?') ? '&' : '?'
+    return `${apiUrl}${sep}page=1&limit=${pageLimit}`
+  }, [apiUrl, pageLimit])
+  const queryKey = useMemo(
+    () => ['paginated-grid', firstPageUrl] as const,
+    [firstPageUrl],
   )
 
-  // apiUrl change (tab switch, following toggle, etc.) resets + refetches.
-  useEffect(() => {
-    setItems([])
-    setPage(1)
-    fetchPage(1)
-  }, [fetchPage])
+  const {
+    data: firstPage,
+    isPending: firstPending,
+    isFetching: firstFetching,
+    error: firstError,
+    refetch,
+  } = useQuery<PageResponse, Error>({
+    queryKey,
+    queryFn: () => fetchPageJson(firstPageUrl),
+    // 30s "fresh" window — re-renders that mount while still fresh
+    // skip the network entirely. After 30s, mounts render cached data
+    // immediately AND fire a background refresh in parallel.
+    staleTime: 30_000,
+    // Keep cached data for 5 minutes after the last consumer unmounts.
+    // Tab-switching round-trips on the discover page sit well within
+    // this window; navigating to a moment detail and back also stays
+    // cached.
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
 
-  const visible = filter ? filter(items) : items
+  // Subsequent pages (load-more) stay in component-local state. Caching
+  // them globally adds complexity (page state per cache entry) without
+  // a clear win — most users don't scroll past page 1, and a fresh
+  // mount restarting at page 1 is the expected UX.
+  const [extraPages, setExtraPages] = useState<T[][]>([])
+  const [currentPage, setCurrentPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
+
+  // Reset load-more state when the underlying query changes (e.g. tab
+  // swap, filter toggle). The first-page cache survives in react-query;
+  // only the locally-accumulated extra pages need clearing.
+  useEffect(() => {
+    setExtraPages([])
+    setCurrentPage(1)
+  }, [firstPageUrl])
+
+  const totalPages = firstPage?.pagination?.total_pages ?? 1
+  // useMemo computes firstPageItems inline so the eslint-deps rule
+  // doesn't trip on a recomputed array reference (which it would
+  // because Array.isArray + cast happens on every render).
+  const allItems = useMemo(() => {
+    const firstPageItems: T[] = Array.isArray(firstPage?.[itemsKey])
+      ? (firstPage[itemsKey] as T[])
+      : []
+    return [...firstPageItems, ...extraPages.flat()]
+  }, [firstPage, itemsKey, extraPages])
+  const visible = filter ? filter(allItems) : allItems
+
+  // Optimistic remove — used after delete/list/etc. actions. Updates
+  // BOTH the cached first page (so the item stays gone after the
+  // user navigates away and comes back) and the local extra pages
+  // (so it disappears immediately from the rendered list).
+  const removeItem = useCallback(
+    (key: string) => {
+      queryClient.setQueryData<PageResponse>(queryKey, (old) => {
+        if (!old) return old
+        const oldItems = (old[itemsKey] as T[] | undefined) ?? []
+        return { ...old, [itemsKey]: oldItems.filter((it) => getKey(it) !== key) }
+      })
+      setExtraPages((prev) =>
+        prev.map((pg) => pg.filter((it) => getKey(it) !== key)),
+      )
+    },
+    [queryClient, queryKey, itemsKey, getKey],
+  )
+
+  const loadMore = useCallback(async () => {
+    const next = currentPage + 1
+    if (next > totalPages || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const url = new URL(apiUrl, location.origin)
+      url.searchParams.set('page', String(next))
+      url.searchParams.set('limit', String(pageLimit))
+      const data = await fetchPageJson(url.toString())
+      const items: T[] = Array.isArray(data[itemsKey])
+        ? (data[itemsKey] as T[])
+        : []
+      setExtraPages((prev) => [...prev, items])
+      setCurrentPage(next)
+    } catch {
+      // Silent — user can tap "load more" again
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [apiUrl, pageLimit, itemsKey, currentPage, totalPages, loadingMore])
+
+  // Manual refresh: clears local extras and forces a fresh first-page
+  // fetch through react-query. isFetching toggles around the refetch
+  // so the icon spins.
+  const refresh = useCallback(() => {
+    setExtraPages([])
+    setCurrentPage(1)
+    void refetch()
+  }, [refetch])
+
+  // Show the skeleton only on cold load — the very first mount with no
+  // cache. Subsequent mounts inside the gcTime window render cached
+  // data immediately (no skeleton flash) with a silent background
+  // revalidation when stale.
+  const loading = firstPending && !firstPage
+  const refreshing = firstFetching && !!firstPage
+  const error = firstError?.message ?? null
 
   return (
     <div>
       <div className="flex items-center justify-between py-4">
         <div>{header}</div>
         <button
-          onClick={() => fetchPage(1)}
-          disabled={loading || refreshing}
+          onClick={refresh}
+          disabled={refreshing}
           className="flex items-center gap-2 text-xs font-mono text-muted hover:text-dim transition-colors disabled:opacity-40"
         >
           <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
@@ -122,7 +211,7 @@ export function PaginatedGrid<T>({
         <div className="border border-red-900/50 p-6 text-center">
           <p className="text-sm font-mono text-red-400">{error}</p>
           <button
-            onClick={() => fetchPage(1)}
+            onClick={() => void refetch()}
             className="mt-4 text-xs font-mono text-dim hover:text-ink underline"
           >
             try again
@@ -138,19 +227,19 @@ export function PaginatedGrid<T>({
             {visible.map((item, index) => {
               const key = getKey(item)
               return renderItem(item, {
-                remove: () => setItems((prev) => prev.filter((it) => getKey(it) !== key)),
+                remove: () => removeItem(key),
                 index,
               })
             })}
           </div>
-          {page < totalPages && (
+          {currentPage < totalPages && (
             <div className="mt-8 text-center">
               <button
-                onClick={() => fetchPage(page + 1, true)}
-                disabled={refreshing}
+                onClick={loadMore}
+                disabled={loadingMore}
                 className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
               >
-                {refreshing ? 'loading…' : 'load more'}
+                {loadingMore ? 'loading…' : 'load more'}
               </button>
             </div>
           )}
