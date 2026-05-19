@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, type ReactElement, type Reac
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { CardSwiper, CardSwiperItem } from './CardSwiper'
+import { LazyMount } from './LazyMount'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -44,7 +45,27 @@ interface PaginatedGridProps<T> {
    * (e.g. inside the `header` slot, beside other filter pills).
    */
   viewMode?: ViewMode
+  /**
+   * When `true`, items beyond EAGER_MOUNT_COUNT defer mount until the
+   * placeholder enters the viewport (via LazyMount). Default `false`
+   * preserves the original eager-everywhere behavior.
+   *
+   * Callers (typically a server component) decide this — usually based
+   * on server-side UA detection so the decision is baked into the SSR
+   * HTML and the lazy/eager render tree never changes after hydration.
+   * Don't toggle this client-side per render: it would cause LazyMount
+   * components to remount when the toggle flips, defeating the point.
+   *
+   * Applies to both view modes — the IntersectionObserver fires on
+   * horizontal scroll too, so swiper cards beyond the eager window
+   * still defer mount until swiped near.
+   */
+  lazy?: boolean
 }
+
+// Eagerly mount this many items even when `lazy` is true. Covers above-
+// the-fold content; everything below scrolls in via LazyMount.
+const EAGER_MOUNT_COUNT = 6
 
 // Shape of a paginated JSON response. itemsKey is dynamic per caller,
 // so we leave the items array un-typed here and narrow per-call.
@@ -69,6 +90,7 @@ export function PaginatedGrid<T>({
   filter,
   pageLimit = 18,
   viewMode = 'feed',
+  lazy = false,
 }: PaginatedGridProps<T>) {
   const queryClient = useQueryClient()
 
@@ -197,6 +219,21 @@ export function PaginatedGrid<T>({
   const refreshing = firstFetching && !!firstPage
   const error = firstError?.message ?? null
 
+  // Single source of truth for "wrap with LazyMount or not". Used in
+  // both layouts so the eager/lazy split stays consistent: items above
+  // EAGER_MOUNT_COUNT (or any item when lazy=false) render directly;
+  // items past the threshold defer until in-viewport.
+  function renderEntry(item: T, index: number): ReactElement {
+    const key = getKey(item)
+    const node = renderItem(item, {
+      remove: () => removeItem(key),
+      index,
+      viewMode,
+    })
+    if (!lazy || index < EAGER_MOUNT_COUNT) return node
+    return <LazyMount key={key}>{() => node}</LazyMount>
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between py-4">
@@ -243,18 +280,11 @@ export function PaginatedGrid<T>({
         <>
           {viewMode === 'grid' ? (
             <CardSwiper>
-              {visible.map((item, index) => {
-                const key = getKey(item)
-                return (
-                  <CardSwiperItem key={key}>
-                    {renderItem(item, {
-                      remove: () => removeItem(key),
-                      index,
-                      viewMode,
-                    })}
-                  </CardSwiperItem>
-                )
-              })}
+              {visible.map((item, index) => (
+                <CardSwiperItem key={getKey(item)}>
+                  {renderEntry(item, index)}
+                </CardSwiperItem>
+              ))}
               {currentPage < totalPages && (
                 // "Load more" sits at the end of the swipe path — once the
                 // user scrolls to the right edge they tap to append the
@@ -275,14 +305,7 @@ export function PaginatedGrid<T>({
           ) : (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {visible.map((item, index) => {
-                  const key = getKey(item)
-                  return renderItem(item, {
-                    remove: () => removeItem(key),
-                    index,
-                    viewMode,
-                  })
-                })}
+                {visible.map((item, index) => renderEntry(item, index))}
               </div>
               {currentPage < totalPages && (
                 <div className="mt-8 text-center">
