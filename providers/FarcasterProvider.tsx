@@ -317,33 +317,46 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         await sdk.actions.ready()
         if (cancelled) return
 
-        // --- Post-paint bootstrap (everything below runs while the
-        //     user already sees a fully identified page) ---
+        // --- Post-paint bootstrap ---
+        //
+        // Everything below runs while the user already sees a fully
+        // identified page. CRITICAL: defer this whole block behind a
+        // setTimeout(0) so it queues AFTER any pending tap/scroll
+        // events. Without the defer, the user's first tap on the nav
+        // (which they often do within the first half-second after
+        // splash dismissal) sits behind ~100-300ms of wagmi connector
+        // initialization + back.enableWebNavigation handshake — felt
+        // as "nav doesn't work right when it opens". Yielding to the
+        // event loop here keeps the main thread interactive.
+        const runPostPaint = () => {
+          if (cancelled) return
 
-        // Wire the host's back control to browser history. Silent
-        // fallback for older hosts that don't expose the capability.
-        try {
-          await sdk.back.enableWebNavigation()
-        } catch {
-          // Older host — leave default close-on-swipe gestures in place.
-        }
+          // Wire the host's back control to browser history. Silent
+          // fallback for older hosts that don't expose the capability.
+          sdk.back.enableWebNavigation().catch(() => {})
 
-        // Wire the host wallet through wagmi. If reconnect-on-mount
-        // already connected, wagmi's connect() is a no-op for an
-        // already-connected connector. Doesn't affect first paint —
-        // identity above already gives us name/pfp; this just unlocks
-        // transactions (mint, follow, etc).
-        if (!hasAttemptedConnect.current) {
-          hasAttemptedConnect.current = true
-          const fcConnector = connectors.find((c) => c.id === 'farcaster')
-          if (fcConnector) {
-            try {
-              connect({ connector: fcConnector })
-            } catch {
-              // Host wallet not available — Mint/Collect flows surface
-              // their own errors when they try to sign.
+          // Wire the host wallet through wagmi. If reconnect-on-mount
+          // already connected, wagmi's connect() is a no-op for an
+          // already-connected connector. Doesn't affect first paint —
+          // identity above already gives us name/pfp; this just
+          // unlocks transactions (mint, follow, etc).
+          if (!hasAttemptedConnect.current) {
+            hasAttemptedConnect.current = true
+            const fcConnector = connectors.find((c) => c.id === 'farcaster')
+            if (fcConnector) {
+              try {
+                connect({ connector: fcConnector })
+              } catch {
+                // Host wallet not available — Mint/Collect flows surface
+                // their own errors when they try to sign.
+              }
             }
           }
+        }
+        if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+          (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback(runPostPaint, { timeout: 1000 })
+        } else {
+          setTimeout(runPostPaint, 0)
         }
 
         // addMiniApp prompt: only on the user's 2nd confirmed open, and

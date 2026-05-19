@@ -676,6 +676,14 @@ export function SharedVideoProvider({ children }: { children: ReactNode }) {
         pool.forEach((video) => {
           const slot = video.slots[0]
           if (!slot) return
+          // Skip slots whose React component has unmounted but whose
+          // release hasn't fired yet (happens during rapid tab swaps
+          // and route transitions). A detached node's
+          // getBoundingClientRect returns (0,0,0,0), which the
+          // fullyOutside check below interprets as "off-screen" and
+          // hides the video — producing the visible "video snaps to
+          // wrong place / disappears" glitch on tab swaps.
+          if (!slot.ref.isConnected) return
           // Skip offscreen entries — IO callback hid them on the false
           // transition and re-positions on the true transition before
           // un-hide. Controls slots fall through (no IO, no flag set).

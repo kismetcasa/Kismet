@@ -61,7 +61,21 @@ export function SharedVideoSlot({
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
 
+  // Same ref-pattern for controls + zIndex: in practice they don't
+  // toggle for a given React component instance (a feed card is
+  // always controls=false, a detail-view slot is always
+  // controls=true), but a parent re-render that recreates the prop
+  // identity would otherwise re-trigger the entire acquire/release
+  // cycle, racing with the new tab's mount on tab swaps and leaving
+  // the pool's `video.slots[0]` pointing at a stale unmounted ref —
+  // which is what produced the "video overlays in wrong place" bug
+  // when bouncing between discover sub-tabs.
+  const controlsRef = useRef(controls)
+  controlsRef.current = controls
+
   const finalZIndex = zIndex ?? overrideZIndex ?? DEFAULT_Z_INDEX
+  const finalZIndexRef = useRef(finalZIndex)
+  finalZIndexRef.current = finalZIndex
 
   useEffect(() => {
     const el = ref.current
@@ -78,8 +92,8 @@ export function SharedVideoSlot({
 
     const release = ctx.acquire(src, {
       ref: el,
-      controls,
-      zIndex: finalZIndex,
+      controls: controlsRef.current,
+      zIndex: finalZIndexRef.current,
       onError: () => onErrorRef.current?.(),
       clipAncestors,
     })
@@ -106,7 +120,9 @@ export function SharedVideoSlot({
         a.removeEventListener('scroll', scheduleRefresh)
       }
     }
-  }, [ctx, src, controls, finalZIndex])
+    // Effect depends only on the slot's lifecycle identity (ctx + src),
+    // NOT on controls/zIndex — see ref-on-render comment above.
+  }, [ctx, src])
 
   return <div ref={ref} className={className} aria-hidden />
 }
