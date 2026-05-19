@@ -10,6 +10,7 @@ import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
+import { isMobileUA } from '@/lib/serverDevice'
 
 interface Props {
   params: Promise<{ address: string }>
@@ -255,6 +256,11 @@ export default async function CollectionPage({ params }: Props) {
     !!adminAddressRaw &&
     detail.payout_recipient.toLowerCase() !== adminAddressRaw.toLowerCase()
 
+  // UA → lazy-mount toggle: server bakes the decision into the prop so
+  // CollectionView (a client component) hydrates with the right value.
+  // Mobile gets LazyMount on the heavy moments grid; desktop unchanged.
+  const isMobile = await isMobileUA()
+
   return (
     <CollectionView
       address={address}
@@ -268,6 +274,7 @@ export default async function CollectionPage({ params }: Props) {
       payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
       createdAt={detail?.created_at}
       initialHidden={hidden}
+      isMobile={isMobile}
     />
   )
 }

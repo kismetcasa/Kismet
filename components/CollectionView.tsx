@@ -22,6 +22,7 @@ import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
 import { resolveAddressOrEns } from '@/lib/address'
 import { MomentCard } from './MomentCard'
+import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface AvatarProfile {
@@ -64,6 +65,10 @@ interface CollectionViewProps {
   payoutRecipient?: string
   createdAt?: string
   initialHidden?: boolean
+  /** Server-passed UA flag. When true, moments grid beyond
+   *  EAGER_MOUNT_COUNT items defers mount via LazyMount. Default
+   *  false — desktop callers render the grid eagerly, unchanged. */
+  isMobile?: boolean
 }
 
 function formatCreatedDate(iso: string): string {
@@ -86,6 +91,7 @@ export function CollectionView({
   payoutRecipient,
   createdAt,
   initialHidden = false,
+  isMobile = false,
 }: CollectionViewProps) {
   const router = useRouter()
   const { address: connectedAddress } = useAccount()
@@ -935,9 +941,14 @@ export function CollectionView({
           )
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-            {loadedMoments.map((m) => (
-              <MomentCard key={m.id || `${m.address}-${m.token_id}`} moment={m} hidePriceSupply />
-            ))}
+            {loadedMoments.map((m, i) => {
+              const key = m.id || `${m.address}-${m.token_id}`
+              return (
+                <MaybeLazy key={key} index={i} lazy={isMobile}>
+                  {() => <MomentCard moment={m} hidePriceSupply />}
+                </MaybeLazy>
+              )
+            })}
           </div>
         )}
       </section>

@@ -379,6 +379,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
               // `.size` alone wouldn't change in that case.
               key={`featured-${[...featuredCollectionAddrs].join(',')}-${[...featuredKeys].join(',')}`}
               emptyMessage={isAdmin ? 'no featured mints or collections yet — click ★ on any mint or collection to feature it' : 'no featured mints or collections yet'}
+              isMobile={isMobile}
             />
           </>
         )}

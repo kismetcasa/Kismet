@@ -58,3 +58,30 @@ export function isWebKitOnly(): boolean {
   const ua = navigator.userAgent
   return ua.includes('AppleWebKit') && !ua.includes('Chrome') && !ua.includes('Chromium')
 }
+
+/**
+ * True when our page is running inside an iframe (the Mini App context
+ * on Farcaster web, Base App web, any other host that embeds us). False
+ * for top-level browsing.
+ *
+ * Used together with isWebKitOnly() to skip the direct-gateway-walk
+ * fallback: an iframe shares the parent page's HTTP/2 connection pool
+ * (Farcaster.xyz makes its own analytics/wallet/CDN calls in parallel
+ * with ours). Stalled gateway requests pile up in that shared pool
+ * even on Chromium, producing the same symptom as Safari standalone —
+ * permagate.io timeouts visible in the iframe's console.
+ *
+ * Top-level Chrome browsing kismet.art directly does NOT match this
+ * check (self === top) and keeps the original direct-walk fallback.
+ *
+ * Cross-origin `window.top` access throws — caught and treated as
+ * "definitely in an iframe" because a same-origin frame wouldn't throw.
+ */
+export function isInIframe(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.self !== window.top
+  } catch {
+    return true
+  }
+}

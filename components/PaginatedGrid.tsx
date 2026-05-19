@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, type ReactElement, type Reac
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { CardSwiper, CardSwiperItem } from './CardSwiper'
-import { LazyMount } from './LazyMount'
+import { LazyMount, EAGER_MOUNT_COUNT } from './LazyMount'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -62,10 +62,6 @@ interface PaginatedGridProps<T> {
    */
   lazy?: boolean
 }
-
-// Eagerly mount this many items even when `lazy` is true. Covers above-
-// the-fold content; everything below scrolls in via LazyMount.
-const EAGER_MOUNT_COUNT = 6
 
 // Shape of a paginated JSON response. itemsKey is dynamic per caller,
 // so we leave the items array un-typed here and narrow per-call.

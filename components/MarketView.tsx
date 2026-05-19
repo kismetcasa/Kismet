@@ -8,7 +8,7 @@ import { ViewModeToggle } from '@/components/ViewModeToggle'
 import { useViewMode } from '@/hooks/useViewMode'
 import type { Listing } from '@/lib/listings'
 
-export function MarketView() {
+export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
   const { address } = useAccount()
   const [viewMode, setViewMode] = useViewMode()
   return (
@@ -18,6 +18,11 @@ export function MarketView() {
         itemsKey="listings"
         getKey={(l) => l.id}
         viewMode={viewMode}
+        // Mobile: lazy-mount listings beyond EAGER_MOUNT_COUNT so the
+        // /market route doesn't pay the full N-card mount cost on
+        // every navigation in. Desktop: lazy=false (default), eager
+        // for everyone, same as before this prop existed.
+        lazy={isMobile}
         renderItem={(l, { remove, viewMode: vm }) => (
           <MarketCard
             key={l.id}

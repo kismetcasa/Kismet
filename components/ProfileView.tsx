@@ -26,6 +26,7 @@ import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { useFinePointer } from '@/hooks/useFinePointer'
+import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
 
 interface Payment {
@@ -152,6 +153,14 @@ function FollowRow({ addr, onClose, onNameLoaded }: { addr: string; onClose: () 
 
 interface ProfileViewProps {
   address: string
+  /**
+   * Set by the server-component wrapper (app/profile/[address]/page.tsx)
+   * based on request UA. When true, MomentCard / MarketCard grids
+   * beyond EAGER_MOUNT_COUNT items defer mount via LazyMount.
+   * Default false — every desktop request and any legacy caller gets
+   * eager rendering exactly as before this prop existed.
+   */
+  isMobile?: boolean
 }
 
 interface Profile {
@@ -165,7 +174,7 @@ interface Profile {
   updatedAt: number
 }
 
-export function ProfileView({ address }: ProfileViewProps) {
+export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
@@ -504,7 +513,18 @@ export function ProfileView({ address }: ProfileViewProps) {
     }
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        {items.map((it) => <div key={getItemKey(it)}>{renderCard(it)}</div>)}
+        {items.map((it, i) => {
+          // Mobile lazy-mount: items beyond EAGER_MOUNT_COUNT defer mount
+          // until the placeholder enters the viewport. Grid-view (above)
+          // uses CardSwiper which only renders the visible horizontal
+          // window, so its own mount cost doesn't compound — only the
+          // feed-view 2/3-col layout needs MaybeLazy.
+          return (
+            <MaybeLazy key={getItemKey(it)} index={i} lazy={isMobile}>
+              {() => renderCard(it)}
+            </MaybeLazy>
+          )
+        })}
       </div>
     )
   }
