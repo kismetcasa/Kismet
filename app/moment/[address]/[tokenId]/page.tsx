@@ -90,19 +90,24 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
   // Farcaster Mini App embed. When this URL is shared in a cast, hosts
   // render a rich card and the button launches Kismet directly into
-  // this moment's page (action.url) rather than the homepage. The image
-  // is the same one OG crawlers use — opengraph-image.tsx serves it at
-  // 1200x800 (3:2), exactly the FC spec ratio.
+  // this moment's page (action.url) rather than the homepage.
   //
-  // Prefer the moment's own poster (if FC's crawler can fetch it without
-  // CDN gating); fall back to our branded opengraph-image route which
-  // is always reachable. Either URL must be absolute — `other` meta
-  // tags aren't resolved against metadataBase.
+  // Always route the embed image through our /opengraph-image endpoint
+  // so every moment ships a consistent 1200x800 (3:2) PNG that's well
+  // inside FC's size/ratio constraints regardless of how the source
+  // media is stored. The OG generator embeds the moment's own poster
+  // when available (image moments, gifs, video posters), and falls
+  // back to a branded card for video/text moments where no usable
+  // still exists. openGraph.images / twitter.images keep pointing at
+  // the raw poster — Twitter/Discord/iMessage handle any aspect ratio
+  // and the original URL is the higher-quality source for those.
   const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
-  const embedImageUrl = imageUrl ?? `${canonicalUrl}/opengraph-image`
+  const embedImageUrl = `${canonicalUrl}/opengraph-image`
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
-    buttonTitle: 'collect',
+    // buildFarcasterEmbed truncates at 32 chars per the FC spec, so a
+    // long moment name won't break the embed — it'll just be elided.
+    buttonTitle: `Collect ${name}`,
     action: {
       url: canonicalUrl,
       name: title,

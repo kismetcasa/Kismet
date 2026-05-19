@@ -22,9 +22,9 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 // sits at the bottom of the mobile dropdown when it isn't the
 // current page.
 const NAV_PAGES = [
-  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Enjoy',  href: '/' },
-  { id: 'mint',   label: 'Mint',     mobileLabel: 'Create', href: '/mint' },
-  { id: 'market', label: 'Market',   mobileLabel: 'Trade',  href: '/market' },
+  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Collect',  href: '/' },
+  { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
+  { id: 'market', label: 'Market',   mobileLabel: 'Converge', href: '/market' },
 ] as const
 
 type NavPageId = (typeof NAV_PAGES)[number]['id']
@@ -225,18 +225,26 @@ export function Nav() {
             </nav>
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Mobile order: name → avatar → bell → search (search/bell hug right).
+              Desktop order: bell → name → avatar (unchanged). */}
+          <div className="flex items-center gap-1 sm:gap-3">
             {/* Search icon on mobile */}
             <button
               onClick={() => { setModalQuery(''); setSearchOpen(true) }}
-              className="sm:hidden text-dim hover:text-ink transition-colors p-1"
+              className="sm:hidden order-4 text-dim hover:text-ink transition-colors p-1"
             >
               <Search size={18} />
             </button>
-            {effectiveSignedIn && effectiveAddress && <NotificationBell address={effectiveAddress} />}
-            <WalletButton />
             {effectiveSignedIn && effectiveAddress && (
-              <Link href={`/profile/${effectiveAddress}`} className="flex-shrink-0">
+              <div className="order-3 sm:order-1">
+                <NotificationBell address={effectiveAddress} />
+              </div>
+            )}
+            <div className="order-1 sm:order-2">
+              <WalletButton />
+            </div>
+            {effectiveSignedIn && effectiveAddress && (
+              <Link href={`/profile/${effectiveAddress}`} className="order-2 sm:order-3 flex-shrink-0">
                 <ProfileAvatar address={effectiveAddress} avatarUrl={avatarUrl} size={32} clickable />
               </Link>
             )}

@@ -1,20 +1,33 @@
 import { ImageResponse } from 'next/og'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl, shortAddress, type MomentDetail } from '@/lib/inprocess'
+import { shareImageUrl } from '@/lib/media/shareImage'
 import {
   shareCard,
   SHARE_CARD_SIZE,
   SHARE_CARD_CONTENT_TYPE,
 } from '@/lib/shareCard'
 
-// Dynamic share-card fallback for moments. Next.js auto-injects this
-// route's URL into og:image so any share where generateMetadata didn't
-// set its own openGraph.images (text moments, video moments where
-// poster extraction failed, legacy moments with broken meta.image)
-// still renders a branded card on Twitter/Discord/iMessage instead of
-// falling back to summary text. Moments with real posters keep their
-// real image as the share card — that URL appears first in the
-// metadata and crawlers prefer it.
+// Dynamic share-card for moments. Serves two roles:
+//
+//   1. og:image fallback for Twitter / Discord / iMessage. Those
+//      crawlers still prefer the raw poster URL (which appears first
+//      in openGraph.images in generateMetadata), so this route only
+//      kicks in for text moments, video moments without a separate
+//      poster, and any moment whose meta.image was rejected by
+//      shareImageUrl.
+//
+//   2. Canonical Farcaster Mini App embed image. generateMetadata
+//      always points fc:miniapp.imageUrl at this route, regardless of
+//      whether a poster exists, so every shared moment renders a
+//      consistent 1200x800 (3:2) PNG inside Farcaster's strict size +
+//      ratio constraints — Twitter/Discord can tolerate the raw URL
+//      at any size, but FC's embed validator can't.
+//
+// When a poster resolves cleanly, this route renders a side-by-side
+// card: 800x800 image hero + 400-wide branded text panel. Otherwise
+// it falls back to the text-only branded card with a media-type label
+// ("VIDEO" / "WRITING" / "MOMENT").
 
 export const size = SHARE_CARD_SIZE
 export const contentType = SHARE_CARD_CONTENT_TYPE
@@ -48,6 +61,7 @@ export default async function Image({ params }: Props) {
   let title = `#${tokenId}`
   let creator = ''
   let label = 'MOMENT'
+  let imageUrl: string | undefined
 
   if (isAddress(address) && isValidTokenId(tokenId)) {
     const detail = await fetchDetail(address, tokenId)
@@ -62,10 +76,18 @@ export default async function Image({ params }: Props) {
       } else if (mime === 'text/plain') {
         label = 'WRITING'
       }
+      // Resolve the moment's poster for the hero side of the card.
+      // shareImageUrl maps ar:// / ipfs:// to public gateways, drops
+      // data: URIs (Satori can't reliably embed them at this scale),
+      // and guards against the legacy bug where animation_url leaked
+      // into meta.image — for video moments that means we get the
+      // separate poster when one exists, and otherwise fall through
+      // to the text-only branded "VIDEO" card.
+      imageUrl = shareImageUrl(detail.metadata?.image, detail.metadata?.animation_url)
     }
   }
 
-  return new ImageResponse(shareCard({ label, title, creator }), {
+  return new ImageResponse(shareCard({ label, title, creator, imageUrl }), {
     ...SHARE_CARD_SIZE,
   })
 }

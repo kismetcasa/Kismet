@@ -49,6 +49,15 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
   const rawAdminAddr = c.default_admin?.address
   const adminAddr = isOperatorAddress(rawAdminAddr) ? undefined : rawAdminAddr
   const initialUsername = isOperatorAddress(rawAdminAddr) ? undefined : c.default_admin?.username
+
+  // Skip the moment whose image is the collection cover so the cover
+  // NFT doesn't visually appear twice (once as the cover-card, once as
+  // a mint card). collect-all eligibility lists are server-computed and
+  // passed separately, so the hidden moment is still collectable.
+  const coverImage = c.metadata?.image?.trim()
+  const displayMoments = coverImage
+    ? c.moments.filter((m) => m.metadata?.image?.trim() !== coverImage)
+    : c.moments
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
     initialUsername ? `@${initialUsername}` : adminAddr ? shortAddress(adminAddr) : null,
   )
@@ -198,12 +207,12 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         <div className="w-80 flex-shrink-0 snap-start">
           {coverCard}
         </div>
-        {c.moments.length === 0 ? (
+        {displayMoments.length === 0 ? (
           <div className="flex-1 flex items-center justify-center min-h-[160px]">
             <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
-          c.moments.map((m, idx) => (
+          displayMoments.map((m, idx) => (
             <div
               key={m.id || `${m.address}-${m.token_id}`}
               className="w-80 flex-shrink-0 snap-start"
@@ -222,12 +231,12 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
 
       {/* lg+ moments — 5×2 column-major grid (top→bottom, then right). */}
       <div className="hidden lg:flex-1 lg:min-w-0 lg:grid lg:grid-cols-5 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
-        {c.moments.length === 0 ? (
+        {displayMoments.length === 0 ? (
           <div className="col-span-full row-span-full flex items-center justify-center min-h-[160px]">
             <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
-          c.moments.map((m, idx) => (
+          displayMoments.map((m, idx) => (
             <MomentCard
               key={m.id || `${m.address}-${m.token_id}`}
               moment={m}
