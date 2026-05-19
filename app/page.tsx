@@ -126,17 +126,16 @@ function MomentFeed({
   emptyMessage?: string
   header?: React.ReactNode
   /**
-   * When true, hoists `useViewMode` and renders a `<ViewModeToggle>`
-   * inline with `header`. Pass-through to PaginatedGrid's `viewMode` so
-   * the card layout (feed grid vs horizontal swiper) follows the toggle.
+   * Renders a `<ViewModeToggle>` inline with `header`. The view-mode
+   * value itself is read from the global `useViewMode` hook regardless —
+   * the toggle is just UI placement. Leave false when a parent already
+   * renders the toggle elsewhere (e.g. MainFeed shares one toggle across
+   * its mints + collections sub-tabs).
    */
   withViewToggle?: boolean
 }) {
   const [viewMode, setViewMode] = useViewMode()
-  const activeMode = withViewToggle ? viewMode : 'feed'
 
-  // Toggle sits to the left of any caller-supplied filter pills. Wrapped
-  // even when header is null so the toggle still gets a flex container.
   const headerWithToggle = withViewToggle ? (
     <div className="flex items-center gap-3 flex-wrap">
       <ViewModeToggle mode={viewMode} onChange={setViewMode} />
@@ -149,7 +148,7 @@ function MomentFeed({
       apiUrl={apiUrl}
       itemsKey="moments"
       getKey={(m) => `${m.address}-${m.token_id}`}
-      viewMode={activeMode}
+      viewMode={viewMode}
       renderItem={(m, { index, viewMode: vm }) => (
         // Feed: 3 visible above-the-fold on lg+ — prioritize first 3.
         // Grid: 6-8 visible above-the-fold on lg+/xl — prioritize first 6
@@ -174,7 +173,14 @@ function MomentFeed({
 
 // ─── collections feed (paginated grid) ───────────────────────────────────────
 
-function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
+function CollectionsFeed({
+  followingAddrs,
+  header,
+}: {
+  followingAddrs?: string[]
+  header?: React.ReactNode
+}) {
+  const [viewMode] = useViewMode()
   const followingSet = followingAddrs
     ? new Set(followingAddrs.map((a) => a.toLowerCase()))
     : null
@@ -190,10 +196,18 @@ function CollectionsFeed({ followingAddrs }: { followingAddrs?: string[] }) {
       apiUrl="/api/collections?feed=1"
       itemsKey="collections"
       getKey={(c) => c.contractAddress}
-      renderItem={(c, { index }) => (
-        <CollectionCard key={c.contractAddress} collection={c} priority={index < 3} />
+      viewMode={viewMode}
+      renderItem={(c, { index, viewMode: vm }) => (
+        <CollectionCard
+          key={c.contractAddress}
+          collection={c}
+          compact={vm === 'grid'}
+          showCreator={vm === 'grid'}
+          priority={vm === 'grid' ? index < 6 : index < 3}
+        />
       )}
       filter={filter}
+      header={header}
       empty={
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">no collections yet</p>
@@ -212,6 +226,7 @@ function MainFeed() {
   const [subTab, setSubTab] = useState<MainSubTab>('mints')
   const [followingOn, setFollowingOn] = useState(false)
   const [followingAddrs, setFollowingAddrs] = useState<string[]>([])
+  const [viewMode, setViewMode] = useViewMode()
 
   useEffect(() => {
     if (!address || !followingOn) { setFollowingAddrs([]); return }
@@ -227,8 +242,12 @@ function MainFeed() {
     ? `/api/timeline?scope=standalone&following=${followingAddrs.join(',')}`
     : '/api/timeline?scope=standalone'
 
+  // Single toggle controls both sub-tabs — switching mints↔collections
+  // preserves the active layout instead of forcing a re-toggle. The
+  // toggle sits leftmost in the bar per the design spec.
   const subTabBar = (
     <div className="flex items-center gap-3 flex-wrap">
+      <ViewModeToggle mode={viewMode} onChange={setViewMode} />
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => setSubTab('mints')}
@@ -265,10 +284,10 @@ function MainFeed() {
 
   if (subTab === 'collections') {
     return (
-      <div>
-        <div className="pt-4">{subTabBar}</div>
-        <CollectionsFeed followingAddrs={followingOn && followingAddrs.length > 0 ? followingAddrs : undefined} />
-      </div>
+      <CollectionsFeed
+        followingAddrs={followingOn && followingAddrs.length > 0 ? followingAddrs : undefined}
+        header={subTabBar}
+      />
     )
   }
 
@@ -277,7 +296,6 @@ function MainFeed() {
       apiUrl={apiUrl}
       emptyMessage="no moments yet — be the first to mint"
       header={subTabBar}
-      withViewToggle
     />
   )
 }

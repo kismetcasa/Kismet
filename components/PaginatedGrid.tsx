@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
+import { CardSwiper, CardSwiperItem } from './CardSwiper'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -241,33 +242,17 @@ export function PaginatedGrid<T>({
       {!loading && visible.length > 0 && (
         <>
           {viewMode === 'grid' ? (
-            // Horizontal snap-scroller. Card widths target 2/3/4/6/8
-            // visible at sm-below / sm / md / lg / xl so the layout density
-            // doubles vs the feed grid. The arithmetic on each w-[calc]
-            // accounts for the gap-3 (0.75rem) between cards so they line
-            // up flush with the container edges instead of overflowing.
-            //
-            // -mx-4 / px-4 lets the scroller extend to the viewport edge
-            // (the outer page container has px-4) so users can swipe from
-            // the very edge; the px-4 inside restores the gutter for the
-            // first/last card. snap-mandatory snaps each card to the
-            // leading edge on swipe-release for a deliberate, paged feel.
-            <div
-              className="-mx-4 px-4 overflow-x-auto flex gap-3 snap-x snap-mandatory [-webkit-overflow-scrolling:touch] pb-4"
-            >
+            <CardSwiper>
               {visible.map((item, index) => {
                 const key = getKey(item)
                 return (
-                  <div
-                    key={key}
-                    className="flex-shrink-0 snap-start w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] md:w-[calc(25%-0.5625rem)] lg:w-[calc(16.667%-0.625rem)] xl:w-[calc(12.5%-0.65625rem)]"
-                  >
+                  <CardSwiperItem key={key}>
                     {renderItem(item, {
                       remove: () => removeItem(key),
                       index,
                       viewMode,
                     })}
-                  </div>
+                  </CardSwiperItem>
                 )
               })}
               {currentPage < totalPages && (
@@ -276,19 +261,17 @@ export function PaginatedGrid<T>({
                 // next page, mirroring the feed mode's bottom-of-list
                 // button. Matches each card's responsive width so it
                 // snaps into a card-shaped slot.
-                <div
-                  className="flex-shrink-0 snap-start w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] md:w-[calc(25%-0.5625rem)] lg:w-[calc(16.667%-0.625rem)] xl:w-[calc(12.5%-0.65625rem)] flex items-stretch"
-                >
+                <CardSwiperItem>
                   <button
                     onClick={loadMore}
                     disabled={loadingMore}
-                    className="w-full border border-line text-[10px] font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+                    className="w-full h-full border border-line text-[10px] font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
                   >
                     {loadingMore ? 'loading…' : 'load more →'}
                   </button>
-                </div>
+                </CardSwiperItem>
               )}
-            </div>
+            </CardSwiper>
           ) : (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
