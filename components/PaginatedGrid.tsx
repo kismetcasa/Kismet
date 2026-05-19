@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
+import { LazyMount } from './LazyMount'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -27,7 +28,23 @@ interface PaginatedGridProps<T> {
   /** Optional client-side filter applied after fetch but before render. */
   filter?: (items: T[]) => T[]
   pageLimit?: number
+  /**
+   * When `true`, items beyond EAGER_MOUNT_COUNT defer mount until the
+   * placeholder enters the viewport (via LazyMount). Default `false`
+   * preserves the original eager-everywhere behavior.
+   *
+   * Callers (typically a server component) decide this — usually based
+   * on server-side UA detection so the decision is baked into the SSR
+   * HTML and the lazy/eager render tree never changes after hydration.
+   * Don't toggle this client-side per render: it would cause LazyMount
+   * components to remount when the toggle flips, defeating the point.
+   */
+  lazy?: boolean
 }
+
+// Eagerly mount this many items even when `lazy` is true. Covers above-
+// the-fold content; everything below scrolls in via LazyMount.
+const EAGER_MOUNT_COUNT = 6
 
 // Shape of a paginated JSON response. itemsKey is dynamic per caller,
 // so we leave the items array un-typed here and narrow per-call.
@@ -51,6 +68,7 @@ export function PaginatedGrid<T>({
   header,
   filter,
   pageLimit = 18,
+  lazy = false,
 }: PaginatedGridProps<T>) {
   const queryClient = useQueryClient()
 
@@ -226,10 +244,27 @@ export function PaginatedGrid<T>({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {visible.map((item, index) => {
               const key = getKey(item)
-              return renderItem(item, {
-                remove: () => removeItem(key),
-                index,
-              })
+              // Eager path: when lazy is false (every desktop caller),
+              // OR when the card is above the lazy threshold. Server
+              // sets `lazy` based on UA so desktop SSR HTML is always
+              // eager — no hydration window where LazyMount briefly
+              // exists on desktop.
+              if (!lazy || index < EAGER_MOUNT_COUNT) {
+                return renderItem(item, {
+                  remove: () => removeItem(key),
+                  index,
+                })
+              }
+              return (
+                <LazyMount key={key}>
+                  {() =>
+                    renderItem(item, {
+                      remove: () => removeItem(key),
+                      index,
+                    })
+                  }
+                </LazyMount>
+              )
             })}
           </div>
           {currentPage < totalPages && (
