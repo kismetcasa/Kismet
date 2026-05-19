@@ -19,9 +19,20 @@ import { toastError } from '@/lib/toast'
 interface MarketCardProps {
   listing: Listing
   onRemove?: () => void
+  /**
+   * Compact mode for the grid-view horizontal swiper. Drops seller chip
+   * and royalty % so only creator + price + buy/cancel remain — keeps
+   * the card visually consistent with compact MomentCards beside it.
+   */
+  compact?: boolean
+  /**
+   * Force the creator chip on/off independent of `compact`. The grid
+   * view passes true; non-compact mode renders it by default.
+   */
+  showCreator?: boolean
 }
 
-export function MarketCard({ listing, onRemove }: MarketCardProps) {
+export function MarketCard({ listing, onRemove, compact, showCreator }: MarketCardProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
@@ -55,6 +66,9 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
   const isTextListing = listing.contentMime === 'text/plain'
   const textSnippet = useTextContent(isTextListing ? listing.contentUri : undefined)
   const isSeller = address?.toLowerCase() === listing.seller.toLowerCase()
+  // Creator chip default: visible non-compact, hidden compact. `showCreator`
+  // overrides either direction so grid view can opt the chip back in.
+  const renderCreator = showCreator ?? !compact
   // formatPrice handles both ETH (wei, 18dp) and USDC (base units, 6dp) and
   // renders the right suffix. Royalty pct is a ratio of two same-currency
   // amounts so it's currency-agnostic.
@@ -162,33 +176,52 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
       </div>
 
       {/* Info */}
-      <div className="p-4 flex flex-col gap-3">
+      <div className={`${compact ? 'p-2 gap-2' : 'p-4 gap-3'} flex flex-col`}>
         <div>
-          <p className="text-sm font-mono text-ink truncate mb-1.5">
+          <p className={`${compact ? 'text-[11px] mb-1' : 'text-sm mb-1.5'} font-mono text-ink truncate`}>
             {listing.name ?? 'untitled'}
           </p>
-          <div className="flex items-center justify-between">
-            {listing.creatorAddress ? (
-              <Link
-                href={`/profile/${listing.creatorAddress}`}
-                className="text-xs font-mono text-muted hover:text-dim transition-colors"
-              >
-                {creatorName}
-              </Link>
-            ) : <span />}
-            <Link
-              href={`/profile/${listing.seller}`}
-              className="text-xs font-mono text-muted hover:text-dim transition-colors"
-            >
-              {sellerName}
-            </Link>
-          </div>
-          <div className="flex items-center justify-between mt-0.5">
-            {Number(listing.royaltyAmount) > 0 ? (
-              <p className="text-xs font-mono text-faint">{royaltyPct}% royalty</p>
-            ) : <span />}
-            <p className="text-xs font-mono accent-grad">{priceLabel}</p>
-          </div>
+          {compact ? (
+            // Compact: creator chip (optional) + price on one row. Seller
+            // chip and royalty % live on the detail page; at ~180px wide
+            // there's no room for them here.
+            <div className="flex items-center justify-between gap-2">
+              {renderCreator && listing.creatorAddress ? (
+                <Link
+                  href={`/profile/${listing.creatorAddress}`}
+                  className="text-[10px] font-mono text-muted hover:text-dim transition-colors truncate min-w-0"
+                >
+                  {creatorName}
+                </Link>
+              ) : <span />}
+              <p className="text-[10px] font-mono accent-grad flex-shrink-0">{priceLabel}</p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                {listing.creatorAddress ? (
+                  <Link
+                    href={`/profile/${listing.creatorAddress}`}
+                    className="text-xs font-mono text-muted hover:text-dim transition-colors"
+                  >
+                    {creatorName}
+                  </Link>
+                ) : <span />}
+                <Link
+                  href={`/profile/${listing.seller}`}
+                  className="text-xs font-mono text-muted hover:text-dim transition-colors"
+                >
+                  {sellerName}
+                </Link>
+              </div>
+              <div className="flex items-center justify-between mt-0.5">
+                {Number(listing.royaltyAmount) > 0 ? (
+                  <p className="text-xs font-mono text-faint">{royaltyPct}% royalty</p>
+                ) : <span />}
+                <p className="text-xs font-mono accent-grad">{priceLabel}</p>
+              </div>
+            </>
+          )}
         </div>
 
         {isSeller ? (
@@ -206,16 +239,20 @@ export function MarketCard({ listing, onRemove }: MarketCardProps) {
               handleCancel()
             }}
             disabled={cancelling}
-            className={`w-full text-xs font-mono tracking-wider uppercase px-4 py-2.5 border transition-colors disabled:opacity-40 ${cancelling ? 'cursor-not-allowed' : ''} ${
+            className={`w-full font-mono tracking-wider uppercase border transition-colors disabled:opacity-40 ${compact ? 'text-[10px] px-2 py-1.5' : 'text-xs px-4 py-2.5'} ${cancelling ? 'cursor-not-allowed' : ''} ${
               confirmArmed
                 ? 'border-red-700 text-red-400'
                 : 'border-line text-muted hover:border-red-900 hover:text-red-400'
             }`}
           >
-            {cancelling ? 'cancelling…' : confirmArmed ? 'tap again to confirm' : 'cancel listing'}
+            {cancelling
+              ? 'cancelling…'
+              : confirmArmed
+                ? (compact ? 'tap again' : 'tap again to confirm')
+                : (compact ? 'cancel' : 'cancel listing')}
           </button>
         ) : (
-          <BuyButton listing={listing} onBought={onRemove} className="w-full" />
+          <BuyButton listing={listing} onBought={onRemove} className="w-full" compact={compact} />
         )}
       </div>
     </div>
