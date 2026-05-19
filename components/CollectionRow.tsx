@@ -30,15 +30,10 @@ interface CollectionRowProps {
   // Above-the-fold hint forwarded to the cover image (and propagated to the
   // first mint card so the row's LCP candidate isn't lazy-loaded).
   priority?: boolean
-  /**
-   * Defer-mount horizontal-scroller moment cards beyond the first one.
-   * Set true on mobile: the row shows ~1.3 cards at 320px each on a
-   * phone, so cards 2-10 are off-screen until the user swipes. Each
-   * MomentCard runs 2 wagmi reads + 3 fetches on mount, so multiplying
-   * by 10 cards across N featured collections turns the Featured tab
-   * into a multi-second JS thrash on cold load. Lazy-mount keeps the
-   * RPC + network fanout proportional to what's actually visible.
-   */
+  // Lazy-mount cards beyond the first in the mobile horizontal scroller.
+  // The row shows ~1.3 cards at 320px each on a phone, so cards 2+ are
+  // off-screen until the user swipes — no reason to pay their mount cost
+  // (2 wagmi reads + 3 fetches each) up front.
   isMobile?: boolean
 }
 
@@ -187,10 +182,6 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               key={m.id || `${m.address}-${m.token_id}`}
               className="w-80 flex-shrink-0 snap-start"
             >
-              {/* Card 0 is partially visible at row entry — render eager
-                  so the LCP image starts loading immediately. Cards 1+ on
-                  mobile defer until they swipe into view (IO fires when
-                  the placeholder enters the viewport on horizontal scroll). */}
               {isMobile && idx > 0 ? (
                 <LazyMount placeholderClassName="block w-full bg-[#161616] border border-line overflow-hidden">
                   {() => <MomentCard moment={m} priority={false} />}

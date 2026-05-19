@@ -23,19 +23,13 @@ export async function getProfile(address: string): Promise<Profile> {
   return { ...base, ...parsed }
 }
 
-// Batch lookup keyed by lowercase address. Used by the timeline enrichment
-// pass to stitch username/avatarUrl into every moment's creator with a
-// single round trip, regardless of how many distinct creators the feed
-// contains. Missing entries (addresses with no Kismet profile yet) are
-// omitted from the returned map — callers fall back to whatever inprocess
-// or the client-side resolver provides for those.
+// Batch lookup keyed by lowercase address. Missing entries are omitted
+// from the returned map; consumers fall back to their own resolvers.
 export async function getProfileBatch(
   addresses: string[],
 ): Promise<Map<string, Profile>> {
   const out = new Map<string, Profile>()
   if (addresses.length === 0) return out
-  // Deduplicate before issuing the MGET so a feed full of moments from a
-  // single creator doesn't request the same key N times.
   const unique = Array.from(new Set(addresses.map((a) => a.toLowerCase())))
   try {
     const raws = await redis.mget<(string | Profile | null)[]>(
@@ -45,15 +39,10 @@ export async function getProfileBatch(
       const raw = raws[i]
       if (!raw) continue
       const parsed: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
-      // Lowercase the address regardless of what's persisted so downstream
-      // case-sensitive equality checks (the same reason getProfile keys
-      // by lowercase) keep working through this path.
+      // Force lowercase to match the rest of the codebase's keying.
       out.set(unique[i], { ...parsed, address: unique[i] })
     }
-  } catch {
-    // Empty map on failure — every consumer's fallback resolves the
-    // identity client-side anyway.
-  }
+  } catch {}
   return out
 }
 

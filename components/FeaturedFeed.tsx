@@ -22,13 +22,9 @@ interface FeaturedFeedProps {
 }
 
 export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedProps) {
-  // null = still loading; [] = resolved-empty. Tracked per-endpoint so
-  // the faster /api/timeline?featured=1 can paint its moments grid the
-  // instant it returns, without waiting on /api/featured/collections-hydrated
-  // (which fans out 20 inprocess fetches + per-collection RPC reads
-  // server-side and is consistently the slower of the two on cold cache).
-  // Collection rows interleave in as a second pass — momentary layout
-  // shift is a fair trade for cutting time-to-first-content on mobile.
+  // null = pending, [] = resolved-empty. Tracked per-endpoint so the
+  // moments grid paints the instant /api/timeline returns instead of
+  // waiting on the slower /api/featured/collections-hydrated.
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
 
@@ -51,9 +47,6 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     return () => { cancelled = true }
   }, [])
 
-  // Spinner only while moments is still in flight — once moments arrives,
-  // paint the grid even if collections is still loading. The interleave
-  // logic below will splice collection rows in once they arrive.
   if (moments === null) {
     return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
   }
@@ -80,9 +73,8 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     }
   }
 
-  // Only declare "empty" once BOTH endpoints have settled — otherwise the
-  // tab would flash an empty-state message in the gap between moments
-  // resolving empty and collections still loading.
+  // Wait for collections to settle before declaring empty, otherwise the
+  // tab flashes the empty state while collections is still loading.
   if (blocks.length === 0 && collections !== null) {
     return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
   }

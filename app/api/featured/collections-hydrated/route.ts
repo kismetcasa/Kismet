@@ -138,27 +138,19 @@ export async function GET() {
           .map((m) => String(m.token_id))
           .filter(isValidTokenId)
           .map(BigInt)
-        const [ethEligible, usdcEligible] = tokenIds.length > 0
-          ? await Promise.all([
-              fetchEligibleTokens(client, address, tokenIds, 'eth'),
-              fetchEligibleTokens(client, address, tokenIds, 'usdc'),
-            ])
-          : [[], []]
+        // Overlap the Redis MGETs in enrichMomentsWithKismetMeta with
+        // the two RPC eligibility calls — they share no state.
+        const [ethEligible, usdcEligible, displayMoments] = await Promise.all([
+          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'eth') : [],
+          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'usdc') : [],
+          enrichMomentsWithKismetMeta(previewMoments.slice(0, ROW_DISPLAY_LIMIT)),
+        ])
         const ethEligibleTotalWei = ethEligible
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()
         const usdcEligibleTotalUsdc = usdcEligible
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()
-
-        // Same Kismet-KV chip enrichment as /api/timeline so MomentCards
-        // inside featured collection rows paint without per-card profile
-        // and chip fetches. Bounded to ROW_DISPLAY_LIMIT moments per row
-        // — the cost is one pair of Redis MGETs per collection, fine for
-        // the 20-collection cap on this endpoint.
-        const displayMoments = await enrichMomentsWithKismetMeta(
-          previewMoments.slice(0, ROW_DISPLAY_LIMIT),
-        )
 
         return {
           contractAddress: address,

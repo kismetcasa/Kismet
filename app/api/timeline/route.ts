@@ -345,17 +345,13 @@ export async function GET(req: NextRequest) {
   }
 
   const start = (page - 1) * limit
-  const slice = merged.slice(start, start + limit)
   const total_pages = Math.max(1, Math.ceil(merged.length / limit))
 
-  // Stitch Kismet KV chip metadata (creator avatar, collection name +
-  // image) so MomentCard skips two N+1 client fetches per card on cold
-  // mount. Cost is two Redis MGETs over the page-sized slice, not the
-  // full merged set — keeps the enrichment proportional to what the
-  // client will actually render. See lib/momentEnrichment.ts for the
-  // coverage gaps (FC-only creators, auto-deploy collections) that
-  // still fall through to the client-side resolvers.
-  const moments = (await enrichMomentsWithKismetMeta(slice as Moment[])) as typeof slice
+  // Enrich only the page slice — keeps the MGET cost proportional to
+  // what the client will render.
+  const moments = await enrichMomentsWithKismetMeta(
+    merged.slice(start, start + limit) as Moment[],
+  )
 
   // Note: an earlier version of this route stitched saleConfig into
   // each moment server-side (one fan-out fetch to inprocess /moment

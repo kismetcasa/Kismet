@@ -154,10 +154,8 @@ export async function getCollectionMeta(
   }
 }
 
-// Batch variant used by the timeline-enrichment pass so a feed with N
-// distinct collections costs one MGET instead of N parallel GETs. Missing
-// addresses (auto-deploy wrappers, non-platform contracts) are omitted —
-// MomentCard's collection chip is intentionally absent in those cases.
+// Batch variant. Missing addresses (auto-deploy wrappers, non-platform
+// contracts) are omitted from the returned map.
 export async function getCollectionMetaBatch(
   addresses: string[],
 ): Promise<Map<string, CollectionMeta>> {
@@ -175,9 +173,7 @@ export async function getCollectionMetaBatch(
         typeof raw === 'string' ? JSON.parse(raw) : raw
       out.set(unique[i], parsed)
     }
-  } catch {
-    // Empty map on failure — client falls back to fetchCollectionChip.
-  }
+  } catch {}
   return out
 }
 

@@ -318,19 +318,11 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredKeys, featuredCollectionAddrs } = useAdmin()
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
-  // Defer the first tab-content render until we've reconciled with
-  // localStorage. Without the gate, we'd mount the default 'main' feed
-  // (firing its /api/timeline?scope=standalone fetch from PaginatedGrid's
-  // useQuery on mount) and then immediately unmount it the moment the
-  // effect below flips active to the user's saved leftmost tab — the
-  // wasted fetch races the new tab's fetches against the Mini App
-  // webview's already-constrained connection pool, dragging out
-  // time-to-content. One paint cycle of "loading…" is the cost; on
-  // mobile (drag-reorder disabled, saved == default) the gate clears
-  // synchronously enough that no skeleton replacement is visible.
+  // Gate first tab-content render on the localStorage reconcile so we
+  // don't mount the default tab only to immediately unmount it for the
+  // saved one — the discarded mount's fetches stay in flight.
   const [hydrated, setHydrated] = useState(false)
 
-  // Hydrate from localStorage after mount; activate leftmost tab
   useEffect(() => {
     const saved = loadOrder()
     setOrder(saved)

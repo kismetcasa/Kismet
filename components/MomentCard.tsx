@@ -78,17 +78,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [creatorName, setCreatorName] = useState(
     () => moment.creator.username || shortAddress(moment.creator.address),
   )
-  // Seed from the server-stitched MomentAdmin.avatarUrl (Kismet KV).
-  // When the timeline route enriched the moment, this paints the chip
-  // avatar on the first render — no /api/profile round trip needed.
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(
     () => moment.creator.avatarUrl,
   )
   // Stays null for non-platform addresses (auto-deploy wrappers, unknown
-  // contracts) — keeps the chip hidden for individual mints. When the
-  // timeline route stitched in kismetCollection, seed from it so the
-  // chip text/image lands on the first render instead of popping in
-  // after fetchCollectionChip resolves.
+  // contracts) — keeps the chip hidden for individual mints.
   const [collectionName, setCollectionName] = useState<string | null>(
     () => moment.kismetCollection?.name ?? null,
   )
@@ -105,12 +99,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
 
   useEffect(() => {
-    // Skip the per-card /api/profile fetch when the timeline route
-    // already stitched in both username and avatarUrl. Either field
-    // missing means the FC fallback path (resolveProfileWithSiblings)
-    // is still worth running to pick up the FC pfp; the LRU cache in
-    // fetchCreatorProfile de-dupes across cards sharing a creator so
-    // the fallback cost is one fetch per unique creator, not per card.
+    // Stitched username + avatarUrl already in state via the initializer;
+    // only fall through to the resolver when either is missing (FC-only
+    // creators rely on this path to pick up the FC pfp).
     if (moment.creator.username && moment.creator.avatarUrl) return
     fetchCreatorProfile(moment.creator.address).then(({ name, avatarUrl }) => {
       // Only overwrite when Kismet returned an actual resolved name —
@@ -123,10 +114,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }, [moment.creator.address, moment.creator.username, moment.creator.avatarUrl])
 
   useEffect(() => {
-    // Skip when the timeline route stitched the chip. `kismetCollection`
-    // defined at all signals "we attempted to enrich" — its name/image
-    // may legitimately be null for known-but-chip-less contracts, and
-    // we don't want to round-trip just to re-confirm null.
+    // `kismetCollection` defined (even with null name/image) signals
+    // the server attempted enrichment — no need to re-confirm null.
     if (moment.kismetCollection !== undefined) return
     fetchCollectionChip(moment.address).then(({ name, image }) => {
       setCollectionName(name)
