@@ -8,6 +8,8 @@ import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMetaBatch } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
+import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
+import type { Moment } from '@/lib/inprocess'
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
@@ -343,8 +345,17 @@ export async function GET(req: NextRequest) {
   }
 
   const start = (page - 1) * limit
-  const moments = merged.slice(start, start + limit)
+  const slice = merged.slice(start, start + limit)
   const total_pages = Math.max(1, Math.ceil(merged.length / limit))
+
+  // Stitch Kismet KV chip metadata (creator avatar, collection name +
+  // image) so MomentCard skips two N+1 client fetches per card on cold
+  // mount. Cost is two Redis MGETs over the page-sized slice, not the
+  // full merged set — keeps the enrichment proportional to what the
+  // client will actually render. See lib/momentEnrichment.ts for the
+  // coverage gaps (FC-only creators, auto-deploy collections) that
+  // still fall through to the client-side resolvers.
+  const moments = (await enrichMomentsWithKismetMeta(slice as Moment[])) as typeof slice
 
   // Note: an earlier version of this route stitched saleConfig into
   // each moment server-side (one fan-out fetch to inprocess /moment

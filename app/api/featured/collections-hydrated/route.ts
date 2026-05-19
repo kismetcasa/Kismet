@@ -8,6 +8,7 @@ import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getCollectionMeta } from '@/lib/kv'
+import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
 // inprocess fetches already cache 60s, so this only batches reads across
@@ -150,12 +151,21 @@ export async function GET() {
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()
 
+        // Same Kismet-KV chip enrichment as /api/timeline so MomentCards
+        // inside featured collection rows paint without per-card profile
+        // and chip fetches. Bounded to ROW_DISPLAY_LIMIT moments per row
+        // — the cost is one pair of Redis MGETs per collection, fine for
+        // the 20-collection cap on this endpoint.
+        const displayMoments = await enrichMomentsWithKismetMeta(
+          previewMoments.slice(0, ROW_DISPLAY_LIMIT),
+        )
+
         return {
           contractAddress: address,
           name: collection.name,
           metadata: collection.metadata,
           default_admin: collection.default_admin,
-          moments: previewMoments.slice(0, ROW_DISPLAY_LIMIT),
+          moments: displayMoments,
           ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
           ethEligibleTotalWei,
           usdcEligibleTokenIds: usdcEligible.map((e) => e.tokenId.toString()),

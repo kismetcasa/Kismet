@@ -154,6 +154,33 @@ export async function getCollectionMeta(
   }
 }
 
+// Batch variant used by the timeline-enrichment pass so a feed with N
+// distinct collections costs one MGET instead of N parallel GETs. Missing
+// addresses (auto-deploy wrappers, non-platform contracts) are omitted —
+// MomentCard's collection chip is intentionally absent in those cases.
+export async function getCollectionMetaBatch(
+  addresses: string[],
+): Promise<Map<string, CollectionMeta>> {
+  const out = new Map<string, CollectionMeta>()
+  if (addresses.length === 0) return out
+  const unique = Array.from(new Set(addresses.map((a) => a.toLowerCase())))
+  try {
+    const raws = await redis.mget<(string | CollectionMeta | null)[]>(
+      ...unique.map(keyCollectionMeta),
+    )
+    for (let i = 0; i < unique.length; i++) {
+      const raw = raws[i]
+      if (!raw) continue
+      const parsed: CollectionMeta =
+        typeof raw === 'string' ? JSON.parse(raw) : raw
+      out.set(unique[i], parsed)
+    }
+  } catch {
+    // Empty map on failure — client falls back to fetchCollectionChip.
+  }
+  return out
+}
+
 // Profile-page fallback when inprocess hasn't indexed a fresh deploy.
 // Walks curated only — auto-deploy wrappers belong in the artist's Mints.
 export async function getCollectionsByArtist(

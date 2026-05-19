@@ -50,6 +50,14 @@ interface MomentAdmin {
   address: string
   username?: string
   hidden: boolean
+  /**
+   * Server-stitched by /api/timeline (and /api/featured/collections-hydrated)
+   * from the Kismet KV profile, when present. Lets MomentCard skip its
+   * per-card /api/profile fetch when the creator has a Kismet record.
+   * Absent for creators who only exist via Farcaster — those still fall
+   * through to fetchCreatorProfile so the FC pfp resolves client-side.
+   */
+  avatarUrl?: string
 }
 
 interface MomentMetadataInline {
@@ -97,6 +105,19 @@ export interface Moment {
     saleStart?: string
     saleEnd?: string
     currency?: string
+  }
+  // Server-stitched chip metadata for the parent collection. Same
+  // motivation as saleConfig above — eliminate the N+1 client fetch
+  // (/api/collections?address=…) that MomentCard otherwise fires per
+  // card. Sourced from Kismet KV so cost is one Redis MGET regardless
+  // of card count. `name === null` is meaningful: it signals "no chip"
+  // (auto-deploy wrappers, non-platform contracts) so the card knows
+  // to suppress the chip without re-fetching to confirm. Field absent
+  // entirely (undefined) means the route didn't enrich — client falls
+  // back to fetchCollectionChip.
+  kismetCollection?: {
+    name: string | null
+    image: string | null
   }
 }
 
