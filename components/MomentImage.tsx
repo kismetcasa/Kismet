@@ -3,7 +3,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
 import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly, isInIframe } from '@/lib/media/gateway'
-import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 
 interface CommonProps {
   /** Raw URI: ar://, ipfs://, https://, blob:, or data: */
@@ -56,12 +55,11 @@ type NextImageProps = CommonProps & {
  *              proxy     → direct
  *              direct    → walk next gateway → onAllError
  */
-export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, priority, ...rest }: NextImageProps) {
+export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash: _thumbhash, priority, ...rest }: NextImageProps) {
   const { url, onError: walkGateway } = useFallbackUrl(src, onAllError)
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
   const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
-  const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   // Memoized once at mount — sniffing UA on every error would be wasteful.
   // Skip the direct-gateway-walk fallback on:
   //   - WebKit (Safari + iOS Mini App webview): stalls Safari's connection
@@ -127,24 +125,15 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
 
   return (
     <>
-      {/* Persistent CSS-background blur — survives iOS WebKit's decoded-
-          image eviction on scroll-off. next/image's placeholder="blur"
-          is removed on onLoad and leaves nothing underneath. Mirrors
-          MomentVideo's poster-layer pattern. */}
-      {blurDataURL && (
-        <span
-          aria-hidden
-          className="absolute inset-0 bg-cover bg-center pointer-events-none"
-          style={{ backgroundImage: `url(${blurDataURL})` }}
-        />
-      )}
-      {/* Skeleton only when there's no thumbhash blur — the blur supersedes. */}
-      {!loaded && !blurDataURL && (
-        <span
-          aria-hidden
-          className="absolute inset-0 bg-raised animate-pulse pointer-events-none"
-        />
-      )}
+      {/* Persistent branded skeleton — animates while loading, sits
+          underneath the loaded image, and resurfaces if iOS WebKit
+          evicts the decoded bytes on scroll-off. The accent-tinted
+          fill is the codebase's brand color at 10% so it reads as a
+          subtle Kismet shade instead of a bright placeholder. */}
+      <span
+        aria-hidden
+        className={`absolute inset-0 bg-accent/10 pointer-events-none ${loaded ? '' : 'animate-pulse'}`}
+      />
       {/* Key includes mode-derived flags so next/image actually remounts
           on transitions — without this, the failed src stays cached
           internally and onError won't refire. */}
@@ -156,9 +145,17 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
         onError={handleError}
         onLoad={() => setLoaded(true)}
         decoding="async"
-        priority={priority}
-        placeholder={blurDataURL ? 'blur' : 'empty'}
-        blurDataURL={blurDataURL}
+        // Force eager loading on iOS WebKit + iframe contexts. Native
+        // loading="lazy" has a documented WebKit bug (bug 200764) that
+        // fails to re-fetch/decode after scroll-back on Safari 15.4+,
+        // producing the "skeleton stays stuck on scroll-back" symptom.
+        // Use fetchPriority="auto" to avoid the high-priority side
+        // effect that next/image normally pairs with `priority` —
+        // we want eager loading without the LCP-boost (which would
+        // make every card compete for bandwidth equally and defeat
+        // first-row prioritisation).
+        priority={priority || skipDirectWalk}
+        fetchPriority={!priority && skipDirectWalk ? 'auto' : undefined}
         {...rest}
       />
     </>

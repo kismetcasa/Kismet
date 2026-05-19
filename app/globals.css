@@ -44,6 +44,12 @@ body {
    * the 100vh line is the fallback for older engines that don't know dvh. */
   min-height: 100vh;
   min-height: 100dvh;
+  /* Disable iOS rubber-band overscroll. The Mini App webview is an
+   * iframe inside the Farcaster host — when the user overscrolls past
+   * the body edge, the bounce exposes the host's canvas (white by
+   * default), reading as a "white flash" on fast scroll. No-op on
+   * desktop browsers (no rubber-band). */
+  overscroll-behavior: none;
 }
 
 /* scrollbar */

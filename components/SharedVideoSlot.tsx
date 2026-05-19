@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   useSharedVideoContext,
   useSharedVideoZIndex,
@@ -54,6 +54,11 @@ export function SharedVideoSlot({
   const ref = useRef<HTMLDivElement>(null)
   const ctx = useSharedVideoContext()
   const overrideZIndex = useSharedVideoZIndex()
+  // Re-acquire token: bumped by the pool's onEvicted callback when the
+  // safety-net eviction (provider's evictIdleIfOverCap stale tier)
+  // destroys this slot's video. The acquire effect's dep on this token
+  // re-fires the effect → fresh acquire against a new pool entry.
+  const [acquireToken, setAcquireToken] = useState(0)
 
   // Keep latest onError in a ref so the acquire effect doesn't re-run
   // on every parent render. Direct write during render is the standard
@@ -95,6 +100,7 @@ export function SharedVideoSlot({
       controls: controlsRef.current,
       zIndex: finalZIndexRef.current,
       onError: () => onErrorRef.current?.(),
+      onEvicted: () => setAcquireToken((t) => t + 1),
       clipAncestors,
     })
 
@@ -120,9 +126,10 @@ export function SharedVideoSlot({
         a.removeEventListener('scroll', scheduleRefresh)
       }
     }
-    // Effect depends only on the slot's lifecycle identity (ctx + src),
-    // NOT on controls/zIndex — see ref-on-render comment above.
-  }, [ctx, src])
+    // Deps: slot lifecycle identity (ctx + src) plus acquireToken so the
+    // pool's onEvicted forces a re-acquire. controls/zIndex use the
+    // ref-on-render pattern above (see comment).
+  }, [ctx, src, acquireToken])
 
   return <div ref={ref} className={className} aria-hidden />
 }
