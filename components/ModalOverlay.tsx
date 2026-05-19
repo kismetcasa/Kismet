@@ -1,7 +1,7 @@
 'use client'
 
-import { useRouter } from 'next/navigation'
-import { useEffect, type ReactNode } from 'react'
+import { useRouter, usePathname } from 'next/navigation'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -26,20 +26,34 @@ const Z_CHROME = 60
  * Dismiss paths (all call router.back() so the URL reverts to the feed
  * and Next.js unmounts the modal slot cleanly): backdrop click, Escape
  * key, X button.
+ *
+ * Auto-dismiss on forward nav: when the user clicks an internal Link
+ * inside the overlay (artist profile, collection chip, comment author,
+ * back-to-home), Next.js does not always resolve the @modal parallel
+ * slot back to its default.tsx — the slot's render tree persists
+ * across soft nav. We snap the pathname on mount and bail to null
+ * once it drifts off, so the destination page renders cleanly without
+ * a stale overlay layered on top.
  */
 export function ModalOverlay({ children }: { children: ReactNode }) {
   const router = useRouter()
+  const pathname = usePathname()
+  const openedAt = useRef(pathname)
+  const stale = pathname !== openedAt.current
   const dismiss = () => router.back()
 
-  useEscapeKey(dismiss)
-  useBodyScrollLock()
+  useEscapeKey(dismiss, !stale)
+  useBodyScrollLock(!stale)
 
   // Defensive: ensure the modal scrolls into view on mount. Without
   // this, opening the modal from a scrolled-down feed could leave the
   // user looking at the same scroll position with the modal off-screen.
   useEffect(() => {
+    if (stale) return
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
-  }, [])
+  }, [stale])
+
+  if (stale) return null
 
   return (
     <>
