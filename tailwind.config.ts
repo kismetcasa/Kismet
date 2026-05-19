@@ -20,7 +20,15 @@ const config: Config = {
         dim: '#888',
         muted: '#555',
         faint: '#333',
-        accent: '#6B3FA0',
+        // Single-color representative of the brand gradient, used by
+        // every `bg-accent`/`text-accent`/`border-accent`/`ring-accent`
+        // and their `/opacity` variants. Picked as the gradient's
+        // middle stop — the most "Kismet pink", distinctly not purple.
+        // CSS can't render gradients in single-color properties
+        // (borders, rings, opacity-tinted backgrounds), so they sit on
+        // this color while text + button-fill surfaces use the full
+        // gradient via .accent-grad / .accent-grad-hover.
+        accent: '#ff87ce',
       },
     },
   },

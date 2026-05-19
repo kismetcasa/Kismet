@@ -28,6 +28,11 @@ import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
+import { SITE_URL } from '@/lib/siteUrl'
+
+const KISMET_CHANNEL_KEY = 'kismet'
 
 type PriceCurrency = 'eth' | 'usdc'
 
@@ -97,6 +102,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+  const { isInMiniApp } = useFarcaster()
   // For post-auto-deploy permission verification — reads
   // permissions(0, smartWallet) on the freshly-deployed contract so we
   // can surface a one-shot Authorize CTA if the smart wallet didn't
@@ -599,6 +605,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        if (isInMiniApp) hapticNotifySuccess()
 
       } else {
         // media mode — ensure session once (cookie cached, no re-prompt)
@@ -790,6 +797,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        if (isInMiniApp) hapticNotifySuccess()
       }
     } catch (err) {
       setStep('idle')
@@ -799,6 +807,37 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   }
 
   const isBusy = step !== 'idle' && step !== 'done'
+
+  // Share the just-minted moment as a cast in /kismet. Mini App only —
+  // composeCast is a host action with no web equivalent. The embed
+  // gives the cast a preview card; the @kismet mention is rendered as
+  // a clickable user mention by the host.
+  async function handleShareToKismet() {
+    if (!result) return
+    try {
+      const { sdk } = await import('@farcaster/miniapp-sdk')
+      const trimmed = name.trim()
+      const text = trimmed
+        ? `I just minted "${trimmed}" on @kismet`
+        : 'I just minted a new moment on @kismet'
+      const momentUrl = `${SITE_URL}/moment/${result.contractAddress}/${result.tokenId}`
+      const composed = await sdk.actions.composeCast({
+        text,
+        embeds: [momentUrl],
+        channelKey: KISMET_CHANNEL_KEY,
+      })
+      // composeCast resolves with { cast: null } when the user dismisses
+      // the compose sheet — that's an explicit "no", so no success toast.
+      if (composed?.cast) {
+        toast.success('Cast shared to /kismet!', { id: 'share' })
+        // Inside handleShareToKismet we already know we're in a Mini App
+        // (the button gating render-time on isInMiniApp), so no gate here.
+        hapticNotifySuccess()
+      }
+    } catch (err) {
+      toastError('Share', err, { id: 'share' })
+    }
+  }
 
   if (step === 'done' && result) {
     return (
@@ -810,13 +849,24 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           <h3 className="text-ink font-mono text-sm mb-2">Moment minted</h3>
           <p className="text-dim text-xs font-mono">Token #{result.tokenId}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => router.push(`/moment/${result.contractAddress}/${result.tokenId}`)}
-          className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent self-center"
-        >
-          Moment details →
-        </button>
+        <div className="flex flex-col items-center gap-2.5">
+          {isInMiniApp && (
+            <button
+              type="button"
+              onClick={handleShareToKismet}
+              className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent"
+            >
+              Share to /kismet →
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => router.push(`/moment/${result.contractAddress}/${result.tokenId}`)}
+            className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent"
+          >
+            Moment details →
+          </button>
+        </div>
         <a
           href={`https://basescan.org/tx/${result.hash}`}
           target="_blank"

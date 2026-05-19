@@ -12,7 +12,12 @@ interface ProfileAvatarProps {
 }
 
 function addressToGradient(address: string): { from: string; to: string; angle: number } {
-  const hex = address.replace('0x', '').toLowerCase()
+  // padEnd defends against short/empty inputs (e.g. the placeholder
+  // address used during the FC-identity-but-no-resolved-address window
+  // — the gradient is invisible under the FC pfp anyway, but the
+  // parseInt('', 16) → NaN would still produce a black slot if the
+  // image fails to load).
+  const hex = address.replace('0x', '').toLowerCase().padEnd(14, '0')
   const r1 = parseInt(hex.slice(0, 2), 16)
   const g1 = parseInt(hex.slice(2, 4), 16)
   const b1 = parseInt(hex.slice(4, 6), 16)
@@ -59,7 +64,28 @@ export function ProfileAvatar({ address, avatarUrl, size = 40, editable = false,
         <img
           src={avatarUrl}
           alt="avatar"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }}
+          // Explicit width/height attributes reserve the box size for
+          // the layout engine before the image starts decoding —
+          // prevents the 1-frame gradient flash on slow networks.
+          // objectFit: cover + objectPosition: center together handle
+          // non-square FC pfp sources (some are 1:1, some are 4:3 from
+          // older clients) by center-cropping to the circle.
+          width={size}
+          height={size}
+          // loading=eager: avatar is above-the-fold in nav and
+          // profile pages, never lazy. decoding=async: lets the decode
+          // run off the main thread so it doesn't block paint.
+          loading="eager"
+          decoding="async"
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            objectPosition: 'center',
+            position: 'absolute',
+            inset: 0,
+            display: 'block',
+          }}
           onError={() => setImgError(true)}
         />
       )}

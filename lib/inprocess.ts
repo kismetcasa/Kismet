@@ -235,14 +235,20 @@ export function formatRelativeTime(timestamp: number): string {
 
 /**
  * Fetch the moments inside a single collection from inprocess's timeline API.
- * Returns [] on any error (network, non-2xx, malformed JSON) so callers can
- * render an empty state cleanly. `revalidate` controls Next.js fetch caching.
+ * Returns [] on any error (network, non-2xx, malformed JSON, timeout) so
+ * callers can render an empty state cleanly. `revalidate` controls
+ * Next.js fetch caching. `timeoutMs` bounds a single request — without it
+ * a hung upstream blocks the caller indefinitely, which is the difference
+ * between "search is slow" and "search froze" when this is fanned out
+ * across many collections (see lib/search.ts).
  */
 export async function fetchCollectionMoments(
   collectionAddress: string,
-  options: { revalidate?: number; limit?: number } = {},
+  options: { revalidate?: number; limit?: number; timeoutMs?: number } = {},
 ): Promise<Moment[]> {
-  const { revalidate = 60, limit = 50 } = options
+  const { revalidate = 60, limit = 50, timeoutMs } = options
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {
     const url = inprocessUrl('/timeline', {
       collection: collectionAddress,
@@ -252,11 +258,14 @@ export async function fetchCollectionMoments(
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate },
+      ...(controller ? { signal: controller.signal } : {}),
     })
     if (!res.ok) return []
     const data = await res.json()
     return Array.isArray(data.moments) ? data.moments : []
   } catch {
     return []
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }

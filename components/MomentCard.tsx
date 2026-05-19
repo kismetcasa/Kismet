@@ -386,7 +386,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
               className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                  : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
+                  : 'text-muted border-line accent-grad-hover'
               }`}
             >
               {collectLabel}
@@ -431,7 +431,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact }: MomentCa
             className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
               hasCollected
                 ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                : 'text-muted border-line hover:bg-gradient-to-r hover:from-accent hover:to-accent hover:text-white hover:border-accent'
+                : 'text-muted border-line accent-grad-hover transition-all'
             }`}
           >
             {collectLabel}

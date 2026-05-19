@@ -2,6 +2,7 @@
 
 import { useCallback } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
+import { useFarcaster } from '@/providers/FarcasterProvider'
 
 /**
  * Ensures the wallet has a valid Kismet session, prompting one wallet
@@ -28,8 +29,17 @@ let inFlight: { address: string; promise: Promise<void> } | null = null
 export function useUploadSession() {
   const { address } = useAccount()
   const { signMessageAsync } = useSignMessage()
+  const { isInMiniApp } = useFarcaster()
 
   const ensureSession = useCallback(async (): Promise<void> => {
+    // Mini App users are already authenticated via Quick Auth — the JWT
+    // is auto-attached to every same-origin fetch by
+    // FarcasterProvider's interceptor (see providers/FarcasterProvider.tsx),
+    // and server-side getSessionAddress() accepts it as a parallel auth
+    // path to the cookie. No SIWE signature needed; would just confuse
+    // the user with a redundant signing prompt.
+    if (isInMiniApp) return
+
     if (!address) throw new Error('Wallet not connected')
     const lower = address.toLowerCase()
 
@@ -83,7 +93,7 @@ export function useUploadSession() {
         inFlight = null
       }
     }
-  }, [address, signMessageAsync])
+  }, [address, signMessageAsync, isInMiniApp])
 
   return { ensureSession }
 }

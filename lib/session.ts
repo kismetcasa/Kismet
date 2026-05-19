@@ -2,6 +2,7 @@ import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { randomUUID } from 'crypto'
 import type { NextRequest, NextResponse } from 'next/server'
+import { verifyFarcasterJwt } from './farcasterAuth'
 
 export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -33,15 +34,40 @@ export async function revokeSession(token: string): Promise<void> {
 }
 
 /**
+ * Read a Farcaster Quick Auth JWT from the Authorization header, if
+ * present. Used as a parallel auth path to the session cookie because
+ * the cookie is SameSite=Lax and therefore not sent on cross-site iframe
+ * subresource requests (i.e. all requests from a Mini App embedded
+ * inside any Farcaster host). The JWT, attached to the Authorization
+ * header by FarcasterProvider's fetch wrapper, bypasses cookie policy
+ * entirely.
+ */
+async function getFarcasterAddressFromBearer(req: NextRequest): Promise<string | null> {
+  const auth = req.headers.get('authorization')
+  if (!auth || !auth.startsWith('Bearer ')) return null
+  const token = auth.slice('Bearer '.length).trim()
+  if (!token) return null
+  const result = await verifyFarcasterJwt(token)
+  return result?.address ?? null
+}
+
+/**
  * Read the session cookie from a request and return the bound address, or
  * null if missing/expired. This is the single auth check for endpoints that
  * spend platform resources (Arweave credit, sponsored API key) — the
  * httpOnly cookie can't be read by client JS, so XSS can't exfiltrate it.
+ *
+ * Falls through to a Quick Auth Bearer JWT check when no cookie is
+ * present, so Mini App users (whose cookies are blocked by SameSite=Lax
+ * inside an iframe) authenticate transparently through the same call.
  */
 export async function getSessionAddress(req: NextRequest): Promise<string | null> {
   const token = req.cookies.get(SESSION_COOKIE)?.value
-  if (!token) return null
-  return verifySession(token)
+  if (token) {
+    const fromCookie = await verifySession(token)
+    if (fromCookie) return fromCookie
+  }
+  return getFarcasterAddressFromBearer(req)
 }
 
 /**
@@ -51,21 +77,37 @@ export async function getSessionAddress(req: NextRequest): Promise<string | null
  * of activity logs active users out mid-action; refreshing on each
  * authenticated request keeps them signed in as long as they're using
  * the app, while still expiring after 7 days of inactivity.
+ *
+ * `token` is null when the session came from a Bearer JWT instead of the
+ * cookie — there's no opaque token to slide; the JWT carries its own
+ * (~1h) expiry and refreshes itself client-side. Callers using the
+ * sliding-session pattern should guard `slideSession` on `token != null`.
  */
-export async function getSessionContext(req: NextRequest): Promise<{ address: string; token: string } | null> {
+export async function getSessionContext(
+  req: NextRequest,
+): Promise<{ address: string; token: string | null } | null> {
   const token = req.cookies.get(SESSION_COOKIE)?.value
-  if (!token) return null
-  const address = await verifySession(token)
-  if (!address) return null
-  return { address, token }
+  if (token) {
+    const address = await verifySession(token)
+    if (address) return { address, token }
+  }
+  const fromBearer = await getFarcasterAddressFromBearer(req)
+  if (fromBearer) return { address: fromBearer, token: null }
+  return null
 }
 
 /**
  * Slide the session forward by re-stamping the cookie + extending the
  * Redis key TTL on a successful authenticated request. Cheap (1 cookie
  * write + 1 Redis EXPIRE), idempotent across concurrent requests.
+ *
+ * Accepts `null` as a no-op so callers can pass `ctx.token` from
+ * `getSessionContext` without guarding: Bearer-JWT sessions (Mini App
+ * users) have no opaque token to slide because the JWT carries its own
+ * expiry and refreshes itself client-side.
  */
-export async function slideSession(res: NextResponse, token: string): Promise<void> {
+export async function slideSession(res: NextResponse, token: string | null): Promise<void> {
+  if (!token) return
   setSessionCookie(res, token)
   // No context — token is the session identifier itself, don't log it.
   await redis.expire(key(token), SESSION_TTL_SECONDS).catch(bestEffort('session.slide'))

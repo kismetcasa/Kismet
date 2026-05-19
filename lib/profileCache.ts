@@ -1,6 +1,18 @@
 import { shortAddress } from './inprocess'
 import { LRUCache } from './lruCache'
 
+// Shape of /api/profile/[address] responses (subset we actually read).
+// `displayName` is server-computed: collapses username → farcaster.username
+// → ensName so consumers don't have to repeat that precedence chain.
+type ProfileResponse = {
+  profile?: {
+    username?: string
+    avatarUrl?: string
+    ensName?: string
+    displayName?: string | null
+  }
+}
+
 interface ProfileEntry {
   name: string
   avatarUrl: string | undefined
@@ -28,8 +40,12 @@ export async function fetchCreatorProfile(
   }
   try {
     const res = await fetch(`/api/profile/${key}`)
-    const d = await res.json()
-    const name: string = d.profile?.username || d.profile?.ensName || ''
+    const d: ProfileResponse = await res.json()
+    // displayName is server-computed (username → farcaster → ens). Fall
+    // back to the legacy chain when an older response shape is cached or
+    // the server-side enrichment is disabled.
+    const name: string =
+      d.profile?.displayName || d.profile?.username || d.profile?.ensName || ''
     const avatarUrl: string | undefined = d.profile?.avatarUrl
     const resolved = !!name
     const entry = { name: name || shortAddress(address), avatarUrl, ts: Date.now(), resolved }

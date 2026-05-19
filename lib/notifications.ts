@@ -159,6 +159,20 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       member: JSON.stringify(stored),
     })
     await redis.zremrangebyrank(keyNotif(recipient), 0, -MAX_PER_USER - 1)
+
+    // Parallel transport: Farcaster native push. Imported lazily so the
+    // non-FC code path (writes purely to the in-app bell) never pulls
+    // farcasterProfile + the FC dispatch helpers into its module graph.
+    // Lazy import also breaks the would-be circular dep between this
+    // file and lib/farcasterNotifications (which imports our types).
+    // Fire-and-forget — push is non-critical; the in-app bell already
+    // succeeded above so the user will see it next time they open Kismet.
+    void import('./farcasterNotifications')
+      // `read` is a read-time computed field, never stored on the entry —
+      // dispatch only cares about identity + payload fields, so the
+      // false here is purely to satisfy the Notification type contract.
+      .then(({ dispatchFarcasterPush }) => dispatchFarcasterPush({ ...stored, read: false }))
+      .catch(() => {})
   } catch {
     // Notifications are non-critical — never let them break the parent operation
   }
@@ -260,6 +274,20 @@ export async function markOneRead(address: string, id: string): Promise<void> {
     .sadd(keyReadIds(address), id)
     .expire(keyReadIds(address), READ_IDS_TTL_SECS)
     .exec()
+}
+
+/**
+ * True iff `address` has muted `actor`. Used by dispatchFarcasterPush
+ * so muting in the feed also blocks FC push — the user perceives one
+ * mute setting, not two. Key shape stays internal to this module so
+ * callers can't drift from the storage helpers above.
+ */
+export async function isActorMuted(address: string, actor: string): Promise<boolean> {
+  try {
+    return (await redis.sismember(keyMuted(address), actor.toLowerCase())) === 1
+  } catch {
+    return false
+  }
 }
 
 export async function muteActor(address: string, actor: string): Promise<void> {

@@ -22,6 +22,21 @@ const TYPE_LABELS: Record<string, string> = {
   authorized: 'Creator authorizations',
 }
 
+// Labels used in the FC push section. We surface every type here (the
+// mute section omits non-muteable ones) because push opt-in is the
+// inverse: financial types default to OFF and the user opts INTO them.
+const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
+  collect: 'Someone collects your work',
+  sale: 'Sales of your listings',
+  follow: 'New followers',
+  mint: 'New mints from people you follow',
+  listing_expired: 'Your listings expire',
+  listing_created: 'New listings from people you follow',
+  airdrop: 'Airdrops you receive',
+  payout: 'Splits and payouts',
+  authorized: 'Creator authorizations',
+}
+
 type ModalTab = 'feed' | 'settings'
 
 interface NotificationModalProps {
@@ -36,15 +51,29 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   const [mutedTypes, setMutedTypes] = useState<NotificationType[] | null>(null)
   const [muteableTypes, setMuteableTypes] = useState<NotificationType[]>([])
   const [typesLoading, setTypesLoading] = useState(false)
+  // FC push: enabled = set of types the user has opted IN to push for.
+  // pushAllTypes mirrors ALL_NOTIFICATION_TYPES sent by the server so
+  // the order/labels don't drift if we add a type later.
+  const [pushEnabled, setPushEnabled] = useState<NotificationType[] | null>(null)
+  const [pushAllTypes, setPushAllTypes] = useState<NotificationType[]>([])
+  const [pushHasTokens, setPushHasTokens] = useState<boolean>(false)
+  const [pushHasFid, setPushHasFid] = useState<boolean>(false)
+  const [pushLoading, setPushLoading] = useState(false)
+  // Master toggle (default off). Gates all push regardless of per-type.
+  // Auto-flipped on by the server during the user's first
+  // notifications_enabled webhook so the "Add Kismet" prompt's promise
+  // still works without an extra trip to settings.
+  const [pushMaster, setPushMaster] = useState<boolean>(false)
 
   useBodyScrollLock()
   useEscapeKey(onClose)
 
-  // Fetch mute lists when settings tab is first opened
+  // Fetch mute lists + push prefs when settings tab is first opened
   useEffect(() => {
     if (tab !== 'settings') return
     setMutedLoading(true)
     setTypesLoading(true)
+    setPushLoading(true)
     fetch('/api/notifications/mute', { credentials: 'same-origin' })
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMuted(Array.isArray(d.muted) ? d.muted : []))
@@ -61,6 +90,23 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
         setMuteableTypes([])
       })
       .finally(() => setTypesLoading(false))
+    fetch('/api/notifications/push-types', { credentials: 'same-origin' })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => {
+        setPushEnabled(Array.isArray(d.enabled) ? d.enabled : [])
+        setPushAllTypes(Array.isArray(d.all) ? d.all : [])
+        setPushHasTokens(!!d.hasTokens)
+        setPushHasFid(typeof d.fid === 'number' && d.fid > 0)
+        setPushMaster(!!d.master)
+      })
+      .catch(() => {
+        setPushEnabled([])
+        setPushAllTypes([])
+        setPushHasTokens(false)
+        setPushHasFid(false)
+        setPushMaster(false)
+      })
+      .finally(() => setPushLoading(false))
   }, [tab])
 
   async function handleUnmute(actor: string) {
@@ -109,16 +155,71 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
     }
   }
 
+  async function handleTogglePush(type: NotificationType) {
+    const previous = pushEnabled
+    const wasEnabled = previous?.includes(type) ?? false
+    setPushEnabled((prev) => {
+      if (!prev) return prev
+      return wasEnabled ? prev.filter((t) => t !== type) : [...prev, type]
+    })
+    try {
+      await ensureSession()
+      const res = await fetch('/api/notifications/push-types', {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, enabled: !wasEnabled }),
+      })
+      if (!res.ok) throw new Error('request failed')
+    } catch (err) {
+      setPushEnabled(previous)
+      const description = humanError(err)
+      if (description === 'Cancelled') return
+      toast.error('Update failed', { description })
+    }
+  }
+
+  async function handleToggleMaster() {
+    const previous = pushMaster
+    const next = !previous
+    setPushMaster(next)
+    try {
+      await ensureSession()
+      const res = await fetch('/api/notifications/push-types', {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ master: next }),
+      })
+      if (!res.ok) throw new Error('request failed')
+    } catch (err) {
+      setPushMaster(previous)
+      const description = humanError(err)
+      if (description === 'Cancelled') return
+      toast.error('Update failed', { description })
+    }
+  }
+
+  // Nav is h-14 + safe-top tall — anchor backdrop + panel to clear it.
+  // Bottom of the panel extends to the screen edge; the scrollable body
+  // below pads itself by --safe-bottom so the last row clears the home
+  // indicator without leaving an unstyled gap below the panel chrome.
+  const topOffset = { top: 'calc(3.5rem + var(--safe-top))' }
+
   return (
     <>
       {/* Backdrop — covers page below nav, click to close */}
       <div
-        className="fixed inset-x-0 top-14 bottom-0 z-[59] bg-black/50"
+        className="fixed inset-x-0 bottom-0 z-[59] bg-black/50"
+        style={topOffset}
         onClick={onClose}
       />
 
       {/* Drawer panel */}
-      <div className="fixed right-0 top-14 bottom-0 z-[60] w-full max-w-[440px] bg-[#0d0d0d] border-l border-line flex flex-col">
+      <div
+        className="fixed right-0 bottom-0 z-[60] w-full max-w-[440px] bg-[#0d0d0d] border-l border-line flex flex-col"
+        style={topOffset}
+      >
 
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-line flex-shrink-0">
@@ -145,15 +246,119 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
           </div>
         </div>
 
-        {/* Scrollable body */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Scrollable body — pad the bottom so the last visible row clears
+            the device's home indicator on mobile FC. 0 on web. */}
+        <div className="flex-1 overflow-y-auto" style={{ paddingBottom: 'var(--safe-bottom)' }}>
           {tab === 'feed' ? (
             <NotificationFeed />
           ) : (
             <div className="p-4 flex flex-col gap-6">
               <div>
+                <p className="text-[10px] font-mono uppercase tracking-widest text-muted mb-1">
+                  mobile push (farcaster)
+                </p>
+                <p className="text-[10px] font-mono text-[#444] mb-3">
+                  {pushHasTokens
+                    ? 'native farcaster push. master toggle gates everything below.'
+                    : pushHasFid
+                      ? 'add kismet inside farcaster to enable mobile push.'
+                      : 'connect a farcaster-linked wallet to enable mobile push.'}
+                </p>
+                {pushLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 size={14} className="animate-spin text-muted" />
+                  </div>
+                ) : !pushHasTokens ? (
+                  // Locked state: no tokens means no surface to push to.
+                  // Render the list disabled so users see what's coming
+                  // once they add Kismet, but every toggle is inert.
+                  <div className="flex flex-col gap-1.5 opacity-50">
+                    <div className="flex items-center justify-between px-3 py-2 border border-line">
+                      <span className="text-xs font-mono text-ink">
+                        All mobile push notifications
+                      </span>
+                      <span className="text-[9px] font-mono uppercase tracking-widest text-[#444]">
+                        off
+                      </span>
+                    </div>
+                    {pushAllTypes.map((type) => (
+                      <div
+                        key={type}
+                        className="flex items-center justify-between px-3 py-2 border border-line"
+                      >
+                        <span className="text-xs font-mono text-dim">
+                          {PUSH_TYPE_LABELS[type] ?? type}
+                        </span>
+                        <span className="text-[9px] font-mono uppercase tracking-widest text-[#444]">
+                          off
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {/* Master row: visually distinct (brighter label, no
+                        sub-row indent) so users see this gates everything. */}
+                    <div className="flex items-center justify-between px-3 py-2 border border-line bg-[#141414]">
+                      <span className="text-xs font-mono text-ink">
+                        All mobile push notifications
+                      </span>
+                      <button
+                        onClick={handleToggleMaster}
+                        className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
+                          pushMaster
+                            ? 'text-ink hover:text-dim'
+                            : 'text-muted hover:text-ink'
+                        }`}
+                      >
+                        {pushMaster ? 'on' : 'off'}
+                      </button>
+                    </div>
+                    {/* Per-type list. Visually inert (and effectively
+                        inert on the server) when master is off, so the
+                        user never sees a toggle they think works but
+                        actually doesn't. */}
+                    <div
+                      className={`flex flex-col gap-1.5 transition-opacity ${
+                        pushMaster ? '' : 'opacity-40 pointer-events-none select-none'
+                      }`}
+                      aria-disabled={!pushMaster}
+                    >
+                      {pushAllTypes.map((type) => {
+                        const isOn = pushEnabled?.includes(type) ?? false
+                        return (
+                          <div
+                            key={type}
+                            className="flex items-center justify-between px-3 py-2 border border-line"
+                          >
+                            <span className="text-xs font-mono text-dim">
+                              {PUSH_TYPE_LABELS[type] ?? type}
+                            </span>
+                            <button
+                              onClick={() => handleTogglePush(type)}
+                              disabled={!pushMaster}
+                              className={`text-[9px] font-mono uppercase tracking-widest transition-colors ${
+                                isOn
+                                  ? 'text-ink hover:text-dim'
+                                  : 'text-muted hover:text-ink'
+                              }`}
+                            >
+                              {isOn ? 'on' : 'off'}
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                <p className="text-[10px] font-mono text-[#444] mt-2">
+                  muting a type or account below also silences its push.
+                </p>
+              </div>
+
+              <div>
                 <p className="text-[10px] font-mono uppercase tracking-widest text-muted mb-3">
-                  notification types
+                  hide from feed
                 </p>
                 {typesLoading ? (
                   <div className="flex justify-center py-4">

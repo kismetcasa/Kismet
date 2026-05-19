@@ -34,7 +34,7 @@ export function generateTextCollectionCoverDataUri(name: string): string {
     SVG_TEMPLATE_PREFIX +
     '<rect width="600" height="600" fill="#0d0d0d"/>' +
     `<text x="300" y="296" text-anchor="middle" font-family="ui-monospace, monospace" font-size="36" fill="#efefef" font-weight="500">${safeName}</text>` +
-    '<text x="300" y="340" text-anchor="middle" font-family="ui-monospace, monospace" font-size="14" fill="#8B5CF6" letter-spacing="3">KISMET</text>' +
+    '<text x="300" y="340" text-anchor="middle" font-family="ui-monospace, monospace" font-size="14" fill="#ff87ce" letter-spacing="3">KISMET</text>' +
     SVG_TEMPLATE_SUFFIX
   return `data:image/svg+xml;base64,${utf8ToBase64(svg)}`
 }

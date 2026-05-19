@@ -8,6 +8,8 @@ import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
+import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { SITE_URL } from '@/lib/siteUrl'
 
 interface Props {
   params: Promise<{ address: string }>
@@ -118,6 +120,20 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // ipfs:// routes through /api/img for the multi-gateway-raced edge
   // cache; https:// passes through.
   const imageUrl = shareImageUrl(meta?.image)
+  // Farcaster Mini App embed — see moment/[address]/[tokenId]/page.tsx
+  // for the rationale. action.url points at this collection's canonical
+  // page so the button drops the user directly here inside the Mini
+  // App rather than the homepage.
+  const canonicalUrl = `${SITE_URL}/collection/${address}`
+  const embedImageUrl = imageUrl ?? `${canonicalUrl}/opengraph-image`
+  const fcEmbed = buildFarcasterEmbed({
+    imageUrl: embedImageUrl,
+    buttonTitle: 'view collection',
+    action: {
+      url: canonicalUrl,
+      name: `${name} — Kismet Art`,
+    },
+  })
   return {
     title: `${name} — Kismet`,
     description,
@@ -136,6 +152,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       description,
       ...(imageUrl ? { images: [imageUrl] } : {}),
     },
+    other: fcEmbed,
   }
 }
 

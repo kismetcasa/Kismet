@@ -106,7 +106,7 @@ export function NotificationBell({ address }: NotificationBellProps) {
         {count > 0 && (
           <span
             aria-hidden="true"
-            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-accent text-[9px] font-mono text-white flex items-center justify-center leading-none"
+            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-accent text-[9px] font-mono text-surface flex items-center justify-center leading-none"
           >
             {badge}
           </span>

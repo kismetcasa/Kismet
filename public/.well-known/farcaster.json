@@ -1,0 +1,23 @@
+{
+  "accountAssociation": {
+    "header": "eyJmaWQiOjUyNzY4MSwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweDE0YmIyNEE4RTYzNDYxQmZlNjg0MjQ1RWQ4N2REOTAwZEQwNTBDMUYifQ",
+    "payload": "eyJkb21haW4iOiJraXNtZXQuYXJ0In0",
+    "signature": "8jZh8U/zOZpIIJQm4kQ7vTG+tG9RyFTS9zSTokr4SywFM9wXhPxete9+jltbFx3Hm2kHH1dDtAfqhL509kwvsRs="
+  },
+  "miniapp": {
+    "version": "1",
+    "name": "Kismet",
+    "iconUrl": "https://kismet.art/icon.png",
+    "homeUrl": "https://kismet.art",
+    "splashImageUrl": "https://kismet.art/splash.png",
+    "splashBackgroundColor": "#ff87ce",
+    "description": "Artists and collectors converge on Kismet",
+    "subtitle": "Onchain Art",
+    "tagline": "mint, discover, collect",
+    "primaryCategory": "art-creativity",
+    "requiredChains": ["eip155:8453"],
+    "requiredCapabilities": ["wallet.getEthereumProvider"],
+    "webhookUrl": "https://kismet.art/api/farcaster/webhook",
+    "canonicalDomain": "kismet.art"
+  }
+}

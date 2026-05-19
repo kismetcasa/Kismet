@@ -20,6 +20,8 @@ import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { toastError } from '@/lib/toast'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 
 interface Payment {
   id: string
@@ -120,7 +122,7 @@ function FollowRow({ addr, onClose, onNameLoaded }: { addr: string; onClose: () 
     fetch(`/api/profile/${addr}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => {
-        const n = d.profile?.username || d.profile?.ensName
+        const n = d.profile?.displayName || d.profile?.username || d.profile?.ensName
         if (n) { setName(n); onNameLoaded?.(addr, n) }
         if (d.profile?.avatarUrl) setAvatarUrl(d.profile.avatarUrl)
       })
@@ -152,6 +154,9 @@ interface Profile {
   username?: string
   ensName?: string
   avatarUrl?: string
+  // Server-computed: collapses the username → farcaster → ens fallback
+  // chain into a single field. See app/api/profile/[address]/route.ts.
+  displayName?: string | null
   updatedAt: number
 }
 
@@ -159,6 +164,7 @@ export function ProfileView({ address }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
+  const { isInMiniApp } = useFarcaster()
   const { isCurator } = useAdmin()
 
   const isOwner = connectedAddress?.toLowerCase() === address.toLowerCase()
@@ -411,6 +417,9 @@ export function ProfileView({ address }: ProfileViewProps) {
       setFollowing(!wasFollowing)
       setFollowerCount((c) => c === null ? null : wasFollowing ? c - 1 : c + 1)
       toast.success(wasFollowing ? 'Unfollowed!' : 'Followed!', { id: 'follow' })
+      // Haptic only on follow (the positive engagement signal), not on
+      // unfollow — buzz-on-removal would feel wrong.
+      if (!wasFollowing && isInMiniApp) hapticNotifySuccess()
     } catch (err) {
       toastError(following ? 'Unfollow' : 'Follow', err, { id: 'follow' })
     } finally {
@@ -572,7 +581,8 @@ export function ProfileView({ address }: ProfileViewProps) {
 
   // ─── render ───────────────────────────────────────────────────────────────
 
-  const displayName = profile?.username || profile?.ensName || shortAddress(address)
+  const displayName =
+    profile?.displayName || profile?.username || profile?.ensName || shortAddress(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">

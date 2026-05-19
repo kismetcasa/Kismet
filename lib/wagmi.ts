@@ -1,6 +1,7 @@
-import { getDefaultConfig } from '@rainbow-me/rainbowkit'
+import { createConfig, http } from 'wagmi'
 import { base, mainnet } from 'wagmi/chains'
-import { http } from 'wagmi'
+import { connectorsForWallets, getDefaultWallets } from '@rainbow-me/rainbowkit'
+import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector'
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
 
@@ -16,10 +17,26 @@ if (!projectId) {
   )
 }
 
-export const wagmiConfig = getDefaultConfig({
+// Manual config (rather than RainbowKit's `getDefaultConfig`) is required
+// because we need to prepend a non-RainbowKit connector — the Farcaster
+// Mini App connector — to the connectors array. RainbowKit's wallet list
+// is preserved via getDefaultWallets() → connectorsForWallets() so the
+// regular-web UX is unchanged: same modal, same wallet options.
+const { wallets } = getDefaultWallets()
+const rainbowKitConnectors = connectorsForWallets(wallets, {
   appName: 'Kismet',
   projectId: projectId ?? 'placeholder-build-only',
+})
+
+export const wagmiConfig = createConfig({
   chains: [base, mainnet],
+  // Farcaster connector FIRST so wagmi's reconnect-on-mount tries it
+  // before any RainbowKit wallet. Its `isAuthorized()` returns true
+  // only inside a Mini App host (eth_accounts resolves to the host
+  // wallet) and false everywhere else, so on regular web wagmi falls
+  // through to whichever wallet the user last connected via the
+  // RainbowKit modal — no behavior change for existing web users.
+  connectors: [farcasterMiniApp(), ...rainbowKitConnectors],
   transports: {
     [base.id]: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
     // Mainnet is included solely for client-side ENS resolution via useEnsName

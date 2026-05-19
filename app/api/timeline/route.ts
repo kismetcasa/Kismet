@@ -7,6 +7,7 @@ import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMetaBatch } from '@/lib/notifications'
+import { expandToFidSiblings } from '@/lib/addressUnion'
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
@@ -24,8 +25,21 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1') || 1)
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '20') || 20))
-  const creator = searchParams.get('creator')?.toLowerCase() ?? undefined
-  const collector = searchParams.get('collector')?.toLowerCase() ?? undefined
+  const creatorRaw = searchParams.get('creator')?.toLowerCase() ?? undefined
+  const collectorRaw = searchParams.get('collector')?.toLowerCase() ?? undefined
+  // Address union: if either address is Farcaster-verified, expand to
+  // every verified address of the same FID. This is what makes a user's
+  // profile feed show their mints/collected regardless of which of their
+  // wallets they happen to sign each action from — see
+  // lib/addressUnion.ts. Non-FC addresses pass through as a single-
+  // element set, so for them the behavior is identical to the old
+  // strict-equality filter.
+  const [creatorAddrs, collectorAddrs] = await Promise.all([
+    creatorRaw ? expandToFidSiblings(creatorRaw) : Promise.resolve<string[] | null>(null),
+    collectorRaw ? expandToFidSiblings(collectorRaw) : Promise.resolve<string[] | null>(null),
+  ])
+  const creatorSet = creatorAddrs ? new Set(creatorAddrs) : null
+  const collectorSet = collectorAddrs ? new Set(collectorAddrs) : null
   // Moments where this address holds admin authority — creator OR a
   // per-token ADMIN delegate. Distinct from ?creator= which is the
   // strict "their work" filter used by profile feeds.
@@ -65,13 +79,20 @@ export async function GET(req: NextRequest) {
   // set — otherwise an airdrop into an untracked collection silently
   // disappears from the recipient's Collected tab — and (b) skip the
   // second zrange below in the filter stage.
+  //
+  // When the collector address belongs to a Farcaster user, the zset is
+  // unioned across all of that FID's verified addresses so that pieces
+  // collected from any of their wallets surface together. Each address
+  // gets a parallel zrange; the merged set is deduped via Set semantics.
   let collectedSet: Set<string> | null = null
   let collectedCollections: string[] = []
-  if (collector) {
-    const pairs = await getCollectedMembers(collector)
-    collectedSet = new Set(pairs)
+  if (collectorAddrs && collectorAddrs.length > 0) {
+    const pairsPerAddr = await Promise.all(
+      collectorAddrs.map((a) => getCollectedMembers(a)),
+    )
+    collectedSet = new Set(pairsPerAddr.flat())
     const fromZset = new Set<string>()
-    for (const pair of pairs) {
+    for (const pair of collectedSet) {
       const colon = pair.indexOf(':')
       if (colon > 0) fromZset.add(pair.slice(0, colon).toLowerCase())
     }
@@ -164,11 +185,13 @@ export async function GET(req: NextRequest) {
     }
   })
 
-  // Creator filter (Featured / Profile feeds)
-  if (creator) {
+  // Creator filter (Featured / Profile feeds). Matches if the moment's
+  // creator address is *any* address in the expanded FID sibling set.
+  if (creatorSet) {
     merged = merged.filter((m: unknown) => {
       const moment = m as { creator?: { address?: string } }
-      return moment.creator?.address?.toLowerCase() === creator
+      const addr = moment.creator?.address?.toLowerCase()
+      return addr ? creatorSet.has(addr) : false
     })
   }
 
@@ -194,10 +217,11 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Collector filter — returns only moments this address has collected
-  // through the app. zset was hoisted to the top of the handler so the
-  // fan-out could include any collections referenced there.
-  if (collector && collectedSet) {
+  // Collector filter — returns only moments this address (or any sibling
+  // verified address of the same FID) has collected through the app.
+  // The unioned collectedSet was built at the top of the handler from
+  // each sibling's zset.
+  if (collectorSet && collectedSet) {
     const setRef = collectedSet
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
@@ -282,7 +306,11 @@ export async function GET(req: NextRequest) {
   ])
   if (hiddenSet.size > 0 || hiddenColls.size > 0) {
     const viewerLower = viewer?.toLowerCase() ?? null
-    const isOwnProfile = viewerLower !== null && creator === viewerLower
+    // "Own profile" = the viewer is one of the sibling verified addresses
+    // of the queried creator FID, so they can see their own hidden moments
+    // from any of their wallets.
+    const isOwnProfile =
+      viewerLower !== null && !!creatorSet && creatorSet.has(viewerLower)
     merged = merged
       .filter((m: unknown) => {
         const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
@@ -325,7 +353,13 @@ export async function GET(req: NextRequest) {
     console.log('[timeline] empty', {
       scope, collections: collections.length,
       mergedBeforeFilter: results.flat().length, mergedAfterFilter: merged.length,
-      filters: { creator, collector, airdroppable, featured, sort, filterToCreators, hasFollowing: !!followingSet?.size },
+      filters: {
+        creator: creatorRaw,
+        creatorSiblings: creatorAddrs?.length ?? 0,
+        collector: collectorRaw,
+        collectorSiblings: collectorAddrs?.length ?? 0,
+        airdroppable, featured, sort, filterToCreators, hasFollowing: !!followingSet?.size,
+      },
     })
   }
 

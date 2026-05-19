@@ -4,6 +4,31 @@
 
 :root {
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  /* Device chrome insets — defaulted to 0 for web/desktop. Overridden by
+     FarcasterProvider when sdk.context.client.safeAreaInsets reports
+     non-zero values on mobile Mini App hosts (notch, Dynamic Island,
+     home indicator, curved edges). Referenced by Nav, layout main, and
+     NotificationModal where edge-fixed surfaces would otherwise sit
+     behind device chrome. */
+  --safe-top: 0px;
+  --safe-bottom: 0px;
+  --safe-left: 0px;
+  --safe-right: 0px;
+  /* Brand gradient — sampled directly from public/logo.png (clockwise
+   * petal sweep). Stops trace the hues that read across the logo
+   * left-to-right: violet (top-left petal) → cyan (top) → pink/magenta
+   * (top-right) → coral (bottom-right) → orange (bottom-left). All five
+   * stops sit at L≈0.75 so contrast against the always-dark UI stays
+   * comfortably above 4.5:1. Single source so .accent-grad,
+   * .btn-accent, and .accent-grad-hover stay in lockstep. */
+  --accent-grad: linear-gradient(
+    to right,
+    #9692f6 0%,
+    #9bd6f5 25%,
+    #ff87ce 55%,
+    #ff7c80 80%,
+    #ffb375 100%
+  );
 }
 
 html {
@@ -51,27 +76,42 @@ input[type='number'] {
   -moz-appearance: textfield;
 }
 
-/* Brand accent utilities — solid #6B3FA0. .accent-grad keeps the
- * gradient text-clip trick so an accent-colored gradient effect is still
- * available if reintroduced later; today both stops are the same color
- * for a flat fill. */
+/* Apply the brand gradient as TEXT via background-clip — used wherever
+ * a single-color text accent would otherwise read as flat. Single-color
+ * surfaces (borders / rings / opacity-tinted backgrounds) use the
+ * tailwind `accent` token (#ff87ce, the gradient's middle stop) since
+ * CSS can't render gradients in those properties. */
 .accent-grad {
-  background: linear-gradient(to right, #6B3FA0, #6B3FA0);
+  background: var(--accent-grad);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
+/* Fill the element's background with the brand gradient on hover.
+ * Pair with a `border` on the resting state so the transition reads
+ * as a fill-reveal rather than a flicker. Dark foreground (#0d0d0d)
+ * gets 6:1+ contrast across every stop of the pastel gradient —
+ * white text drops to ~1.75:1 at the orange end. */
+.accent-grad-hover:not(:disabled):hover {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: #0d0d0d;
+}
+
+/* Outlined button. Resting state: magenta (accent token) border + text
+ * so it harmonizes with `border-accent`/`text-accent` surfaces. Hover
+ * fills with the full brand gradient + dark text. */
 .btn-accent {
-  border: 1px solid #6B3FA0;
-  color: #6B3FA0;
+  border: 1px solid #ff87ce;
+  color: #ff87ce;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .btn-accent:hover:not(:disabled) {
-  background: #6B3FA0;
+  background: var(--accent-grad);
   border-color: transparent;
-  color: white;
+  color: #0d0d0d;
 }
 
 .btn-accent:disabled {

@@ -74,27 +74,37 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
     return () => document.removeEventListener('mousedown', onDown)
   }, [])
 
-  // Debounced search
+  // Debounced search with cancellation: a new keystroke aborts the
+  // in-flight fetch (and the timer if it hasn't fired yet) so we
+  // don't stack requests against the 30-req/min ratelimit or block
+  // the response on stale queries.
   useEffect(() => {
     const q = query.trim()
     if (q.length < 2) { setResults(null); setLoading(false); return }
     setLoading(true)
+    const controller = new AbortController()
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, {
+          signal: controller.signal,
+        })
         const data = await res.json()
         setResults({
           users: (data.users ?? []).slice(0, 5),
           collections: (data.collections ?? []).slice(0, 5),
           mints: (data.mints ?? []).slice(0, 5),
         })
-      } catch {
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return
         setResults(null)
       } finally {
-        setLoading(false)
+        if (!controller.signal.aborted) setLoading(false)
       }
     }, 300)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
   }, [query])
 
   const hasResults = results && (results.users.length > 0 || results.collections.length > 0 || results.mints.length > 0)
