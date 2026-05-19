@@ -1,8 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
-import { getProfile } from '@/lib/profile'
-import { getFarcasterProfileByAddress } from '@/lib/farcasterProfile'
+import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
 // image and the Farcaster Mini App embed image. Matches the styling of
@@ -50,10 +49,11 @@ export default async function Image({ params }: Props) {
   let avatarUrl: string | null = null
 
   if (isAddress(address)) {
-    const [profile, farcaster] = await Promise.all([
-      getProfile(address),
-      getFarcasterProfileByAddress(address),
-    ])
+    // Sibling-aware: when the queried address has no Kismet profile but
+    // a sibling FC-verified address does, the helper surfaces the
+    // sibling's username/avatar so share cards still read as "@kismetcasa"
+    // rather than the raw hex when the user shares any of their wallets.
+    const { profile, farcaster } = await resolveProfileWithSiblings(address)
     // Display chain: explicit Kismet username > FC username > FC display
     // name > shortAddress. Matches the precedence in /api/profile and
     // components/Nav.tsx.

@@ -1,8 +1,7 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { isAddress } from '@/lib/address'
-import { getProfile } from '@/lib/profile'
-import { getFarcasterProfileByAddress } from '@/lib/farcasterProfile'
+import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 import { shortAddress } from '@/lib/inprocess'
@@ -16,13 +15,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address } = await params
   if (!isAddress(address)) return { title: 'Profile — Kismet Art' }
 
-  // Fan out the same lookups used by /api/profile/[address] so the
-  // page metadata (title, description, share card) reflects whichever
-  // identity layer is richest — Kismet profile > FC profile > address.
-  const [profile, farcaster] = await Promise.all([
-    getProfile(address),
-    getFarcasterProfileByAddress(address),
-  ])
+  // Sibling-aware resolution so the page title + share card show the
+  // user's Kismet username even when they created their profile from a
+  // different FC-verified wallet than the one whose page is loading.
+  // See lib/addressUnion.ts.
+  const { profile, farcaster } = await resolveProfileWithSiblings(address)
 
   const displayName =
     profile.username ||

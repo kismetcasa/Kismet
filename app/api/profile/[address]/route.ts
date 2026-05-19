@@ -3,8 +3,8 @@ import { verifyMessage, createPublicClient, http } from 'viem'
 import { isAddress } from '@/lib/address'
 import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
-import { getProfile, upsertProfile, consumeNonce } from '@/lib/profile'
-import { getFarcasterProfileByAddress } from '@/lib/farcasterProfile'
+import { upsertProfile, consumeNonce } from '@/lib/profile'
+import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
@@ -48,14 +48,19 @@ export async function GET(
   if (!isAddress(address)) {
     return errorResponse(400, 'Invalid address')
   }
-  // Profile, ENS, and Farcaster lookups are independent + I/O-bound. Fan
-  // them out so the slowest one (the FC API, ~50-200ms cold) sets total
-  // latency rather than their sum.
-  const [profile, cachedEns, farcaster] = await Promise.all([
-    getProfile(address),
+  // ENS + sibling-aware profile resolution are independent + I/O-bound.
+  // Fan them out so the slowest one (the FC API, ~50-200ms cold) sets
+  // total latency rather than their sum.
+  //
+  // resolveProfileWithSiblings auto-inherits username/avatar from a
+  // sibling verified to the same FID when the queried address has none
+  // of its own — so FC users look the same on any of their wallets'
+  // profile pages. See lib/addressUnion.ts.
+  const [resolved, cachedEns] = await Promise.all([
+    resolveProfileWithSiblings(address),
     getCachedEns(address),
-    getFarcasterProfileByAddress(address),
   ])
+  const { profile, farcaster } = resolved
   if (!profile.username && cachedEns === undefined) {
     after(() => resolveEnsAndCache(address))
   }
