@@ -2,8 +2,27 @@ import { createRequire } from 'module'
 
 const require = createRequire(import.meta.url)
 
+// Baseline security headers applied to every response. Deliberately
+// excludes X-Frame-Options / CSP frame-ancestors — Kismet runs as a
+// Farcaster Mini App inside Warpcast's webview, and a blanket frame
+// deny would break that embed. Clickjacking protection for a Mini App
+// requires an allowlisted frame-ancestors list, which is brittle as
+// new Farcaster clients ship; defer to its own focused change.
+// CSP is also intentionally omitted: RainbowKit / WalletConnect inject
+// inline styles and connect to a wide pool of RPC + walletconnect
+// relays, and our AR.IO + IPFS gateway pool rotates hosts on 404.
+const SECURITY_HEADERS = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+]
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  async headers() {
+    return [{ source: '/:path*', headers: SECURITY_HEADERS }]
+  },
+
   // Emit a self-contained `.next/standalone/server.js` plus a traced
   // minimal node_modules tree. Cuts the Docker runtime image from
   // ~700MB (full node_modules) to ~200MB, and lets us run `node
