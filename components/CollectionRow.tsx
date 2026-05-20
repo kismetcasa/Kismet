@@ -11,6 +11,7 @@ import { MomentCard } from './MomentCard'
 import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
 import { LazyMount } from './LazyMount'
+import { canonicalMediaId } from '@/lib/media/canonicalMediaId'
 
 export interface FeaturedCollectionRow {
   contractAddress: string
@@ -52,11 +53,16 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
 
   // Skip the moment whose image is the collection cover so the cover
   // NFT doesn't visually appear twice (once as the cover-card, once as
-  // a mint card). collect-all eligibility lists are server-computed and
-  // passed separately, so the hidden moment is still collectable.
-  const coverImage = c.metadata?.image?.trim()
-  const displayMoments = coverImage
-    ? c.moments.filter((m) => m.metadata?.image?.trim() !== coverImage)
+  // a mint card). Compare via canonicalMediaId because cover and moment
+  // images travel through different code paths — the cover URL comes
+  // out of our KV as the creator uploaded it (typically ar://<txid>)
+  // while the moment URL comes back from inprocess already resolved to
+  // an https gateway. Raw-string equality misses that. collect-all
+  // eligibility lists are server-computed and passed separately, so
+  // the hidden moment is still collectable.
+  const coverMediaId = canonicalMediaId(c.metadata?.image)
+  const displayMoments = coverMediaId
+    ? c.moments.filter((m) => canonicalMediaId(m.metadata?.image) !== coverMediaId)
     : c.moments
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
     initialUsername ? `@${initialUsername}` : adminAddr ? shortAddress(adminAddr) : null,
