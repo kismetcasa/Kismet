@@ -7,7 +7,7 @@ import { INPROCESS_API, type Moment } from '@/lib/inprocess'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
-import { getCollectionMeta } from '@/lib/kv'
+import { getCollectionMeta, getCreatedMintsSet, getUserCollections } from '@/lib/kv'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
@@ -35,6 +35,16 @@ interface HydratedFeaturedCollection {
   // kismet_thumbhash flows through so the CollectionRow client can
   // dedupe cover-vs-first-mint by image content, not just URL.
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
+  // Token ID minted as the collection cover at deploy time, when the
+  // Kismet create-form flow had mint-cover enabled. CollectionRow
+  // filters this token out of the mint-card grid so the cover doesn't
+  // appear twice in the featured row. Resolved per-collection in two
+  // ways: explicit (from CollectionMeta KV for newly-registered
+  // collections) or inferred (create-form deploy + token-1-marked-as-
+  // created-mint, for collections registered before coverTokenId was
+  // persisted). The collection page itself never filters this — only
+  // the featured row.
+  coverTokenId?: string
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
   ethEligibleTokenIds: string[]
@@ -45,7 +55,7 @@ interface HydratedFeaturedCollection {
 }
 
 export async function GET() {
-  const [raw, hiddenCollections, hiddenMoments] = await Promise.all([
+  const [raw, hiddenCollections, hiddenMoments, userCollections, createdMints] = await Promise.all([
     // Cap at the source so the Redis result + downstream Promise.all fanout
     // are bounded. Hidden-collection filtering can shrink the working set
     // below this; the dropped tail is just newest-N minus those hidden.
@@ -55,7 +65,16 @@ export async function GET() {
     }) as Promise<(string | number)[]>,
     getHiddenCollectionsSet(),
     getHiddenMomentsSet(),
+    // For inferring coverTokenId on collections registered before that
+    // field was persisted to CollectionMeta. A collection in the
+    // create-form set whose token-1 was marked as a created-mint at
+    // deploy time was deployed with cover-mint enabled → token 1 IS
+    // the cover. Both reads are memoized + cached so the cost is one
+    // SMEMBERS each per cache window, not per featured collection.
+    getUserCollections(),
+    getCreatedMintsSet(),
   ])
+  const userCollectionsSet = new Set(userCollections.map((a) => a.toLowerCase()))
 
   const refs: { address: string; featuredAt: number }[] = []
   for (let i = 0; i + 1 < raw.length; i += 2) {
@@ -88,7 +107,11 @@ export async function GET() {
         return null
       }
       try {
-        const [collRes, tlRes] = await Promise.all([
+        // KV lookup runs in parallel with inprocess — needed for (a) the
+        // metadata fallback below when inprocess hasn't indexed yet, and
+        // (b) coverTokenId resolution further down. Memoized + cached
+        // upstream so this is cheap.
+        const [collRes, tlRes, kvMeta] = await Promise.all([
           fetch(`${INPROCESS_API}/collection/${address}`, {
             headers: { Accept: 'application/json' },
             next: { revalidate: 60 },
@@ -100,6 +123,7 @@ export async function GET() {
               next: { revalidate: 60 },
             },
           ),
+          getCollectionMeta(ref.address),
         ])
 
         const collection = collRes.ok ? await collRes.json() : {}
@@ -108,21 +132,40 @@ export async function GET() {
         // create time by the mint-proxy) so the row renders the real name +
         // cover image instead of the address fallback.
         if (!collection.name && !collection.metadata?.name && !collection.metadata?.image) {
-          const kv = await getCollectionMeta(ref.address)
-          if (kv) {
-            collection.name = kv.name
+          if (kvMeta) {
+            collection.name = kvMeta.name
             collection.metadata = {
-              name: kv.name,
-              image: kv.image,
-              description: kv.description,
+              name: kvMeta.name,
+              image: kvMeta.image,
+              description: kvMeta.description,
               // Pass through so the client can dedupe cover-vs-first-mint
               // by perceptual hash — see CollectionRow.tsx for the rationale.
-              ...(kv.kismet_thumbhash ? { kismet_thumbhash: kv.kismet_thumbhash } : {}),
+              ...(kvMeta.kismet_thumbhash ? { kismet_thumbhash: kvMeta.kismet_thumbhash } : {}),
             }
-            if (!collection.default_admin && kv.artist) {
-              collection.default_admin = { address: kv.artist }
+            if (!collection.default_admin && kvMeta.artist) {
+              collection.default_admin = { address: kvMeta.artist }
             }
           }
+        }
+
+        // Resolve coverTokenId for the featured-row dedupe. Two paths:
+        //   * Explicit: persisted into CollectionMeta at deploy time by
+        //     /api/collections (collections registered after that change
+        //     ships).
+        //   * Inferred: for collections registered BEFORE the field was
+        //     persisted, the deploy-time markCreatedMint('addr:1') call
+        //     fires iff the create-form had mint-cover enabled. So a
+        //     create-form collection with `${addr}:1` in the created-
+        //     mints set deterministically had token 1 minted as its
+        //     cover, even though we never wrote coverTokenId for it.
+        const addrLower = ref.address.toLowerCase()
+        let coverTokenId: string | undefined = kvMeta?.coverTokenId
+        if (
+          !coverTokenId &&
+          userCollectionsSet.has(addrLower) &&
+          createdMints.has(`${addrLower}:1`)
+        ) {
+          coverTokenId = '1'
         }
         const tlData = tlRes.ok ? await tlRes.json() : { moments: [] }
         const allPreviewMoments: Moment[] = Array.isArray(tlData.moments) ? tlData.moments : []
@@ -163,6 +206,7 @@ export async function GET() {
           contractAddress: address,
           name: collection.name,
           metadata: collection.metadata,
+          coverTokenId,
           default_admin: collection.default_admin,
           moments: displayMoments,
           ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),

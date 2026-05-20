@@ -17,6 +17,12 @@ export interface FeaturedCollectionRow {
   contractAddress: string
   name?: string
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
+  // Token ID minted as the collection cover at deploy time. Set by
+  // the featured-collections-hydrated API either from CollectionMeta
+  // KV (post-persistence) or inferred from the created-mints set
+  // (for collections registered before the field was persisted).
+  // Drives the highest-priority cover-vs-mint dedupe below.
+  coverTokenId?: string
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
   ethEligibleTokenIds: string[]
@@ -53,32 +59,38 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
 
   // Skip the moment whose image IS the collection cover so the cover
   // NFT doesn't visually appear twice (once as the cover-card, once as
-  // a mint card). Two signals, OR'd:
+  // a mint card). Three signals, OR'd in priority order:
   //
-  //   1. canonicalMediaId: same Arweave txid / IPFS CID regardless of
-  //      which gateway URL form each side carries. Catches the case
-  //      where cover and minted token point at the same uploaded
-  //      object — i.e. the creator re-used one upload for both.
+  //   1. coverTokenId: deterministic. Set at deploy time by the Kismet
+  //      create-form when mint-cover is enabled (always token '1'), or
+  //      inferred server-side for pre-existing collections. When this
+  //      fires, neither image bytes nor URLs need to match — we KNOW
+  //      this specific token is the cover.
   //
-  //   2. kismet_thumbhash: deterministic perceptual hash of image
-  //      bytes generated server-side at upload time. Catches the more
-  //      common case where the same image is uploaded TWICE through
-  //      the deploy flow — once as the cover and once as the first
-  //      minted token — landing on two separate Arweave txids but with
-  //      identical bytes (so identical thumbhashes).
+  //   2. canonicalMediaId: same Arweave txid / IPFS CID regardless of
+  //      gateway URL form each side carries. Catches the case where
+  //      cover and minted token point at the same uploaded object.
+  //
+  //   3. kismet_thumbhash: deterministic perceptual hash of image
+  //      bytes generated client-side at upload time. Catches the case
+  //      where the same image is uploaded TWICE through the deploy
+  //      flow — once as the cover and once as the first minted token —
+  //      landing on two separate Arweave txids but with identical
+  //      thumbhashes.
   //
   // collect-all eligibility lists are server-computed and passed
-  // separately, so the hidden moment is still collectable.
+  // separately, so the hidden moment is still collectable. Note that
+  // this dedupe is scoped to the FEATURED row only — the full
+  // /collection/[address] page is the cover token's actual home, so
+  // it continues to render there.
+  const coverTokenId = c.coverTokenId
   const coverMediaId = canonicalMediaId(c.metadata?.image)
   const coverThumbhash = c.metadata?.kismet_thumbhash?.trim() || undefined
   const displayMoments = c.moments.filter((m) => {
-    if (coverMediaId && canonicalMediaId(m.metadata?.image) === coverMediaId) {
-      return false
-    }
+    if (coverTokenId && String(m.token_id) === coverTokenId) return false
+    if (coverMediaId && canonicalMediaId(m.metadata?.image) === coverMediaId) return false
     const mt = m.metadata?.kismet_thumbhash?.trim()
-    if (coverThumbhash && mt && mt === coverThumbhash) {
-      return false
-    }
+    if (coverThumbhash && mt && mt === coverThumbhash) return false
     return true
   })
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
