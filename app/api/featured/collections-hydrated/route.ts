@@ -35,6 +35,16 @@ interface HydratedFeaturedCollection {
   // kismet_thumbhash flows through so the CollectionRow client can
   // dedupe cover-vs-first-mint by image content, not just URL.
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
+  // Token ID minted as the collection cover at deploy time, when the
+  // Kismet create-form flow had mint-cover enabled. CollectionRow
+  // filters this token out of the mint-card grid so the cover doesn't
+  // appear twice in the featured row. Resolved per-collection in two
+  // ways: explicit (from CollectionMeta KV for newly-registered
+  // collections) or inferred (create-form deploy + token-1-marked-as-
+  // created-mint, for collections registered before coverTokenId was
+  // persisted). The collection page itself never filters this — only
+  // the featured row.
+  coverTokenId?: string
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
   ethEligibleTokenIds: string[]
@@ -88,7 +98,11 @@ export async function GET() {
         return null
       }
       try {
-        const [collRes, tlRes] = await Promise.all([
+        // KV lookup runs in parallel with inprocess — needed for (a) the
+        // metadata fallback below when inprocess hasn't indexed yet, and
+        // (b) coverTokenId resolution further down. Memoized + cached
+        // upstream so this is cheap.
+        const [collRes, tlRes, kvMeta] = await Promise.all([
           fetch(`${INPROCESS_API}/collection/${address}`, {
             headers: { Accept: 'application/json' },
             next: { revalidate: 60 },
@@ -100,6 +114,7 @@ export async function GET() {
               next: { revalidate: 60 },
             },
           ),
+          getCollectionMeta(ref.address),
         ])
 
         const collection = collRes.ok ? await collRes.json() : {}
@@ -108,22 +123,37 @@ export async function GET() {
         // create time by the mint-proxy) so the row renders the real name +
         // cover image instead of the address fallback.
         if (!collection.name && !collection.metadata?.name && !collection.metadata?.image) {
-          const kv = await getCollectionMeta(ref.address)
-          if (kv) {
-            collection.name = kv.name
+          if (kvMeta) {
+            collection.name = kvMeta.name
             collection.metadata = {
-              name: kv.name,
-              image: kv.image,
-              description: kv.description,
+              name: kvMeta.name,
+              image: kvMeta.image,
+              description: kvMeta.description,
               // Pass through so the client can dedupe cover-vs-first-mint
               // by perceptual hash — see CollectionRow.tsx for the rationale.
-              ...(kv.kismet_thumbhash ? { kismet_thumbhash: kv.kismet_thumbhash } : {}),
+              ...(kvMeta.kismet_thumbhash ? { kismet_thumbhash: kvMeta.kismet_thumbhash } : {}),
             }
-            if (!collection.default_admin && kv.artist) {
-              collection.default_admin = { address: kv.artist }
+            if (!collection.default_admin && kvMeta.artist) {
+              collection.default_admin = { address: kvMeta.artist }
             }
           }
         }
+
+        // coverTokenId from KV ONLY — explicitly persisted at deploy time
+        // by /api/collections when the user toggled "mint cover" on. We
+        // deliberately do NOT infer from the created-mints set: that set
+        // is also populated by every regular MintForm mint via mint-proxy,
+        // so "token-1 is in created-mints" can't distinguish a cover-mint
+        // from a creator who just happened to mint token #1 normally
+        // post-deploy. False-positive there would wrongly hide a regular
+        // mint from the featured row. For collections registered before
+        // coverTokenId was persisted (e.g. the Kismet Casa Rome 2026
+        // case), the URI + thumbhash signals in CollectionRow are the
+        // fallback — and they fire deterministically when the cover-mint
+        // setupAction reused contractURI as the cover token's tokenURI
+        // (CreateCollectionForm.tsx:562), which produces byte-identical
+        // metadata JSONs on the two sides of the comparison.
+        const coverTokenId: string | undefined = kvMeta?.coverTokenId
         const tlData = tlRes.ok ? await tlRes.json() : { moments: [] }
         const allPreviewMoments: Moment[] = Array.isArray(tlData.moments) ? tlData.moments : []
         // Strip individually-hidden moments inside the featured collection
@@ -163,6 +193,7 @@ export async function GET() {
           contractAddress: address,
           name: collection.name,
           metadata: collection.metadata,
+          coverTokenId,
           default_admin: collection.default_admin,
           moments: displayMoments,
           ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),

@@ -405,6 +405,11 @@ export async function POST(req: NextRequest) {
       description: body.description,
       artist: sessionAddress,
       ...(body.kismet_thumbhash ? { kismet_thumbhash: body.kismet_thumbhash } : {}),
+      // Persist so the featured-collection row can dedupe this token
+      // from its mint-card grid without inferring it every request.
+      ...(body.coverTokenId && /^\d+$/.test(body.coverTokenId)
+        ? { coverTokenId: body.coverTokenId }
+        : {}),
     },
     source,
   )
