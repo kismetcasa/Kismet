@@ -21,6 +21,7 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
+import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
@@ -102,6 +103,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+  const { signMintIntent } = useIntentAuth()
   const { isInMiniApp } = useFarcaster()
   // For post-auto-deploy permission verification — reads
   // permissions(0, smartWallet) on the freshly-deployed contract so we
@@ -581,10 +583,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           ...(finalSplits ? { splits: finalSplits } : {}),
         }
 
+        // Per-action intent signature — server verifies the wallet at
+        // `payload.account` actually authorized this exact payload
+        // (collection, content hash, sale params, splits hash). Prompts
+        // wallet once before submission; the on-chain mint via inprocess
+        // remains transparent to the user as before.
+        toast.loading('Confirm in wallet…', { id: 'mint' })
+        const { intent } = await signMintIntent(payload, 'write')
+        toast.loading('Minting moment…', { id: 'mint' })
+
         const res = await fetch('/api/write', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, intent }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -771,10 +782,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           ...(finalSplits ? { splits: finalSplits } : {}),
         }
 
+        // Per-action intent signature — server verifies the wallet at
+        // `payload.account` actually authorized this exact payload
+        // (collection, tokenURI, sale params, splits hash). Prompts
+        // wallet once before submission.
+        toast.loading('Confirm in wallet…', { id: 'mint' })
+        const { intent } = await signMintIntent(payload, 'mint')
+        toast.loading('Minting moment…', { id: 'mint' })
+
         const res = await fetch('/api/mint', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, intent }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {

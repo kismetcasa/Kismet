@@ -13,6 +13,8 @@ import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './spl
 import { hasGateAccess, isPlatformPausedFor } from './gate'
 import { isBlacklisted } from './blacklist'
 import { recordPlatformTx } from './pass-validity'
+import { verifyIntent } from './intentAuth'
+import { buildMintBindings, type IntentAction, type IntentEnvelope, type MintBody } from './intent'
 
 type SplitsValidation =
   | { kind: 'absent' }
@@ -86,9 +88,32 @@ export async function proxyMintRequest(
     )
   }
 
-  // Platform-policy gates (additive on top of main's existing on-chain Zora
-  // ADMIN check below). Run in parallel — three independent reads. Skipped
-  // when no caller account is given (smart-wallet preflight handles those).
+  // Verify the caller actually controls body.account before any downstream
+  // policy decisions key off it. Without this, the gate/blacklist/pause
+  // checks are bypassable by simply setting body.account = ADMIN_ADDRESS
+  // (which admin-bypasses every check) — and inprocess derives the
+  // executing smart wallet from this same field, so a successful spoof
+  // could mint Pass tokens via admin's smart wallet without the EOA's
+  // consent. The signature is verified against the same body-derived
+  // bindings the user signed, so any tampered field (price, splits,
+  // recipient, tokenURI, …) between client and server invalidates the
+  // signature.
+  if (account) {
+    const action: IntentAction = rateLimitKey === 'write' ? 'write' : 'mint'
+    const bindings = buildMintBindings(body as MintBody)
+    const intentResult = await verifyIntent(
+      body.intent as IntentEnvelope | undefined,
+      action,
+      account,
+      bindings,
+    )
+    if (!intentResult.ok) {
+      return NextResponse.json({ error: intentResult.error }, { status: intentResult.status })
+    }
+  }
+
+  // Platform-policy gates — only meaningful now that body.account is
+  // signature-bound above. Run in parallel; three independent reads.
   // For new-deploy (hasNameAndUri without address) we use a sentinel zero
   // target — the gate's pass-collection-target rejection branch doesn't
   // fire there, so the check reduces to "does this caller have a valid Pass".
@@ -123,7 +148,10 @@ export async function proxyMintRequest(
   // this, a Pass-holder bypassing the form could supply their own address
   // there and capture the Zora protocol mint-fee referral on every collect
   // of their moment. Always inject the platform's value server-side.
-  const { name: bodyName, splits: _droppedSplits, ...rest } = body
+  // Strip `intent` along with the other private/normalized fields so the
+  // signature envelope never reaches inprocess — it's a server-only auth
+  // artifact and would be flagged as an unknown field upstream.
+  const { name: bodyName, splits: _droppedSplits, intent: _droppedIntent, ...rest } = body
   const sanitizedToken = {
     ...(tokenObj as Record<string, unknown>),
     createReferral: CREATE_REFERRAL,
