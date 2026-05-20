@@ -24,7 +24,7 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 const NAV_PAGES = [
   { id: 'enjoy',  label: 'Discover', mobileLabel: 'Collect',  href: '/' },
   { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
-  { id: 'market', label: 'Market',   mobileLabel: 'Converge', href: '/market' },
+  { id: 'market', label: 'Market',   mobileLabel: 'Curate', href: '/market' },
 ] as const
 
 type NavPageId = (typeof NAV_PAGES)[number]['id']
