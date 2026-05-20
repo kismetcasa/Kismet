@@ -225,13 +225,14 @@ export function Nav() {
             </nav>
           </div>
 
-          {/* Mobile order: name → avatar → bell → search (search/bell hug right).
+          {/* Mobile order: name → search → bell → avatar (profile hugs right,
+              search + bell + avatar tightly coupled to its left).
               Desktop order: bell → name → avatar (unchanged). */}
           <div className="flex items-center gap-1 sm:gap-3">
             {/* Search icon on mobile */}
             <button
               onClick={() => { setModalQuery(''); setSearchOpen(true) }}
-              className="sm:hidden order-4 text-dim hover:text-ink transition-colors p-1"
+              className="sm:hidden order-2 text-dim hover:text-ink transition-colors p-1"
             >
               <Search size={18} />
             </button>
@@ -244,7 +245,7 @@ export function Nav() {
               <WalletButton />
             </div>
             {effectiveSignedIn && effectiveAddress && (
-              <Link href={`/profile/${effectiveAddress}`} className="order-2 sm:order-3 flex-shrink-0">
+              <Link href={`/profile/${effectiveAddress}`} className="order-4 sm:order-3 flex-shrink-0">
                 <ProfileAvatar address={effectiveAddress} avatarUrl={avatarUrl} size={32} clickable />
               </Link>
             )}
