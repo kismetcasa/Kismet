@@ -15,7 +15,7 @@
 # Resolve dependencies in isolation so a source-only change reuses this
 # layer. We need `scripts/` present here because package.json's
 # postinstall hook (copy-ffmpeg-core.mjs) runs as part of `npm ci`.
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 
 # Build toolchain for native modules. `bufferutil` (transitive via ws →
@@ -32,7 +32,7 @@ RUN npm ci --no-audit --no-fund
 # ─── builder stage ───────────────────────────────────────────────────
 # Bring in deps, overlay source, re-run the postinstall (deps stage's
 # public/ffmpeg-core/ is dropped by the source COPY above), then build.
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -54,7 +54,7 @@ RUN npm run build
 # ─── runtime stage ───────────────────────────────────────────────────
 # Final image. Only the standalone bundle + static + public assets +
 # the cache dir Coolify mounts a volume onto.
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
