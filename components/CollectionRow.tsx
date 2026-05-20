@@ -264,14 +264,8 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         )}
       </div>
 
-      {/* lg+ moments — fixed 4×2 grid (8 moments). MomentCard renders
-          a "view" link inside its compact actions stack via the
-          viewLinkHref prop, mirroring the cover card's "view collection"
-          CTA. Column-major flow keeps the top→bottom-then-right
-          chronological reading order. To re-enable horizontal scroll +
-          up to 20 moments later, swap lg:grid-cols-4 for
-          lg:[grid-auto-columns:200px] + lg:overflow-x-auto, and bump
-          ROW_DISPLAY_LIMIT in /api/featured/collections-hydrated. */}
+      {/* lg+ moments — column-major flow preserves chronological
+          top→bottom-then-right reading order across both rows. */}
       <div className="hidden lg:grid lg:flex-1 lg:min-w-0 lg:grid-cols-4 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
         {displayMoments.length === 0 ? (
           <div className="row-span-2 col-span-full flex items-center justify-center min-h-[160px]">

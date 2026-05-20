@@ -16,10 +16,7 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 export const revalidate = 30
 
 const COLLECTION_PREVIEW_LIMIT = 20 // tokens fetched per featured collection
-// Up to 8 moments render inside the featured collection row — fills a
-// fixed 4×2 desktop grid alongside the cover card without scrolling.
-// Bump back toward COLLECTION_PREVIEW_LIMIT (and restore overflow-x-auto
-// in CollectionRow) when more moments should be visible per row.
+// Sized to the 4×2 desktop grid in CollectionRow — keep in sync.
 const ROW_DISPLAY_LIMIT = 8
 // Cap on featured collections hydrated per request. Bounds per-call cost
 // (inprocess fetches + RPC multicalls + total server-time) so latency

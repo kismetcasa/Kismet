@@ -52,15 +52,7 @@ interface MomentCardProps {
    * chip-free (the row's parent surface already shows the creator).
    */
   showCreator?: boolean
-  /**
-   * Opt-in: when set in compact mode, renders a "view" link in the
-   * action stack just above LIST/collect. Used by the featured-
-   * collection row so each mint card has a footer CTA mirroring the
-   * cover card's "view collection" — also incidentally fills the
-   * cell when the grid stretches cards to match the cover's height.
-   * Default = undefined (no view link rendered). Non-compact callers
-   * ignore this even when set.
-   */
+  /** Opt-in compact CTA: renders a "view" link above LIST/collect. Ignored when !compact. */
   viewLinkHref?: string
 }
 
