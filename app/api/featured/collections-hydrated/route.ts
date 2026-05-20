@@ -32,7 +32,9 @@ const MAX_HYDRATED_COLLECTIONS = 20
 interface HydratedFeaturedCollection {
   contractAddress: string
   name?: string
-  metadata?: { name?: string; image?: string; description?: string }
+  // kismet_thumbhash flows through so the CollectionRow client can
+  // dedupe cover-vs-first-mint by image content, not just URL.
+  metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
   ethEligibleTokenIds: string[]
@@ -113,6 +115,9 @@ export async function GET() {
               name: kv.name,
               image: kv.image,
               description: kv.description,
+              // Pass through so the client can dedupe cover-vs-first-mint
+              // by perceptual hash — see CollectionRow.tsx for the rationale.
+              ...(kv.kismet_thumbhash ? { kismet_thumbhash: kv.kismet_thumbhash } : {}),
             }
             if (!collection.default_admin && kv.artist) {
               collection.default_admin = { address: kv.artist }

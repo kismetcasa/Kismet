@@ -51,19 +51,36 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
   const adminAddr = isOperatorAddress(rawAdminAddr) ? undefined : rawAdminAddr
   const initialUsername = isOperatorAddress(rawAdminAddr) ? undefined : c.default_admin?.username
 
-  // Skip the moment whose image is the collection cover so the cover
+  // Skip the moment whose image IS the collection cover so the cover
   // NFT doesn't visually appear twice (once as the cover-card, once as
-  // a mint card). Compare via canonicalMediaId because cover and moment
-  // images travel through different code paths — the cover URL comes
-  // out of our KV as the creator uploaded it (typically ar://<txid>)
-  // while the moment URL comes back from inprocess already resolved to
-  // an https gateway. Raw-string equality misses that. collect-all
-  // eligibility lists are server-computed and passed separately, so
-  // the hidden moment is still collectable.
+  // a mint card). Two signals, OR'd:
+  //
+  //   1. canonicalMediaId: same Arweave txid / IPFS CID regardless of
+  //      which gateway URL form each side carries. Catches the case
+  //      where cover and minted token point at the same uploaded
+  //      object — i.e. the creator re-used one upload for both.
+  //
+  //   2. kismet_thumbhash: deterministic perceptual hash of image
+  //      bytes generated server-side at upload time. Catches the more
+  //      common case where the same image is uploaded TWICE through
+  //      the deploy flow — once as the cover and once as the first
+  //      minted token — landing on two separate Arweave txids but with
+  //      identical bytes (so identical thumbhashes).
+  //
+  // collect-all eligibility lists are server-computed and passed
+  // separately, so the hidden moment is still collectable.
   const coverMediaId = canonicalMediaId(c.metadata?.image)
-  const displayMoments = coverMediaId
-    ? c.moments.filter((m) => canonicalMediaId(m.metadata?.image) !== coverMediaId)
-    : c.moments
+  const coverThumbhash = c.metadata?.kismet_thumbhash?.trim() || undefined
+  const displayMoments = c.moments.filter((m) => {
+    if (coverMediaId && canonicalMediaId(m.metadata?.image) === coverMediaId) {
+      return false
+    }
+    const mt = m.metadata?.kismet_thumbhash?.trim()
+    if (coverThumbhash && mt && mt === coverThumbhash) {
+      return false
+    }
+    return true
+  })
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
     initialUsername ? `@${initialUsername}` : adminAddr ? shortAddress(adminAddr) : null,
   )
