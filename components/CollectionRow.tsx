@@ -167,7 +167,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
     // moment cards). lg+: cover-left + grid-right. SharedVideoProvider's
     // clip-path keeps position:fixed videos inside the mobile scroller.
     <article className="flex flex-col lg:flex-row border border-line bg-[#161616] overflow-hidden">
-      <div className="hidden lg:flex flex-col lg:flex-shrink-0 lg:w-[26rem] xl:w-[30rem] lg:border-r lg:border-line">
+      <div className="hidden lg:flex flex-col lg:flex-shrink-0 lg:w-96 xl:w-96 lg:border-r lg:border-line">
         <Link
           href={`/collection/${c.contractAddress}`}
           className="relative aspect-square w-full block overflow-hidden bg-surface group/img"
@@ -193,7 +193,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-              sizes="(min-width: 1280px) 480px, 416px"
+              sizes="384px"
               onAllError={() => setImgFailed(true)}
               priority={priority}
               preferProxy
@@ -264,13 +264,11 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         )}
       </div>
 
-      {/* lg+ moments — 2 fixed rows that scroll horizontally so up to 20
-          moments fit alongside the cover card. Column-major flow means
-          items still read top→bottom then right, matching the mobile
-          single-row scroller's chronological order. */}
-      <div className="hidden lg:grid lg:flex-1 lg:min-w-0 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:[grid-auto-columns:200px] lg:gap-2 lg:p-3 lg:overflow-x-auto">
+      {/* lg+ moments — column-major flow preserves chronological
+          top→bottom-then-right reading order across both rows. */}
+      <div className="hidden lg:grid lg:flex-1 lg:min-w-0 lg:grid-cols-4 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
         {displayMoments.length === 0 ? (
-          <div className="row-span-2 flex items-center justify-center min-h-[160px]">
+          <div className="row-span-2 col-span-full flex items-center justify-center min-h-[160px]">
             <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
@@ -280,6 +278,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               moment={m}
               compact
               priority={priority && idx === 0}
+              fillCell
             />
           ))
         )}

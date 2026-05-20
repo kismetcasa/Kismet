@@ -52,13 +52,19 @@ interface MomentCardProps {
    * chip-free (the row's parent surface already shows the creator).
    */
   showCreator?: boolean
+  /**
+   * Opt-in: swap aspect-square for flex-1 on the image and h-full on
+   * the article so the card stretches to fill a parent grid/flex cell.
+   * Ignored when !compact.
+   */
+  fillCell?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -252,7 +258,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     // savings on the desktop browsers that DO honour the property
     // aren't worth the visible breakage on the primary mobile path.
     <article
-      className="group flex flex-col bg-[#161616] border border-line overflow-hidden"
+      className={`group flex flex-col bg-[#161616] border border-line overflow-hidden${fillCell && compact ? ' h-full' : ''}`}
     >
       {/* Media — wrapped in <Link> so the click triggers Next.js's
           intercepting route at app/@modal/(.)moment/.../page.tsx. The
@@ -274,7 +280,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           // comments/text caches.
           router.prefetch(`/moment/${moment.address}/${moment.token_id}`)
         }}
-        className="cursor-pointer relative aspect-square bg-surface overflow-hidden block"
+        className={`cursor-pointer relative bg-surface overflow-hidden block ${fillCell && compact ? 'flex-1 min-h-0' : 'aspect-square'}`}
       >
         {isAdmin && (
           <button
