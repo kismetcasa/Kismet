@@ -278,7 +278,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               moment={m}
               compact
               priority={priority && idx === 0}
-              viewLinkHref={`/moment/${m.address}/${m.token_id}`}
+              fillCell
             />
           ))
         )}
