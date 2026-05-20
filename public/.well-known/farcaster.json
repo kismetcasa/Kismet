@@ -13,7 +13,7 @@
     "splashBackgroundColor": "#ffffff",
     "description": "Artists and collectors converge on Kismet",
     "subtitle": "Onchain Art",
-    "tagline": "mint, discover, collect",
+    "tagline": "collect, create, curate",
     "primaryCategory": "art-creativity",
     "requiredChains": ["eip155:8453"],
     "requiredCapabilities": ["wallet.getEthereumProvider"],
