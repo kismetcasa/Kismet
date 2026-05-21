@@ -94,7 +94,8 @@ export async function POST(req: NextRequest) {
   if (existing) {
     await setFidCurrentAddress(session.fid, lower)
   } else {
-    const verifications = await getVerifiedAddressesByFid(session.fid)
+    // Reuse `verifications` from the membership check above instead of
+    // re-fetching — same list, same request lifetime.
     let anchorProfile = null
     for (const v of verifications) {
       const candidate = await getProfile(v)

@@ -41,17 +41,18 @@ export function WalletsPanel() {
 
   // Fetch wallets from /api/me. When force=true, appends ?refresh=1 so
   // the server bypasses its FC-API caches — used by the refresh button
-  // for users who just verified a new wallet on Farcaster. Returns the
-  // wallet list rather than calling setState so the useEffect below
-  // can drop the result safely when the component unmounted mid-fetch.
-  const loadWallets = useCallback(async (force: boolean): Promise<Wallet[]> => {
+  // for users who just verified a new wallet on Farcaster. Returns
+  // null on error so the caller can distinguish "no verifications"
+  // (empty array, panel hides) from "fetch failed" (don't overwrite
+  // state, panel stays visible with previous data + error toast).
+  const loadWallets = useCallback(async (force: boolean): Promise<Wallet[] | null> => {
     try {
       const res = await fetch(force ? '/api/me?refresh=1' : '/api/me')
-      if (!res.ok) return []
+      if (!res.ok) return null
       const d = (await res.json()) as { wallets?: Wallet[] }
-      return Array.isArray(d.wallets) ? d.wallets : []
+      return Array.isArray(d.wallets) ? d.wallets : null
     } catch {
-      return []
+      return null
     }
   }, [])
 
@@ -60,7 +61,10 @@ export function WalletsPanel() {
     let cancelled = false
     loadWallets(false).then((fresh) => {
       if (cancelled) return
-      setWallets(fresh)
+      // Initial-load failure → empty array → panel hides via the gate
+      // below. Same behavior as before this refactor; only the refresh
+      // path needed the null sentinel.
+      setWallets(fresh ?? [])
       setLoading(false)
     })
     return () => { cancelled = true }
@@ -71,6 +75,10 @@ export function WalletsPanel() {
     setRefreshing(true)
     try {
       const fresh = await loadWallets(true)
+      if (fresh === null) {
+        toast.error('Could not refresh wallets', { id: 'wallets-refresh' })
+        return
+      }
       setWallets(fresh)
     } finally {
       setRefreshing(false)

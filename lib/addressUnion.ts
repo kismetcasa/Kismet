@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import {
   getFarcasterProfileByAddress,
   getVerifiedAddressesByFid,
@@ -98,10 +99,16 @@ export interface CanonicalProfile {
  * Used by /api/profile/[address] (GET) for read + canonical-URL hints,
  * /api/me for the current identity address, and the share-card path
  * that needs to know whose profile we're rendering.
+ *
+ * Wrapped in React.cache so generateMetadata + the page render share a
+ * single resolution (Next.js calls both within one request lifecycle).
+ * Without this they'd each fire ~4 Redis lookups + the FC-by-address
+ * fetch — same keys, so cheap on the second pass, but the cache
+ * primitive removes the double-call entirely.
  */
-export async function resolveCanonicalProfile(
+export const resolveCanonicalProfile = cache(async (
   address: string,
-): Promise<CanonicalProfile> {
+): Promise<CanonicalProfile> => {
   const lower = address.toLowerCase()
   const fcProfile = await getFarcasterProfileByAddress(lower)
 
@@ -156,7 +163,7 @@ export async function resolveCanonicalProfile(
     farcaster: fcProfile,
     source: hasData ? (sibLink.inheritedFromSibling ? 'sibling' : 'address') : 'empty',
   }
-}
+})
 
 export async function resolveProfileWithSiblings(
   address: string,
