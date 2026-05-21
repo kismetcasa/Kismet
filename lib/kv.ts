@@ -2,6 +2,7 @@ import { redis } from './redis'
 import { PLATFORM_COLLECTION } from './config'
 import { inprocessUrl } from './inprocess'
 import { getHiddenCollectionsSet } from './hiddenCollections'
+import { getHiddenUsersSet } from './hidden-users'
 import { memoize } from './memoCache'
 
 // In-memory TTL for the hot collection-set getters below. These read
@@ -228,9 +229,14 @@ async function fetchInprocessCollectionImage(address: string): Promise<string | 
 
 // Searches curated collections only; moments have their own search.
 export async function searchCollections(query: string): Promise<CollectionMeta[]> {
-  const [addresses, hiddenCollections] = await Promise.all([
+  // Three filters compose: hiddenCollections (per-content, creator-controlled),
+  // hiddenUsers (per-artist, admin-controlled), and the inline name/address
+  // match. All public search surfaces drop hidden-user content unconditionally
+  // (search isn't an "own profile" exception surface — see lib/search.ts).
+  const [addresses, hiddenCollections, hiddenUsers] = await Promise.all([
     getUserCollections(),
     getHiddenCollectionsSet(),
+    getHiddenUsersSet(),
   ])
   if (!addresses.length) return []
   const keys = addresses.map(keyCollectionMeta)
@@ -243,6 +249,7 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
     const address = addresses[i].toLowerCase()
     if (hiddenCollections.has(address)) continue
     const meta: CollectionMeta = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (meta.artist && hiddenUsers.has(meta.artist.toLowerCase())) continue
     if (meta.name.toLowerCase().includes(q) || address.startsWith(q)) {
       results.push(meta)
       if (results.length >= 20) break

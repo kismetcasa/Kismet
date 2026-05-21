@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { getGateConfig } from '@/lib/gate'
 import { getValidBalance } from '@/lib/pass-validity'
+import { isPassBlacklisted } from '@/lib/pass-blacklist'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -40,6 +41,20 @@ export async function GET(req: NextRequest) {
     // the client doesn't need to special-case absence, just sees zero.
     return NextResponse.json({
       passCollection: null,
+      validBalance: 0,
+    })
+  }
+
+  // Pass-blacklist short-circuit: mirror what hasValidPass does at the
+  // gate-check layer so the badge UX matches the actual mint policy. A
+  // pass-blacklisted holder might still have a positive ledger value
+  // (they hold the Pass on-chain, webhook credited them, admin
+  // blacklisted them after) — surfacing `validBalance > 0` would
+  // render a "valid Pass — gates mint access" badge that's a lie,
+  // because hasValidPass returns false for them at mint time.
+  if (await isPassBlacklisted(address)) {
+    return NextResponse.json({
+      passCollection: config.passCollection,
       validBalance: 0,
     })
   }

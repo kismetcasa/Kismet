@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { getAirdropsBySender } from '@/lib/airdrops'
+import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
 
 /**
@@ -29,6 +31,20 @@ export async function GET(req: NextRequest) {
 
   const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0
   const limit = limitParam ? Math.max(1, Math.min(200, parseInt(limitParam, 10) || 100)) : 100
+
+  // Hidden-users gate: airdrops sent by an admin-hidden artist are
+  // stripped from public surfaces. Same own-profile exception as the
+  // per-content hide pattern — the artist themselves still sees their
+  // outgoing airdrops on their own profile. Both reads run in parallel
+  // because they're independent (viewer ≠ artist constraint).
+  const [hiddenUsers, viewer] = await Promise.all([
+    getHiddenUsersSet(),
+    getSessionAddress(req),
+  ])
+  const artistLower = artist.toLowerCase()
+  if (hiddenUsers.has(artistLower) && viewer?.toLowerCase() !== artistLower) {
+    return NextResponse.json({ airdrops: [] }, { status: 200 })
+  }
 
   try {
     const airdrops = await getAirdropsBySender(artist, { offset, limit })
