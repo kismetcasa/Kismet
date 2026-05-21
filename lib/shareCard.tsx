@@ -30,12 +30,14 @@ export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
     title.length > cap ? `${title.slice(0, cap - 1)}…` : title
 
   if (imageUrl) {
-    // Side-by-side hero layout: 800x800 image on the left (native
-    // square for typical NFT art; non-square media is letterboxed via
-    // background-size: contain so nothing is cropped), 400-wide text
-    // panel on the right. If Satori can't fetch the image (gateway
-    // outage, etc.) the panel still renders and the image area falls
-    // back to the dark backgroundColor — graceful degradation.
+    // Side-by-side hero layout: 800x800 image on the left, 400-wide
+    // text panel on the right. Image uses <img> + objectFit:contain
+    // (rather than backgroundSize:contain on a div) because Satori
+    // honors objectFit on <img> reliably but silently falls back to
+    // cover-like behavior for CSS backgrounds, hard-cropping non-
+    // square sources. If Satori can't fetch the image, the panel
+    // still renders and the area falls back to backgroundColor —
+    // graceful degradation.
     return (
       <div
         style={{
@@ -51,13 +53,23 @@ export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
             width: '800px',
             height: '800px',
             display: 'flex',
-            backgroundImage: `url(${imageUrl})`,
-            backgroundSize: 'contain',
-            backgroundPosition: 'center',
-            backgroundRepeat: 'no-repeat',
+            alignItems: 'center',
+            justifyContent: 'center',
             backgroundColor: '#161616',
           }}
-        />
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageUrl}
+            width={800}
+            height={800}
+            style={{
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+            }}
+          />
+        </div>
         <div
           style={{
             width: '400px',
@@ -73,7 +85,7 @@ export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
             <div style={{ fontSize: 16, letterSpacing: 4, color: '#555', marginTop: 12 }}>{label}</div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: 40, lineHeight: 1.15, color: '#efefef', letterSpacing: -0.5 }}>
+            <div style={{ fontSize: 56, lineHeight: 1.1, color: '#efefef', letterSpacing: -0.5 }}>
               {displayName}
             </div>
             {creator && (
