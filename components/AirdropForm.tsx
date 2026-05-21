@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAccount, useReadContracts } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -45,6 +45,38 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
+
+  // Server-side airdrop quota (per-artist daily cadence + weekly cap,
+  // configured by admin in /admin/airdrop-quota). The quota only
+  // applies to airdrops in the configured Pass collection — for any
+  // other collection the server skips the debit, and the UI hides the
+  // caption + doesn't gate the button. `passCollection` arrives in the
+  // pre-flight response so the form knows when to apply quota UX.
+  // Admin sees Number.MAX_SAFE_INTEGER as the remaining value (the
+  // server's "unlimited" sentinel) — we hide the caption in that case
+  // regardless of which collection they're airdropping.
+  const [quota, setQuota] = useState<{
+    limits: { day: number; week: number }
+    used: { day: number; week: number }
+    remaining: { day: number; week: number }
+    passCollection: string | null
+  } | null>(null)
+
+  const refreshQuota = useCallback(async () => {
+    if (!address) {
+      setQuota(null)
+      return
+    }
+    try {
+      const res = await fetch(`/api/airdrop/quota?artist=${address}`)
+      if (!res.ok) return
+      setQuota(await res.json())
+    } catch {}
+  }, [address])
+
+  useEffect(() => {
+    void refreshQuota()
+  }, [refreshQuota])
 
   // Permission preflight on the SELECTED moment's collection. The
   // wallet that needs ADMIN now is the connected EOA itself — the
@@ -176,6 +208,37 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     }
     if (activeRecipients.length === 0) { toast.error('Add at least one recipient'); return }
 
+    // Pre-flight against the latest quota — but ONLY when this airdrop
+    // targets the configured Pass collection. The server applies the
+    // quota with the same scoping rule, so a moment from a non-Pass
+    // collection skips both the UI block and the ledger debit. We
+    // re-fetch to defeat a stale local snapshot (e.g. the artist
+    // airdropped from another tab between this form mounting and the
+    // click).
+    const fresh = await fetch(`/api/airdrop/quota?artist=${address}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null) as typeof quota
+    if (fresh) {
+      setQuota(fresh)
+      const isPassAirdrop =
+        !!fresh.passCollection
+        && fresh.passCollection.toLowerCase() === selected.address.toLowerCase()
+      if (isPassAirdrop) {
+        if (activeRecipients.length > fresh.remaining.day) {
+          toast.error(
+            `Daily airdrop limit reached — ${fresh.remaining.day} of ${fresh.limits.day} left today`,
+          )
+          return
+        }
+        if (activeRecipients.length > fresh.remaining.week) {
+          toast.error(
+            `Weekly airdrop limit reached — ${fresh.remaining.week} of ${fresh.limits.week} left this week`,
+          )
+          return
+        }
+      }
+    }
+
     setSending(true)
     setResultHash(null)
     try {
@@ -207,7 +270,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           recipients: activeRecipients,
           txHash,
         }),
-      }).catch(() => {})
+      })
+        .then(() => refreshQuota())
+        .catch(() => {})
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
     } finally {
@@ -407,16 +472,33 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         const pendingValid =
           !!pending && isAddress(pending) && !recipients.includes(pending.toLowerCase())
         const totalRecipients = recipients.length + (pendingValid ? 1 : 0)
+        // Quota gating applies ONLY when the selected moment is in the
+        // configured Pass collection AND the connected wallet isn't the
+        // admin (admin sees MAX_SAFE_INTEGER as the remaining sentinel).
+        // Hidden for any other collection because the server skips the
+        // quota check there — surfacing a counter would be misleading.
+        const isPassAirdrop =
+          !!quota?.passCollection
+          && !!selected
+          && quota.passCollection.toLowerCase() === selected.address.toLowerCase()
+        const unlimited = !quota || quota.remaining.day >= Number.MAX_SAFE_INTEGER
+        const gated = isPassAirdrop && !unlimited
+        const overDay = gated && quota ? totalRecipients > quota.remaining.day : false
+        const overWeek = gated && quota ? totalRecipients > quota.remaining.week : false
         return (
           <button
             type="submit"
-            disabled={sending || !selected || totalRecipients === 0}
+            disabled={sending || !selected || totalRecipients === 0 || overDay || overWeek}
             className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50"
           >
             {!isConnected
               ? 'connect wallet to airdrop'
               : sending
               ? 'airdropping…'
+              : overDay
+              ? `daily limit — ${quota?.remaining.day ?? 0} of ${quota?.limits.day ?? 0} left today`
+              : overWeek
+              ? `weekly limit — ${quota?.remaining.week ?? 0} of ${quota?.limits.week ?? 0} left this week`
               : selected && totalRecipients > 0
               ? `airdrop to ${totalRecipients} wallet${totalRecipients !== 1 ? 's' : ''}`
               : 'airdrop'}
@@ -427,6 +509,16 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
         airdrop freshly minted supply to recipients · paid from your wallet
       </p>
+
+      {quota
+        && quota.remaining.day < Number.MAX_SAFE_INTEGER
+        && selected
+        && !!quota.passCollection
+        && quota.passCollection.toLowerCase() === selected.address.toLowerCase() && (
+        <p className="text-[10px] font-mono text-muted text-center -mt-4">
+          {quota.remaining.day} of {quota.limits.day} left today · {quota.remaining.week} of {quota.limits.week} this week
+        </p>
+      )}
 
       {/* Delegate airdrop — moved from the moment detail page so all
           airdrop-related actions live on this tab. Renders only when a

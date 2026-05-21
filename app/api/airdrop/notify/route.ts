@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse, after } from 'next/server'
+import { decodeEventLog, parseAbi, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { recordAirdrop } from '@/lib/airdrops'
+import { consumeQuota } from '@/lib/airdrop-quota'
+import { isBlacklisted } from '@/lib/blacklist'
+import { bestEffort } from '@/lib/bestEffort'
 import { recordCollected } from '@/lib/collected'
+import { getGateConfig } from '@/lib/gate'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
+import { recordPlatformTx } from '@/lib/pass-validity'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { redis } from '@/lib/redis'
+import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 
 /**
@@ -18,11 +26,100 @@ import { errorResponse } from '@/lib/apiResponse'
  * bypass their relay to call Zora's `adminMint` directly, so they never see
  * the airdrop. This endpoint is the local replacement.
  *
- * Best-effort, like /api/collect: failures here don't undo the on-chain
- * mint and the client doesn't gate UI off the response. Validation rejects
- * obviously bad input but no on-chain receipt verification — same trust
- * model the other write-side notify endpoints use.
+ * On-chain verification + idempotency: every claim is verified against the
+ * Transfer events on the supplied txHash before any side effect runs, and
+ * a (txHash, collection, tokenId, sender) tuple is locked into Redis NX so
+ * an attacker who observes a real airdrop tx can't replay it to drain the
+ * sender's airdrop quota or pollute their notification log. The chain is
+ * the source of truth — body fields that disagree with the receipt fail.
  */
+
+const ERC1155_TRANSFER_ABI = parseAbi([
+  'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
+])
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const VERIFY_CACHE_TTL_SECONDS = 300
+const IDEMPOTENCY_TTL_SECONDS = 30 * 24 * 60 * 60
+
+/**
+ * Verify the on-chain receipt contains TransferSingle events from the
+ * specified collection where `operator === sender` (the adminMint caller),
+ * `from === 0x0` (real mint, not a re-transfer), and `id === tokenId`.
+ *
+ * Returns the FULL set of `to` addresses from matching logs as the
+ * authoritative recipient list. Fails when any claimed recipient is
+ * missing from the on-chain set (caller claim disagrees with reality),
+ * but extras present on-chain but not claimed are KEPT — the caller
+ * sees the full set so a race-grief attacker can't shrink the recipient
+ * list by POSTing first with a subset.
+ *
+ * Fail-closed on RPC, decode, receipt status, or operator-mismatch.
+ */
+async function verifyAirdropOnChain(
+  txHash: Hex,
+  collection: string,
+  tokenId: string,
+  sender: string,
+  claimedRecipients: string[],
+): Promise<{ ok: true; verified: Set<string> } | { ok: false }> {
+  const cacheKey = `verify:airdrop:${txHash}:${collection}:${tokenId}:${sender}`
+  const cached = await redis.get<string>(cacheKey).catch(() => null)
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as string[]
+      return { ok: true, verified: new Set(parsed) }
+    } catch {
+      // Fall through to fresh fetch on cache parse failure.
+    }
+  }
+
+  try {
+    const receipt = await serverBaseClient().getTransactionReceipt({ hash: txHash })
+    if (receipt.status !== 'success') return { ok: false }
+
+    const expectedTokenId = BigInt(tokenId)
+    const verified = new Set<string>()
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== collection) continue
+      let decoded
+      try {
+        decoded = decodeEventLog({
+          abi: ERC1155_TRANSFER_ABI,
+          data: log.data,
+          topics: log.topics,
+        })
+      } catch {
+        continue
+      }
+      const { operator, from, to, id } = decoded.args
+      // Bind to the caller: only events where the claimed sender was
+      // msg.sender of the adminMint call count. Without this an attacker
+      // could repost someone else's airdrop tx and claim credit for it.
+      if (operator.toLowerCase() !== sender) continue
+      if (from !== ZERO_ADDRESS) continue
+      if (id !== expectedTokenId) continue
+      verified.add(to.toLowerCase())
+    }
+
+    // Every claimed recipient must have a matching TransferSingle log.
+    // Reject any partial-claim: if the receipt only covers some of the
+    // recipients the client sent, the client is making a claim that
+    // doesn't match reality.
+    const claimedLower = claimedRecipients.map((r) => r.toLowerCase())
+    for (const r of claimedLower) {
+      if (!verified.has(r)) return { ok: false }
+    }
+
+    await redis
+      .set(cacheKey, JSON.stringify(Array.from(verified)), { ex: VERIFY_CACHE_TTL_SECONDS })
+      .catch(() => {})
+    return { ok: true, verified }
+  } catch {
+    return { ok: false }
+  }
+}
+
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`airdrop-notify:${ip}`, 30, 60)
@@ -40,7 +137,7 @@ export async function POST(req: NextRequest) {
 
   const sender = body.sender?.toLowerCase()
   const collectionAddress = body.collectionAddress?.toLowerCase()
-  const tokenId = body.tokenId !== undefined && body.tokenId !== null ? String(body.tokenId) : null
+  const rawTokenId = body.tokenId !== undefined && body.tokenId !== null ? String(body.tokenId) : null
   const recipients = Array.isArray(body.recipients) ? body.recipients : []
   const txHash = body.txHash
 
@@ -50,19 +147,23 @@ export async function POST(req: NextRequest) {
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return errorResponse(400, 'Invalid collectionAddress')
   }
-  if (!tokenId || !/^\d+$/.test(tokenId)) {
+  if (!rawTokenId || !/^\d+$/.test(rawTokenId)) {
     return errorResponse(400, 'Invalid tokenId')
   }
+  // Canonicalize tokenId to base-10 minimal form — same pattern as /api/collect.
+  // Without this, idempotency keys "01" vs "1" would not collide and a
+  // legitimate airdrop could be replayed under a different string form.
+  const tokenId = BigInt(rawTokenId).toString()
   if (recipients.length === 0) {
     return errorResponse(400, 'No recipients')
   }
-  // Cap to the form's UX ceiling — way more than any real airdrop, but stops
-  // a malicious caller from flooding a single sender's log via this endpoint.
   if (recipients.length > 200) {
     return errorResponse(400, 'Too many recipients')
   }
-  // Optional but sanity-check the shape so we don't store garbage.
-  if (txHash && !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+  // txHash is now MANDATORY — it's the proof tying this request to a
+  // specific on-chain event. Without it the endpoint trusts body fields,
+  // which is exactly the spoof we're closing.
+  if (!txHash || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     return errorResponse(400, 'Invalid txHash')
   }
 
@@ -71,6 +172,91 @@ export async function POST(req: NextRequest) {
     .map((r) => r.toLowerCase())
   if (validRecipients.length === 0) {
     return errorResponse(400, 'No valid recipients')
+  }
+
+  // Action-blacklist gate: the on-chain airdrop already happened (Zora
+  // adminMint is direct from the sender's wallet, not relayed through us),
+  // but a blacklisted sender's airdrop is denied platform-side recording.
+  // No quota debit, no notifications, no recordPlatformTx — meaning
+  // recipients hold the Pass on-chain but earn no platform validity (admin
+  // would have to manually grant via /admin/pass). Matches the policy that
+  // blacklisted users can't propagate creator access through their actions.
+  if (await isBlacklisted(sender)) {
+    return errorResponse(403, 'Address is blocked from airdropping')
+  }
+
+  // Verify the receipt contains TransferSingle events matching every
+  // claimed recipient with operator === sender. This is the new gate:
+  // a malicious caller can't credit themselves for someone else's
+  // airdrop tx (operator check), can't credit ghost recipients (set
+  // membership), and can't spoof sender to drain a victim's quota
+  // (verification fails because victim isn't operator in the attacker's
+  // chosen txHash).
+  const verifyResult = await verifyAirdropOnChain(
+    txHash as Hex,
+    collectionAddress,
+    tokenId,
+    sender,
+    validRecipients,
+  )
+  if (!verifyResult.ok) {
+    return errorResponse(403, 'Airdrop not verified on-chain')
+  }
+  // Use the on-chain set as the authoritative recipient list. Closes a
+  // race-grief vector where an attacker watching for the sender's real
+  // airdrop tx could win the idempotency lock by POSTing first with a
+  // subset of recipients (subset passes the per-claim check), suppressing
+  // notifications to the rest. By rebuilding from the receipt instead,
+  // every actual on-chain recipient is recorded regardless of which body
+  // arrives first.
+  const finalRecipients = Array.from(verifyResult.verified)
+
+  // Idempotency lock on (txHash, collection, tokenId, sender). A real
+  // airdrop posted twice (Promise.all retry, browser back-button, network
+  // hiccup) returns ok=idempotent without re-debiting quota or re-
+  // notifying recipients. Lock acquired BEFORE consumeQuota so a
+  // retry never double-spends the quota bucket.
+  const idemKey = `kismetart:airdrop-idem:${txHash}:${collectionAddress}:${tokenId}:${sender}`
+  let acquired: 'OK' | null
+  try {
+    acquired = (await redis.set(idemKey, '1', {
+      nx: true,
+      ex: IDEMPOTENCY_TTL_SECONDS,
+    })) as 'OK' | null
+  } catch (err) {
+    console.error('[airdrop-notify] idempotency-lock failed', { txHash, err })
+    return errorResponse(503, 'Recording temporarily unavailable')
+  }
+  if (acquired !== 'OK') {
+    return NextResponse.json({ ok: true, idempotent: true })
+  }
+
+  // Quota debit is SCOPED to the configured Pass collection — the Season
+  // 1 plan (1/day, 5/week per artist) is about throttling the rate Pass
+  // NFTs are given away, not about constraining moments airdropped from
+  // any other collection. Read gate config per request so a mid-flight
+  // admin update (e.g. switching Pass collections between phases)
+  // immediately applies to subsequent airdrops.
+  const gateConfig = await getGateConfig()
+  const isPassAirdrop =
+    !!gateConfig.passCollection && gateConfig.passCollection === collectionAddress
+
+  if (isPassAirdrop) {
+    const quota = await consumeQuota(sender, finalRecipients.length)
+    if (!quota.ok) {
+      return NextResponse.json(
+        {
+          error:
+            quota.reason === 'day_cap'
+              ? 'Daily airdrop limit reached'
+              : 'Weekly airdrop limit reached',
+          reason: quota.reason,
+          limits: quota.limits,
+          used: quota.used,
+        },
+        { status: 429 },
+      )
+    }
   }
 
   // tokenName lookup is best-effort — kept off the critical path so a meta
@@ -82,14 +268,14 @@ export async function POST(req: NextRequest) {
   const timestamp = Date.now()
 
   await Promise.all(
-    validRecipients.map(async (recipient) => {
+    finalRecipients.map(async (recipient) => {
       try {
         await recordAirdrop(sender, {
           collectionAddress,
           tokenId,
           recipient: { address: recipient },
           amount: 1,
-          ...(txHash ? { txHash } : {}),
+          txHash,
           timestamp,
         })
       } catch {}
@@ -101,7 +287,7 @@ export async function POST(req: NextRequest) {
 
   after(async () => {
     await Promise.all(
-      validRecipients
+      finalRecipients
         .filter((recipient) => recipient !== sender)
         .map((recipient) =>
           writeNotification({
@@ -117,5 +303,21 @@ export async function POST(req: NextRequest) {
     )
   })
 
-  return NextResponse.json({ ok: true, recorded: validRecipients.length })
+  // Flag the airdrop tx as platform-originated so the Pass-transfer webhook
+  // credits each recipient with validity when their Transfer event arrives.
+  // verifyAirdropOnChain above already proved this tx contains real mints
+  // (operator === sender, from === ZERO, recipients verified against logs),
+  // so flagging it is safe. No-op for non-Pass airdrops — the webhook
+  // filters by configured passCollection, so the flag sits unread for
+  // collections that aren't the gate collection. Without this, Season 1
+  // airdrops would put Pass NFTs in recipients' wallets but leave their
+  // validBalance at 0, blocking them from minting moments despite
+  // legitimately holding a Pass.
+  after(() =>
+    recordPlatformTx(txHash).catch(
+      bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender, collectionAddress }),
+    ),
+  )
+
+  return NextResponse.json({ ok: true, recorded: finalRecipients.length })
 }

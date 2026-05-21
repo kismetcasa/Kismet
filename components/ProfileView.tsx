@@ -200,6 +200,12 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const [payments, setPayments] = useState<Payment[]>([])
   const [airdrops, setAirdrops] = useState<AirdropRecord[]>([])
   const [artistCollections, setArtistCollections] = useState<ArtistCollection[]>([])
+  // Pass-validity snapshot for the profile owner, used to overlay a
+  // "Valid Pass" badge on collected Pass NFTs. One fetch per profile
+  // load — the response is small and tolerates the small UX-lag of
+  // briefly showing un-badged cards before this arrives. Re-fetched
+  // on address change so navigating between profiles resets the badge.
+  const [passBadge, setPassBadge] = useState<{ passCollection: string; hasValidity: boolean } | null>(null)
   const [loadingProfile, setLoadingProfile] = useState(true)
   const [loadingMoments, setLoadingMoments] = useState(true)
   const [loadingCollected, setLoadingCollected] = useState(true)
@@ -279,6 +285,22 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       .then((d) => setProfile(d.profile ?? { address, updatedAt: 0 }))
       .catch(() => setProfile({ address, updatedAt: 0 }))
       .finally(() => setLoadingProfile(false))
+  }, [address])
+
+  // Pass-validity snapshot — drives the "Valid Pass" badge on collected
+  // Pass NFTs. Silently fails when the gate isn't configured (returns
+  // passCollection=null, validBalance=0); in that case the badge is
+  // never rendered and the fetch is just a cheap no-op.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/pass-validity?address=${address}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { passCollection: string | null; validBalance: number } | null) => {
+        if (cancelled || !d || !d.passCollection) return
+        setPassBadge({ passCollection: d.passCollection, hasValidity: d.validBalance > 0 })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [address])
 
   useEffect(() => {
@@ -580,7 +602,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           collected,
-          (m, index) => <MomentCard moment={m} hidePriceSupply compact showCreator priority={index < 6} />,
+          (m, index) => <MomentCard moment={m} hidePriceSupply compact showCreator priority={index < 6} passBadge={passBadge ?? undefined} />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : listings.length === 0

@@ -8,7 +8,8 @@ import { INPROCESS_API, type Moment } from '@/lib/inprocess'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
-import { getCollectionMeta } from '@/lib/kv'
+import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getCollectionMeta, getCollectionMetaBatch } from '@/lib/kv'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
@@ -55,7 +56,7 @@ interface HydratedFeaturedCollection {
 }
 
 export async function GET() {
-  const [raw, hiddenCollections, hiddenMoments] = await Promise.all([
+  const [raw, hiddenCollections, hiddenMoments, hiddenUsers] = await Promise.all([
     // Cap at the source so the Redis result + downstream Promise.all fanout
     // are bounded. Hidden-collection filtering can shrink the working set
     // below this; the dropped tail is just newest-N minus those hidden.
@@ -65,6 +66,7 @@ export async function GET() {
     }) as Promise<(string | number)[]>,
     getHiddenCollectionsSet(),
     getHiddenMomentsSet(),
+    getHiddenUsersSet(),
   ])
 
   const refs: { address: string; featuredAt: number }[] = []
@@ -74,6 +76,19 @@ export async function GET() {
     // to the creator's choice.
     if (hiddenCollections.has(addr.toLowerCase())) continue
     refs.push({ address: addr, featuredAt: Number(raw[i + 1]) })
+  }
+
+  // Cascade hidden-users onto featured: drop any featured collection whose
+  // deployer (KV `artist` field) is on the admin-hidden list. Same MGET
+  // strategy as /api/collections feed — single Redis call regardless of
+  // refs count. Auto-deploy wrappers without a stored meta entry survive
+  // (artist unknown ≠ hidden).
+  if (hiddenUsers.size > 0 && refs.length > 0) {
+    const metaByAddr = await getCollectionMetaBatch(refs.map((r) => r.address))
+    for (let i = refs.length - 1; i >= 0; i--) {
+      const artist = metaByAddr.get(refs[i].address.toLowerCase())?.artist?.toLowerCase()
+      if (artist && hiddenUsers.has(artist)) refs.splice(i, 1)
+    }
   }
 
   if (refs.length === 0) {

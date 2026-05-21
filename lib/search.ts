@@ -2,6 +2,7 @@ import { getTrackedCollections } from './kv'
 import { resolveUri, fetchCollectionMoments } from './inprocess'
 import { getHiddenMomentsSet } from './hiddenMoments'
 import { getHiddenCollectionsSet } from './hiddenCollections'
+import { getHiddenUsersSet } from './hidden-users'
 
 export interface MomentSearchResult {
   id: string
@@ -26,10 +27,11 @@ const MAX_SEARCH_COLLECTIONS = 10
 const PER_COLLECTION_TIMEOUT_MS = 2500
 
 export async function searchMoments(query: string): Promise<MomentSearchResult[]> {
-  const [allCollections, hiddenMoments, hiddenCollections] = await Promise.all([
+  const [allCollections, hiddenMoments, hiddenCollections, hiddenUsers] = await Promise.all([
     getTrackedCollections(),
     getHiddenMomentsSet(),
     getHiddenCollectionsSet(),
+    getHiddenUsersSet(),
   ])
   // Skip hidden collections at fan-out time so we don't waste upstream
   // requests fetching moments we'd discard. Cap is applied after the skip.
@@ -58,10 +60,13 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
     const key = `${addr}:${moment.token_id}`
     if (seen.has(key)) continue
     seen.add(key)
-    // Belt-and-suspenders: filter individually-hidden moments, and also
-    // hidden collections in case fetchCollectionMoments returned moments
-    // whose `address` differs from the queried collection (e.g. proxy/wrap).
+    // Belt-and-suspenders: filter individually-hidden moments, hidden
+    // collections (in case fetchCollectionMoments returned moments whose
+    // `address` differs from the queried collection), and moments whose
+    // creator is on the admin-hidden-users list.
     if (hiddenMoments.has(key) || hiddenCollections.has(addr)) continue
+    const creatorLower = (moment.creator?.address ?? '').toLowerCase()
+    if (creatorLower && hiddenUsers.has(creatorLower)) continue
     const name = (moment.metadata?.name ?? '').toLowerCase()
     const desc = (moment.metadata?.description ?? '').toLowerCase()
     const creator = (moment.creator?.address ?? '').toLowerCase()

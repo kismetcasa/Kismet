@@ -110,7 +110,84 @@ export function AdminDashboard() {
       </div>
 
       <HideContentCard withSession={withSession} />
+      <TokenGateCard />
+      <AirdropQuotaCard />
     </div>
+  )
+}
+
+/** Single-link card for the airdrop quota sub-page. Lives apart from the
+ *  token-gate card because the quota controls cohort throughput, not
+ *  access — same admin surface, different operational lever. */
+function AirdropQuotaCard() {
+  return (
+    <section className="border border-line bg-[#161616] p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-ink font-mono text-sm">Airdrop quota</h2>
+        <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
+          Per-artist daily cadence and weekly cap on airdrop mints. Defaults
+          to 1/day and 5/week; admin is always exempt.
+        </p>
+      </div>
+      <Link
+        href="/admin/airdrop-quota"
+        className="block border border-line bg-[#0a0a0a] px-3 py-2.5 hover:border-muted transition-colors"
+      >
+        <div className="text-xs font-mono text-ink uppercase tracking-wider">Quota config</div>
+        <div className="text-[10px] font-mono text-dim mt-1">edit the per-day and per-week limits.</div>
+      </Link>
+    </section>
+  )
+}
+
+/** Token-gate management surface. Sub-pages handle the actual UI so the
+ *  dashboard stays scannable; each tool has its own state and deep-link.
+ *  Listed in workflow order: configure gate, grant validity (the most
+ *  frequent post-airdrop action), moderate addresses. */
+function TokenGateCard() {
+  const links: { href: string; title: string; desc: string }[] = [
+    {
+      href: '/admin/gate',
+      title: 'Gate config',
+      desc: 'enable/disable the pass requirement; set the pass collection; emergency pause.',
+    },
+    {
+      href: '/admin/pass',
+      title: 'Pass validity',
+      desc: 'manually grant or revoke pass validity for an address (used after airdrops).',
+    },
+    {
+      href: '/admin/blacklist',
+      title: 'Moderation',
+      desc:
+        'three address lists: action blacklist (block mint/list/airdrop), pass blacklist (deny validity), hidden users (strip content from public feeds).',
+    },
+  ]
+
+  return (
+    <section className="border border-line bg-[#161616] p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-ink font-mono text-sm">Token gate</h2>
+        <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
+          Configure the Pass-collection gate, override validity for specific
+          addresses, and manage the platform blacklist. Each sub-page handles
+          its own signing prompt.
+        </p>
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {links.map((l) => (
+          <li key={l.href}>
+            <Link
+              href={l.href}
+              className="block border border-line bg-[#0a0a0a] px-3 py-2.5 hover:border-muted transition-colors"
+            >
+              <div className="text-xs font-mono text-ink uppercase tracking-wider">{l.title}</div>
+              <div className="text-[10px] font-mono text-dim mt-1">{l.desc}</div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 

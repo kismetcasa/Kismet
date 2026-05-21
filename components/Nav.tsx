@@ -13,6 +13,7 @@ import { SearchModal } from './SearchModal'
 import { NotificationBell } from './NotificationBell'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+import { useAdmin } from '@/contexts/AdminContext'
 
 // Nav destinations. URLs are canonical so `label` (desktop) and
 // `mobileLabel` (mobile / Mini App dropdown) are purely cosmetic
@@ -119,10 +120,15 @@ function NavDropdown() {
 
 // Desktop nav — three inline links with canonical labels and an
 // active-state highlight. The space is there at sm: and up, no
-// reason to hide it behind a dropdown.
+// reason to hide it behind a dropdown. The Admin link slots in
+// after Market for users whose connected wallet is the platform
+// admin — isAdmin is server-checked in AdminContext (via
+// /api/admin/me) so we don't expose ADMIN_ADDRESS to the client
+// bundle by comparing in JS.
 function NavInline() {
   const pathname = usePathname()
   const currentId = navPageForPath(pathname)
+  const { isAdmin } = useAdmin()
   return (
     <div className="flex items-center gap-1">
       {NAV_PAGES.map((p) => {
@@ -139,6 +145,16 @@ function NavInline() {
           </Link>
         )
       })}
+      {isAdmin && (
+        <Link
+          href="/admin"
+          className={`px-3 py-1.5 text-xs font-mono tracking-wider uppercase transition-colors ${
+            pathname.startsWith('/admin') ? 'text-ink font-bold' : 'text-dim hover:text-ink'
+          }`}
+        >
+          Admin
+        </Link>
+      )}
     </div>
   )
 }

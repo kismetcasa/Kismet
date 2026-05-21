@@ -5,6 +5,7 @@ import { redis, FEATURED_KEY, TRENDING_KEY } from '@/lib/redis'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
+import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMetaBatch } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
@@ -301,12 +302,13 @@ export async function GET(req: NextRequest) {
   // a hidden collection are automatically hidden, and (b) unhiding the
   // collection restores everything that wasn't separately marked
   // moment-hidden — no bulk write needed.
-  const [hiddenSet, hiddenColls, viewer] = await Promise.all([
+  const [hiddenSet, hiddenColls, hiddenUsers, viewer] = await Promise.all([
     getHiddenMomentsSet(),
     getHiddenCollectionsSet(),
+    getHiddenUsersSet(),
     getSessionAddress(req),
   ])
-  if (hiddenSet.size > 0 || hiddenColls.size > 0) {
+  if (hiddenSet.size > 0 || hiddenColls.size > 0 || hiddenUsers.size > 0) {
     const viewerLower = viewer?.toLowerCase() ?? null
     // "Own profile" = the viewer is one of the sibling verified addresses
     // of the queried creator FID, so they can see their own hidden moments
@@ -317,10 +319,19 @@ export async function GET(req: NextRequest) {
       .filter((m: unknown) => {
         const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
         const addr = moment.address?.toLowerCase() ?? ''
+        const creatorAddr = moment.creator?.address?.toLowerCase() ?? ''
         const key = `${addr}:${moment.token_id}`
+        // Hidden-user filter: drop content from admin-hidden creators
+        // EXCEPT when the viewer is the creator themselves on their own
+        // profile. Same "creator sees their own hidden content"
+        // exception as the per-content hide above — the hide is from
+        // PUBLIC feeds, the user themselves can still see what's there.
+        if (hiddenUsers.has(creatorAddr)) {
+          if (!(isOwnProfile && creatorAddr === viewerLower)) return false
+        }
         const isHidden = hiddenSet.has(key) || hiddenColls.has(addr)
         if (!isHidden) return true
-        return isOwnProfile && moment.creator?.address?.toLowerCase() === viewerLower
+        return isOwnProfile && creatorAddr === viewerLower
       })
       .map((m: unknown) => {
         const moment = m as { address?: string; token_id?: string }

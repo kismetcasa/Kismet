@@ -11,6 +11,7 @@ import {
   addTrackedCollection,
   getCollectionsByArtist,
   getCollectionMeta,
+  getCollectionMetaBatch,
   markCreatedMint,
   type CollectionSource,
 } from '@/lib/kv'
@@ -18,6 +19,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -183,14 +185,30 @@ export async function GET(req: NextRequest) {
   if (feed) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
-    const [userCreated, hiddenSet, hiddenMoments] = await Promise.all([
+    const [userCreated, hiddenSet, hiddenMoments, hiddenUsers] = await Promise.all([
       getUserCollections(),
       getHiddenCollectionsSet(),
       getHiddenMomentsSet(),
+      getHiddenUsersSet(),
     ])
-    const visible = userCreated.filter(
-      (addr) => !hiddenSet.has(addr.toLowerCase()),
-    )
+    // Cascade the hidden-users filter onto the discovery feed by looking
+    // up each tracked collection's deployer (stored in KV's artist field)
+    // and dropping any whose artist is on the hidden-users list. Single
+    // MGET via getCollectionMetaBatch — same cost as a single Redis call,
+    // not per-collection. Auto-deploy wrappers without a stored meta
+    // entry are kept (artist unknown ≠ hidden).
+    const metaByAddr = hiddenUsers.size > 0
+      ? await getCollectionMetaBatch(userCreated)
+      : new Map<string, { artist?: string }>()
+    const visible = userCreated.filter((addr) => {
+      const lower = addr.toLowerCase()
+      if (hiddenSet.has(lower)) return false
+      if (hiddenUsers.size > 0) {
+        const artist = metaByAddr.get(lower)?.artist?.toLowerCase()
+        if (artist && hiddenUsers.has(artist)) return false
+      }
+      return true
+    })
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
     const client = serverBaseClient()
@@ -235,9 +253,25 @@ export async function GET(req: NextRequest) {
     if (!isAddress(artist)) {
       return errorResponse(400, 'Invalid artist address')
     }
+    const artistLower = artist.toLowerCase()
+    // Hoist session + hidden-users gate above try/catch so both the
+    // happy path and the inprocess-down fallback share the same viewer
+    // identity and admin-hide check (and getSessionAddress's JWT verify
+    // only runs once per request). Same own-profile exception as the
+    // per-content hide system.
+    const [viewer, hiddenUsers] = await Promise.all([
+      getSessionAddress(req),
+      getHiddenUsersSet(),
+    ])
+    const isOwnProfile = viewer?.toLowerCase() === artistLower
+    if (hiddenUsers.has(artistLower) && !isOwnProfile) {
+      return NextResponse.json({ collections: [] }, {
+        headers: { 'Cache-Control': 'private, no-store' },
+      })
+    }
     const url = inprocessUrl('/collections', { artist, limit: 100 })
     try {
-      const [res, userCreated, kvOwned, hiddenSet, viewer] = await Promise.all([
+      const [res, userCreated, kvOwned, hiddenSet] = await Promise.all([
         fetch(url, {
           headers: { Accept: 'application/json' },
           next: { revalidate: 120 },
@@ -245,14 +279,11 @@ export async function GET(req: NextRequest) {
         getUserCollections(),
         getCollectionsByArtist(artist),
         getHiddenCollectionsSet(),
-        getSessionAddress(req),
       ])
       const text = await res.text()
       const data = JSON.parse(text)
       // Filter to curated only — auto-deploy wrappers go in Mints feed.
       const userSet = new Set(userCreated.map((a: string) => a.toLowerCase()))
-      // Artist sees their own hidden collections so they can unhide.
-      const isOwnProfile = viewer?.toLowerCase() === artist.toLowerCase()
       const inprocessAddrs = new Set<string>()
       if (Array.isArray(data.collections)) {
         data.collections = data.collections.filter(
@@ -287,13 +318,12 @@ export async function GET(req: NextRequest) {
         headers: { 'Cache-Control': 'private, no-store' },
       })
     } catch {
-      // Inprocess down — fall back to local KV only.
-      const [kvOwned, hiddenSet, viewer] = await Promise.all([
+      // Inprocess down — fall back to local KV only. viewer + isOwnProfile
+      // are already in scope from the gate hoist above.
+      const [kvOwned, hiddenSet] = await Promise.all([
         getCollectionsByArtist(artist),
         getHiddenCollectionsSet(),
-        getSessionAddress(req),
       ])
-      const isOwnProfile = viewer?.toLowerCase() === artist.toLowerCase()
       return NextResponse.json(
         {
           collections: kvOwned

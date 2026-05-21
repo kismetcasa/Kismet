@@ -58,13 +58,22 @@ interface MomentCardProps {
    * Ignored when !compact.
    */
   fillCell?: boolean
+  /**
+   * When provided AND moment.address matches passCollection AND the
+   * referenced holder has validBalance ≥ 1, render an accent-color
+   * "valid Pass" check badge bottom-right of the image. Used by
+   * ProfileView's collected list so a holder sees their Pass marked as
+   * granting mint access — and so support requests like "why can't I
+   * mint" become self-diagnosable from a glance at the profile.
+   */
+  passBadge?: { passCollection: string; hasValidity: boolean }
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -303,6 +312,21 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         {moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
             <EyeOff size={10} className="text-muted" />
+          </span>
+        )}
+        {/* Valid-Pass overlay. Shown on the holder's profile collected list
+            so they can confirm at a glance that their Pass currently grants
+            mint access. Hidden when this moment isn't in the gate's
+            passCollection or when the holder's validBalance is 0 (e.g.
+            transferred off-platform — they own the NFT but lost validity).
+            Brand-accent colored, bottom-right of the image. */}
+        {passBadge?.hasValidity
+          && moment.address.toLowerCase() === passBadge.passCollection.toLowerCase() && (
+          <span
+            className="absolute bottom-2 right-2 z-10 w-7 h-7 rounded-full bg-accent flex items-center justify-center shadow-md"
+            title="Valid Kismet Creator Pass — gates mint access"
+          >
+            <Check size={14} className="text-white" strokeWidth={2.5} />
           </span>
         )}
         {isVideo && meta.animation_url ? (

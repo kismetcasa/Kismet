@@ -9,6 +9,8 @@ import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
 import { errorResponse } from '@/lib/apiResponse'
+import { bestEffort } from '@/lib/bestEffort'
+import { recordPlatformTx } from '@/lib/pass-validity'
 
 // All mint paths in this app emit ERC1155 TransferSingle: per-token
 // 1155.mint() (single + collect-all ETH legs) and ERC20Minter.mint()
@@ -193,6 +195,20 @@ export async function POST(req: NextRequest) {
   if (acquired !== 'OK') {
     return NextResponse.json({ ok: true, idempotent: true })
   }
+
+  // Flag this tx as platform-originated so the Pass-transfer webhook credits
+  // the collector with validity when the Transfer event arrives. The flag is
+  // keyed by tx hash and only consulted by the webhook for Pass-collection
+  // transfers — non-Pass collects just write an unused flag (cheap). Without
+  // this, collecting a Pass from the gate-collection page wouldn't grant the
+  // collector the validity their collect should earn, requiring a manual
+  // /admin/pass grant. verifyMintOnChain already proved this is a real mint
+  // of `tokenId` from `collectionLower` to `account`, so flagging is safe.
+  after(() =>
+    recordPlatformTx(txHash).catch(
+      bestEffort('collect.recordPlatformTx', { txHash, collection: collectionLower, account }),
+    ),
+  )
 
   // Bound amount to a sane ceiling — collect-all hardcodes 1, useDirectCollect
   // accepts user input. 1000 is far above any plausible single-mint quantity
