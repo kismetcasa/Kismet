@@ -65,20 +65,16 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   // notifications_enabled webhook so the "Add Kismet" prompt's promise
   // still works without an extra trip to settings.
   const [pushMaster, setPushMaster] = useState<boolean>(false)
-  // 401 from any settings-tab GET below flips authRequired so the tab
-  // renders <SignInPrompt /> instead of three blank sections. Same
-  // wallet-connected-but-no-session-cookie path that NotificationFeed
-  // handles for its own initial GET.
+  // 401 from any settings-tab GET flips this so the tab renders
+  // <SignInPrompt /> instead of three blank sections.
   const [authRequired, setAuthRequired] = useState(false)
 
   useBodyScrollLock()
   useEscapeKey(onClose)
 
-  // Fetch mute lists + push prefs for the settings tab. Extracted so
-  // the sign-in handler below can re-run all three after a successful
-  // SIWE. Each .then guards for 401 → authRequired = true; the
-  // existing .catch paths still null out the lists on any other
-  // failure so partial outages don't show stale data.
+  // useCallback so both the tab-mount useEffect and SignInPrompt's
+  // onSignedIn can re-run it. .catch paths null out the lists on
+  // non-401 failures so partial outages don't show stale data.
   const refetchSettings = useCallback(() => {
     setMutedLoading(true)
     setTypesLoading(true)
@@ -127,9 +123,8 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
       .finally(() => setPushLoading(false))
   }, [])
 
-  // Fetch mute lists + push prefs when settings tab is first opened.
-  // Reset authRequired on every tab switch so the empty state doesn't
-  // stick around from a stale check.
+  // Reset authRequired on each settings-tab mount so a stale 401
+  // doesn't hide the freshly-loaded data.
   useEffect(() => {
     if (tab !== 'settings') return
     setAuthRequired(false)
