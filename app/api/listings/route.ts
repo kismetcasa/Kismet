@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyTypedData } from 'viem'
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
+  verifyTypedData,
+} from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
@@ -71,6 +76,13 @@ function validateOrderShape(args: {
   const expectedToken = currency === 'usdc' ? USDC_BASE.toLowerCase() : ZERO_ADDRESS
   let totalConsideration = 0n
   for (const item of serialized.consideration) {
+    if (!isAddress(item.recipient)) {
+      // Malformed recipients sign cleanly (the seller signed what they
+      // posted) but make the order unfillable — Seaport reverts at fill
+      // time trying to send tokens to garbage. Reject up front so the
+      // listing doesn't pollute the marketplace and waste a buyer's gas.
+      return { error: 'Consideration recipient must be a valid address', status: 400 }
+    }
     if (item.itemType !== expectedItemType) {
       return {
         error: `All consideration items must match listing currency (${currency})`,
@@ -146,7 +158,32 @@ async function verifyRoyalty(args: {
     })) as readonly [`0x${string}`, bigint]
     expectedReceiver = receiver.toLowerCase()
     expectedAmount = amount
-  } catch {
+  } catch (err) {
+    // Distinguish contract-side failure (legit "doesn't implement
+    // EIP-2981") from transport failure (RPC unreachable AFTER viem's
+    // built-in 3-attempt retry). The previous bare catch fell open on
+    // both — a transient RPC blip would let a seller list with zero
+    // royalty and stiff the EIP-2981 receiver. We fail closed with 503
+    // unless we have positive evidence the contract itself errored:
+    //   ContractFunctionRevertedError  → contract was reached and
+    //     reverted (most commonly: unknown function selector when the
+    //     collection doesn't implement royaltyInfo at all).
+    //   ContractFunctionZeroDataError  → call returned empty data
+    //     (e.g., contract has a fallback that returns nothing).
+    // Anything else (HttpRequestError, TimeoutError, RpcRequestError,
+    // an unexpected TypeError, etc.) keeps royalty enforcement on.
+    const isContractError =
+      err instanceof BaseError
+      && !!err.walk((e) =>
+        e instanceof ContractFunctionRevertedError
+        || e instanceof ContractFunctionZeroDataError,
+      )
+    if (!isContractError) {
+      return {
+        error: 'Could not verify royalty (RPC unavailable) — try again',
+        status: 503,
+      }
+    }
     supportsEip2981 = false
   }
 
