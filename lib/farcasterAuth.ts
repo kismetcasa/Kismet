@@ -2,7 +2,7 @@ import { createClient } from '@farcaster/quick-auth'
 import { redis } from './redis'
 import { SITE_URL } from './siteUrl'
 import { getVerifiedAddressesByFid } from './farcasterProfile'
-import { getFidProfile } from './profile'
+import { getFidProfile, getProfile } from './profile'
 
 // Quick Auth verifies JWTs **locally** via asymmetric signature check
 // against Farcaster's published public key — no per-request network round
@@ -89,37 +89,51 @@ export async function getPrimaryAddress(fid: number): Promise<string | null> {
  * primary rather than serving a no-longer-valid identity.
  */
 export async function getKismetIdentityAddress(fid: number): Promise<string | null> {
-  // FidProfile.currentAddress is the source of truth for miniapp-first
-  // users (their profile data is FID-keyed, the address is just a
-  // pointer). Re-validate against current verifications below to
-  // guard against a stale pointer if the user un-verified the chosen
-  // wallet on Farcaster.
+  // Single verifications fetch reused across all precedence steps below
+  // (cached upstream so this is one Redis read in the common case).
+  const verified = await getVerifiedAddressesByFid(fid)
+
+  // 1. FidProfile.currentAddress — source of truth for miniapp-first
+  //    users. Re-validate against current verifications to guard
+  //    against a stale pointer if the user un-verified the chosen
+  //    wallet on Farcaster.
   const fidProfile = await getFidProfile(fid)
-  if (fidProfile?.currentAddress) {
-    const verified = await getVerifiedAddressesByFid(fid)
-    if (verified.includes(fidProfile.currentAddress)) return fidProfile.currentAddress
-    // Stale — fall through. Don't try to "fix" the FidProfile here;
-    // the next /api/me/identity call will replace it.
+  if (fidProfile?.currentAddress && verified.includes(fidProfile.currentAddress)) {
+    return fidProfile.currentAddress
   }
 
-  // Legacy pointer: kismetart:fc:identity:{fid} predates FidProfile.
-  // Still read for users who picked an identity before FidProfile
-  // existed but never edited their profile (so no FidProfile got
-  // created). Eventually drains as those users edit or re-pick.
+  // 2. Legacy kismetart:fc:identity:{fid} pointer — predates FidProfile.
+  //    Still read for users who picked an identity before FidProfile
+  //    existed but never edited their profile (so no FidProfile got
+  //    created). Eventually drains as those users edit or re-pick.
   let stored: string | null = null
   try {
     const v = await redis.get<string>(identityAddressKey(fid))
     stored = v ? v.toLowerCase() : null
   } catch {
-    // Redis blip — fall through to primary.
+    // Redis blip — fall through to anchor / primary.
   }
   if (stored) {
-    const verified = await getVerifiedAddressesByFid(fid)
     if (verified.includes(stored)) return stored
     // Stale choice — drop it and fall through. Avoids a permanent
     // "ghost identity" if a user un-verifies the wallet they picked.
     await redis.del(identityAddressKey(fid)).catch(() => {})
   }
+
+  // 3. Anchored address — for web-first users (created a Kismet
+  //    profile on the web before connecting to Farcaster). Their
+  //    address-keyed Profile is the implicit identity choice; without
+  //    this step, /api/me would return their FC primary (which can
+  //    differ from the anchor) and every Nav link / share URL would
+  //    point at a sibling-inheritance path instead of the canonical
+  //    anchor URL.
+  for (const v of verified) {
+    const candidate = await getProfile(v)
+    if (candidate.username || candidate.avatarUrl) return v
+  }
+
+  // 4. FC primary — for users who haven't created any Kismet profile
+  //    yet (returns null if FC has no primary set for this FID).
   return getPrimaryAddress(fid)
 }
 
