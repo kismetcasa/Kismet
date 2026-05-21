@@ -3,9 +3,11 @@ import { decodeEventLog, parseAbi, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { recordAirdrop } from '@/lib/airdrops'
 import { consumeQuota } from '@/lib/airdrop-quota'
+import { bestEffort } from '@/lib/bestEffort'
 import { recordCollected } from '@/lib/collected'
 import { getGateConfig } from '@/lib/gate'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
+import { recordPlatformTx } from '@/lib/pass-validity'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
@@ -288,6 +290,22 @@ export async function POST(req: NextRequest) {
         ),
     )
   })
+
+  // Flag the airdrop tx as platform-originated so the Pass-transfer webhook
+  // credits each recipient with validity when their Transfer event arrives.
+  // verifyAirdropOnChain above already proved this tx contains real mints
+  // (operator === sender, from === ZERO, recipients verified against logs),
+  // so flagging it is safe. No-op for non-Pass airdrops — the webhook
+  // filters by configured passCollection, so the flag sits unread for
+  // collections that aren't the gate collection. Without this, Season 1
+  // airdrops would put Pass NFTs in recipients' wallets but leave their
+  // validBalance at 0, blocking them from minting moments despite
+  // legitimately holding a Pass.
+  after(() =>
+    recordPlatformTx(txHash).catch(
+      bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender, collectionAddress }),
+    ),
+  )
 
   return NextResponse.json({ ok: true, recorded: finalRecipients.length })
 }
