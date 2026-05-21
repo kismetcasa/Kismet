@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Loader2 } from 'lucide-react'
+import { Loader2, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { shortAddress } from '@/lib/inprocess'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -37,23 +37,45 @@ export function WalletsPanel() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
   const [pendingPick, setPendingPick] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+
+  // Fetch wallets from /api/me. When force=true, appends ?refresh=1 so
+  // the server bypasses its FC-API caches — used by the refresh button
+  // for users who just verified a new wallet on Farcaster. Returns the
+  // wallet list rather than calling setState so the useEffect below
+  // can drop the result safely when the component unmounted mid-fetch.
+  const loadWallets = useCallback(async (force: boolean): Promise<Wallet[]> => {
+    try {
+      const res = await fetch(force ? '/api/me?refresh=1' : '/api/me')
+      if (!res.ok) return []
+      const d = (await res.json()) as { wallets?: Wallet[] }
+      return Array.isArray(d.wallets) ? d.wallets : []
+    } catch {
+      return []
+    }
+  }, [])
 
   useEffect(() => {
     if (!isInMiniApp) { setLoading(false); return }
     let cancelled = false
-    fetch('/api/me')
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d: { wallets?: Wallet[] }) => {
-        if (cancelled) return
-        setWallets(Array.isArray(d.wallets) ? d.wallets : [])
-      })
-      .catch(() => {
-        if (cancelled) return
-        setWallets([])
-      })
-      .finally(() => { if (!cancelled) setLoading(false) })
+    loadWallets(false).then((fresh) => {
+      if (cancelled) return
+      setWallets(fresh)
+      setLoading(false)
+    })
     return () => { cancelled = true }
-  }, [isInMiniApp])
+  }, [isInMiniApp, loadWallets])
+
+  async function refreshWallets() {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      const fresh = await loadWallets(true)
+      setWallets(fresh)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   if (!isInMiniApp) return null
   if (loading) {
@@ -143,6 +165,17 @@ export function WalletsPanel() {
             )
           })}
         </div>
+        {/* Escape hatch for the 1h verification cache: a user who just
+            FC-verified a new wallet sees it here immediately instead of
+            waiting for the TTL to expire. */}
+        <button
+          onClick={refreshWallets}
+          disabled={refreshing}
+          className="self-start flex items-center gap-1.5 mt-2 text-[10px] font-mono text-faint hover:text-muted transition-colors disabled:opacity-50 disabled:cursor-wait"
+        >
+          <RefreshCw size={10} className={refreshing ? 'animate-spin' : ''} />
+          {refreshing ? 'refreshing…' : 'refresh wallets'}
+        </button>
       </div>
 
       {pendingPick && typeof document !== 'undefined' && createPortal(

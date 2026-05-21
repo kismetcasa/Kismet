@@ -42,15 +42,20 @@ export type FarcasterAuthResult = {
  *
  * Spec: https://miniapps.farcaster.xyz/docs/sdk/quick-auth/use-jwt-server
  */
-export async function getPrimaryAddress(fid: number): Promise<string | null> {
+export async function getPrimaryAddress(
+  fid: number,
+  opts: { skipCache?: boolean } = {},
+): Promise<string | null> {
   const cacheKey = primaryAddressKey(fid)
-  try {
-    const cached = await redis.get<string>(cacheKey)
-    if (cached !== null && cached !== undefined) {
-      return cached === '' ? null : cached
+  if (!opts.skipCache) {
+    try {
+      const cached = await redis.get<string>(cacheKey)
+      if (cached !== null && cached !== undefined) {
+        return cached === '' ? null : cached
+      }
+    } catch {
+      // Redis down — fall through to live fetch.
     }
-  } catch {
-    // Redis down — fall through to live fetch.
   }
 
   try {

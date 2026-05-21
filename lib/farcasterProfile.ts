@@ -50,10 +50,13 @@ async function readCached<T>(key: string): Promise<T | undefined> {
 /** Fetch + cache a Farcaster user by FID. Returns null if FID doesn't exist. */
 export async function getFarcasterProfileByFid(
   fid: number,
+  opts: { skipCache?: boolean } = {},
 ): Promise<FarcasterProfile | null> {
   const cacheKey = profileKey(fid)
-  const cached = await readCached<FarcasterProfile | ''>(cacheKey)
-  if (cached !== undefined) return cached === '' ? null : cached
+  if (!opts.skipCache) {
+    const cached = await readCached<FarcasterProfile | ''>(cacheKey)
+    if (cached !== undefined) return cached === '' ? null : cached
+  }
 
   let profile: FarcasterProfile | null = null
   try {
@@ -109,10 +112,15 @@ export async function getFarcasterProfileByFid(
  * rare-write (user has to sign a verifyAddress claim on-chain for each
  * one) so staleness within an hour is benign.
  */
-export async function getVerifiedAddressesByFid(fid: number): Promise<string[]> {
+export async function getVerifiedAddressesByFid(
+  fid: number,
+  opts: { skipCache?: boolean } = {},
+): Promise<string[]> {
   const cacheKey = verificationsKey(fid)
-  const cached = await readCached<string[] | ''>(cacheKey)
-  if (cached !== undefined) return cached === '' ? [] : cached
+  if (!opts.skipCache) {
+    const cached = await readCached<string[] | ''>(cacheKey)
+    if (cached !== undefined) return cached === '' ? [] : cached
+  }
 
   let addresses: string[] = []
   try {
@@ -158,10 +166,11 @@ export async function getVerifiedAddressesByFid(fid: number): Promise<string[]> 
  */
 export async function getFarcasterProfileByAddress(
   address: string,
+  opts: { skipCache?: boolean } = {},
 ): Promise<FarcasterProfile | null> {
   const lower = address.toLowerCase()
   const cacheKey = fidByAddressKey(lower)
-  const cached = await readCached<string>(cacheKey)
+  const cached = opts.skipCache ? undefined : await readCached<string>(cacheKey)
 
   let fid: number | null = null
   if (cached !== undefined) {
@@ -190,5 +199,5 @@ export async function getFarcasterProfileByAddress(
       .catch(() => {})
   }
 
-  return fid ? getFarcasterProfileByFid(fid) : null
+  return fid ? getFarcasterProfileByFid(fid, opts) : null
 }
