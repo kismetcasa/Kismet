@@ -72,6 +72,9 @@ export interface CanonicalProfile {
   canonicalAddress: string
   /** FID if the queried address is FC-verified; null otherwise. */
   fid: number | null
+  /** FC profile for the queried address (username, displayName, pfpUrl),
+   *  surfaced for generateMetadata callers so they don't have to re-fetch. */
+  farcaster: FarcasterProfile | null
   /** Where the data came from — drives WalletsPanel rendering + redirect logic. */
   source: CanonicalSource
   /** Raw FID record when source === 'fid'; needed by /api/me to expose
@@ -109,6 +112,7 @@ export async function resolveCanonicalProfile(
       profile,
       canonicalAddress: lower,
       fid: null,
+      farcaster: null,
       source: profile.username || profile.avatarUrl ? 'address' : 'empty',
     }
   }
@@ -125,6 +129,7 @@ export async function resolveCanonicalProfile(
       },
       canonicalAddress: fidProfile.currentAddress,
       fid: fcProfile.fid,
+      farcaster: fcProfile,
       source: 'fid',
       fidProfile,
     }
@@ -148,6 +153,7 @@ export async function resolveCanonicalProfile(
     profile: sibLink.profile,
     canonicalAddress,
     fid: fcProfile.fid,
+    farcaster: fcProfile,
     source: hasData ? (sibLink.inheritedFromSibling ? 'sibling' : 'address') : 'empty',
   }
 }
