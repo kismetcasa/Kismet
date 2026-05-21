@@ -3,8 +3,9 @@ import { verifyMessage, createPublicClient, http } from 'viem'
 import { isAddress } from '@/lib/address'
 import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
-import { upsertProfile, consumeNonce } from '@/lib/profile'
-import { resolveProfileWithSiblings } from '@/lib/addressUnion'
+import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce } from '@/lib/profile'
+import { resolveCanonicalProfile } from '@/lib/addressUnion'
+import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
@@ -48,19 +49,20 @@ export async function GET(
   if (!isAddress(address)) {
     return errorResponse(400, 'Invalid address')
   }
-  // ENS + sibling-aware profile resolution are independent + I/O-bound.
-  // Fan them out so the slowest one (the FC API, ~50-200ms cold) sets
-  // total latency rather than their sum.
+  // ENS, FC profile, and canonical-profile resolution are all
+  // independent + I/O-bound. Fan them out so the slowest call (the
+  // FC API, ~50-200ms cold) sets total latency rather than their sum.
   //
-  // resolveProfileWithSiblings auto-inherits username/avatar from a
-  // sibling verified to the same FID when the queried address has none
-  // of its own — so FC users look the same on any of their wallets'
-  // profile pages. See lib/addressUnion.ts.
-  const [resolved, cachedEns] = await Promise.all([
-    resolveProfileWithSiblings(address),
+  // resolveCanonicalProfile returns the right profile across all
+  // three identity models — FID-keyed, address-keyed, or sibling-
+  // inherited — along with the canonical address for URL redirects.
+  // See lib/addressUnion.ts for the precedence rules.
+  const [canonical, farcaster, cachedEns] = await Promise.all([
+    resolveCanonicalProfile(address),
+    getFarcasterProfileByAddress(address),
     getCachedEns(address),
   ])
-  const { profile, farcaster } = resolved
+  const { profile, canonicalAddress } = canonical
   if (!profile.username && cachedEns === undefined) {
     after(() => resolveEnsAndCache(address))
   }
@@ -70,6 +72,11 @@ export async function GET(
   //   - displayName: collapses the username/farcaster/ens fallback chain
   //     into a single field so callers don't have to repeat the precedence
   //     logic at every render site
+  //   - canonicalAddress: the address whose profile this data lives
+  //     under. Differs from the queried address when (a) the queried
+  //     address is a sibling that inherited from another verification,
+  //     or (b) the FidProfile.currentAddress doesn't match. Clients
+  //     can use it to canonicalize their URL.
   const ensName = cachedEns || undefined
   const avatarUrl = profile.avatarUrl || farcaster?.pfpUrl || undefined
   const displayName =
@@ -80,6 +87,7 @@ export async function GET(
       avatarUrl,
       ensName,
       displayName,
+      canonicalAddress,
       farcaster: farcaster ?? undefined,
     },
   })
@@ -128,6 +136,71 @@ export async function PUT(
   }
 
   const username = body.username?.trim().slice(0, 30) || undefined
-  const profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+
+  // Route the write to the right store based on the user's identity
+  // model. Signature already proved ownership of `address`, so we
+  // only write to stores where `address` is the legitimate target:
+  //
+  //   * FC user with FidProfile → FID-keyed. Updates username/avatar
+  //     but preserves currentAddress; identity-switching is a
+  //     separate /api/me/identity action.
+  //   * FC user with no FidProfile but existing data at some verified
+  //     address (web-first) → address-keyed at the anchor. If the
+  //     URL doesn't match the anchor, reject with the canonical URL
+  //     so the client can redirect (avoids silently fragmenting data
+  //     across two addresses for the same FID).
+  //   * FC user with no profile data anywhere (miniapp-first first
+  //     edit) → create FidProfile with currentAddress = this address.
+  //   * No FC → address-keyed as today.
+  const fcProfile = await getFarcasterProfileByAddress(address)
+  let profile
+  if (!fcProfile) {
+    profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+  } else {
+    const fid = fcProfile.fid
+    const existingFid = await getFidProfile(fid)
+    if (existingFid) {
+      const updated = await upsertFidProfile(fid, existingFid.currentAddress, {
+        username,
+        avatarUrl: body.avatarUrl,
+      })
+      profile = {
+        address: updated.currentAddress,
+        username: updated.username,
+        avatarUrl: updated.avatarUrl,
+        updatedAt: updated.updatedAt,
+      }
+    } else {
+      const verifications = await getVerifiedAddressesByFid(fid)
+      let anchor: string | null = null
+      for (const v of verifications) {
+        const existing = await getProfile(v)
+        if (existing.username || existing.avatarUrl) {
+          anchor = v
+          break
+        }
+      }
+      if (anchor) {
+        if (anchor !== address.toLowerCase()) {
+          return NextResponse.json(
+            { error: 'Update at canonical address', canonicalAddress: anchor },
+            { status: 409 },
+          )
+        }
+        profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+      } else {
+        const updated = await upsertFidProfile(fid, address, {
+          username,
+          avatarUrl: body.avatarUrl,
+        })
+        profile = {
+          address: updated.currentAddress,
+          username: updated.username,
+          avatarUrl: updated.avatarUrl,
+          updatedAt: updated.updatedAt,
+        }
+      }
+    }
+  }
   return NextResponse.json({ profile })
 }

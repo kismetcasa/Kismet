@@ -12,6 +12,8 @@ interface Wallet {
   isIdentity: boolean
 }
 
+type IdentityModel = 'fid' | 'anchored' | 'none'
+
 // Mini-App-only chooser for which of the user's FC-verified addresses
 // is the "Kismet identity" — the address that drives their public
 // profile URL, display name, share cards, and Nav avatar.
@@ -19,15 +21,20 @@ interface Wallet {
 // Renders nothing when:
 //   - Not inside a Mini App (web users have a single wallet, no choice)
 //   - User has < 2 verified addresses (nothing to choose)
-//   - /api/me fails (we degrade gracefully — the picker is optional,
-//     sibling inheritance already covers the common case)
+//   - identityModel === 'anchored' — user is web-first (existing
+//     address-keyed profile), the panel intentionally hides because
+//     switching would promote them to FID-based identity and break
+//     the "continue using your original address" guarantee. Their
+//     identity stays at the anchor; sibling inheritance handles
+//     display across their other verifications.
+//   - /api/me fails (degrade gracefully — the picker is optional)
 //
-// No signature required from the user when switching — FC's
-// verification system already proved they own every address in the
-// list, so the server-side membership check is sufficient.
+// No signature required when switching — FC's verification system
+// already proved they own every address in the list.
 export function WalletsPanel() {
   const { isInMiniApp, refreshIdentity } = useFarcaster()
   const [wallets, setWallets] = useState<Wallet[] | null>(null)
+  const [identityModel, setIdentityModel] = useState<IdentityModel>('none')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
 
@@ -36,9 +43,10 @@ export function WalletsPanel() {
     let cancelled = false
     fetch('/api/me')
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d: { wallets?: Wallet[] }) => {
+      .then((d: { wallets?: Wallet[]; identityModel?: IdentityModel }) => {
         if (cancelled) return
         setWallets(Array.isArray(d.wallets) ? d.wallets : [])
+        setIdentityModel(d.identityModel ?? 'none')
       })
       .catch(() => {
         if (cancelled) return
@@ -56,10 +64,12 @@ export function WalletsPanel() {
       </div>
     )
   }
-  // Nothing to pick — either we couldn't load wallets, or the user
-  // has only one verification. Hide the section entirely rather than
-  // render a one-row picker that looks like a placeholder.
-  if (!wallets || wallets.length < 2) return null
+  // Nothing to pick — either we couldn't load wallets, only one
+  // verification exists, or the user is web-first (their identity is
+  // anchored to an existing address-keyed profile and switching is
+  // intentionally not offered here). Hide rather than render a
+  // disabled/placeholder row.
+  if (!wallets || wallets.length < 2 || identityModel === 'anchored') return null
 
   async function pick(addr: string) {
     if (saving) return

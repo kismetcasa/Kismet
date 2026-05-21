@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { verifyFarcasterJwt, setKismetIdentityAddress } from '@/lib/farcasterAuth'
 import { getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
+import {
+  getFidProfile,
+  getProfile,
+  setFidCurrentAddress,
+  upsertFidProfile,
+} from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 // POST /api/me/identity   { address }
@@ -70,6 +76,42 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // FidProfile.currentAddress is the new source of truth for identity
+  // routing. Update precedence below + the legacy pointer for back-
+  // compat during the deprecation window. Three cases:
+  //
+  //   * FidProfile exists → just move the pointer. No data change.
+  //   * No FidProfile but address-based profile at some verification
+  //     (web-first user choosing to switch for the first time) → copy
+  //     username/avatar into a new FidProfile keyed by `lower`. The
+  //     old address record stays in KV so the user can switch back
+  //     to it cleanly via WalletsPanel (we'd just move currentAddress
+  //     back; data lives in the FidProfile from now on).
+  //   * No profile data anywhere → create empty FidProfile with
+  //     currentAddress = lower (miniapp-first user picking a wallet
+  //     before they've added a username).
+  const existing = await getFidProfile(session.fid)
+  if (existing) {
+    await setFidCurrentAddress(session.fid, lower)
+  } else {
+    const verifications = await getVerifiedAddressesByFid(session.fid)
+    let anchorProfile = null
+    for (const v of verifications) {
+      const candidate = await getProfile(v)
+      if (candidate.username || candidate.avatarUrl) {
+        anchorProfile = candidate
+        break
+      }
+    }
+    await upsertFidProfile(session.fid, lower, {
+      username: anchorProfile?.username,
+      avatarUrl: anchorProfile?.avatarUrl,
+    })
+  }
+  // Legacy pointer kept in lock-step so getKismetIdentityAddress's
+  // fallback path (for callers that haven't migrated) sees the same
+  // value. Cheap; safe to drop once we're confident no caller reads
+  // the legacy key directly.
   await setKismetIdentityAddress(session.fid, lower)
   return NextResponse.json(
     { address: lower },
