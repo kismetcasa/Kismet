@@ -4,6 +4,47 @@ import { isMomentHidden } from './hiddenMoments'
 import { getMomentMeta } from './notifications'
 
 /**
+ * Look up a token's creator via the inprocess timeline endpoint, which
+ * has a dedicated `creator` field. Necessary because /moment only
+ * exposes momentAdmins (an unordered list of platform admins, smart
+ * wallets, and the actual creator) — position [0] is NOT reliably the
+ * minter. Exported so the /api/moment route and the OG-image route
+ * share one implementation.
+ */
+export async function fetchCreatorFromTimeline(
+  collectionAddress: string,
+  tokenId: string,
+  chainId: string = '8453',
+): Promise<{ address: string; username: string | null } | null> {
+  try {
+    const url = inprocessUrl('/timeline', {
+      collection: collectionAddress,
+      limit: 50,
+      chain_id: chainId,
+    })
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 60 },
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as {
+      moments?: Array<{
+        token_id?: string
+        creator?: { address?: string; username?: string | null }
+      }>
+    }
+    const row = data.moments?.find((m) => m.token_id === tokenId)
+    if (!row?.creator?.address) return null
+    return {
+      address: row.creator.address,
+      username: row.creator.username ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Server-side moment detail fetch shared by the canonical page and the
  * intercepting-route overlay. Wrapped in React.cache so co-running
  * server components (e.g. canonical page's generateMetadata + render)
@@ -12,7 +53,9 @@ import { getMomentMeta } from './notifications'
  * The 60s revalidate is the same window the /api/moment proxy uses, so
  * client and server reads stay consistent on first paint. Hidden state
  * is read uncached from KV alongside the fetch and merged in — same
- * shape /api/moment returns.
+ * shape /api/moment returns. Creator is stitched from the timeline
+ * lookup so downstream consumers (page metadata, OG image card) don't
+ * have to guess momentAdmins[0].
  */
 export const fetchMomentDetail = cache(async (
   address: string,
@@ -20,13 +63,14 @@ export const fetchMomentDetail = cache(async (
 ): Promise<MomentDetail | null> => {
   try {
     const url = inprocessUrl('/moment', { collectionAddress: address, tokenId, chainId: '8453' })
-    const [res, hidden] = await Promise.all([
+    const [res, hidden, creator] = await Promise.all([
       fetch(url, { next: { revalidate: 60 } }),
       isMomentHidden(address, tokenId),
+      fetchCreatorFromTimeline(address, tokenId),
     ])
     if (!res.ok) return null
     const data = (await res.json()) as MomentDetail
-    return { ...data, hidden }
+    return { ...data, hidden, creator }
   } catch {
     return null
   }

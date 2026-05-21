@@ -1,6 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { inprocessUrl, shortAddress, type MomentDetail } from '@/lib/inprocess'
+import { shortAddress } from '@/lib/inprocess'
+import { fetchMomentDetail } from '@/lib/momentDetail'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import {
   shareCard,
@@ -36,25 +37,6 @@ interface Props {
   params: Promise<{ address: string; tokenId: string }>
 }
 
-async function fetchDetail(
-  address: string,
-  tokenId: string,
-): Promise<MomentDetail | null> {
-  try {
-    const url = inprocessUrl('/moment', { collectionAddress: address, tokenId, chainId: '8453' })
-    // 24h cache — moment metadata is effectively immutable post-mint, so
-    // there's no point revalidating frequently. Longer TTL bounds the
-    // generator invocation count (each unique URL fires at most once
-    // per day), trading "name edit shows up in share cards within 5
-    // minutes" for lower upstream load on the inprocess API.
-    const res = await fetch(url, { next: { revalidate: 86400 } })
-    if (!res.ok) return null
-    return (await res.json()) as MomentDetail
-  } catch {
-    return null
-  }
-}
-
 export default async function Image({ params }: Props) {
   const { address, tokenId } = await params
 
@@ -64,7 +46,12 @@ export default async function Image({ params }: Props) {
   let imageUrl: string | undefined
 
   if (isAddress(address) && isValidTokenId(tokenId)) {
-    const detail = await fetchDetail(address, tokenId)
+    // fetchMomentDetail stitches the creator field via the timeline
+    // endpoint (inprocess /moment doesn't return one). Without that
+    // enrichment, detail.creator is always undefined here and the
+    // "by <creator>" line at the bottom of the share card never
+    // renders.
+    const detail = await fetchMomentDetail(address, tokenId)
     if (detail) {
       if (detail.metadata?.name) title = detail.metadata.name
       if (detail.creator) {

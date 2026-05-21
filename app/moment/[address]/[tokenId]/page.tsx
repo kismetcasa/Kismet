@@ -13,6 +13,7 @@ import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { getListings } from '@/lib/listings'
 import { SITE_URL } from '@/lib/siteUrl'
 import { MomentDetailView } from '@/components/MomentDetailView'
 
@@ -103,11 +104,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // and the original URL is the higher-quality source for those.
   const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
+  // Active marketplace listing → embed button reads "View Listing"
+  // instead of "Collect <name>", since the destination conceptually
+  // moves from primary-sale collect to secondary-market purchase. Same
+  // action.url either way — the moment page is where the listing is
+  // surfaced for purchase. getListings caps its scan at 500 so this is
+  // bounded even on hot collections.
+  const { listings: collectionListings } = await getListings({ collection: address })
+  const hasActiveListing = collectionListings.some((l) => l.tokenId === tokenId)
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
     // buildFarcasterEmbed truncates at 32 chars per the FC spec, so a
     // long moment name won't break the embed — it'll just be elided.
-    buttonTitle: `Collect ${name}`,
+    buttonTitle: hasActiveListing ? 'View Listing' : `Collect ${name}`,
     action: {
       url: canonicalUrl,
       name: title,

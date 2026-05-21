@@ -129,7 +129,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const embedImageUrl = imageUrl ?? `${canonicalUrl}/opengraph-image`
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
-    buttonTitle: 'view collection',
+    buttonTitle: 'View Collection',
     action: {
       url: canonicalUrl,
       name: `${name} — Kismet Art`,

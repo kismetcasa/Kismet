@@ -16,6 +16,12 @@ export interface FeaturedCollectionRow {
   contractAddress: string
   name?: string
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
+  // Token ID minted as the collection cover at deploy time. Set by
+  // the featured-collections-hydrated API either from CollectionMeta
+  // KV (post-persistence) or inferred from the created-mints set
+  // (for collections registered before the field was persisted).
+  // Drives the highest-priority cover-vs-mint dedupe below.
+  coverTokenId?: string
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
   ethEligibleTokenIds: string[]
@@ -50,14 +56,10 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
   const adminAddr = isOperatorAddress(rawAdminAddr) ? undefined : rawAdminAddr
   const initialUsername = isOperatorAddress(rawAdminAddr) ? undefined : c.default_admin?.username
 
-  // Skip the moment whose image is the collection cover so the cover
-  // NFT doesn't visually appear twice (once as the cover-card, once as
-  // a mint card). collect-all eligibility lists are server-computed and
-  // passed separately, so the hidden moment is still collectable.
-  const coverImage = c.metadata?.image?.trim()
-  const displayMoments = coverImage
-    ? c.moments.filter((m) => m.metadata?.image?.trim() !== coverImage)
-    : c.moments
+  // The hydrator API already strips the cover-mint from c.moments
+  // before slicing, so the slice math lands on the right number of
+  // VISIBLE moments. Don't re-filter here.
+  const displayMoments = c.moments
   const [creatorLabel, setCreatorLabel] = useState<string | null>(
     initialUsername ? `@${initialUsername}` : adminAddr ? shortAddress(adminAddr) : null,
   )
@@ -132,7 +134,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
     // moment cards). lg+: cover-left + grid-right. SharedVideoProvider's
     // clip-path keeps position:fixed videos inside the mobile scroller.
     <article className="flex flex-col lg:flex-row border border-line bg-[#161616] overflow-hidden">
-      <div className="hidden lg:flex flex-col lg:flex-shrink-0 lg:w-64 xl:w-72 lg:border-r lg:border-line">
+      <div className="hidden lg:flex flex-col lg:flex-shrink-0 lg:w-96 xl:w-96 lg:border-r lg:border-line">
         <Link
           href={`/collection/${c.contractAddress}`}
           className="relative aspect-square w-full block overflow-hidden bg-surface group/img"
@@ -158,7 +160,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               alt={name}
               fill
               className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-              sizes="288px"
+              sizes="384px"
               onAllError={() => setImgFailed(true)}
               priority={priority}
               preferProxy
@@ -229,10 +231,11 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         )}
       </div>
 
-      {/* lg+ moments — 5×2 column-major grid (top→bottom, then right). */}
-      <div className="hidden lg:flex-1 lg:min-w-0 lg:grid lg:grid-cols-5 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
+      {/* lg+ moments — column-major flow preserves chronological
+          top→bottom-then-right reading order across both rows. */}
+      <div className="hidden lg:grid lg:flex-1 lg:min-w-0 lg:grid-cols-4 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
         {displayMoments.length === 0 ? (
-          <div className="col-span-full row-span-full flex items-center justify-center min-h-[160px]">
+          <div className="row-span-2 col-span-full flex items-center justify-center min-h-[160px]">
             <span className="text-xs font-mono text-muted">no moments yet</span>
           </div>
         ) : (
@@ -242,6 +245,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               moment={m}
               compact
               priority={priority && idx === 0}
+              fillCell
             />
           ))
         )}

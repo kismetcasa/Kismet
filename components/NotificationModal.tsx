@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { X, Settings, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { NotificationFeed } from './NotificationFeed'
 import { ProfileAvatar } from './ProfileAvatar'
+import { SignInPrompt } from './SignInPrompt'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
@@ -64,23 +65,33 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
   // notifications_enabled webhook so the "Add Kismet" prompt's promise
   // still works without an extra trip to settings.
   const [pushMaster, setPushMaster] = useState<boolean>(false)
+  // 401 from any settings-tab GET flips this so the tab renders
+  // <SignInPrompt /> instead of three blank sections.
+  const [authRequired, setAuthRequired] = useState(false)
 
   useBodyScrollLock()
   useEscapeKey(onClose)
 
-  // Fetch mute lists + push prefs when settings tab is first opened
-  useEffect(() => {
-    if (tab !== 'settings') return
+  // useCallback so both the tab-mount useEffect and SignInPrompt's
+  // onSignedIn can re-run it. .catch paths null out the lists on
+  // non-401 failures so partial outages don't show stale data.
+  const refetchSettings = useCallback(() => {
     setMutedLoading(true)
     setTypesLoading(true)
     setPushLoading(true)
     fetch('/api/notifications/mute', { credentials: 'same-origin' })
-      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((r) => {
+        if (r.status === 401) { setAuthRequired(true); return Promise.reject() }
+        return r.ok ? r.json() : Promise.reject()
+      })
       .then((d) => setMuted(Array.isArray(d.muted) ? d.muted : []))
       .catch(() => setMuted([]))
       .finally(() => setMutedLoading(false))
     fetch('/api/notifications/mute-type', { credentials: 'same-origin' })
-      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((r) => {
+        if (r.status === 401) { setAuthRequired(true); return Promise.reject() }
+        return r.ok ? r.json() : Promise.reject()
+      })
       .then((d) => {
         setMutedTypes(Array.isArray(d.muted) ? d.muted : [])
         setMuteableTypes(Array.isArray(d.muteable) ? d.muteable : [])
@@ -91,7 +102,10 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
       })
       .finally(() => setTypesLoading(false))
     fetch('/api/notifications/push-types', { credentials: 'same-origin' })
-      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((r) => {
+        if (r.status === 401) { setAuthRequired(true); return Promise.reject() }
+        return r.ok ? r.json() : Promise.reject()
+      })
       .then((d) => {
         setPushEnabled(Array.isArray(d.enabled) ? d.enabled : [])
         setPushAllTypes(Array.isArray(d.all) ? d.all : [])
@@ -107,7 +121,15 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
         setPushMaster(false)
       })
       .finally(() => setPushLoading(false))
-  }, [tab])
+  }, [])
+
+  // Reset authRequired on each settings-tab mount so a stale 401
+  // doesn't hide the freshly-loaded data.
+  useEffect(() => {
+    if (tab !== 'settings') return
+    setAuthRequired(false)
+    refetchSettings()
+  }, [tab, refetchSettings])
 
   async function handleUnmute(actor: string) {
     const previous = muted
@@ -251,6 +273,14 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
         <div className="flex-1 overflow-y-auto" style={{ paddingBottom: 'var(--safe-bottom)' }}>
           {tab === 'feed' ? (
             <NotificationFeed />
+          ) : authRequired ? (
+            <SignInPrompt
+              message="sign in to manage notifications"
+              onSignedIn={() => {
+                setAuthRequired(false)
+                refetchSettings()
+              }}
+            />
           ) : (
             <div className="p-4 flex flex-col gap-6">
               <div>

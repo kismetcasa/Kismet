@@ -25,7 +25,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 const NAV_PAGES = [
   { id: 'enjoy',  label: 'Discover', mobileLabel: 'Collect',  href: '/' },
   { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
-  { id: 'market', label: 'Market',   mobileLabel: 'Converge', href: '/market' },
+  { id: 'market', label: 'Market',   mobileLabel: 'Curate', href: '/market' },
 ] as const
 
 type NavPageId = (typeof NAV_PAGES)[number]['id']
@@ -241,26 +241,27 @@ export function Nav() {
             </nav>
           </div>
 
-          {/* Mobile order: name → avatar → bell → search (search/bell hug right).
-              Desktop order: bell → name → avatar (unchanged). */}
+          {/* Mobile order: search → bell → name → avatar — all hugging
+              the right edge, tightly coupled (gap-1). Desktop order:
+              bell → name → avatar (unchanged) via sm:order-* overrides. */}
           <div className="flex items-center gap-1 sm:gap-3">
             {/* Search icon on mobile */}
             <button
               onClick={() => { setModalQuery(''); setSearchOpen(true) }}
-              className="sm:hidden order-4 text-dim hover:text-ink transition-colors p-1"
+              className="sm:hidden order-1 text-dim hover:text-ink transition-colors p-1"
             >
               <Search size={18} />
             </button>
             {effectiveSignedIn && effectiveAddress && (
-              <div className="order-3 sm:order-1">
+              <div className="order-2 sm:order-1">
                 <NotificationBell address={effectiveAddress} />
               </div>
             )}
-            <div className="order-1 sm:order-2">
+            <div className="order-3 sm:order-2">
               <WalletButton />
             </div>
             {effectiveSignedIn && effectiveAddress && (
-              <Link href={`/profile/${effectiveAddress}`} className="order-2 sm:order-3 flex-shrink-0">
+              <Link href={`/profile/${effectiveAddress}`} className="order-4 sm:order-3 flex-shrink-0">
                 <ProfileAvatar address={effectiveAddress} avatarUrl={avatarUrl} size={32} clickable />
               </Link>
             )}

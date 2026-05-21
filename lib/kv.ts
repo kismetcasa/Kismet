@@ -41,6 +41,13 @@ export interface CollectionMeta {
   description?: string
   artist?: string // lowercased deployer address
   kismet_thumbhash?: string
+  // Token ID minted as the collection cover at deploy time (Kismet
+  // create-form flow with mint-cover enabled — currently always '1').
+  // The featured-collection row dedupes this token from its mint-card
+  // grid so the cover image doesn't render twice (cover card + first
+  // mint card). Not used by /collection/[address] — the full
+  // collection page is the moment's actual home, so it stays there.
+  coverTokenId?: string
 }
 
 export type CollectionSource = 'create-form' | 'auto-deploy'

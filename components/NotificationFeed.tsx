@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { NotificationRow } from './NotificationRow'
+import { SignInPrompt } from './SignInPrompt'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useLongPressDrag } from '@/hooks/useLongPressDrag'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -335,9 +336,14 @@ export function NotificationFeed() {
       {/* List */}
       <div className="flex flex-col">
         {authRequired && (
-          <p className="text-xs font-mono text-muted text-center py-12">
-            sign in to see notifications
-          </p>
+          <SignInPrompt
+            message="sign in to see notifications"
+            onSignedIn={() => {
+              setAuthRequired(false)
+              setPage(1)
+              void fetchPage(1)
+            }}
+          />
         )}
         {!authRequired && fetchError && (
           <p className="text-xs font-mono text-muted text-center py-12">

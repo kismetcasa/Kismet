@@ -36,6 +36,21 @@ const nextConfig = {
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
 
+  // Two knobs that bound peak build RSS on the same constrained host.
+  // The SWC parallel workers live OUTSIDE V8's heap (they're Rust
+  // processes that fork during minification) so NODE_OPTIONS
+  // --max-old-space-size doesn't bound them — on a 4-CPU host the
+  // default 4 workers each held ~600-900 MB of Rust-side memory and
+  // the cgroup OOM-killer was reaching `next build` before V8 ever
+  // noticed. `cpus: 2` halves that peak; `webpackMemoryOptimizations`
+  // drops webpack's intermediate caches during compilation for another
+  // 15-30% reduction. Together they trade ~20s of build wall-time for
+  // ~1.5 GB of headroom against SIGKILL.
+  experimental: {
+    cpus: 2,
+    webpackMemoryOptimizations: true,
+  },
+
   // Keep Node.js Turbo SDK external so /api/upload and /api/sign run natively
   serverExternalPackages: ['@ardrive/turbo-sdk'],
 

@@ -12,8 +12,9 @@ interface ShareCardProps {
   label: string
   title: string
   creator?: string
-  // When set, the card renders the resolved poster on the left and the
-  // KISMET / title / creator chrome on the right. Omitted → text-only
+  // When set, the entire 1200x800 frame is the artwork (object-fit
+  // contain, dark letterbox if the source isn't 3:2). Title + creator
+  // live in the cast text, not on the image. Omitted → text-only
   // branded card (video moments without a poster, text moments,
   // collections without a cover, etc.).
   imageUrl?: string
@@ -22,69 +23,40 @@ interface ShareCardProps {
 // Satori (Next's OG renderer) doesn't handle text-overflow gracefully;
 // cap up front to keep the layout within the card.
 const MAX_TITLE_LEN = 50
-const MAX_TITLE_LEN_WITH_IMAGE = 40
 
 export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
-  const cap = imageUrl ? MAX_TITLE_LEN_WITH_IMAGE : MAX_TITLE_LEN
-  const displayName =
-    title.length > cap ? `${title.slice(0, cap - 1)}…` : title
-
   if (imageUrl) {
-    // Side-by-side hero layout: 800x800 image on the left (native
-    // square for typical NFT art; non-square media is letterboxed via
-    // background-size: contain so nothing is cropped), 400-wide text
-    // panel on the right. If Satori can't fetch the image (gateway
-    // outage, etc.) the panel still renders and the image area falls
-    // back to the dark backgroundColor — graceful degradation.
+    // Full-frame hero. <img> + objectFit:contain rather than CSS
+    // background because Satori silently treats background-size:contain
+    // as cover-like, hard-cropping non-square sources.
     return (
       <div
         style={{
           width: '100%',
           height: '100%',
           display: 'flex',
-          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
           backgroundColor: '#0a0a0a',
         }}
       >
-        <div
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={imageUrl}
+          width={1200}
+          height={800}
           style={{
-            width: '800px',
-            height: '800px',
-            display: 'flex',
-            backgroundImage: `url(${imageUrl})`,
-            backgroundSize: 'contain',
-            backgroundPosition: 'center',
-            backgroundRepeat: 'no-repeat',
-            backgroundColor: '#161616',
+            maxWidth: '100%',
+            maxHeight: '100%',
+            objectFit: 'contain',
           }}
         />
-        <div
-          style={{
-            width: '400px',
-            height: '100%',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-between',
-            padding: '56px 40px',
-          }}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: 26, letterSpacing: 6, color: '#888' }}>KISMET</div>
-            <div style={{ fontSize: 16, letterSpacing: 4, color: '#555', marginTop: 12 }}>{label}</div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <div style={{ fontSize: 40, lineHeight: 1.15, color: '#efefef', letterSpacing: -0.5 }}>
-              {displayName}
-            </div>
-            {creator && (
-              <div style={{ fontSize: 22, color: '#888', marginTop: 16 }}>by {creator}</div>
-            )}
-          </div>
-        </div>
       </div>
     )
   }
 
+  const displayName =
+    title.length > MAX_TITLE_LEN ? `${title.slice(0, MAX_TITLE_LEN - 1)}…` : title
   return (
     <div
       style={{
