@@ -17,7 +17,6 @@ export function NotificationBell({ address }: NotificationBellProps) {
   const [count, setCount] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
 
-  // Close modal when navigating to a new page
   useEffect(() => {
     setModalOpen(false)
   }, [pathname])

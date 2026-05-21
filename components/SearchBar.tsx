@@ -55,7 +55,6 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Focus / clear on open/close
   useEffect(() => {
     if (open) inputRef.current?.focus()
     else { setQuery(''); setResults(null) }
@@ -63,7 +62,6 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
 
   useEscapeKey(useCallback(() => setOpen(false), []))
 
-  // Click outside closes
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
