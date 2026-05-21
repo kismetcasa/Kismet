@@ -77,6 +77,7 @@ export function NotificationFeed() {
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [authRequired, setAuthRequired] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
   const [fetchError, setFetchError] = useState(false)
   // Map of address (lowercased) → display name. NotificationRow keys off
   // each notification's actor; we batch-resolve them per page so the row
@@ -206,6 +207,25 @@ export function NotificationFeed() {
     return () => observer.disconnect()
   }, [hasMore, loading, loadingMore])
 
+  // Wallet-connected users without a session cookie hit 401 on the
+  // initial /api/notifications GET — the rest of NotificationFeed has
+  // always called ensureSession before write actions, but never before
+  // the read. Triggered from the auth-required empty state.
+  async function handleSignIn() {
+    if (signingIn) return
+    setSigningIn(true)
+    try {
+      await ensureSession()
+      setAuthRequired(false)
+      setPage(1)
+      void fetchPage(1)
+    } catch (err) {
+      toast.error('Sign in failed', { description: humanError(err) })
+    } finally {
+      setSigningIn(false)
+    }
+  }
+
   async function handleMarkAllRead() {
     try {
       await ensureSession()
@@ -323,9 +343,16 @@ export function NotificationFeed() {
       {/* List */}
       <div className="flex flex-col">
         {authRequired && (
-          <p className="text-xs font-mono text-muted text-center py-12">
-            sign in to see notifications
-          </p>
+          <div className="flex flex-col items-center gap-3 py-12">
+            <p className="text-xs font-mono text-muted">sign in to see notifications</p>
+            <button
+              onClick={handleSignIn}
+              disabled={signingIn}
+              className="px-4 py-1.5 text-xs font-mono border border-line text-dim hover:text-ink hover:border-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {signingIn ? 'signing…' : 'sign in'}
+            </button>
+          </div>
         )}
         {!authRequired && fetchError && (
           <p className="text-xs font-mono text-muted text-center py-12">
