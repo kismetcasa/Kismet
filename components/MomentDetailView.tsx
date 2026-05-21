@@ -37,6 +37,7 @@ import { SplitsPanel } from './SplitsPanel'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
+import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface Props {
   address: string
@@ -98,6 +99,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
+  const { isInMiniApp } = useFarcaster()
 
   const [detail, setDetail] = useState<MomentDetail | null>(
     initialDetail ?? getCachedDetail(address, tokenId) ?? null
@@ -494,8 +496,25 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     await distribute(inferCollectCurrency(detail.saleConfig))
   }
 
-  function handleCopyLink() {
-    navigator.clipboard.writeText(`${window.location.origin}/moment/${address}/${tokenId}`).catch(() => {})
+  // In a Mini App, share = open the Farcaster cast composer with the
+  // moment embed and pre-filled "Collect <title> by <creator>" text.
+  // On the web, share = copy-to-clipboard (no host composer to call).
+  // Mini App path falls through to copy if the SDK throws so the button
+  // never becomes a dead click.
+  async function handleShare() {
+    const url = `${window.location.origin}/moment/${address}/${tokenId}`
+    if (isInMiniApp) {
+      try {
+        const { sdk } = await import('@farcaster/miniapp-sdk')
+        const titleStr = detail?.metadata?.name || `#${tokenId}`
+        const text = creatorName
+          ? `Collect ${titleStr} by ${creatorName}`
+          : `Collect ${titleStr}`
+        await sdk.actions.composeCast({ text, embeds: [url] })
+        return
+      } catch { /* fall through to clipboard */ }
+    }
+    navigator.clipboard.writeText(url).catch(() => {})
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 1500)
   }
@@ -1162,7 +1181,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           <div className="px-5 pb-4">
             <div className="flex items-center gap-3">
               <button
-                onClick={handleCopyLink}
+                onClick={handleShare}
                 className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
               >
                 {linkCopied
