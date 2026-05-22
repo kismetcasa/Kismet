@@ -32,20 +32,6 @@ import { ADMIN_ADDRESS } from './config'
 
 const KEY = 'kismetart:hidden-users'
 
-export async function isUserHidden(
-  address: string | null | undefined,
-): Promise<boolean> {
-  if (!address) return false
-  const lower = address.toLowerCase()
-  if (ADMIN_ADDRESS && lower === ADMIN_ADDRESS) return false
-  try {
-    const v = await redis.sismember(KEY, lower)
-    return !!v
-  } catch {
-    return false
-  }
-}
-
 export async function addHiddenUser(address: string): Promise<void> {
   const lower = address.toLowerCase()
   if (ADMIN_ADDRESS && lower === ADMIN_ADDRESS) {

@@ -3,6 +3,7 @@ import {
   parseWebhookEvent,
   createVerifyAppKeyWithHub,
 } from '@farcaster/miniapp-node'
+import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { clearTokens, registerToken } from '@/lib/farcasterNotifications'
 
@@ -41,13 +42,13 @@ export async function POST(req: NextRequest) {
   // below; this just prevents a DoS via signature-verify floods.
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`fc-webhook:${ip}`, 60, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   let raw: unknown
   try {
     raw = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return errorResponse(400, 'Invalid JSON')
   }
 
   let result
@@ -59,7 +60,7 @@ export async function POST(req: NextRequest) {
     // we never log the body since it might contain notification tokens.
     const name = err instanceof Error ? err.name : 'unknown'
     console.warn('[fc-webhook] signature verification failed:', name)
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    return errorResponse(401, 'Invalid signature')
   }
 
   const { fid, event } = result

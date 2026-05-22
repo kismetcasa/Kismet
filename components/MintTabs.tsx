@@ -35,7 +35,6 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
   // pick up fresh data.
   const [momentsFetchedAt, setMomentsFetchedAt] = useState<number>(0)
 
-  // Reset when wallet changes
   useEffect(() => {
     setMoments([])
     setMomentsFetchedAt(0)

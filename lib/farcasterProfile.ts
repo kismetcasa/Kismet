@@ -48,7 +48,7 @@ async function readCached<T>(key: string): Promise<T | undefined> {
 }
 
 /** Fetch + cache a Farcaster user by FID. Returns null if FID doesn't exist. */
-export async function getFarcasterProfileByFid(
+async function getFarcasterProfileByFid(
   fid: number,
   opts: { skipCache?: boolean } = {},
 ): Promise<FarcasterProfile | null> {

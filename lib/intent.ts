@@ -113,7 +113,7 @@ interface MintIntentMessage {
  * Empty string when no splits — both sides produce the same empty value
  * so they hash the same way.
  */
-export function hashSplits(splits: unknown): string {
+function hashSplits(splits: unknown): string {
   if (!Array.isArray(splits) || splits.length === 0) return ''
   const items = splits
     .filter((s): s is { address: string; percentAllocation: number } =>

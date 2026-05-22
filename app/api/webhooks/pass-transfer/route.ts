@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
+import { errorResponse } from '@/lib/apiResponse'
 import { getGateConfig } from '@/lib/gate'
 import { processTransfer } from '@/lib/pass-validity'
 
@@ -65,14 +66,14 @@ export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-alchemy-signature') ?? ''
 
   if (!verifySignature(rawBody, signature)) {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    return errorResponse(401, 'Invalid signature')
   }
 
   let payload: AlchemyWebhookPayload
   try {
     payload = JSON.parse(rawBody) as AlchemyWebhookPayload
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return errorResponse(400, 'Invalid JSON')
   }
 
   const config = await getGateConfig()

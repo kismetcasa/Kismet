@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
+import { errorResponse } from '@/lib/apiResponse'
 import { verifyFarcasterJwt, setKismetIdentityAddress } from '@/lib/farcasterAuth'
 import { getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import {
@@ -31,37 +32,28 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`me-identity:${ip}`, 20, 60)
-  if (!allowed) {
-    return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
-  }
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   // Require a Bearer JWT (Mini App). Cookie-auth (web) is intentionally
   // not accepted here — the wallet picker doesn't apply to web users.
   const auth = req.headers.get('authorization')
   if (!auth || !auth.startsWith('Bearer ')) {
-    return NextResponse.json(
-      { error: 'Sign in via Farcaster to continue' },
-      { status: 401 },
-    )
+    return errorResponse(401, 'Sign in via Farcaster to continue')
   }
   const token = auth.slice('Bearer '.length).trim()
-  if (!token) {
-    return NextResponse.json({ error: 'Missing token' }, { status: 401 })
-  }
+  if (!token) return errorResponse(401, 'Missing token')
   const session = await verifyFarcasterJwt(token)
-  if (!session) {
-    return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
-  }
+  if (!session) return errorResponse(401, 'Invalid token')
 
   let body: { address?: string }
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
   const target = body.address
   if (!target || !isAddress(target)) {
-    return NextResponse.json({ error: 'Invalid address' }, { status: 400 })
+    return errorResponse(400, 'Invalid address')
   }
   const lower = target.toLowerCase()
 
@@ -70,10 +62,7 @@ export async function POST(req: NextRequest) {
   // identity at any address (impersonation).
   const verifications = await getVerifiedAddressesByFid(session.fid)
   if (!verifications.includes(lower)) {
-    return NextResponse.json(
-      { error: 'Address is not verified to this Farcaster account' },
-      { status: 403 },
-    )
+    return errorResponse(403, 'Address is not verified to this Farcaster account')
   }
 
   // FidProfile.currentAddress is the new source of truth for identity

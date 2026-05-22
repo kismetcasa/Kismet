@@ -265,7 +265,6 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     setSectionCollapsed(config.collapsed)
   }, [])
 
-  // Reset list modal on profile navigation
   useEffect(() => {
     setActiveList(null)
     setListAddresses([])

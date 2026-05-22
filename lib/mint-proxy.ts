@@ -1,5 +1,6 @@
 import { after, type NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
+import { errorResponse } from './apiResponse'
 import { INPROCESS_API } from './inprocess'
 import { CREATE_REFERRAL } from './config'
 import { trackWallet } from './profile'
@@ -38,13 +39,13 @@ export async function proxyMintRequest(
 ): Promise<Response> {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`${rateLimitKey}:${ip}`, 20, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   let body: Record<string, unknown>
   try {
     body = (await req.json()) as Record<string, unknown>
   } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    return errorResponse(400, 'Invalid request body')
   }
   // body.account is required: it's the address we verify against the
   // intent signature, run gate/blacklist/pause checks on, and forward to
@@ -53,7 +54,7 @@ export async function proxyMintRequest(
   // forward to inprocess without any platform-side authorization. Reject
   // upfront; legitimate clients (MintForm) always include it.
   if (typeof body?.account !== 'string' || !isAddress(body.account)) {
-    return NextResponse.json({ error: 'account is required and must be a valid address' }, { status: 400 })
+    return errorResponse(400, 'account is required and must be a valid address')
   }
   const account = body.account
   void trackWallet(account)
@@ -63,7 +64,7 @@ export async function proxyMintRequest(
   if (maxSupplyRaw !== undefined) {
     const ms = Number(maxSupplyRaw)
     if (!Number.isInteger(ms) || ms < 1) {
-      return NextResponse.json({ error: 'maxSupply must be a positive integer' }, { status: 400 })
+      return errorResponse(400, 'maxSupply must be a positive integer')
     }
   }
 
@@ -73,7 +74,7 @@ export async function proxyMintRequest(
   // with a generic "execution reverted" from SplitMain.
   const splitsValidation = validateSplits(body?.splits)
   if (splitsValidation.kind === 'error') {
-    return NextResponse.json({ error: splitsValidation.message }, { status: 400 })
+    return errorResponse(400, splitsValidation.message)
   }
 
   // Strict routing: the body must identify a collection, either by
@@ -88,12 +89,9 @@ export async function proxyMintRequest(
     typeof contractField?.name === 'string' && contractField.name.trim().length > 0 &&
     typeof contractField?.uri === 'string' && contractField.uri.trim().length > 0
   if (!hasAddress && !hasNameAndUri) {
-    return NextResponse.json(
-      {
-        error:
-          'contract must include either an address (existing collection) or name+uri (deploy a new one)',
-      },
-      { status: 400 },
+    return errorResponse(
+      400,
+      'contract must include either an address (existing collection) or name+uri (deploy a new one)',
     )
   }
 
@@ -114,7 +112,7 @@ export async function proxyMintRequest(
     body as MintBody,
   )
   if (!intentResult.ok) {
-    return NextResponse.json({ error: intentResult.error }, { status: intentResult.status })
+    return errorResponse(intentResult.status, intentResult.error)
   }
 
   // Platform-policy gates — meaningful because body.account is signature-
@@ -133,13 +131,13 @@ export async function proxyMintRequest(
     hasGateAccess(targetForGate, account),
   ])
   if (blocked) {
-    return NextResponse.json({ error: 'Address is blocked from minting' }, { status: 403 })
+    return errorResponse(403, 'Address is blocked from minting')
   }
   if (paused) {
-    return NextResponse.json({ error: 'Platform is temporarily paused', paused: true }, { status: 503 })
+    return errorResponse(503, 'Platform is temporarily paused')
   }
   if (!gateOk) {
-    return NextResponse.json({ error: 'Kismet Creator pass required to mint' }, { status: 403 })
+    return errorResponse(403, 'Kismet Creator pass required to mint')
   }
 
   // body.name is our private hint for moment-meta; never forward to InProcess.

@@ -1,3 +1,5 @@
+import { resolveUri } from '@/lib/inprocess'
+
 /**
  * Build a share-card image URL (og:image / twitter:image) from a moment
  * or collection's `meta.image`. Three guard rails:
@@ -24,11 +26,5 @@ export function shareImageUrl(
   if (!imageUri) return undefined
   if (guardAgainst && imageUri === guardAgainst) return undefined
   if (imageUri.startsWith('data:')) return undefined
-  if (imageUri.startsWith('ar://')) {
-    return `https://arweave.net/${imageUri.slice(5)}`
-  }
-  if (imageUri.startsWith('ipfs://')) {
-    return `https://ipfs.io/ipfs/${imageUri.slice(7)}`
-  }
-  return imageUri
+  return resolveUri(imageUri)
 }
