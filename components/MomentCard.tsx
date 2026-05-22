@@ -27,6 +27,7 @@ import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { isVideoMoment } from '@/lib/media/isVideo'
+import { setVideoDuration } from '@/lib/media/durationCache'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface MomentCardProps {
@@ -258,6 +259,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const isVideo = isVideoMoment(meta)
   const isTextMoment = meta.content?.mime === 'text/plain'
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
+  // Seed the duration cache for SharedVideoProvider.createVideo to read
+  // before this card's SharedVideoSlot effect fires. Idempotent (Map.set
+  // with same value) so re-renders are free. Skipped for non-video and
+  // for moments without the server-stitched kismet_duration_sec field
+  // (older mints predating the durationSec write at /api/collections POST).
+  if (isVideo && meta.animation_url && moment.kismet_duration_sec) {
+    setVideoDuration(resolveUri(meta.animation_url), moment.kismet_duration_sec)
+  }
   return (
     // content-visibility / contain-intrinsic-size were here originally
     // to skip render work for off-screen cards. Removed because on iOS

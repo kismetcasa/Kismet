@@ -272,7 +272,18 @@ export async function proxyMintRequest(
       after(async () => {
         const tasks: Promise<unknown>[] = [
           markCreatedMint(contractAddress, tokenId).catch(bestEffort('mint-proxy.markCreatedMint', { contractAddress, tokenId })),
-          setMomentMeta(contractAddress, tokenId, { creator: account, name: displayName }).catch(bestEffort('mint-proxy.setMomentMeta', { contractAddress, tokenId, account })),
+          setMomentMeta(contractAddress, tokenId, {
+            creator: account,
+            name: displayName,
+            // Optional video duration probed client-side at mint time.
+            // Validated as a finite positive number here; the helper
+            // drops anything else from the persisted record.
+            ...(typeof body.durationSec === 'number' &&
+              Number.isFinite(body.durationSec) &&
+              body.durationSec > 0
+              ? { durationSec: body.durationSec }
+              : {}),
+          }).catch(bestEffort('mint-proxy.setMomentMeta', { contractAddress, tokenId, account })),
           writeNotification({
             type: 'mint',
             recipient: account,

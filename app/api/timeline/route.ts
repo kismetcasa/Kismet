@@ -169,22 +169,24 @@ export async function GET(req: NextRequest) {
   )
   merged = merged.map((m: unknown, i: number) => {
     const meta = metas[i]
-    if (!meta?.creator) return m
+    if (!meta) return m
     const moment = m as {
       creator?: { address?: string; username?: string | null }
     }
-    if (
-      moment.creator?.address?.toLowerCase() === meta.creator.toLowerCase()
-    ) {
-      // Inprocess already had the right creator — preserve any
-      // username it surfaced so we don't strip it.
-      return m
-    }
-    // Override the address; clear the username so the client falls
-    // back to fetchCreatorProfile and resolves the right one.
+    const needsCreatorOverride =
+      !!meta.creator &&
+      moment.creator?.address?.toLowerCase() !== meta.creator.toLowerCase()
+    const hasDuration =
+      typeof meta.durationSec === 'number' && meta.durationSec > 0
+    if (!needsCreatorOverride && !hasDuration) return m
     return {
       ...moment,
-      creator: { address: meta.creator, username: null },
+      ...(needsCreatorOverride
+        ? { creator: { address: meta.creator, username: null } }
+        : {}),
+      // Surfaced for the client durationCache so SharedVideoProvider can
+      // skip the metadata→auto preload upgrade dance for long-form.
+      ...(hasDuration ? { kismet_duration_sec: meta.durationSec } : {}),
     }
   })
 
