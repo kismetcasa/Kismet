@@ -61,7 +61,16 @@ async function loadCollectionMeta(address: string): Promise<Record<string, unkno
     contractAddress: address,
     name: kv?.name,
     metadata: kv
-      ? { name: kv.name, image: kv.image, description: kv.description }
+      ? {
+          name: kv.name,
+          image: kv.image,
+          description: kv.description,
+          // Pass through thumbhash so the MintForm collection chip + any
+          // other client surfaces get the blur placeholder during image
+          // load. inprocess passes it through when it indexes the
+          // Arweave metadata JSON; the KV fallback was dropping it.
+          ...(kv.kismet_thumbhash ? { kismet_thumbhash: kv.kismet_thumbhash } : {}),
+        }
       : undefined,
   }
 }

@@ -55,16 +55,22 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Warm TLS to arweave.net (video tags + 'direct'-mode fallback still
-            hit it from the browser). dns-prefetch covers the AR.IO + IPFS
-            pool we walk through on proxy failure. */}
-        <link rel="preconnect" href="https://arweave.net" crossOrigin="anonymous" />
-        {/* Quick Auth token acquisition runs on every Mini App reload —
-            preconnect shaves the TLS handshake off the critical path. */}
-        <link rel="preconnect" href="https://auth.farcaster.xyz" />
+        {/* Warm TLS to arweave.net. The dominant consumers are the
+            <video> elements in SharedVideoProvider and the poster
+            <img>s in MomentImage — both no-cors by default. Browser
+            connection pools partition by CORS mode, so a crossorigin
+            preconnect here would warm the wrong pool entry and the
+            no-cors video/image requests would open a fresh connection
+            anyway. dns-prefetch covers the AR.IO + IPFS pool we walk
+            through on proxy failure. */}
+        <link rel="preconnect" href="https://arweave.net" />
+        {/* Quick Auth token acquisition runs on every Mini App reload.
+            crossorigin matches the cors-mode fetch the @farcaster/quick-auth
+            SDK issues for /nonce — without it the preconnect's pool entry
+            sits unused and the SDK opens a fresh TCP+TLS connection
+            anyway. */}
+        <link rel="preconnect" href="https://auth.farcaster.xyz" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://permagate.io" />
-        <link rel="dns-prefetch" href="https://g8way.io" />
-        <link rel="dns-prefetch" href="https://ar-io.dev" />
         <link rel="dns-prefetch" href="https://ipfs.io" />
         <link rel="dns-prefetch" href="https://dweb.link" />
       </head>

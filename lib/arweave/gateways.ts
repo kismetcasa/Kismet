@@ -3,11 +3,14 @@
 // of arweave.net during the propagation window) doesn't block verification
 // or rendering on the others. Order matters: arweave.net is canonical and
 // listed first so healthy moments load from it without paying any fallback.
+//
+// Pruned 2026-05: g8way.io stopped resolving (NXDOMAIN) and ar-io.dev's
+// cert expired, producing console noise + wasted RTT on every fallback walk.
+// Verify newly-added entries with `curl -I https://<host>/<known-txid>` —
+// dead gateways stall the fallback chain rather than failing fast.
 const ARWEAVE_GATEWAYS = [
   'https://arweave.net',
   'https://permagate.io',
-  'https://g8way.io',
-  'https://ar-io.dev',
 ] as const
 
 const IPFS_GATEWAYS = [

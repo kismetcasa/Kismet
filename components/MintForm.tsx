@@ -15,6 +15,7 @@ import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
+import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -90,6 +91,13 @@ interface CollectionOption {
   address: string
   name: string
   image?: string
+  // Base64 thumbhash for the cover. Passed to MomentImage so the
+  // selected-collection chip renders a blur placeholder during the
+  // optimizer fetch + any fallback walk — matches what AirdropForm's
+  // moment chip already does. Optional because legacy KV records
+  // pre-date the thumbhash field and inprocess may not surface it
+  // for collections deployed outside the Kismet flow.
+  thumbhash?: string
 }
 
 // PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
@@ -156,7 +164,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         type ApiCollection = {
           contractAddress?: string
           name?: string
-          metadata?: { name?: string; image?: string }
+          metadata?: { name?: string; image?: string; kismet_thumbhash?: string }
         }
         const items: CollectionOption[] = (Array.isArray(d.collections) ? d.collections : [])
           .map((c: ApiCollection) => {
@@ -165,6 +173,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               address: c.contractAddress,
               name: c.metadata?.name ?? c.name ?? shortAddress(c.contractAddress),
               image: c.metadata?.image,
+              thumbhash: c.metadata?.kismet_thumbhash,
             }
           })
           .filter((c: CollectionOption | null): c is CollectionOption => c !== null)
@@ -673,6 +682,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // Hash the poster when transcoded so the placeholder matches the
         // static frame feeds render; otherwise the source media itself.
         const thumbhashPromise = generateThumbhash(posterFile ?? mediaFile)
+        // Probe video duration in parallel with the upload — server
+        // persists via setMomentMeta so feeds can pick long-form
+        // preload at element-create time. Returns null for non-video or
+        // probe failure; payload omits durationSec in those cases.
+        const durationPromise = probeDurationSeconds(mediaFile).catch(() => null)
         const mediaUri = await uploadToArweave(mediaFile, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
@@ -696,7 +710,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('uploading-metadata')
         setUploadProgress(0)
         toast.loading('Uploading metadata…', { id: 'mint' })
-        const [thumbhash, posterUri] = await Promise.all([thumbhashPromise, posterUriPromise])
+        const [thumbhash, posterUri, durationSec] = await Promise.all([
+          thumbhashPromise,
+          posterUriPromise,
+          durationPromise,
+        ])
         const posterVerify = posterUri ? verifyArweaveAvailable(posterUri) : Promise.resolve(true)
         // Poster (when extracted) wins as `image` so feeds render the
         // static frame; the moving asset goes to animation_url. For video
@@ -765,7 +783,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
-        const payload: CreateMomentPayload & { name: string } = {
+        const payload: CreateMomentPayload & { name: string; durationSec?: number } = {
           contract: isAutoDeploy
             ? { name: resolvedCollectionName, uri: collectionUri! }
             : { address: targetCollection! },
@@ -780,6 +798,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           name: name.trim(),
           account: address!,
           ...(finalSplits ? { splits: finalSplits } : {}),
+          // Passed through to mint-proxy's setMomentMeta call so feed
+          // surfaces can seed lib/media/durationCache and skip the
+          // metadata→auto preload upgrade for long-form videos.
+          ...(typeof durationSec === 'number' && durationSec > 0
+            ? { durationSec }
+            : {}),
         }
 
         // Per-action intent signature — server verifies the wallet at
@@ -1178,6 +1202,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                   fill
                   className="object-cover"
                   sizes="32px"
+                  thumbhash={selectedCollection.thumbhash}
                 />
               </div>
             ) : selectedCollection ? (

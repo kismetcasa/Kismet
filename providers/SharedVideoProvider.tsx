@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { gatewayUrls } from '@/lib/arweave/gateways'
+import { getVideoDuration } from '@/lib/media/durationCache'
 
 /**
  * Persistent shared <video> element pool. Lives in the root layout so its
@@ -564,12 +565,23 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
 
   function createVideo(src: string): ManagedVideo {
     const gateways = gatewayUrls(src)
+    // Seeded by MomentCard from the server-stitched kismet_duration_sec.
+    // When present + over the long-form threshold, skip the metadata→auto
+    // preload upgrade dance: start with preload="auto" so the browser
+    // buffers aggressively from the first byte, and set isLongForm=true
+    // so setupIntersectionObserver picks the wide rootMargin upfront.
+    // Absent (most pre-existing moments) → current default behaviour;
+    // loadedmetadata still drives the promotion.
+    const durationHint = getVideoDuration(src)
+    const isLongFormHint =
+      typeof durationHint === 'number' &&
+      durationHint > LONG_FORM_DURATION_THRESHOLD_S
     const el = document.createElement('video')
     el.autoplay = true
     el.muted = true
-    el.loop = true
+    el.loop = !isLongFormHint
     el.playsInline = true
-    el.preload = 'metadata'
+    el.preload = isLongFormHint ? 'auto' : 'metadata'
     el.style.position = 'fixed'
     // Anchor the element at the viewport origin and let positionElement
     // drive placement via transform — keeps scroll-tracking on the GPU.
@@ -598,7 +610,7 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       gatewayIndex: 0,
       loaded: false,
       lastActiveAt: Date.now(),
-      isLongForm: false,
+      isLongForm: isLongFormHint,
       destroyed: false,
       abort,
       lastTop: NaN,
