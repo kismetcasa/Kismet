@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
 import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly, isInIframe } from '@/lib/media/gateway'
+import { trackPerf } from '@/lib/telemetry'
 
 interface CommonProps {
   /** Raw URI: ar://, ipfs://, https://, blob:, or data: */
@@ -100,6 +101,11 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash: _th
       // On WebKit + non-proxiable source we have to walk direct — no proxy
       // path available — but at least skipDirectWalk doesn't apply here
       // because there's no proxy attempt to short-circuit out of.
+      //
+      // Telemetry: record the optimizer-bypass event so we can spot
+      // systemic content-type issues (e.g., creators uploading videos
+      // as cover images) without trawling the production logs.
+      trackPerf('optimizer_400', 1)
       setMode(proxiable ? 'proxy' : 'direct')
       return
     }

@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { getVideoDuration } from '@/lib/media/durationCache'
+import { trackPerf } from '@/lib/telemetry'
 
 /**
  * Persistent shared <video> element pool. Lives in the root layout so its
@@ -394,7 +395,20 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
             video.isIntersecting = true
             // Slot moved during debounce; re-position before un-hide.
             positionElement(video, slot)
-            video.el.play().catch(() => {})
+            // Time-to-first-frame instrumentation: measure from the
+            // play() decision to the first timeupdate event. Captures
+            // the user-perceived "stall" between scroll-into-view and
+            // visible motion. One-shot listener so re-plays don't
+            // double-count.
+            const ttffStart = performance.now()
+            const onFirstFrame = () => {
+              trackPerf('video_ttff', performance.now() - ttffStart)
+              video.el.removeEventListener('timeupdate', onFirstFrame)
+            }
+            video.el.addEventListener('timeupdate', onFirstFrame, { once: true })
+            video.el.play().catch(() => {
+              video.el.removeEventListener('timeupdate', onFirstFrame)
+            })
           } else {
             if (video.slots[0] !== slot) return
             video.isIntersecting = false
@@ -560,6 +574,12 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       slotsToNotify.forEach((s) => s.onEvicted?.())
       destroyVideo(oldest.video)
       poolRef.current.delete(oldest.src)
+      // Eviction-under-pressure signal — high values mean the platform's
+      // decoder budget cap (6 mobile / 18 desktop) is being hit during
+      // active scroll, which manifests as visible re-loads when the
+      // user scrolls back. Watching this distribution by platform tells
+      // us when the caps need tuning.
+      trackPerf('pool_eviction', 1)
     }
   }
 

@@ -3,6 +3,7 @@ import { Toaster } from 'sonner'
 import { Providers } from '@/providers/WagmiProvider'
 import { FarcasterProvider } from '@/providers/FarcasterProvider'
 import { Nav } from '@/components/Nav'
+import { TelemetryProvider } from '@/components/TelemetryProvider'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { isMobileUA } from '@/lib/serverDevice'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -77,6 +78,7 @@ export default async function RootLayout({
       <body>
         <Providers isMobile={isMobile}>
           <FarcasterProvider>
+            <TelemetryProvider />
             <Nav />
             <main
               // Push content below the nav, which is h-14 + safe-top tall.
