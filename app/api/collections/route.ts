@@ -67,14 +67,12 @@ async function loadCollectionMeta(address: string): Promise<Record<string, unkno
 
 interface CollectAllEligibility {
   ethEligibleTokenIds: string[]
-  ethEligibleTotalWei: string
   usdcEligibleTokenIds: string[]
-  usdcEligibleTotalUsdc: string
 }
 
-// Resolve ETH- and USDC-eligible token IDs + totals for a collection so the
-// card can render a one-click "collect all" CTA. Returns empty fields on
-// any failure — the action component then hides itself.
+// Resolve ETH- and USDC-eligible token IDs for a collection so the card can
+// render a one-click "collect all" CTA. Returns empty fields on any failure
+// — the action component then hides itself.
 async function loadCollectAllEligibility(
   client: ReturnType<typeof serverBaseClient>,
   address: string,
@@ -82,9 +80,7 @@ async function loadCollectAllEligibility(
 ): Promise<CollectAllEligibility> {
   const empty: CollectAllEligibility = {
     ethEligibleTokenIds: [],
-    ethEligibleTotalWei: '0',
     usdcEligibleTokenIds: [],
-    usdcEligibleTotalUsdc: '0',
   }
   try {
     const tlUrl = inprocessUrl('/timeline', {
@@ -112,13 +108,7 @@ async function loadCollectAllEligibility(
     ])
     return {
       ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
-      ethEligibleTotalWei: ethEligible
-        .reduce((sum, e) => sum + e.pricePerToken, 0n)
-        .toString(),
       usdcEligibleTokenIds: usdcEligible.map((e) => e.tokenId.toString()),
-      usdcEligibleTotalUsdc: usdcEligible
-        .reduce((sum, e) => sum + e.pricePerToken, 0n)
-        .toString(),
     }
   } catch {
     return empty

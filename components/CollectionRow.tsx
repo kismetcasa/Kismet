@@ -25,9 +25,7 @@ export interface FeaturedCollectionRow {
   default_admin?: { address?: string; username?: string }
   moments: Moment[]
   ethEligibleTokenIds: string[]
-  ethEligibleTotalWei: string
   usdcEligibleTokenIds: string[]
-  usdcEligibleTotalUsdc: string
   featuredAt: number
 }
 
@@ -121,9 +119,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         <CollectAllAction
           collectionAddress={c.contractAddress}
           ethEligibleTokenIds={c.ethEligibleTokenIds}
-          ethEligibleTotalWei={c.ethEligibleTotalWei}
           usdcEligibleTokenIds={c.usdcEligibleTokenIds}
-          usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
         />
       </div>
     </article>
@@ -197,9 +193,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
             <CollectAllAction
               collectionAddress={c.contractAddress}
               ethEligibleTokenIds={c.ethEligibleTokenIds}
-              ethEligibleTotalWei={c.ethEligibleTotalWei}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds}
-              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
             />
           </div>
         </div>

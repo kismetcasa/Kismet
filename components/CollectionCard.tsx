@@ -26,9 +26,7 @@ export interface CollectionDisplay {
   // that fires a single EIP-5792 wallet_sendCalls bundle covering both legs;
   // otherwise the action slot is empty.
   ethEligibleTokenIds?: string[]
-  ethEligibleTotalWei?: string
   usdcEligibleTokenIds?: string[]
-  usdcEligibleTotalUsdc?: string
 }
 
 interface CollectionCardProps {
@@ -142,9 +140,7 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
             <CollectAllAction
               collectionAddress={c.contractAddress}
               ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
-              ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
-              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc ?? '0'}
             />
           ) : (
             <Link
@@ -167,9 +163,7 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
             <CollectAllAction
               collectionAddress={c.contractAddress}
               ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
-              ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
-              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc ?? '0'}
             />
           )}
         </div>
