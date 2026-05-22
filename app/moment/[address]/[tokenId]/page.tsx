@@ -222,14 +222,18 @@ export default async function MomentPage({ params }: Props) {
           request off during HTML parse instead of waiting until the
           <video> element mounts post-hydration. Cuts ~150-400ms of TTFF
           on cold-cache share-link landings (FC casts, X shares). Skip
-          for image/text moments and when no animation_url is set. */}
+          for image/text moments and when no animation_url is set.
+          No crossorigin attribute: must match the no-cors mode of the
+          <video> element this preload is feeding (SharedVideoProvider's
+          createVideo doesn't set crossOrigin). A mismatched preload
+          ends up in a different cache partition and Chrome warns
+          "preload was not used" — the bytes are wasted. */}
       {detail?.metadata?.animation_url &&
         isVideoMoment(detail.metadata) && (
           <link
             rel="preload"
             as="video"
             href={resolveUri(detail.metadata.animation_url)}
-            crossOrigin="anonymous"
           />
         )}
       <MomentDetailView

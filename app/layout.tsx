@@ -55,10 +55,15 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Warm TLS to arweave.net (video tags + 'direct'-mode fallback still
-            hit it from the browser). dns-prefetch covers the AR.IO + IPFS
-            pool we walk through on proxy failure. */}
-        <link rel="preconnect" href="https://arweave.net" crossOrigin="anonymous" />
+        {/* Warm TLS to arweave.net. The dominant consumers are the
+            <video> elements in SharedVideoProvider and the poster
+            <img>s in MomentImage — both no-cors by default. Browser
+            connection pools partition by CORS mode, so a crossorigin
+            preconnect here would warm the wrong pool entry and the
+            no-cors video/image requests would open a fresh connection
+            anyway. dns-prefetch covers the AR.IO + IPFS pool we walk
+            through on proxy failure. */}
+        <link rel="preconnect" href="https://arweave.net" />
         {/* Quick Auth token acquisition runs on every Mini App reload —
             preconnect shaves the TLS handshake off the critical path. */}
         <link rel="preconnect" href="https://auth.farcaster.xyz" />
