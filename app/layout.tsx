@@ -64,12 +64,13 @@ export default async function RootLayout({
             anyway. dns-prefetch covers the AR.IO + IPFS pool we walk
             through on proxy failure. */}
         <link rel="preconnect" href="https://arweave.net" />
-        {/* Quick Auth token acquisition runs on every Mini App reload —
-            preconnect shaves the TLS handshake off the critical path. */}
-        <link rel="preconnect" href="https://auth.farcaster.xyz" />
+        {/* Quick Auth token acquisition runs on every Mini App reload.
+            crossorigin matches the cors-mode fetch the @farcaster/quick-auth
+            SDK issues for /nonce — without it the preconnect's pool entry
+            sits unused and the SDK opens a fresh TCP+TLS connection
+            anyway. */}
+        <link rel="preconnect" href="https://auth.farcaster.xyz" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://permagate.io" />
-        <link rel="dns-prefetch" href="https://g8way.io" />
-        <link rel="dns-prefetch" href="https://ar-io.dev" />
         <link rel="dns-prefetch" href="https://ipfs.io" />
         <link rel="dns-prefetch" href="https://dweb.link" />
       </head>
