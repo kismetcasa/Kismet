@@ -130,36 +130,20 @@ export async function GET(req: NextRequest) {
     return true
   })
 
-  // Curated creator allowlist — narrows to moments by the listed creators.
-  // Applied early (before the broader `creator` profile filter and before
-  // sort/featured) so downstream stages all see the already-narrowed set.
-  if (filterToCreators && creatorsSet) {
-    merged = merged.filter((m: unknown) => {
-      const moment = m as { creator?: { address?: string } }
-      const addr = moment.creator?.address?.toLowerCase()
-      return addr ? creatorsSet.has(addr) : false
-    })
-  }
-
-  // Strict Mints surface: only moments tracked in created-mints (mints
-  // via MintForm + covers minted at Create-Collection time) appear.
-  // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
-  // remain visible in user-history surfaces.
-  if (scope === 'standalone' && !singleCollection) {
-    const createdMints = await getCreatedMintsSet()
-    merged = merged.filter((m: unknown) => {
-      const moment = m as { address?: string; token_id?: string }
-      return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
-    })
-  }
-
-  // Stitch KV moment-meta override onto merged moments. mint-proxy
-  // writes the actual minter EOA at mint time; inprocess attributes
-  // by the collection's defaultAdmin which is wrong for delegated
-  // mints (anyone authorized via the "Authorize creators" panel).
-  // Without this override, delegated mints surface on the deployer's
-  // profile + cards instead of the actual minter's. Same trust path
-  // MomentDetailView already uses via the kvCreatorAddress fallback.
+  // Stitch KV moment-meta override onto merged moments BEFORE any filter
+  // that consumes creator.address. mint-proxy writes the actual minter EOA
+  // at mint time, and /api/collections POST writes the artist EOA for the
+  // cover-mint at deploy time; inprocess attributes both to the wrong
+  // address (the collection's defaultAdmin for delegated mints, the factory
+  // for cover-mints created via setupAction). Without the override, those
+  // moments surface under the wrong address.
+  //
+  // Must run before filterToCreators (rosters) and the hidden-users filter:
+  // both check creator.address, and a cover-mint or delegated mint would be
+  // dropped under the wrong inprocess attribution before the stitch could
+  // rescue it. creatorSet (profile) and airdroppable already run after this
+  // block, so they consume the corrected value too. Same trust path
+  // MomentDetailView uses via the kvCreatorAddress fallback.
   // One MGET in place of N parallel GETs — same shape out, single round trip.
   const metas = await getMomentMetaBatch(
     merged.map((m: unknown) => {
@@ -189,6 +173,30 @@ export async function GET(req: NextRequest) {
       ...(hasDuration ? { kismet_duration_sec: meta.durationSec } : {}),
     }
   })
+
+  // Curated creator allowlist — narrows to moments by the listed creators.
+  // Runs after the KV stitch above so cover-mints and delegated mints (which
+  // inprocess attributes to the wrong address) match the roster on the
+  // corrected creator.address, not the wrong factory/defaultAdmin one.
+  if (filterToCreators && creatorsSet) {
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { creator?: { address?: string } }
+      const addr = moment.creator?.address?.toLowerCase()
+      return addr ? creatorsSet.has(addr) : false
+    })
+  }
+
+  // Strict Mints surface: only moments tracked in created-mints (mints
+  // via MintForm + covers minted at Create-Collection time) appear.
+  // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
+  // remain visible in user-history surfaces.
+  if (scope === 'standalone' && !singleCollection) {
+    const createdMints = await getCreatedMintsSet()
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+    })
+  }
 
   // Creator filter (Featured / Profile feeds). Matches if the moment's
   // creator address is *any* address in the expanded FID sibling set.
