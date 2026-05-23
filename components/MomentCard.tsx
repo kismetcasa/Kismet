@@ -68,13 +68,21 @@ interface MomentCardProps {
    * mint" become self-diagnosable from a glance at the profile.
    */
   passBadge?: { passCollection: string; hasValidity: boolean }
+  /**
+   * Discovery-context flag (the artists/roster tab): the card's primary
+   * action steers to the creator's profile instead of collect/list. The
+   * single button (compact, or non-owned full) becomes "view profile";
+   * an owner's full-layout card keeps "collect+" on the right and swaps
+   * the left "list" for "view profile".
+   */
+  profileCta?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -255,6 +263,24 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     : mintedOut
       ? hasCollected ? 'collected' : 'minted out'
       : hasCollected ? 'collect+' : 'collect'
+
+  // Artists/roster tab: steer the primary action to the creator's profile.
+  // Gated on a resolvable creator address so a malformed moment falls back
+  // to the normal collect/list buttons rather than linking to /profile/undefined.
+  const showProfileCta = !!profileCta && !!moment.creator?.address
+  const renderViewProfile = (variant: 'compact' | 'full') => (
+    <Link
+      href={`/profile/${moment.creator?.address}`}
+      onClick={(e) => e.stopPropagation()}
+      className={
+        variant === 'compact'
+          ? 'block text-center w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border text-muted border-line accent-grad-hover'
+          : `flex-1 flex items-center justify-center ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border text-muted border-line accent-grad-hover transition-all`
+      }
+    >
+      view profile
+    </Link>
+  )
 
   const isVideo = isVideoMoment(meta)
   const isTextMoment = meta.content?.mime === 'text/plain'
@@ -481,7 +507,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </span>
             </div>
           )}
-          {owned > 0 ? (
+          {showProfileCta ? (
+            renderViewProfile('compact')
+          ) : owned > 0 ? (
             <ListButton
               collectionAddress={moment.address}
               tokenId={moment.token_id}
@@ -523,31 +551,38 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </div>
             </div>
           )}
-          {owned > 0 && (
-            <div className="flex-1 min-w-0">
-              <ListButton
-                collectionAddress={moment.address}
-                tokenId={moment.token_id}
-                name={meta.name}
-                image={meta.image ? resolveUri(meta.image) : undefined}
-                creatorAddress={moment.creator?.address}
-                contentUri={meta.content?.uri}
-                contentMime={meta.content?.mime}
-                buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
-              />
-            </div>
+          {owned > 0 &&
+            (showProfileCta ? (
+              renderViewProfile('full')
+            ) : (
+              <div className="flex-1 min-w-0">
+                <ListButton
+                  collectionAddress={moment.address}
+                  tokenId={moment.token_id}
+                  name={meta.name}
+                  image={meta.image ? resolveUri(meta.image) : undefined}
+                  creatorAddress={moment.creator?.address}
+                  contentUri={meta.content?.uri}
+                  contentMime={meta.content?.mime}
+                  buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
+                />
+              </div>
+            ))}
+          {showProfileCta && owned === 0 ? (
+            renderViewProfile('full')
+          ) : (
+            <button
+              onClick={handleCollect}
+              disabled={collecting || mintedOut || !collectReady}
+              className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
+                hasCollected
+                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
+                  : 'text-muted border-line accent-grad-hover transition-all'
+              }`}
+            >
+              {collectLabel}
+            </button>
           )}
-          <button
-            onClick={handleCollect}
-            disabled={collecting || mintedOut || !collectReady}
-            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-              hasCollected
-                ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                : 'text-muted border-line accent-grad-hover transition-all'
-            }`}
-          >
-            {collectLabel}
-          </button>
         </div>
       )}
     </article>

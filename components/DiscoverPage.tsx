@@ -151,6 +151,7 @@ function MomentFeed({
   emptyMessage = 'nothing here yet',
   header,
   withViewToggle = false,
+  profileCta = false,
 }: {
   apiUrl: string
   emptyMessage?: string
@@ -163,6 +164,9 @@ function MomentFeed({
    * its mints + collections sub-tabs).
    */
   withViewToggle?: boolean
+  /** Forwarded to each card — steers the primary action to the creator's
+   *  profile (the artists/roster tab). */
+  profileCta?: boolean
 }) {
   const lazy = useContext(LazyMountCtx)
   const [viewMode, setViewMode] = useViewMode()
@@ -195,6 +199,7 @@ function MomentFeed({
           compact={isGrid}
           showCreator={isGrid}
           priority={index < eagerCount}
+          profileCta={profileCta}
         />
       )}
       empty={
@@ -553,6 +558,7 @@ function RosterFeed() {
       header={header}
       emptyMessage="no moments yet from this roster"
       withViewToggle
+      profileCta
     />
   )
 }

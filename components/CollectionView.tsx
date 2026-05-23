@@ -41,10 +41,12 @@ function AvatarRow({
   return (
     <Link
       href={`/profile/${addr}`}
-      className="flex items-center gap-2.5 border border-line hover:border-muted px-3 py-2 transition-colors w-full sm:w-auto"
+      className="flex items-center gap-2 sm:gap-2.5 border border-line hover:border-muted px-2.5 sm:px-3 py-2 transition-colors w-full sm:w-auto"
     >
-      <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
-      <span className="text-xs font-mono text-dim truncate">
+      <span className="shrink-0">
+        <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
+      </span>
+      <span className="text-xs font-mono text-dim truncate min-w-0">
         {p?.name || shortAddress(addr)}
       </span>
     </Link>
@@ -912,7 +914,7 @@ export function CollectionView({
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
             {uniqueCreators.length === 1 ? 'artist' : 'artists'}
           </h2>
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
             {uniqueCreators.map((addr) => (
               <AvatarRow key={addr} addr={addr} profiles={profiles} />
             ))}
