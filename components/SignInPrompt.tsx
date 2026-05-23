@@ -7,7 +7,7 @@ import { humanError } from '@/lib/toast'
 
 interface SignInPromptProps {
   /** Helper text shown above the button. */
-  message?: string
+  message: string
   /**
    * Fires after SIWE resolves. The caller clears its authRequired
    * state and re-runs the fetch that 401'd — only the surface that
@@ -24,7 +24,7 @@ interface SignInPromptProps {
  * without a wallet prompt.
  */
 export function SignInPrompt({
-  message = 'sign in to continue',
+  message,
   onSignedIn,
 }: SignInPromptProps) {
   const { ensureSession } = useUploadSession()

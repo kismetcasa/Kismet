@@ -101,7 +101,7 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
         {tabs.map((t) => (
           <button
             key={t.id}
-            onClick={() => { if (t.id === 'airdrop') fetchMoments(); setTab(t.id) }}
+            onClick={() => setTab(t.id)}
             onMouseEnter={() => { if (t.id === 'airdrop') fetchMoments() }}
             className={`px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px ${
               tab === t.id

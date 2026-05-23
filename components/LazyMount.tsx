@@ -30,10 +30,6 @@ interface LazyMountProps {
   rootMargin?: string
   /** Placeholder className, applied to the reservation div before mount. */
   placeholderClassName?: string
-  /** Placeholder content. Default mimics a feed-card shape (square image
-   *  area + small footer) so layout shift is near-zero when the real card
-   *  swaps in. */
-  placeholder?: ReactNode
 }
 
 const DEFAULT_PLACEHOLDER = (
@@ -62,7 +58,6 @@ export function LazyMount({
   children,
   rootMargin = '200px',
   placeholderClassName,
-  placeholder = DEFAULT_PLACEHOLDER,
 }: LazyMountProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
@@ -98,7 +93,7 @@ export function LazyMount({
       className={placeholderClassName ?? 'bg-[#161616] border border-line overflow-hidden'}
       aria-hidden
     >
-      {placeholder}
+      {DEFAULT_PLACEHOLDER}
     </div>
   )
 }
@@ -118,15 +113,13 @@ export function MaybeLazy({
   index,
   lazy,
   children,
-  placeholder,
 }: {
   index: number
   lazy: boolean
   children: () => ReactNode
-  placeholder?: ReactNode
 }) {
   if (!lazy || index < EAGER_MOUNT_COUNT) {
     return <Fragment>{children()}</Fragment>
   }
-  return <LazyMount placeholder={placeholder}>{children}</LazyMount>
+  return <LazyMount>{children}</LazyMount>
 }

@@ -34,7 +34,6 @@ export async function POST(req: NextRequest) {
     splitAddress?: string
     collectionAddress?: string
     tokenId?: string
-    chainId?: number
     // 'eth' (default) or 'usdc'. Maps to the inprocess `tokenAddress` field
     // — required for USDC distributions per their docs (otherwise the call
     // defaults to native ETH and distributes nothing from a USDC splits
@@ -141,7 +140,7 @@ export async function POST(req: NextRequest) {
     },
     body: JSON.stringify({
       splitAddress,
-      chainId: body.chainId ?? 8453,
+      chainId: 8453,
       ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
     }),
   })
