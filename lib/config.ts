@@ -13,11 +13,16 @@ export const CREATE_REFERRAL =
   process.env.NEXT_PUBLIC_CREATE_REFERRAL ||
   '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 
-// Kismet Casa residencies wallet — receives 5% of primary sale revenue when the
-// creator opts in at mint time via the residencies toggle.
+// Kismet Casa residencies wallet — receives a creator-chosen cut of primary
+// sale revenue when the creator opts in at mint time via the residencies toggle.
 export const RESIDENCIES_ADDRESS =
   process.env.NEXT_PUBLIC_RESIDENCIES_ADDRESS ||
   '0x58f19e55058057B04feAe2EEA88F90B84b7714Eb'
+
+// Default residencies cut (whole percent) pre-filled when the toggle is on.
+// The creator can edit it to any integer 1–99 (capped lower when custom splits
+// leave less room — see MintForm buildFinalSplits).
+export const DEFAULT_RESIDENCIES_PERCENT = 5
 
 // Inprocess operator smart wallet — the CDP smart account that submits
 // userOps on behalf of the platform identity for every relayed call

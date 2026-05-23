@@ -23,8 +23,9 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
-import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
+import { MAX_SPLITS } from '@/lib/splits'
 import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
@@ -57,28 +58,47 @@ function sortSplits(s: Split[]): Split[] {
 // room for residencies) get mis-parsed downstream and revert the on-chain
 // splits-contract setup.
 //
-// Round each value to the nearest integer (≥1 floor so we never silently
-// drop a recipient), then absorb rounding drift round-robin until the sum
-// matches `target` exactly.
+// Convert fractional `values` (which by construction sum to ~`target`) into
+// integers that sum to EXACTLY `target`, with every entry ≥ 1. Largest-
+// remainder method: floor (min 1), then hand out / claw back the leftover by
+// fractional remainder. Exact and order-stable — unlike a bounded ±1 drift
+// loop, it can't leave the sum off-target for skewed allocations (e.g. many
+// tiny recipients plus one large one). Precondition: target ≥ values.length,
+// which callers guarantee via the recipient cap + residenciesOverCap, so a
+// min-1 solution always exists; the guards below just prevent a spin if it
+// is ever violated (handleMint's sum check is the final backstop).
 function roundToIntegerAllocations(values: number[], target: number): number[] {
-  const rounded = values.map((v) => Math.max(1, Math.round(v)))
-  const sum = rounded.reduce((a, b) => a + b, 0)
-  let drift = target - sum
-  let idx = 0
-  // Bound the loop generously; drift is bounded by recipient count in practice.
-  const max = rounded.length * 4 + 8
-  while (drift !== 0 && idx < max) {
-    const i = idx % rounded.length
-    if (drift > 0) {
-      rounded[i] += 1
-      drift -= 1
-    } else if (drift < 0 && rounded[i] > 1) {
-      rounded[i] -= 1
-      drift += 1
+  const n = values.length
+  if (n === 0) return []
+  const ints = values.map((v) => Math.max(1, Math.floor(v)))
+  let sum = ints.reduce((a, b) => a + b, 0)
+  if (sum === target) return ints
+  // Indices ordered by fractional remainder: add to the largest first,
+  // remove from the smallest first, so the integer split best tracks intent.
+  const byRemainder = values
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => a.frac - b.frac)
+  if (sum < target) {
+    let k = n - 1
+    while (sum < target) {
+      ints[byRemainder[((k % n) + n) % n].i] += 1
+      sum += 1
+      k -= 1
     }
-    idx += 1
+  } else {
+    let k = 0
+    let guard = 0
+    const maxGuard = sum * n + n
+    while (sum > target && guard++ < maxGuard) {
+      const { i } = byRemainder[k % n]
+      if (ints[i] > 1) {
+        ints[i] -= 1
+        sum -= 1
+      }
+      k += 1
+    }
   }
-  return rounded
+  return ints
 }
 
 interface MintFormProps {
@@ -268,6 +288,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
+  // Creator-chosen residencies cut (whole percent). Editable inline when the
+  // toggle is on; `residenciesInput` is the transient edit buffer so typing
+  // doesn't fight the committed integer.
+  const [residenciesPercent, setResidenciesPercent] = useState(DEFAULT_RESIDENCIES_PERCENT)
+  const [editingResidencies, setEditingResidencies] = useState(false)
+  const [residenciesInput, setResidenciesInput] = useState(String(DEFAULT_RESIDENCIES_PERCENT))
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
@@ -281,6 +307,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const verifyTargetRef = useRef<string | null>(null)
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
+  // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits
+  // scales them to sum to (100 − p), and roundToIntegerAllocations floors each
+  // recipient at 1% — so the cut can't exceed 100 − recipientCount or a
+  // recipient would be squeezed below 1% and the array couldn't sum to 100.
+  // With 0/1 splits only the creator shares the remainder, so the cap is 99.
+  // The recipient cap keeps splits.length ≤ MAX_SPLITS−1 while residencies is
+  // on, so this never drops below 51 — there's always room for a 1% cut.
+  const residenciesMax = splits.length >= 2 ? 100 - splits.length : 99
+  // Defense in depth: if the creator raised the % and then added recipients,
+  // the committed value can exceed the live cap. Surface it inline and block
+  // the mint until resolved (we don't silently mutate their chosen number).
+  const residenciesOverCap = residenciesEnabled && residenciesPercent > residenciesMax
   // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
   // the price input is hidden and the salesConfig price is forced to 0.
   // Media-only — text mode hides Supply, so a stale `1` from a prior
@@ -334,6 +372,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     if (!isAddress(addr)) { toast.error('Invalid address'); return }
     if (isNaN(pct) || pct <= 0 || pct > 100) { toast.error('Allocation must be 1–100'); return }
     if (splitsTotal + pct > 100) { toast.error('Total allocation exceeds 100%'); return }
+    // Cap recipient count to the server's MAX_SPLITS. When residencies is on
+    // it occupies one of those slots (buildFinalSplits appends it), so the
+    // custom-recipient limit drops by one — otherwise the final array would
+    // be MAX_SPLITS+1 and validateSplitsArray would reject the mint.
+    const recipientCap = residenciesEnabled ? MAX_SPLITS - 1 : MAX_SPLITS
+    if (splits.length >= recipientCap) {
+      toast.error(
+        residenciesEnabled
+          ? `Up to ${recipientCap} recipients with residencies on (${MAX_SPLITS} total)`
+          : `Up to ${recipientCap} split recipients`,
+      )
+      return
+    }
     // EVM addresses are case-insensitive but 0xSplits' SplitMain rejects
     // byte-level duplicates, so "0xABC" + "0xabc" would revert the deploy.
     const lowerAddr = addr.toLowerCase()
@@ -354,16 +405,58 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   const TEXT_MAX = 5000
 
+  // Parse + commit the inline residencies edit. Integers only — the valid
+  // range is [1, residenciesMax] where residenciesMax ≤ 99 (someone must keep
+  // ≥1%). Behavior by input:
+  //   empty / whitespace / non-numeric / ±Infinity → revert to last committed
+  //   decimals (e.g. 5.9)                           → floored to int, no toast
+  //   < 1 (0, negatives, 0.x)                       → clamp to 1 + toast
+  //   > residenciesMax (incl. 100)                  → clamp to cap + toast
+  //   1..residenciesMax                             → committed as-is
+  function commitResidencies() {
+    setEditingResidencies(false)
+    const raw = residenciesInput.trim()
+    const num = Number(raw)
+    if (raw === '' || !Number.isFinite(num)) {
+      setResidenciesInput(String(residenciesPercent))
+      return
+    }
+    const upper = residenciesMax
+    const intval = Math.floor(num)
+    const clamped = Math.min(upper, Math.max(1, intval))
+    // Toast only when we clamped a genuinely out-of-range value, not for a
+    // silent decimal truncation (5.9 → 5 stays quiet).
+    if (clamped !== intval) {
+      if (intval > upper) {
+        toast.error(
+          splits.length >= 2
+            ? `Residencies capped at ${upper}% so each recipient keeps at least 1%`
+            : `Residencies capped at ${upper}% so you keep at least 1%`,
+        )
+      } else {
+        toast.error('Residencies minimum is 1% — turn the toggle off to remove it')
+      }
+    }
+    setResidenciesPercent(clamped)
+    setResidenciesInput(String(clamped))
+  }
+
   // Builds the final splits array to send to the API. Inprocess docs require
   // integer `percentAllocation` summing to exactly 100% — every code path
-  // here emits integers via roundToIntegerAllocations + appends residencies
-  // (5%) when the toggle is on.
+  // here emits integers via roundToIntegerAllocations + appends the
+  // residencies cut when the toggle is on.
+  //
+  // `p` = residenciesPercent (creator-chosen whole percent, 1..residenciesMax).
   //
   //   residencies OFF + 0/1 splits  → undefined (caller uses payoutRecipient)
   //   residencies OFF + 2+ splits   → sorted user splits (rounded to integers)
-  //   residencies ON  + 0/1 splits  → [creator 95, residencies 5] (sorted)
-  //   residencies ON  + 2+ splits   → user splits scaled ×0.95 to integers
-  //                                   summing to 95, plus residencies 5
+  //   residencies ON  + 0/1 splits  → [creator 100−p, residencies p] (sorted)
+  //   residencies ON  + 2+ splits   → user splits scaled ×(100−p)/100 to
+  //                                   integers summing to 100−p, plus residencies p
+  //
+  // residenciesMax guarantees 100−p ≥ recipientCount, so roundToIntegerAllocations
+  // (which floors each recipient at 1%) can always hit its target and the final
+  // array sums to exactly 100 — re-checked by validateSplitsArray server-side.
   //
   // 0xSplits' SplitMain requires `accounts` sorted ascending — sort
   // defensively in case inprocess forwards our array as-is.
@@ -378,19 +471,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
       )
     }
+    const p = residenciesPercent
     if (splits.length < 2) {
       return sortSplits([
-        { address: address!, percentAllocation: 95 },
-        { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
+        { address: address!, percentAllocation: 100 - p },
+        { address: RESIDENCIES_ADDRESS, percentAllocation: p },
       ])
     }
     const rounded = roundToIntegerAllocations(
-      splits.map((s) => s.percentAllocation * 0.95),
-      95,
+      splits.map((s) => (s.percentAllocation * (100 - p)) / 100),
+      100 - p,
     )
     return sortSplits([
       ...splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
-      { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
+      { address: RESIDENCIES_ADDRESS, percentAllocation: p },
     ])
   }
 
@@ -431,6 +525,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // custom splits while the toggle is also on (e.g. via stale tab state).
     if (residenciesEnabled && splits.some((s) => s.address.toLowerCase() === RESIDENCIES_ADDRESS.toLowerCase())) {
       toast.error('Residencies is in your custom splits — remove it or disable the toggle')
+      return
+    }
+    if (residenciesOverCap) {
+      toast.error(`Lower residencies to ${residenciesMax}% or remove a recipient — each split needs at least 1%`)
       return
     }
 
@@ -1450,6 +1548,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 toast.error('Remove residencies from your custom splits before enabling the toggle')
                 return false
               }
+              // Residencies takes a recipient slot; if the custom list already
+              // fills MAX_SPLITS, enabling would make MAX_SPLITS+1 and the mint
+              // would be rejected server-side. Make the creator free a slot.
+              if (splits.length >= MAX_SPLITS) {
+                toast.error(`Remove a recipient first — ${MAX_SPLITS} is the max including residencies`)
+                return false
+              }
+              // Sync the edit buffer so clicking the % shows the live value.
+              setResidenciesInput(String(residenciesPercent))
               return true
             })
           }}
@@ -1461,7 +1568,42 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </div>
         </button>
         <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-[#444]'}`}>
-          {residenciesEnabled ? '5%' : '0%'} to{' '}
+          {residenciesEnabled ? (
+            editingResidencies ? (
+              <input
+                type="number"
+                autoFocus
+                value={residenciesInput}
+                min={1}
+                max={residenciesMax}
+                step={1}
+                onChange={(e) => setResidenciesInput(e.target.value)}
+                onBlur={commitResidencies}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitResidencies() }
+                  else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setResidenciesInput(String(residenciesPercent))
+                    setEditingResidencies(false)
+                  }
+                }}
+                aria-label="Residencies percent"
+                className="w-9 bg-surface border border-line px-1 py-0.5 text-[10px] text-ink font-mono text-center focus:outline-none focus:border-muted [appearance:textfield]"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setResidenciesInput(String(residenciesPercent))
+                  setEditingResidencies(true)
+                }}
+                title="Click to set the residencies %"
+                className={`underline decoration-dotted underline-offset-2 hover:text-ink transition-colors ${residenciesOverCap ? 'text-red-500' : ''}`}
+              >
+                {residenciesPercent}%
+              </button>
+            )
+          ) : '0%'}{' '}to{' '}
           <a
             href="https://kismetcasa.xyz"
             target="_blank"
@@ -1473,6 +1615,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </a>
         </span>
       </div>
+      {residenciesOverCap && (
+        <p className="text-[10px] font-mono text-red-500 w-fit mx-auto -mt-1 text-center">
+          {residenciesMax}% max with {splits.length} recipients — lower the % or remove one
+        </p>
+      )}
     </form>
   )
 }

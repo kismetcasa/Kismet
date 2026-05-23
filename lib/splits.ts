@@ -12,8 +12,10 @@ interface StoredSplitsResult {
 }
 
 // SplitMain enforces a smaller cap in practice (gas-bound). 50 is a
-// generous safety net that no legitimate UI hits.
-const MAX_SPLITS = 50
+// generous safety net that no legitimate UI hits. Exported so the mint
+// UI caps recipient count against the exact same number it'll be validated
+// against server-side.
+export const MAX_SPLITS = 50
 
 const splitsKey = (collection: string, tokenId: string) =>
   `kismetart:splits:${collection.toLowerCase()}:${tokenId}`
