@@ -458,7 +458,7 @@ export function deserializeOrder(order: SerializedOrderComponents): OrderCompone
  * to a specific listing: any receipt log whose first topic is the event sig
  * and whose first data field is this hash refers to this order.
  */
-export function deriveOrderHash(order: OrderComponents): Hex {
+function deriveOrderHash(order: OrderComponents): Hex {
   return hashStruct({
     types: SEAPORT_ORDER_TYPES,
     primaryType: 'OrderComponents',

@@ -94,19 +94,20 @@ function isAdmin(addr: string): boolean {
   return !!ADMIN_ADDRESS && addr.toLowerCase() === ADMIN_ADDRESS
 }
 
+// Returns 1 when the debit fits both buckets (and applies it), 0 when it
+// would exceed either cap. EXPIRE runs only on a bucket's first INCRBY so the
+// window stays fixed, not sliding.
 const CONSUME_LUA = `
 local cur_d = tonumber(redis.call('GET', KEYS[1]) or '0')
 local cur_w = tonumber(redis.call('GET', KEYS[2]) or '0')
 local n = tonumber(ARGV[1])
-local lim_d = tonumber(ARGV[2])
-local lim_w = tonumber(ARGV[3])
-if cur_d + n > lim_d then return {0, 'day_cap', cur_d, cur_w} end
-if cur_w + n > lim_w then return {0, 'week_cap', cur_d, cur_w} end
+if cur_d + n > tonumber(ARGV[2]) then return 0 end
+if cur_w + n > tonumber(ARGV[3]) then return 0 end
 local new_d = redis.call('INCRBY', KEYS[1], n)
 local new_w = redis.call('INCRBY', KEYS[2], n)
 if new_d == n then redis.call('EXPIRE', KEYS[1], ARGV[4]) end
 if new_w == n then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
-return {1, 'ok', new_d, new_w}
+return 1
 `
 
 /**
@@ -126,13 +127,14 @@ export async function consumeUserQuota(
 
   const window = QUOTAS[kind]
   try {
-    const raw = (await redis.eval(
+    const raw = await redis.eval(
       CONSUME_LUA,
       [dayKey(kind, address), weekKey(kind, address)],
       [n, window.day, window.week, TTL_DAY_SECONDS, TTL_WEEK_SECONDS],
-    )) as unknown
-    if (!Array.isArray(raw) || raw.length === 0) return true // malformed → fail open
-    return Number(raw[0]) === 1
+    )
+    // Only an explicit 0 (cap hit) denies; 1 or any unexpected shape allows
+    // (fail open) — same policy as the catch below and the rate limiter.
+    return raw !== 0 && raw !== '0'
   } catch {
     return true
   }

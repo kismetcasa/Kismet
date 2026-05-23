@@ -20,11 +20,8 @@ export const SESSION_COOKIE =
 const key = (token: string) => `kismetart:session:${token}`
 
 export async function createSession(address: string): Promise<string> {
-  // 32 random bytes = 256 bits, hex-encoded — same shape and entropy as
-  // the admin session token in /api/auth/login. UUID v4 is also
-  // unbruteforceable in practice (~122 bits), but aligning the two
-  // session families on a single primitive keeps the auth surface
-  // homogeneous and the threat model easy to reason about.
+  // 256-bit token, matching the admin session in /api/auth/login. (UUID v4's
+  // ~122 bits was already safe; this just aligns both session families.)
   const token = randomBytes(32).toString('hex')
   await redis.setex(key(token), SESSION_TTL_SECONDS, address.toLowerCase())
   return token

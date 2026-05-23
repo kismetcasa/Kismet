@@ -467,12 +467,12 @@ async function sendOne(
   body: string,
   targetUrl: string,
 ): Promise<HostResponse | null> {
+  // Defense in depth: never POST to an internal/non-https host, covering any
+  // URL persisted before registerToken enforced this guard.
+  if (!isSafePublicHttpsUrl(url)) return null
   // AbortController-based timeout so a hung host endpoint can't pin a
   // connection forever. Push is fire-and-forget at the writeNotification
   // call site, so the loss is just this one push.
-  // Defense in depth against any URL stored before this guard existed
-  // was enforced at registration — never POST to an internal/non-https host.
-  if (!isSafePublicHttpsUrl(url)) return null
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS)
   try {
