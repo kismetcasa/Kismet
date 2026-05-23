@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAccount, useConnect } from 'wagmi'
 import { toast } from 'sonner'
+import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
 
 export type FarcasterIdentity = {
   /** Numeric Farcaster ID — from `sdk.context.user.fid` (Mini App) or a /api/profile reverse lookup (web). */
@@ -41,29 +42,6 @@ const FarcasterContext = createContext<FarcasterContextValue>({
 })
 
 export const useFarcaster = () => useContext(FarcasterContext)
-
-// Cheap, synchronous pre-flight to keep the ~SDK bundle out of regular web
-// payloads entirely. Farcaster hosts always render Mini Apps in an iframe
-// (web) or React Native WebView (mobile), so a regular browser tab can
-// short-circuit to false without touching the SDK. False positives here
-// just mean we load the SDK and it tells us we're not in a Mini App
-// (sdk.isInMiniApp returns false fast). False negatives would be bad
-// (splash hangs forever) but the two checks below are exhaustive for
-// every current Farcaster host.
-function isPotentialMiniAppEnv(): boolean {
-  if (typeof window === 'undefined') return false
-  try {
-    const inIframe = window.self !== window.top
-    const inReactNativeWebView =
-      typeof (window as { ReactNativeWebView?: unknown }).ReactNativeWebView !==
-      'undefined'
-    return inIframe || inReactNativeWebView
-  } catch {
-    // Cross-origin iframe access throws on `window.top` — that itself is a
-    // strong signal we're embedded.
-    return true
-  }
-}
 
 /**
  * Install a same-origin Authorization injector on `window.fetch`.

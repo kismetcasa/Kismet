@@ -36,6 +36,18 @@ export function WalletButton() {
   // info available) and the first client render.
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
+
+  // Defensive reveal: no matter what wagmi reports, show the button after a
+  // short grace period so a misbehaving connector can never leave it
+  // permanently invisible. The primary safeguard is the time-bounded
+  // Farcaster connector (see lib/wagmi.ts), which makes wagmi reach a
+  // terminal status on its own; this is belt-and-suspenders for any future
+  // connector that stalls reconnect.
+  const [revealFallbackElapsed, setRevealFallbackElapsed] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setRevealFallbackElapsed(true), 2000)
+    return () => clearTimeout(t)
+  }, [])
   const { address, isConnected, status } = useAccount()
   const { openAccountModal } = useAccountModal()
   const { openConnectModal } = useConnectModal()
@@ -99,7 +111,8 @@ export function WalletButton() {
   const settled = mounted && (
     isInMiniApp ||
     status === 'disconnected' ||
-    (status === 'connected' && nameResolved)
+    (status === 'connected' && nameResolved) ||
+    revealFallbackElapsed
   )
 
   return (
