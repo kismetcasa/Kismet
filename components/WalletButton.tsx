@@ -84,14 +84,20 @@ export function WalletButton() {
   }, [effectiveAddress])
 
   // Hide until state is truly settled:
-  // - Mini App: settle as soon as the FC identity has an address — no
-  //   wagmi state to wait on (and wagmi may still be probing the host
-  //   wallet provider when the FC identity is already known)
+  // - Mini App: settle as soon as the FC bootstrap completes. isInMiniApp
+  //   only flips true after FarcasterProvider has finished resolving
+  //   identity (it sets isInMiniApp + identity in one setState), so at
+  //   this point the FC address is whatever it's going to be — present
+  //   (show the name) or null (show the connect fallback). We must NOT
+  //   gate on fcIdentity.address: in hosts like the Base App the primary
+  //   address often doesn't resolve and wagmi stays stuck in
+  //   connecting/reconnecting (never disconnected or connected), so an
+  //   address-gated reveal would leave the button invisible forever.
   // - Web disconnected: safe to show the connect button immediately
   // - Web connected: wait for the profile fetch so we jump straight to
   //   the final name, never 0x → name
   const settled = mounted && (
-    (isInMiniApp && !!fcIdentity?.address) ||
+    isInMiniApp ||
     status === 'disconnected' ||
     (status === 'connected' && nameResolved)
   )
