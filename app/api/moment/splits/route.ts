@@ -4,9 +4,11 @@ import { getStoredSplits } from '@/lib/splits'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Returns { hasSplits, recipients } for a single moment.
-// `hasSplits` gates the creator-only distribute UI in useMomentSplits.
-// `recipients` is empty for legacy mints stored as the `'1'` flag —
-// those continue to support distribute but render no splits panel.
+// `hasSplits` gates the distribute UI in useMomentSplits, and `recipients`
+// lets it detect whether the connected wallet is a payee (recipients, the
+// creator, and admins may all distribute). `recipients` is empty for legacy
+// mints stored as the `'1'` flag — those still support distribute (via
+// creator/admin) but render no splits panel.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collectionAddress = searchParams.get('collectionAddress')

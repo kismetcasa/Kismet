@@ -133,7 +133,8 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            you received a payout from {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+            you received {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} ` : 'a payout '}
+            from {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             split distributed in {(n.currency ?? 'eth').toUpperCase()} · {time}

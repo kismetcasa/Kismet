@@ -92,6 +92,7 @@ const ZORA_ERC20_MINTER_ABI = parseAbi([
 export const ERC20_ABI = parseAbi([
   'function approve(address spender, uint256 value) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address account) view returns (uint256)',
 ])
 
 // FixedPriceSale's mint() reads (mintTo, comment) out of an abi-encoded blob

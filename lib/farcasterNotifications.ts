@@ -1,6 +1,6 @@
 import { redis } from './redis'
 import { getFarcasterProfileByAddress } from './farcasterProfile'
-import { isPlatformCollectComment } from './inprocess'
+import { formatPrice, isPlatformCollectComment } from './inprocess'
 import {
   ALL_NOTIFICATION_TYPES,
   isActorMuted,
@@ -289,8 +289,11 @@ interface ComposedPush {
   targetUrl: string
 }
 
+// Notification `price` is stored in base units (wei / USDC-6) — the same
+// convention NotificationRow renders via formatPrice. Delegate so push copy
+// matches the in-app row instead of interpolating the raw integer.
 function formatPushPrice(price: string, currency?: 'eth' | 'usdc'): string {
-  return currency === 'usdc' ? `$${price}` : `${price} ETH`
+  return formatPrice(price, currency ?? 'eth')
 }
 
 // Composition mirrors components/NotificationRow.tsx so the push and the
@@ -401,11 +404,11 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // moment-scoped (one split distribution per moment). Match that.
       const currencyLabel = (n.currency ?? 'eth').toUpperCase()
       const subject = tokenName ? `"${tokenName}"` : 'a moment'
-      const amountLabel = n.price ? `${formatPushPrice(n.price, n.currency)} ` : ''
+      const amountLabel = n.price ? formatPushPrice(n.price, n.currency) : 'a payout'
       return {
         title: truncate('Payout received', TITLE_MAX),
         body: truncate(
-          `You received ${amountLabel}from ${subject} (${currencyLabel})`,
+          `You received ${amountLabel} from ${subject} (${currencyLabel})`,
           BODY_MAX,
         ),
         targetUrl: momentUrl,
