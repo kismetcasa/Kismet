@@ -29,31 +29,40 @@ export type QuotaKind =
   | 'update-uri'
   | 'distribute'
 
-export interface QuotaWindow {
+interface QuotaWindow {
   /** Cap per UTC calendar day. */
   day: number
   /** Cap per ISO week (Monday-start, UTC) — defense against bursty days. */
   week: number
 }
 
+// These are abuse CEILINGS, not product knobs — every limit is set far above
+// any plausible legitimate cadence so a real creator (including a prolific
+// drop session) never hits one, while a runaway script is bounded to a non-
+// catastrophic level instead of the IP rate limit's ~28k/day theoretical max.
+// Mints are one-per-user-action (no bulk loop in MintForm), so daily counts
+// only accrue through manual repetition. Do not tighten without usage data.
 const QUOTAS: Record<QuotaKind, QuotaWindow> = {
-  mint:           { day: 50,           week: 200            },
-  write:          { day: 50,           week: 200            },
-  // Upload is byte-denominated because Turbo bills by bytes. 500 MB/day
-  // is well above any plausible single user's legitimate output and well
-  // below "an attacker is meaningfully draining the wallet" territory.
+  // ~one mint every ~5 min for 24h straight before the cap — no human does
+  // that; a script does. Bounds platform inprocess spend per identity.
+  mint:           { day: 300,          week: 1000           },
+  write:          { day: 300,          week: 1000           },
+  // Byte-denominated (Turbo bills by bytes). NOTE: /api/upload only carries
+  // JSON metadata (≤50 MB each); media streams through /api/sign. 500 MB/day
+  // of metadata is thousands of mints — never a real ceiling, but caps a
+  // metadata-spam abuser.
   'upload-bytes': { day: 500 * 1024 * 1024,  week: 2 * 1024 * 1024 * 1024 },
-  // sign-calls bounds the COUNT of media-upload signings per identity.
-  // The bytes can't be metered here (the media streams client → Turbo and
-  // never reaches the server), so this count + an operationally-capped
-  // wallet balance are the controls. See app/api/sign/route.ts.
-  'sign-calls':   { day: 200,          week: 800            },
+  // COUNT of media-upload signings. Bytes can't be metered here (media
+  // streams client → Turbo, never reaching the server), so this count + an
+  // operationally-capped wallet balance are the controls (see
+  // app/api/sign/route.ts). A video mint is 2 signings (media + poster);
+  // 600/day clears ~300 video mints/day.
+  'sign-calls':   { day: 600,          week: 2000           },
   // Owner-gated inprocess-key actions that submit a sponsored on-chain tx
-  // (gas paid by the platform smart wallet). Generous ceilings — these are
-  // far above any legitimate cadence — that bound an authorized owner from
-  // spamming gas-burning no-op calls on their own token.
-  'update-uri':   { day: 20,           week: 50             },
-  'distribute':   { day: 50,           week: 200            },
+  // (gas paid by the platform smart wallet). Above any legitimate cadence;
+  // bound an authorized owner from spamming gas-burning calls on their token.
+  'update-uri':   { day: 50,           week: 200            },
+  'distribute':   { day: 100,          week: 400            },
 }
 
 const TTL_DAY_SECONDS = 25 * 60 * 60       // 25h: covers boundary requests
@@ -100,17 +109,20 @@ if new_w == n then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
 return {1, 'ok', new_d, new_w}
 `
 
-export type ConsumeResult =
-  | { ok: true }
-  | { ok: false; reason: 'day_cap' | 'week_cap'; window: QuotaWindow; used: { day: number; week: number } }
-
+/**
+ * Atomically debit `n` against the kind's day + week buckets. Returns true
+ * when allowed (under cap), false when the debit would exceed either cap.
+ * Fails OPEN (true) on a Redis hiccup — same policy as the rate limiter, and
+ * the reason a transient outage can never block a legitimate mint. Admin and
+ * non-positive/empty inputs bypass.
+ */
 export async function consumeUserQuota(
   kind: QuotaKind,
   address: string,
   n: number = 1,
-): Promise<ConsumeResult> {
-  if (n <= 0 || !address) return { ok: true }
-  if (isAdmin(address)) return { ok: true }
+): Promise<boolean> {
+  if (n <= 0 || !address) return true
+  if (isAdmin(address)) return true
 
   const window = QUOTAS[kind]
   try {
@@ -119,69 +131,9 @@ export async function consumeUserQuota(
       [dayKey(kind, address), weekKey(kind, address)],
       [n, window.day, window.week, TTL_DAY_SECONDS, TTL_WEEK_SECONDS],
     )) as unknown
-
-    if (!Array.isArray(raw) || raw.length !== 4) {
-      // Malformed eval response — fail open so a Redis hiccup doesn't
-      // hard-stop every user. Matches the rate-limiter's policy.
-      return { ok: true }
-    }
-    const okFlag = Number(raw[0])
-    const reason = String(raw[1])
-    if (okFlag === 1) return { ok: true }
-    return {
-      ok: false,
-      reason: reason === 'week_cap' ? 'week_cap' : 'day_cap',
-      window,
-      used: { day: Number(raw[2]) || 0, week: Number(raw[3]) || 0 },
-    }
+    if (!Array.isArray(raw) || raw.length === 0) return true // malformed → fail open
+    return Number(raw[0]) === 1
   } catch {
-    return { ok: true }
-  }
-}
-
-export interface QuotaStatus {
-  kind: QuotaKind
-  window: QuotaWindow
-  used: { day: number; week: number }
-  remaining: { day: number; week: number }
-}
-
-/** Read-only status snapshot for UI. Admin reports MAX_SAFE_INTEGER remaining. */
-export async function getUserQuotaStatus(
-  kind: QuotaKind,
-  address: string,
-): Promise<QuotaStatus> {
-  const window = QUOTAS[kind]
-  if (isAdmin(address)) {
-    return {
-      kind,
-      window,
-      used: { day: 0, week: 0 },
-      remaining: { day: Number.MAX_SAFE_INTEGER, week: Number.MAX_SAFE_INTEGER },
-    }
-  }
-  try {
-    const [d, w] = await Promise.all([
-      redis.get<string>(dayKey(kind, address)),
-      redis.get<string>(weekKey(kind, address)),
-    ])
-    const usedDay = parseInt(d ?? '0', 10) || 0
-    const usedWeek = parseInt(w ?? '0', 10) || 0
-    return {
-      kind,
-      window,
-      used: { day: usedDay, week: usedWeek },
-      remaining: {
-        day: Math.max(0, window.day - usedDay),
-        week: Math.max(0, window.week - usedWeek),
-      },
-    }
-  } catch {
-    return {
-      kind,
-      window,
-      used: { day: 0, week: 0 },
-      remaining: { day: window.day, week: window.week },
-    }
+    return true
   }
 }

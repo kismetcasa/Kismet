@@ -62,8 +62,8 @@ export async function POST(req: NextRequest) {
   // total spend — a determined user with rotating IPs could drain Arweave
   // credit one 50 MB upload at a time. Debit AFTER we know the real byte
   // count so the bucket reflects actual platform spend.
-  const quota = await consumeUserQuota('upload-bytes', address, serializedBytes)
-  if (!quota.ok) {
+  const withinQuota = await consumeUserQuota('upload-bytes', address, serializedBytes)
+  if (!withinQuota) {
     return errorResponse(429, 'Daily upload size limit reached — try again tomorrow')
   }
 

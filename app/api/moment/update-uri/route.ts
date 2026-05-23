@@ -129,8 +129,8 @@ export async function POST(req: NextRequest) {
   // Bound platform-sponsored gas: an authorized owner could otherwise spam
   // URI updates on their own token. Debited after the admin check so a
   // non-owner never touches the bucket. Admin bypasses inside the helper.
-  const quota = await consumeUserQuota('update-uri', callerAddress, 1)
-  if (!quota.ok) {
+  const withinQuota = await consumeUserQuota('update-uri', callerAddress, 1)
+  if (!withinQuota) {
     return errorResponse(429, 'Daily metadata-update limit reached — try again tomorrow')
   }
 

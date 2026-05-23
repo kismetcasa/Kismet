@@ -50,8 +50,8 @@ export async function POST(req: NextRequest) {
   // wallet's Turbo balance capped + monitored (see .env.example). Turbo
   // calls sign() exactly once per uploadFile, so one debit == one upload.
   // Debit AFTER input validation so malformed requests don't burn a bucket.
-  const quota = await consumeUserQuota('sign-calls', address, 1)
-  if (!quota.ok) {
+  const withinQuota = await consumeUserQuota('sign-calls', address, 1)
+  if (!withinQuota) {
     return errorResponse(429, 'Daily upload signing limit reached — try again tomorrow')
   }
 

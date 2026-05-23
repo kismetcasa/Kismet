@@ -124,8 +124,8 @@ export async function POST(req: NextRequest) {
   // distribute on their own token (each call is a sponsored on-chain tx).
   // Debited after the ownership check so a non-owner never touches the
   // bucket. Admin bypasses inside consumeUserQuota.
-  const quota = await consumeUserQuota('distribute', callerAddress, 1)
-  if (!quota.ok) {
+  const withinQuota = await consumeUserQuota('distribute', callerAddress, 1)
+  if (!withinQuota) {
     return errorResponse(429, 'Daily distribute limit reached — try again tomorrow')
   }
 
