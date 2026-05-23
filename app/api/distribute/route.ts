@@ -5,7 +5,7 @@ import { INPROCESS_API, inprocessUrl } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { getStoredSplits } from '@/lib/splits'
-import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
+import { ERC20_ABI, USDC_BASE, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
@@ -144,6 +144,25 @@ export async function POST(req: NextRequest) {
   }
   if (!authorized) {
     return errorResponse(403, 'Only the moment creator, an admin, or a split recipient may distribute')
+  }
+
+  // Bind splitAddress to the token: it must be the token's on-chain
+  // creator-reward-recipient. Without this, being authorized on *one* moment
+  // would let a caller pass any split contract's address and have the
+  // platform sponsor its distribution (no theft — 0xSplits only pays the
+  // fixed recipients — but gas griefing + bogus payout notifications).
+  try {
+    const onchainSplit = await serverBaseClient().readContract({
+      address: collectionAddress as `0x${string}`,
+      abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
+      functionName: 'getCreatorRewardRecipient',
+      args: [BigInt(tokenId)],
+    })
+    if (onchainSplit.toLowerCase() !== splitAddress.toLowerCase()) {
+      return errorResponse(400, 'splitAddress does not match the token on-chain split')
+    }
+  } catch {
+    return errorResponse(502, 'Could not verify split address')
   }
 
   // Bound platform-sponsored gas: an authorized owner could otherwise spam
