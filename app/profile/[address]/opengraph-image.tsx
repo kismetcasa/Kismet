@@ -2,6 +2,7 @@ import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { resolveProfileWithSiblings } from '@/lib/addressUnion'
+import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
 // image and the Farcaster Mini App embed image. Matches the styling of
@@ -73,6 +74,12 @@ export default async function Image({ params }: Props) {
     }
     avatarUrl = profile.avatarUrl || farcaster?.pfpUrl || null
   }
+
+  // SSRF guard at the render sink: ImageResponse fetches <img src> server-
+  // side. Drop any avatar that isn't a public https host (covers values
+  // stored before input validation existed, and the FC pfp fallback). An
+  // unsafe URL just renders the no-avatar layout.
+  if (avatarUrl && !isSafePublicHttpsUrl(avatarUrl)) avatarUrl = null
 
   // Truncate to keep within the 1200x800 frame. The display-name font
   // size (96) caps comfortably around ~22 chars; we leave headroom.

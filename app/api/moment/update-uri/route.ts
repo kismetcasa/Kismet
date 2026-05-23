@@ -12,6 +12,7 @@ import { consumeNonce } from '@/lib/profile'
 import { setMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
+import { consumeUserQuota } from '@/lib/userQuota'
 
 /**
  * Caller must hold ADMIN (2) or METADATA (16) permission on the token —
@@ -123,6 +124,14 @@ export async function POST(req: NextRequest) {
   const authorized = await canUpdateUri(collectionAddress, tokenId, callerAddress)
   if (!authorized) {
     return errorResponse(403, 'Caller is not admin of this token')
+  }
+
+  // Bound platform-sponsored gas: an authorized owner could otherwise spam
+  // URI updates on their own token. Debited after the admin check so a
+  // non-owner never touches the bucket. Admin bypasses inside the helper.
+  const withinQuota = await consumeUserQuota('update-uri', callerAddress, 1)
+  if (!withinQuota) {
+    return errorResponse(429, 'Daily metadata-update limit reached — try again tomorrow')
   }
 
   const upstreamBody = {

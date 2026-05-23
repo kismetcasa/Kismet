@@ -44,7 +44,13 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const page = Math.max(1, parseInt(searchParams.get('page') ?? '1') || 1)
+  // page is capped: fetchLimit below is `page * limit`, sent verbatim as the
+  // upstream /timeline `limit` for EVERY tracked collection in parallel. An
+  // uncapped page (e.g. 1e8) would fan out billions-sized upstream requests —
+  // a cheap-request → expensive-amplification DoS. 100 pages is far beyond any
+  // real scroll (page 100 @ limit 20 = 2,000 items deep); beyond it the feed
+  // degrades gracefully to empty rather than amplifying.
+  const page = Math.min(100, Math.max(1, parseInt(searchParams.get('page') ?? '1') || 1))
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '20') || 20))
   const creatorRaw = searchParams.get('creator')?.toLowerCase() ?? undefined
   const collectorRaw = searchParams.get('collector')?.toLowerCase() ?? undefined

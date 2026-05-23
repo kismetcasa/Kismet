@@ -7,6 +7,7 @@ import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonc
 import { resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { errorResponse } from '@/lib/apiResponse'
+import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 
 // Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
 // the public default. MAINNET_RPC_URL is the server-only override; falls
@@ -113,8 +114,14 @@ export async function PUT(
     return errorResponse(400, 'signature and nonce required')
   }
 
-  if (body.avatarUrl && !body.avatarUrl.startsWith('https://')) {
-    return errorResponse(400, 'avatarUrl must be an https URL')
+  // avatarUrl is rendered server-side via next/og <img src> in the profile
+  // OG-image route (ImageResponse fetches it during PNG render). A bare
+  // https:// prefix check let an attacker store an internal URL
+  // (https://169.254.169.254/…, https://localhost:port/…) and exfiltrate the
+  // fetched bytes through the generated share card — validate the host, not
+  // just the scheme.
+  if (body.avatarUrl && !isSafePublicHttpsUrl(body.avatarUrl)) {
+    return errorResponse(400, 'avatarUrl must be a public https URL')
   }
 
   // Verify the signature proves ownership of the address

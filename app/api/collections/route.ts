@@ -22,6 +22,7 @@ import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
+import { consumeUserQuota } from '@/lib/userQuota'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Cap on tokens we fetch per collection when computing bulk-collect
@@ -437,6 +438,18 @@ export async function POST(req: NextRequest) {
   }
 
   const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
+
+  // Per-address daily cap on DELIBERATE collection creation (Create
+  // Collection form). Debited after the on-chain admin check so only a
+  // legitimate deployer counts. auto-deploy wrappers are exempt: they're a
+  // side effect of minting (already bounded by the mint cap) and gating them
+  // here would 429 a mint mid-flow. Admin bypasses inside consumeUserQuota.
+  if (source === 'create-form') {
+    const withinQuota = await consumeUserQuota('collection', sessionAddress, 1)
+    if (!withinQuota) {
+      return errorResponse(429, 'Daily collection limit reached — try again tomorrow')
+    }
+  }
   await addTrackedCollection(
     body.address,
     {

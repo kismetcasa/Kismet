@@ -16,6 +16,13 @@ import { isBlacklisted } from './blacklist'
 import { recordPlatformTx } from './pass-validity'
 import { verifyIntent } from './intentAuth'
 import type { IntentAction, IntentEnvelope, MintBody } from './intent'
+import { consumeUserQuota } from './userQuota'
+
+// Conservative ceiling on tokenContent (writing-moment body forwarded to
+// inprocess + persisted in setMomentContent). The existing IP rate limit
+// bounds call frequency; this bounds per-call payload so a single mint
+// can't push tens of MB of garbage through INPROCESS_API_KEY and our KV.
+const MAX_TOKEN_CONTENT_BYTES = 10 * 1024 * 1024
 
 type SplitsValidation =
   | { kind: 'absent' }
@@ -66,6 +73,14 @@ export async function proxyMintRequest(
     if (!Number.isInteger(ms) || ms < 1) {
       return errorResponse(400, 'maxSupply must be a positive integer')
     }
+  }
+
+  // Per-call cap on the writing-moment body — bounds what we forward to
+  // inprocess + persist in setMomentContent. Only the string form costs
+  // real bytes; other tokenContent shapes (e.g. references) are unaffected.
+  if (typeof tokenObj.tokenContent === 'string'
+      && Buffer.byteLength(tokenObj.tokenContent) > MAX_TOKEN_CONTENT_BYTES) {
+    return errorResponse(413, 'tokenContent too large')
   }
 
   // Validate splits up-front so a bad payload (duplicates, mis-summed,
@@ -138,6 +153,14 @@ export async function proxyMintRequest(
   }
   if (!gateOk) {
     return errorResponse(403, 'Kismet Creator pass required to mint')
+  }
+
+  // Per-address daily/weekly cap on platform-paid mint/write operations.
+  // Debited AFTER the gates so a blocked or pass-less caller doesn't burn
+  // their bucket. Admin bypasses inside consumeUserQuota.
+  const withinQuota = await consumeUserQuota(action, account, 1)
+  if (!withinQuota) {
+    return errorResponse(429, `Daily ${action} limit reached — try again tomorrow`)
   }
 
   // body.name is our private hint for moment-meta; never forward to InProcess.
