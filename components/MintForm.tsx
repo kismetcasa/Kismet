@@ -292,6 +292,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // recipient at 1% — so the cut can't exceed 100 − recipientCount or a
   // recipient would be squeezed below 1% and the array couldn't sum to 100.
   // With 0/1 splits only the creator shares the remainder, so the cap is 99.
+  // With many custom recipients this can fall to ≤0 (no room for residencies);
+  // residenciesOverCap then blocks the mint until the creator frees up space.
   const residenciesMax = splits.length >= 2 ? 100 - splits.length : 99
   // Defense in depth: if the creator raised the % and then added recipients,
   // the committed value can exceed the live cap. Surface it inline and block
@@ -370,22 +372,36 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   const TEXT_MAX = 5000
 
-  // Parse + commit the inline residencies edit. Integers only: floor decimals,
-  // clamp to [1, residenciesMax]. Empty/NaN reverts to the last committed
-  // value. A clamp surfaces a toast so the creator knows why the number moved.
+  // Parse + commit the inline residencies edit. Integers only — the valid
+  // range is [1, residenciesMax] where residenciesMax ≤ 99 (someone must keep
+  // ≥1%). Behavior by input:
+  //   empty / whitespace / non-numeric / ±Infinity → revert to last committed
+  //   decimals (e.g. 5.9)                           → floored to int, no toast
+  //   < 1 (0, negatives, 0.x)                       → clamp to 1 + toast
+  //   > residenciesMax (incl. 100)                  → clamp to cap + toast
+  //   1..residenciesMax                             → committed as-is
   function commitResidencies() {
     setEditingResidencies(false)
-    const parsed = parseInt(residenciesInput, 10)
-    if (!Number.isFinite(parsed)) {
+    const raw = residenciesInput.trim()
+    const num = Number(raw)
+    if (raw === '' || !Number.isFinite(num)) {
       setResidenciesInput(String(residenciesPercent))
       return
     }
-    const clamped = Math.min(residenciesMax, Math.max(1, Math.floor(parsed)))
-    if (clamped !== parsed) {
-      if (parsed > residenciesMax) {
-        toast.error(`Residencies capped at ${residenciesMax}% — each recipient needs at least 1%`)
-      } else if (parsed < 1) {
-        toast.error('Residencies must be at least 1% — use the toggle to turn it off')
+    const upper = Math.max(1, residenciesMax)
+    const intval = Math.floor(num)
+    const clamped = Math.min(upper, Math.max(1, intval))
+    // Toast only when we clamped a genuinely out-of-range value, not for a
+    // silent decimal truncation (5.9 → 5 stays quiet).
+    if (clamped !== intval) {
+      if (intval > upper) {
+        toast.error(
+          splits.length >= 2
+            ? `Residencies capped at ${upper}% so each recipient keeps at least 1%`
+            : `Residencies capped at ${upper}% so you keep at least 1%`,
+        )
+      } else {
+        toast.error('Residencies minimum is 1% — turn the toggle off to remove it')
       }
     }
     setResidenciesPercent(clamped)
@@ -479,7 +495,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       return
     }
     if (residenciesOverCap) {
-      toast.error(`Lower residencies to ${residenciesMax}% or remove a recipient — each split needs at least 1%`)
+      toast.error(
+        residenciesMax >= 1
+          ? `Lower residencies to ${residenciesMax}% or remove a recipient — each split needs at least 1%`
+          : 'Too many recipients to include residencies — remove some or turn the toggle off',
+      )
       return
     }
     // Final backstop: every split path must emit integers summing to exactly
@@ -1527,7 +1547,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 autoFocus
                 value={residenciesInput}
                 min={1}
-                max={residenciesMax}
+                max={Math.max(1, residenciesMax)}
                 step={1}
                 onChange={(e) => setResidenciesInput(e.target.value)}
                 onBlur={commitResidencies}
@@ -1569,7 +1589,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       </div>
       {residenciesOverCap && (
         <p className="text-[10px] font-mono text-red-500 w-fit mx-auto -mt-1 text-center">
-          {residenciesMax}% max with {splits.length} recipients — lower the % or remove one
+          {residenciesMax >= 1
+            ? `${residenciesMax}% max with ${splits.length} recipients — lower the % or remove one`
+            : `Too many recipients (${splits.length}) to include residencies — remove some or turn it off`}
         </p>
       )}
     </form>
