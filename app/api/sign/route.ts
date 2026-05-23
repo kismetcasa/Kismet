@@ -37,13 +37,19 @@ export async function POST(req: NextRequest) {
   const key = process.env.ARWEAVE_JWK
   if (!key) return errorResponse(500, 'Not configured')
 
-  // Per-address daily cap. The IP rate limit above only bounds bursts; this
-  // bounds the total Turbo data-item signatures a single identity can spend
-  // per day, regardless of how many IPs the caller cycles through. Each call
-  // signs one ~48-byte deep hash but the data item it covers can be
-  // arbitrarily large, so the bound is conservative until /api/sign is
-  // gated by a size-committed upload session. Debit AFTER input validation
-  // so malformed requests don't burn a legitimate user's bucket.
+  // Per-address daily cap on media-upload signings. The IP rate limit above
+  // only bounds bursts; this bounds the count a single identity can spend
+  // per day no matter how many IPs it cycles through.
+  //
+  // Why count, not bytes: the media stream goes client → Turbo directly
+  // (see lib/arweave/uploadFile.ts); this endpoint only ever sees the
+  // 48-byte deep hash, never the payload, so it CANNOT meter bytes. A
+  // client-reported size would be trivially under-reported by an attacker
+  // and is therefore not used. The count limit is the per-identity bound;
+  // the catastrophic-drain backstop is operational — keep the ARWEAVE_JWK
+  // wallet's Turbo balance capped + monitored (see .env.example). Turbo
+  // calls sign() exactly once per uploadFile, so one debit == one upload.
+  // Debit AFTER input validation so malformed requests don't burn a bucket.
   const quota = await consumeUserQuota('sign-calls', address, 1)
   if (!quota.ok) {
     return errorResponse(429, 'Daily upload signing limit reached — try again tomorrow')

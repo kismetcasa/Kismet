@@ -3,7 +3,14 @@ import { getSessionAddress } from '@/lib/session'
 import { getUserQuotaStatus, type QuotaKind } from '@/lib/userQuota'
 import { errorResponse } from '@/lib/apiResponse'
 
-const KINDS: QuotaKind[] = ['mint', 'write', 'upload-bytes', 'sign-calls']
+const KINDS: QuotaKind[] = [
+  'mint',
+  'write',
+  'upload-bytes',
+  'sign-calls',
+  'update-uri',
+  'distribute',
+]
 
 // Read-only snapshot of the session user's remaining mint / write / upload
 // / sign budget. Mirrors /api/airdrop/quota's role for the airdrop bucket.

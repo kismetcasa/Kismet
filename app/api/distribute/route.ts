@@ -8,6 +8,7 @@ import { getStoredSplits, hasRegisteredSplits } from '@/lib/splits'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
+import { consumeUserQuota } from '@/lib/userQuota'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
@@ -117,6 +118,15 @@ export async function POST(req: NextRequest) {
     }
   } catch {
     return errorResponse(502, 'Could not verify moment creator')
+  }
+
+  // Bound platform-sponsored gas: an authorized owner could otherwise spam
+  // distribute on their own token (each call is a sponsored on-chain tx).
+  // Debited after the ownership check so a non-owner never touches the
+  // bucket. Admin bypasses inside consumeUserQuota.
+  const quota = await consumeUserQuota('distribute', callerAddress, 1)
+  if (!quota.ok) {
+    return errorResponse(429, 'Daily distribute limit reached — try again tomorrow')
   }
 
   // Forward only the specific fields inprocess expects — never relay arbitrary

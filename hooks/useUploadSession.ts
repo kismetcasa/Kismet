@@ -82,10 +82,11 @@ export function useUploadSession() {
         chainId: base.id,
         nonce,
         issuedAt,
-        // Server enforces a fresh nonce + 5-min TTL on the nonce ledger,
-        // so this is belt-and-suspenders; viem's verifySiweMessage will
-        // reject the message after this point regardless of nonce state.
-        expirationTime: new Date(issuedAt.getTime() + 5 * 60 * 1000),
+        // The single-use nonce (server-side, 5-min TTL) is the real replay
+        // bound. expirationTime is belt-and-suspenders, set comfortably
+        // wider than the nonce TTL so client/server clock skew can't
+        // falsely reject a valid sign-in before the nonce itself expires.
+        expirationTime: new Date(issuedAt.getTime() + 15 * 60 * 1000),
       })
       const signature = await signMessageAsync({ message })
 

@@ -21,7 +21,13 @@ import { ADMIN_ADDRESS } from './config'
  * outage doesn't deny every legitimate user.
  */
 
-export type QuotaKind = 'mint' | 'write' | 'upload-bytes' | 'sign-calls'
+export type QuotaKind =
+  | 'mint'
+  | 'write'
+  | 'upload-bytes'
+  | 'sign-calls'
+  | 'update-uri'
+  | 'distribute'
 
 export interface QuotaWindow {
   /** Cap per UTC calendar day. */
@@ -37,11 +43,17 @@ const QUOTAS: Record<QuotaKind, QuotaWindow> = {
   // is well above any plausible single user's legitimate output and well
   // below "an attacker is meaningfully draining the wallet" territory.
   'upload-bytes': { day: 500 * 1024 * 1024,  week: 2 * 1024 * 1024 * 1024 },
-  // sign-calls is a coarse proxy for "Turbo data-item signatures issued"
-  // until /api/sign is bound to a size-committed upload session. Each
-  // call signs one ~48-byte deep hash but the data item it covers can be
-  // arbitrarily large, so this is the interim Layer-B bound.
+  // sign-calls bounds the COUNT of media-upload signings per identity.
+  // The bytes can't be metered here (the media streams client → Turbo and
+  // never reaches the server), so this count + an operationally-capped
+  // wallet balance are the controls. See app/api/sign/route.ts.
   'sign-calls':   { day: 200,          week: 800            },
+  // Owner-gated inprocess-key actions that submit a sponsored on-chain tx
+  // (gas paid by the platform smart wallet). Generous ceilings — these are
+  // far above any legitimate cadence — that bound an authorized owner from
+  // spamming gas-burning no-op calls on their own token.
+  'update-uri':   { day: 20,           week: 50             },
+  'distribute':   { day: 50,           week: 200            },
 }
 
 const TTL_DAY_SECONDS = 25 * 60 * 60       // 25h: covers boundary requests
