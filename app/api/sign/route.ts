@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
+import { consumeUserQuota } from '@/lib/userQuota'
 
 export const runtime = 'nodejs'
 
@@ -35,6 +36,18 @@ export async function POST(req: NextRequest) {
 
   const key = process.env.ARWEAVE_JWK
   if (!key) return errorResponse(500, 'Not configured')
+
+  // Per-address daily cap. The IP rate limit above only bounds bursts; this
+  // bounds the total Turbo data-item signatures a single identity can spend
+  // per day, regardless of how many IPs the caller cycles through. Each call
+  // signs one ~48-byte deep hash but the data item it covers can be
+  // arbitrarily large, so the bound is conservative until /api/sign is
+  // gated by a size-committed upload session. Debit AFTER input validation
+  // so malformed requests don't burn a legitimate user's bucket.
+  const quota = await consumeUserQuota('sign-calls', address, 1)
+  if (!quota.ok) {
+    return errorResponse(429, 'Daily upload signing limit reached — try again tomorrow')
+  }
 
   try {
     const jwk = JSON.parse(Buffer.from(key, 'base64').toString())

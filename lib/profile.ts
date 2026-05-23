@@ -1,7 +1,7 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
-import { randomUUID } from 'crypto'
+import { randomBytes } from 'crypto'
 
 export interface Profile {
   address: string
@@ -192,16 +192,25 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
   return results
 }
 
-// Nonce for wallet signature verification — expires in 5 minutes
+// Nonce for wallet signature verification — expires in 5 minutes.
+// 16 random bytes = 128 bits, hex-encoded so the value is alphanumeric
+// (no dashes). Matches the EIP-4361 SIWE nonce rule (^[a-zA-Z0-9]{8,}$),
+// so this single helper covers both SIWE-formatted user login and the
+// freeform-message paths (profile update, follow, listing PATCH, …).
 export async function createNonce(address: string): Promise<string> {
-  const nonce = randomUUID()
+  const nonce = randomBytes(16).toString('hex')
   await redis.setex(keyNonce(address), 300, nonce)
   return nonce
 }
 
+// Atomic via GETDEL — single Redis round-trip returns the stored value and
+// deletes the key. Without atomicity, two concurrent calls with the same
+// nonce can both observe-and-delete (GET, compare, DEL) and both succeed,
+// letting a captured signature be replayed in parallel. A mismatched-nonce
+// attempt also clears whatever was stored, which is the right trade-off:
+// nonces are server-issued and the legitimate caller transparently refetches.
 export async function consumeNonce(address: string, nonce: string): Promise<boolean> {
-  const stored = await redis.get<string>(keyNonce(address))
-  if (!stored || stored !== nonce) return false
-  await redis.del(keyNonce(address))
-  return true
+  if (!nonce || typeof nonce !== 'string') return false
+  const stored = await redis.getdel<string>(keyNonce(address))
+  return stored === nonce
 }

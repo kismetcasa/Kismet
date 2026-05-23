@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyMessage } from 'viem'
-import { isAddress } from '@/lib/address'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import {
@@ -12,6 +10,7 @@ import {
   revokeSession,
   setSessionCookie,
 } from '@/lib/session'
+import { verifySiweLogin } from '@/lib/siweLogin'
 import { errorResponse } from '@/lib/apiResponse'
 
 /** Returns the address bound to the current session cookie, or 401. */
@@ -29,45 +28,38 @@ export async function POST(req: NextRequest) {
   const allowed = await checkRateLimit(`session:${ip}`, 10, 60)
   if (!allowed) return errorResponse(429, 'Too many requests')
 
-  let body: { address?: string; signature?: string; nonce?: string }
+  // EIP-4361 SIWE. The signed message carries the domain so a signature
+  // obtained for kismet.art on a phishing clone (same text rendered to
+  // the user on attacker.com) cannot be replayed against us. Wire shape
+  // mirrors /api/auth/login: { message, signature } in the body.
+  let body: { message?: unknown; signature?: unknown }
   try {
-    body = await req.json()
+    body = (await req.json()) as { message?: unknown; signature?: unknown }
   } catch {
     return errorResponse(400, 'Invalid request body')
   }
-
-  if (!body.address || !isAddress(body.address)) {
-    return errorResponse(400, 'Valid address required')
-  }
-  if (!body.signature || !body.nonce) {
-    return errorResponse(400, 'signature and nonce required')
+  if (typeof body.message !== 'string' || typeof body.signature !== 'string') {
+    return errorResponse(400, 'message and signature required')
   }
 
-  const message = `Sign in to Kismet\nAddress: ${body.address.toLowerCase()}\nNonce: ${body.nonce}`
-  let sigValid = false
-  try {
-    sigValid = await verifyMessage({
-      address: body.address as `0x${string}`,
-      message,
-      signature: body.signature as `0x${string}`,
-    })
-  } catch {
-    return errorResponse(401, 'Invalid signature')
-  }
-  if (!sigValid) return errorResponse(401, 'Signature verification failed')
+  const expectedHost = req.headers.get('host')
+  const verified = await verifySiweLogin(body.message, body.signature, expectedHost)
+  if ('error' in verified) return errorResponse(verified.status, verified.error)
 
-  // Verify-then-consume: a failed sig leaves the nonce reusable, so an
-  // attacker can't burn nonces with bogus sigs to DoS sign-in.
-  const nonceValid = await consumeNonce(body.address, body.nonce)
+  // Verify-then-consume: a failed sig leaves the nonce reusable, so a
+  // bogus-sig flood can't burn a legitimate user's nonce. The nonce is
+  // stored against the SIGNER address (the same address that requested
+  // it via /api/profile/<addr>/nonce), making this lookup symmetric
+  // with the rest of the address-keyed nonce flows.
+  const nonceValid = await consumeNonce(verified.address, verified.nonce)
   if (!nonceValid) {
     return errorResponse(401, 'Invalid or expired nonce')
   }
 
-  const token = await createSession(body.address)
+  const token = await createSession(verified.address)
   // ttl returned so clients can decide when to refresh — but the cookie's
-  // Max-Age is the single source of truth; clients that rely on it have no
-  // need to track expiry locally.
-  const res = NextResponse.json({ ok: true, address: body.address.toLowerCase(), ttl: SESSION_TTL_SECONDS })
+  // Max-Age is the single source of truth.
+  const res = NextResponse.json({ ok: true, address: verified.address, ttl: SESSION_TTL_SECONDS })
   setSessionCookie(res, token)
   return res
 }

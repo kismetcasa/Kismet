@@ -1,4 +1,10 @@
-import type { Address, Hex } from 'viem'
+import {
+  decodeEventLog,
+  hashStruct,
+  parseAbiItem,
+  type Address,
+  type Hex,
+} from 'viem'
 import { USDC_BASE } from './zoraMint'
 
 // Seaport 1.5 — deployed on Base mainnet
@@ -440,3 +446,78 @@ export function deserializeOrder(order: SerializedOrderComponents): OrderCompone
     counter: BigInt(order.counter),
   }
 }
+
+// ─── Receipt-anchored status verification ────────────────────────────────────
+
+/**
+ * Seaport's on-chain orderHash is the EIP-712 struct hash of the
+ * OrderComponents — keccak256(typeHash || encodeData(components)), with NO
+ * domain separator. viem's hashStruct produces exactly that.
+ *
+ * Used to match a transaction's OrderFulfilled / OrderCancelled event back
+ * to a specific listing: any receipt log whose first topic is the event sig
+ * and whose first data field is this hash refers to this order.
+ */
+export function deriveOrderHash(order: OrderComponents): Hex {
+  return hashStruct({
+    types: SEAPORT_ORDER_TYPES,
+    primaryType: 'OrderComponents',
+    data: order,
+  })
+}
+
+// Seaport 1.5 OrderFulfilled signature. `offerer` and `zone` are indexed
+// (topics 1+2); orderHash, recipient, and the offer/consideration arrays
+// live in `data`. decodeEventLog handles both.
+//
+// OrderCancelled is intentionally not decoded server-side: cancellation
+// remains signature-only so a seller can "soft cancel" without paying
+// gas to call Seaport.cancel — the listing leaves the platform feed but
+// the underlying on-chain order is still fulfillable. Fulfillment is
+// the asymmetric-harm side (a third party can grief any listing), so
+// only that path requires the receipt anchor.
+const ORDER_FULFILLED_EVENT = parseAbiItem(
+  'event OrderFulfilled(bytes32 orderHash, address indexed offerer, address indexed zone, address recipient, (uint8 itemType, address token, uint256 identifier, uint256 amount)[] offer, (uint8 itemType, address token, uint256 identifier, uint256 amount, address recipient)[] consideration)',
+)
+
+interface ListingLike {
+  orderComponents: SerializedOrderComponents
+}
+
+/**
+ * Scan a transaction receipt for a Seaport fulfillment event matching
+ * `listing.orderComponents`. Returns the on-chain recipient (msg.sender of
+ * fulfillOrder) on a match, or null otherwise.
+ *
+ * Match conditions:
+ *   - Log emitted by SEAPORT_ADDRESS (no other contract's events count)
+ *   - Decodes as OrderFulfilled
+ *   - First data field (orderHash) equals deriveOrderHash(listing)
+ *
+ * Caller is expected to also check that the returned recipient matches the
+ * signer of the PATCH so a third party can't co-opt someone else's purchase.
+ */
+export function findFulfillmentInLogs(
+  listing: ListingLike,
+  logs: ReadonlyArray<{ address: string; topics: readonly Hex[]; data: Hex }>,
+): { recipient: Address } | null {
+  const expected = deriveOrderHash(deserializeOrder(listing.orderComponents))
+  for (const log of logs) {
+    if (log.address.toLowerCase() !== SEAPORT_ADDRESS.toLowerCase()) continue
+    let decoded
+    try {
+      decoded = decodeEventLog({
+        abi: [ORDER_FULFILLED_EVENT],
+        data: log.data,
+        // decodeEventLog requires a mutable [signature, ...indexed] tuple
+        topics: log.topics as unknown as [signature: Hex, ...args: Hex[]],
+      })
+    } catch {
+      continue
+    }
+    if (decoded.args.orderHash !== expected) continue
+    return { recipient: decoded.args.recipient }
+  }
+  return null
+}
+

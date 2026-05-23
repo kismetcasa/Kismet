@@ -2,6 +2,8 @@
 
 import { useCallback } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
+import { createSiweMessage } from 'viem/siwe'
+import { base } from 'wagmi/chains'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 /**
@@ -62,20 +64,36 @@ export function useUploadSession() {
         await fetch('/api/session', { method: 'DELETE', credentials: 'same-origin' }).catch(() => {})
       }
 
-      // No valid session — run the sign-in flow.
+      // No valid session — run the sign-in flow. SIWE message format so
+      // the server can bind verification to the host (anti-phishing) and
+      // wallets render the domain prominently in the typed signing UI.
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
       if (!nonceRes.ok) throw new Error('Could not fetch nonce')
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
       if (!nonce) throw new Error('Could not fetch nonce')
 
-      const message = `Sign in to Kismet\nAddress: ${lower}\nNonce: ${nonce}`
+      const issuedAt = new Date()
+      const message = createSiweMessage({
+        domain: window.location.host,
+        address,
+        statement: 'Sign in to Kismet',
+        uri: window.location.origin,
+        version: '1',
+        chainId: base.id,
+        nonce,
+        issuedAt,
+        // Server enforces a fresh nonce + 5-min TTL on the nonce ledger,
+        // so this is belt-and-suspenders; viem's verifySiweMessage will
+        // reject the message after this point regardless of nonce state.
+        expirationTime: new Date(issuedAt.getTime() + 5 * 60 * 1000),
+      })
       const signature = await signMessageAsync({ message })
 
       const res = await fetch('/api/session', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address, signature, nonce }),
+        body: JSON.stringify({ message, signature }),
       })
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; address?: string; error?: string }
       if (!res.ok) throw new Error(data.error ?? 'Session creation failed')

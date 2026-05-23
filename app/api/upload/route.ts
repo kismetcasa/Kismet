@@ -4,6 +4,7 @@ import { getPaidBy } from '@/lib/arweave/paidBy'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
+import { consumeUserQuota } from '@/lib/userQuota'
 
 export const runtime = 'nodejs'
 
@@ -52,8 +53,18 @@ export async function POST(req: NextRequest) {
   // Re-stringify and re-check size — defends against missing/forged
   // content-length and against payloads that decode larger than they appear.
   const serialized = JSON.stringify(body.json)
-  if (Buffer.byteLength(serialized) > MAX_BODY_BYTES) {
+  const serializedBytes = Buffer.byteLength(serialized)
+  if (serializedBytes > MAX_BODY_BYTES) {
     return errorResponse(413, 'Payload too large')
+  }
+
+  // Per-address daily byte budget. IP-based rate limit alone doesn't bound
+  // total spend — a determined user with rotating IPs could drain Arweave
+  // credit one 50 MB upload at a time. Debit AFTER we know the real byte
+  // count so the bucket reflects actual platform spend.
+  const quota = await consumeUserQuota('upload-bytes', address, serializedBytes)
+  if (!quota.ok) {
+    return errorResponse(429, 'Daily upload size limit reached — try again tomorrow')
   }
 
   try {

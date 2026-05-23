@@ -1,6 +1,6 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
-import { randomUUID } from 'crypto'
+import { randomBytes } from 'crypto'
 import type { NextRequest, NextResponse } from 'next/server'
 import { verifyFarcasterJwt } from './farcasterAuth'
 
@@ -20,7 +20,12 @@ export const SESSION_COOKIE =
 const key = (token: string) => `kismetart:session:${token}`
 
 export async function createSession(address: string): Promise<string> {
-  const token = randomUUID()
+  // 32 random bytes = 256 bits, hex-encoded — same shape and entropy as
+  // the admin session token in /api/auth/login. UUID v4 is also
+  // unbruteforceable in practice (~122 bits), but aligning the two
+  // session families on a single primitive keeps the auth surface
+  // homogeneous and the threat model easy to reason about.
+  const token = randomBytes(32).toString('hex')
   await redis.setex(key(token), SESSION_TTL_SECONDS, address.toLowerCase())
   return token
 }

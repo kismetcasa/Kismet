@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { randomBytes } from 'crypto'
-import { parseSiweMessage, verifySiweMessage } from 'viem/siwe'
 import { redis } from '@/lib/redis'
-import { serverBaseClient } from '@/lib/rpc'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from '@/lib/config'
 import { ADMIN_SESSION_COOKIE, adminSessionKey, adminNonceKey } from '@/lib/curator'
+import { verifySiweLogin } from '@/lib/siweLogin'
 import { errorResponse } from '@/lib/apiResponse'
 
 // 4 hours — matches the prior signature-TTL UX so admins/curators sign
@@ -40,48 +39,17 @@ export async function POST(req: NextRequest) {
   if (!body || typeof body.message !== 'string' || typeof body.signature !== 'string') {
     return errorResponse(400, 'message and signature required')
   }
-  if (!/^0x[0-9a-fA-F]+$/.test(body.signature)) {
-    return errorResponse(400, 'Invalid signature shape')
-  }
 
-  // Parse first so we can bind verification to the message's own nonce +
-  // address. Mismatched values cause verifySiweMessage to fail closed.
-  let parsed
-  try {
-    parsed = parseSiweMessage(body.message)
-  } catch {
-    return errorResponse(400, 'Invalid SIWE message')
-  }
-  const { address, nonce, domain } = parsed
-  if (!address || !nonce || !domain) {
-    return errorResponse(400, 'SIWE message missing required fields')
-  }
-
-  // Domain binding: the message must claim the same host the request was
-  // sent to. Prevents a curator's signature obtained for kismet.art from
-  // being replayed on a malicious clone (CSRF / phishing protection).
-  // Compare lowercased because the Host header is case-insensitive per
-  // HTTP, and clients (RainbowKit / browsers) can normalize differently.
-  const expectedDomain = req.headers.get('host')?.toLowerCase()
-  if (!expectedDomain || domain.toLowerCase() !== expectedDomain) {
-    return errorResponse(401, 'Domain mismatch')
-  }
-
-  // Verify signature against the message, with viem also asserting the
-  // message's expirationTime hasn't passed.
-  const verified = await verifySiweMessage(serverBaseClient(), {
-    message: body.message,
-    signature: body.signature as `0x${string}`,
-    domain: expectedDomain,
-    nonce,
-  })
-  if (!verified) {
-    return errorResponse(401, 'Signature verification failed')
-  }
+  // Shared SIWE verifier — parses the message, binds domain to the
+  // request host (anti-phishing), and runs viem's verifySiweMessage
+  // (which also asserts expirationTime hasn't passed and supports
+  // ERC-1271 smart wallets via verifyHash).
+  const verified = await verifySiweLogin(body.message, body.signature, req.headers.get('host'))
+  if ('error' in verified) return errorResponse(verified.status, verified.error)
+  const { address: signer, nonce } = verified
 
   // Privilege check after signature verification so we don't leak whether
   // an address is privileged via timing differences on early-return paths.
-  const signer = address.toLowerCase()
   const isAdmin = signer === ADMIN_ADDRESS
   const isCurator = CURATOR_ADDRESSES.includes(signer)
   if (!isAdmin && !isCurator) {
