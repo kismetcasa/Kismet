@@ -34,23 +34,38 @@ const rainbowKitConnectors = connectorsForWallets(wallets, {
   projectId: projectId ?? 'placeholder-build-only',
 })
 
-// Max time we'll wait for a Farcaster Mini App host to answer an EIP-1193
-// request before treating it as unavailable. Genuine hosts (Farcaster web,
-// FC iOS) answer their postMessage bridge in a few ms, so this never trips
-// for them — it only fires in environments that LOOK embedded but no
-// longer speak the Mini App protocol, most importantly the Base App, which
-// dropped the Farcaster Mini App spec in April 2026.
+// Max time we'll wait for a Farcaster Mini App host to answer a
+// non-interactive connection-probe RPC before treating it as unavailable.
+// Genuine hosts (Farcaster web, FC iOS) answer their postMessage bridge in
+// a few ms, so this never trips for them — it only fires in environments
+// that LOOK embedded but no longer speak the Mini App protocol, most
+// importantly the Base App, which dropped the Farcaster Mini App spec in
+// April 2026.
 //
 // Why it matters: the connector's eth_accounts call rides a Comlink
 // postMessage bridge with no timeout of its own. On a dead bridge it never
 // resolves, and because wagmi's reconnect-on-mount awaits connectors
 // serially, an unbounded call on the first connector pins the entire
 // wallet state in 'connecting'/'reconnecting' forever — the wallet button
-// never settles and nothing can sign. Bounding `request` makes
+// never settles and nothing can sign. Bounding the probe makes
 // isAuthorized() resolve to false (its own try/catch swallows the
 // rejection) and connect() reject (caught by reconnect), so wagmi falls
 // through to the remaining connectors and reaches 'disconnected'.
 const HOST_RPC_TIMEOUT_MS = 1500
+
+// Only the non-interactive lifecycle RPCs the connector fires during
+// reconnect-on-mount get time-bounded — these are the calls that hang
+// forever on a dead bridge. Interactive methods (eth_sendTransaction,
+// wallet_sendCalls, personal_sign, eth_signTypedData*, and the
+// user-prompting wallet_switchEthereumChain) are deliberately EXCLUDED:
+// they legitimately take seconds while the host shows its confirm sheet and
+// waits for the human, so bounding them would fire a spurious "host did not
+// respond" mid-signature even though the transaction goes on to succeed.
+const TIME_BOUNDED_METHODS = new Set([
+  'eth_accounts', // isAuthorized() probe — the dead-bridge culprit
+  'eth_requestAccounts', // connect() — auto-resolved by a live host
+  'eth_chainId', // getChainId() — instant on a live host
+])
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -60,22 +75,34 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-// Wrap an EIP-1193 provider so every `request` is time-bounded. All other
-// members pass straight through, bound to the original provider so `this`
-// stays correct — notably the `on`/`removeListener` event-emitter methods
-// the Farcaster connector asserts exist before subscribing.
+// Wrap an EIP-1193 provider so the non-interactive connection-probe
+// requests in TIME_BOUNDED_METHODS are time-bounded, while interactive
+// requests (signing, sending, chain switch) pass through untouched. All
+// other members pass straight through, bound to the original provider so
+// `this` stays correct — notably the `on`/`removeListener` event-emitter
+// methods the Farcaster connector asserts exist before subscribing.
 function timeBoundProvider<T extends object>(provider: T): T {
   return new Proxy(provider, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver)
       if (prop === 'request' && typeof value === 'function') {
         const request = value as (...args: unknown[]) => Promise<unknown>
-        return (...args: unknown[]) =>
-          withTimeout(
-            request.apply(target, args),
-            HOST_RPC_TIMEOUT_MS,
-            'Farcaster Mini App host did not respond',
-          )
+        return (...args: unknown[]) => {
+          const arg = args[0]
+          const method =
+            typeof arg === 'object' && arg !== null
+              ? (arg as { method?: unknown }).method
+              : undefined
+          const result = request.apply(target, args)
+          if (typeof method === 'string' && TIME_BOUNDED_METHODS.has(method)) {
+            return withTimeout(
+              result,
+              HOST_RPC_TIMEOUT_MS,
+              'Farcaster Mini App host did not respond',
+            )
+          }
+          return result
+        }
       }
       return typeof value === 'function'
         ? (value as (...args: unknown[]) => unknown).bind(target)
