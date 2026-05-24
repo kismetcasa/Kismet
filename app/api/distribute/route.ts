@@ -197,25 +197,57 @@ export async function POST(req: NextRequest) {
   // body keys, which could ride along to undocumented upstream parameters.
   // Per inprocess docs (payments/distribute): tokenAddress is required for
   // ERC20 distributions (defaults to native ETH if omitted).
-  const res = await fetch(`${INPROCESS_API}/distribute`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-    },
-    body: JSON.stringify({
-      splitAddress,
-      chainId: 8453,
-      ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
-    }),
-  })
+  const upstreamBody = {
+    splitAddress,
+    chainId: 8453,
+    ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
+  }
+
+  let res: Response
+  try {
+    res = await fetch(`${INPROCESS_API}/distribute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(upstreamBody),
+    })
+  } catch (err) {
+    // Network-level failure reaching inprocess. Without this guard the throw
+    // bubbles to a bare 500 with no body — indistinguishable from the
+    // missing-key 500 above and impossible to diagnose from logs.
+    console.error(
+      `[distribute] upstream unreachable: ${err instanceof Error ? err.message : String(err)} | request: ${JSON.stringify(upstreamBody)}`,
+    )
+    return NextResponse.json(
+      { error: 'upstream unreachable', detail: err instanceof Error ? err.message : String(err) },
+      { status: 502 },
+    )
+  }
 
   const text = await res.text()
   let data: unknown
   try {
     data = JSON.parse(text)
   } catch {
-    return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
+    console.error(
+      `[distribute] upstream non-JSON: status=${res.status} body=${text.slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+    )
+    return NextResponse.json(
+      { error: 'upstream error', status: res.status, detail: text.slice(0, 200) },
+      { status: 502 },
+    )
+  }
+
+  // Log non-OK upstream responses so the actual inprocess error (bad request
+  // shape, key rejected, smart-wallet not admin, on-chain revert) is visible
+  // server-side — the only other signal is the client toast.
+  if (!res.ok) {
+    console.error(
+      `[distribute] upstream ${res.status}: ${JSON.stringify(data).slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+    )
   }
 
   // Fan-out payout notifications on inprocess 2xx (best-effort). Reuses the
