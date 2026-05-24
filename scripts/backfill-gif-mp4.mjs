@@ -101,11 +101,27 @@ async function waitForPropagation(uri, timeoutMs = 90_000) {
   return false
 }
 
-function isRawGif(meta) {
-  if (meta.animation_url) return false // already has a moving asset (mp4)
-  const mime = meta.content?.mime
-  const uri = meta.content?.uri ?? meta.image ?? ''
-  return mime === 'image/gif' || /\.gif$/i.test(uri)
+const VIDEO_EXTS = ['.mp4', '.webm', '.mov', '.ogv', '.m4v']
+
+// Is the moment ALREADY a video (an MP4 we shouldn't touch)? The raw
+// on-chain metadata is often minimal — just {name, description, image} —
+// so there's usually no mime to read; fall back to extension sniffing.
+function isAlreadyVideo(meta) {
+  if (meta.content?.mime?.startsWith('video/')) return true
+  const anim = (meta.animation_url ?? '').split(/[?#]/, 1)[0].toLowerCase()
+  return VIDEO_EXTS.some((ext) => anim.endsWith(ext))
+}
+
+// The animated/primary asset to inspect. Real on-chain metadata here is
+// just `image`; animation_url / content.uri are the marketplace variants.
+function mediaSource(meta) {
+  return meta.animation_url ?? meta.content?.uri ?? meta.image ?? null
+}
+
+// ar:// URIs carry no extension and the raw metadata has no reliable mime,
+// so the only trustworthy GIF signal is the file's own magic number.
+function isGifBytes(buf) {
+  return buf.length >= 6 && buf.toString('ascii', 0, 4) === 'GIF8'
 }
 
 async function transcode(gifBuf, outDir) {
@@ -213,24 +229,31 @@ async function main() {
       console.log(`  tokenURI: ${metaUri}`)
       const meta = await fetchFromGateways(metaUri)
 
-      if (!isRawGif(meta)) {
-        console.log('  SKIP — not a raw GIF (already has animation_url or non-gif content). No change.')
+      if (isAlreadyVideo(meta)) {
+        console.log('  SKIP — already a video (mp4). No change.')
         continue
       }
-
-      const gifUri = meta.content?.uri ?? meta.image
-      console.log(`  raw gif: ${gifUri}`)
+      const gifUri = mediaSource(meta)
+      if (!gifUri) {
+        console.log('  SKIP — no media URL in metadata. No change.')
+        continue
+      }
+      console.log(`  media: ${gifUri}`)
       const gifBuf = await fetchFromGateways(gifUri, { asBuffer: true })
-      console.log(`  downloaded ${(gifBuf.length / 1024 / 1024).toFixed(1)} MB`)
+      // The raw metadata has no reliable mime/extension, so confirm it's
+      // actually a GIF from its magic number before transcoding.
+      if (!isGifBytes(gifBuf)) {
+        console.log(`  SKIP — asset is not a GIF (magic ${gifBuf.toString('hex', 0, 4)}). No change.`)
+        continue
+      }
+      console.log(`  raw gif confirmed, ${(gifBuf.length / 1024 / 1024).toFixed(1)} MB`)
 
       const { mp4, poster } = await transcode(gifBuf, workDir)
       console.log(`  transcoded -> mp4 ${(mp4.length / 1024 / 1024).toFixed(1)} MB, poster ${(poster.length / 1024).toFixed(0)} KB`)
 
       if (dryRun) {
         const newMeta = {
-          name: meta.name,
-          description: meta.description,
-          ...(meta.external_url ? { external_url: meta.external_url } : {}),
+          ...meta,
           image: 'ar://<poster>',
           animation_url: 'ar://<mp4>',
           content: { uri: 'ar://<mp4>', mime: 'video/mp4' },
@@ -246,16 +269,14 @@ async function main() {
       ])
       console.log(`  uploaded mp4 ${mp4Uri}  poster ${posterUri}`)
 
-      // Rewritten metadata: image = poster, animation_url = mp4, and
-      // content = the mp4 with mime video/mp4. The content.mime is
-      // load-bearing — ar:// URIs have no extension, so isVideoMoment()
-      // classifies by content.mime; writing it explicitly (rather than the
-      // stale image/gif, or omitting it) guarantees the moment renders as a
-      // playing video regardless of how the indexer re-derives metadata.
+      // Rewritten metadata: preserve every existing field (name,
+      // description, createReferral, …), swap image → poster, and add
+      // animation_url + content = the mp4 with mime video/mp4. content.mime
+      // is load-bearing — ar:// URIs have no extension, so isVideoMoment()
+      // classifies by content.mime; writing it explicitly guarantees the
+      // moment renders as a playing video regardless of indexer behavior.
       const newMeta = {
-        name: meta.name,
-        description: meta.description,
-        ...(meta.external_url ? { external_url: meta.external_url } : {}),
+        ...meta,
         image: posterUri,
         animation_url: mp4Uri,
         content: { uri: mp4Uri, mime: 'video/mp4' },
