@@ -13,6 +13,7 @@ import { shortAddress, type CreateMomentPayload, type Split } from '@/lib/inproc
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
+import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
@@ -744,6 +745,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // still-frame for cards, modals, og:image, and the detail page.
         let mediaFile: File = file!
         let posterFile: File | null = null
+        // Set when the in-browser transcode can't handle this GIF (over the
+        // 100MB ffmpeg.wasm cap, or it threw). The raw GIF is uploaded as-is
+        // below, then handed to the server transcoder. Fail-safe: if the
+        // server step also fails, the mint still ships today's raw-GIF
+        // bindings rather than blocking.
+        let needsServerTranscode = false
+        const isGifFile = file!.type === 'image/gif' || file!.name.toLowerCase().endsWith('.gif')
         if (canTranscode(file!)) {
           setStep('preparing-media')
           setUploadProgress(0)
@@ -756,8 +764,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             mediaFile = mp4
             posterFile = poster
           } catch (err) {
-            console.warn('[MintForm] GIF transcode failed; uploading original', err)
+            console.warn('[MintForm] GIF transcode failed; will retry server-side', err)
+            needsServerTranscode = true
           }
+        } else if (isGifFile) {
+          // Over the ffmpeg.wasm cap — can't transcode in the browser.
+          // Upload the raw GIF below, then transcode it on the server.
+          needsServerTranscode = true
         } else if (file!.type.startsWith('video/')) {
           setStep('preparing-media')
           toast.loading('Optimizing video for fast playback…', { id: 'mint' })
@@ -823,14 +836,39 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // renderer would try to load it as an <img> src and fail, leaving
         // a black card. Better to leave image undefined and let the
         // thumbhash + icon placeholder cover the slot.
-        const isVideoMedia = mediaFile.type.startsWith('video/')
-        const imageUri = isVideoMedia ? posterUri : (posterUri ?? mediaUri)
+        // Default (client-transcoded or non-GIF) media bindings: a video
+        // moment points animation_url at the uploaded MP4 and image at the
+        // poster; everything else uses the media itself as the image.
+        let animationUri: string | undefined = mediaFile.type.startsWith('video/') ? mediaUri : undefined
+        let finalImageUri = animationUri ? posterUri : (posterUri ?? mediaUri)
+        let finalThumbhash = thumbhash
+        // Oversized / wasm-failed GIF: `mediaUri` is the raw GIF we just
+        // uploaded. Transcode it server-side and swap in the MP4 + poster so
+        // it renders as a video (iOS can't decode large animated GIFs).
+        // Fail-safe: any error keeps the raw-GIF bindings above so the mint
+        // still completes — never worse than today's behavior.
+        if (needsServerTranscode) {
+          try {
+            toast.loading('Optimizing animation on server…', { id: 'mint' })
+            // The server fetches the raw GIF from a gateway, so block on its
+            // propagation first or the hand-off 404s.
+            const rawOk = await mediaVerify
+            if (!rawOk) throw new Error('source GIF not yet propagated')
+            const r = await serverTranscodeGif(mediaUri)
+            animationUri = r.animationUri
+            finalImageUri = r.posterUri
+            finalThumbhash = r.thumbhash ?? finalThumbhash
+          } catch (err) {
+            console.warn('[MintForm] server GIF transcode failed; shipping original', err)
+          }
+        }
+        const imageUri = finalImageUri
         const metadata = {
           name: name.trim(),
           description: description.trim(),
           ...(imageUri ? { image: imageUri } : {}),
-          ...(isVideoMedia ? { animation_url: mediaUri } : {}),
-          ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
+          ...(animationUri ? { animation_url: animationUri } : {}),
+          ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
         }
         const metadataUri = await uploadJson(metadata)
         const metadataVerify = verifyArweaveAvailable(metadataUri)
@@ -841,14 +879,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // above — for video media, never fall back to the MP4 URL.
         let collectionUri: string | null = null
         let collectionVerify: Promise<boolean> = Promise.resolve(true)
-        const coverImageUri = isVideoMedia ? posterUri : (posterUri ?? mediaUri)
+        const coverImageUri = imageUri
         if (isAutoDeploy) {
           toast.loading('Uploading collection metadata…', { id: 'mint' })
           const collectionMetadata = {
             name: resolvedCollectionName,
             description: description.trim(),
             ...(coverImageUri ? { image: coverImageUri } : {}),
-            ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
+            ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
             createReferral: CREATE_REFERRAL,
           }
           collectionUri = await uploadJson(collectionMetadata)
@@ -937,7 +975,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // mediaUri otherwise) so the KV registration can store it and
           // the collection card has a non-blank image immediately.
           // thumbhash piggybacks for the cover placeholder.
-          void trackAndVerifyAutoDeploy(data.contractAddress, coverImageUri ?? undefined, thumbhash ?? undefined)
+          void trackAndVerifyAutoDeploy(data.contractAddress, coverImageUri ?? undefined, finalThumbhash ?? undefined)
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })

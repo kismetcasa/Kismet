@@ -27,6 +27,7 @@ import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
+import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
@@ -627,14 +628,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // resolver keeps classifying the moment as a GIF and renders the old
       // raw bytes instead of the new MP4.
       let dropContent = false
-      if (editFile) {
+      const isGifEdit =
+        !!editFile && (editFile.type === 'image/gif' || editFile.name.toLowerCase().endsWith('.gif'))
+      if (editFile && isGifEdit) {
+        // A re-uploaded GIF gets the same iOS-safe MP4 + poster treatment as
+        // MintForm — WebKit can't decode large animated GIFs, so we never
+        // ship the raw .gif as the rendered asset. Small GIFs transcode in
+        // the browser; ones over the 100MB ffmpeg.wasm cap (or that throw)
+        // fall through to the server transcoder.
+        let done = false
         if (canTranscode(editFile)) {
-          // A re-uploaded GIF gets the same iOS-safe MP4 + poster treatment
-          // as MintForm — WebKit can't decode large animated GIFs, so we
-          // never ship the raw .gif as the rendered asset. Over the 100MB
-          // ffmpeg.wasm cap (canTranscode === false) this branch is skipped
-          // and the server backfill is the only fix.
-          let transcoded = false
           try {
             toast.loading('Optimizing animation for fast playback…', { id: 'edit-meta' })
             const { mp4, poster } = await transcodeGifToMp4(editFile)
@@ -648,39 +651,62 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             imageUri = posterUri
             thumbhash = (await thumbhashPromise) ?? thumbhash
             dropContent = true
-            transcoded = true
+            done = true
           } catch (err) {
-            console.warn('[MomentDetailView] GIF transcode failed; uploading original', err)
+            console.warn('[MomentDetailView] client GIF transcode failed; trying server', err)
           }
-          if (!transcoded) {
-            toast.loading('Uploading image…', { id: 'edit-meta' })
-            const thumbhashPromise = generateThumbhash(editFile)
-            imageUri = await uploadToArweave(editFile)
-            thumbhash = (await thumbhashPromise) ?? thumbhash
+        }
+        if (!done) {
+          // Over the browser cap, or the client encode failed: upload the
+          // raw GIF and transcode it server-side (no wasm cap).
+          try {
+            toast.loading('Uploading animation…', { id: 'edit-meta' })
+            const rawUri = await uploadToArweave(editFile)
+            // The server fetches the GIF from a gateway — block on its
+            // propagation first or the hand-off 404s.
+            const rawOk = await verifyArweaveAvailable(rawUri, 90_000)
+            if (!rawOk) throw new Error('source GIF not yet propagated')
+            toast.loading('Optimizing animation on server…', { id: 'edit-meta' })
+            const r = await serverTranscodeGif(rawUri)
+            animationUri = r.animationUri
+            imageUri = r.posterUri
+            thumbhash = r.thumbhash ?? thumbhash
+            dropContent = true
+            done = true
+          } catch (err) {
+            console.warn('[MomentDetailView] server GIF transcode failed; uploading original', err)
           }
-        } else {
-          // Picker accepts video/* so the creator can re-upload the
-          // moment's source video to fix a broken meta.image — extract
-          // the first frame and use that as the cover, never store the
-          // video URL itself as the image (same constraint as MintForm).
-          let uploadFile: File = editFile
-          if (editFile.type.startsWith('video/')) {
-            toast.loading('Extracting poster from video…', { id: 'edit-meta' })
-            const poster = await extractVideoPoster(editFile)
-            if (!poster) {
-              throw new Error('Could not extract a poster frame from this video — try uploading an image instead')
-            }
-            uploadFile = poster
-          }
+        }
+        if (!done) {
+          // Both paths failed — save the raw GIF as the image so the edit
+          // still completes (no worse than before the fix).
           toast.loading('Uploading image…', { id: 'edit-meta' })
-          // Hash and upload in parallel — the encode is bounded by 100px
-          // downscale and finishes well before the Arweave POST does, so
-          // it's free latency. Falls back to the previous hash on encode
-          // failure rather than stripping the placeholder.
-          const thumbhashPromise = generateThumbhash(uploadFile)
-          imageUri = await uploadToArweave(uploadFile)
+          const thumbhashPromise = generateThumbhash(editFile)
+          imageUri = await uploadToArweave(editFile)
           thumbhash = (await thumbhashPromise) ?? thumbhash
         }
+      } else if (editFile) {
+        // Picker accepts video/* so the creator can re-upload the
+        // moment's source video to fix a broken meta.image — extract
+        // the first frame and use that as the cover, never store the
+        // video URL itself as the image (same constraint as MintForm).
+        let uploadFile: File = editFile
+        if (editFile.type.startsWith('video/')) {
+          toast.loading('Extracting poster from video…', { id: 'edit-meta' })
+          const poster = await extractVideoPoster(editFile)
+          if (!poster) {
+            throw new Error('Could not extract a poster frame from this video — try uploading an image instead')
+          }
+          uploadFile = poster
+        }
+        toast.loading('Uploading image…', { id: 'edit-meta' })
+        // Hash and upload in parallel — the encode is bounded by 100px
+        // downscale and finishes well before the Arweave POST does, so
+        // it's free latency. Falls back to the previous hash on encode
+        // failure rather than stripping the placeholder.
+        const thumbhashPromise = generateThumbhash(uploadFile)
+        imageUri = await uploadToArweave(uploadFile)
+        thumbhash = (await thumbhashPromise) ?? thumbhash
       }
 
       // Build the new metadata JSON. Preserve animation_url + content
