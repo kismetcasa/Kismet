@@ -132,7 +132,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
-  const { isInMiniApp } = useFarcaster()
+  const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
   // For post-auto-deploy permission verification — reads
   // permissions(0, smartWallet) on the freshly-deployed contract so we
   // can surface a one-shot Authorize CTA if the smart wallet didn't
@@ -723,7 +723,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
-        if (isInMiniApp) hapticNotifySuccess()
+        if (isInMiniApp) {
+          hapticNotifySuccess()
+          maybePromptCollectNotifs()
+        }
 
       } else {
         // media mode — ensure session once (cookie cached, no re-prompt)
@@ -938,7 +941,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
-        if (isInMiniApp) hapticNotifySuccess()
+        if (isInMiniApp) {
+          hapticNotifySuccess()
+          maybePromptCollectNotifs()
+        }
       }
     } catch (err) {
       setStep('idle')

@@ -32,6 +32,14 @@ type FarcasterContextValue = {
    * full page reload.
    */
   refreshIdentity: () => Promise<void>
+  /**
+   * Offer the "Add Kismet" prompt so the creator gets push when their
+   * work is collected. Self-gating no-op outside a Mini App, when the app
+   * is already added / notifications enabled, once shown this session, or
+   * after it has fired once on this device. Called from the mint success
+   * path so a creator's first mint surfaces the ask.
+   */
+  maybePromptCollectNotifs: () => void
 }
 
 const FarcasterContext = createContext<FarcasterContextValue>({
@@ -39,6 +47,7 @@ const FarcasterContext = createContext<FarcasterContextValue>({
   ready: false,
   identity: null,
   refreshIdentity: async () => {},
+  maybePromptCollectNotifs: () => {},
 })
 
 export const useFarcaster = () => useContext(FarcasterContext)
@@ -129,6 +138,13 @@ function installFetchInterceptor(
 const OPEN_COUNT_KEY = 'kismetart:miniapp-opens'
 const PROMPT_TARGET_OPEN = 2
 
+// One-shot (per device) flag for the post-first-mint "Add Kismet" prompt.
+// Set the first time we surface that prompt so a creator who mints
+// repeatedly is asked at most once. Independent of OPEN_COUNT_KEY: the two
+// triggers (2nd open, 1st mint) each fire at most once, and a session-level
+// guard (addPromptShownRef) prevents both landing in the same session.
+const MINT_PROMPT_KEY = 'kismetart:miniapp-mint-prompt'
+
 function bumpAndReadOpenCount(): number {
   try {
     const prev = Number(localStorage.getItem(OPEN_COUNT_KEY)) || 0
@@ -143,7 +159,10 @@ function bumpAndReadOpenCount(): number {
   }
 }
 
-type FarcasterState = Omit<FarcasterContextValue, 'refreshIdentity'>
+type FarcasterState = Omit<
+  FarcasterContextValue,
+  'refreshIdentity' | 'maybePromptCollectNotifs'
+>
 
 export function FarcasterProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FarcasterState>({
@@ -184,6 +203,53 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   const { connect, connectors } = useConnect()
   const hasAttemptedConnect = useRef(false)
 
+  // Drives the "Add Kismet" notification prompt, shared by both triggers
+  // (2nd open + 1st mint). Set during bootstrap.
+  const isInMiniAppRef = useRef(false)
+  // Latest host add/notification state, so maybePromptCollectNotifs can
+  // gate without re-querying the SDK.
+  const addEligibilityRef = useRef({ added: false, notificationsEnabled: false })
+  // Session guard: true once the prompt has shown this load, so the two
+  // triggers never double-prompt within a single session.
+  const addPromptShownRef = useRef(false)
+
+  // The single source of truth for the "Add Kismet" toast. Both triggers
+  // route through here so the copy + consent action stay identical and the
+  // session guard is set in one place. The SDK chunk is already resolved
+  // (bootstrap imported it), so the dynamic import in onClick is instant.
+  const showAddKismetPrompt = useCallback(() => {
+    addPromptShownRef.current = true
+    toast('Get pinged when someone collects your work.', {
+      duration: 8000,
+      action: {
+        label: 'Add Kismet',
+        onClick: () => {
+          // Host owns the consent sheet from here. Errors (user-dismissed,
+          // capability missing) are not our concern — they don't add, no
+          // push tokens land.
+          void import('@farcaster/miniapp-sdk').then(({ sdk }) =>
+            sdk.actions.addMiniApp().catch(() => {}),
+          )
+        },
+      },
+    })
+  }, [])
+
+  const maybePromptCollectNotifs = useCallback(() => {
+    if (!isInMiniAppRef.current || addPromptShownRef.current) return
+    const { added, notificationsEnabled } = addEligibilityRef.current
+    if (added || notificationsEnabled) return
+    try {
+      if (localStorage.getItem(MINT_PROMPT_KEY) === '1') return
+      localStorage.setItem(MINT_PROMPT_KEY, '1')
+    } catch {
+      // Can't persist the one-shot (private mode, etc) — skip rather than
+      // risk re-prompting on every subsequent mint.
+      return
+    }
+    showAddKismetPrompt()
+  }, [showAddKismetPrompt])
+
   useEffect(() => {
     if (!isPotentialMiniAppEnv()) {
       // Regular web user — never load the Mini App SDK, never call ready().
@@ -207,6 +273,7 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // preview that isn't actually a Farcaster host).
         const confirmed = await sdk.isInMiniApp()
         if (cancelled || !confirmed) return
+        isInMiniAppRef.current = true
 
         // Install the JWT interceptor up front so the /api/me fetch
         // below picks up the Bearer token automatically. The token
@@ -388,25 +455,14 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // addMiniApp prompt: only on the user's 2nd confirmed open, and
         // only when they haven't already added or enabled notifications.
         // Fires as a non-modal sonner toast so it can't interfere with
-        // any in-flight action.
+        // any in-flight action. The same eligibility (cached here) also
+        // gates the post-first-mint trigger via maybePromptCollectNotifs.
         const added = ctx?.client?.added === true
         const notificationsEnabled = !!ctx?.client?.notificationDetails
+        addEligibilityRef.current = { added, notificationsEnabled }
         if (!added && !notificationsEnabled) {
           const opens = bumpAndReadOpenCount()
-          if (opens === PROMPT_TARGET_OPEN) {
-            toast('Get pinged when someone collects your work.', {
-              duration: 8000,
-              action: {
-                label: 'Add Kismet',
-                onClick: () => {
-                  // Host owns the consent sheet from here. Errors
-                  // (user-dismissed, capability missing) are not our
-                  // concern — they don't add, no push tokens land.
-                  void sdk.actions.addMiniApp().catch(() => {})
-                },
-              },
-            })
-          }
+          if (opens === PROMPT_TARGET_OPEN) showAddKismetPrompt()
         }
       } catch (err) {
         // Fail open: if anything in the bootstrap throws, behave as a
@@ -500,8 +556,8 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   // Memoize so refreshIdentity (stable) doesn't force a re-render
   // every time `state` changes for unrelated reasons.
   const value = useMemo<FarcasterContextValue>(
-    () => ({ ...state, refreshIdentity }),
-    [state, refreshIdentity],
+    () => ({ ...state, refreshIdentity, maybePromptCollectNotifs }),
+    [state, refreshIdentity, maybePromptCollectNotifs],
   )
   return (
     <FarcasterContext.Provider value={value}>{children}</FarcasterContext.Provider>
