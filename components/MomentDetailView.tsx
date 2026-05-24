@@ -335,11 +335,38 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  const { hasSplits, recipients: splitRecipients, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
+  // Moment admin per inprocess's momentAdmins (unordered; may include the
+  // operator smart wallet — harmless, the distribute API's signature gate is
+  // authoritative). One of the roles canDistribute admits.
+  const isMomentAdmin =
+    !!connectedAddress &&
+    Array.isArray(detail?.momentAdmins) &&
+    detail.momentAdmins.some((a) => a.toLowerCase() === connectedAddress.toLowerCase())
+  const splitsCurrency = detail ? inferCollectCurrency(detail.saleConfig) : 'eth'
+  const {
+    hasSplits,
+    recipients: splitRecipients,
+    splitAddress,
+    canDistribute,
+    isRecipient,
+    pendingFormatted,
+    pendingShareFormatted,
+    hasPending,
+    distribute,
+    distributing,
+    distributeHash,
+  } = useMomentSplits({
     address,
     tokenId,
     isCreator,
+    isAdmin: isMomentAdmin,
+    isPlatformAdmin: isAdmin,
+    currency: splitsCurrency,
   })
+  // The platform admin sees distribute on any moment as a support override.
+  // Flag the case where that's the *only* reason the controls show, so the
+  // UI can label it rather than imply the admin is a creator/payee.
+  const adminDistributeOverride = isAdmin && !isCreator && !isMomentAdmin && !isRecipient
 
   // Fetch moment detail. We retry on the client when initialDetail is null
   // (server-side fetch returned no data, e.g. inprocess hasn't indexed a
@@ -1091,16 +1118,36 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Spacer — pushes bottom group down when content is short */}
           <div className="flex-1 min-h-6" />
 
-          {/* Distribute earnings (floats above collect) */}
-          {isCreator && hasSplits && (
+          {/* Distribute earnings — shown to anyone who can distribute.
+              Distributing pays every recipient at once (0xSplits is
+              all-or-nothing), so the figures show the full pending balance
+              plus the viewer's cut. */}
+          {canDistribute && (
             <div className="px-5 pb-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">distribute earnings</p>
+              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">
+                distribute earnings
+                {adminDistributeOverride && <span className="text-accent"> · admin override</span>}
+              </p>
+              {pendingFormatted !== undefined && (
+                <p className="text-[11px] font-mono text-dim">
+                  {hasPending ? `${pendingFormatted} to distribute` : 'nothing to distribute yet'}
+                  {pendingShareFormatted && hasPending && (
+                    <span className="text-muted"> · your share ≈ {pendingShareFormatted}</span>
+                  )}
+                </p>
+              )}
               <button
                 onClick={handleDistribute}
-                disabled={distributing || !splitAddress}
+                disabled={distributing || !splitAddress || !hasPending}
                 className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
               >
-                {distributing ? 'distributing…' : splitAddress ? 'distribute' : 'loading…'}
+                {distributing
+                  ? 'distributing…'
+                  : !splitAddress || pendingFormatted === undefined
+                    ? 'loading…'
+                    : hasPending
+                      ? 'distribute'
+                      : 'nothing to distribute'}
               </button>
               {distributeHash && (
                 <a

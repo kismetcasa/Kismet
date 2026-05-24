@@ -500,8 +500,7 @@ function ArtistsFeed() {
         <MomentCard
           key={`${m.address}-${m.token_id}`}
           moment={m}
-          hidePriceSupply
-          viewProfileHref={`/profile/${m.creator.address}`}
+          profileCta
           priority={index < 3}
         />
       )}

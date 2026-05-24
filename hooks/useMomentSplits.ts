@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAccount, useReadContract, useSignMessage } from 'wagmi'
+import { useAccount, useBalance, useReadContract, useSignMessage } from 'wagmi'
+import { base } from 'viem/chains'
 import { toast } from 'sonner'
-import { ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
+import { ERC20_ABI, USDC_BASE, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
+import { formatPrice } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
 import type { SplitRecipient } from '@/lib/splits'
 import type { CollectCurrency } from '@/hooks/useDirectCollect'
@@ -11,13 +13,40 @@ import type { CollectCurrency } from '@/hooks/useDirectCollect'
 interface Options {
   address: string
   tokenId: string
+  // Creator (resolved EOA) or a moment admin per the parent view. Either
+  // grants distribute rights; recipients are detected here from the stored
+  // split list. The distribute API authorizes the same roles.
   isCreator: boolean
+  isAdmin: boolean
+  // Kismet platform admin (ADMIN_ADDRESS) — a break-glass role that may
+  // distribute any moment's splits (e.g. to unstick a payout a user reports
+  // as missing). The distribute API authorizes the same address; the
+  // signature gate keeps it to the real admin EOA.
+  isPlatformAdmin: boolean
+  // Sale currency of the moment — selects which balance to read off the
+  // split contract (native ETH vs USDC) and which token inprocess distributes.
+  currency: CollectCurrency
 }
 
 interface SplitsState {
   hasSplits: boolean
   recipients: SplitRecipient[]
   splitAddress: `0x${string}` | undefined
+  // True when the connected wallet may trigger a distribution: creator,
+  // moment admin, split recipient, or platform admin.
+  canDistribute: boolean
+  // True when the connected wallet is one of the split recipients. Lets the
+  // view distinguish a recipient/creator from a platform-admin override.
+  isRecipient: boolean
+  // Undistributed proceeds sitting on the split, formatted for display
+  // (e.g. "0.5 ETH" / "$5"). undefined while the balance read is pending.
+  pendingFormatted: string | undefined
+  // The connected wallet's share of `pendingFormatted` (balance × their %).
+  // undefined when the viewer isn't a recipient or the read is pending.
+  pendingShareFormatted: string | undefined
+  // True when there's a non-zero balance to distribute. Gates the button so
+  // we don't sponsor a no-op tx.
+  hasPending: boolean
   distribute: (currency: CollectCurrency) => Promise<void>
   distributing: boolean
   distributeHash: string | null
@@ -25,15 +54,16 @@ interface SplitsState {
 
 /**
  * Bundles the splits state for MomentDetailView: the stored recipient list
- * (rendered for every viewer in the splits panel) plus the creator-only
- * distribute flow.
+ * (rendered for every viewer in the splits panel) plus the distribute flow
+ * for the creator, moment admins, recipients, and the platform admin.
  *
- * `splitAddress` is gated on `isCreator && hasSplits` because only the
- * distribute UI uses it. `currency` is injected by the caller — inprocess
- * needs `tokenAddress=USDC_BASE` for USDC moments or it defaults to ETH
- * and distributes nothing from a USDC splits contract.
+ * `splitAddress`, the balance reads, and the distribute action are gated on
+ * `canDistribute` because only those roles use them. `currency` selects the
+ * balance to read (and is what inprocess needs as `tokenAddress=USDC_BASE`
+ * for USDC moments, else it defaults to ETH and distributes nothing from a
+ * USDC split).
  */
-export function useMomentSplits({ address, tokenId, isCreator }: Options): SplitsState {
+export function useMomentSplits({ address, tokenId, isCreator, isAdmin, isPlatformAdmin, currency }: Options): SplitsState {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
   const [hasSplits, setHasSplits] = useState(false)
@@ -56,13 +86,48 @@ export function useMomentSplits({ address, tokenId, isCreator }: Options): Split
     return () => { cancelled = true }
   }, [address, tokenId])
 
+  const connectedLower = connectedAddress?.toLowerCase()
+  const viewerRecipient = connectedLower
+    ? recipients.find((r) => r.address.toLowerCase() === connectedLower)
+    : undefined
+  const canDistribute = hasSplits && (isCreator || isAdmin || isPlatformAdmin || !!viewerRecipient)
+
   const { data: splitAddress } = useReadContract({
     address: address as `0x${string}`,
     abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
     functionName: 'getCreatorRewardRecipient',
     args: [BigInt(tokenId)],
-    query: { enabled: isCreator && hasSplits },
+    query: { enabled: canDistribute },
   })
+
+  // Undistributed proceeds live on the split contract until distribute is
+  // called. ETH moments read the native balance; USDC moments read the ERC20
+  // balance. Both hooks are declared unconditionally (rules of hooks) and
+  // gated to the relevant currency via `enabled`.
+  const { data: ethBalance } = useBalance({
+    address: splitAddress,
+    chainId: base.id,
+    query: { enabled: canDistribute && !!splitAddress && currency === 'eth' },
+  })
+  const { data: usdcBalance } = useReadContract({
+    address: USDC_BASE,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: splitAddress ? [splitAddress] : undefined,
+    query: { enabled: canDistribute && !!splitAddress && currency === 'usdc' },
+  })
+
+  const pendingRaw = currency === 'usdc' ? usdcBalance : ethBalance?.value
+  const hasPending = pendingRaw !== undefined && pendingRaw > 0n
+  const pendingFormatted =
+    pendingRaw === undefined ? undefined : formatPrice(pendingRaw.toString(), currency)
+  const pendingShareFormatted =
+    pendingRaw === undefined || !viewerRecipient
+      ? undefined
+      : formatPrice(
+          ((pendingRaw * BigInt(viewerRecipient.percentAllocation)) / 100n).toString(),
+          currency,
+        )
 
   async function distribute(currency: CollectCurrency) {
     if (!splitAddress) { toast.error('Split address not found'); return }
@@ -102,5 +167,17 @@ export function useMomentSplits({ address, tokenId, isCreator }: Options): Split
     }
   }
 
-  return { hasSplits, recipients, splitAddress, distribute, distributing, distributeHash }
+  return {
+    hasSplits,
+    recipients,
+    splitAddress,
+    canDistribute,
+    isRecipient: !!viewerRecipient,
+    pendingFormatted,
+    pendingShareFormatted,
+    hasPending,
+    distribute,
+    distributing,
+    distributeHash,
+  }
 }

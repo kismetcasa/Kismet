@@ -45,17 +45,6 @@ export async function getStoredSplits(
   return decodeStoredSplits(raw)
 }
 
-// Cheap truthy gate for the distribute flow — both the legacy `'1'`
-// flag and the JSON recipient payload qualify a token for distribute.
-// Avoids re-parsing recipients we don't need at the gate.
-export async function hasRegisteredSplits(
-  collection: string,
-  tokenId: string,
-): Promise<boolean> {
-  const exists = await redis.exists(splitsKey(collection, tokenId)).catch(() => 0)
-  return exists === 1
-}
-
 function decodeStoredSplits(raw: unknown): StoredSplitsResult {
   if (raw === null || raw === undefined) {
     return { hasSplits: false, recipients: [] }

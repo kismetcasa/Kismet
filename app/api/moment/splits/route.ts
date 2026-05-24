@@ -3,10 +3,10 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { getStoredSplits } from '@/lib/splits'
 import { errorResponse } from '@/lib/apiResponse'
 
-// Returns { hasSplits, recipients } for a single moment.
-// `hasSplits` gates the creator-only distribute UI in useMomentSplits.
-// `recipients` is empty for legacy mints stored as the `'1'` flag —
-// those continue to support distribute but render no splits panel.
+// Returns { hasSplits, recipients } for a single moment. `hasSplits` gates the
+// distribute UI; `recipients` lets it detect whether the viewer is a payee.
+// Empty recipients = legacy `'1'`-flag mints (distribute still works via
+// creator/admin; no splits panel).
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collectionAddress = searchParams.get('collectionAddress')

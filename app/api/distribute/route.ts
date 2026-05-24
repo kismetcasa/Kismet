@@ -4,11 +4,13 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { INPROCESS_API, inprocessUrl } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
-import { getStoredSplits, hasRegisteredSplits } from '@/lib/splits'
-import { USDC_BASE } from '@/lib/zoraMint'
+import { getStoredSplits } from '@/lib/splits'
+import { ERC20_ABI, USDC_BASE, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
+import { serverBaseClient } from '@/lib/rpc'
+import { ADMIN_ADDRESS } from '@/lib/config'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
@@ -90,33 +92,77 @@ export async function POST(req: NextRequest) {
   }
 
   // Token must have splits registered via our mint flow. Without this gate
-  // anyone could trigger distribute on arbitrary contract addresses.
-  if (!(await hasRegisteredSplits(collectionAddress, tokenId))) {
+  // anyone could trigger distribute on arbitrary contract addresses. The
+  // stored recipient list is reused for authorization and the payout
+  // notification fan-out below.
+  const stored = await getStoredSplits(collectionAddress, tokenId)
+  if (!stored.hasSplits) {
     return errorResponse(403, 'No splits registered for this token')
   }
 
-  // Caller must be creator or admin of the moment per inprocess.
-  // /moment returns `momentAdmins: string[]` — an unordered list. We
-  // accept any caller in the list (creator OR delegated admin) via
-  // .includes() below, so ordering doesn't matter here.
-  try {
-    const momentUrl = inprocessUrl('/moment', { collectionAddress, tokenId, chainId: '8453' })
-    const momentRes = await fetch(momentUrl, { headers: { Accept: 'application/json' } })
-    if (!momentRes.ok) {
-      return errorResponse(403, 'Could not verify moment creator')
+  // Authorize the caller as creator, moment admin, recipient, OR the Kismet
+  // platform admin. Distribution is permissionless on 0xSplits (it can only
+  // pay the fixed recipients, never redirect funds), so widening the roster
+  // is safe; platform-sponsored gas stays bounded by the per-user quota below
+  // (the platform admin is quota-exempt, by design — it's a support lever).
+  const callerLower = callerAddress.toLowerCase()
+  const isRecipient = stored.recipients.some((r) => r.address.toLowerCase() === callerLower)
+
+  // Platform admin (ADMIN_ADDRESS) — break-glass override so support can
+  // unstick a payout a user reports as missing on any moment. The EOA-only
+  // signature gate above already proved the caller holds this key.
+  const isPlatformAdmin = !!ADMIN_ADDRESS && callerLower === ADMIN_ADDRESS
+
+  // KV moment-meta creator — the EOA mint-proxy recorded at mint. Preferred
+  // over inprocess's momentAdmins, which often lists the platform smart
+  // wallet rather than the creator's EOA, locking the creator out otherwise.
+  const meta = await getMomentMeta(collectionAddress, tokenId)
+  const isKvCreator = meta?.creator?.toLowerCase() === callerLower
+
+  let authorized = isRecipient || isKvCreator || isPlatformAdmin
+  // Only consult inprocess's momentAdmins when the cheap KV/recipient signals
+  // didn't already authorize — saves an upstream round-trip in the common case.
+  // /moment returns `momentAdmins: string[]`, an unordered list; .includes()
+  // accepts any entry (creator or delegated admin), so ordering doesn't matter.
+  if (!authorized) {
+    try {
+      const momentUrl = inprocessUrl('/moment', { collectionAddress, tokenId, chainId: '8453' })
+      const momentRes = await fetch(momentUrl, { headers: { Accept: 'application/json' } })
+      if (!momentRes.ok) {
+        return errorResponse(403, 'Could not verify moment creator')
+      }
+      const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
+      const adminsLower = Array.isArray(momentData.momentAdmins)
+        ? momentData.momentAdmins
+            .filter((a): a is string => typeof a === 'string')
+            .map((a) => a.toLowerCase())
+        : []
+      authorized = adminsLower.includes(callerLower)
+    } catch {
+      return errorResponse(502, 'Could not verify moment creator')
     }
-    const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
-    const callerLower = callerAddress.toLowerCase()
-    const adminsLower = Array.isArray(momentData.momentAdmins)
-      ? momentData.momentAdmins
-          .filter((a): a is string => typeof a === 'string')
-          .map((a) => a.toLowerCase())
-      : []
-    if (!adminsLower.includes(callerLower)) {
-      return errorResponse(403, 'Only the moment creator or an admin may distribute')
+  }
+  if (!authorized) {
+    return errorResponse(403, 'Only the moment creator, an admin, or a split recipient may distribute')
+  }
+
+  // Bind splitAddress to the token: it must be the token's on-chain
+  // creator-reward-recipient. Without this, being authorized on *one* moment
+  // would let a caller pass any split contract's address and have the
+  // platform sponsor its distribution (no theft — 0xSplits only pays the
+  // fixed recipients — but gas griefing + bogus payout notifications).
+  try {
+    const onchainSplit = await serverBaseClient().readContract({
+      address: collectionAddress as `0x${string}`,
+      abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
+      functionName: 'getCreatorRewardRecipient',
+      args: [BigInt(tokenId)],
+    })
+    if (onchainSplit.toLowerCase() !== splitAddress.toLowerCase()) {
+      return errorResponse(400, 'splitAddress does not match the token on-chain split')
     }
   } catch {
-    return errorResponse(502, 'Could not verify moment creator')
+    return errorResponse(502, 'Could not verify split address')
   }
 
   // Bound platform-sponsored gas: an authorized owner could otherwise spam
@@ -126,6 +172,25 @@ export async function POST(req: NextRequest) {
   const withinQuota = await consumeUserQuota('distribute', callerAddress, 1)
   if (!withinQuota) {
     return errorResponse(429, 'Daily distribute limit reached — try again tomorrow')
+  }
+
+  // Capture the split's undistributed balance before the tx so each payout
+  // notification can show the recipient their share (balance × allocation).
+  // Best-effort: on read failure we omit amounts rather than block the payout.
+  let balanceBefore = 0n
+  try {
+    const client = serverBaseClient()
+    balanceBefore =
+      currency === 'usdc'
+        ? await client.readContract({
+            address: USDC_BASE,
+            abi: ERC20_ABI,
+            functionName: 'balanceOf',
+            args: [splitAddress as `0x${string}`],
+          })
+        : await client.getBalance({ address: splitAddress as `0x${string}` })
+  } catch {
+    balanceBefore = 0n
   }
 
   // Forward only the specific fields inprocess expects — never relay arbitrary
@@ -153,17 +218,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'upstream error', detail: text.slice(0, 200) }, { status: 502 })
   }
 
-  // Fan-out payout notifications on inprocess 2xx (best-effort).
-  // writeNotification's self-check filters caller-as-recipient.
-  if (res.ok) {
+  // Fan-out payout notifications on inprocess 2xx (best-effort). Reuses the
+  // recipient list + moment meta already read for authorization, and stamps
+  // each recipient's share of the pre-distribute balance so the notification
+  // shows how much they received. writeNotification's self-check filters
+  // caller-as-recipient.
+  if (res.ok && stored.recipients.length) {
     after(async () => {
       try {
-        const stored = await getStoredSplits(collectionAddress, tokenId)
-        if (!stored.recipients.length) return
-        const meta = await getMomentMeta(collectionAddress, tokenId)
         await Promise.all(
-          stored.recipients.map((r) =>
-            writeNotification({
+          stored.recipients.map((r) => {
+            const share =
+              balanceBefore > 0n
+                ? (balanceBefore * BigInt(r.percentAllocation)) / 100n
+                : 0n
+            return writeNotification({
               type: 'payout',
               recipient: r.address,
               actor: callerAddress,
@@ -171,8 +240,9 @@ export async function POST(req: NextRequest) {
               tokenId,
               tokenName: meta?.name,
               currency,
-            }),
-          ),
+              ...(share > 0n ? { price: share.toString() } : {}),
+            })
+          }),
         )
       } catch {}
     })

@@ -69,18 +69,20 @@ interface MomentCardProps {
    */
   passBadge?: { passCollection: string; hasValidity: boolean }
   /**
-   * When set, renders a "view profile" button (→ "view" on narrow screens)
-   * to the left of the collect button, linking to this href. Used by the
-   * Artists tab's artist cards. Off by default — other feeds are unchanged.
+   * Discovery-context flag (the artists tab): the card's primary action
+   * steers to the creator's profile. In the non-owned full layout the row
+   * is [view profile][collect]; compact shows a single "view profile"; an
+   * owner's full card keeps "collect+" on the right and swaps the left
+   * "list" for "view profile".
    */
-  viewProfileHref?: string
+  profileCta?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, viewProfileHref }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -261,6 +263,24 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     : mintedOut
       ? hasCollected ? 'collected' : 'minted out'
       : hasCollected ? 'collect+' : 'collect'
+
+  // Artists/roster tab: steer the primary action to the creator's profile.
+  // Gated on a resolvable creator address so a malformed moment falls back
+  // to the normal collect/list buttons rather than linking to /profile/undefined.
+  const showProfileCta = !!profileCta && !!moment.creator?.address
+  const renderViewProfile = (variant: 'compact' | 'full') => (
+    <Link
+      href={`/profile/${moment.creator?.address}`}
+      onClick={(e) => e.stopPropagation()}
+      className={
+        variant === 'compact'
+          ? 'block text-center w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border text-muted border-line accent-grad-hover'
+          : `flex-1 flex items-center justify-center ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border text-muted border-line accent-grad-hover transition-all`
+      }
+    >
+      view profile
+    </Link>
+  )
 
   const isVideo = isVideoMoment(meta)
   const isTextMoment = meta.content?.mime === 'text/plain'
@@ -487,7 +507,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </span>
             </div>
           )}
-          {owned > 0 ? (
+          {showProfileCta ? (
+            renderViewProfile('compact')
+          ) : owned > 0 ? (
             <ListButton
               collectionAddress={moment.address}
               tokenId={moment.token_id}
@@ -510,29 +532,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               {collectLabel}
             </button>
           )}
-          {viewProfileHref && (
-            <Link
-              href={viewProfileHref}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full py-1.5 flex items-center justify-center text-[10px] font-mono tracking-wider uppercase border border-line text-muted hover:border-muted hover:text-ink transition-colors"
-            >
-              view
-            </Link>
-          )}
         </div>
       ) : (
         <div className="px-4 pb-4 flex gap-2 items-stretch">
-          {viewProfileHref && (
-            <Link
-              href={viewProfileHref}
-              onClick={(e) => e.stopPropagation()}
-              className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} flex items-center justify-center text-xs font-mono tracking-wider uppercase border border-line text-muted hover:border-muted hover:text-ink transition-colors`}
-            >
-              <span className="sm:hidden">view</span>
-              <span className="hidden sm:inline">view profile</span>
-            </Link>
-          )}
-          {!hidePriceSupply && owned === 0 && !collected && (
+          {!showProfileCta && !hidePriceSupply && owned === 0 && !collected && (
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
@@ -548,7 +551,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </div>
             </div>
           )}
-          {owned > 0 && (
+          {showProfileCta ? (
+            renderViewProfile('full')
+          ) : owned > 0 ? (
             <div className="flex-1 min-w-0">
               <ListButton
                 collectionAddress={moment.address}
@@ -561,7 +566,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
               />
             </div>
-          )}
+          ) : null}
           <button
             onClick={handleCollect}
             disabled={collecting || mintedOut || !collectReady}
