@@ -92,6 +92,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // re-entry refires comments + text + route prefetches.
   const prefetchedRef = useRef<string>('')
   const [imgError, setImgError] = useState(false)
+  const [videoError, setVideoError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
   const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
   const [currency, setCurrency] = useState<CollectCurrency | null>(null)
@@ -370,7 +371,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Check size={14} className="text-white" strokeWidth={2.5} />
           </span>
         )}
-        {isVideo && media.src ? (
+        {isVideo && media.src && !videoError ? (
           <MomentVideo
             src={media.src}
             poster={media.poster}
@@ -378,6 +379,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             showPosterLayer
             className="w-full h-full object-contain"
             priority={priority}
+            // A video that can't decode (e.g. a legacy non-iOS-safe mp4 on
+            // WebKit) with no usable poster would otherwise paint a black
+            // box. Fall through to the thumbhash blur / placeholder.
+            onAllError={() => setVideoError(true)}
           />
         ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
           <MomentImage

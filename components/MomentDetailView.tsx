@@ -141,6 +141,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [showFullDesc, setShowFullDesc] = useState(false)
   const [descOverflows, setDescOverflows] = useState(false)
   const [imgError, setImgError] = useState(false)
+  const [videoError, setVideoError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   // Seeded from server-prefetched KV metadata when available so the
   // collection chip renders on first paint instead of popping in after
@@ -824,7 +825,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isVideo && media.src ? (
+              {isVideo && media.src && !videoError ? (
                 <MomentVideo
                   src={media.src}
                   poster={media.poster}
@@ -832,6 +833,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   showPosterLayer
                   controls
                   className="w-full h-full object-contain"
+                  onAllError={() => setVideoError(true)}
                 />
               ) : isZoomable && media.src && !imgError ? (
                 <MomentImage
