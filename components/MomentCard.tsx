@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Star, Copy, Check, EyeOff, ArrowUpRight } from 'lucide-react'
@@ -26,7 +26,8 @@ import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
-import { isVideoMoment } from '@/lib/media/isVideo'
+import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { setVideoDuration } from '@/lib/media/durationCache'
 import { ProfileAvatar } from './ProfileAvatar'
 
@@ -282,8 +283,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     </Link>
   )
 
-  const isVideo = isVideoMoment(meta)
-  const isTextMoment = meta.content?.mime === 'text/plain'
+  const media = resolveMomentMedia(meta)
+  const isVideo = media.kind === 'video'
+  const isTextMoment = media.kind === 'text'
+  const blurPreview = useMemo(
+    () => thumbhashToBlurDataURL(meta.kismet_thumbhash),
+    [meta.kismet_thumbhash],
+  )
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   // Seed the duration cache for SharedVideoProvider.createVideo to read
   // before this card's SharedVideoSlot effect fires. Idempotent (Map.set
@@ -364,18 +370,18 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Check size={14} className="text-white" strokeWidth={2.5} />
           </span>
         )}
-        {isVideo && meta.animation_url ? (
+        {isVideo && media.src ? (
           <MomentVideo
-            src={meta.animation_url}
-            poster={meta.image}
+            src={media.src}
+            poster={media.poster}
             thumbhash={meta.kismet_thumbhash}
             showPosterLayer
             className="w-full h-full object-contain"
             priority={priority}
           />
-        ) : meta.image && !imgError ? (
+        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
           <MomentImage
-            src={meta.image}
+            src={media.src}
             alt={meta.name ?? 'moment'}
             fill
             className="object-contain transition-transform duration-500 group-hover:scale-105"
@@ -387,7 +393,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             sizes={compact
               ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
               : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
-            mime={meta.content?.mime}
+            // Force the gif mime so MomentImage skips the optimizer (which
+            // flattens animation) and streams the animated bytes via /api/img.
+            mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
             thumbhash={meta.kismet_thumbhash}
             priority={priority}
           />
@@ -408,6 +416,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               <p className="text-xs sm:text-sm font-mono text-[#bbb]">untitled</p>
             )}
           </div>
+        ) : blurPreview ? (
+          // Media missing or every gateway errored, but we have a
+          // thumbhash — paint the low-fi preview instead of a blank tile.
+          <span
+            aria-hidden
+            className="absolute inset-0 bg-cover bg-center"
+            style={{ backgroundImage: `url(${blurPreview})` }}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <span className="text-line font-mono text-xs">no preview</span>

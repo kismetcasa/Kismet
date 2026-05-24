@@ -30,7 +30,7 @@ import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
-import { isVideoMoment } from '@/lib/media/isVideo'
+import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { SplitsPanel } from './SplitsPanel'
@@ -743,10 +743,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // wrote locally at deploy time so the image/title/description don't sit
   // blank for the 5-30s of indexer delay on a fresh mint.
   const meta = detail?.metadata ?? fallbackMeta ?? {}
-  const isTextMoment = meta.content?.mime === 'text/plain'
-  const isVideo = isVideoMoment(meta)
-  // Truthy when there's any media to show — controls the lightbox affordance.
-  const hasMedia = !!meta.image || !!(isVideo && meta.animation_url)
+  const media = resolveMomentMedia(meta)
+  const isTextMoment = media.kind === 'text'
+  const isVideo = media.kind === 'video'
+  // Still images and gifs open the zoom lightbox; videos use native
+  // fullscreen via their controls.
+  const isZoomable = media.kind === 'image' || media.kind === 'gif'
   const price = detail
     ? formatPrice(detail.saleConfig.pricePerToken, inferCollectCurrency(detail.saleConfig))
     : null
@@ -819,27 +821,29 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           ) : (
             <div
-              className={`relative aspect-square bg-surface ${hasMedia && !isVideo ? 'cursor-zoom-in' : ''}`}
-              onClick={() => { if (hasMedia && !isVideo) setLightboxOpen(true) }}
+              className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
+              onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isVideo && meta.animation_url ? (
+              {isVideo && media.src ? (
                 <MomentVideo
-                  src={meta.animation_url}
-                  poster={meta.image}
+                  src={media.src}
+                  poster={media.poster}
                   thumbhash={meta.kismet_thumbhash}
                   showPosterLayer
                   controls
                   className="w-full h-full object-contain"
                 />
-              ) : meta.image && !imgError ? (
+              ) : isZoomable && media.src && !imgError ? (
                 <MomentImage
-                  src={meta.image}
+                  src={media.src}
                   alt={meta.name ?? 'moment'}
                   fill
                   className="object-contain"
                   sizes="(max-width: 768px) 100vw, 50vw"
                   priority
-                  mime={meta.content?.mime}
+                  // Force the gif mime so the optimizer is skipped and the
+                  // animated bytes stream through /api/img.
+                  mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
                   thumbhash={meta.kismet_thumbhash}
                   onAllError={() => setImgError(true)}
                 />
@@ -1317,9 +1321,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Image-only lightbox. Videos don't open the lightbox — the
               cursor-zoom-in affordance above is gated on `!isVideo` and
               videos already expose native fullscreen via the controls. */}
-          {meta.image && (
+          {media.src && (
             <MomentImg
-              src={meta.image}
+              src={media.src}
               alt={meta.name ?? 'moment'}
               className="max-h-[95vh] max-w-[95vw] object-contain"
               onClick={(e) => e.stopPropagation()}
