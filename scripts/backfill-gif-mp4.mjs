@@ -119,8 +119,10 @@ async function waitForPropagation(uri, timeoutMs = 90_000) {
   while (Date.now() < deadline) {
     for (const url of gatewayUrls(uri)) {
       try {
-        const res = await fetch(url, { method: 'HEAD' })
-        if (res.ok) return true
+        // curl -I (HEAD) for the same reason downloads use curl: Node's
+        // fetch is flaky against this CDN. -f makes a non-2xx exit nonzero.
+        await execFileAsync('curl', ['-fsIL', '--max-time', '20', url], { maxBuffer: 1024 * 1024 })
+        return true
       } catch {}
     }
     await new Promise((r) => setTimeout(r, 3000))
