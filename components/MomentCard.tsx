@@ -69,11 +69,11 @@ interface MomentCardProps {
    */
   passBadge?: { passCollection: string; hasValidity: boolean }
   /**
-   * Discovery-context flag (the artists/roster tab): the card's primary
-   * action steers to the creator's profile instead of collect/list. The
-   * single button (compact, or non-owned full) becomes "view profile";
-   * an owner's full-layout card keeps "collect+" on the right and swaps
-   * the left "list" for "view profile".
+   * Discovery-context flag (the artists tab): the card's primary action
+   * steers to the creator's profile. In the non-owned full layout the row
+   * is [view profile][collect]; compact shows a single "view profile"; an
+   * owner's full card keeps "collect+" on the right and swaps the left
+   * "list" for "view profile".
    */
   profileCta?: boolean
 }

@@ -151,7 +151,6 @@ function MomentFeed({
   emptyMessage = 'nothing here yet',
   header,
   withViewToggle = false,
-  profileCta = false,
 }: {
   apiUrl: string
   emptyMessage?: string
@@ -164,9 +163,6 @@ function MomentFeed({
    * its mints + collections sub-tabs).
    */
   withViewToggle?: boolean
-  /** Forwarded to each card — steers the primary action to the creator's
-   *  profile (the artists/roster tab). */
-  profileCta?: boolean
 }) {
   const lazy = useContext(LazyMountCtx)
   const [viewMode, setViewMode] = useViewMode()
@@ -199,7 +195,6 @@ function MomentFeed({
           compact={isGrid}
           showCreator={isGrid}
           priority={index < eagerCount}
-          profileCta={profileCta}
         />
       )}
       empty={
@@ -462,7 +457,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
 
         {hydrated && visitedTabs.has('roster') && (
           <div hidden={active !== 'roster'}>
-            <RosterFeed />
+            <ArtistsFeed />
           </div>
         )}
       </div>
@@ -471,15 +466,23 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   )
 }
 
-// ─── roster feed ─────────────────────────────────────────────────────────────
+// ─── artists feed ────────────────────────────────────────────────────────────
 
 interface CreatorListLite {
   slug: string
   name: string
   addresses: string[]
+  collection?: string
 }
 
-function RosterFeed() {
+// One card per artist in the active creator list. Each list names *which*
+// artists appear; its optional `collection` decides *which* moment represents
+// each one — for the Kismet Casa Rome list that's the Rome collection. Lists
+// with no collection fall back to each artist's most-collected mint anywhere.
+// Either way the feed is deduped to a single card per artist and ordered by
+// the list, with the view-profile CTA steering to each artist's profile.
+function ArtistsFeed() {
+  const lazy = useContext(LazyMountCtx)
   const [lists, setLists] = useState<CreatorListLite[]>([])
   const [activeSlug, setActiveSlug] = useState<string | null>(null)
   const [listsLoaded, setListsLoaded] = useState(false)
@@ -498,14 +501,11 @@ function RosterFeed() {
 
   const activeList = lists.find((l) => l.slug === activeSlug) ?? null
 
-  // No lists at all → empty state with curator hint. Don't render
-  // MomentFeed since there's nothing to query.
+  // No lists at all → empty state with curator hint.
   if (listsLoaded && lists.length === 0) {
     return (
       <div className="border border-line p-8 sm:p-16 text-center mt-4">
-        <p className="text-sm font-mono text-muted">
-          no creator rosters yet
-        </p>
+        <p className="text-sm font-mono text-muted">no artist lists yet</p>
         <p className="text-xs font-mono text-[#444] mt-2">
           a curator can create one from their profile
         </p>
@@ -513,39 +513,66 @@ function RosterFeed() {
     )
   }
 
-  // Empty list selected → don't fire the API call (?creators= would be
-  // empty → match-nothing); show empty state inline.
-  const apiUrl =
-    activeList && activeList.addresses.length > 0
-      ? `/api/timeline?creators=${activeList.addresses.join(',')}`
-      : null
+  // Restrict to the list's artists, keep one moment each (the first survivor of
+  // the feed's sort order — most-collected for the fallback, the sole token for
+  // a collection-scoped list), then order by the list's own sequence.
+  const filterToArtists = (items: Moment[]) => {
+    if (!activeList) return []
+    const order = new Map(activeList.addresses.map((a, i) => [a.toLowerCase(), i]))
+    const seen = new Set<string>()
+    const out: Moment[] = []
+    for (const m of items) {
+      const addr = m.creator?.address?.toLowerCase()
+      if (!addr || !order.has(addr) || seen.has(addr)) continue
+      seen.add(addr)
+      out.push(m)
+    }
+    return out.sort(
+      (a, b) =>
+        (order.get(a.creator.address.toLowerCase()) ?? 0) -
+        (order.get(b.creator.address.toLowerCase()) ?? 0),
+    )
+  }
 
-  const header = lists.length > 0 ? (
-    <div className="flex items-center gap-2 flex-wrap">
-      {lists.map((l) => (
-        <button
-          key={l.slug}
-          onClick={() => setActiveSlug(l.slug)}
-          className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
-            l.slug === activeSlug
-              ? 'border-ink text-ink'
-              : 'border-line text-muted hover:border-muted hover:text-dim'
-          }`}
-        >
-          {l.name}
-          <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
-        </button>
-      ))}
-    </div>
-  ) : null
+  // Collection-scoped when the list names a source collection (Rome list → Rome
+  // collection). Otherwise pull the listed artists' own timelines sorted by
+  // collects, so the dedupe keeps each one's most-collected (most popular) mint.
+  const apiUrl = activeList
+    ? activeList.collection
+      ? `/api/timeline?collection=${activeList.collection}`
+      : activeList.addresses.length > 0
+        ? `/api/timeline?creators=${activeList.addresses.join(',')}&sort=trending`
+        : null
+    : null
 
+  const header =
+    lists.length > 1 ? (
+      <div className="flex items-center gap-2 flex-wrap">
+        {lists.map((l) => (
+          <button
+            key={l.slug}
+            onClick={() => setActiveSlug(l.slug)}
+            className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
+              l.slug === activeSlug
+                ? 'border-ink text-ink'
+                : 'border-line text-muted hover:border-muted hover:text-dim'
+            }`}
+          >
+            {l.name}
+            <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
+          </button>
+        ))}
+      </div>
+    ) : null
+
+  // Empty list (no addresses, no collection) → nothing to query.
   if (!apiUrl) {
     return (
       <div>
-        <div className="py-4">{header}</div>
+        {header && <div className="py-4">{header}</div>}
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">
-            {activeList ? 'this list has no creators yet' : 'select a roster'}
+            {activeList ? 'this list has no artists yet' : 'select a list'}
           </p>
         </div>
       </div>
@@ -553,12 +580,27 @@ function RosterFeed() {
   }
 
   return (
-    <MomentFeed
+    <PaginatedGrid<Moment>
       apiUrl={apiUrl}
+      itemsKey="moments"
+      getKey={(m) => `${m.address}-${m.token_id}`}
+      lazy={lazy}
+      pageLimit={lazy ? 12 : 18}
+      filter={filterToArtists}
       header={header}
-      emptyMessage="no moments yet from this roster"
-      withViewToggle
-      profileCta
+      renderItem={(m, { index }) => (
+        <MomentCard
+          key={`${m.address}-${m.token_id}`}
+          moment={m}
+          profileCta
+          priority={index < 3}
+        />
+      )}
+      empty={
+        <div className="border border-line p-8 sm:p-16 text-center">
+          <p className="text-sm font-mono text-muted">no mints to show yet</p>
+        </div>
+      }
     />
   )
 }
