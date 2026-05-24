@@ -86,7 +86,7 @@ export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
           {displayName}
         </div>
         {creator && (
-          <div style={{ fontSize: 32, color: '#888', marginTop: 32 }}>by {creator}</div>
+          <div style={{ fontSize: 32, color: '#888', marginTop: 32 }}>{`by ${creator}`}</div>
         )}
       </div>
     </div>
