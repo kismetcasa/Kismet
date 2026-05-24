@@ -71,7 +71,12 @@ export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
       meta.content?.uri ||
       meta.image
     if (src) {
-      const poster = meta.image && !imageIsGif ? meta.image : undefined
+      // Use `image` as the poster only when it's a distinct, non-animated
+      // still — never when `image` IS the gif we're rendering.
+      const poster =
+        meta.image && meta.image !== src && !isGifUrl(meta.image)
+          ? meta.image
+          : undefined
       return { kind: 'gif', src, poster }
     }
   }
