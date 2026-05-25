@@ -48,6 +48,10 @@ export async function registerCollectionWithBackoff(
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        // Without a timeout a stalled /api/collections would hang the very
+        // first iteration forever, so the backoff retries never run and the
+        // collection silently never lands in KV.
+        signal: AbortSignal.timeout(15_000),
       })
       if (res.ok) return
       const text = await res.text().catch(() => '')

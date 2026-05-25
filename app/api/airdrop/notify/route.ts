@@ -6,6 +6,7 @@ import { consumeQuota } from '@/lib/airdrop-quota'
 import { isBlacklisted } from '@/lib/blacklist'
 import { bestEffort } from '@/lib/bestEffort'
 import { recordCollected } from '@/lib/collected'
+import { MAX_AIRDROP_RECIPIENTS } from '@/lib/config'
 import { getGateConfig } from '@/lib/gate'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { recordPlatformTx } from '@/lib/pass-validity'
@@ -157,7 +158,7 @@ export async function POST(req: NextRequest) {
   if (recipients.length === 0) {
     return errorResponse(400, 'No recipients')
   }
-  if (recipients.length > 200) {
+  if (recipients.length > MAX_AIRDROP_RECIPIENTS) {
     return errorResponse(400, 'Too many recipients')
   }
   // txHash is now MANDATORY — it's the proof tying this request to a
@@ -267,8 +268,12 @@ export async function POST(req: NextRequest) {
 
   const timestamp = Date.now()
 
-  await Promise.all(
+  // Record per recipient. Failures are logged (not swallowed) so a Redis
+  // hiccup that drops a recipient's record is diagnosable, and the response
+  // reports the count actually written rather than an optimistic total.
+  const recordResults = await Promise.all(
     finalRecipients.map(async (recipient) => {
+      let ok = false
       try {
         await recordAirdrop(sender, {
           collectionAddress,
@@ -278,18 +283,25 @@ export async function POST(req: NextRequest) {
           txHash,
           timestamp,
         })
-      } catch {}
-      try {
-        await recordCollected(recipient, collectionAddress, tokenId, timestamp)
-      } catch {}
+        ok = true
+      } catch (err) {
+        bestEffort('airdrop-notify.recordAirdrop', { sender, recipient, txHash })(err)
+      }
+      await recordCollected(recipient, collectionAddress, tokenId, timestamp).catch(
+        bestEffort('airdrop-notify.recordCollected', { recipient, collectionAddress, tokenId }),
+      )
+      return ok
     }),
   )
+  const recordedCount = recordResults.filter(Boolean).length
 
   after(async () => {
     await Promise.all(
       finalRecipients
         .filter((recipient) => recipient !== sender)
         .map((recipient) =>
+          // Per-call catch so one failed notification doesn't abort the rest
+          // of the batch (Promise.all rejects on the first rejection).
           writeNotification({
             type: 'airdrop',
             recipient,
@@ -298,7 +310,9 @@ export async function POST(req: NextRequest) {
             tokenId,
             ...(tokenName ? { tokenName } : {}),
             amount: 1,
-          }),
+          }).catch(
+            bestEffort('airdrop-notify.writeNotification', { recipient, sender, txHash }),
+          ),
         ),
     )
   })
@@ -319,5 +333,5 @@ export async function POST(req: NextRequest) {
     ),
   )
 
-  return NextResponse.json({ ok: true, recorded: finalRecipients.length })
+  return NextResponse.json({ ok: true, recorded: recordedCount })
 }

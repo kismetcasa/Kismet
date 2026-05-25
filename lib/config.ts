@@ -46,6 +46,12 @@ export function isOperatorAddress(address: string | undefined | null): boolean {
   return address.toLowerCase() === OPERATOR_SMART_WALLET.toLowerCase()
 }
 
+// Max recipients per airdrop. Shared by the client form (blocks the on-chain
+// tx before it happens) and the server notify route (rejects the record).
+// Single source so the two can't drift — a higher client cap would let an
+// airdrop mint on-chain and then fail to record, stranding it off-chain.
+export const MAX_AIRDROP_RECIPIENTS = 200
+
 // Admin address — single privileged wallet that passes admin-session
 // signatures (see lib/curator.ts)
 // and is reported as `isAdmin: true` by /api/admin/me. Always

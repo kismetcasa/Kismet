@@ -119,6 +119,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
   const { data: receipt } = useWaitForTransactionReceipt({
     hash: txHash,
+    // Pin to Base — the write (writeContractAsync) and the verify client both
+    // target base.id, so the receipt must be read from Base too. Without this
+    // the watcher polls whatever chain the connector currently reports; if it
+    // isn't Base, the receipt is never found and the deploy spins forever.
+    chainId: base.id,
     query: { enabled: !!txHash && step === 'deploying' },
   })
 
