@@ -193,7 +193,7 @@ function MomentFeed({
           key={`${m.address}-${m.token_id}`}
           moment={m}
           compact={isGrid}
-          showCreator={isGrid}
+          showCreator
           priority={index < eagerCount}
         />
       )}
