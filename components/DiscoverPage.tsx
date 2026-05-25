@@ -484,7 +484,7 @@ interface CreatorListLite {
 function ArtistsFeed() {
   const lazy = useContext(LazyMountCtx)
   const [lists, setLists] = useState<CreatorListLite[]>([])
-  const [activeSlug, setActiveSlug] = useState<string | null>(null)
+  const [activeSlugs, setActiveSlugs] = useState<Set<string>>(new Set())
   const [listsLoaded, setListsLoaded] = useState(false)
 
   useEffect(() => {
@@ -493,13 +493,29 @@ function ArtistsFeed() {
       .then((d: { lists?: CreatorListLite[] }) => {
         const next = Array.isArray(d.lists) ? d.lists : []
         setLists(next)
-        setActiveSlug(next[0]?.slug ?? null)
+        // Start with the first list on; the rest toggle in from there.
+        setActiveSlugs(next[0] ? new Set([next[0].slug]) : new Set())
       })
       .catch(() => {})
       .finally(() => setListsLoaded(true))
   }, [])
 
-  const activeList = lists.find((l) => l.slug === activeSlug) ?? null
+  // Toggle a list on/off. A list never toggles off if it's the last one on —
+  // with a single list that makes its button permanently on, and with several
+  // it guarantees the feed always has at least one roster to show.
+  const toggle = (slug: string) =>
+    setActiveSlugs((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) {
+        if (next.size === 1) return prev
+        next.delete(slug)
+      } else {
+        next.add(slug)
+      }
+      return next
+    })
+
+  const activeLists = lists.filter((l) => activeSlugs.has(l.slug))
 
   // No lists at all → empty state with curator hint.
   if (listsLoaded && lists.length === 0) {
@@ -513,12 +529,25 @@ function ArtistsFeed() {
     )
   }
 
-  // Restrict to the list's artists, keep one moment each (the first survivor of
-  // the feed's sort order — most-collected for the fallback, the sole token for
-  // a collection-scoped list), then order by the list's own sequence.
+  // The artists of every active list, in list order then within-list order,
+  // deduped across lists so an artist on two lists still gets a single card.
+  const unionAddresses: string[] = []
+  const unionSeen = new Set<string>()
+  for (const l of activeLists) {
+    for (const a of l.addresses) {
+      const lc = a.toLowerCase()
+      if (!unionSeen.has(lc)) {
+        unionSeen.add(lc)
+        unionAddresses.push(lc)
+      }
+    }
+  }
+
+  // Restrict the feed to the union's artists, keep one moment each (the first
+  // survivor of the feed's sort order — most-collected for the fallback, the
+  // sole token for a collection-scoped list), then order by the union sequence.
   const filterToArtists = (items: Moment[]) => {
-    if (!activeList) return []
-    const order = new Map(activeList.addresses.map((a, i) => [a.toLowerCase(), i]))
+    const order = new Map(unionAddresses.map((a, i) => [a, i]))
     const seen = new Set<string>()
     const out: Moment[] = []
     for (const m of items) {
@@ -534,57 +563,54 @@ function ArtistsFeed() {
     )
   }
 
-  // Collection-scoped when the list names a source collection (Rome list → Rome
-  // collection). Otherwise pull the listed artists' own timelines sorted by
-  // collects, so the dedupe keeps each one's most-collected (most popular) mint.
-  const apiUrl = activeList
-    ? activeList.collection
-      ? `/api/timeline?collection=${activeList.collection}`
-      : activeList.addresses.length > 0
-        ? `/api/timeline?creators=${activeList.addresses.join(',')}&sort=trending`
-        : null
-    : null
+  // A lone collection-scoped list keeps its per-collection mint (Rome list →
+  // each artist's Rome piece). Any union of lists — or an address-only list —
+  // pulls the listed artists' timelines sorted by collects, so the dedupe keeps
+  // each one's most-collected (most popular) mint across all active lists.
+  const soleCollection =
+    activeLists.length === 1 ? activeLists[0].collection : undefined
+  const apiUrl = soleCollection
+    ? `/api/timeline?collection=${soleCollection}`
+    : unionAddresses.length > 0
+      ? `/api/timeline?creators=${unionAddresses.join(',')}&sort=trending`
+      : null
 
-  // A single list shows its name as a static title — it's the context for the
-  // feed (e.g. the artists who stayed at the Kismet Casa Rome residence). Once
-  // there's more than one list the same names become selectable filter chips.
+  // Each list is a toggle button. With one list its button is permanently on,
+  // serving as the feed's title/context (e.g. the artists who stayed at the
+  // Kismet Casa Rome residence). With several, clicking toggles each on/off and
+  // the feed unions every active roster.
   const header =
-    lists.length > 1 ? (
+    lists.length > 0 ? (
       <div className="flex items-center gap-2 flex-wrap">
-        {lists.map((l) => (
-          <button
-            key={l.slug}
-            onClick={() => setActiveSlug(l.slug)}
-            className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
-              l.slug === activeSlug
-                ? 'border-ink text-ink'
-                : 'border-line text-muted hover:border-muted hover:text-dim'
-            }`}
-          >
-            {l.name}
-            <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
-          </button>
-        ))}
-      </div>
-    ) : activeList ? (
-      <div className="flex items-baseline gap-2">
-        <h2 className="text-xs font-mono text-ink uppercase tracking-wider">
-          {activeList.name}
-        </h2>
-        <span className="text-[10px] font-mono text-[#444]">
-          {activeList.addresses.length}
-        </span>
+        {lists.map((l) => {
+          const on = activeSlugs.has(l.slug)
+          return (
+            <button
+              key={l.slug}
+              onClick={() => toggle(l.slug)}
+              aria-pressed={on}
+              className={`text-[10px] font-mono px-2.5 py-1 border transition-colors ${
+                on
+                  ? 'border-ink text-ink'
+                  : 'border-line text-muted hover:border-muted hover:text-dim'
+              }`}
+            >
+              {l.name}
+              <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
+            </button>
+          )
+        })}
       </div>
     ) : null
 
-  // Empty list (no addresses, no collection) → nothing to query.
+  // No active artists (every roster empty) → nothing to query.
   if (!apiUrl) {
     return (
       <div>
         {header && <div className="py-4">{header}</div>}
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">
-            {activeList ? 'this list has no artists yet' : 'select a list'}
+            {activeLists.length > 0 ? 'no artists in this list yet' : 'select a list'}
           </p>
         </div>
       </div>
