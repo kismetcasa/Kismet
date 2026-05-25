@@ -24,6 +24,13 @@ import { consumeUserQuota } from './userQuota'
 // can't push tens of MB of garbage through INPROCESS_API_KEY and our KV.
 const MAX_TOKEN_CONTENT_BYTES = 10 * 1024 * 1024
 
+// Upstream timeout for the inprocess call. Generous because /moment/create
+// submits a userOp on-chain (gas estimation + bundler submission), which
+// legitimately takes tens of seconds — a short timeout would abort valid
+// mints. Without any timeout a stalled inprocess hangs the request until the
+// platform kills the function, leaving the user on an indefinite spinner.
+const INPROCESS_TIMEOUT_MS = 60_000
+
 type SplitsValidation =
   | { kind: 'absent' }
   | { kind: 'ok'; splits: SplitRecipient[] }
@@ -233,6 +240,7 @@ export async function proxyMintRequest(
       method: 'POST',
       headers,
       body: JSON.stringify(forwardBody),
+      signal: AbortSignal.timeout(INPROCESS_TIMEOUT_MS),
     })
   } catch (err) {
     // Network-level failure reaching inprocess. Surface as 502 with a

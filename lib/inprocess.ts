@@ -275,7 +275,9 @@ export async function fetchCollectionMoments(
   collectionAddress: string,
   options: { revalidate?: number; limit?: number; timeoutMs?: number } = {},
 ): Promise<Moment[]> {
-  const { revalidate = 60, limit = 50, timeoutMs } = options
+  // Default to a bounded read so a new caller that forgets `timeoutMs` can't
+  // reintroduce an indefinite hang — opting out must be explicit (pass 0).
+  const { revalidate = 60, limit = 50, timeoutMs = 8_000 } = options
   const controller = timeoutMs ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {

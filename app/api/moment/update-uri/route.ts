@@ -153,6 +153,12 @@ export async function POST(req: NextRequest) {
         Accept: 'application/json',
       },
       body: JSON.stringify(upstreamBody),
+      // Generous timeout — the URI update runs on-chain via a CDP smart-account
+      // tx, so it legitimately takes tens of seconds; a short bound would abort
+      // a valid update. Without any bound a stalled inprocess hangs the request.
+      // Non-idempotent: a timeout is INDETERMINATE (the tx may have landed), so
+      // we surface 502 and never auto-retry.
+      signal: AbortSignal.timeout(45_000),
     })
   } catch (err) {
     console.error(

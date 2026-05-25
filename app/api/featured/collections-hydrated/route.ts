@@ -118,22 +118,29 @@ export async function GET() {
         // metadata fallback below when inprocess hasn't indexed yet, and
         // (b) coverTokenId resolution further down. Memoized + cached
         // upstream so this is cheap.
+        // Short read timeout per inprocess fetch. These are idempotent reads,
+        // so failing fast is correct — and each resolves to null on
+        // timeout/error INDEPENDENTLY of the KV lookup, so a stalled gateway
+        // degrades the row to its KV-stored name/cover instead of dropping it
+        // (which is what a shared Promise.all rejection would do).
         const [collRes, tlRes, kvMeta] = await Promise.all([
           fetch(`${INPROCESS_API}/collection/${address}`, {
             headers: { Accept: 'application/json' },
             next: { revalidate: 60 },
-          }),
+            signal: AbortSignal.timeout(8_000),
+          }).catch(() => null),
           fetch(
             `${INPROCESS_API}/timeline?collection=${address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=8453`,
             {
               headers: { Accept: 'application/json' },
               next: { revalidate: 60 },
+              signal: AbortSignal.timeout(8_000),
             },
-          ),
+          ).catch(() => null),
           getCollectionMeta(ref.address),
         ])
 
-        const collection = collRes.ok ? await collRes.json() : {}
+        const collection = collRes?.ok ? await collRes.json() : {}
         // Inprocess hasn't indexed every freshly-deployed collection — when
         // it returns nothing useful, stitch our KV-stored record (written at
         // create time by the mint-proxy) so the row renders the real name +
@@ -170,7 +177,7 @@ export async function GET() {
         // (CreateCollectionForm.tsx:562), which produces byte-identical
         // metadata JSONs on the two sides of the comparison.
         const coverTokenId: string | undefined = kvMeta?.coverTokenId
-        const tlData = tlRes.ok ? await tlRes.json() : { moments: [] }
+        const tlData = tlRes?.ok ? await tlRes.json() : { moments: [] }
         const allPreviewMoments: Moment[] = Array.isArray(tlData.moments) ? tlData.moments : []
         // Strip individually-hidden moments inside the featured collection
         // so they don't appear in the row's preview grid.

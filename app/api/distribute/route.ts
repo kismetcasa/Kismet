@@ -213,6 +213,12 @@ export async function POST(req: NextRequest) {
         Accept: 'application/json',
       },
       body: JSON.stringify(upstreamBody),
+      // Generous timeout — distribution submits an on-chain tx, legitimately
+      // slow. Per inprocess docs this call is NOT idempotent (re-sending
+      // "will likely execute multiple distributions"), so a timeout is
+      // INDETERMINATE: surface 502 and never auto-retry, or we risk paying out
+      // twice.
+      signal: AbortSignal.timeout(45_000),
     })
   } catch (err) {
     // Network-level failure reaching inprocess. Without this guard the throw
