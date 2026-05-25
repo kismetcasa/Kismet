@@ -367,6 +367,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     return true
   }
 
+  // Platform-pause kill switch — the mint proxy returns 503 when an admin
+  // has paused minting. Surface a single clean toast instead of the generic
+  // "Mint failed" + description (or a misleading payload-level error like
+  // "duplicate splits address"), so a paused platform reads as an intentional
+  // state. Checked before maybeHandleAuthError/throw so it always wins.
+  function maybeHandlePauseError(status: number): boolean {
+    if (status !== 503) return false
+    toast.error('Platform is temporarily paused', { id: 'mint' })
+    setStep('idle')
+    setUploadProgress(0)
+    return true
+  }
+
   function addSplit() {
     const addr = splitInput.address.trim()
     const pct = parseFloat(splitInput.pct)
@@ -707,6 +720,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
+          if (maybeHandlePauseError(res.status)) return
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
@@ -960,6 +974,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
+          if (maybeHandlePauseError(res.status)) return
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
