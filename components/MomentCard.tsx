@@ -20,7 +20,6 @@ import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent, fetchTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { useAdmin } from '@/contexts/AdminContext'
-import { useFarcaster } from '@/providers/FarcasterProvider'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
@@ -119,7 +118,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
-  const { isInMiniApp } = useFarcaster()
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { collect, status: collectStatus } = useDirectCollect()
@@ -262,13 +260,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
-  // Mini-app surfaces frame the action as "enjoy" rather than "collect".
-  const collectVerb = isInMiniApp ? 'enjoy' : 'collect'
   const collectLabel = collecting
-    ? `${collectVerb}ing…`
+    ? 'collecting…'
     : mintedOut
-      ? hasCollected ? `${collectVerb}ed` : 'minted out'
-      : hasCollected ? `${collectVerb}+` : collectVerb
+      ? hasCollected ? 'collected' : 'minted out'
+      : hasCollected ? 'collect+' : 'collect'
 
   // Artists/roster tab: steer the primary action to the creator's profile.
   // Gated on a resolvable creator address so a malformed moment falls back

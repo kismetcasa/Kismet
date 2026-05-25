@@ -529,13 +529,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
-  // Mini-app surfaces frame the action as "enjoy" rather than "collect".
-  const collectVerb = isInMiniApp ? 'enjoy' : 'collect'
   const collectLabel = collecting
-    ? `${collectVerb}ing…`
+    ? 'collecting…'
     : mintedOut
-      ? hasCollected ? `${collectVerb}ed` : 'minted out'
-      : hasCollected ? `${collectVerb}+` : collectVerb
+      ? hasCollected ? 'collected' : 'minted out'
+      : hasCollected ? 'collect+' : 'collect'
 
   async function handleDistribute() {
     if (!detail) { toast.error('Moment details still loading'); return }
@@ -565,8 +563,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     setTimeout(() => setLinkCopied(false), 1500)
   }
 
-  // Copies the token's BaseScan URL rather than navigating away — keeps the
-  // viewer on the moment while still handing them the on-chain explorer link.
   function handleCopyScan() {
     const url = `https://basescan.org/token/${address}?a=${tokenId}`
     navigator.clipboard.writeText(url).catch(() => {})

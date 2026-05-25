@@ -607,9 +607,8 @@ export function CollectionView({
   const coverThumbhash = collectionImage ? collectionThumbhash : firstMoment?.metadata?.kismet_thumbhash
   const description = collectionDescription
 
-  // Total collects across the collection: sum on-chain totalMinted for every
-  // loaded token. One multicall batch (wagmi aggregates these). The featured
-  // hydrators don't carry an aggregated count, so we read it here.
+  // Total collects: sum on-chain totalMinted per token — no aggregated count
+  // exists upstream. Batched into one multicall by wagmi.
   const { data: tokenInfos } = useReadContracts({
     contracts: loadedMoments.map((m) => ({
       address: m.address as `0x${string}`,
@@ -627,9 +626,8 @@ export function CollectionView({
     0,
   )
 
-  // "Collect all" candidate token IDs, bucketed by mint currency. The
-  // useCollectAll hook re-checks live eligibility (sold out / sale ended /
-  // already owned) at click time, so passing every priced token is safe.
+  // Collect-all candidates bucketed by currency; useCollectAll re-checks live
+  // eligibility at click time, so passing every priced token is safe.
   const ethCollectIds: string[] = []
   const usdcCollectIds: string[] = []
   for (const m of loadedMoments) {
