@@ -4,18 +4,11 @@
 const ARWEAVE_TXID = /^[A-Za-z0-9_-]{43}$/
 
 /**
- * Normalise a user-pasted media URL to the canonical scheme the app stores
- * in metadata, so re-pointing a moment at content that ALREADY lives on
- * Arweave never re-uploads the bytes.
- *
- *   ar://AbC...                    → ar://AbC...        (kept)
- *   https://arweave.net/AbC...     → ar://AbC...        (gateway → ar://)
- *   https://permagate.io/AbC.../t  → ar://AbC.../t
- *   https://ipfs.io/ipfs/bafy...   → ipfs://bafy...
- *   https://example.com/clip.mp4   → kept as-is (opaque direct URL)
- *
- * Returns null for input that isn't a usable absolute media URL, so callers
- * can reject it before building metadata.
+ * Normalise a user-pasted media URL to the canonical scheme the app stores in
+ * metadata so re-pointing a moment at existing content never re-uploads bytes.
+ * Gateway links collapse to ar:// / ipfs:// (e.g. https://arweave.net/<txid>
+ * → ar://<txid>); ar:// and opaque https URLs pass through. Returns null for
+ * input that isn't a usable absolute media URL.
  */
 export function normalizeMediaUrl(input: string): string | null {
   const trimmed = input.trim()
@@ -42,20 +35,19 @@ export function normalizeMediaUrl(input: string): string | null {
     return `ar://${segs[0]}${rest ? `/${rest}` : ''}`
   }
 
-  // Opaque https media (no recognisable content hash) — keep verbatim; the
-  // gateway pool / image proxy pass non-ar:// URLs through unchanged.
+  // Opaque https media — keep verbatim; the gateway pool / image proxy pass
+  // non-ar:// URLs through unchanged.
   return trimmed
 }
 
 /**
- * Best-effort media-kind guess from a URL's extension, for pre-selecting the
- * type control. ar:// / ipfs:// hashes carry no extension, so callers default
- * to 'video' (the common "restore my video" case) when this returns null.
+ * Pre-select the type control from a URL's extension. ar:// / ipfs:// hashes
+ * carry none, so callers default to 'video' when this returns null.
  */
 export function guessMediaTypeFromUrl(url: string): 'video' | 'gif' | 'image' | null {
   const path = url.split(/[?#]/, 1)[0]!.toLowerCase()
   if (/\.(mp4|webm|mov|ogv|m4v)$/.test(path)) return 'video'
   if (path.endsWith('.gif')) return 'gif'
-  if (/\.(png|jpe?g|webp|avif|gif|svg)$/.test(path)) return 'image'
+  if (/\.(png|jpe?g|webp|avif|svg)$/.test(path)) return 'image'
   return null
 }

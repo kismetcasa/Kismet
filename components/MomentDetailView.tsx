@@ -663,14 +663,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       let contentField: { uri?: string; mime?: string } | undefined = detail.metadata.content
       let thumbhash = detail.metadata.kismet_thumbhash
 
-      // 1a) RE-POINT MEDIA — point the moment at content that already lives on
-      // Arweave/IPFS. No upload: we only rebuild + re-pin the metadata JSON,
-      // so restoring a previously-minted video costs a few KB instead of
-      // re-sending the whole file (which fails with 402 once Turbo credits run
-      // out). content.mime is written explicitly because ar:// hashes have no
-      // extension and isVideoMoment()/resolveMomentMedia() classify by mime.
-      // Empty URL field = no media change (media is optional); only a
-      // non-empty, unparseable URL is an error.
+      // 1a) RE-POINT MEDIA — point the moment at content already on Arweave.
+      // No upload: Arweave is content-addressed, so re-sending bytes only
+      // burns Turbo credits (→ 402) for an identical result. content.mime is
+      // set explicitly because ar:// hashes carry no extension to classify by.
+      // Empty field = no change (media is optional); a non-empty bad URL errors.
       const repointUrl = mediaMode === 'url' ? normalizeMediaUrl(existingMediaUrl) : null
       if (mediaMode === 'url' && existingMediaUrl.trim() && !repointUrl) {
         throw new Error('That doesn’t look like a valid media URL — paste an ar:// URI or an https gateway link')
@@ -679,15 +676,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         if (existingMediaType === 'video') {
           animationUri = repointUrl
           contentField = { uri: repointUrl, mime: 'video/mp4' }
-          // Poster (image) + thumbhash carry over from the current metadata
-          // unless the creator is also setting a new cover below.
+          // Poster (image) + thumbhash carry over unless a cover is set below.
         } else if (existingMediaType === 'gif') {
           animationUri = repointUrl
           contentField = { uri: repointUrl, mime: 'image/gif' }
         } else {
-          // Still image → the image IS the moment; drop any video binding. The
-          // old thumbhash described the previous media, so clear it rather than
-          // paint a misleading blur under the new still.
+          // Still image → it IS the moment; drop the video binding. The old
+          // thumbhash described the prior media, so clear it.
           imageUri = repointUrl
           animationUri = undefined
           contentField = undefined
@@ -695,10 +690,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         }
       }
 
-      // 1b) CHANGE MEDIA (upload) — replaces the moment's primary content,
-      // mirroring the mint pipeline: video → faststart MP4 + poster; GIF →
-      // transcoded MP4 + poster (server fallback over the 100MB wasm cap);
-      // image → still moment.
+      // 1b) CHANGE MEDIA (upload) — mirrors the mint pipeline: video →
+      // faststart MP4 + poster; GIF → transcoded MP4 + poster (server fallback
+      // over the 100MB wasm cap); image → still moment.
       if (mediaMode === 'upload' && mediaFile) {
         const isGif = mediaFile.type === 'image/gif' || mediaFile.name.toLowerCase().endsWith('.gif')
         if (mediaFile.type.startsWith('video/')) {
@@ -1104,12 +1098,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
                   />
                 </div>
-                {/* Change media — replaces the primary content (image, gif,
-                    or video). Two sources: upload a new file (video →
-                    faststart MP4, GIF → transcoded MP4 like at mint), or
-                    re-point at content already on Arweave (no upload, so a
-                    previously-minted video can be restored without re-sending
-                    the bytes / burning Turbo credits). */}
+                {/* Change media — upload a new file, or re-point at content
+                    already on Arweave (no re-upload). */}
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[10px] font-mono uppercase tracking-widest text-muted">media (optional)</label>
                   <div className="flex items-center gap-1">
