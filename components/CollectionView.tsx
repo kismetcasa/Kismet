@@ -642,7 +642,7 @@ export function CollectionView({
       try {
         const { sdk } = await import('@farcaster/miniapp-sdk')
         await sdk.actions.composeCast({
-          text: `Check out ${displayName} on @kismet in the /kismet channel`,
+          text: `Check out ${displayName} on @kismet`,
           embeds: [url],
           channelKey: 'kismet',
         })
