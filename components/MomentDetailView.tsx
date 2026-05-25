@@ -26,6 +26,9 @@ import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
+import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
+import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
+import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
@@ -162,15 +165,27 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
+  // "Change media" — replaces the primary content (image / gif / video).
   const {
-    file: editFile,
-    preview: editPreview,
-    inputRef: editFileInputRef,
-    onChange: handleEditFile,
-    clear: clearEditFile,
+    file: mediaFile,
+    inputRef: mediaInputRef,
+    onChange: handleMediaFile,
+    clear: clearMedia,
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Max 420 MB' }),
+  })
+  // "Change cover" — replaces only the poster/thumbnail (image or gif),
+  // never the main media. A GIF cover is stored as-is (animates).
+  const {
+    file: coverFile,
+    preview: coverPreview,
+    inputRef: coverInputRef,
+    onChange: handleCoverFile,
+    clear: clearCover,
+  } = useFileUpload({
+    maxBytes: 100 * 1024 * 1024,
+    onTooLarge: () => toast.error('Cover too large', { description: 'Max 100 MB' }),
   })
   const [savingMeta, setSavingMeta] = useState(false)
   const { ensureSession } = useUploadSession()
@@ -596,12 +611,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (!detail) return
     setEditName(detail.metadata.name ?? '')
     setEditDesc(detail.metadata.description ?? '')
-    clearEditFile()
+    clearMedia()
+    clearCover()
     setEditing(true)
   }
 
   function closeEditor() {
-    clearEditFile()
+    clearMedia()
+    clearCover()
     setEditing(false)
   }
 
@@ -614,47 +631,106 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     try {
       await ensureSession()
 
-      // Reuse the existing image URI when the creator didn't pick a new
-      // file — Arweave is content-addressed so the original ar:// stays
-      // valid forever. Preserve the existing thumbhash by default so a
-      // name/description-only edit doesn't strip the blur placeholder.
+      // Existing values carry over when nothing is re-uploaded — Arweave is
+      // content-addressed so the original ar:// stays valid forever, and the
+      // thumbhash is preserved so a name/description-only edit doesn't strip
+      // the blur placeholder.
       let imageUri = detail.metadata.image
+      let animationUri = detail.metadata.animation_url
+      let contentField: { uri?: string; mime?: string } | undefined = detail.metadata.content
       let thumbhash = detail.metadata.kismet_thumbhash
-      if (editFile) {
-        // Picker accepts video/* so the creator can re-upload the
-        // moment's source video to fix a broken meta.image — extract
-        // the first frame and use that as the cover, never store the
-        // video URL itself as the image (same constraint as MintForm).
-        // Other media (images, GIFs) are stored as the cover as-is, which
-        // never touches the moment's main media (animation_url).
-        let uploadFile: File = editFile
-        if (editFile.type.startsWith('video/')) {
-          toast.loading('Extracting poster from video…', { id: 'edit-meta' })
-          const poster = await extractVideoPoster(editFile)
-          if (!poster) {
-            throw new Error('Could not extract a poster frame from this video — try uploading an image instead')
+
+      // 1) CHANGE MEDIA — replaces the moment's primary content, mirroring the
+      // mint pipeline: video → faststart MP4 + poster; GIF → transcoded MP4 +
+      // poster (server fallback over the 100MB wasm cap); image → still moment.
+      // content.mime is written explicitly because ar:// URLs have no
+      // extension and isVideoMoment() classifies by mime.
+      if (mediaFile) {
+        const isGif = mediaFile.type === 'image/gif' || mediaFile.name.toLowerCase().endsWith('.gif')
+        if (mediaFile.type.startsWith('video/')) {
+          toast.loading('Optimizing video…', { id: 'edit-meta' })
+          let video = mediaFile
+          try {
+            const remuxed = await remuxToFaststartMp4(mediaFile)
+            if (remuxed) video = remuxed
+          } catch (err) {
+            console.warn('[MomentDetailView] faststart remux failed; uploading original', err)
           }
-          uploadFile = poster
+          toast.loading('Uploading media…', { id: 'edit-meta' })
+          animationUri = await uploadToArweave(video)
+          contentField = { uri: animationUri, mime: 'video/mp4' }
+          // Auto-extract a poster unless the creator is also setting a cover.
+          if (!coverFile) {
+            try {
+              const poster = await extractVideoPoster(mediaFile)
+              if (poster) {
+                const tp = generateThumbhash(poster)
+                imageUri = await uploadToArweave(poster)
+                thumbhash = (await tp) ?? thumbhash
+              }
+            } catch (err) {
+              console.warn('[MomentDetailView] poster extraction failed', err)
+            }
+          }
+        } else if (isGif) {
+          let done = false
+          if (canTranscode(mediaFile)) {
+            try {
+              toast.loading('Optimizing animation for fast playback…', { id: 'edit-meta' })
+              const { mp4, poster } = await transcodeGifToMp4(mediaFile)
+              toast.loading('Uploading media…', { id: 'edit-meta' })
+              const tp = generateThumbhash(poster)
+              const [a, p] = await Promise.all([uploadToArweave(mp4), uploadToArweave(poster)])
+              animationUri = a
+              contentField = { uri: a, mime: 'video/mp4' }
+              if (!coverFile) { imageUri = p; thumbhash = (await tp) ?? thumbhash }
+              done = true
+            } catch (err) {
+              console.warn('[MomentDetailView] client GIF transcode failed; trying server', err)
+            }
+          }
+          if (!done) {
+            toast.loading('Uploading animation…', { id: 'edit-meta' })
+            const rawUri = await uploadToArweave(mediaFile)
+            if (!(await verifyArweaveAvailable(rawUri, 90_000))) {
+              throw new Error('Source GIF not yet propagated — try again in a minute')
+            }
+            toast.loading('Optimizing animation on server…', { id: 'edit-meta' })
+            const r = await serverTranscodeGif(rawUri)
+            animationUri = r.animationUri
+            contentField = { uri: r.animationUri, mime: 'video/mp4' }
+            if (!coverFile) { imageUri = r.posterUri; thumbhash = r.thumbhash ?? thumbhash }
+          }
+        } else {
+          // Static image → the image IS the moment; drop any video binding.
+          toast.loading('Uploading media…', { id: 'edit-meta' })
+          const tp = generateThumbhash(mediaFile)
+          imageUri = await uploadToArweave(mediaFile)
+          thumbhash = (await tp) ?? thumbhash
+          animationUri = undefined
+          contentField = undefined
         }
-        toast.loading('Uploading image…', { id: 'edit-meta' })
-        // Hash and upload in parallel — the encode is bounded by 100px
-        // downscale and finishes well before the Arweave POST does, so
-        // it's free latency. Falls back to the previous hash on encode
-        // failure rather than stripping the placeholder.
-        const thumbhashPromise = generateThumbhash(uploadFile)
-        imageUri = await uploadToArweave(uploadFile)
-        thumbhash = (await thumbhashPromise) ?? thumbhash
       }
 
-      // Build the new metadata JSON. Preserve animation_url + content
-      // fields from the existing metadata so video/writing moments keep
-      // their media bindings intact when only name/description changed.
+      // 2) CHANGE COVER — replaces only the poster/thumbnail, stored as-is (a
+      // GIF cover animates). Never touches the main media (animation_url).
+      if (coverFile) {
+        toast.loading('Uploading cover…', { id: 'edit-meta' })
+        const tp = generateThumbhash(coverFile)
+        imageUri = await uploadToArweave(coverFile)
+        thumbhash = (await tp) ?? thumbhash
+      }
+
+      // Build the new metadata JSON from the resolved bindings above —
+      // unchanged fields carry their existing values, a media change updates
+      // animation_url/content (or clears them for a new still image), and a
+      // cover change updates only image.
       const newMetadata: Record<string, unknown> = {
         name: editName.trim(),
         description: editDesc.trim(),
         ...(imageUri ? { image: imageUri } : {}),
-        ...(detail.metadata.animation_url ? { animation_url: detail.metadata.animation_url } : {}),
-        ...(detail.metadata.content ? { content: detail.metadata.content } : {}),
+        ...(animationUri ? { animation_url: animationUri } : {}),
+        ...(contentField ? { content: contentField } : {}),
         ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
       }
 
@@ -667,14 +743,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // sees broken metadata until the gateway pool catches up. Image
       // budget mirrors MintForm's 90s for large uploads.
       toast.loading('Verifying Arweave propagation…', { id: 'edit-meta' })
+      // Verify freshly-uploaded URIs (image when media/cover changed, the MP4
+      // when media changed). image is pushed before animation, so positional
+      // destructuring stays correct.
       const verifies: Promise<boolean>[] = [verifyArweaveAvailable(newUri)]
-      if (editFile && imageUri?.startsWith('ar://')) {
+      if ((mediaFile || coverFile) && imageUri?.startsWith('ar://')) {
         verifies.push(verifyArweaveAvailable(imageUri, 90_000))
       }
-      const [metaOk, imageOk = true] = await Promise.all(verifies)
-      if (!metaOk || !imageOk) {
+      if (mediaFile && animationUri?.startsWith('ar://')) {
+        verifies.push(verifyArweaveAvailable(animationUri, 90_000))
+      }
+      const [metaOk, imageOk = true, animOk = true] = await Promise.all(verifies)
+      if (!metaOk || !imageOk || !animOk) {
         const failed: string[] = []
         if (!imageOk) failed.push('image')
+        if (!animOk) failed.push('media')
         if (!metaOk) failed.push('metadata')
         throw new Error(
           `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
@@ -711,7 +794,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // proxy fallback hits cached bytes the moment the optimistic state
       // swap below re-mounts the <Image>. Fire-and-forget — failure is
       // a no-op, the existing fallback chain still walks the pool.
-      if (editFile && imageUri?.startsWith('ar://')) {
+      if ((mediaFile || coverFile) && imageUri?.startsWith('ar://')) {
         void fetch(proxyUrl(imageUri), { cache: 'no-store' }).catch(() => {})
       }
 
@@ -727,6 +810,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           name: editName.trim(),
           description: editDesc.trim(),
           ...(imageUri ? { image: imageUri } : {}),
+          // Explicit (not spread-conditional) so a media change is reflected
+          // immediately — including clearing the video for a new still image.
+          animation_url: animationUri,
+          content: contentField,
           ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         },
       }
@@ -958,31 +1045,69 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
                   />
                 </div>
+                {/* Change media — replaces the primary content (image, gif,
+                    or video). Video → re-points animation_url; a GIF is
+                    transcoded to MP4 like at mint. */}
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">image (optional)</label>
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">media (optional)</label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => mediaInputRef.current?.click()}
+                      disabled={savingMeta}
+                      className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
+                    >
+                      change media
+                    </button>
+                    {mediaFile && (
+                      <>
+                        <span className="text-[10px] font-mono text-dim truncate max-w-[9rem]" title={mediaFile.name}>{mediaFile.name}</span>
+                        <button
+                          type="button"
+                          onClick={clearMedia}
+                          disabled={savingMeta}
+                          className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
+                        >
+                          keep current
+                        </button>
+                      </>
+                    )}
+                    <input
+                      ref={mediaInputRef}
+                      type="file"
+                      accept="image/*,video/*,.gif"
+                      onChange={handleMediaFile}
+                      className="hidden"
+                    />
+                  </div>
+                </div>
+                {/* Change cover — replaces only the thumbnail/poster (image or
+                    gif), never the main media. */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">cover (optional)</label>
                   <div className="flex items-center gap-2">
-                    {/* Show whatever's currently selected: new file preview > existing on-chain image > nothing.
-                        MomentImg handles both — a blob URL from the file picker passes through unchanged,
-                        an ar:// URI walks the gateway pool on error. */}
-                    {(editPreview || meta.image) && (
+                    {/* new cover preview > existing on-chain image > nothing.
+                        MomentImg passes a blob URL through unchanged and walks
+                        the gateway pool for an ar:// on error. */}
+                    {(coverPreview || meta.image) && (
                       <MomentImg
-                        src={editPreview ?? meta.image ?? ''}
-                        alt="preview"
+                        src={coverPreview ?? meta.image ?? ''}
+                        alt="cover preview"
                         className="w-12 h-12 object-cover bg-surface border border-line"
                       />
                     )}
                     <button
                       type="button"
-                      onClick={() => editFileInputRef.current?.click()}
+                      onClick={() => coverInputRef.current?.click()}
                       disabled={savingMeta}
                       className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
                     >
-                      {editFile ? 'replace' : 'change image'}
+                      {coverFile ? 'replace' : 'change cover'}
                     </button>
-                    {editFile && (
+                    {coverFile && (
                       <button
                         type="button"
-                        onClick={clearEditFile}
+                        onClick={clearCover}
                         disabled={savingMeta}
                         className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
                       >
@@ -990,10 +1115,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       </button>
                     )}
                     <input
-                      ref={editFileInputRef}
+                      ref={coverInputRef}
                       type="file"
-                      accept="image/*,video/*"
-                      onChange={handleEditFile}
+                      accept="image/*,.gif"
+                      onChange={handleCoverFile}
                       className="hidden"
                     />
                   </div>
