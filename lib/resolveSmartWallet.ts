@@ -8,6 +8,11 @@ import { inprocessUrl } from '@/lib/inprocess'
 const cache = new Map<string, { value: string; expiresAt: number }>()
 const TTL_MS = 24 * 60 * 60 * 1000
 
+// Bound the upstream call so a stalled inprocess endpoint can't hang the
+// request indefinitely. Callers treat the resulting null as "could not
+// resolve" (HTTP 502) and surface a retryable error instead of spinning.
+const UPSTREAM_TIMEOUT_MS = 10_000
+
 /**
  * Resolves an artist's inprocess smart wallet address from their EOA via
  * `GET /api/smartwallet`. Centralizes the defensive shape parsing —
@@ -37,6 +42,7 @@ export async function resolveSmartWallet(
     res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate },
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
   } catch {
     return null
