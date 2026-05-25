@@ -211,21 +211,26 @@ async function updateTokenUri(collectionAddress, tokenId, newUri) {
   const apiKey = process.env.INPROCESS_API_KEY
   if (!apiKey) throw new Error('INPROCESS_API_KEY not configured')
   const body = JSON.stringify({ moment: { collectionAddress, tokenId, chainId: CHAIN_ID }, newUri })
-  // Use curl (not Node fetch) for the same reason as the downloads: Node's
-  // undici is unreliable on this network. Body goes via a temp file; the
-  // status code is appended with -w so we can detect non-2xx.
-  const tmp = join(tmpdir(), `body-${Date.now()}.json`)
-  await writeFile(tmp, body)
+  // Use curl (Node fetch is unreliable here). The API key + headers go in a
+  // 0600 config file (-K), NOT argv, so the key can never surface in a
+  // "Command failed: curl …" error. Body via a temp file; status via -w.
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const bodyFile = join(tmpdir(), `body-${stamp}.json`)
+  const cfgFile = join(tmpdir(), `cfg-${stamp}`)
+  await writeFile(bodyFile, body)
+  await writeFile(
+    cfgFile,
+    `header = "x-api-key: ${apiKey}"\nheader = "Content-Type: application/json"\nheader = "Accept: application/json"\n`,
+    { mode: 0o600 },
+  )
   try {
     const { stdout } = await execFileAsync(
       'curl',
       [
-        '-sS', '-4', '--max-time', '60',
+        '-sS', '--max-time', '60', '--retry', '4', '--retry-all-errors', '--retry-delay', '3',
         '-X', 'POST',
-        '-H', 'Content-Type: application/json',
-        '-H', 'Accept: application/json',
-        '-H', `x-api-key: ${apiKey}`,
-        '--data-binary', `@${tmp}`,
+        '-K', cfgFile,
+        '--data-binary', `@${bodyFile}`,
         '-w', '\n%{http_code}',
         `${INPROCESS_API}/moment/update-uri`,
       ],
@@ -239,7 +244,8 @@ async function updateTokenUri(collectionAddress, tokenId, newUri) {
     }
     return text
   } finally {
-    await rm(tmp, { force: true }).catch(() => {})
+    await rm(bodyFile, { force: true }).catch(() => {})
+    await rm(cfgFile, { force: true }).catch(() => {})
   }
 }
 
