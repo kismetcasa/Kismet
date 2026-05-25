@@ -145,8 +145,8 @@ export async function POST(req: NextRequest) {
 
   let res: Response
   try {
-    res = await fetch(`${INPROCESS_API}/moment/update-uri`, {
-      method: 'POST',
+    res = await fetch(`${INPROCESS_API}/moment`, {
+      method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,

@@ -228,11 +228,11 @@ async function updateTokenUri(collectionAddress, tokenId, newUri) {
       'curl',
       [
         '-sS', '--max-time', '60', '--retry', '4', '--retry-all-errors', '--retry-delay', '3',
-        '-X', 'POST',
+        '-X', 'PATCH',
         '-K', cfgFile,
         '--data-binary', `@${bodyFile}`,
         '-w', '\n%{http_code}',
-        `${INPROCESS_API}/moment/update-uri`,
+        `${INPROCESS_API}/moment`,
       ],
       { maxBuffer: 4 * 1024 * 1024 },
     )
