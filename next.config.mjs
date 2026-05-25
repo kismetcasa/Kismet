@@ -42,12 +42,15 @@ const nextConfig = {
   // --max-old-space-size doesn't bound them — on a 4-CPU host the
   // default 4 workers each held ~600-900 MB of Rust-side memory and
   // the cgroup OOM-killer was reaching `next build` before V8 ever
-  // noticed. `cpus: 2` halves that peak; `webpackMemoryOptimizations`
-  // drops webpack's intermediate caches during compilation for another
-  // 15-30% reduction. Together they trade ~20s of build wall-time for
-  // ~1.5 GB of headroom against SIGKILL.
+  // noticed. `cpus: 1` runs a single worker (the biggest peak-RAM cut;
+  // dropped from 2 after the build crept up to the OOM threshold and
+  // started SIGKILLing on deploy); `webpackMemoryOptimizations` drops
+  // webpack's intermediate caches during compilation for another
+  // 15-30% reduction. Together they trade build wall-time for headroom
+  // against SIGKILL. If the build still OOMs, the host needs more
+  // RAM/swap — the V8 heap alone is capped at 4 GB (Dockerfile).
   experimental: {
-    cpus: 2,
+    cpus: 1,
     webpackMemoryOptimizations: true,
   },
 
