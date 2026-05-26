@@ -367,13 +367,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     return true
   }
 
-  // Platform-pause kill switch — the mint proxy returns 503 when an admin
-  // has paused minting. Surface a single clean toast instead of the generic
-  // "Mint failed" + description (or a misleading payload-level error like
-  // "duplicate splits address"), so a paused platform reads as an intentional
-  // state. Checked before maybeHandleAuthError/throw so it always wins.
-  function maybeHandlePauseError(status: number): boolean {
-    if (status !== 503) return false
+  // Platform-pause kill switch — the mint proxy returns 503 with a
+  // "paused" message when an admin has paused minting. Surface a single
+  // clean toast instead of the generic "Mint failed" + description (or a
+  // misleading payload-level error like "duplicate splits address"), so a
+  // paused platform reads as an intentional state. Matches the message too,
+  // not just the status, so a pass-through 503 from an inprocess outage
+  // still falls through to the generic error path. Checked before
+  // maybeHandleAuthError/throw so it always wins.
+  function maybeHandlePauseError(status: number, data?: { error?: unknown }): boolean {
+    if (status !== 503 || typeof data?.error !== 'string' || !/paused/i.test(data.error)) {
+      return false
+    }
     toast.error('Platform is temporarily paused', { id: 'mint' })
     setStep('idle')
     setUploadProgress(0)
@@ -720,7 +725,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
-          if (maybeHandlePauseError(res.status)) return
+          if (maybeHandlePauseError(res.status, data)) return
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
@@ -974,7 +979,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
-          if (maybeHandlePauseError(res.status)) return
+          if (maybeHandlePauseError(res.status, data)) return
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
