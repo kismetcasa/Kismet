@@ -90,15 +90,6 @@ export async function proxyMintRequest(
     return errorResponse(413, 'tokenContent too large')
   }
 
-  // Validate splits up-front so a bad payload (duplicates, mis-summed,
-  // unsorted, malformed addresses) returns a 400 with a clear message
-  // instead of letting the request reach inprocess just to fail upstream
-  // with a generic "execution reverted" from SplitMain.
-  const splitsValidation = validateSplits(body?.splits)
-  if (splitsValidation.kind === 'error') {
-    return errorResponse(400, splitsValidation.message)
-  }
-
   // Strict routing: the body must identify a collection, either by
   // `contract.address` (existing) or by `contract.name + contract.uri`
   // (auto-deploy + first mint, the documented inprocess pattern).
@@ -160,6 +151,17 @@ export async function proxyMintRequest(
   }
   if (!gateOk) {
     return errorResponse(403, 'Kismet Creator pass required to mint')
+  }
+
+  // Validate splits after the platform-policy gates so a paused/blocked/
+  // pass-less caller gets that (uniform) reason rather than a payload-level
+  // 400. A bad splits payload (duplicates, mis-summed, unsorted, malformed
+  // addresses) still returns a clear 400 here — before we debit quota or
+  // reach inprocess, where it would otherwise fail with a generic
+  // "execution reverted" from SplitMain.
+  const splitsValidation = validateSplits(body?.splits)
+  if (splitsValidation.kind === 'error') {
+    return errorResponse(400, splitsValidation.message)
   }
 
   // Per-address daily/weekly cap on platform-paid mint/write operations.
