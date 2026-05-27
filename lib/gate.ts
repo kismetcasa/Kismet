@@ -91,3 +91,12 @@ export async function isPlatformPausedFor(address: string): Promise<boolean> {
   const config = await getGateConfig()
   return config.paused
 }
+
+/** Raw platform-pause flag with no admin bypass — backs the public
+ *  status endpoint that powers client-side "paused" affordances (e.g.
+ *  disabling the create-collection button). Admin exemption for those
+ *  surfaces is applied client-side via the admin context. */
+export async function isPlatformPaused(): Promise<boolean> {
+  const config = await getGateConfig()
+  return config.paused
+}

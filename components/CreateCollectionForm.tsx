@@ -25,6 +25,8 @@ import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError } from '@/lib/toast'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { shortAddress } from '@/lib/inprocess'
+import { useAdmin } from '@/contexts/AdminContext'
+import { usePlatformPaused } from '@/hooks/usePlatformPaused'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
@@ -35,6 +37,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
+  const { isAdmin } = useAdmin()
+  // Deploy is a direct on-chain factory call, so it can't be gated server-
+  // side by the pause switch. Block it client-side instead. Admin is exempt
+  // (consistent with isPlatformPausedFor) so they can still deploy while paused.
+  const { paused: platformPaused } = usePlatformPaused()
+  const pausedBlock = platformPaused && !isAdmin
 
   const {
     file: coverFile,
@@ -362,6 +370,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
     if (!isConnected || !address) {
       openConnectModal?.()
+      return
+    }
+    // Defense in depth: the submit button is disabled while paused, but a
+    // form can still submit via Enter — bail before any upload/deploy.
+    if (pausedBlock) {
+      toast.error('Platform is temporarily paused')
       return
     }
     if (!coverFile) {
@@ -886,18 +900,27 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         )}
       </div>
 
-      {/* Submit */}
-      <button
-        type="submit"
-        disabled={isBusy}
-        className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+      {/* Submit. Wrapped in a titled span so the hover tooltip still shows
+          when the button is disabled (disabled buttons don't fire hover). */}
+      <span
+        className="block w-full"
+        title={pausedBlock ? 'Platform temporarily paused' : undefined}
       >
-        {!isConnected
-          ? 'connect wallet to deploy'
-          : isBusy
-          ? stepLabel(step, uploadProgress)
-          : 'create'}
-      </button>
+        <button
+          type="submit"
+          disabled={isBusy || pausedBlock}
+          title={pausedBlock ? 'Platform temporarily paused' : undefined}
+          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {!isConnected
+            ? 'connect wallet to deploy'
+            : pausedBlock
+            ? 'platform temporarily paused'
+            : isBusy
+            ? stepLabel(step, uploadProgress)
+            : 'create'}
+        </button>
+      </span>
     </form>
   )
 }
