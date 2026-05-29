@@ -148,12 +148,33 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     })
   }, [moment.address, moment.kismetCollection])
 
+  // Defer the per-card price fetch + the two on-chain reads off the initial
+  // mount/scroll path. Firing them on mount stacks a network + RPC + re-render
+  // burst onto the exact window where the feed is rendering in and the
+  // shared-video reposition rAF is already contended — which is what makes the
+  // overlay lag/mis-position while moments are still rendering. Waiting for
+  // idle keeps that window light; price/supply still popcorn in a beat later,
+  // and the collect button stays gated on collectReady until they land.
+  const [deferReady, setDeferReady] = useState(false)
+  useEffect(() => {
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    if (w.requestIdleCallback) {
+      const h = w.requestIdleCallback(() => setDeferReady(true), { timeout: 1500 })
+      return () => w.cancelIdleCallback?.(h)
+    }
+    const t = setTimeout(() => setDeferReady(true), 300)
+    return () => clearTimeout(t)
+  }, [])
+
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
     args: connectedAddress ? [connectedAddress, BigInt(moment.token_id)] : undefined,
-    query: { enabled: !!connectedAddress },
+    query: { enabled: deferReady && !!connectedAddress },
   })
   const owned = ownedBalance ? Number(ownedBalance) : 0
 
@@ -162,6 +183,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     abi: ZORA_1155_TOKEN_INFO_ABI,
     functionName: 'getTokenInfo',
     args: [BigInt(moment.token_id)],
+    query: { enabled: deferReady },
   })
   const maxSupply = tokenInfo?.maxSupply
   const totalMinted = tokenInfo?.totalMinted
@@ -173,16 +195,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // compact contexts still need these state values to drive collect.
   //
   // Two paths:
-  //   1. Fast path: /api/timeline now enriches each moment with its
-  //      saleConfig server-side. When present, populate state directly
-  //      and skip the round-trip entirely — the discover feed paints
-  //      with prices already in place instead of popcorning them in.
-  //   2. Fallback: callers that pass moments from sources that don't
-  //      enrich (FeaturedFeed inputs from non-timeline routes, third-
-  //      party usages, or a timeline call where the per-moment upstream
-  //      fetch happened to fail) still get correct behavior via the
-  //      per-card /api/moment fetch — exact same logic that was here
-  //      before, just gated on absence.
+  //   1. Fast path: if a caller supplies moment.saleConfig, populate state
+  //      directly and skip the round-trip. NOTE: /api/timeline does NOT stitch
+  //      saleConfig today (server-side enrichment was reverted — see the
+  //      comment near the end of app/api/timeline/route.ts), so feed moments
+  //      fall through to path 2. This branch stays for any caller that does
+  //      supply it (and for a future warm-cache enrichment).
+  //   2. Canonical path for feed moments: fetch /api/moment per card. Deferred
+  //      to idle (see deferReady) so it doesn't fire during the render-in
+  //      window; price/supply popcorn in a beat later.
   useEffect(() => {
     if (moment.saleConfig) {
       // Match the fetch path's implicit error swallowing (the .catch
@@ -198,6 +219,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       } catch {}
       return
     }
+    // Held until idle (see deferReady) so the fetch doesn't fire during the
+    // render-in window. The saleConfig fast-path above still runs immediately
+    // when present.
+    if (!deferReady) return
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
@@ -212,7 +237,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         setCurrency(cur)
       })
       .catch(() => {})
-  }, [moment.address, moment.token_id, moment.saleConfig])
+  }, [moment.address, moment.token_id, moment.saleConfig, deferReady])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return

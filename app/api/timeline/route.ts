@@ -428,8 +428,28 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // Cache policy. A request is viewer-dependent — and therefore must never
+  // be served from a shared cache — when it filters/reorders by who's asking:
+  //   - creator=  : profile feed; the hidden-moment block below reveals the
+  //                 OWNER's own hidden moments (isOwnProfile), so the body
+  //                 differs for the creator vs everyone else.
+  //   - collector= / airdroppable= : address-scoped personal feeds.
+  //   - following= : reorders to bubble the caller's follows to the top.
+  // Everything else (trending, featured, the default newest feed, a single
+  // collection, the curated creators= roster) is identical for every viewer:
+  // the session cookie is read above but only consumed when creatorSet is set,
+  // which none of these set. Those get a short shared-cache window with a
+  // stale-while-revalidate tail so the first click on trending/main is served
+  // from the edge in ~tens of ms and refreshed in the background, instead of
+  // re-running the cross-collection fan-out + merge on every cold hit.
+  const viewerDependent =
+    !!creatorRaw || !!collectorRaw || !!airdroppable || !!followingParam
+  const cacheControl = viewerDependent
+    ? 'private, no-store'
+    : 'public, s-maxage=30, stale-while-revalidate=120'
+
   return NextResponse.json(
     { status: 'success', moments, pagination: { page, limit, total_pages } },
-    { headers: { 'Cache-Control': 'private, no-store' } },
+    { headers: { 'Cache-Control': cacheControl } },
   )
 }
