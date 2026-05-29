@@ -754,7 +754,18 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       if (video.destroyed) return
       video.loaded = true
       el.style.opacity = '1'
-      if (video.slots.length > 0) el.style.visibility = 'visible'
+      // Re-measure before the first reveal. The acquire-time positionElement
+      // can read a stale rect when many cards mount in one synchronous commit
+      // (the eager desktop grid, or a cache-warm instant render via prefetch)
+      // before the browser flushes layout — leaving the element parked at the
+      // wrong coordinates (typically y≈0), then revealed there with nothing to
+      // trigger a reposition (fixed-aspect posters don't reflow, no scroll on
+      // desktop). By loadeddata layout has long settled, so positioning here
+      // lands the first reveal correctly. applySlotGeometry flips visibility on
+      // (video.loaded is now true) when the rect is valid; a detached/zero-rect
+      // slot stays hidden until the IO/ResizeObserver repositions it.
+      const active = video.slots[0]
+      if (active) positionElement(video, active)
     }, { signal: abort.signal })
 
     el.src = gateways[0] ?? src
