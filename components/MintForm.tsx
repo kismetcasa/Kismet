@@ -231,9 +231,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // Client-side preflight on the SELECTED collection. Saves an Arweave
   // round-trip when the smart wallet isn't ADMIN — the form blocks
   // submit and surfaces an Authorize CTA before any upload work.
-  // Skipped in auto-deploy mode (no collection to read yet); auto-
-  // deploy uses post-mint verification in trackAutoDeploy
-  // below.
+  // Skipped in auto-deploy mode (no collection to read yet).
   //
   // We check the ADMIN bit specifically because inprocess's relay
   // requires it for setupNewToken — MINTER alone won't work through
