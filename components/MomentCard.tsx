@@ -195,16 +195,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // compact contexts still need these state values to drive collect.
   //
   // Two paths:
-  //   1. Fast path: /api/timeline now enriches each moment with its
-  //      saleConfig server-side. When present, populate state directly
-  //      and skip the round-trip entirely — the discover feed paints
-  //      with prices already in place instead of popcorning them in.
-  //   2. Fallback: callers that pass moments from sources that don't
-  //      enrich (FeaturedFeed inputs from non-timeline routes, third-
-  //      party usages, or a timeline call where the per-moment upstream
-  //      fetch happened to fail) still get correct behavior via the
-  //      per-card /api/moment fetch — exact same logic that was here
-  //      before, just gated on absence.
+  //   1. Fast path: if a caller supplies moment.saleConfig, populate state
+  //      directly and skip the round-trip. NOTE: /api/timeline does NOT stitch
+  //      saleConfig today (server-side enrichment was reverted — see the
+  //      comment near the end of app/api/timeline/route.ts), so feed moments
+  //      fall through to path 2. This branch stays for any caller that does
+  //      supply it (and for a future warm-cache enrichment).
+  //   2. Canonical path for feed moments: fetch /api/moment per card. Deferred
+  //      to idle (see deferReady) so it doesn't fire during the render-in
+  //      window; price/supply popcorn in a beat later.
   useEffect(() => {
     if (moment.saleConfig) {
       // Match the fetch path's implicit error swallowing (the .catch

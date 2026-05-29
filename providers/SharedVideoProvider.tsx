@@ -825,13 +825,13 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     // ancestor-scroll listeners stay in SharedVideoSlot since ancestor
     // sets vary per slot.
     //
-    // `mobileScrolling` is set while a mobile scroll is in flight. Any flush
-    // that runs during that window (scroll-driven OR a body-reflow / resize
-    // flush) keeps feed videos hidden, so a layout shift mid-scroll can't
-    // sneak a video back onscreen at a stale position. The transform is
-    // still updated under the hood, so the reveal flush the settle timer
-    // runs lands the element at its correct resting place. Desktop never
-    // sets the flag and tracks live.
+    // `mobileScrolling` marks a scroll as in flight. Combined with a recent
+    // body reflow (`lastReflowAt`), it holds feed videos hidden — poster
+    // showing — only for the render-in window where the reposition rAF can
+    // fall behind. Outside that window (steady state) videos track live during
+    // scroll. The transform is still updated while hidden, so the reveal flush
+    // the settle timer runs lands the element at its correct resting place.
+    // Desktop never sets the flag and always tracks live.
     let rafPending = false
     let mobileScrolling = false
     // Timestamp of the last body reflow (image load / card mount / resize).
