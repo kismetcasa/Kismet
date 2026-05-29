@@ -26,9 +26,9 @@ const keyKnownTokens = (collection: string) =>
 const keyProcessed = (txHash: string, logIndex: number, subIndex: number) =>
   `kismetart:pass:processed:${txHash.toLowerCase()}:${logIndex}:${subIndex}`
 // Per-acquisition idempotency for credits — distinct from the per-event
-// processed-key above. Direct-credit paths (listing fill, future:
-// collect, airdrop) and the webhook backstop both write through
-// creditValidityOnce, which CAS-claims this key; second writer is a no-op.
+// processed-key above. The direct-credit path (listing fill) and the
+// webhook backstop both write through creditValidityOnce, which CAS-
+// claims this key; second writer is a no-op.
 const keyCredited = (collection: string, address: string, txHash: string) =>
   `kismetart:pass:credited:${collection.toLowerCase()}:${address.toLowerCase()}:${txHash.toLowerCase()}`
 // Tainted tokenIds: any tokenId that has ever left the sanctioned
