@@ -1,4 +1,16 @@
 import { rgbaToThumbHash, thumbHashToDataURL } from 'thumbhash'
+import { LRUCache } from '@/lib/lruCache'
+
+// Decoded blur data-URLs keyed by the source base64 thumbhash. The decode is
+// a synchronous pure-JS PNG encode (~0.5-2ms each) that the feed otherwise
+// re-runs on every card mount — and because LazyMount unmounts cards at
+// 3000px and remounts them on scroll-back, the same hash is decoded again and
+// again during a scroll, and once more per tab a moment appears in. A card's
+// own useMemo only survives until it unmounts; this process-level cache
+// survives remounts and is shared across every card/tab/feed, so each unique
+// hash is decoded at most once. Bounded so a long session can't leak. `undefined`
+// results (malformed input) are cached too so bad hashes aren't retried.
+const blurUrlCache = new LRUCache<string, string | undefined>(512)
 
 // Downscale target before encoding. Past 100px the encode is slower
 // without meaningful placeholder-quality gain.
@@ -58,10 +70,14 @@ export async function generateThumbhash(file: File): Promise<string | null> {
  */
 export function thumbhashToBlurDataURL(b64: string | undefined): string | undefined {
   if (!b64) return undefined
+  if (blurUrlCache.has(b64)) return blurUrlCache.get(b64)
+  let result: string | undefined
   try {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
-    return thumbHashToDataURL(bytes)
+    result = thumbHashToDataURL(bytes)
   } catch {
-    return undefined
+    result = undefined
   }
+  blurUrlCache.set(b64, result)
+  return result
 }

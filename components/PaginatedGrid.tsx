@@ -1,9 +1,16 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { MaybeLazy } from './LazyMount'
+import { trackPerf } from '@/lib/telemetry'
+import {
+  fetchPageJson,
+  paginatedFirstPageUrl,
+  paginatedQueryKey,
+  type PageResponse,
+} from '@/lib/paginatedGridQuery'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -58,19 +65,6 @@ interface PaginatedGridProps<T> {
   lazy?: boolean
 }
 
-// Shape of a paginated JSON response. itemsKey is dynamic per caller,
-// so we leave the items array un-typed here and narrow per-call.
-interface PageResponse {
-  pagination?: { total_pages?: number }
-  [key: string]: unknown
-}
-
-async function fetchPageJson(url: string): Promise<PageResponse> {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Failed (${res.status})`)
-  return res.json()
-}
-
 export function PaginatedGrid<T>({
   apiUrl,
   itemsKey,
@@ -96,12 +90,12 @@ export function PaginatedGrid<T>({
   // toggle (apiUrl changes) cleanly switches to a different cache
   // entry without invalidating the previous one — meaning toggling
   // back is also instant.
-  const firstPageUrl = useMemo(() => {
-    const sep = apiUrl.includes('?') ? '&' : '?'
-    return `${apiUrl}${sep}page=1&limit=${pageLimit}`
-  }, [apiUrl, pageLimit])
+  const firstPageUrl = useMemo(
+    () => paginatedFirstPageUrl(apiUrl, pageLimit),
+    [apiUrl, pageLimit],
+  )
   const queryKey = useMemo(
-    () => ['paginated-grid', firstPageUrl] as const,
+    () => paginatedQueryKey(firstPageUrl),
     [firstPageUrl],
   )
 
@@ -125,6 +119,26 @@ export function PaginatedGrid<T>({
     gcTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   })
+
+  // Measure the open-feed "freeze" window: wall-clock from the first render
+  // that has data to two frames later. If mounting the eager cards blocks the
+  // main thread, the first rAF callback is delayed by that block, so the
+  // elapsed approximates the freeze duration. Portable (performance.now +
+  // rAF), so it reports on iOS WebKit where longtask/LoAF don't exist. Op-in
+  // telemetry only; trackPerf is a no-op otherwise. One-shot per mount.
+  const feedRenderStart = useRef<number | null>(null)
+  const feedRenderLogged = useRef(false)
+  if (firstPage && feedRenderStart.current === null) {
+    feedRenderStart.current = performance.now()
+  }
+  useEffect(() => {
+    if (!firstPage || feedRenderLogged.current || feedRenderStart.current === null) return
+    feedRenderLogged.current = true
+    const start = feedRenderStart.current
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => trackPerf('feed_render', performance.now() - start)),
+    )
+  }, [firstPage])
 
   // Subsequent pages (load-more) stay in component-local state. Caching
   // them globally adds complexity (page state per cache entry) without

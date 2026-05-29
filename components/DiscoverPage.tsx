@@ -2,6 +2,8 @@
 
 import { createContext, useContext, useState, useEffect, useRef, useCallback, startTransition } from 'react'
 import { useAccount } from 'wagmi'
+import { useQueryClient } from '@tanstack/react-query'
+import { prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
@@ -37,6 +39,22 @@ const LABEL: Record<TabId, string> = {
 
 const ORDER_KEY = 'kismetart:tab-order'
 const ACTIVE_KEY = 'kismetart:active-tab'
+
+// First-page apiUrls for the tabs whose feed runs through PaginatedGrid
+// (react-query). Warming these into the query cache before the tab is
+// clicked turns the first tap from a cold network round-trip (skeleton →
+// 1-2s wait on the Mini App webview's constrained pool) into an instant
+// cache hit. Must match the apiUrl each tab's feed passes to PaginatedGrid
+// verbatim, or the prefetched entry won't dedupe against the live query:
+//   trending → MomentFeed apiUrl below
+//   main     → MainFeed's mints sub-tab default (no `following=`)
+// featured (raw fetch, not react-query) and roster (depends on an async
+// creator-lists fetch) are intentionally excluded; featured is also the
+// default landing tab, so it loads on first paint regardless.
+const PREFETCH_URL: Partial<Record<TabId, string>> = {
+  trending: '/api/timeline?sort=trending&scope=standalone',
+  main: '/api/timeline?scope=standalone',
+}
 
 // Reconcile a stored tab order with the current DRAGGABLE list: keep
 // recognized entries in their saved positions, drop unknowns, and append
@@ -80,11 +98,15 @@ function TabBar({
   active,
   onSelect,
   onReorder,
+  onIntent,
 }: {
   order: TabId[]
   active: TabId
   onSelect: (t: TabId) => void
   onReorder: (o: TabId[]) => void
+  /** Hover-intent prefetch (desktop). Mouse-only so it never collides with
+   *  the touch drag-reorder path; mobile relies on the idle warm-up. */
+  onIntent?: (t: TabId) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { draggingId: draggingTab, dragOffset, bindItem } = useLongPressDrag<TabId>({
@@ -106,6 +128,7 @@ function TabBar({
             key={tab}
             data-tab={tab}
             {...bindItem(tab)}
+            onMouseEnter={() => onIntent?.(tab)}
             // Keyboard activation lives outside the pointer path —
             // onClick would race the pointer-tap handler on touch.
             onKeyDown={(e) => {
@@ -345,6 +368,10 @@ function MainFeed() {
 
 export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredKeys, featuredCollectionAddrs } = useAdmin()
+  const queryClient = useQueryClient()
+  // Mirror MomentFeed's page size (lazy=isMobile → 12 mobile / 18 desktop)
+  // so a warmed entry shares the live grid's exact query key.
+  const pageLimit = isMobile ? 12 : 18
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
   // Defer the first tab-content render until we've reconciled with
@@ -374,6 +401,43 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
     setActive(loadActiveTab(savedOrder))
     setHydrated(true)
   }, [])
+
+  // Warm a tab's first page into the react-query cache. No-op for tabs not
+  // in PREFETCH_URL (featured/roster) and a cheap cache-hit if already warm.
+  const prefetchTab = useCallback(
+    (tab: TabId) => {
+      const url = PREFETCH_URL[tab]
+      if (url) prefetchPaginatedFirstPage(queryClient, url, pageLimit)
+    },
+    [queryClient, pageLimit],
+  )
+
+  // Idle warm-up: once the landing tab has settled, prefetch the other
+  // PaginatedGrid-backed tabs (trending / main) so the FIRST tap on either
+  // renders from cache instead of waiting on a cold fetch over the Mini App
+  // webview's constrained connection pool. This is the mobile path's win —
+  // there's no hover to prefetch on, so we warm on idle instead. Skips the
+  // currently-active tab (its own useQuery already owns that request) and
+  // yields via requestIdleCallback so it never contends with the active
+  // tab's initial load.
+  useEffect(() => {
+    if (!hydrated) return
+    const run = () => {
+      for (const tab of Object.keys(PREFETCH_URL) as TabId[]) {
+        if (tab !== active) prefetchTab(tab)
+      }
+    }
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    if (w.requestIdleCallback) {
+      const handle = w.requestIdleCallback(run, { timeout: 2000 })
+      return () => w.cancelIdleCallback?.(handle)
+    }
+    const t = setTimeout(run, 800)
+    return () => clearTimeout(t)
+  }, [hydrated, active, prefetchTab])
 
   function handleReorder(next: TabId[]) {
     setOrder(next)
@@ -407,6 +471,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
         active={active}
         onSelect={handleSelect}
         onReorder={handleReorder}
+        onIntent={prefetchTab}
       />
 
       <div className="mt-2">

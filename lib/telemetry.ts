@@ -32,6 +32,8 @@ export type EventName =
   | 'image_lcp'          // PerformanceObserver largest-contentful-paint, ms
   | 'optimizer_400'      // Next.js /_next/image returned 400 — counter
   | 'pool_eviction'      // SharedVideoProvider idle-over-cap eviction — counter
+  | 'feed_render'        // first feed page: data-present render → painted, ms
+  | 'long_task'          // PerformanceObserver longtask duration (Chromium), ms
 
 const STORAGE_KEY = 'kismet_telemetry'
 
@@ -52,7 +54,13 @@ if (typeof window !== 'undefined') {
 }
 
 function formatValue(name: EventName, value: number): string {
-  if (name === 'video_ttff' || name === 'image_lcp') return `${Math.round(value)}ms`
+  if (
+    name === 'video_ttff' ||
+    name === 'image_lcp' ||
+    name === 'feed_render' ||
+    name === 'long_task'
+  )
+    return `${Math.round(value)}ms`
   return String(Math.round(value))
 }
 

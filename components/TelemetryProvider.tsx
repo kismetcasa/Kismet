@@ -35,15 +35,32 @@ export function TelemetryProvider() {
       // hydration completes).
       observer.observe({ type: 'largest-contentful-paint', buffered: true })
 
+      // Long tasks (>50ms) are exactly the main-thread blocks that read as
+      // a "freeze" on feed open. NOTE: WebKit/iOS doesn't support the
+      // 'longtask' entry type — observe() throws there and the catch below
+      // swallows it — so this reports only on Chromium Mini App webviews;
+      // the feed_render timer in PaginatedGrid covers the iOS case.
+      let longTaskObserver: PerformanceObserver | null = null
+      try {
+        longTaskObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) trackPerf('long_task', entry.duration)
+        })
+        longTaskObserver.observe({ type: 'longtask', buffered: true })
+      } catch {
+        longTaskObserver = null
+      }
+
       // Flush the running max on pagehide so the value at navigation
       // time is what we record. Per Web Vitals guidance.
       const onPageHide = () => {
         if (lastLcp > 0) trackPerf('image_lcp', lastLcp)
         observer.disconnect()
+        longTaskObserver?.disconnect()
       }
       addEventListener('pagehide', onPageHide, { once: true })
       return () => {
         observer.disconnect()
+        longTaskObserver?.disconnect()
         removeEventListener('pagehide', onPageHide)
       }
     } catch {

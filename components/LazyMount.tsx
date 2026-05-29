@@ -19,7 +19,11 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 const EAGER_MOUNT_COUNT = 4
 
 // Mount this far before the viewport — just enough to hide pop-in on a
-// normal scroll while the browser fetches/decodes the image.
+// normal scroll while the browser fetches/decodes the image. Kept tight on
+// purpose: a larger margin mounts more heavy cards at once, which lengthens
+// the render-in window where the shared-video reposition rAF gets starved
+// (the cause of the mid-scroll overlay mis-positioning). Reducing per-card
+// mount cost is the lever for pop-in, not a wider margin.
 const MOUNT_MARGIN = '200px'
 
 // Unmount once a card is this far OUTSIDE the viewport. Deliberately huge
