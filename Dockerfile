@@ -64,6 +64,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
+# ffmpeg powers the server-side GIF→MP4 transcode (/api/transcode-gif),
+# the no-wasm-cap fallback for GIFs too large for the in-browser path.
+# Static Alpine package, no extra runtime deps; the route shells out to
+# the binary via child_process.
+RUN apk add --no-cache ffmpeg
+
 # Non-root runtime user (security baseline; some host kernels' seccomp
 # profiles also require it).
 RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs

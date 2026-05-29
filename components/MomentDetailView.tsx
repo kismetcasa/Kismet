@@ -7,7 +7,7 @@ import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteC
 import { mainnet } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -26,11 +26,15 @@ import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
+import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
+import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
+import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
-import { isVideoMoment } from '@/lib/media/isVideo'
+import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { normalizeMediaUrl, guessMediaTypeFromUrl } from '@/lib/media/normalizeMediaUrl'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { SplitsPanel } from './SplitsPanel'
@@ -137,10 +141,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   })
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
   const [linkCopied, setLinkCopied] = useState(false)
+  const [scanCopied, setScanCopied] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [showFullDesc, setShowFullDesc] = useState(false)
   const [descOverflows, setDescOverflows] = useState(false)
   const [imgError, setImgError] = useState(false)
+  const [videoError, setVideoError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   // Seeded from server-prefetched KV metadata when available so the
   // collection chip renders on first paint instead of popping in after
@@ -161,15 +167,35 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
+  // "Change media" — replaces the primary content (image / gif / video).
+  // Two sources: upload a new file, or re-point at content already on
+  // Arweave/IPFS (no re-upload — Arweave is content-addressed and permanent,
+  // so the original ar:// is valid forever and re-uploading it only burns
+  // Turbo credits → the "Insufficient balance" 402 artists hit when restoring
+  // a large video they'd previously minted).
   const {
-    file: editFile,
-    preview: editPreview,
-    inputRef: editFileInputRef,
-    onChange: handleEditFile,
-    clear: clearEditFile,
+    file: mediaFile,
+    inputRef: mediaInputRef,
+    onChange: handleMediaFile,
+    clear: clearMedia,
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Max 420 MB' }),
+  })
+  const [mediaMode, setMediaMode] = useState<'upload' | 'url'>('upload')
+  const [existingMediaUrl, setExistingMediaUrl] = useState('')
+  const [existingMediaType, setExistingMediaType] = useState<'video' | 'gif' | 'image'>('video')
+  // "Change cover" — replaces only the poster/thumbnail (image or gif),
+  // never the main media. A GIF cover is stored as-is (animates).
+  const {
+    file: coverFile,
+    preview: coverPreview,
+    inputRef: coverInputRef,
+    onChange: handleCoverFile,
+    clear: clearCover,
+  } = useFileUpload({
+    maxBytes: 100 * 1024 * 1024,
+    onTooLarge: () => toast.error('Cover too large', { description: 'Max 100 MB' }),
   })
   const [savingMeta, setSavingMeta] = useState(false)
   const { ensureSession } = useUploadSession()
@@ -335,11 +361,38 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  const { hasSplits, recipients: splitRecipients, splitAddress, distribute, distributing, distributeHash } = useMomentSplits({
+  // Moment admin per inprocess's momentAdmins (unordered; may include the
+  // operator smart wallet — harmless, the distribute API's signature gate is
+  // authoritative). One of the roles canDistribute admits.
+  const isMomentAdmin =
+    !!connectedAddress &&
+    Array.isArray(detail?.momentAdmins) &&
+    detail.momentAdmins.some((a) => a.toLowerCase() === connectedAddress.toLowerCase())
+  const splitsCurrency = detail ? inferCollectCurrency(detail.saleConfig) : 'eth'
+  const {
+    hasSplits,
+    recipients: splitRecipients,
+    splitAddress,
+    canDistribute,
+    isRecipient,
+    pendingFormatted,
+    pendingShareFormatted,
+    hasPending,
+    distribute,
+    distributing,
+    distributeHash,
+  } = useMomentSplits({
     address,
     tokenId,
     isCreator,
+    isAdmin: isMomentAdmin,
+    isPlatformAdmin: isAdmin,
+    currency: splitsCurrency,
   })
+  // The platform admin sees distribute on any moment as a support override.
+  // Flag the case where that's the *only* reason the controls show, so the
+  // UI can label it rather than imply the admin is a creator/payee.
+  const adminDistributeOverride = isAdmin && !isCreator && !isMomentAdmin && !isRecipient
 
   // Fetch moment detail. We retry on the client when initialDetail is null
   // (server-side fetch returned no data, e.g. inprocess hasn't indexed a
@@ -519,6 +572,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     setTimeout(() => setLinkCopied(false), 1500)
   }
 
+  function handleCopyScan() {
+    const url = `https://basescan.org/token/${address}?a=${tokenId}`
+    navigator.clipboard.writeText(url).catch(() => {})
+    setScanCopied(true)
+    setTimeout(() => setScanCopied(false), 1500)
+  }
+
   async function handleToggleHidden() {
     if (!detail || hidePending) return
     const next = !isHidden
@@ -568,12 +628,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (!detail) return
     setEditName(detail.metadata.name ?? '')
     setEditDesc(detail.metadata.description ?? '')
-    clearEditFile()
+    clearMedia()
+    clearCover()
+    setMediaMode('upload')
+    setExistingMediaUrl('')
+    setExistingMediaType('video')
     setEditing(true)
   }
 
   function closeEditor() {
-    clearEditFile()
+    clearMedia()
+    clearCover()
+    setMediaMode('upload')
+    setExistingMediaUrl('')
+    setExistingMediaType('video')
     setEditing(false)
   }
 
@@ -586,45 +654,131 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     try {
       await ensureSession()
 
-      // Reuse the existing image URI when the creator didn't pick a new
-      // file — Arweave is content-addressed so the original ar:// stays
-      // valid forever. Preserve the existing thumbhash by default so a
-      // name/description-only edit doesn't strip the blur placeholder.
+      // Existing values carry over when nothing is re-uploaded — Arweave is
+      // content-addressed so the original ar:// stays valid forever, and the
+      // thumbhash is preserved so a name/description-only edit doesn't strip
+      // the blur placeholder.
       let imageUri = detail.metadata.image
+      let animationUri = detail.metadata.animation_url
+      let contentField: { uri?: string; mime?: string } | undefined = detail.metadata.content
       let thumbhash = detail.metadata.kismet_thumbhash
-      if (editFile) {
-        // Picker accepts video/* so the creator can re-upload the
-        // moment's source video to fix a broken meta.image — extract
-        // the first frame and use that as the cover, never store the
-        // video URL itself as the image (same constraint as MintForm).
-        let uploadFile: File = editFile
-        if (editFile.type.startsWith('video/')) {
-          toast.loading('Extracting poster from video…', { id: 'edit-meta' })
-          const poster = await extractVideoPoster(editFile)
-          if (!poster) {
-            throw new Error('Could not extract a poster frame from this video — try uploading an image instead')
-          }
-          uploadFile = poster
+
+      // 1a) RE-POINT MEDIA — point the moment at content already on Arweave.
+      // No upload: Arweave is content-addressed, so re-sending bytes only
+      // burns Turbo credits (→ 402) for an identical result. content.mime is
+      // set explicitly because ar:// hashes carry no extension to classify by.
+      // Empty field = no change (media is optional); a non-empty bad URL errors.
+      const repointUrl = mediaMode === 'url' ? normalizeMediaUrl(existingMediaUrl) : null
+      if (mediaMode === 'url' && existingMediaUrl.trim() && !repointUrl) {
+        throw new Error('That doesn’t look like a valid media URL — paste an ar:// URI or an https gateway link')
+      }
+      if (repointUrl) {
+        if (existingMediaType === 'video') {
+          animationUri = repointUrl
+          contentField = { uri: repointUrl, mime: 'video/mp4' }
+          // Poster (image) + thumbhash carry over unless a cover is set below.
+        } else if (existingMediaType === 'gif') {
+          animationUri = repointUrl
+          contentField = { uri: repointUrl, mime: 'image/gif' }
+        } else {
+          // Still image → it IS the moment; drop the video binding. The old
+          // thumbhash described the prior media, so clear it.
+          imageUri = repointUrl
+          animationUri = undefined
+          contentField = undefined
+          thumbhash = undefined
         }
-        toast.loading('Uploading image…', { id: 'edit-meta' })
-        // Hash and upload in parallel — the encode is bounded by 100px
-        // downscale and finishes well before the Arweave POST does, so
-        // it's free latency. Falls back to the previous hash on encode
-        // failure rather than stripping the placeholder.
-        const thumbhashPromise = generateThumbhash(uploadFile)
-        imageUri = await uploadToArweave(uploadFile)
-        thumbhash = (await thumbhashPromise) ?? thumbhash
       }
 
-      // Build the new metadata JSON. Preserve animation_url + content
-      // fields from the existing metadata so video/writing moments keep
-      // their media bindings intact when only name/description changed.
+      // 1b) CHANGE MEDIA (upload) — mirrors the mint pipeline: video →
+      // faststart MP4 + poster; GIF → transcoded MP4 + poster (server fallback
+      // over the 100MB wasm cap); image → still moment.
+      if (mediaMode === 'upload' && mediaFile) {
+        const isGif = mediaFile.type === 'image/gif' || mediaFile.name.toLowerCase().endsWith('.gif')
+        if (mediaFile.type.startsWith('video/')) {
+          toast.loading('Optimizing video…', { id: 'edit-meta' })
+          let video = mediaFile
+          try {
+            const remuxed = await remuxToFaststartMp4(mediaFile)
+            if (remuxed) video = remuxed
+          } catch (err) {
+            console.warn('[MomentDetailView] faststart remux failed; uploading original', err)
+          }
+          toast.loading('Uploading media…', { id: 'edit-meta' })
+          animationUri = await uploadToArweave(video)
+          contentField = { uri: animationUri, mime: 'video/mp4' }
+          // Auto-extract a poster unless the creator is also setting a cover.
+          if (!coverFile) {
+            try {
+              const poster = await extractVideoPoster(mediaFile)
+              if (poster) {
+                const tp = generateThumbhash(poster)
+                imageUri = await uploadToArweave(poster)
+                thumbhash = (await tp) ?? thumbhash
+              }
+            } catch (err) {
+              console.warn('[MomentDetailView] poster extraction failed', err)
+            }
+          }
+        } else if (isGif) {
+          let done = false
+          if (canTranscode(mediaFile)) {
+            try {
+              toast.loading('Optimizing animation for fast playback…', { id: 'edit-meta' })
+              const { mp4, poster } = await transcodeGifToMp4(mediaFile)
+              toast.loading('Uploading media…', { id: 'edit-meta' })
+              const tp = generateThumbhash(poster)
+              const [a, p] = await Promise.all([uploadToArweave(mp4), uploadToArweave(poster)])
+              animationUri = a
+              contentField = { uri: a, mime: 'video/mp4' }
+              if (!coverFile) { imageUri = p; thumbhash = (await tp) ?? thumbhash }
+              done = true
+            } catch (err) {
+              console.warn('[MomentDetailView] client GIF transcode failed; trying server', err)
+            }
+          }
+          if (!done) {
+            toast.loading('Uploading animation…', { id: 'edit-meta' })
+            const rawUri = await uploadToArweave(mediaFile)
+            if (!(await verifyArweaveAvailable(rawUri, 90_000))) {
+              throw new Error('Source GIF not yet propagated — try again in a minute')
+            }
+            toast.loading('Optimizing animation on server…', { id: 'edit-meta' })
+            const r = await serverTranscodeGif(rawUri)
+            animationUri = r.animationUri
+            contentField = { uri: r.animationUri, mime: 'video/mp4' }
+            if (!coverFile) { imageUri = r.posterUri; thumbhash = r.thumbhash ?? thumbhash }
+          }
+        } else {
+          // Static image → the image IS the moment; drop any video binding.
+          toast.loading('Uploading media…', { id: 'edit-meta' })
+          const tp = generateThumbhash(mediaFile)
+          imageUri = await uploadToArweave(mediaFile)
+          thumbhash = (await tp) ?? thumbhash
+          animationUri = undefined
+          contentField = undefined
+        }
+      }
+
+      // 2) CHANGE COVER — replaces only the poster/thumbnail, stored as-is (a
+      // GIF cover animates). Never touches the main media (animation_url).
+      if (coverFile) {
+        toast.loading('Uploading cover…', { id: 'edit-meta' })
+        const tp = generateThumbhash(coverFile)
+        imageUri = await uploadToArweave(coverFile)
+        thumbhash = (await tp) ?? thumbhash
+      }
+
+      // Build the new metadata JSON from the resolved bindings above —
+      // unchanged fields carry their existing values, a media change updates
+      // animation_url/content (or clears them for a new still image), and a
+      // cover change updates only image.
       const newMetadata: Record<string, unknown> = {
         name: editName.trim(),
         description: editDesc.trim(),
         ...(imageUri ? { image: imageUri } : {}),
-        ...(detail.metadata.animation_url ? { animation_url: detail.metadata.animation_url } : {}),
-        ...(detail.metadata.content ? { content: detail.metadata.content } : {}),
+        ...(animationUri ? { animation_url: animationUri } : {}),
+        ...(contentField ? { content: contentField } : {}),
         ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
       }
 
@@ -637,14 +791,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // sees broken metadata until the gateway pool catches up. Image
       // budget mirrors MintForm's 90s for large uploads.
       toast.loading('Verifying Arweave propagation…', { id: 'edit-meta' })
+      // A media change is either a fresh upload or a re-point at existing
+      // content; both want their image/animation URIs verified before we
+      // commit the on-chain pointer. A re-point's bytes are already live, so
+      // this is a cheap sanity check that also catches a typo'd txid.
+      const mediaChanged = repointUrl != null || (mediaMode === 'upload' && !!mediaFile)
+      // Verify freshly-resolved URIs (image when media/cover changed, the MP4
+      // when media changed). image is pushed before animation, so positional
+      // destructuring stays correct.
       const verifies: Promise<boolean>[] = [verifyArweaveAvailable(newUri)]
-      if (editFile && imageUri?.startsWith('ar://')) {
+      if ((mediaChanged || coverFile) && imageUri?.startsWith('ar://')) {
         verifies.push(verifyArweaveAvailable(imageUri, 90_000))
       }
-      const [metaOk, imageOk = true] = await Promise.all(verifies)
-      if (!metaOk || !imageOk) {
+      if (mediaChanged && animationUri?.startsWith('ar://')) {
+        verifies.push(verifyArweaveAvailable(animationUri, 90_000))
+      }
+      const [metaOk, imageOk = true, animOk = true] = await Promise.all(verifies)
+      if (!metaOk || !imageOk || !animOk) {
         const failed: string[] = []
         if (!imageOk) failed.push('image')
+        if (!animOk) failed.push('media')
         if (!metaOk) failed.push('metadata')
         throw new Error(
           `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
@@ -681,7 +847,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // proxy fallback hits cached bytes the moment the optimistic state
       // swap below re-mounts the <Image>. Fire-and-forget — failure is
       // a no-op, the existing fallback chain still walks the pool.
-      if (editFile && imageUri?.startsWith('ar://')) {
+      if ((mediaChanged || coverFile) && imageUri?.startsWith('ar://')) {
         void fetch(proxyUrl(imageUri), { cache: 'no-store' }).catch(() => {})
       }
 
@@ -697,6 +863,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           name: editName.trim(),
           description: editDesc.trim(),
           ...(imageUri ? { image: imageUri } : {}),
+          // Explicit (not spread-conditional) so a media change is reflected
+          // immediately — including clearing the video for a new still image.
+          animation_url: animationUri,
+          content: contentField,
           ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         },
       }
@@ -716,10 +886,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // wrote locally at deploy time so the image/title/description don't sit
   // blank for the 5-30s of indexer delay on a fresh mint.
   const meta = detail?.metadata ?? fallbackMeta ?? {}
-  const isTextMoment = meta.content?.mime === 'text/plain'
-  const isVideo = isVideoMoment(meta)
-  // Truthy when there's any media to show — controls the lightbox affordance.
-  const hasMedia = !!meta.image || !!(isVideo && meta.animation_url)
+  const media = resolveMomentMedia(meta)
+  const isTextMoment = media.kind === 'text'
+  const isVideo = media.kind === 'video'
+  // Still images and gifs open the zoom lightbox; videos use native
+  // fullscreen via their controls.
+  const isZoomable = media.kind === 'image' || media.kind === 'gif'
   const price = detail
     ? formatPrice(detail.saleConfig.pricePerToken, inferCollectCurrency(detail.saleConfig))
     : null
@@ -792,27 +964,30 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           ) : (
             <div
-              className={`relative aspect-square bg-surface ${hasMedia && !isVideo ? 'cursor-zoom-in' : ''}`}
-              onClick={() => { if (hasMedia && !isVideo) setLightboxOpen(true) }}
+              className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
+              onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isVideo && meta.animation_url ? (
+              {isVideo && media.src && !videoError ? (
                 <MomentVideo
-                  src={meta.animation_url}
-                  poster={meta.image}
+                  src={media.src}
+                  poster={media.poster}
                   thumbhash={meta.kismet_thumbhash}
                   showPosterLayer
                   controls
                   className="w-full h-full object-contain"
+                  onAllError={() => setVideoError(true)}
                 />
-              ) : meta.image && !imgError ? (
+              ) : isZoomable && media.src && !imgError ? (
                 <MomentImage
-                  src={meta.image}
+                  src={media.src}
                   alt={meta.name ?? 'moment'}
                   fill
                   className="object-contain"
                   sizes="(max-width: 768px) 100vw, 50vw"
                   priority
-                  mime={meta.content?.mime}
+                  // Force the gif mime so the optimizer is skipped and the
+                  // animated bytes stream through /api/img.
+                  mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
                   thumbhash={meta.kismet_thumbhash}
                   onAllError={() => setImgError(true)}
                 />
@@ -923,31 +1098,121 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
                   />
                 </div>
+                {/* Change media — upload a new file, or re-point at content
+                    already on Arweave (no re-upload). */}
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">image (optional)</label>
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">media (optional)</label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setMediaMode('upload')}
+                      disabled={savingMeta}
+                      className={`text-[10px] font-mono uppercase tracking-widest border border-line px-2.5 py-1 disabled:opacity-50 ${mediaMode === 'upload' ? 'text-ink border-muted bg-surface' : 'text-muted hover:text-dim'}`}
+                    >
+                      upload new
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMediaMode('url')}
+                      disabled={savingMeta}
+                      className={`text-[10px] font-mono uppercase tracking-widest border border-line px-2.5 py-1 disabled:opacity-50 ${mediaMode === 'url' ? 'text-ink border-muted bg-surface' : 'text-muted hover:text-dim'}`}
+                    >
+                      use existing url
+                    </button>
+                  </div>
+                  {mediaMode === 'upload' ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => mediaInputRef.current?.click()}
+                        disabled={savingMeta}
+                        className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
+                      >
+                        change media
+                      </button>
+                      {mediaFile && (
+                        <>
+                          <span className="text-[10px] font-mono text-dim truncate max-w-[9rem]" title={mediaFile.name}>{mediaFile.name}</span>
+                          <button
+                            type="button"
+                            onClick={clearMedia}
+                            disabled={savingMeta}
+                            className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
+                          >
+                            keep current
+                          </button>
+                        </>
+                      )}
+                      <input
+                        ref={mediaInputRef}
+                        type="file"
+                        accept="image/*,video/*,.gif"
+                        onChange={handleMediaFile}
+                        className="hidden"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      <input
+                        type="text"
+                        value={existingMediaUrl}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setExistingMediaUrl(v)
+                          const guessed = guessMediaTypeFromUrl(v)
+                          if (guessed) setExistingMediaType(guessed)
+                        }}
+                        disabled={savingMeta}
+                        placeholder="ar://… or https://arweave.net/…"
+                        className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                      />
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-mono uppercase tracking-widest text-faint">type</span>
+                        {(['video', 'gif', 'image'] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => setExistingMediaType(t)}
+                            disabled={savingMeta}
+                            className={`text-[10px] font-mono uppercase tracking-widest border border-line px-2 py-1 disabled:opacity-50 ${existingMediaType === t ? 'text-ink border-muted bg-surface' : 'text-muted hover:text-dim'}`}
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] font-mono text-faint leading-relaxed">
+                        re-points to content already on arweave — no re-upload. the cover/poster is kept unless you also change it below.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {/* Change cover — replaces only the thumbnail/poster (image or
+                    gif), never the main media. */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">cover (optional)</label>
                   <div className="flex items-center gap-2">
-                    {/* Show whatever's currently selected: new file preview > existing on-chain image > nothing.
-                        MomentImg handles both — a blob URL from the file picker passes through unchanged,
-                        an ar:// URI walks the gateway pool on error. */}
-                    {(editPreview || meta.image) && (
+                    {/* new cover preview > existing on-chain image > nothing.
+                        MomentImg passes a blob URL through unchanged and walks
+                        the gateway pool for an ar:// on error. */}
+                    {(coverPreview || meta.image) && (
                       <MomentImg
-                        src={editPreview ?? meta.image ?? ''}
-                        alt="preview"
+                        src={coverPreview ?? meta.image ?? ''}
+                        alt="cover preview"
                         className="w-12 h-12 object-cover bg-surface border border-line"
                       />
                     )}
                     <button
                       type="button"
-                      onClick={() => editFileInputRef.current?.click()}
+                      onClick={() => coverInputRef.current?.click()}
                       disabled={savingMeta}
                       className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
                     >
-                      {editFile ? 'replace' : 'change image'}
+                      {coverFile ? 'replace' : 'change cover'}
                     </button>
-                    {editFile && (
+                    {coverFile && (
                       <button
                         type="button"
-                        onClick={clearEditFile}
+                        onClick={clearCover}
                         disabled={savingMeta}
                         className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
                       >
@@ -955,10 +1220,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       </button>
                     )}
                     <input
-                      ref={editFileInputRef}
+                      ref={coverInputRef}
                       type="file"
-                      accept="image/*,video/*"
-                      onChange={handleEditFile}
+                      accept="image/*,.gif"
+                      onChange={handleCoverFile}
                       className="hidden"
                     />
                   </div>
@@ -1091,16 +1356,36 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Spacer — pushes bottom group down when content is short */}
           <div className="flex-1 min-h-6" />
 
-          {/* Distribute earnings (floats above collect) */}
-          {isCreator && hasSplits && (
+          {/* Distribute earnings — shown to anyone who can distribute.
+              Distributing pays every recipient at once (0xSplits is
+              all-or-nothing), so the figures show the full pending balance
+              plus the viewer's cut. */}
+          {canDistribute && (
             <div className="px-5 pb-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">distribute earnings</p>
+              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">
+                distribute earnings
+                {adminDistributeOverride && <span className="text-accent"> · admin override</span>}
+              </p>
+              {pendingFormatted !== undefined && (
+                <p className="text-[11px] font-mono text-dim">
+                  {hasPending ? `${pendingFormatted} to distribute` : 'nothing to distribute yet'}
+                  {pendingShareFormatted && hasPending && (
+                    <span className="text-muted"> · your share ≈ {pendingShareFormatted}</span>
+                  )}
+                </p>
+              )}
               <button
                 onClick={handleDistribute}
-                disabled={distributing || !splitAddress}
+                disabled={distributing || !splitAddress || !hasPending}
                 className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
               >
-                {distributing ? 'distributing…' : splitAddress ? 'distribute' : 'loading…'}
+                {distributing
+                  ? 'distributing…'
+                  : !splitAddress || pendingFormatted === undefined
+                    ? 'loading…'
+                    : hasPending
+                      ? 'distribute'
+                      : 'nothing to distribute'}
               </button>
               {distributeHash && (
                 <a
@@ -1180,6 +1465,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               the moment link; send sits to its right for holders only. */}
           <div className="px-5 pb-4">
             <div className="flex items-center gap-3">
+              <button
+                onClick={handleCopyScan}
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+                title="Copy BaseScan link"
+              >
+                <Square size={12} strokeWidth={1.5} />
+                {scanCopied ? 'copied' : 'scan'}
+              </button>
               <button
                 onClick={handleShare}
                 className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
@@ -1270,9 +1563,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Image-only lightbox. Videos don't open the lightbox — the
               cursor-zoom-in affordance above is gated on `!isVideo` and
               videos already expose native fullscreen via the controls. */}
-          {meta.image && (
+          {media.src && (
             <MomentImg
-              src={meta.image}
+              src={media.src}
               alt={meta.name ?? 'moment'}
               className="max-h-[95vh] max-w-[95vw] object-contain"
               onClick={(e) => e.stopPropagation()}

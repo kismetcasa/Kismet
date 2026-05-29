@@ -13,6 +13,8 @@ import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
+import { MAX_AIRDROP_RECIPIENTS } from '@/lib/config'
+import { notifyAirdropWithBackoff } from '@/lib/notifyAirdrop'
 
 interface AirdropFormProps {
   moments: Moment[]
@@ -182,6 +184,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     const addr = recipientInput.trim()
     if (!isAddress(addr)) { toast.error('Invalid address'); return }
     if (recipients.includes(addr.toLowerCase())) { toast.error('Already added'); return }
+    if (recipients.length >= MAX_AIRDROP_RECIPIENTS) {
+      toast.error(`Max ${MAX_AIRDROP_RECIPIENTS} recipients per airdrop`); return
+    }
     setRecipients((prev) => [...prev, addr.toLowerCase()])
     setRecipientInput('')
   }
@@ -207,6 +212,12 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       setRecipientInput('')
     }
     if (activeRecipients.length === 0) { toast.error('Add at least one recipient'); return }
+    // Guard the server's cap before broadcasting — otherwise the on-chain
+    // adminMint would succeed and the notify record would then 400, stranding
+    // the airdrop off-chain (invisible in profile, no recipient inbox entry).
+    if (activeRecipients.length > MAX_AIRDROP_RECIPIENTS) {
+      toast.error(`Max ${MAX_AIRDROP_RECIPIENTS} recipients per airdrop`); return
+    }
 
     // Pre-flight against the latest quota — but ONLY when this airdrop
     // targets the configured Pass collection. The server applies the
@@ -254,25 +265,20 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         `Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`,
         { id: 'airdrop' },
       )
-      // Fire-and-forget the server notify so this airdrop shows up in the
-      // sender's profile airdrops section and recipients get an inbox
-      // notification. Kismet airdrops bypass inprocess's relay, so without
-      // this round-trip neither surface would ever observe the airdrop.
-      // Errors are swallowed — the on-chain mint already succeeded; UI
-      // visibility is best-effort.
-      void fetch('/api/airdrop/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender: address,
-          collectionAddress: selected.address,
-          tokenId: selected.token_id,
-          recipients: activeRecipients,
-          txHash,
-        }),
-      })
-        .then(() => refreshQuota())
-        .catch(() => {})
+      // Record the airdrop server-side so it shows up in the sender's profile
+      // airdrops section and recipients get an inbox notification. Kismet
+      // airdrops bypass inprocess's relay, so without this round-trip neither
+      // surface would ever observe the airdrop. Retry-with-backoff: the mint
+      // already landed on-chain, and the endpoint is idempotency-locked +
+      // verify-gated, so a transient failure self-heals instead of silently
+      // stranding the airdrop off-chain.
+      void notifyAirdropWithBackoff({
+        sender: address,
+        collectionAddress: selected.address,
+        tokenId: String(selected.token_id),
+        recipients: activeRecipients,
+        txHash,
+      }).then(() => refreshQuota())
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
     } finally {

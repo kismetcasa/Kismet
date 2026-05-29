@@ -16,7 +16,21 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
  * Lower than 4 starts producing visible placeholder pop-in on first paint;
  * higher and we re-introduce the click-through pause on heavy feeds.
  */
-export const EAGER_MOUNT_COUNT = 4
+const EAGER_MOUNT_COUNT = 4
+
+// Mount this far before the viewport — just enough to hide pop-in on a
+// normal scroll while the browser fetches/decodes the image.
+const MOUNT_MARGIN = '200px'
+
+// Unmount once a card is this far OUTSIDE the viewport. Deliberately huge
+// relative to MOUNT_MARGIN: the gap is hysteresis so a card lingering near
+// one edge can't thrash mount↔unmount, and it sits far beyond the
+// SharedVideoProvider's video IntersectionObserver margins (150px short /
+// 200% long) + RELEASE_HOLD_MS. By the time a card is 3000px offscreen its
+// pooled <video> has long since paused and dropped out of the active slot
+// set, so unmounting the card (and releasing its slot) causes none of the
+// acquire/release churn that the near-viewport case would.
+const UNMOUNT_MARGIN = '3000px'
 
 interface LazyMountProps {
   /** Render-prop: only invoked once the placeholder enters the IO window.
@@ -30,10 +44,6 @@ interface LazyMountProps {
   rootMargin?: string
   /** Placeholder className, applied to the reservation div before mount. */
   placeholderClassName?: string
-  /** Placeholder content. Default mimics a feed-card shape (square image
-   *  area + small footer) so layout shift is near-zero when the real card
-   *  swaps in. */
-  placeholder?: ReactNode
 }
 
 const DEFAULT_PLACEHOLDER = (
@@ -47,58 +57,70 @@ const DEFAULT_PLACEHOLDER = (
 )
 
 /**
- * Mount the wrapped content only when the placeholder enters (or nears)
- * the viewport. Once mounted, content stays mounted — this is
- * mount-deferral, not virtualization-with-unmount (avoids the
- * SharedVideoProvider race where a video's slot unmounts mid-grace).
+ * Mount the wrapped content while it's near the viewport and UNMOUNT it
+ * once it scrolls far away (`UNMOUNT_MARGIN`), reclaiming its DOM nodes,
+ * decoded poster bitmap, and pooled video slot. Bidirectional windowing —
+ * the wrapper div persists across mount/unmount so the two
+ * IntersectionObservers keep tracking it, and the rendered height is
+ * snapshotted before unmount and reapplied as the placeholder's
+ * min-height so the scroll position never jumps.
  *
- * NEVER instantiated on desktop: the only caller (PaginatedGrid) gates
- * its use on a `lazy` prop that the discover page sets to `false` on
- * desktop UAs. Server-side UA detection means the decision is baked
- * into the SSR HTML — no client-side flip, no hydration window where
- * desktop briefly sees the lazy tree.
+ * NEVER instantiated on desktop: the only callers (PaginatedGrid /
+ * MaybeLazy) gate use on a `lazy` prop the discover page sets to `false`
+ * on desktop UAs. Server-side UA detection bakes the decision into the
+ * SSR HTML — no client-side flip, no hydration window where desktop
+ * briefly sees the lazy tree.
  */
 export function LazyMount({
   children,
-  rootMargin = '200px',
+  rootMargin = MOUNT_MARGIN,
   placeholderClassName,
-  placeholder = DEFAULT_PLACEHOLDER,
 }: LazyMountProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
+  // Rendered height while mounted, reused as the placeholder's min-height
+  // after unmount so reclaiming the card doesn't collapse its cell and
+  // jump the scroll position.
+  const heightRef = useRef(0)
 
   useEffect(() => {
-    if (mounted) return
     const node = ref.current
     if (!node) return
 
-    // Single-shot observer — disconnect on first intersection so we
-    // don't keep observing once content has mounted.
-    const observer = new IntersectionObserver(
+    const mountObs = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
-          setMounted(true)
-          observer.disconnect()
-        }
+        if (entry?.isIntersecting) setMounted(true)
       },
       { rootMargin },
     )
-
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [mounted, rootMargin])
-
-  if (mounted) {
-    return <>{children()}</>
-  }
+    const unmountObs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry && !entry.isIntersecting) {
+          const h = node.getBoundingClientRect().height
+          if (h > 0) heightRef.current = h
+          setMounted(false)
+        }
+      },
+      { rootMargin: UNMOUNT_MARGIN },
+    )
+    // The wrapper node is stable across mount/unmount, so the observers
+    // are set up once and never re-attached on toggle.
+    mountObs.observe(node)
+    unmountObs.observe(node)
+    return () => {
+      mountObs.disconnect()
+      unmountObs.disconnect()
+    }
+  }, [rootMargin])
 
   return (
     <div
       ref={ref}
-      className={placeholderClassName ?? 'bg-[#161616] border border-line overflow-hidden'}
-      aria-hidden
+      className={mounted ? undefined : (placeholderClassName ?? 'bg-[#161616] border border-line overflow-hidden')}
+      style={!mounted && heightRef.current ? { minHeight: heightRef.current } : undefined}
+      aria-hidden={mounted ? undefined : true}
     >
-      {placeholder}
+      {mounted ? children() : DEFAULT_PLACEHOLDER}
     </div>
   )
 }
@@ -118,15 +140,13 @@ export function MaybeLazy({
   index,
   lazy,
   children,
-  placeholder,
 }: {
   index: number
   lazy: boolean
   children: () => ReactNode
-  placeholder?: ReactNode
 }) {
   if (!lazy || index < EAGER_MOUNT_COUNT) {
     return <Fragment>{children()}</Fragment>
   }
-  return <LazyMount placeholder={placeholder}>{children}</LazyMount>
+  return <LazyMount>{children}</LazyMount>
 }

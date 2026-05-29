@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
+import { consumeUserQuota } from '@/lib/userQuota'
 
 export const runtime = 'nodejs'
 
@@ -35,6 +36,17 @@ export async function POST(req: NextRequest) {
 
   const key = process.env.ARWEAVE_JWK
   if (!key) return errorResponse(500, 'Not configured')
+
+  // Per-address daily cap on media-upload signings. The server only sees the
+  // 48-byte deep hash (media streams client → Turbo, see uploadFile.ts), so it
+  // can't meter bytes — this count plus the operationally-capped wallet balance
+  // (.env.example) are the controls. Turbo calls sign() once per uploadFile, so
+  // one debit == one upload. Debit after validation so a malformed body can't
+  // burn the bucket.
+  const withinQuota = await consumeUserQuota('sign-calls', address, 1)
+  if (!withinQuota) {
+    return errorResponse(429, 'Daily upload signing limit reached — try again tomorrow')
+  }
 
   try {
     const jwk = JSON.parse(Buffer.from(key, 'base64').toString())

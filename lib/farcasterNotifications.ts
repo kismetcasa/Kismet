@@ -1,6 +1,6 @@
 import { redis } from './redis'
 import { getFarcasterProfileByAddress } from './farcasterProfile'
-import { isPlatformCollectComment } from './inprocess'
+import { formatPrice, isPlatformCollectComment } from './inprocess'
 import {
   ALL_NOTIFICATION_TYPES,
   isActorMuted,
@@ -9,6 +9,7 @@ import {
   type NotificationType,
 } from './notifications'
 import { SITE_URL } from './siteUrl'
+import { isSafePublicHttpsUrl } from './safeUrl'
 
 // Farcaster native push notifications, layered on top of the in-app bell.
 //
@@ -104,6 +105,10 @@ const DEFAULT_ENABLED_PUSH_TYPES: ReadonlySet<NotificationType> = new Set(['coll
  * any number of disable/enable cycles.
  */
 export async function registerToken(fid: number, details: NotificationToken): Promise<void> {
+  // SSRF guard: never persist a notification URL the server would later POST
+  // to unless it's https + a non-internal host. Silently drop otherwise — a
+  // bad URL means no push for that registration, which is the safe failure.
+  if (!isSafePublicHttpsUrl(details.url)) return
   const member = JSON.stringify({ url: details.url, token: details.token })
   await redis
     .multi()
@@ -284,8 +289,11 @@ interface ComposedPush {
   targetUrl: string
 }
 
+// Notification `price` is stored in base units (wei / USDC-6) — the same
+// convention NotificationRow renders via formatPrice. Delegate so push copy
+// matches the in-app row instead of interpolating the raw integer.
 function formatPushPrice(price: string, currency?: 'eth' | 'usdc'): string {
-  return currency === 'usdc' ? `$${price}` : `${price} ETH`
+  return formatPrice(price, currency ?? 'eth')
 }
 
 // Composition mirrors components/NotificationRow.tsx so the push and the
@@ -394,15 +402,12 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
     case 'payout': {
       // In-app row links to the moment, not the profile — payouts are
       // moment-scoped (one split distribution per moment). Match that.
-      const currencyLabel = (n.currency ?? 'eth').toUpperCase()
+      // amountLabel already carries the currency ("0.1 ETH" / "$5").
       const subject = tokenName ? `"${tokenName}"` : 'a moment'
-      const amountLabel = n.price ? `${formatPushPrice(n.price, n.currency)} ` : ''
+      const amountLabel = n.price ? formatPushPrice(n.price, n.currency) : 'a payout'
       return {
         title: truncate('Payout received', TITLE_MAX),
-        body: truncate(
-          `You received ${amountLabel}from ${subject} (${currencyLabel})`,
-          BODY_MAX,
-        ),
+        body: truncate(`You received ${amountLabel} from ${subject}`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }
@@ -462,6 +467,9 @@ async function sendOne(
   body: string,
   targetUrl: string,
 ): Promise<HostResponse | null> {
+  // Defense in depth: never POST to an internal/non-https host, covering any
+  // URL persisted before registerToken enforced this guard.
+  if (!isSafePublicHttpsUrl(url)) return null
   // AbortController-based timeout so a hung host endpoint can't pin a
   // connection forever. Push is fire-and-forget at the writeNotification
   // call site, so the loss is just this one push.

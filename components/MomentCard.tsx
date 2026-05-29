@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Star, Copy, Check, EyeOff, ArrowUpRight } from 'lucide-react'
@@ -26,7 +26,9 @@ import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
-import { isVideoMoment } from '@/lib/media/isVideo'
+import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { setVideoDuration } from '@/lib/media/durationCache'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface MomentCardProps {
@@ -67,13 +69,21 @@ interface MomentCardProps {
    * mint" become self-diagnosable from a glance at the profile.
    */
   passBadge?: { passCollection: string; hasValidity: boolean }
+  /**
+   * Discovery-context flag (the artists tab): the card's primary action
+   * steers to the creator's profile. In the non-owned full layout the row
+   * is [view profile][collect]; compact shows a single "view profile"; an
+   * owner's full card keeps "collect+" on the right and swaps the left
+   * "list" for "view profile".
+   */
+  profileCta?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -82,6 +92,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // re-entry refires comments + text + route prefetches.
   const prefetchedRef = useRef<string>('')
   const [imgError, setImgError] = useState(false)
+  const [videoError, setVideoError] = useState(false)
   const [price, setPrice] = useState<string | null>(null)
   const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
   const [currency, setCurrency] = useState<CollectCurrency | null>(null)
@@ -255,9 +266,40 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       ? hasCollected ? 'collected' : 'minted out'
       : hasCollected ? 'collect+' : 'collect'
 
-  const isVideo = isVideoMoment(meta)
-  const isTextMoment = meta.content?.mime === 'text/plain'
+  // Artists/roster tab: steer the primary action to the creator's profile.
+  // Gated on a resolvable creator address so a malformed moment falls back
+  // to the normal collect/list buttons rather than linking to /profile/undefined.
+  const showProfileCta = !!profileCta && !!moment.creator?.address
+  const renderViewProfile = (variant: 'compact' | 'full') => (
+    <Link
+      href={`/profile/${moment.creator?.address}`}
+      onClick={(e) => e.stopPropagation()}
+      className={
+        variant === 'compact'
+          ? 'block text-center w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border text-muted border-line accent-grad-hover'
+          : `flex-1 flex items-center justify-center ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border text-muted border-line accent-grad-hover transition-all`
+      }
+    >
+      view profile
+    </Link>
+  )
+
+  const media = resolveMomentMedia(meta)
+  const isVideo = media.kind === 'video'
+  const isTextMoment = media.kind === 'text'
+  const blurPreview = useMemo(
+    () => thumbhashToBlurDataURL(meta.kismet_thumbhash),
+    [meta.kismet_thumbhash],
+  )
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
+  // Seed the duration cache for SharedVideoProvider.createVideo to read
+  // before this card's SharedVideoSlot effect fires. Idempotent (Map.set
+  // with same value) so re-renders are free. Skipped for non-video and
+  // for moments without the server-stitched kismet_duration_sec field
+  // (older mints predating the durationSec write at /api/collections POST).
+  if (isVideo && meta.animation_url && moment.kismet_duration_sec) {
+    setVideoDuration(resolveUri(meta.animation_url), moment.kismet_duration_sec)
+  }
   return (
     // content-visibility / contain-intrinsic-size were here originally
     // to skip render work for off-screen cards. Removed because on iOS
@@ -329,18 +371,22 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Check size={14} className="text-white" strokeWidth={2.5} />
           </span>
         )}
-        {isVideo && meta.animation_url ? (
+        {isVideo && media.src && !videoError ? (
           <MomentVideo
-            src={meta.animation_url}
-            poster={meta.image}
+            src={media.src}
+            poster={media.poster}
             thumbhash={meta.kismet_thumbhash}
             showPosterLayer
             className="w-full h-full object-contain"
             priority={priority}
+            // A video that can't decode (e.g. a legacy non-iOS-safe mp4 on
+            // WebKit) with no usable poster would otherwise paint a black
+            // box. Fall through to the thumbhash blur / placeholder.
+            onAllError={() => setVideoError(true)}
           />
-        ) : meta.image && !imgError ? (
+        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
           <MomentImage
-            src={meta.image}
+            src={media.src}
             alt={meta.name ?? 'moment'}
             fill
             className="object-contain transition-transform duration-500 group-hover:scale-105"
@@ -352,7 +398,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             sizes={compact
               ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
               : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
-            mime={meta.content?.mime}
+            // Force the gif mime so MomentImage skips the optimizer (which
+            // flattens animation) and streams the animated bytes via /api/img.
+            mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
             thumbhash={meta.kismet_thumbhash}
             priority={priority}
           />
@@ -373,6 +421,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               <p className="text-xs sm:text-sm font-mono text-[#bbb]">untitled</p>
             )}
           </div>
+        ) : blurPreview ? (
+          // Media missing or every gateway errored, but we have a
+          // thumbhash — paint the low-fi preview instead of a blank tile.
+          <span
+            aria-hidden
+            className="absolute inset-0 bg-cover bg-center"
+            style={{ backgroundImage: `url(${blurPreview})` }}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <span className="text-line font-mono text-xs">no preview</span>
@@ -472,7 +528,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </span>
             </div>
           )}
-          {owned > 0 ? (
+          {showProfileCta ? (
+            renderViewProfile('compact')
+          ) : owned > 0 ? (
             <ListButton
               collectionAddress={moment.address}
               tokenId={moment.token_id}
@@ -498,7 +556,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         </div>
       ) : (
         <div className="px-4 pb-4 flex gap-2 items-stretch">
-          {!hidePriceSupply && owned === 0 && !collected && (
+          {!showProfileCta && !hidePriceSupply && owned === 0 && !collected && (
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
@@ -514,7 +572,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </div>
             </div>
           )}
-          {owned > 0 && (
+          {showProfileCta ? (
+            renderViewProfile('full')
+          ) : owned > 0 ? (
             <div className="flex-1 min-w-0">
               <ListButton
                 collectionAddress={moment.address}
@@ -527,7 +587,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
               />
             </div>
-          )}
+          ) : null}
           <button
             onClick={handleCollect}
             disabled={collecting || mintedOut || !collectReady}

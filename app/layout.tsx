@@ -3,6 +3,7 @@ import { Toaster } from 'sonner'
 import { Providers } from '@/providers/WagmiProvider'
 import { FarcasterProvider } from '@/providers/FarcasterProvider'
 import { Nav } from '@/components/Nav'
+import { TelemetryProvider } from '@/components/TelemetryProvider'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { isMobileUA } from '@/lib/serverDevice'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -27,10 +28,9 @@ export const metadata: Metadata = {
   other: buildFarcasterEmbed({
     imageUrl:
       process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
-    buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Create Kismet',
+    buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Enjoy Kismet',
     action: {
       url: SITE_URL,
-      name: process.env.NEXT_PUBLIC_FARCASTER_APP_NAME ?? 'Kismet',
       splashImageUrl:
         process.env.NEXT_PUBLIC_FARCASTER_SPLASH_URL ?? `${SITE_URL}/splash.png`,
       splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#ffffff',
@@ -55,22 +55,29 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Warm TLS to arweave.net (video tags + 'direct'-mode fallback still
-            hit it from the browser). dns-prefetch covers the AR.IO + IPFS
-            pool we walk through on proxy failure. */}
-        <link rel="preconnect" href="https://arweave.net" crossOrigin="anonymous" />
-        {/* Quick Auth token acquisition runs on every Mini App reload —
-            preconnect shaves the TLS handshake off the critical path. */}
-        <link rel="preconnect" href="https://auth.farcaster.xyz" />
+        {/* Warm TLS to arweave.net. The dominant consumers are the
+            <video> elements in SharedVideoProvider and the poster
+            <img>s in MomentImage — both no-cors by default. Browser
+            connection pools partition by CORS mode, so a crossorigin
+            preconnect here would warm the wrong pool entry and the
+            no-cors video/image requests would open a fresh connection
+            anyway. dns-prefetch covers the AR.IO + IPFS pool we walk
+            through on proxy failure. */}
+        <link rel="preconnect" href="https://arweave.net" />
+        {/* Quick Auth token acquisition runs on every Mini App reload.
+            crossorigin matches the cors-mode fetch the @farcaster/quick-auth
+            SDK issues for /nonce — without it the preconnect's pool entry
+            sits unused and the SDK opens a fresh TCP+TLS connection
+            anyway. */}
+        <link rel="preconnect" href="https://auth.farcaster.xyz" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://permagate.io" />
-        <link rel="dns-prefetch" href="https://g8way.io" />
-        <link rel="dns-prefetch" href="https://ar-io.dev" />
         <link rel="dns-prefetch" href="https://ipfs.io" />
         <link rel="dns-prefetch" href="https://dweb.link" />
       </head>
       <body>
         <Providers isMobile={isMobile}>
           <FarcasterProvider>
+            <TelemetryProvider />
             <Nav />
             <main
               // Push content below the nav, which is h-14 + safe-top tall.
@@ -91,6 +98,7 @@ export default async function RootLayout({
               position="bottom-center"
               offset={{ bottom: 16 }}
               theme="dark"
+              duration={3000}
               toastOptions={{
                 style: {
                   background: '#161616',

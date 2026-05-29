@@ -9,12 +9,9 @@ import type { SplitRecipient } from '@/lib/splits'
 
 interface Props {
   recipients: SplitRecipient[]
-  // Optional click handler — overlay surfaces pass a dismiss callback so
-  // navigating to a recipient's profile closes the overlay cleanly.
-  onNavigate?: () => void
 }
 
-export function SplitsPanel({ recipients, onNavigate }: Props) {
+export function SplitsPanel({ recipients }: Props) {
   const [profiles, setProfiles] = useState<
     Record<string, { name: string; avatarUrl?: string }>
   >({})
@@ -47,7 +44,6 @@ export function SplitsPanel({ recipients, onNavigate }: Props) {
             <Link
               key={lower}
               href={`/profile/${r.address}`}
-              onClick={onNavigate}
               className="flex items-center gap-2 group"
             >
               <ProfileAvatar address={r.address} avatarUrl={profile?.avatarUrl} size={18} />

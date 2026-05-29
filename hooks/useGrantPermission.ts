@@ -127,6 +127,9 @@ export function useGrantPermission() {
   const [hash, setHash] = useState<`0x${string}` | undefined>(undefined)
   const { data: receipt } = useWaitForTransactionReceipt({
     hash,
+    // Pin to Base so the receipt is read from the same chain the grant tx
+    // was written to, regardless of the connector's currently-reported chain.
+    chainId: base.id,
     query: { enabled: !!hash },
   })
 

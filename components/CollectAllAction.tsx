@@ -13,13 +13,22 @@ interface CollectAllActionProps {
   ethEligibleTokenIds: string[]
   // Sum of pricePerToken across the ETH-eligible tokens (wei). The actual
   // on-chain value is recomputed at submit time and includes the per-token
-  // mintFee.
-  ethEligibleTotalWei: string
+  // mintFee. Unused (and may be omitted) when `compact` is true.
+  ethEligibleTotalWei?: string
   // USDC-eligible tokens (ERC20Minter). Mixed with the ETH leg into a single
   // EIP-5792 wallet_sendCalls bundle.
   usdcEligibleTokenIds: string[]
   // Sum of pricePerToken across USDC-eligible tokens (USDC base units, 6 dp).
-  usdcEligibleTotalUsdc: string
+  // Unused (and may be omitted) when `compact` is true.
+  usdcEligibleTotalUsdc?: string
+  // Compact mode: full-width button only, no cost chip. Used by the grid
+  // discover cards where horizontal space is tight and per-card widths must
+  // line up cleanly. Non-compact (default) keeps the chip + button row.
+  compact?: boolean
+  // Plain mode: borderless text-only action (no chip, no border, no count).
+  // Brand gradient paints the text on hover. Used inline beside the
+  // collection page's "artworks" heading.
+  plain?: boolean
 }
 
 // Trim a wei value's formatted ether string to ≤4 decimal places, dropping
@@ -65,9 +74,13 @@ function statusLabel(status: ReturnType<typeof useCollectAll>['status']): string
  * Returns null when nothing's eligible at all (sale ended, sold out, exotic
  * non-USDC currency).
  *
- * Chip display policy (display-only — the action still bundles both
- * currencies, the wallet's confirmation step is the source of truth on
- * what gets charged):
+ * `compact` (used by the grid discover cards) drops the chip and spans the
+ * row at full width so per-card widths line up cleanly when space is tight.
+ * The wallet confirmation step is the source of truth on what gets charged
+ * either way.
+ *
+ * Chip display policy (non-compact only — display-only; the action still
+ * bundles both currencies):
  *   - all-ETH or mixed → Ξ total (USDC items ignored by the chip in mixed)
  *   - all-USDC         → $ total
  * Keeps the chip in a single currency so it reads at a glance. A later
@@ -80,6 +93,8 @@ export function CollectAllAction({
   ethEligibleTotalWei,
   usdcEligibleTokenIds,
   usdcEligibleTotalUsdc,
+  compact = false,
+  plain = false,
 }: CollectAllActionProps) {
   const ethCount = ethEligibleTokenIds.length
   const usdcCount = usdcEligibleTokenIds.length
@@ -92,18 +107,6 @@ export function CollectAllAction({
 
   const inFlight = status !== 'idle' && status !== 'done' && status !== 'error'
   const batchSize = Math.min(totalCount, MAX_COLLECT_ALL_BATCH)
-  const ethTotalWei = BigInt(ethEligibleTotalWei)
-  const usdcTotalUsdc = BigInt(usdcEligibleTotalUsdc)
-
-  // USDC chip only when the collection is 100% USDC-priced; any ETH
-  // presence flips to the ETH chip (mixed → ETH).
-  const usdcOnly = ethCount === 0
-  let costLabel: string
-  if (usdcOnly) {
-    costLabel = usdcTotalUsdc > 0n ? `$${formatUsdcChip(usdcTotalUsdc)}` : 'free'
-  } else {
-    costLabel = ethTotalWei > 0n ? `Ξ ${formatEthChip(ethTotalWei)}` : 'free'
-  }
 
   function handleClick() {
     if (!isConnected) {
@@ -120,6 +123,44 @@ export function CollectAllAction({
   const label = inFlight
     ? statusLabel(status)
     : `collect all (${batchSize}${totalCount > MAX_COLLECT_ALL_BATCH ? ` of ${totalCount}` : ''})`
+
+  // Plain text-only variant: inline beside a heading, brand gradient on hover.
+  if (plain) {
+    return (
+      <button
+        onClick={handleClick}
+        disabled={inFlight}
+        className="text-xs font-mono uppercase tracking-widest text-muted accent-grad-text-hover transition-colors disabled:opacity-60 disabled:cursor-wait whitespace-nowrap"
+      >
+        {inFlight ? statusLabel(status) : 'collect all'}
+      </button>
+    )
+  }
+
+  if (compact) {
+    return (
+      <button
+        onClick={handleClick}
+        disabled={inFlight}
+        className="w-full py-1.5 text-xs font-mono border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors disabled:opacity-60 disabled:cursor-wait"
+      >
+        {label}
+      </button>
+    )
+  }
+
+  const ethTotalWei = BigInt(ethEligibleTotalWei ?? '0')
+  const usdcTotalUsdc = BigInt(usdcEligibleTotalUsdc ?? '0')
+
+  // USDC chip only when the collection is 100% USDC-priced; any ETH
+  // presence flips to the ETH chip (mixed → ETH).
+  const usdcOnly = ethCount === 0
+  let costLabel: string
+  if (usdcOnly) {
+    costLabel = usdcTotalUsdc > 0n ? `$${formatUsdcChip(usdcTotalUsdc)}` : 'free'
+  } else {
+    costLabel = ethTotalWei > 0n ? `Ξ ${formatEthChip(ethTotalWei)}` : 'free'
+  }
 
   return (
     <div className="flex items-stretch gap-1.5">

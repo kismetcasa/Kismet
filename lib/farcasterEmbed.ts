@@ -10,16 +10,25 @@
 //
 // Spec: https://miniapps.farcaster.xyz/docs/specification
 
+// The Mini App name rendered on the launch/splash screen. Per the embed
+// spec `action.name` is the *application* name, so it stays constant across
+// every shared surface (home, collection, moment, profile). Setting it to a
+// per-content title (a collection or moment name) makes the app appear to
+// rename itself when the embed is opened — callers therefore omit `name`
+// and inherit this value. Env override preserved for white-label deploys.
+export const MINIAPP_NAME = process.env.NEXT_PUBLIC_FARCASTER_APP_NAME ?? 'Kismet'
+
 export type FarcasterEmbedAction = {
   /** Page URL the host should open. Defaults to the current page URL when omitted. */
   url?: string
   /**
-   * App / page name. REQUIRED by the canonical actionLaunchMiniAppSchema
-   * (miniAppNameSchema = z.string().max(32)). User-influenced values
-   * (moment titles, collection names, usernames) are truncated by the
-   * builder so callers can't accidentally emit an invalid embed.
+   * Application name shown on the launch/splash screen. Optional — defaults
+   * to MINIAPP_NAME so the name is identical on every shared surface. Don't
+   * pass a per-content title here; that's what makes the app look renamed.
+   * The canonical actionLaunchMiniAppSchema caps this at 32 chars
+   * (miniAppNameSchema = z.string().max(32)); the builder truncates to match.
    */
-  name: string
+  name?: string
   /** Splash image override. Defaults to manifest.splashImageUrl. Must be 200x200 PNG. */
   splashImageUrl?: string
   /** Splash bg override. Defaults to manifest.splashBackgroundColor. */
@@ -47,7 +56,7 @@ export function buildFarcasterEmbed(
   const button = { title: input.buttonTitle.slice(0, NAME_AND_TITLE_MAX) }
   const action = {
     ...input.action,
-    name: input.action.name.slice(0, NAME_AND_TITLE_MAX),
+    name: (input.action.name ?? MINIAPP_NAME).slice(0, NAME_AND_TITLE_MAX),
   }
 
   const miniappPayload = {

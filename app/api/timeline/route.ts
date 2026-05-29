@@ -11,22 +11,46 @@ import { getMomentMetaBatch } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
+import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
+  let moments: unknown[] = []
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' }, next: { revalidate: 30 } })
     const text = await res.text()
     const data = JSON.parse(text)
-    return Array.isArray(data.moments) ? data.moments : []
+    moments = Array.isArray(data.moments) ? data.moments : []
   } catch {
-    return []
+    moments = []
   }
+
+  // Cover-mints created at deploy time via factory setupAction never reach
+  // inprocess's /moment/create endpoint, so they don't enter the /timeline
+  // index even though they're on-chain and inprocess /moment resolves them.
+  // Synthesize the missing entry locally, gated by collection-meta's
+  // coverTokenId — only set by /api/collections POST for create-form deploys
+  // with a cover mint, so case #1 (collection only) and case #3 (individual
+  // MintForm mint via inprocess) are untouched. Failure short-circuits to
+  // null so a synthesis error never poisons the inprocess passthrough.
+  const synthCover = await synthesizeMissingCoverMoment(
+    collection,
+    moments as { token_id?: string }[],
+  )
+  if (synthCover) moments.push(synthCover)
+
+  return moments
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const page = Math.max(1, parseInt(searchParams.get('page') ?? '1') || 1)
+  // page is capped: fetchLimit below is `page * limit`, sent verbatim as the
+  // upstream /timeline `limit` for EVERY tracked collection in parallel. An
+  // uncapped page (e.g. 1e8) would fan out billions-sized upstream requests —
+  // a cheap-request → expensive-amplification DoS. 100 pages is far beyond any
+  // real scroll (page 100 @ limit 20 = 2,000 items deep); beyond it the feed
+  // degrades gracefully to empty rather than amplifying.
+  const page = Math.min(100, Math.max(1, parseInt(searchParams.get('page') ?? '1') || 1))
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '20') || 20))
   const creatorRaw = searchParams.get('creator')?.toLowerCase() ?? undefined
   const collectorRaw = searchParams.get('collector')?.toLowerCase() ?? undefined
@@ -130,9 +154,54 @@ export async function GET(req: NextRequest) {
     return true
   })
 
+  // Stitch KV moment-meta override onto merged moments BEFORE any filter
+  // that consumes creator.address. mint-proxy writes the actual minter EOA
+  // at mint time, and /api/collections POST writes the artist EOA for the
+  // cover-mint at deploy time; inprocess attributes both to the wrong
+  // address (the collection's defaultAdmin for delegated mints, the factory
+  // for cover-mints created via setupAction). Without the override, those
+  // moments surface under the wrong address.
+  //
+  // Must run before filterToCreators (rosters) and the hidden-users filter:
+  // both check creator.address, and a cover-mint or delegated mint would be
+  // dropped under the wrong inprocess attribution before the stitch could
+  // rescue it. creatorSet (profile) and airdroppable already run after this
+  // block, so they consume the corrected value too. Same trust path
+  // MomentDetailView uses via the kvCreatorAddress fallback.
+  // One MGET in place of N parallel GETs — same shape out, single round trip.
+  const metas = await getMomentMetaBatch(
+    merged.map((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return { address: moment.address, tokenId: moment.token_id }
+    }),
+  )
+  merged = merged.map((m: unknown, i: number) => {
+    const meta = metas[i]
+    if (!meta) return m
+    const moment = m as {
+      creator?: { address?: string; username?: string | null }
+    }
+    const needsCreatorOverride =
+      !!meta.creator &&
+      moment.creator?.address?.toLowerCase() !== meta.creator.toLowerCase()
+    const hasDuration =
+      typeof meta.durationSec === 'number' && meta.durationSec > 0
+    if (!needsCreatorOverride && !hasDuration) return m
+    return {
+      ...moment,
+      ...(needsCreatorOverride
+        ? { creator: { address: meta.creator, username: null } }
+        : {}),
+      // Surfaced for the client durationCache so SharedVideoProvider can
+      // skip the metadata→auto preload upgrade dance for long-form.
+      ...(hasDuration ? { kismet_duration_sec: meta.durationSec } : {}),
+    }
+  })
+
   // Curated creator allowlist — narrows to moments by the listed creators.
-  // Applied early (before the broader `creator` profile filter and before
-  // sort/featured) so downstream stages all see the already-narrowed set.
+  // Runs after the KV stitch above so cover-mints and delegated mints (which
+  // inprocess attributes to the wrong address) match the roster on the
+  // corrected creator.address, not the wrong factory/defaultAdmin one.
   if (filterToCreators && creatorsSet) {
     merged = merged.filter((m: unknown) => {
       const moment = m as { creator?: { address?: string } }
@@ -152,41 +221,6 @@ export async function GET(req: NextRequest) {
       return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
     })
   }
-
-  // Stitch KV moment-meta override onto merged moments. mint-proxy
-  // writes the actual minter EOA at mint time; inprocess attributes
-  // by the collection's defaultAdmin which is wrong for delegated
-  // mints (anyone authorized via the "Authorize creators" panel).
-  // Without this override, delegated mints surface on the deployer's
-  // profile + cards instead of the actual minter's. Same trust path
-  // MomentDetailView already uses via the kvCreatorAddress fallback.
-  // One MGET in place of N parallel GETs — same shape out, single round trip.
-  const metas = await getMomentMetaBatch(
-    merged.map((m: unknown) => {
-      const moment = m as { address?: string; token_id?: string }
-      return { address: moment.address, tokenId: moment.token_id }
-    }),
-  )
-  merged = merged.map((m: unknown, i: number) => {
-    const meta = metas[i]
-    if (!meta?.creator) return m
-    const moment = m as {
-      creator?: { address?: string; username?: string | null }
-    }
-    if (
-      moment.creator?.address?.toLowerCase() === meta.creator.toLowerCase()
-    ) {
-      // Inprocess already had the right creator — preserve any
-      // username it surfaced so we don't strip it.
-      return m
-    }
-    // Override the address; clear the username so the client falls
-    // back to fetchCreatorProfile and resolves the right one.
-    return {
-      ...moment,
-      creator: { address: meta.creator, username: null },
-    }
-  })
 
   // Creator filter (Featured / Profile feeds). Matches if the moment's
   // creator address is *any* address in the expanded FID sibling set.

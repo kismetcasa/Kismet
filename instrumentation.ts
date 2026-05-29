@@ -37,6 +37,19 @@ export async function register() {
     console.error('[instrumentation] cache warmup failed (non-fatal):', err)
   }
 
+  // One-time backfill for cover-mint moments deployed before the
+  // /api/collections POST path started writing setMomentMeta. Gated by
+  // a Redis marker so steady-state cost is a single GET. Safe to leave
+  // here even after every existing record is filled — once the marker is
+  // set the function short-circuits before doing any other work. See the
+  // module docstring for the full rationale.
+  try {
+    const { backfillCoverMomentMeta } = await import('@/lib/coverMomentMetaBackfill')
+    await backfillCoverMomentMeta()
+  } catch (err) {
+    console.error('[instrumentation] cover-momentmeta backfill failed (non-fatal):', err)
+  }
+
   // Periodic Redis cleanup (expired listings, old notifications, trending
   // zset trim) — only viable now on a long-running Node process.
   try {

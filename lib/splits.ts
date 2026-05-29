@@ -12,8 +12,10 @@ interface StoredSplitsResult {
 }
 
 // SplitMain enforces a smaller cap in practice (gas-bound). 50 is a
-// generous safety net that no legitimate UI hits.
-const MAX_SPLITS = 50
+// generous safety net that no legitimate UI hits. Exported so the mint
+// UI caps recipient count against the exact same number it'll be validated
+// against server-side.
+export const MAX_SPLITS = 50
 
 const splitsKey = (collection: string, tokenId: string) =>
   `kismetart:splits:${collection.toLowerCase()}:${tokenId}`
@@ -41,17 +43,6 @@ export async function getStoredSplits(
 ): Promise<StoredSplitsResult> {
   const raw = await redis.get<unknown>(splitsKey(collection, tokenId))
   return decodeStoredSplits(raw)
-}
-
-// Cheap truthy gate for the distribute flow — both the legacy `'1'`
-// flag and the JSON recipient payload qualify a token for distribute.
-// Avoids re-parsing recipients we don't need at the gate.
-export async function hasRegisteredSplits(
-  collection: string,
-  tokenId: string,
-): Promise<boolean> {
-  const exists = await redis.exists(splitsKey(collection, tokenId)).catch(() => 0)
-  return exists === 1
 }
 
 function decodeStoredSplits(raw: unknown): StoredSplitsResult {

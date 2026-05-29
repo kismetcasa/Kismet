@@ -6,14 +6,27 @@ const KEY = 'kismetart:blacklist'
 /**
  * ACTION blacklist — addresses listed here are blocked from creator
  * actions: mint, write (writing moments), list (secondary sales), and
- * airdrop. Collecting is intentionally NOT blocked — banned users can
- * still buy other people's content.
+ * airdrop.
+ *
+ * POLICY: this is intentionally narrow. The following are NOT blocked:
+ *   - Collecting (a banned user can still buy others' content)
+ *   - Following / being followed
+ *   - Sending or receiving notifications
+ * The rationale is asymmetric harm: creator actions produce content
+ * and offers that the platform displays / surfaces, so they need a
+ * moderation lever. Consumption and social actions only affect the
+ * banned user's own experience or are mutually-consensual, so they
+ * don't justify a hard block. If product later wants "full isolation,"
+ * the additional enforcement points would be:
+ *   - app/api/collect/route.ts POST          (recordCollected gate)
+ *   - app/api/follow/[address]/route.ts POST (follow gate)
+ *   - lib/notifications.ts → writeNotification (recipient + actor gate)
  *
  * Two sibling lists live in their own files for separation of concerns:
  *   - lib/pass-blacklist.ts → denies Pass validity (even when held)
  *   - lib/hidden-users.ts   → hides authored content from public feeds
  *
- * Wiring (enforcement points):
+ * Wiring (current enforcement points):
  *   - lib/mint-proxy.ts                  → /api/mint, /api/write
  *   - app/api/listings/route.ts POST     → secondary listing creation
  *   - app/api/airdrop/notify/route.ts    → airdrop platform-recording

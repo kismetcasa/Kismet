@@ -8,7 +8,9 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
-import { gatewayUrls } from '@/lib/arweave/gateways'
+import { videoGatewayUrls } from '@/lib/media/gateway'
+import { getVideoDuration } from '@/lib/media/durationCache'
+import { trackPerf } from '@/lib/telemetry'
 
 /**
  * Persistent shared <video> element pool. Lives in the root layout so its
@@ -201,6 +203,19 @@ const LONG_FORM_DURATION_THRESHOLD_S = 60
 const IO_ROOT_MARGIN_SHORT = '150px'
 const IO_ROOT_MARGIN_LONG = '200%'
 
+// Mobile-only fast-scroll handling. A position:fixed video tracked via
+// transform can't keep up with iOS momentum scroll — the compositor
+// repaints the fixed element a frame or two behind, so it visibly smears
+// over the wrong card mid-fling, then snaps back when scroll settles.
+// When a slot moves more than this many px between scroll frames we treat
+// it as a fling and hide the video (the poster/thumbhash layer underneath
+// shows the correct still), then reveal it once scrolling settles. Slow
+// scrolls stay under the threshold and keep tracking exactly as before.
+const FAST_SCROLL_DELTA_PX = 24
+// Trailing delay after the last scroll event before we re-position and
+// reveal videos hidden during a fling.
+const SCROLL_SETTLE_MS = 140
+
 // Module-level memory of playback position by canonical src. Outlives
 // pool eviction so that an evict→re-acquire round-trip (long feed,
 // scroll-back after the 30min window or past the cap) resumes where
@@ -270,6 +285,7 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     slot: Slot,
     rect: DOMRect,
     clip: DOMRect | null,
+    forceHidden = false,
   ) {
     const el = video.el
     // translate3d is GPU-composited; top/left would force layout per
@@ -327,11 +343,31 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     } else {
       el.style.clipPath = ''
     }
-    if (video.loaded) el.style.visibility = 'visible'
+    // Hidden during a fling (transform is still updated above, so the
+    // element is correctly placed the moment we reveal it on settle).
+    if (forceHidden) {
+      el.style.visibility = 'hidden'
+    } else if (video.loaded) {
+      el.style.visibility = 'visible'
+    }
   }
 
   function positionElement(video: ManagedVideo, slot: Slot) {
     const { rect, clip } = readSlotGeometry(slot)
+    // Guard the non-hot-path callers — activateSlot, the IO re-show branch,
+    // the visibilitychange resume, and the per-slot refresh — against a
+    // slot whose React component has detached (LazyMount recycling,
+    // route/tab swaps) or isn't laid out yet. A detached node's
+    // getBoundingClientRect is (0,0,0,0); applying that with the
+    // activate-time morph transition still set animates the video shrinking
+    // into the top-left corner before it hides. Hide and bail instead — the
+    // slot's ResizeObserver re-runs positionElement once it has real
+    // geometry, so a transiently-zero slot self-heals. (flushAll carries the
+    // same isConnected guard inline on its per-scroll-frame hot path.)
+    if (!slot.ref.isConnected || (rect.width === 0 && rect.height === 0)) {
+      video.el.style.visibility = 'hidden'
+      return
+    }
     applySlotGeometry(video, slot, rect, clip)
   }
 
@@ -393,7 +429,20 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
             video.isIntersecting = true
             // Slot moved during debounce; re-position before un-hide.
             positionElement(video, slot)
-            video.el.play().catch(() => {})
+            // Time-to-first-frame instrumentation: measure from the
+            // play() decision to the first timeupdate event. Captures
+            // the user-perceived "stall" between scroll-into-view and
+            // visible motion. One-shot listener so re-plays don't
+            // double-count.
+            const ttffStart = performance.now()
+            const onFirstFrame = () => {
+              trackPerf('video_ttff', performance.now() - ttffStart)
+              video.el.removeEventListener('timeupdate', onFirstFrame)
+            }
+            video.el.addEventListener('timeupdate', onFirstFrame, { once: true })
+            video.el.play().catch(() => {
+              video.el.removeEventListener('timeupdate', onFirstFrame)
+            })
           } else {
             if (video.slots[0] !== slot) return
             video.isIntersecting = false
@@ -559,17 +608,38 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       slotsToNotify.forEach((s) => s.onEvicted?.())
       destroyVideo(oldest.video)
       poolRef.current.delete(oldest.src)
+      // Eviction-under-pressure signal — high values mean the platform's
+      // decoder budget cap (6 mobile / 18 desktop) is being hit during
+      // active scroll, which manifests as visible re-loads when the
+      // user scrolls back. Watching this distribution by platform tells
+      // us when the caps need tuning.
+      trackPerf('pool_eviction', 1)
     }
   }
 
   function createVideo(src: string): ManagedVideo {
-    const gateways = gatewayUrls(src)
+    // In Mini App webviews / iframe embeds the direct-gateway src stalls on
+    // the shared connection pool (loadeddata never fires → element stays
+    // hidden). videoGatewayUrls prepends the /api/img proxy in those
+    // contexts and leaves top-level browsing on the direct gateways.
+    const gateways = videoGatewayUrls(src)
+    // Seeded by MomentCard from the server-stitched kismet_duration_sec.
+    // When present + over the long-form threshold, skip the metadata→auto
+    // preload upgrade dance: start with preload="auto" so the browser
+    // buffers aggressively from the first byte, and set isLongForm=true
+    // so setupIntersectionObserver picks the wide rootMargin upfront.
+    // Absent (most pre-existing moments) → current default behaviour;
+    // loadedmetadata still drives the promotion.
+    const durationHint = getVideoDuration(src)
+    const isLongFormHint =
+      typeof durationHint === 'number' &&
+      durationHint > LONG_FORM_DURATION_THRESHOLD_S
     const el = document.createElement('video')
     el.autoplay = true
     el.muted = true
-    el.loop = true
+    el.loop = !isLongFormHint
     el.playsInline = true
-    el.preload = 'metadata'
+    el.preload = isLongFormHint ? 'auto' : 'metadata'
     el.style.position = 'fixed'
     // Anchor the element at the viewport origin and let positionElement
     // drive placement via transform — keeps scroll-tracking on the GPU.
@@ -598,7 +668,7 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
       gatewayIndex: 0,
       loaded: false,
       lastActiveAt: Date.now(),
-      isLongForm: false,
+      isLongForm: isLongFormHint,
       destroyed: false,
       abort,
       lastTop: NaN,
@@ -748,12 +818,23 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     // a synchronous reflow per video per frame on WebKit. Per-slot
     // ancestor-scroll listeners stay in SharedVideoSlot since ancestor
     // sets vary per slot.
+    // `allowFling` gates the mobile fling-hide. Only SCROLL may hide a
+    // video mid-motion — it's the only trigger that arms the settle timer
+    // that reveals it again. A resize- or layout-shift-driven flush is a
+    // discrete jump (not momentum lag): it must reposition + reveal, never
+    // hide, or the video would stay stuck-hidden until the next scroll.
+    // Coalesced per frame — if any caller this frame was a scroll, the
+    // fling-hide stays eligible.
     let rafPending = false
-    const flushAll = () => {
+    let pendingAllowFling = false
+    const flushAll = (allowFling = false) => {
+      if (allowFling) pendingAllowFling = true
       if (rafPending) return
       rafPending = true
       requestAnimationFrame(() => {
         rafPending = false
+        const allowFlingThisFrame = pendingAllowFling
+        pendingAllowFling = false
         const updates: Array<{
           video: ManagedVideo
           slot: Slot
@@ -779,12 +860,52 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
           updates.push({ video, slot, rect, clip })
         })
         for (const { video, slot, rect, clip } of updates) {
-          applySlotGeometry(video, slot, rect, clip)
+          // On mobile, hide a feed video that's moving too fast this frame
+          // to track without smearing; the trailing settle timer reveals
+          // it once scrolling stops. Controls surfaces (detail/lightbox)
+          // and desktop always track live.
+          const fling =
+            allowFlingThisFrame &&
+            isMobile &&
+            !slot.controls &&
+            Number.isFinite(video.lastTop) &&
+            Math.abs(rect.top - video.lastTop) > FAST_SCROLL_DELTA_PX
+          applySlotGeometry(video, slot, rect, clip, fling)
         }
       })
     }
-    window.addEventListener('scroll', flushAll, { passive: true })
-    window.addEventListener('resize', flushAll)
+    // On mobile, schedule a reposition+reveal once scrolling settles so a
+    // video hidden mid-fling doesn't stay hidden after the user stops.
+    let settleTimer: ReturnType<typeof setTimeout> | null = null
+    const onScroll = () => {
+      flushAll(true)
+      if (!isMobile) return
+      if (settleTimer !== null) clearTimeout(settleTimer)
+      settleTimer = setTimeout(() => {
+        settleTimer = null
+        flushAll()
+      }, SCROLL_SETTLE_MS)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    // Resize is a discrete jump, not momentum — reposition without the
+    // fling-hide (which only the scroll path can reveal). Wrapped so the
+    // Event arg isn't read as `allowFling`.
+    const onResize = () => flushAll(false)
+    window.addEventListener('resize', onResize)
+
+    // CORE FIX for the "video overlay parks over the wrong card" bug. In a
+    // window-scrolled feed the slot's viewport position shifts whenever
+    // content ABOVE it reflows — a GIF/image finishing load, a LazyMount
+    // card mounting/unmounting, an expanding description. None of those
+    // fire scroll/resize or change the slot's OWN size, so the other
+    // triggers miss them and the fixed-position video stays parked at
+    // stale coordinates. document.body's height changes on every such
+    // reflow; observe it and reposition. Routed through the rAF-throttled
+    // flushAll so a burst of reflows coalesces to one reposition per
+    // frame. Fixed-position videos don't contribute to body height, so
+    // repositioning them can't re-trigger this observer (no RO loop).
+    const bodyResizeObserver = new ResizeObserver(() => flushAll(false))
+    bodyResizeObserver.observe(document.body)
 
     // Eviction sweep. Walks the pool, drops entries whose slot count
     // hit zero longer than the tier-appropriate window ago. Guarded
@@ -842,9 +963,11 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
-      window.removeEventListener('scroll', flushAll)
-      window.removeEventListener('resize', flushAll)
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onResize)
+      bodyResizeObserver.disconnect()
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      if (settleTimer !== null) clearTimeout(settleTimer)
       clearInterval(interval)
       // Defensive: destroy all videos on provider unmount so they
       // don't outlive the React tree as orphan DOM nodes.

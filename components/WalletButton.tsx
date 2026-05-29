@@ -36,6 +36,18 @@ export function WalletButton() {
   // info available) and the first client render.
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
+
+  // Defensive reveal: no matter what wagmi reports, show the button after a
+  // short grace period so a misbehaving connector can never leave it
+  // permanently invisible. The primary safeguard is the time-bounded
+  // Farcaster connector (see lib/wagmi.ts), which makes wagmi reach a
+  // terminal status on its own; this is belt-and-suspenders for any future
+  // connector that stalls reconnect.
+  const [revealFallbackElapsed, setRevealFallbackElapsed] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setRevealFallbackElapsed(true), 2000)
+    return () => clearTimeout(t)
+  }, [])
   const { address, isConnected, status } = useAccount()
   const { openAccountModal } = useAccountModal()
   const { openConnectModal } = useConnectModal()
@@ -84,16 +96,23 @@ export function WalletButton() {
   }, [effectiveAddress])
 
   // Hide until state is truly settled:
-  // - Mini App: settle as soon as the FC identity has an address — no
-  //   wagmi state to wait on (and wagmi may still be probing the host
-  //   wallet provider when the FC identity is already known)
+  // - Mini App: settle as soon as the FC bootstrap completes. isInMiniApp
+  //   only flips true after FarcasterProvider has finished resolving
+  //   identity (it sets isInMiniApp + identity in one setState), so at
+  //   this point the FC address is whatever it's going to be — present
+  //   (show the name) or null (show the connect fallback). We must NOT
+  //   gate on fcIdentity.address: in hosts like the Base App the primary
+  //   address often doesn't resolve and wagmi stays stuck in
+  //   connecting/reconnecting (never disconnected or connected), so an
+  //   address-gated reveal would leave the button invisible forever.
   // - Web disconnected: safe to show the connect button immediately
   // - Web connected: wait for the profile fetch so we jump straight to
   //   the final name, never 0x → name
   const settled = mounted && (
-    (isInMiniApp && !!fcIdentity?.address) ||
+    isInMiniApp ||
     status === 'disconnected' ||
-    (status === 'connected' && nameResolved)
+    (status === 'connected' && nameResolved) ||
+    revealFallbackElapsed
   )
 
   return (

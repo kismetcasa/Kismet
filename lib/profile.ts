@@ -1,7 +1,7 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
-import { randomUUID } from 'crypto'
+import { randomBytes } from 'crypto'
 
 export interface Profile {
   address: string
@@ -10,8 +10,30 @@ export interface Profile {
   updatedAt: number
 }
 
+/**
+ * FID-keyed profile, used for "miniapp-first" Farcaster users — those
+ * who created their Kismet profile inside the Mini App and never had
+ * an address-keyed record. The user's identity follows their FID, and
+ * `currentAddress` (always an FC-verified address) is the address
+ * currently representing them: drives the profile URL, the Nav avatar,
+ * share cards, etc. WalletsPanel switches it freely without losing
+ * data because the username/avatar live alongside the FID, not the
+ * address. "Web-first" users (existing address-keyed Profile from
+ * before they connected FC) stay on the address-keyed path — they
+ * see no chooser and their identity stays anchored.
+ */
+export interface FidProfile {
+  fid: number
+  currentAddress: string
+  username?: string
+  avatarUrl?: string
+  updatedAt: number
+}
+
 const keyByAddress = (address: string) =>
   `kismetart:profile:${address.toLowerCase()}`
+const keyByFid = (fid: number) =>
+  `kismetart:profile:fid:${fid}`
 const keyNonce = (address: string) =>
   `kismetart:nonce:${address.toLowerCase()}`
 export const KEY_PROFILES = 'kismetart:profiles'
@@ -56,6 +78,59 @@ export async function upsertProfile(
   await Promise.all([
     redis.set(keyByAddress(address), JSON.stringify(updated)),
     redis.sadd(KEY_PROFILES, address.toLowerCase()),
+  ])
+  return updated
+}
+
+export async function getFidProfile(fid: number): Promise<FidProfile | null> {
+  const raw = await redis.get<string | FidProfile>(keyByFid(fid))
+  if (!raw) return null
+  const parsed: FidProfile = typeof raw === 'string' ? JSON.parse(raw) : raw
+  return parsed
+}
+
+export async function upsertFidProfile(
+  fid: number,
+  currentAddress: string,
+  data: Partial<Pick<FidProfile, 'username' | 'avatarUrl'>>,
+): Promise<FidProfile> {
+  const existing = await getFidProfile(fid)
+  const updated: FidProfile = {
+    fid,
+    currentAddress: currentAddress.toLowerCase(),
+    username: data.username ?? existing?.username,
+    avatarUrl: data.avatarUrl ?? existing?.avatarUrl,
+    updatedAt: Date.now(),
+  }
+  await Promise.all([
+    redis.set(keyByFid(fid), JSON.stringify(updated)),
+    // Index the current address in the master profiles SET so address-
+    // prefix search still surfaces FID-based users.
+    redis.sadd(KEY_PROFILES, updated.currentAddress),
+  ])
+  return updated
+}
+
+/**
+ * Move the FidProfile's `currentAddress` pointer without touching
+ * username/avatar. Called by /api/me/identity when the user switches
+ * which of their FC-verified wallets represents them. No-op if the
+ * FID has no profile yet — caller should `upsertFidProfile` first.
+ */
+export async function setFidCurrentAddress(
+  fid: number,
+  currentAddress: string,
+): Promise<FidProfile | null> {
+  const existing = await getFidProfile(fid)
+  if (!existing) return null
+  const updated: FidProfile = {
+    ...existing,
+    currentAddress: currentAddress.toLowerCase(),
+    updatedAt: Date.now(),
+  }
+  await Promise.all([
+    redis.set(keyByFid(fid), JSON.stringify(updated)),
+    redis.sadd(KEY_PROFILES, updated.currentAddress),
   ])
   return updated
 }
@@ -117,16 +192,25 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
   return results
 }
 
-// Nonce for wallet signature verification — expires in 5 minutes
+// Nonce for wallet signature verification — expires in 5 minutes.
+// 16 random bytes = 128 bits, hex-encoded so the value is alphanumeric
+// (no dashes). Matches the EIP-4361 SIWE nonce rule (^[a-zA-Z0-9]{8,}$),
+// so this single helper covers both SIWE-formatted user login and the
+// freeform-message paths (profile update, follow, listing PATCH, …).
 export async function createNonce(address: string): Promise<string> {
-  const nonce = randomUUID()
+  const nonce = randomBytes(16).toString('hex')
   await redis.setex(keyNonce(address), 300, nonce)
   return nonce
 }
 
+// Atomic via GETDEL — single Redis round-trip returns the stored value and
+// deletes the key. Without atomicity, two concurrent calls with the same
+// nonce can both observe-and-delete (GET, compare, DEL) and both succeed,
+// letting a captured signature be replayed in parallel. A mismatched-nonce
+// attempt also clears whatever was stored, which is the right trade-off:
+// nonces are server-issued and the legitimate caller transparently refetches.
 export async function consumeNonce(address: string, nonce: string): Promise<boolean> {
-  const stored = await redis.get<string>(keyNonce(address))
-  if (!stored || stored !== nonce) return false
-  await redis.del(keyNonce(address))
-  return true
+  if (!nonce || typeof nonce !== 'string') return false
+  const stored = await redis.getdel<string>(keyNonce(address))
+  return stored === nonce
 }

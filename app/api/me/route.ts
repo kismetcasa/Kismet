@@ -36,12 +36,18 @@ export async function GET(req: NextRequest) {
       { status: 401, headers: { 'Cache-Control': 'private, no-store' } },
     )
   }
-  const farcaster = await getFarcasterProfileByAddress(address)
+  // ?refresh=1 forces a bypass of every FC-API cache touched here so
+  // a user who just verified a new wallet (or just changed their FC
+  // primary) sees it immediately, instead of waiting up to 1h for
+  // the verifications/profile/primary TTLs to expire. Used by the
+  // "refresh wallets" button in WalletsPanel.
+  const skipCache = req.nextUrl.searchParams.get('refresh') === '1'
+  const farcaster = await getFarcasterProfileByAddress(address, { skipCache })
   let wallets: MyWallet[] = []
   if (farcaster?.fid) {
     const [verifications, primary] = await Promise.all([
-      getVerifiedAddressesByFid(farcaster.fid),
-      getPrimaryAddress(farcaster.fid),
+      getVerifiedAddressesByFid(farcaster.fid, { skipCache }),
+      getPrimaryAddress(farcaster.fid, { skipCache }),
     ])
     const lowerIdentity = address.toLowerCase()
     const lowerPrimary = primary?.toLowerCase()

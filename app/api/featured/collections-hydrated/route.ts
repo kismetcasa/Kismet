@@ -10,6 +10,7 @@ import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getCollectionMeta, getCollectionMetaBatch } from '@/lib/kv'
+import { getMomentMetaBatch } from '@/lib/notifications'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
@@ -117,22 +118,29 @@ export async function GET() {
         // metadata fallback below when inprocess hasn't indexed yet, and
         // (b) coverTokenId resolution further down. Memoized + cached
         // upstream so this is cheap.
+        // Short read timeout per inprocess fetch. These are idempotent reads,
+        // so failing fast is correct — and each resolves to null on
+        // timeout/error INDEPENDENTLY of the KV lookup, so a stalled gateway
+        // degrades the row to its KV-stored name/cover instead of dropping it
+        // (which is what a shared Promise.all rejection would do).
         const [collRes, tlRes, kvMeta] = await Promise.all([
           fetch(`${INPROCESS_API}/collection/${address}`, {
             headers: { Accept: 'application/json' },
             next: { revalidate: 60 },
-          }),
+            signal: AbortSignal.timeout(8_000),
+          }).catch(() => null),
           fetch(
             `${INPROCESS_API}/timeline?collection=${address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=8453`,
             {
               headers: { Accept: 'application/json' },
               next: { revalidate: 60 },
+              signal: AbortSignal.timeout(8_000),
             },
-          ),
+          ).catch(() => null),
           getCollectionMeta(ref.address),
         ])
 
-        const collection = collRes.ok ? await collRes.json() : {}
+        const collection = collRes?.ok ? await collRes.json() : {}
         // Inprocess hasn't indexed every freshly-deployed collection — when
         // it returns nothing useful, stitch our KV-stored record (written at
         // create time by the mint-proxy) so the row renders the real name +
@@ -169,7 +177,7 @@ export async function GET() {
         // (CreateCollectionForm.tsx:562), which produces byte-identical
         // metadata JSONs on the two sides of the comparison.
         const coverTokenId: string | undefined = kvMeta?.coverTokenId
-        const tlData = tlRes.ok ? await tlRes.json() : { moments: [] }
+        const tlData = tlRes?.ok ? await tlRes.json() : { moments: [] }
         const allPreviewMoments: Moment[] = Array.isArray(tlData.moments) ? tlData.moments : []
         // Strip individually-hidden moments inside the featured collection
         // so they don't appear in the row's preview grid.
@@ -208,13 +216,42 @@ export async function GET() {
           if (coverThumbhash && mt && mt === coverThumbhash) return false
           return true
         })
-        // Overlap the Redis MGETs in enrichMomentsWithKismetMeta with
-        // the two RPC eligibility calls — they share no state.
-        const [ethEligible, usdcEligible, displayMoments] = await Promise.all([
+        // Overlap the moment-meta MGET with the two RPC eligibility calls —
+        // they share no state. enrichMomentsWithKismetMeta runs after so it
+        // resolves the creator chip against the corrected address below.
+        const visibleSlice = visibleMoments.slice(0, ROW_DISPLAY_LIMIT)
+        const [ethEligible, usdcEligible, momentMetas] = await Promise.all([
           tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'eth') : [],
           tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'usdc') : [],
-          enrichMomentsWithKismetMeta(visibleMoments.slice(0, ROW_DISPLAY_LIMIT)),
+          getMomentMetaBatch(
+            visibleSlice.map((m) => ({ address: m.address, tokenId: m.token_id })),
+          ),
         ])
+        // Same KV creator-override /api/timeline applies (see that route's
+        // comment): inprocess attributes delegated mints to the collection's
+        // defaultAdmin and cover mints to the factory, so a moment minted by
+        // an individual artist inside a Kismet collection would otherwise
+        // surface — and resolve its creator chip — under the collection
+        // owner's address (e.g. every "Kismet Casa Rome 2026" mint showing
+        // "Kismet Casa" as the creator). mint-proxy writes the real minter
+        // EOA to moment-meta KV at mint time; stitch it on before enrichment
+        // so the username/avatar resolve for the right person. Reset the
+        // inprocess-supplied username/avatarUrl so enrichment re-resolves
+        // them from the corrected address rather than keeping the wrong ones.
+        const correctedSlice = visibleSlice.map((m, i) => {
+          const mMeta = momentMetas[i]
+          if (
+            mMeta?.creator &&
+            m.creator?.address?.toLowerCase() !== mMeta.creator.toLowerCase()
+          ) {
+            return {
+              ...m,
+              creator: { ...m.creator, address: mMeta.creator, username: undefined, avatarUrl: undefined },
+            }
+          }
+          return m
+        })
+        const displayMoments = await enrichMomentsWithKismetMeta(correctedSlice)
         const ethEligibleTotalWei = ethEligible
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()

@@ -11,6 +11,7 @@ export interface CreatorListShape {
   slug: string
   name: string
   addresses: string[]
+  collection?: string
   createdAt: number
   updatedAt: number
 }
@@ -35,7 +36,13 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
   const { withSession } = useAdmin()
   const [name, setName] = useState(list?.name ?? '')
   const [text, setText] = useState(list ? list.addresses.join('\n') : '')
+  const [collection, setCollection] = useState(list?.collection ?? '')
   const [busy, setBusy] = useState(false)
+
+  // A blank field is valid (clears the source collection → fallback feed).
+  // A non-blank field must be a well-formed address before save is allowed.
+  const collectionTrimmed = collection.trim()
+  const collectionValid = collectionTrimmed === '' || isAddress(collectionTrimmed.toLowerCase())
 
   // Live preview of parsed addresses so the curator sees the count their
   // save will produce. Garbage lines silently drop both here and on the
@@ -51,6 +58,10 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
       toast.error('Name required', { id: 'creator-list-save' })
       return
     }
+    if (!collectionValid) {
+      toast.error('Collection must be a valid 0x… address (or blank)', { id: 'creator-list-save' })
+      return
+    }
     setBusy(true)
     try {
       const result = await withSession(async () => {
@@ -61,6 +72,7 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
             slug: list?.slug,
             name: name.trim(),
             addresses: parsed,
+            collection: collectionTrimmed,
           }),
         })
         const data = (await res.json().catch(() => ({}))) as { list?: CreatorListShape; error?: string }
@@ -148,10 +160,31 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
         />
       </div>
 
+      <div className="flex flex-col gap-1.5">
+        <label className="text-[10px] font-mono uppercase tracking-widest text-muted">
+          source collection (optional)
+        </label>
+        <input
+          type="text"
+          value={collection}
+          onChange={(e) => setCollection(e.target.value)}
+          disabled={busy}
+          placeholder="0x… — shows each artist's mint here"
+          className={`bg-surface border px-2.5 py-2 text-[11px] font-mono text-ink placeholder-faint focus:outline-none disabled:opacity-50 ${
+            collectionValid ? 'border-line focus:border-muted' : 'border-red-900/60'
+          }`}
+        />
+        <p className="text-[10px] font-mono text-[#444]">
+          {collectionValid
+            ? 'blank → show each artist’s most-collected mint'
+            : 'not a valid address'}
+        </p>
+      </div>
+
       <div className="flex gap-2">
         <button
           onClick={handleSave}
-          disabled={busy || !name.trim()}
+          disabled={busy || !name.trim() || !collectionValid}
           className="flex-1 flex items-center justify-center gap-1.5 text-xs font-mono tracking-wider uppercase py-2 btn-accent disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Save size={11} />

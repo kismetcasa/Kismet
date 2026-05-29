@@ -132,7 +132,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     buttonTitle: 'View Collection',
     action: {
       url: canonicalUrl,
-      name: `${name} — Kismet Art`,
     },
   })
   return {

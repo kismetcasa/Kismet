@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
     slug?: string
     name?: string
     addresses?: unknown[]
+    collection?: string
   } | null
   if (!body) return errorResponse(400, 'Invalid request body')
 
@@ -60,7 +61,8 @@ export async function POST(req: NextRequest) {
   }
 
   const addresses = body.addresses.filter((a): a is string => typeof a === 'string')
-  const saved = await saveCreatorList({ slug, name: body.name, addresses })
+  const collection = typeof body.collection === 'string' ? body.collection : undefined
+  const saved = await saveCreatorList({ slug, name: body.name, addresses, collection })
   return NextResponse.json({ list: saved })
 }
 

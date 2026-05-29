@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { usePathname } from 'next/navigation'
 import { Bell } from 'lucide-react'
@@ -16,19 +16,31 @@ export function NotificationBell({ address }: NotificationBellProps) {
   const pathname = usePathname()
   const [count, setCount] = useState(0)
   const [modalOpen, setModalOpen] = useState(false)
+  // Backoff flag: a wallet may be connected (address truthy) without a
+  // valid Kismet session cookie — every poll then 401s indefinitely,
+  // spamming the console + wasting requests. Set on first 401, cleared
+  // when the user comes back to the tab or any signal fires that
+  // implies the session might have been restored (sign-in flow firing
+  // notif-refetch, or wallet address changing). Ref instead of state
+  // so toggling doesn't trigger a re-render.
+  const skipFetchRef = useRef(false)
 
-  // Close modal when navigating to a new page
   useEffect(() => {
     setModalOpen(false)
   }, [pathname])
 
   const fetchCount = useCallback(async () => {
-    if (!address) return
+    if (!address || skipFetchRef.current) return
     try {
       const res = await fetch('/api/notifications/unread', { credentials: 'same-origin' })
-      // On 401 the session has expired — clear the stale badge so it doesn't
-      // show a phantom count while the feed shows "sign in to see notifications".
-      if (res.status === 401) { setCount(0); return }
+      if (res.status === 401) {
+        // Session expired or never established. Clear the badge and stop
+        // polling until a visibility-change / notif-refetch / address-change
+        // signal resets skipFetchRef.
+        setCount(0)
+        skipFetchRef.current = true
+        return
+      }
       if (!res.ok) return
       const data = await res.json()
       if (typeof data.count === 'number') setCount(data.count)
@@ -39,13 +51,19 @@ export function NotificationBell({ address }: NotificationBellProps) {
 
   // Poll only when tab is visible; re-fetch immediately on tab focus
   useEffect(() => {
-    if (!address) { setCount(0); return }
+    if (!address) { setCount(0); skipFetchRef.current = false; return }
+    skipFetchRef.current = false  // fresh wallet → optimistic retry
     fetchCount()
     const interval = setInterval(() => {
       if (!document.hidden) fetchCount()
     }, POLL_INTERVAL_MS)
 
-    const onVisibilityChange = () => { if (!document.hidden) fetchCount() }
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        skipFetchRef.current = false  // user may have signed in elsewhere
+        fetchCount()
+      }
+    }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
@@ -56,10 +74,12 @@ export function NotificationBell({ address }: NotificationBellProps) {
 
   // Listen for read signals from notification feed
   // - notif-read: mark-all-read fired → clear badge immediately
-  // - notif-refetch: single notification read or mute → re-verify count
+  // - notif-refetch: single notification read or mute → re-verify count.
+  //   Also fired by sign-in flows (NotificationFeed's SignInPrompt), so
+  //   reset the backoff so the post-sign-in fetch lands.
   useEffect(() => {
     const onReadAll = () => setCount(0)
-    const onRefetch = () => fetchCount()
+    const onRefetch = () => { skipFetchRef.current = false; fetchCount() }
     window.addEventListener('kismetart:notif-read', onReadAll)
     window.addEventListener('kismetart:notif-refetch', onRefetch)
     return () => {

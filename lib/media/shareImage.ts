@@ -1,3 +1,6 @@
+import { resolveUri } from '@/lib/inprocess'
+import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+
 /**
  * Build a share-card image URL (og:image / twitter:image) from a moment
  * or collection's `meta.image`. Three guard rails:
@@ -24,11 +27,13 @@ export function shareImageUrl(
   if (!imageUri) return undefined
   if (guardAgainst && imageUri === guardAgainst) return undefined
   if (imageUri.startsWith('data:')) return undefined
-  if (imageUri.startsWith('ar://')) {
-    return `https://arweave.net/${imageUri.slice(5)}`
-  }
-  if (imageUri.startsWith('ipfs://')) {
-    return `https://ipfs.io/ipfs/${imageUri.slice(7)}`
-  }
-  return imageUri
+  const resolved = resolveUri(imageUri)
+  // SSRF guard: this URL is rendered server-side via next/og <img src> in the
+  // moment/collection OG routes (ImageResponse fetches it during render), and
+  // meta.image is attacker-controlled (set at mint). ar:// / ipfs:// resolve
+  // to public gateway hosts and pass; a crafted internal https host (or any
+  // non-https) is dropped, falling back to the text-only branded card. Also
+  // correct for the crawler og:image use — internal URLs wouldn't render there
+  // either.
+  return isSafePublicHttpsUrl(resolved) ? resolved : undefined
 }

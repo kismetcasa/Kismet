@@ -11,6 +11,7 @@ import {
   getPushMaster,
   setPushMaster,
 } from '@/lib/farcasterNotifications'
+import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionContext, slideSession } from '@/lib/session'
 
@@ -35,10 +36,10 @@ import { getSessionContext, slideSession } from '@/lib/session'
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`notif-push-types-get:${ip}`, 60, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const ctx = await getSessionContext(req)
-  if (!ctx) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+  if (!ctx) return errorResponse(401, 'Sign in to continue')
 
   const fid = await getFidForAddress(ctx.address)
   const [enabled, tokens, master] = fid
@@ -68,10 +69,10 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`notif-push-types:${ip}`, 30, 60)
-  if (!allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!allowed) return errorResponse(429, 'Too many requests')
 
   const ctx = await getSessionContext(req)
-  if (!ctx) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 })
+  if (!ctx) return errorResponse(401, 'Sign in to continue')
 
   const body = (await req.json().catch(() => null)) as
     | { type?: string; enabled?: boolean; master?: boolean }
@@ -84,21 +85,15 @@ export async function PATCH(req: NextRequest) {
     typeof body?.type === 'string' && typeof body?.enabled === 'boolean'
 
   if (!isMaster && !isType) {
-    return NextResponse.json(
-      { error: 'Provide either { master: boolean } or { type, enabled }' },
-      { status: 400 },
-    )
+    return errorResponse(400, 'Provide either { master: boolean } or { type, enabled }')
   }
   if (isMaster && isType) {
-    return NextResponse.json(
-      { error: 'Provide exactly one of master/type in a single request' },
-      { status: 400 },
-    )
+    return errorResponse(400, 'Provide exactly one of master/type in a single request')
   }
   if (isType) {
     const type = body!.type as NotificationType
     if (!(ALL_NOTIFICATION_TYPES as readonly string[]).includes(type)) {
-      return NextResponse.json({ error: 'Unknown notification type' }, { status: 400 })
+      return errorResponse(400, 'Unknown notification type')
     }
   }
 

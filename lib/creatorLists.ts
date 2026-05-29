@@ -9,6 +9,10 @@ export interface CreatorList {
   // Lowercased EOA addresses. Order is preserved from the curator's input
   // so the homepage roster can render in the order they were added.
   addresses: string[]
+  // Optional source collection (lowercased). When set, the artists tab shows
+  // each listed artist's mint *in this collection* (one card per artist).
+  // When absent, the tab falls back to each artist's most recent mint.
+  collection?: string
   createdAt: number
   updatedAt: number
 }
@@ -40,9 +44,14 @@ function parseStored(raw: unknown): StoredList | null {
     if (!parsed || typeof parsed !== 'object') return null
     const obj = parsed as Partial<StoredList>
     if (typeof obj.name !== 'string' || !Array.isArray(obj.addresses)) return null
+    const collection =
+      typeof obj.collection === 'string' && isAddress(obj.collection.toLowerCase())
+        ? obj.collection.toLowerCase()
+        : undefined
     return {
       name: obj.name,
       addresses: obj.addresses.filter((a): a is string => typeof a === 'string'),
+      ...(collection ? { collection } : {}),
       createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : 0,
       updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : 0,
     }
@@ -84,6 +93,7 @@ export async function saveCreatorList(input: {
   slug: string
   name: string
   addresses: string[]
+  collection?: string
 }): Promise<CreatorList> {
   const seen = new Set<string>()
   const addresses: string[] = []
@@ -94,6 +104,13 @@ export async function saveCreatorList(input: {
     seen.add(lower)
     addresses.push(lower)
   }
+
+  // Optional source collection. Invalid / empty → unset (drops any prior one),
+  // so clearing the field in the editor reverts the list to the fallback feed.
+  const collection =
+    typeof input.collection === 'string' && isAddress(input.collection.toLowerCase())
+      ? input.collection.toLowerCase()
+      : undefined
 
   // Re-read just this slug to preserve createdAt across updates without
   // pulling the entire hash on every save.
@@ -111,12 +128,14 @@ export async function saveCreatorList(input: {
     slug: input.slug,
     name: input.name.trim().slice(0, 80),
     addresses,
+    ...(collection ? { collection } : {}),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   }
   const stored: StoredList = {
     name: next.name,
     addresses: next.addresses,
+    ...(collection ? { collection } : {}),
     createdAt: next.createdAt,
     updatedAt: next.updatedAt,
   }

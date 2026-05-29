@@ -17,10 +17,12 @@ import {
 } from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
+import { setMomentMeta } from '@/lib/notifications'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
+import { consumeUserQuota } from '@/lib/userQuota'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Cap on tokens we fetch per collection when computing bulk-collect
@@ -60,7 +62,16 @@ async function loadCollectionMeta(address: string): Promise<Record<string, unkno
     contractAddress: address,
     name: kv?.name,
     metadata: kv
-      ? { name: kv.name, image: kv.image, description: kv.description }
+      ? {
+          name: kv.name,
+          image: kv.image,
+          description: kv.description,
+          // Pass through thumbhash so the MintForm collection chip + any
+          // other client surfaces get the blur placeholder during image
+          // load. inprocess passes it through when it indexes the
+          // Arweave metadata JSON; the KV fallback was dropping it.
+          ...(kv.kismet_thumbhash ? { kismet_thumbhash: kv.kismet_thumbhash } : {}),
+        }
       : undefined,
   }
 }
@@ -427,6 +438,18 @@ export async function POST(req: NextRequest) {
   }
 
   const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
+
+  // Per-address daily cap on DELIBERATE collection creation (Create
+  // Collection form). Debited after the on-chain admin check so only a
+  // legitimate deployer counts. auto-deploy wrappers are exempt: they're a
+  // side effect of minting (already bounded by the mint cap) and gating them
+  // here would 429 a mint mid-flow. Admin bypasses inside consumeUserQuota.
+  if (source === 'create-form') {
+    const withinQuota = await consumeUserQuota('collection', sessionAddress, 1)
+    if (!withinQuota) {
+      return errorResponse(429, 'Daily collection limit reached — try again tomorrow')
+    }
+  }
   await addTrackedCollection(
     body.address,
     {
@@ -445,9 +468,21 @@ export async function POST(req: NextRequest) {
   )
   // Cover tokens minted at deploy time (cover-mint toggle on) ARE
   // mints — they should show in the Mints feed alongside MintForm
-  // mints. Track them in created-mints just like a normal mint.
+  // mints. Track them in created-mints + write the per-moment KV
+  // creator record so the timeline route's KV stitching can override
+  // the wrong inprocess-attributed creator (deploy goes through the
+  // factory, which inprocess returns as creator.address for the cover
+  // token — without this override the cover mint shows up under the
+  // factory address and disappears from any creator-filtered feed).
+  // Mirrors the post-mint hooks in lib/mint-proxy.ts.
   if (source === 'create-form' && body.coverTokenId && /^\d+$/.test(body.coverTokenId)) {
-    await markCreatedMint(body.address, body.coverTokenId)
+    await Promise.all([
+      markCreatedMint(body.address, body.coverTokenId),
+      setMomentMeta(body.address, body.coverTokenId, {
+        creator: sessionAddress,
+        name: body.name ?? body.address,
+      }),
+    ])
   }
   return NextResponse.json({ ok: true })
 }

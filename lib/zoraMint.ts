@@ -46,7 +46,7 @@ const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 // from the last ~year are new-style; legacy mintWithRewards() is intentionally
 // not supported here. totalSupply tracks how many of a given token id have
 // been minted (sum of all editions), used to display "X collected" in UIs.
-export const ZORA_1155_MINT_ABI = parseAbi([
+const ZORA_1155_MINT_ABI = parseAbi([
   'function mint(address minter, uint256 tokenId, uint256 quantity, address[] rewardsRecipients, bytes minterArguments) payable',
   'function mintFee() view returns (uint256)',
   'function totalSupply(uint256 id) view returns (uint256)',
@@ -92,6 +92,7 @@ const ZORA_ERC20_MINTER_ABI = parseAbi([
 export const ERC20_ABI = parseAbi([
   'function approve(address spender, uint256 value) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address account) view returns (uint256)',
 ])
 
 // FixedPriceSale's mint() reads (mintTo, comment) out of an abi-encoded blob

@@ -259,6 +259,7 @@ export function CuratePanel() {
                   <span className="text-xs font-mono text-ink truncate">{l.name}</span>
                   <span className="text-[10px] font-mono text-muted">
                     {l.slug} · {l.addresses.length} {l.addresses.length === 1 ? 'creator' : 'creators'}
+                    {l.collection ? ` · ${shortAddress(l.collection)}` : ' · no collection'}
                   </span>
                 </div>
                 <button

@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { resolveUri } from '@/lib/inprocess'
 import { shareImageUrl } from '@/lib/media/shareImage'
+import { isVideoMoment } from '@/lib/media/isVideo'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
@@ -119,7 +120,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     buttonTitle: hasActiveListing ? 'View Listing' : `Collect ${name}`,
     action: {
       url: canonicalUrl,
-      name: title,
     },
   })
 
@@ -216,14 +216,34 @@ export default async function MomentPage({ params }: Props) {
   }
 
   return (
-    <MomentDetailView
-      address={address}
-      tokenId={tokenId}
-      initialDetail={detail}
-      fallbackMeta={fallbackMeta}
-      initialCollectionMeta={initialCollectionMeta}
-      kvCreatorAddress={kvCreatorAddress}
-      initialTextContent={initialTextContent}
-    />
+    <>
+      {/* Above-fold LCP hint for video moments — kicks the first Range
+          request off during HTML parse instead of waiting until the
+          <video> element mounts post-hydration. Cuts ~150-400ms of TTFF
+          on cold-cache share-link landings (FC casts, X shares). Skip
+          for image/text moments and when no animation_url is set.
+          No crossorigin attribute: must match the no-cors mode of the
+          <video> element this preload is feeding (SharedVideoProvider's
+          createVideo doesn't set crossOrigin). A mismatched preload
+          ends up in a different cache partition and Chrome warns
+          "preload was not used" — the bytes are wasted. */}
+      {detail?.metadata?.animation_url &&
+        isVideoMoment(detail.metadata) && (
+          <link
+            rel="preload"
+            as="video"
+            href={resolveUri(detail.metadata.animation_url)}
+          />
+        )}
+      <MomentDetailView
+        address={address}
+        tokenId={tokenId}
+        initialDetail={detail}
+        fallbackMeta={fallbackMeta}
+        initialCollectionMeta={initialCollectionMeta}
+        kvCreatorAddress={kvCreatorAddress}
+        initialTextContent={initialTextContent}
+      />
+    </>
   )
 }

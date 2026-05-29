@@ -13,8 +13,10 @@ import { shortAddress, type CreateMomentPayload, type Split } from '@/lib/inproc
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
+import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
+import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -22,8 +24,9 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
-import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
+import { MAX_SPLITS } from '@/lib/splits'
 import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
@@ -57,28 +60,47 @@ function sortSplits(s: Split[]): Split[] {
 // room for residencies) get mis-parsed downstream and revert the on-chain
 // splits-contract setup.
 //
-// Round each value to the nearest integer (≥1 floor so we never silently
-// drop a recipient), then absorb rounding drift round-robin until the sum
-// matches `target` exactly.
+// Convert fractional `values` (which by construction sum to ~`target`) into
+// integers that sum to EXACTLY `target`, with every entry ≥ 1. Largest-
+// remainder method: floor (min 1), then hand out / claw back the leftover by
+// fractional remainder. Exact and order-stable — unlike a bounded ±1 drift
+// loop, it can't leave the sum off-target for skewed allocations (e.g. many
+// tiny recipients plus one large one). Precondition: target ≥ values.length,
+// which callers guarantee via the recipient cap + residenciesOverCap, so a
+// min-1 solution always exists; the guards below just prevent a spin if it
+// is ever violated (handleMint's sum check is the final backstop).
 function roundToIntegerAllocations(values: number[], target: number): number[] {
-  const rounded = values.map((v) => Math.max(1, Math.round(v)))
-  const sum = rounded.reduce((a, b) => a + b, 0)
-  let drift = target - sum
-  let idx = 0
-  // Bound the loop generously; drift is bounded by recipient count in practice.
-  const max = rounded.length * 4 + 8
-  while (drift !== 0 && idx < max) {
-    const i = idx % rounded.length
-    if (drift > 0) {
-      rounded[i] += 1
-      drift -= 1
-    } else if (drift < 0 && rounded[i] > 1) {
-      rounded[i] -= 1
-      drift += 1
+  const n = values.length
+  if (n === 0) return []
+  const ints = values.map((v) => Math.max(1, Math.floor(v)))
+  let sum = ints.reduce((a, b) => a + b, 0)
+  if (sum === target) return ints
+  // Indices ordered by fractional remainder: add to the largest first,
+  // remove from the smallest first, so the integer split best tracks intent.
+  const byRemainder = values
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => a.frac - b.frac)
+  if (sum < target) {
+    let k = n - 1
+    while (sum < target) {
+      ints[byRemainder[((k % n) + n) % n].i] += 1
+      sum += 1
+      k -= 1
     }
-    idx += 1
+  } else {
+    let k = 0
+    let guard = 0
+    const maxGuard = sum * n + n
+    while (sum > target && guard++ < maxGuard) {
+      const { i } = byRemainder[k % n]
+      if (ints[i] > 1) {
+        ints[i] -= 1
+        sum -= 1
+      }
+      k += 1
+    }
   }
-  return rounded
+  return ints
 }
 
 interface MintFormProps {
@@ -91,6 +113,13 @@ interface CollectionOption {
   address: string
   name: string
   image?: string
+  // Base64 thumbhash for the cover. Passed to MomentImage so the
+  // selected-collection chip renders a blur placeholder during the
+  // optimizer fetch + any fallback walk — matches what AirdropForm's
+  // moment chip already does. Optional because legacy KV records
+  // pre-date the thumbhash field and inprocess may not surface it
+  // for collections deployed outside the Kismet flow.
+  thumbhash?: string
 }
 
 // PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
@@ -105,7 +134,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
-  const { isInMiniApp } = useFarcaster()
+  const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
   // Admin is gate-exempt server-side; skip the pass CTA for them.
   const { isAdmin } = useAdmin()
   // For post-auto-deploy permission verification — reads
@@ -159,7 +188,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         type ApiCollection = {
           contractAddress?: string
           name?: string
-          metadata?: { name?: string; image?: string }
+          metadata?: { name?: string; image?: string; kismet_thumbhash?: string }
         }
         const items: CollectionOption[] = (Array.isArray(d.collections) ? d.collections : [])
           .map((c: ApiCollection) => {
@@ -168,6 +197,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               address: c.contractAddress,
               name: c.metadata?.name ?? c.name ?? shortAddress(c.contractAddress),
               image: c.metadata?.image,
+              thumbhash: c.metadata?.kismet_thumbhash,
             }
           })
           .filter((c: CollectionOption | null): c is CollectionOption => c !== null)
@@ -292,6 +322,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
+  // Creator-chosen residencies cut (whole percent). Editable inline when the
+  // toggle is on; `residenciesInput` is the transient edit buffer so typing
+  // doesn't fight the committed integer.
+  const [residenciesPercent, setResidenciesPercent] = useState(DEFAULT_RESIDENCIES_PERCENT)
+  const [editingResidencies, setEditingResidencies] = useState(false)
+  const [residenciesInput, setResidenciesInput] = useState(String(DEFAULT_RESIDENCIES_PERCENT))
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
@@ -305,6 +341,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const verifyTargetRef = useRef<string | null>(null)
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
+  // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits
+  // scales them to sum to (100 − p), and roundToIntegerAllocations floors each
+  // recipient at 1% — so the cut can't exceed 100 − recipientCount or a
+  // recipient would be squeezed below 1% and the array couldn't sum to 100.
+  // With 0/1 splits only the creator shares the remainder, so the cap is 99.
+  // The recipient cap keeps splits.length ≤ MAX_SPLITS−1 while residencies is
+  // on, so this never drops below 51 — there's always room for a 1% cut.
+  const residenciesMax = splits.length >= 2 ? 100 - splits.length : 99
+  // Defense in depth: if the creator raised the % and then added recipients,
+  // the committed value can exceed the live cap. Surface it inline and block
+  // the mint until resolved (we don't silently mutate their chosen number).
+  const residenciesOverCap = residenciesEnabled && residenciesPercent > residenciesMax
   // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
   // the price input is hidden and the salesConfig price is forced to 0.
   // Media-only — text mode hides Supply, so a stale `1` from a prior
@@ -352,12 +400,43 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     return true
   }
 
+  // Platform-pause kill switch — the mint proxy returns 503 with a
+  // "paused" message when an admin has paused minting. Surface a single
+  // clean toast instead of the generic "Mint failed" + description (or a
+  // misleading payload-level error like "duplicate splits address"), so a
+  // paused platform reads as an intentional state. Matches the message too,
+  // not just the status, so a pass-through 503 from an inprocess outage
+  // still falls through to the generic error path. Checked before
+  // maybeHandleAuthError/throw so it always wins.
+  function maybeHandlePauseError(status: number, data?: { error?: unknown }): boolean {
+    if (status !== 503 || typeof data?.error !== 'string' || !/paused/i.test(data.error)) {
+      return false
+    }
+    toast.error('Platform is temporarily paused', { id: 'mint' })
+    setStep('idle')
+    setUploadProgress(0)
+    return true
+  }
+
   function addSplit() {
     const addr = splitInput.address.trim()
     const pct = parseFloat(splitInput.pct)
     if (!isAddress(addr)) { toast.error('Invalid address'); return }
     if (isNaN(pct) || pct <= 0 || pct > 100) { toast.error('Allocation must be 1–100'); return }
     if (splitsTotal + pct > 100) { toast.error('Total allocation exceeds 100%'); return }
+    // Cap recipient count to the server's MAX_SPLITS. When residencies is on
+    // it occupies one of those slots (buildFinalSplits appends it), so the
+    // custom-recipient limit drops by one — otherwise the final array would
+    // be MAX_SPLITS+1 and validateSplitsArray would reject the mint.
+    const recipientCap = residenciesEnabled ? MAX_SPLITS - 1 : MAX_SPLITS
+    if (splits.length >= recipientCap) {
+      toast.error(
+        residenciesEnabled
+          ? `Up to ${recipientCap} recipients with residencies on (${MAX_SPLITS} total)`
+          : `Up to ${recipientCap} split recipients`,
+      )
+      return
+    }
     // EVM addresses are case-insensitive but 0xSplits' SplitMain rejects
     // byte-level duplicates, so "0xABC" + "0xabc" would revert the deploy.
     const lowerAddr = addr.toLowerCase()
@@ -378,16 +457,58 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   const TEXT_MAX = 5000
 
+  // Parse + commit the inline residencies edit. Integers only — the valid
+  // range is [1, residenciesMax] where residenciesMax ≤ 99 (someone must keep
+  // ≥1%). Behavior by input:
+  //   empty / whitespace / non-numeric / ±Infinity → revert to last committed
+  //   decimals (e.g. 5.9)                           → floored to int, no toast
+  //   < 1 (0, negatives, 0.x)                       → clamp to 1 + toast
+  //   > residenciesMax (incl. 100)                  → clamp to cap + toast
+  //   1..residenciesMax                             → committed as-is
+  function commitResidencies() {
+    setEditingResidencies(false)
+    const raw = residenciesInput.trim()
+    const num = Number(raw)
+    if (raw === '' || !Number.isFinite(num)) {
+      setResidenciesInput(String(residenciesPercent))
+      return
+    }
+    const upper = residenciesMax
+    const intval = Math.floor(num)
+    const clamped = Math.min(upper, Math.max(1, intval))
+    // Toast only when we clamped a genuinely out-of-range value, not for a
+    // silent decimal truncation (5.9 → 5 stays quiet).
+    if (clamped !== intval) {
+      if (intval > upper) {
+        toast.error(
+          splits.length >= 2
+            ? `Residencies capped at ${upper}% so each recipient keeps at least 1%`
+            : `Residencies capped at ${upper}% so you keep at least 1%`,
+        )
+      } else {
+        toast.error('Residencies minimum is 1% — turn the toggle off to remove it')
+      }
+    }
+    setResidenciesPercent(clamped)
+    setResidenciesInput(String(clamped))
+  }
+
   // Builds the final splits array to send to the API. Inprocess docs require
   // integer `percentAllocation` summing to exactly 100% — every code path
-  // here emits integers via roundToIntegerAllocations + appends residencies
-  // (5%) when the toggle is on.
+  // here emits integers via roundToIntegerAllocations + appends the
+  // residencies cut when the toggle is on.
+  //
+  // `p` = residenciesPercent (creator-chosen whole percent, 1..residenciesMax).
   //
   //   residencies OFF + 0/1 splits  → undefined (caller uses payoutRecipient)
   //   residencies OFF + 2+ splits   → sorted user splits (rounded to integers)
-  //   residencies ON  + 0/1 splits  → [creator 95, residencies 5] (sorted)
-  //   residencies ON  + 2+ splits   → user splits scaled ×0.95 to integers
-  //                                   summing to 95, plus residencies 5
+  //   residencies ON  + 0/1 splits  → [creator 100−p, residencies p] (sorted)
+  //   residencies ON  + 2+ splits   → user splits scaled ×(100−p)/100 to
+  //                                   integers summing to 100−p, plus residencies p
+  //
+  // residenciesMax guarantees 100−p ≥ recipientCount, so roundToIntegerAllocations
+  // (which floors each recipient at 1%) can always hit its target and the final
+  // array sums to exactly 100 — re-checked by validateSplitsArray server-side.
   //
   // 0xSplits' SplitMain requires `accounts` sorted ascending — sort
   // defensively in case inprocess forwards our array as-is.
@@ -402,19 +523,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
       )
     }
+    const p = residenciesPercent
     if (splits.length < 2) {
       return sortSplits([
-        { address: address!, percentAllocation: 95 },
-        { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
+        { address: address!, percentAllocation: 100 - p },
+        { address: RESIDENCIES_ADDRESS, percentAllocation: p },
       ])
     }
     const rounded = roundToIntegerAllocations(
-      splits.map((s) => s.percentAllocation * 0.95),
-      95,
+      splits.map((s) => (s.percentAllocation * (100 - p)) / 100),
+      100 - p,
     )
     return sortSplits([
       ...splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
-      { address: RESIDENCIES_ADDRESS, percentAllocation: 5 },
+      { address: RESIDENCIES_ADDRESS, percentAllocation: p },
     ])
   }
 
@@ -459,6 +581,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // custom splits while the toggle is also on (e.g. via stale tab state).
     if (residenciesEnabled && splits.some((s) => s.address.toLowerCase() === RESIDENCIES_ADDRESS.toLowerCase())) {
       toast.error('Residencies is in your custom splits — remove it or disable the toggle')
+      return
+    }
+    if (residenciesOverCap) {
+      toast.error(`Lower residencies to ${residenciesMax}% or remove a recipient — each split needs at least 1%`)
       return
     }
 
@@ -636,6 +762,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
+          if (maybeHandlePauseError(res.status, data)) return
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
@@ -653,7 +780,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
-        if (isInMiniApp) hapticNotifySuccess()
+        if (isInMiniApp) {
+          hapticNotifySuccess()
+          maybePromptCollectNotifs()
+        }
 
       } else {
         // media mode — ensure session once (cookie cached, no re-prompt)
@@ -671,6 +801,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // still-frame for cards, modals, og:image, and the detail page.
         let mediaFile: File = file!
         let posterFile: File | null = null
+        // Set when the in-browser transcode can't handle this GIF (over the
+        // 100MB ffmpeg.wasm cap, or it threw). The raw GIF is uploaded as-is
+        // below, then handed to the server transcoder. Fail-safe: if the
+        // server step also fails, the mint still ships today's raw-GIF
+        // bindings rather than blocking.
+        let needsServerTranscode = false
+        const isGifFile = file!.type === 'image/gif' || file!.name.toLowerCase().endsWith('.gif')
         if (canTranscode(file!)) {
           setStep('preparing-media')
           setUploadProgress(0)
@@ -683,8 +820,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             mediaFile = mp4
             posterFile = poster
           } catch (err) {
-            console.warn('[MintForm] GIF transcode failed; uploading original', err)
+            console.warn('[MintForm] GIF transcode failed; will retry server-side', err)
+            needsServerTranscode = true
           }
+        } else if (isGifFile) {
+          // Over the ffmpeg.wasm cap — can't transcode in the browser.
+          // Upload the raw GIF below, then transcode it on the server.
+          needsServerTranscode = true
         } else if (file!.type.startsWith('video/')) {
           setStep('preparing-media')
           toast.loading('Optimizing video for fast playback…', { id: 'mint' })
@@ -710,6 +852,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // Hash the poster when transcoded so the placeholder matches the
         // static frame feeds render; otherwise the source media itself.
         const thumbhashPromise = generateThumbhash(posterFile ?? mediaFile)
+        // Probe video duration in parallel with the upload — server
+        // persists via setMomentMeta so feeds can pick long-form
+        // preload at element-create time. Returns null for non-video or
+        // probe failure; payload omits durationSec in those cases.
+        const durationPromise = probeDurationSeconds(mediaFile).catch(() => null)
         const mediaUri = await uploadToArweave(mediaFile, (pct) => {
           setUploadProgress(pct)
           toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
@@ -733,7 +880,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('uploading-metadata')
         setUploadProgress(0)
         toast.loading('Uploading metadata…', { id: 'mint' })
-        const [thumbhash, posterUri] = await Promise.all([thumbhashPromise, posterUriPromise])
+        const [thumbhash, posterUri, durationSec] = await Promise.all([
+          thumbhashPromise,
+          posterUriPromise,
+          durationPromise,
+        ])
         const posterVerify = posterUri ? verifyArweaveAvailable(posterUri) : Promise.resolve(true)
         // Poster (when extracted) wins as `image` so feeds render the
         // static frame; the moving asset goes to animation_url. For video
@@ -741,14 +892,39 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // renderer would try to load it as an <img> src and fail, leaving
         // a black card. Better to leave image undefined and let the
         // thumbhash + icon placeholder cover the slot.
-        const isVideoMedia = mediaFile.type.startsWith('video/')
-        const imageUri = isVideoMedia ? posterUri : (posterUri ?? mediaUri)
+        // Default (client-transcoded or non-GIF) media bindings: a video
+        // moment points animation_url at the uploaded MP4 and image at the
+        // poster; everything else uses the media itself as the image.
+        let animationUri: string | undefined = mediaFile.type.startsWith('video/') ? mediaUri : undefined
+        let finalImageUri = animationUri ? posterUri : (posterUri ?? mediaUri)
+        let finalThumbhash = thumbhash
+        // Oversized / wasm-failed GIF: `mediaUri` is the raw GIF we just
+        // uploaded. Transcode it server-side and swap in the MP4 + poster so
+        // it renders as a video (iOS can't decode large animated GIFs).
+        // Fail-safe: any error keeps the raw-GIF bindings above so the mint
+        // still completes — never worse than today's behavior.
+        if (needsServerTranscode) {
+          try {
+            toast.loading('Optimizing animation on server…', { id: 'mint' })
+            // The server fetches the raw GIF from a gateway, so block on its
+            // propagation first or the hand-off 404s.
+            const rawOk = await mediaVerify
+            if (!rawOk) throw new Error('source GIF not yet propagated')
+            const r = await serverTranscodeGif(mediaUri)
+            animationUri = r.animationUri
+            finalImageUri = r.posterUri
+            finalThumbhash = r.thumbhash ?? finalThumbhash
+          } catch (err) {
+            console.warn('[MintForm] server GIF transcode failed; shipping original', err)
+          }
+        }
+        const imageUri = finalImageUri
         const metadata = {
           name: name.trim(),
           description: description.trim(),
           ...(imageUri ? { image: imageUri } : {}),
-          ...(isVideoMedia ? { animation_url: mediaUri } : {}),
-          ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
+          ...(animationUri ? { animation_url: animationUri } : {}),
+          ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
         }
         const metadataUri = await uploadJson(metadata)
         const metadataVerify = verifyArweaveAvailable(metadataUri)
@@ -759,14 +935,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // above — for video media, never fall back to the MP4 URL.
         let collectionUri: string | null = null
         let collectionVerify: Promise<boolean> = Promise.resolve(true)
-        const coverImageUri = isVideoMedia ? posterUri : (posterUri ?? mediaUri)
+        const coverImageUri = imageUri
         if (isAutoDeploy) {
           toast.loading('Uploading collection metadata…', { id: 'mint' })
           const collectionMetadata = {
             name: resolvedCollectionName,
             description: description.trim(),
             ...(coverImageUri ? { image: coverImageUri } : {}),
-            ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
+            ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
             createReferral: CREATE_REFERRAL,
           }
           collectionUri = await uploadJson(collectionMetadata)
@@ -802,7 +978,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
-        const payload: CreateMomentPayload & { name: string } = {
+        const payload: CreateMomentPayload & { name: string; durationSec?: number } = {
           contract: isAutoDeploy
             ? { name: resolvedCollectionName, uri: collectionUri! }
             : { address: targetCollection! },
@@ -817,6 +993,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           name: name.trim(),
           account: address!,
           ...(finalSplits ? { splits: finalSplits } : {}),
+          // Passed through to mint-proxy's setMomentMeta call so feed
+          // surfaces can seed lib/media/durationCache and skip the
+          // metadata→auto preload upgrade for long-form videos.
+          ...(typeof durationSec === 'number' && durationSec > 0
+            ? { durationSec }
+            : {}),
         }
 
         // Per-action intent signature — server verifies the wallet at
@@ -834,6 +1016,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
+          if (maybeHandlePauseError(res.status, data)) return
           const errors = Array.isArray(data.errors)
             ? ': ' + data.errors.map((e: { field?: string; message?: string }) => `${e.field ?? ''} ${e.message ?? ''}`.trim()).join(', ')
             : ''
@@ -849,11 +1032,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // mediaUri otherwise) so the KV registration can store it and
           // the collection card has a non-blank image immediately.
           // thumbhash piggybacks for the cover placeholder.
-          void trackAndVerifyAutoDeploy(data.contractAddress, coverImageUri ?? undefined, thumbhash ?? undefined)
+          void trackAndVerifyAutoDeploy(data.contractAddress, coverImageUri ?? undefined, finalThumbhash ?? undefined)
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
-        if (isInMiniApp) hapticNotifySuccess()
+        if (isInMiniApp) {
+          hapticNotifySuccess()
+          maybePromptCollectNotifs()
+        }
       }
     } catch (err) {
       setStep('idle')
@@ -1215,6 +1401,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                   fill
                   className="object-cover"
                   sizes="32px"
+                  thumbhash={selectedCollection.thumbhash}
                 />
               </div>
             ) : selectedCollection ? (
@@ -1478,6 +1665,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 toast.error('Remove residencies from your custom splits before enabling the toggle')
                 return false
               }
+              // Residencies takes a recipient slot; if the custom list already
+              // fills MAX_SPLITS, enabling would make MAX_SPLITS+1 and the mint
+              // would be rejected server-side. Make the creator free a slot.
+              if (splits.length >= MAX_SPLITS) {
+                toast.error(`Remove a recipient first — ${MAX_SPLITS} is the max including residencies`)
+                return false
+              }
+              // Sync the edit buffer so clicking the % shows the live value.
+              setResidenciesInput(String(residenciesPercent))
               return true
             })
           }}
@@ -1489,7 +1685,42 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </div>
         </button>
         <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-[#444]'}`}>
-          {residenciesEnabled ? '5%' : '0%'} to{' '}
+          {residenciesEnabled ? (
+            editingResidencies ? (
+              <input
+                type="number"
+                autoFocus
+                value={residenciesInput}
+                min={1}
+                max={residenciesMax}
+                step={1}
+                onChange={(e) => setResidenciesInput(e.target.value)}
+                onBlur={commitResidencies}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitResidencies() }
+                  else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setResidenciesInput(String(residenciesPercent))
+                    setEditingResidencies(false)
+                  }
+                }}
+                aria-label="Residencies percent"
+                className="w-9 bg-surface border border-line px-1 py-0.5 text-[10px] text-ink font-mono text-center focus:outline-none focus:border-muted [appearance:textfield]"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setResidenciesInput(String(residenciesPercent))
+                  setEditingResidencies(true)
+                }}
+                title="Click to set the residencies %"
+                className={`underline decoration-dotted underline-offset-2 hover:text-ink transition-colors ${residenciesOverCap ? 'text-red-500' : ''}`}
+              >
+                {residenciesPercent}%
+              </button>
+            )
+          ) : '0%'}{' '}to{' '}
           <a
             href="https://kismetcasa.xyz"
             target="_blank"
@@ -1501,6 +1732,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </a>
         </span>
       </div>
+      {residenciesOverCap && (
+        <p className="text-[10px] font-mono text-red-500 w-fit mx-auto -mt-1 text-center">
+          {residenciesMax}% max with {splits.length} recipients — lower the % or remove one
+        </p>
+      )}
     </form>
   )
 }

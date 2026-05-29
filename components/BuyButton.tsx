@@ -139,7 +139,10 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
       await fetch(`/api/listings/${listing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'filled', signature, nonce, signer: address }),
+        // txHash is required server-side now — the backend decodes the
+        // Seaport OrderFulfilled event from this receipt to confirm the
+        // sale before flipping status. Without it the PATCH returns 400.
+        body: JSON.stringify({ status: 'filled', signature, nonce, signer: address, txHash: hash }),
       })
 
       setBought(true)

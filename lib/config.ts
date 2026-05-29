@@ -13,11 +13,16 @@ export const CREATE_REFERRAL =
   process.env.NEXT_PUBLIC_CREATE_REFERRAL ||
   '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 
-// Kismet Casa residencies wallet — receives 5% of primary sale revenue when the
-// creator opts in at mint time via the residencies toggle.
+// Kismet Casa residencies wallet — receives a creator-chosen cut of primary
+// sale revenue when the creator opts in at mint time via the residencies toggle.
 export const RESIDENCIES_ADDRESS =
   process.env.NEXT_PUBLIC_RESIDENCIES_ADDRESS ||
   '0x58f19e55058057B04feAe2EEA88F90B84b7714Eb'
+
+// Default residencies cut (whole percent) pre-filled when the toggle is on.
+// The creator can edit it to any integer 1–99 (capped lower when custom splits
+// leave less room — see MintForm buildFinalSplits).
+export const DEFAULT_RESIDENCIES_PERCENT = 5
 
 // Inprocess operator smart wallet — the CDP smart account that submits
 // userOps on behalf of the platform identity for every relayed call
@@ -40,6 +45,12 @@ export function isOperatorAddress(address: string | undefined | null): boolean {
   if (!address || !OPERATOR_SMART_WALLET) return false
   return address.toLowerCase() === OPERATOR_SMART_WALLET.toLowerCase()
 }
+
+// Max recipients per airdrop. Shared by the client form (blocks the on-chain
+// tx before it happens) and the server notify route (rejects the record).
+// Single source so the two can't drift — a higher client cap would let an
+// airdrop mint on-chain and then fail to record, stranding it off-chain.
+export const MAX_AIRDROP_RECIPIENTS = 200
 
 // Admin address — single privileged wallet that passes admin-session
 // signatures (see lib/curator.ts)

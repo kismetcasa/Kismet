@@ -142,9 +142,8 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
             <CollectAllAction
               collectionAddress={c.contractAddress}
               ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
-              ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
-              usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc ?? '0'}
+              compact
             />
           ) : (
             <Link

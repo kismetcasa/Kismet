@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
-import { LazyMount, EAGER_MOUNT_COUNT } from './LazyMount'
+import { MaybeLazy } from './LazyMount'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -210,15 +210,17 @@ export function PaginatedGrid<T>({
   const refreshing = firstFetching && !!firstPage
   const error = firstError?.message ?? null
 
-  // Eager up to EAGER_MOUNT_COUNT, then LazyMount past it when `lazy`
-  // is on. Inlining the lazy decision next to the render so the eager/
-  // lazy split is one obvious branch.
+  // Eager/lazy mount decision lives in MaybeLazy (single source of the
+  // EAGER_MOUNT_COUNT gate). Key goes on MaybeLazy itself per its contract.
   const gridClass = viewMode === 'grid' ? GRID_GRID : GRID_FEED
   function renderEntry(item: T, index: number): ReactElement {
     const key = getKey(item)
     const node = renderItem(item, { remove: () => removeItem(key), index })
-    if (!lazy || index < EAGER_MOUNT_COUNT) return node
-    return <LazyMount key={key}>{() => node}</LazyMount>
+    return (
+      <MaybeLazy key={key} index={index} lazy={lazy}>
+        {() => node}
+      </MaybeLazy>
+    )
   }
 
   return (

@@ -33,6 +33,31 @@ export function proxyUrl(uri: string): string {
 }
 
 /**
+ * Candidate URLs for a <video> element's `src`, in fallback order.
+ *
+ * In iframe / WebKit-only contexts (Farcaster + Base Mini App webviews and
+ * web embeds) a <video> fetching straight from a public gateway stalls on
+ * the shared HTTP/2 connection pool exactly the way <img> does — the
+ * gateway request hangs without failing, `loadeddata` never fires, and the
+ * pooled element stays `visibility:hidden`, so the video never appears.
+ * This is the same failure mode `skipDirectWalk` guards against for images;
+ * the difference is video had no proxy path at all. Route those contexts
+ * through `/api/img`, which races the gateway pool server-side and forwards
+ * Range requests for seek/resume. Direct gateways follow as a fallback so a
+ * proxy-only outage still degrades to the old behaviour.
+ *
+ * Top-level browsing keeps the original direct-gateway list (no proxy
+ * egress cost): standalone Chrome/Safari fetch video direct without stalls.
+ */
+export function videoGatewayUrls(uri: string): string[] {
+  const direct = gatewayUrls(uri)
+  if (isProxiable(uri) && (isInIframe() || isWebKitOnly())) {
+    return [proxyUrl(uri), ...direct]
+  }
+  return direct
+}
+
+/**
  * True on Safari (desktop + iOS) and any other WebKit-only context — Chrome
  * iOS (CriOS), Mini App iOS WKWebView, etc. False on Chromium-based browsers
  * (Chrome, Edge, Brave, Opera) which all include "Chrome" in their UA.

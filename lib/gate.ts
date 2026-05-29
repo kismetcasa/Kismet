@@ -18,21 +18,29 @@ export interface GateConfig {
   paused: boolean
 }
 
+// Upstash's REST client sends string args to SET unchanged but JSON-parses
+// GET results, so the flag stored as '1' comes back as the number 1 — a
+// strict `=== '1'` would always be false and the toggle would never persist.
+// Normalize both representations.
+function isFlagSet(raw: string | number | null): boolean {
+  return String(raw) === '1'
+}
+
 export async function getGateConfig(): Promise<GateConfig> {
   try {
     const [enabled, collectionRaw, paused] = await Promise.all([
-      redis.get<string>(KEY_ENABLED),
+      redis.get<string | number>(KEY_ENABLED),
       redis.get<string>(KEY_PASS_COLLECTION),
-      redis.get<string>(KEY_PAUSED),
+      redis.get<string | number>(KEY_PAUSED),
     ])
     const passCollection =
       typeof collectionRaw === 'string' && isAddress(collectionRaw)
         ? collectionRaw.toLowerCase()
         : null
     return {
-      enabled: enabled === '1',
+      enabled: isFlagSet(enabled),
       passCollection,
-      paused: paused === '1',
+      paused: isFlagSet(paused),
     }
   } catch {
     return { enabled: false, passCollection: null, paused: false }
@@ -80,6 +88,15 @@ export async function hasGateAccess(
  *  flow without lifting the pause first. */
 export async function isPlatformPausedFor(address: string): Promise<boolean> {
   if (ADMIN_ADDRESS && address.toLowerCase() === ADMIN_ADDRESS) return false
+  const config = await getGateConfig()
+  return config.paused
+}
+
+/** Raw platform-pause flag with no admin bypass — backs the public
+ *  status endpoint that powers client-side "paused" affordances (e.g.
+ *  disabling the create-collection button). Admin exemption for those
+ *  surfaces is applied client-side via the admin context. */
+export async function isPlatformPaused(): Promise<boolean> {
   const config = await getGateConfig()
   return config.paused
 }

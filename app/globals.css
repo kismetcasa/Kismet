@@ -105,6 +105,16 @@ input[type='number'] {
   color: #0d0d0d;
 }
 
+/* Paint the element's TEXT with the brand gradient on hover, leaving it
+ * plain at rest. For borderless plain-text actions where a full background
+ * fill would read as a button rather than a link. */
+.accent-grad-text-hover:not(:disabled):hover {
+  background: var(--accent-grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
 /* Outlined button. Resting state: magenta (accent token) border + text
  * so it harmonizes with `border-accent`/`text-accent` surfaces. Hover
  * fills with the full brand gradient + dark text. */

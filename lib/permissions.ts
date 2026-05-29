@@ -67,10 +67,10 @@ export async function readPermissions(
   collection: Address,
   tokenId: bigint,
   user: Address,
-  options: { retries?: number; backoffMs?: number } = {},
+  options: { retries?: number } = {},
 ): Promise<bigint> {
   const retries = options.retries ?? 4
-  const backoffMs = options.backoffMs ?? 500
+  const backoffMs = 500
   let lastErr: unknown = null
   for (let attempt = 0; attempt < retries; attempt++) {
     try {

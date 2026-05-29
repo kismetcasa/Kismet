@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAccount, useConnect } from 'wagmi'
 import { toast } from 'sonner'
+import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
 
 export type FarcasterIdentity = {
   /** Numeric Farcaster ID — from `sdk.context.user.fid` (Mini App) or a /api/profile reverse lookup (web). */
@@ -31,6 +32,14 @@ type FarcasterContextValue = {
    * full page reload.
    */
   refreshIdentity: () => Promise<void>
+  /**
+   * Offer the "Add Kismet" prompt so the creator gets push when their
+   * work is collected. Self-gating no-op outside a Mini App, when the app
+   * is already added / notifications enabled, once shown this session, or
+   * after it has fired once on this device. Called from the mint success
+   * path so a creator's first mint surfaces the ask.
+   */
+  maybePromptCollectNotifs: () => void
 }
 
 const FarcasterContext = createContext<FarcasterContextValue>({
@@ -38,32 +47,10 @@ const FarcasterContext = createContext<FarcasterContextValue>({
   ready: false,
   identity: null,
   refreshIdentity: async () => {},
+  maybePromptCollectNotifs: () => {},
 })
 
 export const useFarcaster = () => useContext(FarcasterContext)
-
-// Cheap, synchronous pre-flight to keep the ~SDK bundle out of regular web
-// payloads entirely. Farcaster hosts always render Mini Apps in an iframe
-// (web) or React Native WebView (mobile), so a regular browser tab can
-// short-circuit to false without touching the SDK. False positives here
-// just mean we load the SDK and it tells us we're not in a Mini App
-// (sdk.isInMiniApp returns false fast). False negatives would be bad
-// (splash hangs forever) but the two checks below are exhaustive for
-// every current Farcaster host.
-function isPotentialMiniAppEnv(): boolean {
-  if (typeof window === 'undefined') return false
-  try {
-    const inIframe = window.self !== window.top
-    const inReactNativeWebView =
-      typeof (window as { ReactNativeWebView?: unknown }).ReactNativeWebView !==
-      'undefined'
-    return inIframe || inReactNativeWebView
-  } catch {
-    // Cross-origin iframe access throws on `window.top` — that itself is a
-    // strong signal we're embedded.
-    return true
-  }
-}
 
 /**
  * Install a same-origin Authorization injector on `window.fetch`.
@@ -85,7 +72,10 @@ function isPotentialMiniAppEnv(): boolean {
  *
  * Returns a teardown that restores the original fetch.
  */
-function installFetchInterceptor(getToken: () => Promise<string | null>): () => void {
+function installFetchInterceptor(
+  getToken: () => Promise<string | null>,
+  refreshToken: () => Promise<string | null>,
+): () => void {
   const original = window.fetch.bind(window)
   const ownOrigin = window.location.origin
 
@@ -104,12 +94,30 @@ function installFetchInterceptor(getToken: () => Promise<string | null>): () => 
     }
     if (!isOwnOrigin) return original(input, init)
 
-    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
-    if (!headers.has('authorization')) {
-      const token = await getToken()
-      if (token) headers.set('authorization', `Bearer ${token}`)
+    const baseHeaders = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+    let attached: string | null = null
+    if (!baseHeaders.has('authorization')) {
+      attached = await getToken()
+      if (attached) baseHeaders.set('authorization', `Bearer ${attached}`)
     }
-    return original(input, { ...init, headers })
+    let response = await original(input, { ...init, headers: baseHeaders })
+
+    // Industry-standard single-retry on 401: Apollo's onError link,
+    // Axios response interceptors, RTK Query reauth — all do this.
+    // Transparent to every consumer; the cost is one extra getToken()
+    // call per 401, paid once per stale-JWT cycle. Compare returned
+    // token to the one we attached so a legitimately-unauthenticated
+    // request (server rejects every JWT for this user) doesn't loop —
+    // if refresh returns the same token, the 401 wasn't expiry-driven.
+    if (response.status === 401 && attached) {
+      const fresh = await refreshToken()
+      if (fresh && fresh !== attached) {
+        const retryHeaders = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+        retryHeaders.set('authorization', `Bearer ${fresh}`)
+        response = await original(input, { ...init, headers: retryHeaders })
+      }
+    }
+    return response
   }
 
   window.fetch = wrapped
@@ -130,6 +138,13 @@ function installFetchInterceptor(getToken: () => Promise<string | null>): () => 
 const OPEN_COUNT_KEY = 'kismetart:miniapp-opens'
 const PROMPT_TARGET_OPEN = 2
 
+// One-shot (per device) flag for the post-first-mint "Add Kismet" prompt.
+// Set the first time we surface that prompt so a creator who mints
+// repeatedly is asked at most once. Independent of OPEN_COUNT_KEY: the two
+// triggers (2nd open, 1st mint) each fire at most once, and a session-level
+// guard (addPromptShownRef) prevents both landing in the same session.
+const MINT_PROMPT_KEY = 'kismetart:miniapp-mint-prompt'
+
 function bumpAndReadOpenCount(): number {
   try {
     const prev = Number(localStorage.getItem(OPEN_COUNT_KEY)) || 0
@@ -144,7 +159,10 @@ function bumpAndReadOpenCount(): number {
   }
 }
 
-type FarcasterState = Omit<FarcasterContextValue, 'refreshIdentity'>
+type FarcasterState = Omit<
+  FarcasterContextValue,
+  'refreshIdentity' | 'maybePromptCollectNotifs'
+>
 
 export function FarcasterProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FarcasterState>({
@@ -185,6 +203,53 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   const { connect, connectors } = useConnect()
   const hasAttemptedConnect = useRef(false)
 
+  // Drives the "Add Kismet" notification prompt, shared by both triggers
+  // (2nd open + 1st mint). Set during bootstrap.
+  const isInMiniAppRef = useRef(false)
+  // Latest host add/notification state, so maybePromptCollectNotifs can
+  // gate without re-querying the SDK.
+  const addEligibilityRef = useRef({ added: false, notificationsEnabled: false })
+  // Session guard: true once the prompt has shown this load, so the two
+  // triggers never double-prompt within a single session.
+  const addPromptShownRef = useRef(false)
+
+  // The single source of truth for the "Add Kismet" toast. Both triggers
+  // route through here so the copy + consent action stay identical and the
+  // session guard is set in one place. The SDK chunk is already resolved
+  // (bootstrap imported it), so the dynamic import in onClick is instant.
+  const showAddKismetPrompt = useCallback(() => {
+    addPromptShownRef.current = true
+    toast('Get pinged when someone collects your work.', {
+      duration: 8000,
+      action: {
+        label: 'Add Kismet',
+        onClick: () => {
+          // Host owns the consent sheet from here. Errors (user-dismissed,
+          // capability missing) are not our concern — they don't add, no
+          // push tokens land.
+          void import('@farcaster/miniapp-sdk').then(({ sdk }) =>
+            sdk.actions.addMiniApp().catch(() => {}),
+          )
+        },
+      },
+    })
+  }, [])
+
+  const maybePromptCollectNotifs = useCallback(() => {
+    if (!isInMiniAppRef.current || addPromptShownRef.current) return
+    const { added, notificationsEnabled } = addEligibilityRef.current
+    if (added || notificationsEnabled) return
+    try {
+      if (localStorage.getItem(MINT_PROMPT_KEY) === '1') return
+      localStorage.setItem(MINT_PROMPT_KEY, '1')
+    } catch {
+      // Can't persist the one-shot (private mode, etc) — skip rather than
+      // risk re-prompting on every subsequent mint.
+      return
+    }
+    showAddKismetPrompt()
+  }, [showAddKismetPrompt])
+
   useEffect(() => {
     if (!isPotentialMiniAppEnv()) {
       // Regular web user — never load the Mini App SDK, never call ready().
@@ -208,19 +273,27 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // preview that isn't actually a Farcaster host).
         const confirmed = await sdk.isInMiniApp()
         if (cancelled || !confirmed) return
+        isInMiniAppRef.current = true
 
         // Install the JWT interceptor up front so the /api/me fetch
         // below picks up the Bearer token automatically. The token
         // getter is lazy — getToken() returns the in-memory token
         // when one is cached, otherwise acquires a fresh one.
-        teardownFetch = installFetchInterceptor(async () => {
+        // Quick Auth caches the JWT in memory and refreshes when it
+        // detects expiry. Both arguments are the same call — the
+        // interceptor invokes the second one only after the server
+        // returned 401, which prompts the SDK to revalidate against
+        // the host. If the SDK's own cache check missed the expiry
+        // (clock skew, key rotation, etc.) this catches it.
+        const getQuickAuthToken = async (): Promise<string | null> => {
           try {
             const result = await sdk.quickAuth.getToken()
             return result?.token ?? null
           } catch {
             return null
           }
-        })
+        }
+        teardownFetch = installFetchInterceptor(getQuickAuthToken, getQuickAuthToken)
 
         // Parallelize everything we need before ready(). The host's
         // splash screen is showing throughout this block — every ms
@@ -382,25 +455,14 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // addMiniApp prompt: only on the user's 2nd confirmed open, and
         // only when they haven't already added or enabled notifications.
         // Fires as a non-modal sonner toast so it can't interfere with
-        // any in-flight action.
+        // any in-flight action. The same eligibility (cached here) also
+        // gates the post-first-mint trigger via maybePromptCollectNotifs.
         const added = ctx?.client?.added === true
         const notificationsEnabled = !!ctx?.client?.notificationDetails
+        addEligibilityRef.current = { added, notificationsEnabled }
         if (!added && !notificationsEnabled) {
           const opens = bumpAndReadOpenCount()
-          if (opens === PROMPT_TARGET_OPEN) {
-            toast('Get pinged when someone collects your work.', {
-              duration: 8000,
-              action: {
-                label: 'Add Kismet',
-                onClick: () => {
-                  // Host owns the consent sheet from here. Errors
-                  // (user-dismissed, capability missing) are not our
-                  // concern — they don't add, no push tokens land.
-                  void sdk.actions.addMiniApp().catch(() => {})
-                },
-              },
-            })
-          }
+          if (opens === PROMPT_TARGET_OPEN) showAddKismetPrompt()
         }
       } catch (err) {
         // Fail open: if anything in the bootstrap throws, behave as a
@@ -494,8 +556,8 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   // Memoize so refreshIdentity (stable) doesn't force a re-render
   // every time `state` changes for unrelated reasons.
   const value = useMemo<FarcasterContextValue>(
-    () => ({ ...state, refreshIdentity }),
-    [state, refreshIdentity],
+    () => ({ ...state, refreshIdentity, maybePromptCollectNotifs }),
+    [state, refreshIdentity, maybePromptCollectNotifs],
   )
   return (
     <FarcasterContext.Provider value={value}>{children}</FarcasterContext.Provider>

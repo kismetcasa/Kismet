@@ -9,6 +9,12 @@ import { useEffect, useState } from 'react'
 const cache = new Map<string, string | null>()
 const inFlight = new Map<string, Promise<string | null>>()
 
+// Without a timeout, a stalled inprocess /smartwallet upstream hangs this
+// fetch indefinitely. On the deploy path that means CreateCollectionForm
+// awaits the lookup forever before it ever reaches writeContractAsync, so
+// the UI sits on "Deploying…" and no transaction is ever proposed.
+const FETCH_TIMEOUT_MS = 12_000
+
 async function load(artistWallet: string): Promise<string | null> {
   const key = artistWallet.toLowerCase()
   if (cache.has(key)) return cache.get(key) ?? null
@@ -18,17 +24,17 @@ async function load(artistWallet: string): Promise<string | null> {
     try {
       const res = await fetch(
         `/api/inprocess/smart-wallet?artist_wallet=${encodeURIComponent(key)}`,
+        { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
       )
-      if (!res.ok) {
-        cache.set(key, null)
-        return null
-      }
+      if (!res.ok) return null
       const data = (await res.json()) as { address?: string }
       const addr = typeof data?.address === 'string' ? data.address : null
-      cache.set(key, addr)
+      // Only cache successful resolutions. Caching null would poison every
+      // subsequent attempt (deploy, authorize banner) until a full reload,
+      // turning a transient blip into a permanent failure.
+      if (addr) cache.set(key, addr)
       return addr
     } catch {
-      cache.set(key, null)
       return null
     } finally {
       inFlight.delete(key)

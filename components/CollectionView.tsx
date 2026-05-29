@@ -4,12 +4,13 @@ import { useState, useEffect, useRef } from 'react'
 import { MomentImage } from './MomentImage'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useReadContract } from 'wagmi'
+import { useAccount, usePublicClient, useReadContract, useReadContracts } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2 } from 'lucide-react'
+import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
+import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -24,6 +25,8 @@ import { resolveAddressOrEns } from '@/lib/address'
 import { MomentCard } from './MomentCard'
 import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
+import { CollectAllAction } from './CollectAllAction'
+import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
   name: string
@@ -41,10 +44,12 @@ function AvatarRow({
   return (
     <Link
       href={`/profile/${addr}`}
-      className="flex items-center gap-2.5 border border-line hover:border-muted px-3 py-2 transition-colors w-full sm:w-auto"
+      className="flex items-center gap-2 sm:gap-2.5 border border-line hover:border-muted px-2.5 sm:px-3 py-2 transition-colors w-full sm:w-auto"
     >
-      <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
-      <span className="text-xs font-mono text-dim truncate">
+      <span className="shrink-0">
+        <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
+      </span>
+      <span className="text-xs font-mono text-dim truncate min-w-0">
         {p?.name || shortAddress(addr)}
       </span>
     </Link>
@@ -96,8 +101,10 @@ export function CollectionView({
   const router = useRouter()
   const { address: connectedAddress } = useAccount()
   const { isAdmin, featuredCollectionAddrs, toggleFeaturedCollection } = useAdmin()
+  const { isInMiniApp } = useFarcaster()
   const [profiles, setProfiles] = useState<Record<string, AvatarProfile>>({})
   const [hidden, setHidden] = useState(initialHidden)
+  const [linkCopied, setLinkCopied] = useState(false)
   const [resolvedAdminName, setResolvedAdminName] = useState<string | null>(
     defaultAdminUsername ? `@${defaultAdminUsername}` : null,
   )
@@ -600,6 +607,54 @@ export function CollectionView({
   const coverThumbhash = collectionImage ? collectionThumbhash : firstMoment?.metadata?.kismet_thumbhash
   const description = collectionDescription
 
+  // Total collects: sum on-chain totalMinted per token — no aggregated count
+  // exists upstream. Batched into one multicall by wagmi.
+  const { data: tokenInfos } = useReadContracts({
+    contracts: loadedMoments.map((m) => ({
+      address: m.address as `0x${string}`,
+      abi: ZORA_1155_TOKEN_INFO_ABI,
+      functionName: 'getTokenInfo' as const,
+      args: [BigInt(m.token_id)] as const,
+    })),
+    query: { enabled: loadedMoments.length > 0 },
+  })
+  const totalSold = tokenInfos?.reduce(
+    (sum, r) =>
+      r.status === 'success' && r.result
+        ? sum + Number((r.result as { totalMinted: bigint }).totalMinted)
+        : sum,
+    0,
+  )
+
+  // Collect-all candidates: tokens not yet sold out, from the same getTokenInfo
+  // read used above. useCollectAll resolves each token's currency + live sale
+  // eligibility on-chain at click time, so the same id list feeds both legs.
+  const collectableIds: string[] = []
+  loadedMoments.forEach((m, i) => {
+    const info = tokenInfos?.[i]
+    if (info?.status !== 'success' || !info.result) return
+    const { maxSupply, totalMinted } = info.result as { maxSupply: bigint; totalMinted: bigint }
+    if (isOpenEdition(maxSupply) || totalMinted < maxSupply) collectableIds.push(m.token_id)
+  })
+
+  async function handleShare() {
+    const url = `${window.location.origin}/collection/${address}`
+    if (isInMiniApp) {
+      try {
+        const { sdk } = await import('@farcaster/miniapp-sdk')
+        await sdk.actions.composeCast({
+          text: `Check out ${displayName} on @kismet`,
+          embeds: [url],
+          channelKey: 'kismet',
+        })
+        return
+      } catch { /* fall through to clipboard */ }
+    }
+    navigator.clipboard.writeText(url).catch(() => {})
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 1500)
+  }
+
   // Unique creator addresses across all loaded moments — surfaces
   // anyone who has actually shipped a token here, including authorized
   // creators after they mint. Pre-mint authorizations live in the
@@ -666,12 +721,20 @@ export function CollectionView({
           )}
           {/* Enriched chips: payout transparency (only when it differs from
               the admin — same-address payouts are noise) and creation date. */}
-          {(payoutRecipient || createdAt) && (
-            <div className="flex flex-wrap gap-2 mt-1.5">
+          {(payoutRecipient || createdAt || (totalSold !== undefined && totalSold > 0)) && (
+            <div className="flex flex-wrap items-center gap-2 mt-1.5">
               {createdAt && (
                 <span className="text-[10px] font-mono text-muted uppercase tracking-widest">
                   created {formatCreatedDate(createdAt)}
                 </span>
+              )}
+              {totalSold !== undefined && totalSold > 0 && (
+                <>
+                  {createdAt && <span className="text-[10px] font-mono text-[#444]">|</span>}
+                  <span className="text-[10px] font-mono text-muted uppercase tracking-widest">
+                    total sold {totalSold.toLocaleString()}
+                  </span>
+                </>
               )}
               {payoutRecipient && (
                 <Link
@@ -754,6 +817,16 @@ export function CollectionView({
                 {hidden ? 'hidden' : 'hide'}
               </button>
             )}
+            <button
+              onClick={handleShare}
+              className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors"
+              title="Share collection"
+            >
+              {linkCopied
+                ? <Check size={12} className="text-[#6ee7b7]" />
+                : <Copy size={12} strokeWidth={1.5} />}
+              {linkCopied ? 'copied' : 'share'}
+            </button>
           </div>
         </div>
       </div>
@@ -912,7 +985,7 @@ export function CollectionView({
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
             {uniqueCreators.length === 1 ? 'artist' : 'artists'}
           </h2>
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
             {uniqueCreators.map((addr) => (
               <AvatarRow key={addr} addr={addr} profiles={profiles} />
             ))}
@@ -922,9 +995,19 @@ export function CollectionView({
 
       {/* NFT grid */}
       <section>
-        <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-          moments{loadedMoments.length > 0 ? ` (${loadedMoments.length})` : ''}
-        </h2>
+        <div className="flex items-center gap-4 mb-4">
+          <h2 className="text-xs font-mono text-muted uppercase tracking-widest">
+            artworks{loadedMoments.length > 0 ? ` (${loadedMoments.length})` : ''}
+          </h2>
+          {collectableIds.length > 0 && (
+            <CollectAllAction
+              plain
+              collectionAddress={address}
+              ethEligibleTokenIds={collectableIds}
+              usdcEligibleTokenIds={collectableIds}
+            />
+          )}
+        </div>
         {moments === null ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {Array.from({ length: 6 }).map((_, i) => (

@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse, after } from 'next/server'
-import { verifyMessage } from 'viem'
+import { verifyMessage, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { getListing, updateListingStatus } from '@/lib/listings'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
+import { serverBaseClient } from '@/lib/rpc'
+import { findFulfillmentInLogs } from '@/lib/seaport'
 
 export async function PATCH(
   req: NextRequest,
@@ -21,6 +23,11 @@ export async function PATCH(
     signature?: string
     nonce?: string
     signer?: string
+    // Required on 'filled' transitions — the Seaport fulfillment tx hash.
+    // The handler decodes its OrderFulfilled event and rejects any PATCH
+    // whose orderHash doesn't match this listing, closing the prior griefing
+    // path where any non-seller could mark any active listing as sold.
+    txHash?: string
   }
 
   if (body.status !== 'filled' && body.status !== 'cancelled') {
@@ -62,9 +69,17 @@ export async function PATCH(
       return errorResponse(401, 'Invalid or expired nonce')
     }
   } else {
-    // status === 'filled' — must be the buyer.
+    // status === 'filled' — must be the buyer, AND there must be a real
+    // Seaport fulfillment tx whose OrderFulfilled event names this signer
+    // as the recipient. Signature alone was insufficient (any wallet that
+    // isn't the seller could sign), so any third party could fabricate
+    // sales — including pumping fake priority `sale` notifications into
+    // the seller's bell. The on-chain receipt is the binding gate.
     if (signer.toLowerCase() === listing.seller.toLowerCase()) {
       return errorResponse(403, 'Seller cannot mark own listing filled')
+    }
+    if (!body.txHash || !/^0x[0-9a-fA-F]{64}$/.test(body.txHash)) {
+      return errorResponse(400, 'txHash required to mark filled')
     }
     const message = `Mark Kismet listing filled\nListing: ${id}\nBuyer: ${signer.toLowerCase()}\nNonce: ${nonce}`
     const verified = await verifyMessage({
@@ -75,6 +90,33 @@ export async function PATCH(
     if (!verified) {
       return errorResponse(401, 'Signature verification failed')
     }
+
+    // Receipt verification BEFORE nonce consumption — a verification-only
+    // failure shouldn't burn a legitimate buyer's nonce. waitForTransactionReceipt
+    // polls so a brief RPC propagation lag (buyer's client saw the receipt
+    // milliseconds ago; the server-side RPC node may not have indexed yet)
+    // doesn't reject a real sale. 10s upper bound on the wait.
+    let onchainOk = false
+    try {
+      const receipt = await serverBaseClient().waitForTransactionReceipt({
+        hash: body.txHash as Hex,
+        timeout: 10_000,
+        pollingInterval: 500,
+      })
+      if (receipt.status === 'success') {
+        const found = findFulfillmentInLogs(listing, receipt.logs)
+        if (found && found.recipient.toLowerCase() === signer.toLowerCase()) {
+          onchainOk = true
+        }
+      }
+    } catch {
+      // Timeout / decode / RPC error — fail-closed; client can retry the
+      // PATCH if they hit a transient lag.
+    }
+    if (!onchainOk) {
+      return errorResponse(403, 'Fulfillment not verified on-chain for this listing')
+    }
+
     const valid = await consumeNonce(signer, nonce)
     if (!valid) {
       return errorResponse(401, 'Invalid or expired nonce')

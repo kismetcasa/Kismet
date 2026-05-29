@@ -23,7 +23,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 // sits at the bottom of the mobile dropdown when it isn't the
 // current page.
 const NAV_PAGES = [
-  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Collect',  href: '/' },
+  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Enjoy',  href: '/' },
   { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
   { id: 'market', label: 'Market',   mobileLabel: 'Curate', href: '/market' },
 ] as const

@@ -3,6 +3,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
 import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly, isInIframe } from '@/lib/media/gateway'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { trackPerf } from '@/lib/telemetry'
 
 interface CommonProps {
   /** Raw URI: ar://, ipfs://, https://, blob:, or data: */
@@ -55,8 +57,12 @@ type NextImageProps = CommonProps & {
  *              proxy     → direct
  *              direct    → walk next gateway → onAllError
  */
-export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash: _thumbhash, priority, ...rest }: NextImageProps) {
+export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, priority, ...rest }: NextImageProps) {
   const { url, onError: walkGateway } = useFallbackUrl(src, onAllError)
+  // Decode the thumbhash once into a tiny data-URL so next/image can paint
+  // an instant low-fi preview behind the loading image, in place of the
+  // bare skeleton. Cheap (a few bytes → a small canvas) and memoized.
+  const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
   const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
@@ -100,6 +106,11 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash: _th
       // On WebKit + non-proxiable source we have to walk direct — no proxy
       // path available — but at least skipDirectWalk doesn't apply here
       // because there's no proxy attempt to short-circuit out of.
+      //
+      // Telemetry: record the optimizer-bypass event so we can spot
+      // systemic content-type issues (e.g., creators uploading videos
+      // as cover images) without trawling the production logs.
+      trackPerf('optimizer_400', 1)
       setMode(proxiable ? 'proxy' : 'direct')
       return
     }
@@ -145,6 +156,7 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash: _th
         onError={handleError}
         onLoad={() => setLoaded(true)}
         decoding="async"
+        {...(blurDataURL ? { placeholder: 'blur' as const, blurDataURL } : {})}
         // Force eager loading on iOS WebKit + iframe contexts. Native
         // loading="lazy" has a documented WebKit bug (bug 200764) that
         // fails to re-fetch/decode after scroll-back on Safari 15.4+,
