@@ -10,6 +10,9 @@ const PROCESSED_TTL = 30 * 24 * 60 * 60 // 30 days
 // targets where the flag is never consulted (the webhook filters by
 // passCollection, so the flag sits unread for off-Pass mints).
 const PLATFORM_TX_TTL = 90 * 24 * 60 * 60
+// Credited-once dedup TTL. Bounds the keyspace to the same realistic
+// window as platform-tx; long-tail re-delivery beyond 90d is implausible.
+const CREDITED_TTL = 90 * 24 * 60 * 60
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 const keyPlatformTx = (txHash: string) =>
@@ -22,6 +25,12 @@ const keyKnownTokens = (collection: string) =>
   `kismetart:pass:tokenids:${collection.toLowerCase()}`
 const keyProcessed = (txHash: string, logIndex: number, subIndex: number) =>
   `kismetart:pass:processed:${txHash.toLowerCase()}:${logIndex}:${subIndex}`
+// Per-acquisition idempotency for credits — distinct from the per-event
+// processed-key above. Direct-credit paths (listing fill, future:
+// collect, airdrop) and the webhook backstop both write through
+// creditValidityOnce, which CAS-claims this key; second writer is a no-op.
+const keyCredited = (collection: string, address: string, txHash: string) =>
+  `kismetart:pass:credited:${collection.toLowerCase()}:${address.toLowerCase()}:${txHash.toLowerCase()}`
 
 const ERC1155_ABI = [
   {
@@ -163,20 +172,72 @@ export async function processTransfer(params: {
   const platform = await isPlatformTx(txHash)
   const isMint = from === ZERO_ADDRESS
 
+  // Off-platform sale invariant: `from`'s decrement runs UNCONDITIONALLY
+  // for any non-mint transfer. So an OpenSea / direct-Seaport / P2P
+  // transfer of a Pass automatically revokes the seller's validity, even
+  // though `to` is never credited (the platform-flag gate below denies
+  // them). Live reconciliation in hasValidPass is a second layer of
+  // protection: if this webhook event is missed, the ledger>on-chain
+  // clamp still revokes once the seller no longer holds the token.
   if (!isMint) {
     await adjustValidBalance(collection, from, -amount)
   }
   if (platform) {
-    // Skip the credit step if `to` is on the pass-blacklist. The Pass
-    // moves to them on-chain regardless, but for platform purposes they
-    // gain no validity. `from`'s decrement above still applies — moving
-    // the Pass to a blacklisted address takes validity AWAY from the
-    // sender just as if they'd transferred it off-platform. Pairs with
-    // hasValidPass's short-circuit so an admin-listed address stays
-    // denied even if a webhook event somehow incremented them.
-    if (await isPassBlacklisted(to)) return
-    await adjustValidBalance(collection, to, amount)
+    // Convergence point: webhook and any direct-credit path
+    // (currently /api/listings/[id] PATCH filled, on a Pass-collection
+    // sale) both call creditValidityOnce so whichever fires first
+    // credits and the other is a no-op. Pass-blacklist + knownTokenIds
+    // sadd live inside the primitive.
+    await creditValidityOnce({ collection, address: to, txHash, tokenId, amount })
   }
+}
+
+/**
+ * Idempotent validity credit keyed by (collection, address, txHash).
+ * Designed to be called from BOTH the synchronous direct-credit paths
+ * (e.g. /api/listings/[id] PATCH filled on a Kismet Pass sale) AND the
+ * asynchronous webhook backstop — whichever fires first wins the SET NX
+ * and increments validBalance; the other is a no-op via the same key.
+ *
+ * Always populates knownTokenIds. hasValidPass's live reconciliation
+ * (balanceOfBatch clamp-down) only runs when knownTokenIds is non-empty,
+ * so without this sadd a direct credit ahead of any webhook event would
+ * leave the ledger uncheckable and the gate would trust a stale value.
+ *
+ * Pass-blacklist short-circuits BEFORE the CAS so a blacklisted address
+ * doesn't burn the credited-key slot for a real future acquisition.
+ *
+ * Caller responsibilities:
+ *   - On-chain proof that `address` received `tokenId` of `collection`
+ *     in `txHash` (collect: verifyMintOnChain; airdrop: verifyAirdropOnChain;
+ *     listing fill: findFulfillmentInLogs + recipient===signer).
+ *   - This function trusts what it's given. It is the credit step, not
+ *     the proof step.
+ */
+export async function creditValidityOnce(params: {
+  collection: string
+  address: string
+  txHash: string
+  tokenId: string
+  amount?: number
+}): Promise<void> {
+  const { collection, address, txHash, tokenId } = params
+  const amount = params.amount ?? 1
+  if (amount <= 0 || !address || !txHash) return
+
+  if (await isPassBlacklisted(address)) return
+
+  const claimed = await redis.set(
+    keyCredited(collection, address, txHash),
+    '1',
+    { nx: true, ex: CREDITED_TTL },
+  )
+  if (!claimed) return
+
+  if (tokenId) {
+    void redis.sadd(keyKnownTokens(collection), tokenId).catch(() => {})
+  }
+  await adjustValidBalance(collection, address, amount)
 }
 
 /** Returns true if the address holds any validly-acquired pass in the
