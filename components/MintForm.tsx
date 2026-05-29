@@ -1,14 +1,13 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useReadContract } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
-import { parseEther, parseUnits, isAddress, type Address } from 'viem'
+import { parseEther, parseUnits, isAddress } from 'viem'
 import { shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
@@ -28,7 +27,7 @@ import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESI
 import { COLLECTION_ABI } from '@/lib/collections'
 import { MAX_SPLITS } from '@/lib/splits'
 import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
-import { hasAdminBit, readPermissions } from '@/lib/permissions'
+import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
@@ -137,12 +136,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
   // Admin is gate-exempt server-side; skip the pass CTA for them.
   const { isAdmin } = useAdmin()
-  // For post-auto-deploy permission verification — reads
-  // permissions(0, smartWallet) on the freshly-deployed contract so we
-  // can surface a one-shot Authorize CTA if the smart wallet didn't
-  // end up with ADMIN.
-  const publicClient = usePublicClient({ chainId: base.id })
-
   // null = auto-deploy a fresh collection on submit. Initialized from the
   // URL/prop hint when present; cleared back to null via the × button.
   const [selectedCollection, setSelectedCollection] = useState<CollectionOption | null>(() => {
@@ -239,7 +232,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // round-trip when the smart wallet isn't ADMIN — the form blocks
   // submit and surfaces an Authorize CTA before any upload work.
   // Skipped in auto-deploy mode (no collection to read yet); auto-
-  // deploy uses post-mint verification in trackAndVerifyAutoDeploy
+  // deploy uses post-mint verification in trackAutoDeploy
   // below.
   //
   // We check the ADMIN bit specifically because inprocess's relay
@@ -331,14 +324,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
-  // Address of an auto-deployed collection where the smart wallet did
-  // NOT end up with ADMIN. Surfaces as a persistent warning in the
-  // success card; cleared by the "Mint another" handler.
-  const [autoDeployNeedsAuth, setAutoDeployNeedsAuth] = useState<string | null>(null)
-  // Race guard for the fire-and-forget post-mint verify: if the user
-  // clicks "Mint another" before the verify settles, this ref gets
-  // nulled and the helper bails before writing stale state.
-  const verifyTargetRef = useRef<string | null>(null)
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
   // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits
@@ -621,17 +606,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
     const finalSplits = buildFinalSplits()
 
-    // After a successful auto-deploy mint: register the new collection
-    // in KV and verify the smart wallet ended up with ADMIN. The mint
-    // itself is real on chain regardless of how this goes — both calls
-    // fire-and-forget; failures log to console.
-    async function trackAndVerifyAutoDeploy(
+    // After a successful auto-deploy mint, register the new collection
+    // in KV so the server can fan it out under moments. Fire-and-forget;
+    // failures log inside the helper. The mint itself is real on chain
+    // regardless of how this goes.
+    async function trackAutoDeploy(
       contractAddress: string,
       imageUri: string | undefined,
       thumbhash?: string,
     ): Promise<void> {
-      verifyTargetRef.current = contractAddress
-
       // Mark this contract as an auto-deployed wrapper (the protocol
       // creates one per first-mint when no collection is picked). The
       // server records it in the tracked set for moment fan-out but
@@ -646,46 +629,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         source: 'auto-deploy',
         kismet_thumbhash: thumbhash,
       })
-
-      if (publicClient && smartWalletForCaller && isAddress(smartWalletForCaller)) {
-        try {
-          const perms = await readPermissions(
-            publicClient,
-            contractAddress as Address,
-            0n,
-            smartWalletForCaller as Address,
-          )
-          if (!hasAdminBit(perms)) {
-            console.warn(
-              '[MintForm] auto-deploy: smart wallet missing ADMIN on new collection',
-              {
-                collection: contractAddress,
-                smartWallet: smartWalletForCaller,
-                perms: perms.toString(),
-              },
-            )
-            // Bail if "Mint another" already cleared the target.
-            if (verifyTargetRef.current !== contractAddress) return
-            setAutoDeployNeedsAuth(contractAddress)
-            toast.info('Authorize for next mint', {
-              description:
-                "Moment minted. For follow-up mints into this collection, grant Kismet ADMIN.",
-              action: {
-                label: 'Authorize',
-                onClick: () => router.push(`/collection/${contractAddress}`),
-              },
-            })
-          }
-        } catch (err) {
-          // RPC failure ≠ permission failure. Log only — the moment
-          // succeeded; we'd rather not show an alarming toast based on
-          // a transient read error.
-          console.warn(
-            '[MintForm] post-auto-deploy permission read threw',
-            err instanceof Error ? err.message : String(err),
-          )
-        }
-      }
     }
 
     try {
@@ -776,7 +719,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // Text moments don't have a media file, so the new
           // collection's cover stays unset (image: undefined). User
           // can update it later via collection-management UI.
-          void trackAndVerifyAutoDeploy(data.contractAddress, undefined)
+          void trackAutoDeploy(data.contractAddress, undefined)
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
@@ -1032,7 +975,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // mediaUri otherwise) so the KV registration can store it and
           // the collection card has a non-blank image immediately.
           // thumbhash piggybacks for the cover placeholder.
-          void trackAndVerifyAutoDeploy(data.contractAddress, coverImageUri ?? undefined, finalThumbhash ?? undefined)
+          void trackAutoDeploy(data.contractAddress, coverImageUri ?? undefined, finalThumbhash ?? undefined)
         }
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
@@ -1117,38 +1060,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         >
           {result.hash.slice(0, 10)}…{result.hash.slice(-8)}
         </a>
-        {/* Persistent warning when an auto-deploy left the smart
-            wallet without ADMIN on the new contract — without it the
-            user would only see the transient post-mint toast. Routes
-            to the collection page's existing Authorize banner. */}
-        {autoDeployNeedsAuth && (
-          <div className="text-left p-3 sm:p-4 border border-accent/40 bg-accent/5 flex items-start gap-2.5">
-            <ShieldAlert size={14} className="text-accent flex-shrink-0 mt-0.5" />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-mono text-ink">
-                Authorize for follow-up mints
-              </p>
-              <p className="text-[11px] font-mono text-dim mt-1">
-                Your moment is on chain. To mint more into this collection, grant Kismet ADMIN — one onchain tx from your wallet.
-              </p>
-              <button
-                type="button"
-                onClick={() => router.push(`/collection/${autoDeployNeedsAuth}`)}
-                className="mt-2.5 text-[10px] font-mono uppercase tracking-wider px-4 py-2 btn-accent"
-              >
-                authorize →
-              </button>
-            </div>
-          </div>
-        )}
         <button
           onClick={() => {
             setStep('idle')
             setResult(null)
-            setAutoDeployNeedsAuth(null)
-            // Signal any in-flight verify to bail before writing stale
-            // state against this freshly-reset form.
-            verifyTargetRef.current = null
             clearFile()
             setTextContent('')
             setName('')
