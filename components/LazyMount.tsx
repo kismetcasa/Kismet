@@ -18,9 +18,14 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
  */
 const EAGER_MOUNT_COUNT = 4
 
-// Mount this far before the viewport — just enough to hide pop-in on a
-// normal scroll while the browser fetches/decodes the image.
-const MOUNT_MARGIN = '200px'
+// Mount this far before the viewport so the card's content has time to
+// fetch/decode before it scrolls in. Sized generously (roughly a screen of
+// lead) because a fast flick on mobile easily outruns a tight margin — that
+// shows up as blank/placeholder cells popping in mid-scroll. Mounting ahead
+// is cheap now that feed videos stay hidden (poster only) during scroll and
+// only acquire/decode once scrolling settles, so the eager work no longer
+// competes with the scroll itself.
+const MOUNT_MARGIN = '600px'
 
 // Unmount once a card is this far OUTSIDE the viewport. Deliberately huge
 // relative to MOUNT_MARGIN: the gap is hysteresis so a card lingering near

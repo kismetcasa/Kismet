@@ -203,17 +203,17 @@ const LONG_FORM_DURATION_THRESHOLD_S = 60
 const IO_ROOT_MARGIN_SHORT = '150px'
 const IO_ROOT_MARGIN_LONG = '200%'
 
-// Mobile-only fast-scroll handling. A position:fixed video tracked via
-// transform can't keep up with iOS momentum scroll — the compositor
-// repaints the fixed element a frame or two behind, so it visibly smears
-// over the wrong card mid-fling, then snaps back when scroll settles.
-// When a slot moves more than this many px between scroll frames we treat
-// it as a fling and hide the video (the poster/thumbhash layer underneath
-// shows the correct still), then reveal it once scrolling settles. Slow
-// scrolls stay under the threshold and keep tracking exactly as before.
-const FAST_SCROLL_DELTA_PX = 24
-// Trailing delay after the last scroll event before we re-position and
-// reveal videos hidden during a fling.
+// Mobile scroll handling. A position:fixed video tracked via transform
+// can't keep pace with iOS momentum scroll — the compositor repaints the
+// fixed element a frame or more behind, so following the slot mid-scroll
+// paints the video over the wrong card / bleeding past the grid. So on
+// mobile we hide every feed video for the entire duration of a scroll (the
+// inline poster/thumbhash layer underneath shows the correct still and
+// scrolls natively with the card) and only reposition + reveal once scroll
+// settles. Stationary is the only time a fixed feed video is ever painted,
+// so the mis-positioning is impossible by construction. Desktop tracks live.
+//
+// Trailing delay after the last scroll event before we reposition + reveal.
 const SCROLL_SETTLE_MS = 140
 
 // Module-level memory of playback position by canonical src. Outlives
@@ -818,23 +818,21 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     // a synchronous reflow per video per frame on WebKit. Per-slot
     // ancestor-scroll listeners stay in SharedVideoSlot since ancestor
     // sets vary per slot.
-    // `allowFling` gates the mobile fling-hide. Only SCROLL may hide a
-    // video mid-motion — it's the only trigger that arms the settle timer
-    // that reveals it again. A resize- or layout-shift-driven flush is a
-    // discrete jump (not momentum lag): it must reposition + reveal, never
-    // hide, or the video would stay stuck-hidden until the next scroll.
-    // Coalesced per frame — if any caller this frame was a scroll, the
-    // fling-hide stays eligible.
+    //
+    // `mobileScrolling` is set while a mobile scroll is in flight. Any flush
+    // that runs during that window (scroll-driven OR a body-reflow / resize
+    // flush) keeps feed videos hidden, so a layout shift mid-scroll can't
+    // sneak a video back onscreen at a stale position. The transform is
+    // still updated under the hood, so the reveal flush the settle timer
+    // runs lands the element at its correct resting place. Desktop never
+    // sets the flag and tracks live.
     let rafPending = false
-    let pendingAllowFling = false
-    const flushAll = (allowFling = false) => {
-      if (allowFling) pendingAllowFling = true
+    let mobileScrolling = false
+    const flushAll = () => {
       if (rafPending) return
       rafPending = true
       requestAnimationFrame(() => {
         rafPending = false
-        const allowFlingThisFrame = pendingAllowFling
-        pendingAllowFling = false
         const updates: Array<{
           video: ManagedVideo
           slot: Slot
@@ -860,37 +858,34 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
           updates.push({ video, slot, rect, clip })
         })
         for (const { video, slot, rect, clip } of updates) {
-          // On mobile, hide a feed video that's moving too fast this frame
-          // to track without smearing; the trailing settle timer reveals
-          // it once scrolling stops. Controls surfaces (detail/lightbox)
-          // and desktop always track live.
-          const fling =
-            allowFlingThisFrame &&
-            isMobile &&
-            !slot.controls &&
-            Number.isFinite(video.lastTop) &&
-            Math.abs(rect.top - video.lastTop) > FAST_SCROLL_DELTA_PX
-          applySlotGeometry(video, slot, rect, clip, fling)
+          // Hold feed videos hidden for the whole duration of a mobile
+          // scroll — the inline poster underneath scrolls natively and
+          // correctly, while the fixed video would lag and smear. Controls
+          // surfaces (detail/lightbox) and desktop always track live.
+          const hideWhileScrolling =
+            mobileScrolling && isMobile && !slot.controls
+          applySlotGeometry(video, slot, rect, clip, hideWhileScrolling)
         }
       })
     }
-    // On mobile, schedule a reposition+reveal once scrolling settles so a
-    // video hidden mid-fling doesn't stay hidden after the user stops.
+    // Scrolling arms the hide; the trailing settle timer clears it and runs
+    // one reveal+reposition flush so videos return at their resting position
+    // once the user stops.
     let settleTimer: ReturnType<typeof setTimeout> | null = null
     const onScroll = () => {
-      flushAll(true)
+      if (isMobile) mobileScrolling = true
+      flushAll()
       if (!isMobile) return
       if (settleTimer !== null) clearTimeout(settleTimer)
       settleTimer = setTimeout(() => {
         settleTimer = null
+        mobileScrolling = false
         flushAll()
       }, SCROLL_SETTLE_MS)
     }
     window.addEventListener('scroll', onScroll, { passive: true })
-    // Resize is a discrete jump, not momentum — reposition without the
-    // fling-hide (which only the scroll path can reveal). Wrapped so the
-    // Event arg isn't read as `allowFling`.
-    const onResize = () => flushAll(false)
+    // Resize repositions everything. Wrapped so the Event arg isn't passed.
+    const onResize = () => flushAll()
     window.addEventListener('resize', onResize)
 
     // CORE FIX for the "video overlay parks over the wrong card" bug. In a
@@ -904,7 +899,7 @@ export function SharedVideoProvider({ children, isMobile = false }: { children: 
     // flushAll so a burst of reflows coalesces to one reposition per
     // frame. Fixed-position videos don't contribute to body height, so
     // repositioning them can't re-trigger this observer (no RO loop).
-    const bodyResizeObserver = new ResizeObserver(() => flushAll(false))
+    const bodyResizeObserver = new ResizeObserver(() => flushAll())
     bodyResizeObserver.observe(document.body)
 
     // Eviction sweep. Walks the pool, drops entries whose slot count
