@@ -170,8 +170,8 @@ function TokenGateCard() {
         <h2 className="text-ink font-mono text-sm">Token gate</h2>
         <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
           Configure the Pass-collection gate, override validity for specific
-          addresses, and manage the platform blacklist. Each sub-page handles
-          its own signing prompt.
+          addresses, and moderate users (action blacklist, pass blacklist,
+          hidden users). Each sub-page handles its own signing prompt.
         </p>
       </div>
       <ul className="flex flex-col gap-1.5">

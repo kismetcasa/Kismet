@@ -33,6 +33,7 @@ import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+import { useAdmin } from '@/contexts/AdminContext'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { SITE_URL } from '@/lib/siteUrl'
 
@@ -134,6 +135,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
+  // Admin is gate-exempt server-side; skip the pass CTA for them.
+  const { isAdmin } = useAdmin()
   // For post-auto-deploy permission verification — reads
   // permissions(0, smartWallet) on the freshly-deployed contract so we
   // can surface a one-shot Authorize CTA if the smart wallet didn't
@@ -267,6 +270,36 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     !!smartWalletForCaller &&
     smartWalletPerms !== undefined &&
     !hasAdminBit(smartWalletPerms as bigint)
+
+  // Token-gate pre-check. When the gate is enabled and the connected
+  // wallet holds no valid Pass, we swap the mint button for a "collect
+  // creator pass" CTA that links to the Pass collection — so a gated-out
+  // user is told up front instead of burning an Arweave upload + intent
+  // signature only to hit the server's 403. This is a UX hint, not the
+  // enforcement boundary; lib/mint-proxy still runs the authoritative
+  // hasGateAccess check on every request.
+  const [passGate, setPassGate] = useState<{
+    enabled: boolean
+    passCollection: string | null
+    validBalance: number
+  } | null>(null)
+  useEffect(() => {
+    if (!address) { setPassGate(null); return }
+    let cancelled = false
+    fetch(`/api/pass-validity?address=${address}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setPassGate(d) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [address])
+  const gatedOut =
+    !!passGate?.enabled &&
+    !!passGate.passCollection &&
+    passGate.validBalance < 1 &&
+    !isAdmin
+  const passCollectionHref = passGate?.passCollection
+    ? `/collection/${passGate.passCollection}`
+    : '/'
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
@@ -511,6 +544,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     e.preventDefault()
 
     if (!isConnected || !address) { openConnectModal?.(); return }
+    // Gated out (no valid Pass) — route to the Pass collection instead of
+    // attempting a mint that the server would 403. Guards the Enter-key
+    // submit path; the button itself is already swapped to the CTA below.
+    if (gatedOut) { router.push(passCollectionHref); return }
     // Bail before any Arweave upload if the smart wallet isn't ADMIN.
     // The banner above the form still renders the Authorize CTA.
     if (preflightUnauthorized) {
@@ -1583,18 +1620,34 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         )}
       </div>
 
-      {/* Submit */}
-      <button
-        type="submit"
-        disabled={isBusy}
-        className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
-      >
-        {!isConnected
-          ? 'connect wallet to mint'
-          : isBusy
-          ? stepLabel(step, uploadProgress)
-          : 'mint'}
-      </button>
+      {/* Submit — swaps to a "collect creator pass" CTA when the gate is
+          enabled and the connected wallet holds no valid Pass. */}
+      {gatedOut ? (
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => router.push(passCollectionHref)}
+            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+          >
+            collect creator pass
+          </button>
+          <p className="text-[10px] font-mono text-muted text-center">
+            minting requires a Kismet Creator Pass
+          </p>
+        </div>
+      ) : (
+        <button
+          type="submit"
+          disabled={isBusy}
+          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+        >
+          {!isConnected
+            ? 'connect wallet to mint'
+            : isBusy
+            ? stepLabel(step, uploadProgress)
+            : 'mint'}
+        </button>
+      )}
 
       {/* Residencies toggle */}
       <div className="flex items-center gap-2.5 w-fit mx-auto -mt-2">
