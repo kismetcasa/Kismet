@@ -64,6 +64,24 @@ function formatValue(name: EventName, value: number): string {
   return String(Math.round(value))
 }
 
+// Whether operator telemetry is on for this session. Lets UI (the on-screen
+// perf badge) mount only when an operator opted in — never for normal users.
+export function isTelemetryEnabled(): boolean {
+  return enabled
+}
+
+// Minimal in-page pub/sub so an on-screen readout can show values without a
+// console — the only practical way to read perf inside the Farcaster iOS
+// WebView (no DevTools, no URL bar). Listeners fire only while enabled.
+type PerfListener = (name: EventName, value: number) => void
+const listeners = new Set<PerfListener>()
+export function onPerf(cb: PerfListener): () => void {
+  listeners.add(cb)
+  return () => {
+    listeners.delete(cb)
+  }
+}
+
 /**
  * Record a single perf event. Cheap when telemetry is disabled
  * (single boolean check) so call sites can stay hot-path-safe.
@@ -71,4 +89,5 @@ function formatValue(name: EventName, value: number): string {
 export function trackPerf(name: EventName, value: number): void {
   if (!enabled || !Number.isFinite(value)) return
   console.log(`[telemetry] ${name}=${formatValue(name, value)}`)
+  listeners.forEach((l) => l(name, value))
 }
