@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi'
+import { useAccount, usePublicClient, useReconnect, useWriteContract } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
@@ -72,6 +72,10 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const { address } = useAccount()
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
+  // Recovery for a connected-but-unauthorized wallet (stale session): the
+  // toast's Reconnect action re-runs wagmi's connector reconnect, the
+  // programmatic equivalent of the page-refresh users currently rely on.
+  const { reconnect } = useReconnect()
   const ensureBase = useEnsureBase()
   const [status, setStatus] = useState<CollectStatus>('idle')
 
@@ -230,11 +234,11 @@ export function useDirectCollect(): UseDirectCollectReturn {
         return { hash }
       } catch (err) {
         setStatus('error')
-        toastError('Collect', err, { id: TOAST_ID })
+        toastError('Collect', err, { id: TOAST_ID, onReconnect: () => reconnect() })
         return null
       }
     },
-    [address, publicClient, writeContractAsync, ensureBase],
+    [address, publicClient, writeContractAsync, reconnect, ensureBase],
   )
 
   return { collect, status }
