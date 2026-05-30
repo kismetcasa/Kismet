@@ -62,7 +62,12 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   useEffect(() => {
     setGatewayIndex(0)
     setLoaded(false)
+    unmuteTriedRef.current = false
   }, [src])
+
+  // One-shot guard for the detail's auto-unmute (below) so a deliberate
+  // manual mute via the native controls isn't overridden on a later event.
+  const unmuteTriedRef = useRef(false)
 
   // Feed cards: want-to-play tracks viewport intersection. Committed videos
   // always want to play. Kept in a ref so the event handlers and the IO share
@@ -73,6 +78,23 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     const el = ref.current
     if (!el) return
     if (controls) {
+      // Detail = committed viewing: try to play WITH sound. Clicking through a
+      // card is a user gesture and Next.js soft-nav keeps the same document,
+      // so the browser usually allows the unmute; if it doesn't (a slow load
+      // outran the activation window, or this is a direct URL load with no
+      // preceding gesture) we fall back to muted and the user can unmute via
+      // the native controls. Unmuting a silent clip is a no-op, so there's no
+      // need to probe for an audio track first. Done once so a manual mute
+      // isn't undone by a later canplay/seek.
+      if (!unmuteTriedRef.current) {
+        unmuteTriedRef.current = true
+        el.muted = false
+        el.play().catch(() => {
+          el.muted = true
+          el.play().catch(() => {})
+        })
+        return
+      }
       el.play().catch(() => {})
       return
     }
