@@ -51,7 +51,7 @@ export default function RootLayout({
     <html lang="en">
       <head>
         {/* Warm TLS to arweave.net. The dominant consumers are the
-            <video> elements in SharedVideoProvider and the poster
+            inline <video> elements and the poster
             <img>s in MomentImage — both no-cors by default. Browser
             connection pools partition by CORS mode, so a crossorigin
             preconnect here would warm the wrong pool entry and the
@@ -86,8 +86,7 @@ export default function RootLayout({
             {/* Intercepted routes render here as an overlay over the
                 still-mounted {children} below. The feed stays alive
                 underneath, scroll position preserved, card videos still
-                playing — combined with SharedVideoProvider, the same
-                video element CSS-transitions from card to overlay. */}
+                playing as the detail opens above. */}
             {modal}
             <Toaster
               position="bottom-center"

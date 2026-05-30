@@ -223,8 +223,8 @@ export default async function MomentPage({ params }: Props) {
           on cold-cache share-link landings (FC casts, X shares). Skip
           for image/text moments and when no animation_url is set.
           No crossorigin attribute: must match the no-cors mode of the
-          <video> element this preload is feeding (SharedVideoProvider's
-          createVideo doesn't set crossOrigin). A mismatched preload
+          <video> element this preload is feeding (InlineVideo doesn't set
+          crossOrigin). A mismatched preload
           ends up in a different cache partition and Chrome warns
           "preload was not used" — the bytes are wasted. */}
       {detail?.metadata?.animation_url &&

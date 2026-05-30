@@ -339,8 +339,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       {/* Media — wrapped in <Link> so the click triggers Next.js's
           intercepting route at app/@modal/(.)moment/.../page.tsx. The
           feed stays mounted; the detail page renders as an overlay
-          above. Combined with SharedVideoProvider, the same <video>
-          element CSS-transitions from card to overlay without re-mount.
+          above, with the card's inline video still playing underneath.
           Direct URL load of /moment/X bypasses the interception and
           hits the canonical detail page. */}
       <Link

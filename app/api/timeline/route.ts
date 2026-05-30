@@ -192,7 +192,7 @@ export async function GET(req: NextRequest) {
       ...(needsCreatorOverride
         ? { creator: { address: meta.creator, username: null } }
         : {}),
-      // Surfaced for the client durationCache so SharedVideoProvider can
+      // Surfaced for the client durationCache so InlineVideo can
       // skip the metadata→auto preload upgrade dance for long-form.
       ...(hasDuration ? { kismet_duration_sec: meta.durationSec } : {}),
     }
