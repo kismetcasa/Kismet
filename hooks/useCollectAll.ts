@@ -5,6 +5,7 @@ import {
   useAccount,
   useConfig,
   usePublicClient,
+  useReconnect,
   useSendCalls,
   useWalletClient,
   useWriteContract,
@@ -149,6 +150,10 @@ export function useCollectAll(): UseCollectAllReturn {
   const { sendCallsAsync } = useSendCalls()
   const { data: walletClient } = useWalletClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
+  // Recovery for a connected-but-unauthorized wallet (stale session): the
+  // toast's Reconnect action re-runs wagmi's connector reconnect, the
+  // programmatic equivalent of the page-refresh users currently rely on.
+  const { reconnect } = useReconnect()
   const ensureBase = useEnsureBase()
   const [status, setStatus] = useState<Status>('idle')
   // Synchronous re-entrance latch. setStatus is async — between the user's
@@ -590,13 +595,13 @@ export function useCollectAll(): UseCollectAllReturn {
         return { minted: recorded.length }
       } catch (err) {
         setStatus('error')
-        toastError('Collect all', err, { id: TOAST_ID })
+        toastError('Collect all', err, { id: TOAST_ID, onReconnect: () => reconnect() })
         return null
       } finally {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase],
+    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, reconnect, ensureBase],
   )
 
   return { collectAll, status }
