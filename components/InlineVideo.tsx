@@ -58,16 +58,16 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     return typeof d === 'number' && d > LONG_FORM_DURATION_THRESHOLD_S
   }, [src])
 
+  // One-shot guard for the detail's auto-unmute (below) so a deliberate
+  // manual mute via the native controls isn't overridden on a later event.
+  const unmuteTriedRef = useRef(false)
+
   // Reset the gateway walk + fade when the src changes.
   useEffect(() => {
     setGatewayIndex(0)
     setLoaded(false)
     unmuteTriedRef.current = false
   }, [src])
-
-  // One-shot guard for the detail's auto-unmute (below) so a deliberate
-  // manual mute via the native controls isn't overridden on a later event.
-  const unmuteTriedRef = useRef(false)
 
   // Feed cards: want-to-play tracks viewport intersection. Committed videos
   // always want to play. Kept in a ref so the event handlers and the IO share

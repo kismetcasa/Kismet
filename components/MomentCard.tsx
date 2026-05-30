@@ -149,12 +149,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }, [moment.address, moment.kismetCollection])
 
   // Defer the per-card price fetch + the two on-chain reads off the initial
-  // mount/scroll path. Firing them on mount stacks a network + RPC + re-render
-  // burst onto the exact window where the feed is rendering in and the
-  // shared-video reposition rAF is already contended — which is what makes the
-  // overlay lag/mis-position while moments are still rendering. Waiting for
-  // idle keeps that window light; price/supply still popcorn in a beat later,
-  // and the collect button stays gated on collectReady until they land.
+  // mount path. Firing them on mount stacks a network + RPC + re-render burst
+  // onto the synchronous commit where a page of cards mounts at once — the
+  // open-feed freeze. Waiting for idle keeps that commit light; price/supply
+  // still popcorn in a beat later, and the collect button stays gated on
+  // collectReady until they land.
   const [deferReady, setDeferReady] = useState(false)
   useEffect(() => {
     const w = window as Window & {
