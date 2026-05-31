@@ -106,6 +106,10 @@ async function findFirstMomentTokenId(address: string): Promise<string | null> {
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  // Wrap in try/catch because error.tsx does NOT catch generateMetadata
+  // throws (vercel/next.js#49925). Safe fallback keeps the page rendering
+  // even when the KV/inprocess fetch fails.
+  try {
   const { address } = await params
   // KV is written at deploy time and is always fast; only fall back to
   // inprocess (fetchCollectionMeta) when KV has nothing.
@@ -153,6 +157,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       ...(imageUrl ? { images: [imageUrl] } : {}),
     },
     other: fcEmbed,
+  }
+  } catch (err) {
+    console.error('[generateMetadata] collection', err)
+    return { title: 'Collection — Kismet' }
   }
 }
 

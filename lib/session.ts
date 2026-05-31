@@ -1,5 +1,6 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
+import { safeRead } from './redisRead'
 import { randomBytes } from 'crypto'
 import type { NextRequest, NextResponse } from 'next/server'
 import { verifyFarcasterJwt } from './farcasterAuth'
@@ -28,7 +29,12 @@ export async function createSession(address: string): Promise<string> {
 }
 
 export async function verifySession(token: string): Promise<string | null> {
-  return redis.get<string>(key(token))
+  // Degrade to "unauthenticated" on Redis failure. Semantically identical
+  // to an expired token — every consumer (API gates, SSR isCreator checks)
+  // already handles null cleanly. Throwing here would 500 every authenticated
+  // page during any Upstash blip; null lets the user see the logged-out
+  // view and recover with a refresh once Redis is back.
+  return safeRead('verifySession', () => redis.get<string>(key(token)), null)
 }
 
 export async function revokeSession(token: string): Promise<void> {

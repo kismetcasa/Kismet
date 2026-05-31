@@ -1,19 +1,20 @@
-import { redis, TRENDING_KEY } from './redis'
 import { sweepExpiredListings } from './listings'
-import { KEY_PROFILES } from './profile'
+import { withLeaderLock } from './leaderLock'
 
 /**
- * Periodic Redis cleanup tasks. Per-task try/catch isolates failures;
- * running guard prevents overlapping ticks.
+ * Periodic Redis cleanup. Reduced to the listings sweep — notification
+ * cleanup moved to lazy-on-read in loadAndAnnotate, trending cleanup
+ * moved to inline-on-write in /api/collect. The listings sweep stays
+ * periodic because it touches per-listing keys + has to fire expiry
+ * notifications, which is awkward to do lazy.
  *
- * Multi-pod: each pod runs this independently. All tasks are idempotent
- * (SET NX claim keys; deterministic ZREMRANGEBY*) so duplicate work is
- * harmless. If pod count grows, wrap runSweep in a SET NX pod-lock.
+ * Multi-pod: the sweep runs under a Redis leader lock so only one pod
+ * cluster-wide executes it per tick. Without the lock, N pods × N sweeps
+ * each tick amplifies the work linearly with replicas.
  */
 
 const TICK_MS = 5 * 60 * 1000
-const NOTIF_TTL_SECONDS = 60 * 24 * 60 * 60   // 60 days
-const TRENDING_KEEP_TOP = 10_000
+const LOCK_TTL_SEC = 60
 
 let started = false
 let running = false
@@ -32,40 +33,13 @@ async function runSweep(): Promise<void> {
   if (running) return
   running = true
   try {
-    await Promise.all([
-      runTask('sweep-listings', sweepExpiredListings),
-      runTask('trim-notifications', trimNotifications),
-      runTask('trim-trending', trimTrending),
-    ])
+    // withLeaderLock returns null if another pod holds the lock — that's
+    // the normal "you don't run this tick" path, not an error. Throws
+    // from sweepExpiredListings itself propagate and are logged below.
+    await withLeaderLock('sweep-listings', LOCK_TTL_SEC, sweepExpiredListings)
+  } catch (err) {
+    console.error('[bg:sweep-listings] failed:', err instanceof Error ? err.message : String(err))
   } finally {
     running = false
   }
-}
-
-async function runTask(name: string, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn()
-  } catch (err) {
-    console.error(`[bg:${name}] failed:`, err instanceof Error ? err.message : String(err))
-  }
-}
-
-// Drop notifications older than NOTIF_TTL_SECONDS. Without this the
-// per-user zset only shrank via the MAX_PER_USER=200 trim on write —
-// low-activity users accumulated old entries indefinitely.
-async function trimNotifications(): Promise<void> {
-  const cutoff = Math.floor(Date.now() / 1000) - NOTIF_TTL_SECONDS
-  const profiles = (await redis.smembers(KEY_PROFILES)) as string[]
-  await Promise.all(
-    profiles.map((addr) =>
-      redis.zremrangebyscore(`kismetart:notif:${addr.toLowerCase()}`, 0, cutoff).catch(() => 0),
-    ),
-  )
-}
-
-// Keep the trending zset capped at top TRENDING_KEEP_TOP entries —
-// /api/timeline reads only that many, so anything past is dead weight.
-async function trimTrending(): Promise<void> {
-  // Range [0, -KEEP-1] removes every rank except the top KEEP.
-  await redis.zremrangebyrank(TRENDING_KEY, 0, -TRENDING_KEEP_TOP - 1)
 }

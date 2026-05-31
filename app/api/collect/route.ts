@@ -218,7 +218,18 @@ export async function POST(req: NextRequest) {
     : 1
 
   await Promise.all([
-    redis.zincrby(TRENDING_KEY, 1, `${collectionLower}:${tokenId}`).catch(() => {}),
+    // Inline trim: keep the trending zset capped at top 10K alongside the
+    // increment. Pattern: BullMQ-style write-side bounding, replaces the
+    // per-5min trimTrending background task with a per-collect operation.
+    // The trim is a no-op when the zset is under cap (cheap) and is
+    // amortized across every collect event — vastly fewer than 288/day
+    // background-task fires.
+    redis
+      .multi()
+      .zincrby(TRENDING_KEY, 1, `${collectionLower}:${tokenId}`)
+      .zremrangebyrank(TRENDING_KEY, 0, -10_001)
+      .exec()
+      .catch(() => {}),
     recordCollected(account, collectionLower, tokenId).catch(() => {}),
   ])
 

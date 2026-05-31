@@ -71,4 +71,4 @@ async function _getHiddenUsersSet(): Promise<Set<string>> {
     return new Set()
   }
 }
-export const getHiddenUsersSet = memoize(_getHiddenUsersSet, 60_000)
+export const getHiddenUsersSet = memoize(_getHiddenUsersSet, 5 * 60_000)

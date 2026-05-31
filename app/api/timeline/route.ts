@@ -214,12 +214,21 @@ export async function GET(req: NextRequest) {
   // via MintForm + covers minted at Create-Collection time) appear.
   // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
   // remain visible in user-history surfaces.
+  //
+  // If the createdMints lookup fails (Upstash blip), skip the filter for
+  // this request rather than serve an empty feed. Showing some unfiltered
+  // moments briefly is strictly better UX than "no moments yet" — and the
+  // next request retries the lookup (memoize doesn't cache the throw).
   if (scope === 'standalone' && !singleCollection) {
-    const createdMints = await getCreatedMintsSet()
-    merged = merged.filter((m: unknown) => {
-      const moment = m as { address?: string; token_id?: string }
-      return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
-    })
+    try {
+      const createdMints = await getCreatedMintsSet()
+      merged = merged.filter((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string }
+        return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+      })
+    } catch (err) {
+      console.warn('[timeline] standalone filter skipped (Redis unavailable):', err)
+    }
   }
 
   // Creator filter (Featured / Profile feeds). Matches if the moment's
