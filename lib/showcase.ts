@@ -13,9 +13,10 @@ export type PinCategory = 'mints' | 'collected' | 'listings'
 
 const CATEGORIES: readonly PinCategory[] = ['mints', 'collected', 'listings']
 
-// Two rows of the profile's 6-wide compact grid. A showcase is a highlight
-// reel, not a second feed — the cap keeps it glanceable and bounds the read.
-export const MAX_PINS_PER_CATEGORY = 12
+// One curated row of the profile's grid per section — a showcase is a tight
+// highlight reel, not a second feed. Small by design (and in line with how
+// other products cap pins: IG 3, GitHub 6); the cap also bounds the read.
+export const MAX_PINS_PER_CATEGORY = 4
 
 export function isPinCategory(value: unknown): value is PinCategory {
   return typeof value === 'string' && (CATEGORIES as readonly string[]).includes(value)

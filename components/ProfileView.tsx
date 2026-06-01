@@ -194,7 +194,7 @@ interface Profile {
 }
 
 export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
-  const { address: connectedAddress, isConnecting, isReconnecting } = useAccount()
+  const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
@@ -392,23 +392,25 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       .finally(() => setLoadingListings(false))
   }, [address, tier3])
 
+  // Sales + Airdrops are owner-dashboard-only sections — a visitor's curated
+  // view never renders them, so skip the fetches entirely for non-owners.
   useEffect(() => {
-    if (!tier3) return
+    if (!tier3 || !isOwner) return
     fetch(`/api/payments?artist=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
       .catch(() => setPayments([]))
       .finally(() => setLoadingPayments(false))
-  }, [address, tier3])
+  }, [address, tier3, isOwner])
 
   useEffect(() => {
-    if (!tier3) return
+    if (!tier3 || !isOwner) return
     fetch(`/api/airdrops?artist_address=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setAirdrops(Array.isArray(d.airdrops) ? d.airdrops : []))
       .catch(() => setAirdrops([]))
       .finally(() => setLoadingAirdrops(false))
-  }, [address, tier3])
+  }, [address, tier3, isOwner])
 
   // ─── section drag / collapse ──────────────────────────────────────────────
 
@@ -568,23 +570,17 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     }
   }
 
-  // Visitor "pinned only" curated view. Owners always see their full profile
-  // (so they can pin); a visitor sees just the pinned sections. The flag is
-  // gated on the POST-FILTER renderable count, so if every pin is currently
-  // unrenderable (buried past the fetch window / delisted) it falls back to
-  // the full view rather than rendering an empty profile.
+  // Pinned-showcase derivations. A visitor (`!isOwner`) sees ONLY the owner's
+  // pinned moments — filtered from the already-loaded arrays, which keeps the
+  // render self-validating (a pin can only show content the owner truly
+  // minted/collected/listed). Owners always see their full dashboard so they
+  // can curate. With no pins, a visitor's view has no sections at all — just
+  // the profile header (identity only).
   const pinnedMoments = orderByPins(moments, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.mints)
   const pinnedCollected = orderByPins(collected, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.collected)
   const pinnedListings = orderByPins(listings, (l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`, pins.listings)
-  const hasAnyPins = pins.mints.length + pins.collected.length + pins.listings.length > 0
-  const pinSourcesLoaded = !loadingMoments && !loadingCollected && !loadingListings
-  const totalPinnedRenderable = pinnedMoments.length + pinnedCollected.length + pinnedListings.length
-  // Hold off the pinned/full decision until the wallet has settled, so an
-  // owner whose reconnect hasn't resolved yet never flashes the visitor view
-  // of their own profile (isOwner is briefly false mid-reconnect).
-  const walletSettled = !isConnecting && !isReconnecting
-  const pinnedView =
-    walletSettled && !isOwner && hasAnyPins && !(pinSourcesLoaded && totalPinnedRenderable === 0)
+  const pinnedView = !isOwner
+  const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
   const displayMoments = pinnedView ? pinnedMoments : moments
   const displayCollected = pinnedView ? pinnedCollected : collected
@@ -1044,6 +1040,19 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         </div>
       )}
 
+
+      {/* Owner-only hint: the public profile is curation-driven, and an owner
+          only ever sees this (full) dashboard — so without this they'd have no
+          way to know visitors currently see just their details. */}
+      {ownerHasNoPins && (
+        <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
+          <p className="text-xs font-mono text-muted leading-relaxed">
+            Visitors see only the moments you <span className="text-dim">pin</span>. Tap the
+            {' '}<span className="text-dim">pin</span> on any moment below to feature it — until then,
+            your public profile shows just your details.
+          </p>
+        </div>
+      )}
 
       {/* Draggable / collapsible sections. The optional `curate` section is
           appended last for the curator on their own profile and is not
