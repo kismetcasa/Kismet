@@ -6,9 +6,9 @@ import { errorResponse } from '@/lib/apiResponse'
 import { addPin, removePin, getAllPins, isPinCategory } from '@/lib/showcase'
 
 // GET /api/profile/[address]/pins — public. Returns the owner's pinned
-// showcase refs per category, newest-pinned first. Same for every viewer
-// (it's the profile owner's curation), so a short shared-cache window is
-// safe; the owner sees their own writes instantly via optimistic UI.
+// showcase refs per category, newest-pinned first. Served fresh (uncached,
+// like /api/featured) so a just-pinned moment is visible to other viewers
+// immediately — it's three small ZRANGEs.
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ address: string }> },
@@ -20,10 +20,7 @@ export async function GET(
   // this with the canonical key already — no per-request resolution needed
   // on the hot read path.
   const pins = await getAllPins(address)
-  return NextResponse.json(
-    { pins },
-    { headers: { 'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=60' } },
-  )
+  return NextResponse.json({ pins })
 }
 
 interface PinBody {

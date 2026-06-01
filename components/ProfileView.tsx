@@ -536,10 +536,16 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   async function togglePin(category: PinCategory, collectionAddress: string, tokenId: string) {
     if (!connectedAddress) { openConnectModal?.(); return }
     const key = `${collectionAddress.toLowerCase()}:${tokenId}`
-    const prev = pins[category]
-    const wasPinned = prev.includes(key)
-    const next = wasPinned ? prev.filter((k) => k !== key) : [key, ...prev]
-    setPins((p) => ({ ...p, [category]: next }))
+    const wasPinned = pins[category].includes(key)
+    // Functional add/remove scoped to this key, so rapid taps across cards
+    // can't clobber each other's optimistic state. New pins go to the front
+    // to match the server's newest-pinned-first ordering.
+    const apply = (pinned: boolean) =>
+      setPins((p) => {
+        const without = p[category].filter((k) => k !== key)
+        return { ...p, [category]: pinned ? [key, ...without] : without }
+      })
+    apply(!wasPinned)
     try {
       const res = await fetch(`/api/profile/${address}/pins`, {
         method: wasPinned ? 'DELETE' : 'POST',
@@ -551,7 +557,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         throw new Error(d.error ?? 'Failed')
       }
     } catch (err) {
-      setPins((p) => ({ ...p, [category]: prev })) // revert optimistic toggle
+      apply(wasPinned) // revert just this key
       toastError(wasPinned ? 'Unpin' : 'Pin', err)
     }
   }
