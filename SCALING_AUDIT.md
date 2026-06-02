@@ -285,7 +285,12 @@ a *soft/degraded* signal rather than a hard readiness gate.
 - `api.farcaster.xyz` is hit for **primary-address + profile** resolution, cached
   1 h / 5 h in Redis (`lib/farcasterAuth.ts`, `lib/farcasterProfile.ts`) but is on
   the **per-request path for Mini App users** on cache miss. Hub used only for
-  webhook signature verify. Quick-Auth JWT verified locally (no network).
+  webhook signature verify. Quick-Auth JWT verification is **not** purely local:
+  `verifyJwt` validates against the issuer's **remote JWKS**
+  (`auth.farcaster.xyz/.well-known/jwks.json`), fetched once and cached in-process —
+  steady-state is local CPU, but cold starts / key rotations make a network call,
+  so the runtime needs egress to `auth.farcaster.xyz` and should reuse one
+  long-lived client. _(Corrected after doc research — see REMEDIATION_PLAYBOOK.md.)_
 - Native **push** POSTs to host URLs are SSRF-guarded, timed out (10 s), chunked
   ≤100 tokens, idempotent, GC-invalid-tokens — well built; the only scale concern
   is the §3 fan-out volume.
