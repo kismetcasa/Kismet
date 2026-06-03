@@ -11,9 +11,13 @@ const REJECTION_REGEX = /user rejected|user denied|rejected the request|user can
 // NOT match bare `/not authorized/` — that wording appears in on-chain
 // permission reverts ("Caller is not authorized for this token"), which
 // would mislead the user into a reconnect loop. The literal "unauthorized"
-// or "not been authorized" phrasings are wallet-context only.
+// or "not been authorized" phrasings are wallet-context only. The
+// disconnect alternation covers viem (provider/wallet) and WalletConnect
+// ("user disconnected", "session settlement failed"); `\bexpired\b`
+// catches WalletConnect's bare "Expired." (code 6) which has no
+// session/wallet prefix.
 const AUTH_ERROR_REGEX =
-  /unauthorized|not been authorized|session.*(?:expired|disconnect)|(?:wallet|provider).*disconnect/i
+  /unauthorized|not been authorized|\bexpired\b|(?:session|wallet|provider|user).*disconnect|session.*settlement/i
 
 // EIP-1193 auth-class numeric codes: 4100 = not authorized by user,
 // 4900 = provider disconnected, 4901 = not connected to requested chain.
@@ -24,7 +28,6 @@ interface MaybeWalletError {
   code?: unknown
   details?: unknown
   shortMessage?: unknown
-  cause?: unknown
 }
 
 // Walks an error chain (err → err.cause → …) testing each frame against
@@ -113,10 +116,18 @@ export function humanError(err: unknown): string {
 }
 
 /**
- * Show an error toast for a wallet write. Wallet rejections collapse to a
- * clean "Cancelled" title; auth-class failures show a reconnect-recovery
- * message with an optional Reconnect action; everything else falls back to
- * "<action> failed" + the underlying message.
+ * Show an error toast. Wallet rejections collapse to a clean "Cancelled"
+ * title. Callers that opt into wallet-recovery UX by supplying `onReconnect`
+ * get a "Wallet needs to reconnect" toast with a Reconnect action when the
+ * error looks auth-class. Everything else falls back to "<action> failed"
+ * + the underlying message.
+ *
+ * The auth-recovery branch is GATED on `onReconnect` because the regex
+ * matches on broad phrasings ("unauthorized", "session expired") that
+ * also appear in server API responses unrelated to wallet sessions —
+ * surfacing "Wallet needs to reconnect" for a `/api/profile` 401 would
+ * be misleading. Opting in via `onReconnect` is how a call site declares
+ * "I'm a wallet write, treat my auth errors accordingly."
  */
 export function toastError(
   action: string,
@@ -127,26 +138,25 @@ export function toastError(
     toast.error('Cancelled', { id: options.id })
     return
   }
-  if (isAuthError(err)) {
+  if (options.onReconnect && isAuthError(err)) {
+    const onReconnect = options.onReconnect
     toast.error('Wallet needs to reconnect', {
       id: options.id,
       description:
         'Your wallet session expired. Reconnect and try again — nothing was charged.',
-      action: options.onReconnect
-        ? {
-            label: 'Reconnect',
-            onClick: (event) => {
-              // preventDefault keeps sonner from auto-dismissing — sonner
-              // runs `!event.defaultPrevented && dismiss()` after onClick,
-              // which would kill the loading toast we set right below.
-              event.preventDefault()
-              if (options.id) {
-                toast.loading('Reconnecting…', { id: options.id })
-              }
-              options.onReconnect!()
-            },
+      action: {
+        label: 'Reconnect',
+        onClick: (event) => {
+          // preventDefault keeps sonner from auto-dismissing — sonner
+          // runs `!event.defaultPrevented && dismiss()` after onClick,
+          // which would kill the loading toast we set right below.
+          event.preventDefault()
+          if (options.id) {
+            toast.loading('Reconnecting…', { id: options.id })
           }
-        : undefined,
+          onReconnect()
+        },
+      },
     })
     return
   }
