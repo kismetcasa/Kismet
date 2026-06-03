@@ -81,6 +81,12 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const collectRef = useRef<(args: CollectArgs) => Promise<{ hash: Hash } | null>>(
     () => Promise.resolve(null),
   )
+  // Synchronous re-entrance latch. The button stays clickable through
+  // status === 'error' (see consumers), so during the 2-8s reconnect
+  // window between layer-2's Reconnect tap and the auto-retry firing,
+  // a manual tap could otherwise dispatch a parallel collect — leading
+  // to a double-charge if both succeed.
+  const inFlightRef = useRef(false)
 
   const collect = useCallback(
     async (args: CollectArgs): Promise<{ hash: Hash } | null> => {
@@ -116,6 +122,8 @@ export function useDirectCollect(): UseDirectCollectReturn {
         toast.error('Invalid token id')
         return null
       }
+      if (inFlightRef.current) return null
+      inFlightRef.current = true
 
       setStatus('preparing')
       toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
@@ -242,6 +250,8 @@ export function useDirectCollect(): UseDirectCollectReturn {
           void collectRef.current(args)
         })
         return null
+      } finally {
+        inFlightRef.current = false
       }
     },
     [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError],
