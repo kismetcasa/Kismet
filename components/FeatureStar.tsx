@@ -16,13 +16,16 @@ const TAP_MAX_MS = 400
 // from the yellow "featured" state. This is an actual gradient color (not one
 // of the retired purple tokens), so the hex-token lint rule allows it.
 const DISPLAY_PURPLE = '#9692f6'
+// Star glyph size and the progress-ring box around it. Fixed — every surface
+// renders the star at the same size today.
+const STAR_SIZE = 16
+const RING_SIZE = STAR_SIZE + 12
 
 interface FeatureStarProps {
   address: string
   tokenId: string
   /** Positioning / layout classes (e.g. an absolute image corner). */
   className?: string
-  size?: number
 }
 
 /**
@@ -34,7 +37,7 @@ interface FeatureStarProps {
  * Pass Display (purple). Renders nothing for non-admins, so it adds no weight
  * to public feeds.
  */
-export function FeatureStar({ address, tokenId, className = '', size = 16 }: FeatureStarProps) {
+export function FeatureStar({ address, tokenId, className = '' }: FeatureStarProps) {
   const { isAdmin, featuredKeys, mintPassKeys, toggleFeatured, toggleMintPassDisplay } = useAdmin()
 
   const [holding, setHolding] = useState(false)
@@ -107,10 +110,6 @@ export function FeatureStar({ address, tokenId, className = '', size = 16 }: Fea
       ? 'Featured · tap to unfeature, hold to set Mint Pass Display'
       : 'Tap to feature · hold to set Mint Pass Display'
 
-  // Ring is sized a touch larger than the star and normalized via pathLength
-  // so a single keyframe fills it regardless of radius.
-  const ringSize = size + 12
-
   return (
     <button
       type="button"
@@ -131,8 +130,8 @@ export function FeatureStar({ address, tokenId, className = '', size = 16 }: Fea
           <svg
             aria-hidden
             className="absolute pointer-events-none -rotate-90"
-            width={ringSize}
-            height={ringSize}
+            width={RING_SIZE}
+            height={RING_SIZE}
             viewBox="0 0 100 100"
           >
             <circle cx="50" cy="50" r="46" fill="none" stroke={DISPLAY_PURPLE} strokeOpacity="0.25" strokeWidth="9" />
@@ -150,7 +149,7 @@ export function FeatureStar({ address, tokenId, className = '', size = 16 }: Fea
             />
           </svg>
         )}
-        <Star size={size} fill={isFeatured || isDisplay ? 'currentColor' : 'none'} strokeWidth={1.5} />
+        <Star size={STAR_SIZE} fill={isFeatured || isDisplay ? 'currentColor' : 'none'} strokeWidth={1.5} />
       </span>
     </button>
   )
