@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import type { Moment } from '@/lib/inprocess'
+import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
@@ -11,11 +12,6 @@ import { MaybeLazy } from './LazyMount'
 // breaks in. Picked to match the lg+ 4-col grid so the collection always
 // appears at a visual row boundary rather than mid-row.
 const STRIDE = 4
-
-interface MintPassDisplayRef {
-  address: string
-  tokenId: string
-}
 
 interface FeaturedFeedProps {
   emptyMessage: string
@@ -28,14 +24,15 @@ interface FeaturedFeedProps {
 }
 
 export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedProps) {
+  // Which featured mints are Mint Pass Displays — sourced from AdminContext
+  // (already fetched for the feature stars) so the hero reuses the mint's data
+  // straight from the featured timeline below, with no extra /api/featured or
+  // /api/moment round-trips.
+  const { mintPassKeys } = useAdmin()
   // Per-endpoint state so the moments grid paints when /api/timeline
   // returns, not when both endpoints have. null = pending, [] = empty.
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
-  // Curated Mint Pass Displays (ordered newest-first). Just the refs — each
-  // FeaturedMoment hydrates itself — so the list scales without a bespoke
-  // batch endpoint.
-  const [displays, setDisplays] = useState<MintPassDisplayRef[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -53,59 +50,26 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
         if (cancelled) return
         setCollections(Array.isArray(fc?.collections) ? fc.collections : [])
       })
-    // The hero is desktop-only, so the display set is only needed there — skip
-    // the fetch on mobile/miniapp, where the same mint already rides the grid.
-    if (!isMobile) {
-      fetch('/api/featured')
-        .then((r) => (r.ok ? r.json() : { mintPassDisplays: [] }))
-        .catch(() => ({ mintPassDisplays: [] }))
-        .then((d) => {
-          if (cancelled) return
-          const refs: MintPassDisplayRef[] = Array.isArray(d?.mintPassDisplays)
-            ? d.mintPassDisplays
-                .filter(
-                  (m: { collectionAddress?: string; tokenId?: string }) =>
-                    m?.collectionAddress && m?.tokenId,
-                )
-                .map((m: { collectionAddress: string; tokenId: string }) => ({
-                  address: m.collectionAddress,
-                  tokenId: m.tokenId,
-                }))
-            : []
-          setDisplays(refs)
-        })
-    }
     return () => { cancelled = true }
-  }, [isMobile])
-
-  // One curated Mint Pass Display leads the tab as a desktop hero (web-only).
-  // On mobile/miniapp the same mint is shown as a normal featured card in the
-  // grid below (it's also in FEATURED_KEY), so the hero is null there.
-  const displayRef = displays[0] ?? null
-  const hero = displayRef ? (
-    <FeaturedMoment address={displayRef.address} tokenId={displayRef.tokenId} priority />
-  ) : null
+  }, [])
 
   if (moments === null) {
-    return (
-      <div className="flex flex-col gap-6 pt-4">
-        {hero}
-        <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
-      </div>
-    )
+    return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
   }
 
-  // On desktop the hero mint is pulled out of the grid so it isn't shown
-  // twice. On mobile `hero` is null and the mint stays in the grid.
-  const gridMoments = displayRef
-    ? moments.filter(
-        (m) =>
-          !(
-            m.address?.toLowerCase() === displayRef.address.toLowerCase() &&
-            String(m.token_id) === String(displayRef.tokenId)
-          ),
-      )
-    : moments
+  // The desktop hero (web-only) is the newest featured mint that's also a Mint
+  // Pass Display — found in the moments we already have, so it costs no extra
+  // fetch. On mobile/miniapp it's left in the grid as a normal card (hero null).
+  const heroMoment =
+    !isMobile && mintPassKeys.size > 0
+      ? moments.find((m) =>
+          mintPassKeys.has(`${m.address?.toLowerCase()}:${m.token_id}`),
+        ) ?? null
+      : null
+  const hero = heroMoment ? <FeaturedMoment moment={heroMoment} priority /> : null
+
+  // Pull the hero mint out of the grid so it isn't shown twice.
+  const gridMoments = heroMoment ? moments.filter((m) => m !== heroMoment) : moments
 
   // Interleave: STRIDE moments → 1 collection → STRIDE moments → ...
   // Both lists arrive sorted by featuredAt desc, so the result is roughly
@@ -132,14 +96,9 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   // Wait for collections too before showing empty — otherwise the tab
   // flashes "empty" between moments resolving empty and collections done.
   // Skip it when the hero leads the tab so it never reads "nothing here"
-  // above the showcase.
+  // above the showcase. (hero is null here by the guard.)
   if (blocks.length === 0 && collections !== null && !hero) {
-    return (
-      <div className="flex flex-col gap-6 pt-4">
-        {hero}
-        <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
-      </div>
-    )
+    return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
   }
 
   // Running flat index across moment-blocks so MaybeLazy's eager-count

@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { shortAddress, type MomentDetail } from '@/lib/inprocess'
+import { shortAddress, type Moment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
-import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
@@ -13,8 +12,13 @@ import { MomentVideo } from './MomentVideo'
 import { FeatureStar } from './FeatureStar'
 
 interface FeaturedMomentProps {
-  address: string
-  tokenId: string
+  /**
+   * The hero mint — passed straight from FeaturedFeed's already-fetched
+   * featured timeline (the display mint is also in FEATURED_KEY). The Moment
+   * is server-enriched with creator + collection chip + inline metadata, so
+   * this component needs no fetch of its own.
+   */
+  moment: Moment
   /** Above-the-fold hint — the hero leads the featured tab and is the LCP. */
   priority?: boolean
 }
@@ -39,55 +43,40 @@ const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
  * letterbox); the left text links to the moment detail page and the right
  * text to the collection page.
  *
- * Self-contained: fetches its own MomentDetail and resolves the artist /
- * collection labels from the shared caches. Holds a fixed-height skeleton
- * while loading and renders nothing if the moment fails to load or is hidden,
- * so a stale curation never leaves a broken hero in the feed.
+ * Presentational: the Moment is handed in fully-formed, so there's no fetch,
+ * loading, or hidden-gating here (the timeline already filtered hidden mints).
  */
-export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentProps) {
-  const [detail, setDetail] = useState<MomentDetail | null>(null)
-  const [failed, setFailed] = useState(false)
-  // A moment resolves to exactly one media kind, so a single failure flag
-  // (set by whichever of the image/video branches exhausts its gateways)
-  // covers both — they can never both render.
+export function FeaturedMoment({ moment, priority }: FeaturedMomentProps) {
+  const { address, token_id: tokenId } = moment
+  const meta = moment.metadata ?? {}
   const [mediaError, setMediaError] = useState(false)
   const [naturalRatio, setNaturalRatio] = useState<number | null>(null)
-  const [artist, setArtist] = useState<string | null>(null)
-  const [collection, setCollection] = useState<string | null>(null)
 
+  // Artist label — seeded from the server-enriched Moment so it paints
+  // immediately, then upgraded from the profile cache for FC-only creators
+  // whose username isn't stitched server-side.
+  const creatorAddress = moment.creator?.address
+  const seedArtist = creatorAddress
+    ? moment.creator?.username
+      ? `@${moment.creator.username}`
+      : shortAddress(creatorAddress)
+    : null
+  const [resolvedArtist, setResolvedArtist] = useState<string | null>(null)
+  const artist = resolvedArtist ?? seedArtist
   useEffect(() => {
-    let cancelled = false
-    const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
-    fetch(`/api/moment?${params}`)
-      .then((r) => (r.ok ? (r.json() as Promise<MomentDetail>) : Promise.reject()))
-      .then((d) => { if (!cancelled) setDetail(d) })
-      .catch(() => { if (!cancelled) setFailed(true) })
-    return () => { cancelled = true }
-  }, [address, tokenId])
-
-  // Artist label — `@username` when resolvable, else the short address. Seed
-  // from the /api/moment creator, then upgrade from the Kismet profile cache.
-  const creatorAddress = detail?.creator?.address
-  const creatorUsername = detail?.creator?.username
-  useEffect(() => {
-    if (!creatorAddress) return
-    setArtist(creatorUsername ? `@${creatorUsername}` : shortAddress(creatorAddress))
+    if (!creatorAddress || moment.creator?.username) return
     fetchCreatorProfile(creatorAddress)
       .then(({ name }) => {
         const isUsername = !!name && name !== shortAddress(creatorAddress)
-        setArtist(isUsername ? `@${name}` : shortAddress(creatorAddress))
+        setResolvedArtist(isUsername ? `@${name}` : shortAddress(creatorAddress))
       })
       .catch(() => {})
-  }, [creatorAddress, creatorUsername])
+  }, [creatorAddress, moment.creator?.username])
 
-  // Collection label — falls back to the short contract address.
-  useEffect(() => {
-    fetchCollectionChip(address)
-      .then(({ name }) => setCollection(name ?? shortAddress(address)))
-      .catch(() => setCollection(shortAddress(address)))
-  }, [address])
+  // Collection label — the timeline already stitches the chip; fall back to
+  // the short contract address.
+  const collection = moment.kismetCollection?.name ?? shortAddress(address)
 
-  const meta = detail?.metadata ?? {}
   const media = resolveMomentMedia(meta)
   const isVideo = media.kind === 'video'
   const isTextMoment = media.kind === 'text'
@@ -96,14 +85,12 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
 
   // Exact natural ratio (once the image loads) wins; the thumbhash ratio is the
-  // shift-free initial guess; square is the pre-data fallback.
+  // shift-free initial guess; square is the fallback.
   const aspectRatio = clampRatio(naturalRatio ?? thumbRatio ?? DEFAULT_RATIO)
   const handleNaturalSize = useCallback((w: number, h: number) => {
     if (w > 0 && h > 0) setNaturalRatio(w / h)
   }, [])
 
-  if (failed || detail?.hidden) return null
-  const loading = !detail
   const momentHref = `/moment/${address}/${tokenId}`
   const title = meta.name ?? `#${tokenId}`
 
@@ -117,21 +104,15 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
         href={momentHref}
         className="group/l flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1.5 px-6"
       >
-        {loading ? (
-          <span aria-hidden className="h-5 w-2/3 bg-line/50 animate-pulse" />
-        ) : (
+        <span className="font-mono text-ink text-lg xl:text-xl leading-snug line-clamp-3 group-hover/l:text-dim transition-colors">
+          {title}
+        </span>
+        {artist && (
           <>
-            <span className="font-mono text-ink text-lg xl:text-xl leading-snug line-clamp-3 group-hover/l:text-dim transition-colors">
-              {title}
+            <span className="font-mono text-muted text-xs">by</span>
+            <span className="font-mono text-dim text-sm truncate max-w-full group-hover/l:text-ink transition-colors">
+              {artist}
             </span>
-            {artist && (
-              <>
-                <span className="font-mono text-muted text-xs">by</span>
-                <span className="font-mono text-dim text-sm truncate max-w-full group-hover/l:text-ink transition-colors">
-                  {artist}
-                </span>
-              </>
-            )}
           </>
         )}
       </Link>
@@ -177,8 +158,6 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
           </div>
         ) : blurPreview ? (
           <span aria-hidden className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${blurPreview})` }} />
-        ) : loading ? (
-          <span aria-hidden className="absolute inset-0 bg-accent/10 animate-pulse" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <span className="text-line font-mono text-xs">no preview</span>
@@ -194,13 +173,9 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
         href={`/collection/${address}`}
         className="group/r flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6"
       >
-        {loading ? (
-          <span aria-hidden className="h-4 w-1/2 bg-line/50 animate-pulse" />
-        ) : collection ? (
-          <span className="font-mono text-ink text-base xl:text-lg leading-snug line-clamp-3 group-hover/r:text-dim transition-colors">
-            {collection}
-          </span>
-        ) : null}
+        <span className="font-mono text-ink text-base xl:text-lg leading-snug line-clamp-3 group-hover/r:text-dim transition-colors">
+          {collection}
+        </span>
       </Link>
     </article>
   )
