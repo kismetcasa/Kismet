@@ -163,10 +163,13 @@ wrong). Those are collected first.
 ### B5. Image/media proxy `/api/img`  ·  Verdict: **CONFIRMED — CDN is the highest-leverage change**
 - The built-in optimizer is per-instance/CPU-heavy with its own local disk cache;
   content-addressed immutable media should be served with long immutable `Cache-Control`
-  and cached at the **edge**. Add an IP **rate limit** to `/api/img` — unbounded media
-  egress through one box is OWASP **API4:2023 Unrestricted Resource Consumption** (a
-  DoS *and* cost vector). The existing ar://+ipfs:// allow-list + no-redirect posture is
-  the correct **SSRF** control (OWASP A10/API7).
+  and cached at the **edge** — the CDN is the control here (unbounded media egress
+  through one box is OWASP **API4:2023 Unrestricted Resource Consumption**, a DoS *and*
+  cost vector). A request-*count* rate limit is the **wrong tool**: `<video>` streams
+  through this route via Range requests and the Mini App audience is largely behind
+  carrier-grade NAT, so a per-IP cap would 429 legitimate viewers — keep the 2 GB
+  per-request size cap + a CDN instead. The existing ar://+ipfs:// allow-list +
+  no-redirect posture is the correct **SSRF** control (OWASP A10/API7).
   ([Next.js images](https://nextjs.org/docs/app/api-reference/config/next-config-js/images), [API4:2023](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/), [SSRF Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html))
 
 ### B6. RPC key exposure + resilience  ·  Verdict: **CONFIRMED, with refinements**
@@ -283,7 +286,7 @@ simultaneously a security *and* a cost finding — which is exactly the Arweave 
 ## D. Consolidated, source-grounded roadmap
 
 **Now (days):**
-1. **CDN in front of `/api/img` + static/feed GETs** (immutable content → edge offload); add IP rate limits to `/api/img` and `/api/listings POST`. ([Next CDN](https://nextjs.org/docs/app/guides/cdn-caching), [API4](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/))
+1. **CDN in front of `/api/img` + static/feed GETs** (immutable content → edge offload; the CDN — not a request-count limit — is the control for the Range-streaming `/api/img`); add a per-IP rate limit to `/api/listings POST`. ([Next CDN](https://nextjs.org/docs/app/guides/cdn-caching), [API4](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/))
 2. **Server-only RPC key + viem `fallback` (rank, batch); decouple readiness from RPC** (degrade not gate). ([viem](https://github.com/wevm/viem/blob/main/site/pages/docs/clients/transports/fallback.md), [SRE](https://sre.google/sre-book/addressing-cascading-failures/))
 3. **CI** (`npm run check` + `npm audit --audit-level=high` + build, least-priv token, branch protection) + **Dependabot security updates**; schedule the critical arbundles/turbo-sdk + axios/CDP upgrades. ([GH Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs), [Dependabot](https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates))
 4. **Uniform per-call timeouts + circuit breaker** on inprocess; **Turbo `shareCredits`** approvals + balance alerts; fix Quick Auth client reuse + egress; parse `failedTokens`. ([Azure CB](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker), [Turbo](https://docs.ardrive.io/docs/turbo/credit-sharing.html))

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-check:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,28 +21,18 @@ jobs:
       - run: npm ci
       # Build BEFORE `npm run check`: the bundle-size gate (check:bundle reads
       # .next/app-build-manifest.json) needs a completed build to compare
-      # against bundle-baseline.json. Env vars are unset here on purpose — the
-      # app warns-and-continues on missing config at build time (see
-      # lib/redis.ts / lib/wagmi.ts), so the build is green without secrets.
+      # against bundle-baseline.json. No env vars are set on purpose — the app
+      # warns-and-continues on missing config at build time (lib/redis.ts /
+      # lib/wagmi.ts), so the build is green without secrets.
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: '1'
       # typecheck + lint + resource-hint CORS + per-route bundle-size.
       - run: npm run check
-
-  audit:
-    # NON-blocking for now: the dependency tree currently carries known
-    # critical/high advisories (transitive, via the Arweave/Turbo + Coinbase
-    # CDP subtrees) that Dependabot security updates will clear. Once the tree
-    # is clean, remove `continue-on-error` and make this a required check so
-    # any NEW critical/high vuln blocks merges.
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm audit --audit-level=high
+      # NON-blocking for now: the dependency tree carries known critical/high
+      # advisories (transitive, via the Arweave/Turbo + Coinbase CDP subtrees)
+      # that Dependabot security updates will clear. Drop `continue-on-error`
+      # to make new critical/high vulns block merges once the tree is clean.
+      - name: npm audit (non-blocking until the tree is clean)
+        continue-on-error: true
+        run: npm audit --audit-level=high

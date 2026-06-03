@@ -367,8 +367,11 @@ collects, idempotency keys everywhere, SSRF guards on the proxy + push URLs,
 `__Host-` cookie prefix, timing-safe webhook HMAC.
 
 Scale-relevant gaps:
-- **`/api/img` and `/api/listings POST` lack rate limits** (img is the bigger
-  egress risk; listings POST does EIP-712 recovery + RPC per call). Add IP limits.
+- **`/api/listings POST` lacks a rate limit** (EIP-712 recovery + RPC per call) —
+  add a per-IP limit. **`/api/img`** also has none, but a request-*count* limit is
+  the wrong tool there: `<video>` streams through it via Range requests and the
+  Mini App audience is largely behind carrier-grade NAT, so a per-IP cap would 429
+  legitimate viewers. Its controls are the 2 GB per-request size cap + a CDN (§5).
 - Rate limits and quotas **fail open** — correct for availability, but means a
   Redis outage removes all spend/abuse ceilings simultaneously. Pair with the
   wallet-balance backstop and Upstash alerting.
@@ -383,7 +386,9 @@ Scale-relevant gaps:
 **Now (days) — cheap, high-leverage, no architecture change:**
 1. **Front `/api/img` (and static/feed GETs) with a CDN/Cloudflare.** Immutable
    content-addressed media → near-100% offload of the 2 GB-streaming path off the
-   single box. Add an IP rate limit to `/api/img` and `/api/listings POST`.
+   single box. (A request-*count* rate limit is the wrong tool for `/api/img` —
+   Range-based video streaming + carrier-NAT would 429 real viewers; rely on the
+   per-request size cap + CDN. Add a per-IP limit to `/api/listings POST`.)
 2. **Move server RPC to a server-only key + add a failover provider**; decouple
    `/api/readiness` from a hard Base-RPC gate (degrade, don't dark).
 3. **Add CI** (typecheck/lint/bundle/audit/build) and Dependabot; schedule the

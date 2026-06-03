@@ -1,6 +1,5 @@
 import { NextRequest } from 'next/server'
 import { gatewayUrls } from '@/lib/arweave/gateways'
-import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 // Pinned to Node's runtime: this proxy streams multi-MB media payloads
 // end-to-end and we want Node's stream primitives plus unbounded request
@@ -59,14 +58,15 @@ async function raceFetchGateways(
  * range-request support for seeking and resume.
  */
 export async function GET(req: NextRequest) {
-  // Generous per-IP cap. Content-addressed media is immutable and
-  // browser/CDN-cached, so steady-state human browsing rarely re-hits this
-  // route — but it streams up to 2GB/request through the box with no auth, so
-  // this bounds a scripted abuse loop. Fails open if Redis is down. (A CDN in
-  // front of this route is the real fix — see REMEDIATION_PLAYBOOK.md.)
-  if (!(await checkRateLimit(`img:${getClientIp(req)}`, 240, 60))) {
-    return new Response('Too many requests', { status: 429 })
-  }
+  // No per-IP request-count rate limit here, deliberately: <video> in the
+  // Mini App + Safari path (see videoGatewayUrls in lib/media/gateway.ts)
+  // streams through this proxy via Range requests — many per playthrough —
+  // and that audience is largely mobile behind carrier-grade NAT, so a
+  // count-based per-IP cap would 429 legitimate viewers (collateral across a
+  // shared IP) while barely bounding the real resource (egress bytes, not
+  // request count). The controls that fit a streaming media proxy are the
+  // per-request MAX_DECLARED_BYTES cap below and a CDN in front
+  // (see REMEDIATION_PLAYBOOK.md §B5).
   const u = req.nextUrl.searchParams.get('u')
   if (!u) return new Response('missing u', { status: 400 })
   // SSRF: proxy our gateway pool only, never arbitrary outbound.
