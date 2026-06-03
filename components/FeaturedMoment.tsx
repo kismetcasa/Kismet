@@ -140,11 +140,15 @@ export function FeaturedMoment({ moment, priority }: FeaturedMomentProps) {
             alt={title}
             fill
             className="object-contain"
+            // No preferProxy: the hero is the LCP, so let next/image optimize
+            // (AVIF/WebP + downscale via `sizes`) rather than serving the raw
+            // bytes. Matches how the same mint's image is handled in the grid
+            // (MomentCard) and the detail view (MomentDetailView); MomentImage
+            // still falls back to the proxy if the optimizer 413s heavy art.
             sizes="60vw"
             mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
             thumbhash={meta.kismet_thumbhash}
             priority={priority}
-            preferProxy
             onNaturalSize={handleNaturalSize}
             onAllError={() => setMediaError(true)}
           />
