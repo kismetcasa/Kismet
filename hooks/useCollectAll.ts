@@ -17,7 +17,7 @@ import { toast } from 'sonner'
 import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { isUserRejection, toastError } from '@/lib/toast'
+import { isAuthError, isUserRejection, toastError, toastReloadRecovery } from '@/lib/toast'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import {
@@ -171,6 +171,14 @@ export function useCollectAll(): UseCollectAllReturn {
   // stays clickable until the next toast replaces it, so without this a
   // panicked retap can fire two concurrent recovery flows.
   const isRecoveringRef = useRef(false)
+  // Set to true by the recovery handler immediately before it kicks off
+  // the post-reconnect retry; consumed at the next collectAll entry. When
+  // the retry ALSO hits an auth-class error, this flag tells us not to
+  // show another Reconnect button (reconnect already failed to fix it)
+  // and to fall through to the "Try reloading" terminal recovery instead.
+  // Single-shot: cleared synchronously on the next collectAll call so a
+  // non-retry call never inherits the flag.
+  const isRetryAfterRecoveryRef = useRef(false)
   // Synchronous re-entrance latch. setStatus is async — between the user's
   // click and React committing the disabled-button render, a double-click
   // could otherwise kick off two parallel bundles.
@@ -178,6 +186,8 @@ export function useCollectAll(): UseCollectAllReturn {
 
   const collectAll = useCallback(
     async (args: CollectAllArgs) => {
+      const isRetryAfterRecovery = isRetryAfterRecoveryRef.current
+      isRetryAfterRecoveryRef.current = false
       const { ethCandidateTokenIds, usdcCandidateTokenIds } = args
 
       if (!address) {
@@ -610,6 +620,17 @@ export function useCollectAll(): UseCollectAllReturn {
         return { minted: recorded.length }
       } catch (err) {
         setStatus('error')
+        // Layer-3 terminal recovery: reconnect already ran once for this
+        // failure chain and the wallet is STILL returning an auth error.
+        // wagmi reconnect can't fix this (most commonly a Farcaster Mini
+        // App with a dead host bridge, where isAuthorized() returns true
+        // but the host won't sign). A full page reload re-bootstraps the
+        // SDK and is the universal recovery across every connector type.
+        if (isRetryAfterRecovery && isAuthError(err)) {
+          toastReloadRecovery({ id: TOAST_ID })
+          return null
+        }
+        // Layer-2 first-failure recovery: try reconnect + retry.
         toastError('Collect all', err, {
           id: TOAST_ID,
           onReconnect: () => {
@@ -620,7 +641,9 @@ export function useCollectAll(): UseCollectAllReturn {
             isRecoveringRef.current = true
             // Fire-and-forget: the toast action is sync. We re-attempt
             // the same bundle on success, or hand off to the wallet
-            // picker if reconnect couldn't restore signing.
+            // picker if reconnect couldn't restore signing. (toast.ts has
+            // already replaced the toast with "Reconnecting…" so the
+            // user has visible progress during the await below.)
             void (async () => {
               try {
                 try {
@@ -631,8 +654,13 @@ export function useCollectAll(): UseCollectAllReturn {
                 }
                 const account = getAccount(config)
                 if (account.status === 'connected' && account.address) {
+                  isRetryAfterRecoveryRef.current = true
                   void collectAllRef.current(args)
                 } else {
+                  // Dismiss the stale "Reconnecting…" toast before the
+                  // modal takes over — otherwise it lingers in the corner
+                  // while the user picks a wallet.
+                  toast.dismiss(TOAST_ID)
                   openConnectModal?.()
                 }
               } finally {
