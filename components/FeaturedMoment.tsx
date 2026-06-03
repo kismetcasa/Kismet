@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { shortAddress, type MomentDetail } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
-import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
+import { thumbhashToBlurDataURL, thumbhashToRatio, thumbhashToTint } from '@/lib/media/thumbhash'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { FeatureStar } from './FeatureStar'
@@ -24,27 +25,28 @@ interface FeaturedMomentProps {
 // normal card — so there's no responsive layout here.
 const DESKTOP_H = 560
 const DEFAULT_RATIO = 1
-// Bound the artwork so an extreme panorama/column can't starve the flanking
-// text columns. Within the band the box matches the artwork exactly, so
-// object-contain fills it with no letterbox; beyond it the whole piece still
-// shows, letterboxed, never cropped.
 const MIN_RATIO = 0.5
 const MAX_RATIO = 2.0
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
+// Neutral light tint when the moment has no thumbhash to sample.
+const NEUTRAL_TINT = 'hsl(0, 0%, 88%)'
 
 /**
  * Mint Pass Display — the single curated desktop hero atop the featured tab.
- * A three-column band: [title · by · @artist] | artwork | [collection]. The
- * artwork is centered and sized to its own aspect ratio (no crop, no
- * letterbox); the left text links to the moment detail page and the right
- * text to the collection page.
+ * A three-column band: [title · by · @artist] | artwork | [collection], on a
+ * light box tinted to the artwork's own palette (black text). The artwork is
+ * centered and sized to its own aspect ratio (no crop, no letterbox).
+ *
+ * Click targets: the @artist goes to the artist's profile; clicking anywhere
+ * else on the left (or the artwork) opens the moment; the right text opens the
+ * collection.
  *
  * Self-contained: fetches the mint by address/tokenId, so it renders whether
- * or not the mint is a standalone featured-timeline entry (e.g. a mint inside
- * a featured collection still shows as the hero). Renders nothing if the
- * moment fails to load or is hidden.
+ * or not the mint is a standalone featured-timeline entry. Renders nothing if
+ * the moment fails to load or is hidden.
  */
 export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentProps) {
+  const router = useRouter()
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [failed, setFailed] = useState(false)
   // A moment resolves to one media kind, so a single failure flag (set by
@@ -64,8 +66,10 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
     return () => { cancelled = true }
   }, [address, tokenId])
 
-  // Artist label — `@username` when resolvable, else the short address. Seed
-  // from the /api/moment creator, then upgrade from the Kismet profile cache.
+  // Artist label + profile link. /api/moment resolves creator to the real
+  // minter EOA (KV-corrected), so the address here is the artist, not the
+  // collection operator. Seed the label from the response, upgrade from the
+  // profile cache.
   const creatorAddress = detail?.creator?.address
   const creatorUsername = detail?.creator?.username
   useEffect(() => {
@@ -92,6 +96,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   const isTextMoment = media.kind === 'text'
   const blurPreview = useMemo(() => thumbhashToBlurDataURL(meta.kismet_thumbhash), [meta.kismet_thumbhash])
   const thumbRatio = useMemo(() => thumbhashToRatio(meta.kismet_thumbhash), [meta.kismet_thumbhash])
+  const tint = useMemo(() => thumbhashToTint(meta.kismet_thumbhash), [meta.kismet_thumbhash])
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
 
   // Exact natural ratio (once the image loads) wins; the thumbhash ratio is the
@@ -104,43 +109,54 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   if (failed || detail?.hidden) return null
   const loading = !detail
   const momentHref = `/moment/${address}/${tokenId}`
+  const profileHref = creatorAddress ? `/profile/${creatorAddress}` : undefined
   const title = meta.name ?? `#${tokenId}`
+  const boxBg = tint ?? NEUTRAL_TINT
 
   return (
     <article
-      className="relative flex border border-line bg-[#161616] overflow-hidden"
-      style={{ height: DESKTOP_H }}
+      className="relative flex border border-line overflow-hidden transition-colors duration-500"
+      style={{ height: DESKTOP_H, backgroundColor: boxBg }}
     >
-      {/* Left — title · by · artist → moment detail */}
-      <Link
-        href={momentHref}
-        className="group/l flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1.5 px-6"
+      {/* Left — click anywhere opens the moment; the @artist opens the artist. */}
+      <div
+        onClick={() => router.push(momentHref)}
+        className="flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1.5 px-6 cursor-pointer hover:bg-black/5 transition-colors"
       >
         {loading ? (
-          <span aria-hidden className="h-5 w-2/3 bg-line/50 animate-pulse" />
+          <span aria-hidden className="h-5 w-2/3 bg-black/10 animate-pulse" />
         ) : (
           <>
-            <span className="font-mono text-ink text-lg xl:text-xl leading-snug line-clamp-3 group-hover/l:text-dim transition-colors">
+            <span className="font-mono text-[#0d0d0d] text-lg xl:text-xl leading-snug line-clamp-3">
               {title}
             </span>
             {artist && (
               <>
-                <span className="font-mono text-muted text-xs">by</span>
-                <span className="font-mono text-dim text-sm truncate max-w-full group-hover/l:text-ink transition-colors">
-                  {artist}
-                </span>
+                <span className="font-mono text-[#666] text-xs">by</span>
+                {profileHref ? (
+                  <Link
+                    href={profileHref}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-mono text-[#0d0d0d] text-sm truncate max-w-full hover:underline"
+                  >
+                    {artist}
+                  </Link>
+                ) : (
+                  <span className="font-mono text-[#0d0d0d] text-sm truncate max-w-full">{artist}</span>
+                )}
               </>
             )}
           </>
         )}
-      </Link>
+      </div>
 
       {/* Center — artwork, sized to its own ratio. max-w caps it so the
           flanking text always has room; a too-wide piece on a narrow desktop
           letterboxes (object-contain) instead of overflowing the row. */}
-      <div
-        className="relative flex-shrink-0 bg-surface max-w-[70%]"
-        style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H }}
+      <Link
+        href={momentHref}
+        className="relative flex-shrink-0 max-w-[70%] block"
+        style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H, backgroundColor: boxBg }}
       >
         {isVideo && media.src && !mediaError ? (
           <MomentVideo
@@ -169,36 +185,37 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
             onAllError={() => setMediaError(true)}
           />
         ) : isTextMoment ? (
-          <div className="w-full h-full flex flex-col p-8 bg-gradient-to-br from-raised to-surface overflow-hidden">
-            <span className="text-[10px] font-mono text-muted uppercase tracking-widest mb-3">writing</span>
-            {meta.name && <p className="text-xl font-mono text-ink mb-3 truncate">{meta.name}</p>}
+          <div className="w-full h-full flex flex-col p-8 overflow-hidden">
+            <span className="text-[10px] font-mono text-[#666] uppercase tracking-widest mb-3">writing</span>
+            {meta.name && <p className="text-xl font-mono text-[#0d0d0d] mb-3 truncate">{meta.name}</p>}
             {textSnippet && (
-              <p className="text-sm font-mono text-[#bbb] leading-relaxed whitespace-pre-wrap">{textSnippet}</p>
+              <p className="text-sm font-mono text-[#444] leading-relaxed whitespace-pre-wrap">{textSnippet}</p>
             )}
           </div>
         ) : blurPreview ? (
           <span aria-hidden className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${blurPreview})` }} />
         ) : loading ? (
-          <span aria-hidden className="absolute inset-0 bg-accent/10 animate-pulse" />
+          <span aria-hidden className="absolute inset-0 bg-black/5 animate-pulse" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <span className="text-line font-mono text-xs">no preview</span>
+            <span className="text-[#666] font-mono text-xs">no preview</span>
           </div>
         )}
 
-        {/* Admin control — tap to feature, hold to set this Mint Pass Display. */}
+        {/* Admin control — tap to feature, hold to set this Mint Pass Display.
+            Its own handlers stop the wrapping link from navigating. */}
         <FeatureStar address={address} tokenId={tokenId} className="absolute top-2 left-2" />
-      </div>
+      </Link>
 
       {/* Right — collection → collection page */}
       <Link
         href={`/collection/${address}`}
-        className="group/r flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6"
+        className="flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6 hover:bg-black/5 transition-colors"
       >
         {loading ? (
-          <span aria-hidden className="h-4 w-1/2 bg-line/50 animate-pulse" />
+          <span aria-hidden className="h-4 w-1/2 bg-black/10 animate-pulse" />
         ) : collection ? (
-          <span className="font-mono text-ink text-base xl:text-lg leading-snug line-clamp-3 group-hover/r:text-dim transition-colors">
+          <span className="font-mono text-[#0d0d0d] text-base xl:text-lg leading-snug line-clamp-3 hover:underline">
             {collection}
           </span>
         ) : null}

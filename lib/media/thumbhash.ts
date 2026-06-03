@@ -1,5 +1,27 @@
-import { rgbaToThumbHash, thumbHashToDataURL, thumbHashToApproximateAspectRatio } from 'thumbhash'
+import {
+  rgbaToThumbHash,
+  thumbHashToDataURL,
+  thumbHashToApproximateAspectRatio,
+  thumbHashToAverageRGBA,
+} from 'thumbhash'
 import { LRUCache } from '@/lib/lruCache'
+
+// rgb (each 0..1) → [hue 0..1, saturation 0..1].
+function rgbToHs(r: number, g: number, b: number): [number, number] {
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  if (d === 0) return [0, 0]
+  const s = d / (1 - Math.abs(2 * l - 1))
+  let h: number
+  if (max === r) h = ((g - b) / d) % 6
+  else if (max === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  h /= 6
+  if (h < 0) h += 1
+  return [h, s]
+}
 
 // Decoded blur data-URLs keyed by the source base64 thumbhash. The decode is
 // a synchronous pure-JS PNG encode (~0.5-2ms each) that the feed otherwise
@@ -92,6 +114,26 @@ export function thumbhashToRatio(b64: string | undefined): number | undefined {
   try {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
     return thumbHashToApproximateAspectRatio(bytes)
+  } catch {
+    return undefined
+  }
+}
+
+// A light tint that matches the artwork — the average color of the moment
+// (encoded in the thumbhash) recast as a high-lightness pastel that keeps the
+// hue but stays readable under black text. Returns an `hsl()` string, or
+// undefined on malformed/missing input (caller falls back to a neutral tint).
+export function thumbhashToTint(b64: string | undefined): string | undefined {
+  if (!b64) return undefined
+  try {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const { r, g, b } = thumbHashToAverageRGBA(bytes)
+    const [h, s] = rgbToHs(r, g, b)
+    // Boost a muddy average so the hue actually reads, but cap it so a vivid
+    // one doesn't go neon; keep a near-gray average gray. Lightness stays high
+    // enough that #0d0d0d text clears 4.5:1 on any hue.
+    const sat = Math.round(Math.min(s * 1.35, 0.6) * 100)
+    return `hsl(${Math.round(h * 360)}, ${sat}%, 80%)`
   } catch {
     return undefined
   }
