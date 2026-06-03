@@ -12,6 +12,7 @@ import { formatPrice } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 interface BuyButtonProps {
   listing: Listing
@@ -77,6 +78,7 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
             abi: ERC20_ABI,
             functionName: 'approve',
             args: [SEAPORT_ADDRESS, priceTotal],
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
           toast.loading('Confirming approval…', { id: 'buy' })
           const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash })
@@ -117,6 +119,7 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
           },
           ZERO_BYTES32,
         ],
+        dataSuffix: BUILDER_DATA_SUFFIX,
       })
 
       // Don't mark filled until the tx actually confirms — a reverted fulfillOrder

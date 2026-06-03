@@ -1,13 +1,14 @@
 'use client'
 
-import { useCallback, useState } from 'react'
-import { useAccount, usePublicClient, useReconnect, useWriteContract } from 'wagmi'
+import { useCallback, useRef, useState } from 'react'
+import { useAccount, usePublicClient, useWriteContract } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { toastError } from '@/lib/toast'
+import { useWalletRecovery } from '@/hooks/useWalletRecovery'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -72,15 +73,25 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const { address } = useAccount()
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
-  // Recovery for a connected-but-unauthorized wallet (stale session): the
-  // toast's Reconnect action re-runs wagmi's connector reconnect, the
-  // programmatic equivalent of the page-refresh users currently rely on.
-  const { reconnect } = useReconnect()
   const ensureBase = useEnsureBase()
+  const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect')
   const [status, setStatus] = useState<CollectStatus>('idle')
+  // Lets the recovery flow's post-reconnect retry re-invoke the latest
+  // `collect` closure. A ref breaks the cycle that would otherwise
+  // require collect's own useCallback to depend on itself.
+  const collectRef = useRef<(args: CollectArgs) => Promise<{ hash: Hash } | null>>(
+    () => Promise.resolve(null),
+  )
+  // Synchronous re-entrance latch. The button stays clickable through
+  // status === 'error' (see consumers), so during the 2-8s reconnect
+  // window between layer-2's Reconnect tap and the auto-retry firing,
+  // a manual tap could otherwise dispatch a parallel collect — leading
+  // to a double-charge if both succeed.
+  const inFlightRef = useRef(false)
 
   const collect = useCallback(
     async (args: CollectArgs): Promise<{ hash: Hash } | null> => {
+      const isRetryAfterRecovery = consumeRetryFlag()
       const {
         tokenId,
         pricePerToken,
@@ -112,6 +123,8 @@ export function useDirectCollect(): UseDirectCollectReturn {
         toast.error('Invalid token id')
         return null
       }
+      if (inFlightRef.current) return null
+      inFlightRef.current = true
 
       setStatus('preparing')
       toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
@@ -145,6 +158,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               pricePerToken,
               comment,
             }),
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
         } else {
           // ERC20 (USDC) path: check allowance, approve if short, then mint.
@@ -165,6 +179,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               abi: ERC20_ABI,
               functionName: 'approve',
               args: [ZORA_ERC20_MINTER, totalPrice],
+              dataSuffix: BUILDER_DATA_SUFFIX,
             })
 
             toast.loading('Confirming approval…', { id: TOAST_ID })
@@ -188,6 +203,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               pricePerToken,
               comment,
             }),
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
         }
 
@@ -231,15 +247,22 @@ export function useDirectCollect(): UseDirectCollectReturn {
 
         setStatus('done')
         toast.success('Collected!', { id: TOAST_ID })
+        ackSuccess()
         return { hash }
       } catch (err) {
         setStatus('error')
-        toastError('Collect', err, { id: TOAST_ID, onReconnect: () => reconnect() })
+        showError(err, isRetryAfterRecovery, () => {
+          void collectRef.current(args)
+        })
         return null
+      } finally {
+        inFlightRef.current = false
       }
     },
-    [address, publicClient, writeContractAsync, reconnect, ensureBase],
+    [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
+
+  collectRef.current = collect
 
   return { collect, status }
 }

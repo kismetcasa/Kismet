@@ -5,7 +5,6 @@ import {
   useAccount,
   useConfig,
   usePublicClient,
-  useReconnect,
   useSendCalls,
   useWalletClient,
   useWriteContract,
@@ -16,7 +15,9 @@ import { toast } from 'sonner'
 import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { isUserRejection, toastError } from '@/lib/toast'
+import { isUserRejection, walkError } from '@/lib/toast'
+import { useWalletRecovery } from '@/hooks/useWalletRecovery'
+import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import {
@@ -77,24 +78,18 @@ interface UseCollectAllReturn {
 // MethodNotSupportedRpcError. Coinbase Wallet (mobile / WalletConnect path)
 // returns a generic InternalRpcError whose `details` carries "this request
 // method is not supported" — same intent, wrong shape, fallback never fires.
-// Walk the cause chain looking for either the canonical viem error names or
-// the recognizable phrasings (scoped to "method"-related wording so we don't
-// false-positive on unrelated errors like "chain is not supported").
+// Scoped to "method"-related wording so we don't false-positive on
+// unrelated errors like "chain is not supported".
 const UNSUPPORTED_METHOD_RE = /method (?:is )?not supported|method not found|request method is not supported|unsupported (?:rpc )?method/i
+const UNSUPPORTED_METHOD_NAME_RE = /MethodNotSupportedRpcError|UnsupportedNonOptionalCapability|UnsupportedProviderMethodError/i
 
-function isUnsupportedMethodError(err: unknown, depth = 0): boolean {
-  if (err == null || depth > 5) return false
+function isUnsupportedMethodError(err: unknown): boolean {
   if (typeof err === 'string') return UNSUPPORTED_METHOD_RE.test(err)
-  if (typeof err !== 'object') return false
-  const e = err as { message?: unknown; name?: unknown; details?: unknown; cause?: unknown }
-  if (typeof e.name === 'string' &&
-      /MethodNotSupportedRpcError|UnsupportedNonOptionalCapability|UnsupportedProviderMethodError/i.test(e.name)) {
-    return true
-  }
-  if (typeof e.details === 'string' && UNSUPPORTED_METHOD_RE.test(e.details)) return true
-  if (typeof e.message === 'string' && UNSUPPORTED_METHOD_RE.test(e.message)) return true
-  if (e.cause != null) return isUnsupportedMethodError(e.cause, depth + 1)
-  return false
+  return walkError(err, (e) =>
+    (typeof e.name === 'string' && UNSUPPORTED_METHOD_NAME_RE.test(e.name)) ||
+    (typeof e.details === 'string' && UNSUPPORTED_METHOD_RE.test(e.details)) ||
+    (typeof e.message === 'string' && UNSUPPORTED_METHOD_RE.test(e.message)),
+  )
 }
 
 /**
@@ -150,12 +145,15 @@ export function useCollectAll(): UseCollectAllReturn {
   const { sendCallsAsync } = useSendCalls()
   const { data: walletClient } = useWalletClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
-  // Recovery for a connected-but-unauthorized wallet (stale session): the
-  // toast's Reconnect action re-runs wagmi's connector reconnect, the
-  // programmatic equivalent of the page-refresh users currently rely on.
-  const { reconnect } = useReconnect()
   const ensureBase = useEnsureBase()
+  const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect all')
   const [status, setStatus] = useState<Status>('idle')
+  // Lets the recovery flow's post-reconnect retry re-invoke the latest
+  // `collectAll` closure. A ref breaks the cycle that would otherwise
+  // require collectAll's own useCallback to depend on itself.
+  const collectAllRef = useRef<(args: CollectAllArgs) => Promise<{ minted: number } | null>>(
+    () => Promise.resolve(null),
+  )
   // Synchronous re-entrance latch. setStatus is async — between the user's
   // click and React committing the disabled-button render, a double-click
   // could otherwise kick off two parallel bundles.
@@ -163,6 +161,7 @@ export function useCollectAll(): UseCollectAllReturn {
 
   const collectAll = useCallback(
     async (args: CollectAllArgs) => {
+      const isRetryAfterRecovery = consumeRetryFlag()
       const { ethCandidateTokenIds, usdcCandidateTokenIds } = args
 
       if (!address) {
@@ -378,6 +377,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 value: s.call.value!,
               })),
             ),
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
 
           setStatus('confirming')
@@ -405,6 +405,7 @@ export function useCollectAll(): UseCollectAllReturn {
             calls,
             chainId: base.id,
             experimental_fallback: true,
+            capabilities: builderCodeCapabilities,
           })
 
           setStatus('confirming')
@@ -464,6 +465,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 data: call.data,
                 value: call.value ?? 0n,
                 chain: base,
+                dataSuffix: BUILDER_DATA_SUFFIX,
               })
               const r = await publicClient.waitForTransactionReceipt({
                 hash,
@@ -592,17 +594,22 @@ export function useCollectAll(): UseCollectAllReturn {
             { id: TOAST_ID },
           )
         }
+        ackSuccess()
         return { minted: recorded.length }
       } catch (err) {
         setStatus('error')
-        toastError('Collect all', err, { id: TOAST_ID, onReconnect: () => reconnect() })
+        showError(err, isRetryAfterRecovery, () => {
+          void collectAllRef.current(args)
+        })
         return null
       } finally {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, reconnect, ensureBase],
+    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
+
+  collectAllRef.current = collectAll
 
   return { collectAll, status }
 }

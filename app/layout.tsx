@@ -23,18 +23,24 @@ export const metadata: Metadata = {
   // Farcaster Mini App embed for the homepage. When the apex URL is
   // shared in a cast, this is the rich card that renders + launches the
   // Mini App. Per-route embeds (moment, collection, profile) are added
-  // in their own generateMetadata in Phase 4.
-  other: buildFarcasterEmbed({
-    imageUrl:
-      process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
-    buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Enjoy Kismet',
-    action: {
-      url: SITE_URL,
-      splashImageUrl:
-        process.env.NEXT_PUBLIC_FARCASTER_SPLASH_URL ?? `${SITE_URL}/splash.png`,
-      splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#ffffff',
-    },
-  }),
+  // in their own generateMetadata in Phase 4. Also carries the Base.dev
+  // app verification tag — base.dev fetches the apex HTML and confirms
+  // the `base:app_id` matches the registered app to grant domain
+  // ownership.
+  other: {
+    ...buildFarcasterEmbed({
+      imageUrl:
+        process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
+      buttonTitle: process.env.NEXT_PUBLIC_FARCASTER_BUTTON_TITLE ?? 'Enjoy Kismet',
+      action: {
+        url: SITE_URL,
+        splashImageUrl:
+          process.env.NEXT_PUBLIC_FARCASTER_SPLASH_URL ?? `${SITE_URL}/splash.png`,
+        splashBackgroundColor: process.env.NEXT_PUBLIC_FARCASTER_SPLASH_BG ?? '#ffffff',
+      },
+    }),
+    'base:app_id': '6a20aeab12545704b821bcc0',
+  },
 }
 
 export default function RootLayout({

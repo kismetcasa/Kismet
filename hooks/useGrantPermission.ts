@@ -17,6 +17,7 @@ import {
 } from '@/lib/permissions'
 import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 /** String alias over the bigint constants — call-sites use the bit
  *  name they're granting instead of importing raw bigints. */
@@ -158,6 +159,7 @@ export function useGrantPermission() {
           functionName:
             op.direction === 'grant' ? 'addPermission' : 'removePermission',
           args: [op.tokenId, op.grantee, BIT_VALUES[op.bit]],
+          dataSuffix: BUILDER_DATA_SUFFIX,
         })
         setHash(txHash)
         return 'submitted'
@@ -176,6 +178,7 @@ export function useGrantPermission() {
         abi: ZORA_MULTICALL_ABI,
         functionName: 'multicall',
         args: [calls],
+        dataSuffix: BUILDER_DATA_SUFFIX,
       })
       setHash(txHash)
       return 'submitted'

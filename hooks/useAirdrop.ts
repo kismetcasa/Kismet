@@ -6,6 +6,7 @@ import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
 import { useEnsureBase } from '@/lib/useEnsureBase'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 export interface AirdropRequest {
   collectionAddress: `0x${string}`
@@ -65,6 +66,7 @@ export function useAirdrop() {
         abi: COLLECTION_ABI,
         functionName: 'adminMint',
         args: [recipients[0], tokenId, 1n, '0x'],
+        dataSuffix: BUILDER_DATA_SUFFIX,
       })
     }
 
@@ -85,6 +87,7 @@ export function useAirdrop() {
       abi: ZORA_MULTICALL_ABI,
       functionName: 'multicall',
       args: [calls],
+      dataSuffix: BUILDER_DATA_SUFFIX,
     })
   }
 

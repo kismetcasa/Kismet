@@ -20,6 +20,7 @@ import {
 } from '@/lib/seaport'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 type ListCurrency = 'eth' | 'usdc'
 
@@ -112,6 +113,7 @@ export function ListButton({
           abi: ERC1155_ABI,
           functionName: 'setApprovalForAll',
           args: [SEAPORT_ADDRESS, true],
+          dataSuffix: BUILDER_DATA_SUFFIX,
         })
         // Wait for the approval to actually land before signing the order —
         // otherwise refetchApproval() can race and the listing would be unfillable.

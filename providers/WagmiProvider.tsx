@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
 import { wagmiConfig } from '@/lib/wagmi'
 import { AdminProvider } from '@/contexts/AdminContext'
+import { WalletConnectKeepalive } from '@/hooks/useWalletConnectKeepalive'
 
 import '@rainbow-me/rainbowkit/styles.css'
 
@@ -15,6 +16,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <WagmiProvider config={wagmiConfig}>
+      <WalletConnectKeepalive />
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider
           initialChain={base}

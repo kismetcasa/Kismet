@@ -16,6 +16,7 @@ import Link from 'next/link'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 interface MarketCardProps {
   listing: Listing
@@ -119,6 +120,7 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
           conduitKey: order.conduitKey,
           counter: order.counter,
         }]],
+        dataSuffix: BUILDER_DATA_SUFFIX,
       })
 
       // Don't update the backend until cancel actually confirms — a reverted

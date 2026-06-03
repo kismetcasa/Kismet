@@ -23,6 +23,7 @@ import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError } from '@/lib/toast'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { shortAddress } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -613,6 +614,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           address,
           setupActions,
         ],
+        dataSuffix: BUILDER_DATA_SUFFIX,
       })
 
       setTxHash(hash)
