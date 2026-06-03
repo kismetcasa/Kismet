@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { wagmiConfig } from '@/lib/wagmi'
 import { AdminProvider } from '@/contexts/AdminContext'
 import { SharedVideoProvider } from '@/providers/SharedVideoProvider'
+import { WalletConnectKeepalive } from '@/hooks/useWalletConnectKeepalive'
 
 import '@rainbow-me/rainbowkit/styles.css'
 
@@ -16,6 +17,7 @@ export function Providers({ children, isMobile = false }: { children: React.Reac
 
   return (
     <WagmiProvider config={wagmiConfig}>
+      <WalletConnectKeepalive />
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider
           initialChain={base}
