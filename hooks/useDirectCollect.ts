@@ -1,15 +1,13 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useAccount, useConfig, usePublicClient, useReconnect, useWriteContract } from 'wagmi'
-import { getAccount } from '@wagmi/core'
+import { useAccount, usePublicClient, useWriteContract } from 'wagmi'
 import { base } from 'wagmi/chains'
-import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { isAuthError, toastError, toastReloadRecovery } from '@/lib/toast'
+import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -72,42 +70,21 @@ const TOAST_ID = 'direct-collect'
  */
 export function useDirectCollect(): UseDirectCollectReturn {
   const { address } = useAccount()
-  const config = useConfig()
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
-  // Recovery for a connected-but-unauthorized wallet (stale session).
-  // reconnectAsync silently re-authorizes on Farcaster / injected; for
-  // WalletConnect it either re-pairs or actively disconnects (its
-  // isAuthorized() tears down stale sessions). When that drops us to
-  // disconnected, we fall back to the wallet picker so the user always
-  // lands somewhere actionable. See the recovery handler below.
-  const { reconnectAsync } = useReconnect()
-  const { openConnectModal } = useConnectModal()
   const ensureBase = useEnsureBase()
+  const { consumeRetryFlag, showError } = useWalletRecovery(TOAST_ID, 'Collect')
   const [status, setStatus] = useState<CollectStatus>('idle')
-  // Lets the failure toast's Retry action re-invoke the latest `collect`
-  // closure with the same args. A ref breaks the circular dep that would
-  // otherwise require putting `collect` in its own useCallback's deps.
+  // Lets the recovery flow's post-reconnect retry re-invoke the latest
+  // `collect` closure. A ref breaks the cycle that would otherwise
+  // require collect's own useCallback to depend on itself.
   const collectRef = useRef<(args: CollectArgs) => Promise<{ hash: Hash } | null>>(
     () => Promise.resolve(null),
   )
-  // Dedupes rapid double-taps of the Retry button. Sonner's toast action
-  // stays clickable until the next toast replaces it, so without this a
-  // panicked retap can fire two concurrent collect attempts.
-  const isRecoveringRef = useRef(false)
-  // Set to true by the recovery handler immediately before it kicks off
-  // the post-reconnect retry; consumed at the next collect entry. When
-  // the retry ALSO hits an auth-class error, this flag tells us not to
-  // show another Reconnect button (reconnect already failed to fix it)
-  // and to fall through to the "Try reloading" terminal recovery instead.
-  // Single-shot: cleared synchronously on the next collect call so a
-  // non-retry collect never inherits the flag.
-  const isRetryAfterRecoveryRef = useRef(false)
 
   const collect = useCallback(
     async (args: CollectArgs): Promise<{ hash: Hash } | null> => {
-      const isRetryAfterRecovery = isRetryAfterRecoveryRef.current
-      isRetryAfterRecoveryRef.current = false
+      const isRetryAfterRecovery = consumeRetryFlag()
       const {
         tokenId,
         pricePerToken,
@@ -261,59 +238,13 @@ export function useDirectCollect(): UseDirectCollectReturn {
         return { hash }
       } catch (err) {
         setStatus('error')
-        // Layer-3 terminal recovery: reconnect already ran once for this
-        // failure chain and the wallet is STILL returning an auth error.
-        // wagmi reconnect can't fix this (most commonly a Farcaster Mini
-        // App with a dead host bridge, where isAuthorized() returns true
-        // but the host won't sign). A full page reload re-bootstraps the
-        // SDK and is the universal recovery across every connector type.
-        if (isRetryAfterRecovery && isAuthError(err)) {
-          toastReloadRecovery({ id: TOAST_ID })
-          return null
-        }
-        // Layer-2 first-failure recovery: try reconnect + retry.
-        toastError('Collect', err, {
-          id: TOAST_ID,
-          onReconnect: () => {
-            // Dedupe rapid retaps: the toast remains clickable until our
-            // new toast replaces it, so a double-tap would otherwise fire
-            // two concurrent collect attempts.
-            if (isRecoveringRef.current) return
-            isRecoveringRef.current = true
-            // Fire-and-forget: the toast action is sync. We re-attempt
-            // the same collect on success, or hand off to the wallet
-            // picker if reconnect couldn't restore signing. (toast.ts has
-            // already replaced the toast with "Reconnecting…" so the
-            // user has visible progress during the await below.)
-            void (async () => {
-              try {
-                try {
-                  await reconnectAsync()
-                } catch {
-                  // reconnect itself can throw on dead connectors — fall
-                  // through to the post-reconnect status check below.
-                }
-                const account = getAccount(config)
-                if (account.status === 'connected' && account.address) {
-                  isRetryAfterRecoveryRef.current = true
-                  void collectRef.current(args)
-                } else {
-                  // Dismiss the stale "Reconnecting…" toast before the
-                  // modal takes over — otherwise it lingers in the corner
-                  // while the user picks a wallet.
-                  toast.dismiss(TOAST_ID)
-                  openConnectModal?.()
-                }
-              } finally {
-                isRecoveringRef.current = false
-              }
-            })()
-          },
+        showError(err, isRetryAfterRecovery, () => {
+          void collectRef.current(args)
         })
         return null
       }
     },
-    [address, publicClient, writeContractAsync, reconnectAsync, config, openConnectModal, ensureBase],
+    [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError],
   )
 
   collectRef.current = collect

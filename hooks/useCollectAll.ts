@@ -5,19 +5,18 @@ import {
   useAccount,
   useConfig,
   usePublicClient,
-  useReconnect,
   useSendCalls,
   useWalletClient,
   useWriteContract,
 } from 'wagmi'
 import { getAccount, waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
-import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { isAuthError, isUserRejection, toastError, toastReloadRecovery } from '@/lib/toast'
+import { isUserRejection, walkError } from '@/lib/toast'
+import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import {
@@ -78,24 +77,18 @@ interface UseCollectAllReturn {
 // MethodNotSupportedRpcError. Coinbase Wallet (mobile / WalletConnect path)
 // returns a generic InternalRpcError whose `details` carries "this request
 // method is not supported" — same intent, wrong shape, fallback never fires.
-// Walk the cause chain looking for either the canonical viem error names or
-// the recognizable phrasings (scoped to "method"-related wording so we don't
-// false-positive on unrelated errors like "chain is not supported").
+// Scoped to "method"-related wording so we don't false-positive on
+// unrelated errors like "chain is not supported".
 const UNSUPPORTED_METHOD_RE = /method (?:is )?not supported|method not found|request method is not supported|unsupported (?:rpc )?method/i
+const UNSUPPORTED_METHOD_NAME_RE = /MethodNotSupportedRpcError|UnsupportedNonOptionalCapability|UnsupportedProviderMethodError/i
 
-function isUnsupportedMethodError(err: unknown, depth = 0): boolean {
-  if (err == null || depth > 5) return false
+function isUnsupportedMethodError(err: unknown): boolean {
   if (typeof err === 'string') return UNSUPPORTED_METHOD_RE.test(err)
-  if (typeof err !== 'object') return false
-  const e = err as { message?: unknown; name?: unknown; details?: unknown; cause?: unknown }
-  if (typeof e.name === 'string' &&
-      /MethodNotSupportedRpcError|UnsupportedNonOptionalCapability|UnsupportedProviderMethodError/i.test(e.name)) {
-    return true
-  }
-  if (typeof e.details === 'string' && UNSUPPORTED_METHOD_RE.test(e.details)) return true
-  if (typeof e.message === 'string' && UNSUPPORTED_METHOD_RE.test(e.message)) return true
-  if (e.cause != null) return isUnsupportedMethodError(e.cause, depth + 1)
-  return false
+  return walkError(err, (e) =>
+    (typeof e.name === 'string' && UNSUPPORTED_METHOD_NAME_RE.test(e.name)) ||
+    (typeof e.details === 'string' && UNSUPPORTED_METHOD_RE.test(e.details)) ||
+    (typeof e.message === 'string' && UNSUPPORTED_METHOD_RE.test(e.message)),
+  )
 }
 
 /**
@@ -151,34 +144,15 @@ export function useCollectAll(): UseCollectAllReturn {
   const { sendCallsAsync } = useSendCalls()
   const { data: walletClient } = useWalletClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
-  // Recovery for a connected-but-unauthorized wallet (stale session).
-  // reconnectAsync silently re-authorizes on Farcaster / injected; for
-  // WalletConnect it either re-pairs or actively disconnects (its
-  // isAuthorized() tears down stale sessions). When that drops us to
-  // disconnected, we fall back to the wallet picker so the user always
-  // lands somewhere actionable. See the recovery handler below.
-  const { reconnectAsync } = useReconnect()
-  const { openConnectModal } = useConnectModal()
   const ensureBase = useEnsureBase()
+  const { consumeRetryFlag, showError } = useWalletRecovery(TOAST_ID, 'Collect all')
   const [status, setStatus] = useState<Status>('idle')
-  // Lets the failure toast's Retry action re-invoke the latest `collectAll`
-  // closure with the same args. A ref breaks the circular dep that would
-  // otherwise require putting `collectAll` in its own useCallback's deps.
+  // Lets the recovery flow's post-reconnect retry re-invoke the latest
+  // `collectAll` closure. A ref breaks the cycle that would otherwise
+  // require collectAll's own useCallback to depend on itself.
   const collectAllRef = useRef<(args: CollectAllArgs) => Promise<{ minted: number } | null>>(
     () => Promise.resolve(null),
   )
-  // Dedupes rapid double-taps of the Retry button. Sonner's toast action
-  // stays clickable until the next toast replaces it, so without this a
-  // panicked retap can fire two concurrent recovery flows.
-  const isRecoveringRef = useRef(false)
-  // Set to true by the recovery handler immediately before it kicks off
-  // the post-reconnect retry; consumed at the next collectAll entry. When
-  // the retry ALSO hits an auth-class error, this flag tells us not to
-  // show another Reconnect button (reconnect already failed to fix it)
-  // and to fall through to the "Try reloading" terminal recovery instead.
-  // Single-shot: cleared synchronously on the next collectAll call so a
-  // non-retry call never inherits the flag.
-  const isRetryAfterRecoveryRef = useRef(false)
   // Synchronous re-entrance latch. setStatus is async — between the user's
   // click and React committing the disabled-button render, a double-click
   // could otherwise kick off two parallel bundles.
@@ -186,8 +160,7 @@ export function useCollectAll(): UseCollectAllReturn {
 
   const collectAll = useCallback(
     async (args: CollectAllArgs) => {
-      const isRetryAfterRecovery = isRetryAfterRecoveryRef.current
-      isRetryAfterRecoveryRef.current = false
+      const isRetryAfterRecovery = consumeRetryFlag()
       const { ethCandidateTokenIds, usdcCandidateTokenIds } = args
 
       if (!address) {
@@ -620,61 +593,15 @@ export function useCollectAll(): UseCollectAllReturn {
         return { minted: recorded.length }
       } catch (err) {
         setStatus('error')
-        // Layer-3 terminal recovery: reconnect already ran once for this
-        // failure chain and the wallet is STILL returning an auth error.
-        // wagmi reconnect can't fix this (most commonly a Farcaster Mini
-        // App with a dead host bridge, where isAuthorized() returns true
-        // but the host won't sign). A full page reload re-bootstraps the
-        // SDK and is the universal recovery across every connector type.
-        if (isRetryAfterRecovery && isAuthError(err)) {
-          toastReloadRecovery({ id: TOAST_ID })
-          return null
-        }
-        // Layer-2 first-failure recovery: try reconnect + retry.
-        toastError('Collect all', err, {
-          id: TOAST_ID,
-          onReconnect: () => {
-            // Dedupe rapid retaps: the toast remains clickable until our
-            // new toast replaces it, so a double-tap would otherwise fire
-            // two concurrent recovery flows.
-            if (isRecoveringRef.current) return
-            isRecoveringRef.current = true
-            // Fire-and-forget: the toast action is sync. We re-attempt
-            // the same bundle on success, or hand off to the wallet
-            // picker if reconnect couldn't restore signing. (toast.ts has
-            // already replaced the toast with "Reconnecting…" so the
-            // user has visible progress during the await below.)
-            void (async () => {
-              try {
-                try {
-                  await reconnectAsync()
-                } catch {
-                  // reconnect itself can throw on dead connectors — fall
-                  // through to the post-reconnect status check below.
-                }
-                const account = getAccount(config)
-                if (account.status === 'connected' && account.address) {
-                  isRetryAfterRecoveryRef.current = true
-                  void collectAllRef.current(args)
-                } else {
-                  // Dismiss the stale "Reconnecting…" toast before the
-                  // modal takes over — otherwise it lingers in the corner
-                  // while the user picks a wallet.
-                  toast.dismiss(TOAST_ID)
-                  openConnectModal?.()
-                }
-              } finally {
-                isRecoveringRef.current = false
-              }
-            })()
-          },
+        showError(err, isRetryAfterRecovery, () => {
+          void collectAllRef.current(args)
         })
         return null
       } finally {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, reconnectAsync, openConnectModal, ensureBase],
+    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError],
   )
 
   collectAllRef.current = collectAll

@@ -7,27 +7,16 @@ import { toast } from 'sonner'
 const REJECTION_REGEX = /user rejected|user denied|rejected the request|user cancell?ed/i
 
 // "Connected but not authorized" signals. wagmi can restore a persisted
-// session (isConnected === true) while the wallet's signing backend is
-// dead — a stale WalletConnect session on mobile web, or a Mini App host
-// that answers eth_accounts but hasn't granted signing. The write then
-// fails at the wallet with an auth-class error. We surface a recovery
-// path instead of a raw RPC dump. Note: viem mislabels the host's -32006
-// as "Version of JSON-RPC protocol is not supported"; the real signal is
-// the `Details: Unauthorized` line, which lands in error.message/.details.
-//
-// Deliberately NOT matching loose `/not authorized/` — that string appears
-// in on-chain permission reverts ("Caller is not authorized for this
-// token"), which are NOT wallet-session failures and would mislead the
-// user into a reconnect loop. We rely on the literal "unauthorized" /
-// "has not been authorized" wording, which is wallet-context only.
+// session while the wallet's signing backend is dead. Deliberately does
+// NOT match bare `/not authorized/` — that wording appears in on-chain
+// permission reverts ("Caller is not authorized for this token"), which
+// would mislead the user into a reconnect loop. The literal "unauthorized"
+// or "not been authorized" phrasings are wallet-context only.
 const AUTH_ERROR_REGEX =
-  /unauthorized|has not been authorized|session.*(expired|disconnect)|wallet.*disconnect|provider.*disconnect/i
+  /unauthorized|not been authorized|session.*(?:expired|disconnect)|(?:wallet|provider).*disconnect/i
 
-// EIP-1193 auth-class numeric codes — unambiguous regardless of message
-// format. 4100 = "method/account not authorized by user"; 4900 = "provider
-// disconnected from all chains"; 4901 = "not connected to requested chain"
-// (still implies the provider exists, just on a different chain — same
-// recovery via reconnect).
+// EIP-1193 auth-class numeric codes: 4100 = not authorized by user,
+// 4900 = provider disconnected, 4901 = not connected to requested chain.
 const AUTH_ERROR_CODES = new Set([4100, 4900, 4901])
 
 interface MaybeWalletError {
@@ -38,47 +27,47 @@ interface MaybeWalletError {
   cause?: unknown
 }
 
-/**
- * Walks an error chain (err → err.cause → err.cause.cause …) checking each
- * level for a known wallet rejection signal. wagmi often wraps a viem
- * UserRejectedRequestError inside a ContractFunctionExecutionError or
- * similar, so the rejection signal can be 2-3 levels deep.
- */
-export function isUserRejection(err: unknown, depth = 0): boolean {
+// Walks an error chain (err → err.cause → …) testing each frame against
+// a predicate. wagmi/viem wrap the meaningful error 2-3 levels deep
+// inside ContractFunctionExecutionError / RpcRequestError envelopes.
+// Depth-capped so a cyclic .cause cannot loop.
+export function walkError(
+  err: unknown,
+  match: (e: Record<string, unknown>) => boolean,
+  depth = 0,
+): boolean {
   if (err == null || depth > 5) return false
-  if (typeof err === 'string') return REJECTION_REGEX.test(err)
   if (typeof err !== 'object') return false
-  const e = err as MaybeWalletError
-  // EIP-1193 standard rejection code — providers MUST return 4001 on user
-  // rejection per the spec, regardless of how they format the message.
-  if (typeof e.code === 'number' && e.code === 4001) return true
-  if (typeof e.message === 'string' && REJECTION_REGEX.test(e.message)) return true
-  if (e.cause != null) return isUserRejection(e.cause, depth + 1)
-  return false
+  const e = err as Record<string, unknown>
+  if (match(e)) return true
+  return e.cause != null ? walkError(e.cause, match, depth + 1) : false
 }
 
 /**
- * Walks an error chain for an authorization-class failure: any EIP-1193
- * auth-class code (4100, 4900, 4901) or any "unauthorized"/"session
- * expired"/"provider disconnected" phrasing the wallet attaches to
- * message/details. Deliberately does NOT match bare -32006 by code —
- * that code is ambiguous (its canonical meaning is "JSON-RPC version
- * unsupported"); we rely on the auth wording the host sends alongside
- * it, which viem folds into the message string.
- *
- * Checked AFTER isUserRejection so an explicit 4001 decline never reads as
- * an auth failure.
+ * True if the error chain contains a wallet user-rejection — EIP-1193
+ * code 4001 or a recognized "user rejected/cancelled" phrasing.
  */
-export function isAuthError(err: unknown, depth = 0): boolean {
-  if (err == null || depth > 5) return false
+export function isUserRejection(err: unknown): boolean {
+  if (typeof err === 'string') return REJECTION_REGEX.test(err)
+  return walkError(err, (e) =>
+    (typeof e.code === 'number' && e.code === 4001) ||
+    (typeof e.message === 'string' && REJECTION_REGEX.test(e.message)),
+  )
+}
+
+/**
+ * True if the error chain contains an authorization-class failure — an
+ * EIP-1193 auth code (4100/4900/4901) or a wallet "unauthorized / session
+ * expired / provider disconnected" phrasing. Check AFTER isUserRejection
+ * so an explicit 4001 decline never reads as an auth failure.
+ */
+export function isAuthError(err: unknown): boolean {
   if (typeof err === 'string') return AUTH_ERROR_REGEX.test(err)
-  if (typeof err !== 'object') return false
-  const e = err as MaybeWalletError
-  if (typeof e.code === 'number' && AUTH_ERROR_CODES.has(e.code)) return true
-  if (typeof e.message === 'string' && AUTH_ERROR_REGEX.test(e.message)) return true
-  if (typeof e.details === 'string' && AUTH_ERROR_REGEX.test(e.details)) return true
-  if (e.cause != null) return isAuthError(e.cause, depth + 1)
-  return false
+  return walkError(err, (e) =>
+    (typeof e.code === 'number' && AUTH_ERROR_CODES.has(e.code)) ||
+    (typeof e.message === 'string' && AUTH_ERROR_REGEX.test(e.message)) ||
+    (typeof e.details === 'string' && AUTH_ERROR_REGEX.test(e.details)),
+  )
 }
 
 /**
@@ -99,7 +88,8 @@ function extractMessage(err: unknown): string {
       const details = typeof e.details === 'string' ? e.details : ''
       // Append the provider reason only when it adds signal the
       // shortMessage doesn't already carry (avoids "X. (X)").
-      if (details && !short.toLowerCase().includes(details.toLowerCase())) {
+      const detailsLower = details.toLowerCase()
+      if (details && !short.toLowerCase().includes(detailsLower)) {
         return `${short} (${details})`
       }
       return short
@@ -123,26 +113,10 @@ export function humanError(err: unknown): string {
 }
 
 /**
- * Show an error toast. When the error is a wallet rejection, surfaces a
- * clean "Cancelled" title with no description so the user sees a single
- * unambiguous signal. When it's an auth-class failure (stale session /
- * host not authorized), shows a recovery message and — if `onReconnect`
- * is supplied — a Reconnect action so the user can re-establish the
- * session without a full page reload. For real errors, falls back to
- * "<action> failed" + the underlying message. Use this anywhere a wallet
- * signature or transaction is involved so cancellations never read as
- * failures.
- *
- * When `onReconnect` is supplied, the Reconnect button's onClick:
- *   1. Calls event.preventDefault() so sonner does not auto-dismiss the
- *      toast (sonner's action handler runs `!event.defaultPrevented && $()`
- *      to dismiss; without preventDefault, the loading toast we set
- *      synchronously below would be dismissed in the same tick).
- *   2. Replaces the toast in place with a "Reconnecting…" loading state
- *      so the user has visible progress during wagmi's reconnect window
- *      (~2-8s for WalletConnect / Mini App connectors).
- *   3. Invokes the consumer's onReconnect, which is expected to run the
- *      wagmi reconnect + retry chain.
+ * Show an error toast for a wallet write. Wallet rejections collapse to a
+ * clean "Cancelled" title; auth-class failures show a reconnect-recovery
+ * message with an optional Reconnect action; everything else falls back to
+ * "<action> failed" + the underlying message.
  */
 export function toastError(
   action: string,
@@ -162,6 +136,9 @@ export function toastError(
         ? {
             label: 'Reconnect',
             onClick: (event) => {
+              // preventDefault keeps sonner from auto-dismissing — sonner
+              // runs `!event.defaultPrevented && dismiss()` after onClick,
+              // which would kill the loading toast we set right below.
               event.preventDefault()
               if (options.id) {
                 toast.loading('Reconnecting…', { id: options.id })
@@ -180,13 +157,10 @@ export function toastError(
 }
 
 /**
- * Show the "reconnect didn't help — try reloading" recovery toast. Used
- * by wallet-write hooks when an auth-class error reoccurs on the retry
- * that followed a wagmi reconnect: at that point we know reconnect alone
- * can't fix this user's wallet session (most commonly a Farcaster Mini App
- * with a dead host bridge), and a full page reload — which re-bootstraps
- * the SDK, the wagmi connectors, and the EIP-1193 provider — is the
- * universal recovery that works across every connector type.
+ * Terminal recovery toast for when reconnect already ran and the wallet
+ * is still returning auth errors. A full page reload re-bootstraps the
+ * SDK, wagmi connectors, and EIP-1193 provider — the universal recovery
+ * (notably for Farcaster Mini App hosts with a dead bridge).
  */
 export function toastReloadRecovery(options: { id?: string } = {}): void {
   toast.error('Try reloading the page', {
