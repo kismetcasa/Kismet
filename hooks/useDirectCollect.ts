@@ -73,7 +73,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
-  const { consumeRetryFlag, showError } = useWalletRecovery(TOAST_ID, 'Collect')
+  const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect')
   const [status, setStatus] = useState<CollectStatus>('idle')
   // Lets the recovery flow's post-reconnect retry re-invoke the latest
   // `collect` closure. A ref breaks the cycle that would otherwise
@@ -243,6 +243,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
 
         setStatus('done')
         toast.success('Collected!', { id: TOAST_ID })
+        ackSuccess()
         return { hash }
       } catch (err) {
         setStatus('error')
@@ -254,7 +255,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         inFlightRef.current = false
       }
     },
-    [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError],
+    [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectRef.current = collect

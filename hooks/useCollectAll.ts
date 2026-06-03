@@ -145,7 +145,7 @@ export function useCollectAll(): UseCollectAllReturn {
   const { data: walletClient } = useWalletClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
-  const { consumeRetryFlag, showError } = useWalletRecovery(TOAST_ID, 'Collect all')
+  const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect all')
   const [status, setStatus] = useState<Status>('idle')
   // Lets the recovery flow's post-reconnect retry re-invoke the latest
   // `collectAll` closure. A ref breaks the cycle that would otherwise
@@ -590,6 +590,7 @@ export function useCollectAll(): UseCollectAllReturn {
             { id: TOAST_ID },
           )
         }
+        ackSuccess()
         return { minted: recorded.length }
       } catch (err) {
         setStatus('error')
@@ -601,7 +602,7 @@ export function useCollectAll(): UseCollectAllReturn {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError],
+    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectAllRef.current = collectAll

@@ -19,6 +19,13 @@ interface UseWalletRecoveryReturn {
   // with the same args — typically `() => void runRef.current(args)` so
   // it picks up the latest hook closure.
   showError: (err: unknown, isRetryAfterRecovery: boolean, retry: () => void) => void
+  // Call from every success path of the wallet write. If a reconnect
+  // recovery is in flight (between user tapping Reconnect and the
+  // reconnectAsync awaiting completing), this tells the recovery to skip
+  // its auto-retry — otherwise a fast-completing manual retry during the
+  // reconnect window would be followed by a duplicate auto-retry, charging
+  // the user twice.
+  ackSuccess: () => void
 }
 
 /**
@@ -43,6 +50,16 @@ export function useWalletRecovery(toastId: string, action: string): UseWalletRec
   openConnectModalRef.current = openConnectModal
 
   const isRetryAfterRecoveryRef = useRef(false)
+  // True between the user tapping Reconnect and the recovery's
+  // continuation deciding what to do (retry vs. open modal). Gates the
+  // supersede logic — events outside this window don't affect recovery.
+  const pendingRecoveryRef = useRef(false)
+  // Set during a pending recovery when something happens that should
+  // cancel the planned auto-retry: a fresh wallet write succeeded
+  // (double-charge avoidance), or a fresh error toast appeared (surprise
+  // avoidance — user already saw a new error and would be confused by a
+  // delayed auto-prompt).
+  const recoverySupersededRef = useRef(false)
 
   const consumeRetryFlag = useCallback(() => {
     const v = isRetryAfterRecoveryRef.current
@@ -50,8 +67,20 @@ export function useWalletRecovery(toastId: string, action: string): UseWalletRec
     return v
   }, [])
 
+  const ackSuccess = useCallback(() => {
+    if (pendingRecoveryRef.current) {
+      recoverySupersededRef.current = true
+    }
+  }, [])
+
   const showError = useCallback(
     (err: unknown, isRetryAfterRecovery: boolean, retry: () => void) => {
+      // A fresh error during a pending recovery — not the recovery's own
+      // retry — means the user just saw a new toast. Don't auto-prompt
+      // them later when the original `reconnectAsync` resolves.
+      if (pendingRecoveryRef.current && !isRetryAfterRecovery) {
+        recoverySupersededRef.current = true
+      }
       // Layer 3: reconnect already ran and the wallet is still unauthorized
       // (most commonly a Mini App with a dead host bridge). Reload is the
       // only fix that works across every connector type.
@@ -63,19 +92,44 @@ export function useWalletRecovery(toastId: string, action: string): UseWalletRec
       toastError(action, err, {
         id: toastId,
         onReconnect: () => {
+          // Dedupe overlapping Reconnect clicks — when a manual write
+          // fails during a recovery's await, the new error toast carries
+          // its own Reconnect button. The user might tap it; we already
+          // have a recovery in flight, so just let that one finish.
+          // (toastError's onClick already set the "Reconnecting…" loading
+          // toast, so the user gets visual feedback either way.)
+          if (pendingRecoveryRef.current) return
+          pendingRecoveryRef.current = true
+          recoverySupersededRef.current = false
           void (async () => {
-            // Some connectors throw on reconnect; either way the
-            // post-reconnect getAccount check is the source of truth.
-            await reconnectAsync().catch(() => {})
-            const account = getAccount(config)
-            if (account.status === 'connected' && account.address) {
-              isRetryAfterRecoveryRef.current = true
-              retry()
-            } else {
-              // Dismiss the "Reconnecting…" toast before the wallet
-              // picker takes over — otherwise it lingers in the corner.
-              toast.dismiss(toastId)
-              openConnectModalRef.current?.()
+            try {
+              // Some connectors throw on reconnect; either way the
+              // post-reconnect getAccount check is the source of truth.
+              await reconnectAsync().catch(() => {})
+              if (recoverySupersededRef.current) {
+                toast.dismiss(toastId)
+                return
+              }
+              const account = getAccount(config)
+              if (account.status === 'connected' && account.address) {
+                isRetryAfterRecoveryRef.current = true
+                retry()
+              } else {
+                // Dismiss the "Reconnecting…" toast before the wallet
+                // picker takes over — otherwise it lingers in the corner.
+                toast.dismiss(toastId)
+                // RainbowKit only exposes `openConnectModal` as a defined
+                // function when wagmi.status is 'disconnected'. wagmi just
+                // flipped to disconnected via reconnectAsync, but React
+                // hasn't yet committed the resulting render — so the ref
+                // we captured pre-disconnect is still `undefined`. Defer
+                // past the next render via a 0-ms macrotask so React
+                // commits the post-disconnect state and the ref points
+                // at a real function before we invoke it.
+                setTimeout(() => openConnectModalRef.current?.(), 0)
+              }
+            } finally {
+              pendingRecoveryRef.current = false
             }
           })()
         },
@@ -84,5 +138,5 @@ export function useWalletRecovery(toastId: string, action: string): UseWalletRec
     [action, config, reconnectAsync, toastId],
   )
 
-  return { consumeRetryFlag, showError }
+  return { consumeRetryFlag, showError, ackSuccess }
 }
