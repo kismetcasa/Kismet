@@ -29,4 +29,9 @@ export const redis = new Redis({
 
 export const FEATURED_KEY = 'kismetart:featured'
 export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
+// Mint Pass Display — individual mints curated to render at collection scale
+// (a full-bleed showcase card) in the featured tab. Kept distinct from
+// FEATURED_KEY (the small featured grid) and mutually exclusive with it: a
+// mint is either a small feature or a Mint Pass Display, never both.
+export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'

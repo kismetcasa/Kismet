@@ -3,7 +3,7 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Star, Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
+import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import {
@@ -19,7 +19,7 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent, fetchTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
-import { useAdmin } from '@/contexts/AdminContext'
+import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
@@ -126,7 +126,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
-  const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { collect, status: collectStatus } = useDirectCollect()
@@ -197,7 +196,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const totalMinted = tokenInfo?.totalMinted
 
   const meta = moment.metadata ?? {}
-  const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
   // Price + currency. hidePriceSupply only controls badge rendering —
   // compact contexts still need these state values to drive collect.
@@ -365,24 +363,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         }}
         className={`cursor-pointer relative bg-surface overflow-hidden block ${fillCell && compact ? 'flex-1 min-h-0' : 'aspect-square'}`}
       >
-        {isAdmin && (
-          <button
-            onClick={(e) => {
-              // Star sits inside the <Link>; preventDefault stops the
-              // navigation that would otherwise fire, stopPropagation
-              // belt-and-suspenders any future ancestor click handler.
-              e.preventDefault()
-              e.stopPropagation()
-              toggleFeatured(moment.address, moment.token_id)
-            }}
-            className={`absolute top-1.5 left-1.5 z-10 min-w-10 min-h-10 flex items-center justify-center transition-colors ${
-              isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
-            }`}
-            title={isFeatured ? 'Unfeature' : 'Feature'}
-          >
-            <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-          </button>
-        )}
+        {/* Feature control (admin-only; FeatureStar self-gates). Tap to
+            feature, hold to set as a Mint Pass Display. Sits inside the
+            <Link>; the button's own pointer handlers stop navigation. */}
+        <FeatureStar
+          address={moment.address}
+          tokenId={moment.token_id}
+          className="absolute top-1.5 left-1.5"
+        />
         {moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
             <EyeOff size={10} className="text-muted" />

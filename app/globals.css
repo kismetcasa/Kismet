@@ -134,3 +134,13 @@ input[type='number'] {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Long-press progress ring for the feature star's "hold to set Mint Pass
+ * Display" gesture. Drives a normalized (pathLength=100) SVG circle's
+ * stroke-dashoffset from empty to full over the hold duration so the admin
+ * sees the press registering. The element sets animation-duration inline to
+ * match the JS hold timer. */
+@keyframes feature-hold {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}

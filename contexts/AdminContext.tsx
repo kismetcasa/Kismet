@@ -33,8 +33,16 @@ interface AdminContextValue {
   startSession: () => Promise<void>
   featuredKeys: Set<string>
   featuredCollectionAddrs: Set<string>
+  // Mints promoted to a Mint Pass Display — rendered at collection scale as a
+  // full-bleed showcase in the featured tab. Keyed `<addr>:<tokenId>` (lower-
+  // case addr), mutually exclusive with featuredKeys.
+  mintPassKeys: Set<string>
   toggleFeatured: (collectionAddress: string, tokenId: string) => Promise<void>
   toggleFeaturedCollection: (collectionAddress: string) => Promise<void>
+  // Long-press affordance on the star: promote/demote a mint to a Mint Pass
+  // Display. Promoting clears any small-feature on the same mint (and vice
+  // versa) so the two tiers never overlap.
+  toggleMintPassDisplay: (collectionAddress: string, tokenId: string) => Promise<void>
   // Run `fn` with a valid privileged session in scope. Auto-prompts a
   // one-time SIWE signature + login round-trip if no session is active.
   // Returns whatever `fn` returns, or null if unprivileged / cancelled.
@@ -50,8 +58,10 @@ const AdminContext = createContext<AdminContextValue>({
   startSession: async () => {},
   featuredKeys: new Set(),
   featuredCollectionAddrs: new Set(),
+  mintPassKeys: new Set(),
   toggleFeatured: async () => {},
   toggleFeaturedCollection: async () => {},
+  toggleMintPassDisplay: async () => {},
   withSession: async () => null,
 })
 
@@ -69,6 +79,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const sessionRef = useRef<AdminSession | null>(null)
   const [featuredKeys, setFeaturedKeys] = useState<Set<string>>(new Set())
   const [featuredCollectionAddrs, setFeaturedCollectionAddrs] = useState<Set<string>>(new Set())
+  const [mintPassKeys, setMintPassKeys] = useState<Set<string>>(new Set())
 
   function applySession(s: AdminSession | null) {
     sessionRef.current = s
@@ -145,6 +156,16 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
             new Set(
               d.featuredCollections.map(
                 (f: { collectionAddress: string }) => f.collectionAddress.toLowerCase(),
+              ),
+            ),
+          )
+        }
+        if (Array.isArray(d.mintPassDisplays)) {
+          setMintPassKeys(
+            new Set(
+              d.mintPassDisplays.map(
+                (f: { collectionAddress: string; tokenId: string }) =>
+                  `${f.collectionAddress.toLowerCase()}:${f.tokenId}`,
               ),
             ),
           )
@@ -253,11 +274,64 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
+        // Promoting to small-feature clears any Mint Pass Display on the same
+        // mint — the server enforces this too; mirror it locally so the star
+        // doesn't briefly show both states.
+        if (!isFeatured) {
+          setMintPassKeys((prev) => {
+            if (!prev.has(key)) return prev
+            const next = new Set(prev)
+            next.delete(key)
+            return next
+          })
+        }
       } catch (err) {
         toastError('Featured update', err)
       }
     },
     [address, isAdmin, isCurator, ensureSession, featuredKeys],
+  )
+
+  const toggleMintPassDisplay = useCallback(
+    async (collectionAddress: string, tokenId: string) => {
+      if (!address || (!isAdmin && !isCurator)) return
+      const s = await ensureSession()
+      if (!s) return // user cancelled signing
+
+      const key = `${collectionAddress.toLowerCase()}:${tokenId}`
+      const isDisplay = mintPassKeys.has(key)
+
+      try {
+        const res = await fetch('/api/featured', {
+          method: isDisplay ? 'DELETE' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'momentDisplay', collectionAddress, tokenId }),
+        })
+        if (!res.ok) {
+          const d = await res.json()
+          throw new Error(d.error ?? 'Failed')
+        }
+        setMintPassKeys((prev) => {
+          const next = new Set(prev)
+          if (isDisplay) next.delete(key)
+          else next.add(key)
+          return next
+        })
+        // Promoting to a Mint Pass Display clears any small-feature on the
+        // same mint (mutual exclusivity, mirrored from the server).
+        if (!isDisplay) {
+          setFeaturedKeys((prev) => {
+            if (!prev.has(key)) return prev
+            const next = new Set(prev)
+            next.delete(key)
+            return next
+          })
+        }
+      } catch (err) {
+        toastError('Mint Pass Display update', err)
+      }
+    },
+    [address, isAdmin, isCurator, ensureSession, mintPassKeys],
   )
 
   const withSession = useCallback(
@@ -317,15 +391,17 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       startSession,
       featuredKeys,
       featuredCollectionAddrs,
+      mintPassKeys,
       toggleFeatured,
       toggleFeaturedCollection,
+      toggleMintPassDisplay,
       withSession,
     }),
     [
       isAdmin, isCurator, session, address,
       startSession,
-      featuredKeys, featuredCollectionAddrs,
-      toggleFeatured, toggleFeaturedCollection, withSession,
+      featuredKeys, featuredCollectionAddrs, mintPassKeys,
+      toggleFeatured, toggleFeaturedCollection, toggleMintPassDisplay, withSession,
     ],
   )
 

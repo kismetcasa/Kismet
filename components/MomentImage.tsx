@@ -44,6 +44,13 @@ type NextImageProps = CommonProps & {
    * loading image, in place of the skeleton overlay.
    */
   thumbhash?: string
+  /**
+   * Fired with the decoded image's natural pixel dimensions once it loads.
+   * Lets a caller size its frame to the artwork's exact aspect ratio (the
+   * Mint Pass Display hugs the image with no letterbox). Optional — most
+   * callers don't need the source dimensions.
+   */
+  onNaturalSize?: (width: number, height: number) => void
 } & Omit<ImageProps, 'src' | 'onError'>
 
 /**
@@ -57,7 +64,7 @@ type NextImageProps = CommonProps & {
  *              proxy     → direct
  *              direct    → walk next gateway → onAllError
  */
-export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, priority, ...rest }: NextImageProps) {
+export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, priority, onNaturalSize, ...rest }: NextImageProps) {
   const { url, onError: walkGateway } = useFallbackUrl(src, onAllError)
   // Decode the thumbhash once into a tiny data-URL so next/image can paint
   // an instant low-fi preview behind the loading image, in place of the
@@ -154,7 +161,15 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
         src={renderUrl}
         unoptimized={unoptimized}
         onError={handleError}
-        onLoad={() => setLoaded(true)}
+        onLoad={(e) => {
+          setLoaded(true)
+          if (onNaturalSize) {
+            const img = e.currentTarget
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              onNaturalSize(img.naturalWidth, img.naturalHeight)
+            }
+          }
+        }}
         decoding="async"
         {...(blurDataURL ? { placeholder: 'blur' as const, blurDataURL } : {})}
         // Force eager loading on iOS WebKit + iframe contexts. Native
