@@ -57,19 +57,29 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
   }
 
-  // The desktop hero (web-only) is the newest featured mint that's also a Mint
-  // Pass Display — found in the moments we already have, so it costs no extra
-  // fetch. On mobile/miniapp it's left in the grid as a normal card (hero null).
-  const heroMoment =
-    !isMobile && mintPassKeys.size > 0
-      ? moments.find((m) =>
-          mintPassKeys.has(`${m.address?.toLowerCase()}:${m.token_id}`),
-        ) ?? null
-      : null
-  const hero = heroMoment ? <FeaturedMoment moment={heroMoment} priority /> : null
+  // The desktop hero (web-only) is the curated Mint Pass Display — one at a
+  // time. Render it from its ref (FeaturedMoment self-fetches) so it shows
+  // even when it isn't a standalone featured-timeline mint (e.g. a mint inside
+  // a featured collection). On mobile/miniapp there's no hero — the mint shows
+  // in the feed as a normal card / collection-row member instead.
+  const displayKey = !isMobile && mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
+  const colon = displayKey ? displayKey.indexOf(':') : -1
+  const hero = displayKey && colon > 0
+    ? (
+      <FeaturedMoment
+        address={displayKey.slice(0, colon)}
+        tokenId={displayKey.slice(colon + 1)}
+        priority
+      />
+    )
+    : null
 
-  // Pull the hero mint out of the grid so it isn't shown twice.
-  const gridMoments = heroMoment ? moments.filter((m) => m !== heroMoment) : moments
+  // Pull the hero mint out of the standalone-moments grid so it isn't shown
+  // twice. (A copy may still appear inside its own collection row below — the
+  // collection's full set is intentionally left complete.)
+  const gridMoments = displayKey
+    ? moments.filter((m) => `${m.address?.toLowerCase()}:${m.token_id}` !== displayKey)
+    : moments
 
   // Interleave: STRIDE moments → 1 collection → STRIDE moments → ...
   // Both lists arrive sorted by featuredAt desc, so the result is roughly
