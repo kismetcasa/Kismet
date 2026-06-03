@@ -47,8 +47,10 @@ const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
 export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentProps) {
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [failed, setFailed] = useState(false)
-  const [imgError, setImgError] = useState(false)
-  const [videoError, setVideoError] = useState(false)
+  // A moment resolves to exactly one media kind, so a single failure flag
+  // (set by whichever of the image/video branches exhausts its gateways)
+  // covers both — they can never both render.
+  const [mediaError, setMediaError] = useState(false)
   const [naturalRatio, setNaturalRatio] = useState<number | null>(null)
   const [artist, setArtist] = useState<string | null>(null)
   const [collection, setCollection] = useState<string | null>(null)
@@ -141,7 +143,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
         className="relative flex-shrink-0 bg-surface max-w-[70%]"
         style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H }}
       >
-        {isVideo && media.src && !videoError ? (
+        {isVideo && media.src && !mediaError ? (
           <MomentVideo
             src={media.src}
             poster={media.poster}
@@ -149,9 +151,9 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
             showPosterLayer
             className="w-full h-full object-contain"
             priority={priority}
-            onAllError={() => setVideoError(true)}
+            onAllError={() => setMediaError(true)}
           />
-        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
+        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
           <MomentImage
             src={media.src}
             alt={title}
@@ -163,7 +165,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
             priority={priority}
             preferProxy
             onNaturalSize={handleNaturalSize}
-            onAllError={() => setImgError(true)}
+            onAllError={() => setMediaError(true)}
           />
         ) : isTextMoment ? (
           <div className="w-full h-full flex flex-col p-8 bg-gradient-to-br from-raised to-surface overflow-hidden">
