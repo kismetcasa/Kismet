@@ -37,10 +37,11 @@ const rainbowKitConnectors = connectorsForWallets(wallets, {
 // Max time we'll wait for a Farcaster Mini App host to answer a
 // non-interactive connection-probe RPC before treating it as unavailable.
 // Genuine hosts (Farcaster web, FC iOS) answer their postMessage bridge in
-// a few ms, so this never trips for them — it only fires in environments
-// that LOOK embedded but no longer speak the Mini App protocol, most
-// importantly the Base App, which dropped the Farcaster Mini App spec in
-// April 2026.
+// a few ms, so this never trips for them. Belt-and-suspenders fallback
+// for an unknown embedded WebView that looks like a Mini App env but
+// doesn't speak the protocol — the Base App used to be the headline case
+// before lib/miniAppEnv.ts learned to short-circuit Coinbase WebViews
+// directly.
 //
 // Why it matters: the connector's eth_accounts call rides a Comlink
 // postMessage bridge with no timeout of its own. On a dead bridge it never
@@ -133,15 +134,16 @@ export const wagmiConfig = createConfig({
   chains: [base, mainnet],
   // Farcaster connector FIRST (when present) so wagmi's reconnect-on-mount
   // tries it before any RainbowKit wallet. We only register it in embedded
-  // contexts (iframe / RN WebView) — a regular browser tab is never a
-  // Farcaster host, so omitting it there avoids a guaranteed-unauthorized
-  // probe on every web load. Inside the Base App it IS registered (the Base
-  // App is an embedded WebView) but time-bounded, so its now-dead bridge
-  // can't pin wagmi's serial reconnect; it falls through to the RainbowKit
-  // wallets / EIP-6963-discovered Base App provider. The synchronous
-  // isPotentialMiniAppEnv() returns false during SSR (no window), so the
-  // server build simply omits it — the client config is authoritative for
-  // runtime connection behavior.
+  // contexts (iframe / RN WebView) that are NOT a Coinbase WebView — a
+  // regular browser tab is never a Farcaster host, and the Base App (which
+  // dropped the Mini App spec in April 2026) is a Coinbase WebView that
+  // looks embedded but auto-connects via its injected provider through
+  // wagmi's EIP-6963 discovery. isPotentialMiniAppEnv() short-circuits
+  // both cases to false, so the FC connector is omitted and the standard
+  // web wallet path runs without a guaranteed-unauthorized probe burning
+  // the 1.5s timeout. SSR also returns false (no window) so the server
+  // build simply omits the FC connector — the client config is
+  // authoritative for runtime connection behavior.
   connectors: [
     ...(isPotentialMiniAppEnv() ? [farcasterMiniAppTimeBounded()] : []),
     ...rainbowKitConnectors,
