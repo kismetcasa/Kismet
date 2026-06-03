@@ -17,6 +17,7 @@ import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { isUserRejection, walkError } from '@/lib/toast'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
+import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import {
@@ -376,6 +377,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 value: s.call.value!,
               })),
             ),
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
 
           setStatus('confirming')
@@ -403,6 +405,7 @@ export function useCollectAll(): UseCollectAllReturn {
             calls,
             chainId: base.id,
             experimental_fallback: true,
+            capabilities: builderCodeCapabilities,
           })
 
           setStatus('confirming')
@@ -462,6 +465,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 data: call.data,
                 value: call.value ?? 0n,
                 chain: base,
+                dataSuffix: BUILDER_DATA_SUFFIX,
               })
               const r = await publicClient.waitForTransactionReceipt({
                 hash,

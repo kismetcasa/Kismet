@@ -8,6 +8,7 @@ import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -157,6 +158,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               pricePerToken,
               comment,
             }),
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
         } else {
           // ERC20 (USDC) path: check allowance, approve if short, then mint.
@@ -177,6 +179,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               abi: ERC20_ABI,
               functionName: 'approve',
               args: [ZORA_ERC20_MINTER, totalPrice],
+              dataSuffix: BUILDER_DATA_SUFFIX,
             })
 
             toast.loading('Confirming approval…', { id: TOAST_ID })
@@ -200,6 +203,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               pricePerToken,
               comment,
             }),
+            dataSuffix: BUILDER_DATA_SUFFIX,
           })
         }
 
