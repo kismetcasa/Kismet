@@ -7,15 +7,11 @@
 // Coinbase WebView (Base App + Coinbase Wallet mobile dapp browser) is
 // explicitly excluded — those are embedded WebViews but NOT Farcaster
 // hosts. The Base App dropped the Mini App spec on April 9, 2026 (per
-// docs.base.org/apps/guides/migrate-to-standard-web-app) and now loads
-// apps as standard web pages with `window.ethereum` injected (EIP-6963
-// advertises `rdns: app.base.account` / `com.coinbase.wallet`); the
-// Coinbase Wallet mobile browser was never a Mini App host. In both,
-// wagmi auto-discovers the injected provider via mipd, so the standard
-// web wallet path connects with no prompt — registering the Farcaster
-// connector would just burn an `eth_accounts` probe (and the 1.5s
-// timeout in lib/wagmi.ts) before falling through, producing a visible
-// flicker of failure where there should be a silent auto-connect.
+// docs.base.org/apps/guides/migrate-to-standard-web-app); Coinbase Wallet
+// mobile was never a Mini App host. In both, wagmi's EIP-6963 auto-
+// discovery picks up the injected provider directly — registering the FC
+// connector would just burn the eth_accounts probe (and the 1.5s timeout
+// in lib/wagmi.ts) before falling through, producing visible flicker.
 export function isPotentialMiniAppEnv(): boolean {
   if (typeof window === 'undefined') return false
   try {

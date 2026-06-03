@@ -19,8 +19,7 @@ const REJECTION_REGEX = /user rejected|user denied|rejected the request|user can
 const AUTH_ERROR_REGEX =
   /unauthorized|not been authorized|\bexpired\b|(?:session|wallet|provider|user).*disconnect|session.*settlement/i
 
-// EIP-1193 auth-class numeric codes: 4100 = not authorized by user,
-// 4900 = provider disconnected, 4901 = not connected to requested chain.
+// EIP-1193 auth-class numeric codes (4100 / 4900 / 4901).
 const AUTH_ERROR_CODES = new Set([4100, 4900, 4901])
 
 interface MaybeWalletError {

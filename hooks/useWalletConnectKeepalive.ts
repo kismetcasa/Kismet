@@ -6,25 +6,20 @@ import { useConfig } from 'wagmi'
 // Mobile OSes (iOS Safari especially) suspend the WebSocket transport
 // when the tab is backgrounded — the local TCP layer keeps reporting
 // readyState===1, so wagmi keeps reporting isConnected: true. The
-// dead socket only becomes visible on the next outbound request, which
-// is when the user taps Collect and hits "User disconnected" / "Expired."
-// / "Session settlement failed." (the wording the auth-error regex in
+// dead socket only becomes visible on the next outbound request, when
+// the user taps Collect and hits "User disconnected" / "Expired." /
+// "Session settlement failed." (the wording the auth-error regex in
 // lib/toast.ts was widened to catch).
 //
 // On visibility regain we ping the relay; the WC `wc_sessionPing` RPC
 // is marked prompt:false so the peer wallet auto-answers without any
 // UI. If the ping times out, restartTransport closes and reopens the
-// socket cleanly. Both are silent — zero friction in the happy path,
-// and the existing recovery flow remains the backstop for the case
-// the heal itself fails to catch (mid-tab death, half-broken host).
-//
-// Field chain is verified against:
-//   @walletconnect/ethereum-provider/EthereumProvider.d.ts (signer, session)
-//   @walletconnect/universal-provider/UniversalProvider.d.ts (client)
-//   @walletconnect/sign-client/client.d.ts (ping, core)
-// All are typed-public surfaces, but the chain is deep — the structural
-// type below degrades to silent no-op via optional chaining if any
-// field disappears in a future WC bump, rather than crashing.
+// socket cleanly. Both are silent — zero friction in the happy path.
+// The recovery flow in useWalletRecovery remains the backstop for the
+// cases the heal can't catch (mid-tab death, half-broken host). The
+// deep field chain (signer.client.core.relayer) is typed-public per
+// WC's .d.ts but optional-chained throughout so any future field-rename
+// degrades to silent no-op instead of crashing.
 
 // At most one heal per 30s. Real foreground-after-background transitions
 // are sparse; rapid visibility flips (focus shifts within the OS task
@@ -63,7 +58,6 @@ export function useWalletConnectKeepalive(): void {
       if (healInFlightRef.current) return
       const now = Date.now()
       if (now - lastHealAtRef.current < THROTTLE_MS) return
-      lastHealAtRef.current = now
       healInFlightRef.current = true
 
       try {
@@ -77,6 +71,9 @@ export function useWalletConnectKeepalive(): void {
         // No active WC session (user is on injected / Mini App / not yet
         // connected via WC) — nothing to heal.
         if (!topic || !ping) return
+        // Throttle ONLY when we found a session to heal; otherwise a non-WC
+        // user's visibility events would burn the budget pointlessly.
+        lastHealAtRef.current = now
 
         const pingOk = await Promise.race<boolean>([
           ping({ topic }).then(() => true).catch(() => false),

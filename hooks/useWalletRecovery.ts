@@ -8,23 +8,11 @@ import { toast } from 'sonner'
 import { isAuthError, toastError, toastReloadRecovery } from '@/lib/toast'
 
 interface UseWalletRecoveryReturn {
-  // Read-and-clear the "this call is the post-reconnect retry" flag. Call
-  // once at the top of the wallet-write callback; the returned boolean
-  // drives the layer-2-vs-layer-3 branch in `showError`.
+  /** Read-and-clear the post-reconnect retry flag. Call at hook entry. */
   consumeRetryFlag: () => boolean
-  // Render the right recovery toast for the error. Layer-3 (Reload) when
-  // a reconnect retry just failed again with an auth error; layer-2
-  // (Reconnect → retry/openConnectModal) otherwise. `retry` is invoked
-  // after a successful reconnect and should re-run the same wallet write
-  // with the same args — typically `() => void runRef.current(args)` so
-  // it picks up the latest hook closure.
+  /** Render the recovery toast for an error. Layer-3 (Reload) when the retry itself failed auth-class; layer-2 (Reconnect) otherwise. */
   showError: (err: unknown, isRetryAfterRecovery: boolean, retry: () => void) => void
-  // Call from every success path of the wallet write. If a reconnect
-  // recovery is in flight (between user tapping Reconnect and the
-  // reconnectAsync awaiting completing), this tells the recovery to skip
-  // its auto-retry — otherwise a fast-completing manual retry during the
-  // reconnect window would be followed by a duplicate auto-retry, charging
-  // the user twice.
+  /** Call from every success path. Marks an in-flight recovery as superseded so its auto-retry doesn't re-dispatch the same write. */
   ackSuccess: () => void
 }
 
