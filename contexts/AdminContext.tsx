@@ -274,10 +274,9 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
-        // Promoting to small-feature clears any Mint Pass Display on the same
-        // mint — the server enforces this too; mirror it locally so the star
-        // doesn't briefly show both states.
-        if (!isFeatured) {
+        // Unfeaturing cascades: a mint that isn't featured can't be a Mint
+        // Pass Display, so drop any hero treatment too (server does the same).
+        if (isFeatured) {
           setMintPassKeys((prev) => {
             if (!prev.has(key)) return prev
             const next = new Set(prev)
@@ -317,13 +316,14 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
-        // Promoting to a Mint Pass Display clears any small-feature on the
-        // same mint (mutual exclusivity, mirrored from the server).
+        // Promoting to a Mint Pass Display also features the mint (DISPLAY ⊆
+        // FEATURED) so it still shows as a normal card on mobile. Demoting
+        // leaves it featured.
         if (!isDisplay) {
           setFeaturedKeys((prev) => {
-            if (!prev.has(key)) return prev
+            if (prev.has(key)) return prev
             const next = new Set(prev)
-            next.delete(key)
+            next.add(key)
             return next
           })
         }

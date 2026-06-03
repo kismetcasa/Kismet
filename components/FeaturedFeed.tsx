@@ -53,49 +53,59 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
         if (cancelled) return
         setCollections(Array.isArray(fc?.collections) ? fc.collections : [])
       })
-    fetch('/api/featured')
-      .then((r) => (r.ok ? r.json() : { mintPassDisplays: [] }))
-      .catch(() => ({ mintPassDisplays: [] }))
-      .then((d) => {
-        if (cancelled) return
-        const refs: MintPassDisplayRef[] = Array.isArray(d?.mintPassDisplays)
-          ? d.mintPassDisplays
-              .filter(
-                (m: { collectionAddress?: string; tokenId?: string }) =>
-                  m?.collectionAddress && m?.tokenId,
-              )
-              .map((m: { collectionAddress: string; tokenId: string }) => ({
-                address: m.collectionAddress,
-                tokenId: m.tokenId,
-              }))
-          : []
-        setDisplays(refs)
-      })
+    // The hero is desktop-only, so the display set is only needed there — skip
+    // the fetch on mobile/miniapp, where the same mint already rides the grid.
+    if (!isMobile) {
+      fetch('/api/featured')
+        .then((r) => (r.ok ? r.json() : { mintPassDisplays: [] }))
+        .catch(() => ({ mintPassDisplays: [] }))
+        .then((d) => {
+          if (cancelled) return
+          const refs: MintPassDisplayRef[] = Array.isArray(d?.mintPassDisplays)
+            ? d.mintPassDisplays
+                .filter(
+                  (m: { collectionAddress?: string; tokenId?: string }) =>
+                    m?.collectionAddress && m?.tokenId,
+                )
+                .map((m: { collectionAddress: string; tokenId: string }) => ({
+                  address: m.collectionAddress,
+                  tokenId: m.tokenId,
+                }))
+            : []
+          setDisplays(refs)
+        })
+    }
     return () => { cancelled = true }
-  }, [])
+  }, [isMobile])
 
-  // Mint Pass Displays lead the tab as full-bleed showcases, newest first.
-  // Each owns its own fetch + skeleton, so they paint independently of the
-  // grid/collections feed below. Lazy-mount past the first few on mobile so
-  // a large curated set doesn't mount every heavy hero at once.
-  const showcase = displays.length > 0 ? (
-    <div className="flex flex-col gap-6">
-      {displays.map((d, i) => (
-        <MaybeLazy key={`${d.address}-${d.tokenId}`} index={i} lazy={isMobile}>
-          {() => <FeaturedMoment address={d.address} tokenId={d.tokenId} priority={i === 0} />}
-        </MaybeLazy>
-      ))}
-    </div>
+  // One curated Mint Pass Display leads the tab as a desktop hero (web-only).
+  // On mobile/miniapp the same mint is shown as a normal featured card in the
+  // grid below (it's also in FEATURED_KEY), so the hero is null there.
+  const displayRef = displays[0] ?? null
+  const hero = displayRef ? (
+    <FeaturedMoment address={displayRef.address} tokenId={displayRef.tokenId} priority />
   ) : null
 
   if (moments === null) {
     return (
       <div className="flex flex-col gap-6 pt-4">
-        {showcase}
+        {hero}
         <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
       </div>
     )
   }
+
+  // On desktop the hero mint is pulled out of the grid so it isn't shown
+  // twice. On mobile `hero` is null and the mint stays in the grid.
+  const gridMoments = displayRef
+    ? moments.filter(
+        (m) =>
+          !(
+            m.address?.toLowerCase() === displayRef.address.toLowerCase() &&
+            String(m.token_id) === String(displayRef.tokenId)
+          ),
+      )
+    : moments
 
   // Interleave: STRIDE moments → 1 collection → STRIDE moments → ...
   // Both lists arrive sorted by featuredAt desc, so the result is roughly
@@ -108,10 +118,10 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   const blocks: Block[] = []
   let mIdx = 0
   let cIdx = 0
-  while (mIdx < moments.length || cIdx < safeCollections.length) {
-    const take = Math.min(STRIDE, moments.length - mIdx)
+  while (mIdx < gridMoments.length || cIdx < safeCollections.length) {
+    const take = Math.min(STRIDE, gridMoments.length - mIdx)
     if (take > 0) {
-      blocks.push({ kind: 'moments', items: moments.slice(mIdx, mIdx + take) })
+      blocks.push({ kind: 'moments', items: gridMoments.slice(mIdx, mIdx + take) })
       mIdx += take
     }
     if (cIdx < safeCollections.length) {
@@ -121,12 +131,12 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
 
   // Wait for collections too before showing empty — otherwise the tab
   // flashes "empty" between moments resolving empty and collections done.
-  // Skip the empty message entirely when Mint Pass Displays lead the tab, so
-  // it never reads "nothing here" above a wall of showcases.
-  if (blocks.length === 0 && collections !== null && displays.length === 0) {
+  // Skip it when the hero leads the tab so it never reads "nothing here"
+  // above the showcase.
+  if (blocks.length === 0 && collections !== null && !hero) {
     return (
       <div className="flex flex-col gap-6 pt-4">
-        {showcase}
+        {hero}
         <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
       </div>
     )
@@ -141,7 +151,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
 
   return (
     <div className="flex flex-col gap-6 pt-4">
-      {showcase}
+      {hero}
       {blocks.map((b, i) =>
         b.kind === 'moments' ? (
           <div
