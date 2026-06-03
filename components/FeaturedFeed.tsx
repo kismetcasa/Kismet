@@ -4,12 +4,23 @@ import { useEffect, useState } from 'react'
 import type { Moment } from '@/lib/inprocess'
 import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
+import { FeaturedMoment } from './FeaturedMoment'
 import { MaybeLazy } from './LazyMount'
 
 // Number of moments rendered as a single grid row before the next collection
 // breaks in. Picked to match the lg+ 4-col grid so the collection always
 // appears at a visual row boundary rather than mid-row.
 const STRIDE = 4
+
+// Curated single-moment hero pinned to the top of the featured tab. Rendered
+// at the same footprint as a collection display (CollectionRow) so it reads
+// as a true showcase for one artwork. Set to null to remove the hero. An
+// admin/curator picker to choose the showcased moment is a deliberate
+// follow-up — this is the display-card-first pass.
+const SHOWCASE_MOMENT: { address: string; tokenId: string } | null = {
+  address: '0x83c9309e7945d514907be7535dac7a7002169892',
+  tokenId: '5',
+}
 
 interface FeaturedFeedProps {
   emptyMessage: string
@@ -46,8 +57,24 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     return () => { cancelled = true }
   }, [])
 
+  // The curated hero owns its own fetch + skeleton, so it leads the tab
+  // immediately and stays put while the moments/collections feed below
+  // resolves independently.
+  const showcase = SHOWCASE_MOMENT ? (
+    <FeaturedMoment
+      address={SHOWCASE_MOMENT.address}
+      tokenId={SHOWCASE_MOMENT.tokenId}
+      priority
+    />
+  ) : null
+
   if (moments === null) {
-    return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
+    return (
+      <div className="flex flex-col gap-6 pt-4">
+        {showcase}
+        <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
+      </div>
+    )
   }
 
   // Interleave: STRIDE moments → 1 collection → STRIDE moments → ...
@@ -74,8 +101,14 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
 
   // Wait for collections too before showing empty — otherwise the tab
   // flashes "empty" between moments resolving empty and collections done.
+  // The showcase still leads regardless, so the tab is never bare.
   if (blocks.length === 0 && collections !== null) {
-    return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
+    return (
+      <div className="flex flex-col gap-6 pt-4">
+        {showcase}
+        <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
+      </div>
+    )
   }
 
   // Running flat index across moment-blocks so MaybeLazy's eager-count
@@ -87,6 +120,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
 
   return (
     <div className="flex flex-col gap-6 pt-4">
+      {showcase}
       {blocks.map((b, i) =>
         b.kind === 'moments' ? (
           <div
