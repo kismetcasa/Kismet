@@ -333,7 +333,10 @@ all current. Engines pin `node >=22.11`.
 - Add **CI** (GitHub Actions): run `npm run check` (typecheck + lint +
   resource-hint + bundle-size), `npm audit --omit=dev`, and a Docker build, on
   every PR. Today nothing enforces the gates the code comments rely on.
-- Add **Dependabot/Renovate**; schedule the turbo-sdk major bump and CDP/axios fix.
+- Schedule the dependency upgrades **manually** (deliberately no automated
+  update bot — the auto-PR branch churn was unwanted): the critical turbo-sdk/arbundles bump and the
+  CDP/axios fix, applied by bumping the parent package or via targeted `package.json`
+  `overrides`, verified by `npm ci` + build.
 - Pin/track the `bundle-baseline.json` budget in CI (the script exists,
   `scripts/check-bundle-size.mjs`, but isn't enforced anywhere automated).
 
@@ -391,8 +394,8 @@ Scale-relevant gaps:
    per-request size cap + CDN. Add a per-IP limit to `/api/listings POST`.)
 2. **Move server RPC to a server-only key + add a failover provider**; decouple
    `/api/readiness` from a hard Base-RPC gate (degrade, don't dark).
-3. **Add CI** (typecheck/lint/bundle/audit/build) and Dependabot; schedule the
-   **critical arbundles / turbo-sdk** and **axios/CDP** upgrades.
+3. **Add CI** (typecheck/lint/bundle/audit/build); schedule the **critical
+   arbundles / turbo-sdk** and **axios/CDP** upgrades manually (parent-bump / `overrides`).
 4. **Uniform per-call timeouts + circuit breaker** on all inprocess fetches;
    wrap `durationCache` in `LRUCache`; add Upstash + wallet-balance alerts.
 
