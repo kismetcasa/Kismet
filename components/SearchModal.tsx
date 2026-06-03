@@ -7,6 +7,8 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress } from '@/lib/inprocess'
+import { fetchCreatorProfile } from '@/lib/profileCache'
+import { isOperatorAddress } from '@/lib/config'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -31,6 +33,27 @@ function CollectionResult({ col, onClose }: { col: CollectionMeta; onClose: () =
   const [errored, setErrored] = useState(false)
   const showImage = !!col.image && !errored
   const initial = (col.name || '?').trim().charAt(0).toUpperCase() || '?'
+
+  // Subtitle = the artist's @handle, resolved the same way
+  // CollectionCard/CollectionRow do: suppress the operator smart wallet
+  // (platform-deployed, no profile), async-resolve the username, and fall
+  // back to the artist's short address. Showing the artist is more useful
+  // than the raw contract address — only fall back to that when the meta
+  // carries no artist at all, so the row never loses its subtitle.
+  const artistAddr = isOperatorAddress(col.artist) ? undefined : col.artist
+  const [subtitle, setSubtitle] = useState<string>(
+    artistAddr ? shortAddress(artistAddr) : shortAddress(col.address),
+  )
+  useEffect(() => {
+    if (!artistAddr) return
+    fetchCreatorProfile(artistAddr).then(({ name }) => {
+      // profileCache returns the username when set, otherwise a short
+      // address — the `@` prefix only makes sense for a real username.
+      const isUsername = name && name !== shortAddress(artistAddr)
+      setSubtitle(isUsername ? `@${name}` : shortAddress(artistAddr))
+    })
+  }, [artistAddr])
+
   return (
     <Link
       href={`/collection/${col.address}`}
@@ -56,7 +79,7 @@ function CollectionResult({ col, onClose }: { col: CollectionMeta; onClose: () =
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-sm text-ink font-mono truncate">{col.name}</p>
-        <p className="text-xs text-muted font-mono">{shortAddress(col.address)}</p>
+        <p className="text-xs text-muted font-mono truncate">{subtitle}</p>
       </div>
     </Link>
   )
