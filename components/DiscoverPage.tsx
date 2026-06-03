@@ -367,7 +367,7 @@ function MainFeed() {
 // ─── discover page ────────────────────────────────────────────────────────────
 
 export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
-  const { isAdmin, hasSession, startSession, featuredKeys, featuredCollectionAddrs } = useAdmin()
+  const { isAdmin, hasSession, startSession, featuredKeys, featuredCollectionAddrs, mintPassKeys } = useAdmin()
   const queryClient = useQueryClient()
   // Mirror MomentFeed's page size (lazy=isMobile → 12 mobile / 18 desktop)
   // so a warmed entry shares the live grid's exact query key.
@@ -495,9 +495,10 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
             )}
             <FeaturedFeed
               // Content-derived key so swapping a feature (un-feature A,
-              // feature B in the same session) still triggers a re-fetch.
-              // `.size` alone wouldn't change in that case.
-              key={`featured-${[...featuredCollectionAddrs].join(',')}-${[...featuredKeys].join(',')}`}
+              // feature B in the same session) — or promoting a mint to a
+              // Mint Pass Display — still triggers a re-fetch. `.size` alone
+              // wouldn't change when one key swaps for another.
+              key={`featured-${[...featuredCollectionAddrs].join(',')}-${[...featuredKeys].join(',')}-${[...mintPassKeys].join(',')}`}
               emptyMessage={isAdmin ? 'no featured mints or collections yet — click ★ on any mint or collection to feature it' : 'no featured mints or collections yet'}
               isMobile={isMobile}
             />

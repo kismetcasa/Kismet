@@ -1,4 +1,4 @@
-import { rgbaToThumbHash, thumbHashToDataURL } from 'thumbhash'
+import { rgbaToThumbHash, thumbHashToDataURL, thumbHashToApproximateAspectRatio } from 'thumbhash'
 import { LRUCache } from '@/lib/lruCache'
 
 // Decoded blur data-URLs keyed by the source base64 thumbhash. The decode is
@@ -80,4 +80,19 @@ export function thumbhashToBlurDataURL(b64: string | undefined): string | undefi
   }
   blurUrlCache.set(b64, result)
   return result
+}
+
+// Approximate width/height aspect ratio (encoded in every thumbhash). Lets a
+// surface size its frame to the artwork's shape BEFORE the full image loads —
+// so the box can hug the image with no letterbox and no layout shift. Returns
+// undefined on malformed/missing input; the caller refines to the exact ratio
+// once the real image reports its natural dimensions.
+export function thumbhashToRatio(b64: string | undefined): number | undefined {
+  if (!b64) return undefined
+  try {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    return thumbHashToApproximateAspectRatio(bytes)
+  } catch {
+    return undefined
+  }
 }
