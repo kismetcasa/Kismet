@@ -40,7 +40,7 @@
     "stream-browserify": "^3.0.0",
     "thumbhash": "^0.1.1",
     "viem": "^2.21.0",
-    "wagmi": "^2.12.0"
+    "wagmi": "^3.6.16"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
