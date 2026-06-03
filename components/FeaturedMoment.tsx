@@ -117,8 +117,13 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   const title = meta.name ?? `#${tokenId}`
 
   return (
+    // Desktop-only on two levels: FeaturedFeed gates rendering on the server
+    // !isMobile flag, and `hidden lg:flex` is a CSS belt for contexts where
+    // that UA check misses (some miniapp webviews report a non-mobile UA, or
+    // the HTML is served cross-UA), so the wide 3-column hero never shows below
+    // lg regardless. On those viewports the mint shows as a normal card.
     <article
-      className="relative flex border border-line overflow-hidden"
+      className="relative hidden lg:flex border border-line overflow-hidden"
       style={{ backgroundColor: DISPLAY_BG }}
     >
       {/* Left — click anywhere opens the moment; the @artist opens the artist. */}
