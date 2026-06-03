@@ -367,7 +367,7 @@ function MainFeed() {
 // ─── discover page ────────────────────────────────────────────────────────────
 
 export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
-  const { isAdmin, hasSession, startSession, featuredKeys, featuredCollectionAddrs, mintPassKeys } = useAdmin()
+  const { isAdmin, hasSession, startSession, featuredRevision } = useAdmin()
   const queryClient = useQueryClient()
   // Mirror MomentFeed's page size (lazy=isMobile → 12 mobile / 18 desktop)
   // so a warmed entry shares the live grid's exact query key.
@@ -494,11 +494,14 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
               </div>
             )}
             <FeaturedFeed
-              // Content-derived key so swapping a feature (un-feature A,
-              // feature B in the same session) — or promoting a mint to a
-              // Mint Pass Display — still triggers a re-fetch. `.size` alone
-              // wouldn't change when one key swaps for another.
-              key={`featured-${[...featuredCollectionAddrs].join(',')}-${[...featuredKeys].join(',')}-${[...mintPassKeys].join(',')}`}
+              // Remount-to-refetch on a real curation change (feature, un-
+              // feature, collection, or Mint Pass Display) via a counter that
+              // only the toggles bump. Keying on the set *contents* instead
+              // would also remount when they first populate from /api/featured
+              // — a wasteful double-fetch of the tab's heaviest endpoints on
+              // every initial load. The hero reacts to mintPassKeys reactively
+              // (no remount needed) for that initial-populate case.
+              key={`featured-${featuredRevision}`}
               emptyMessage={isAdmin ? 'no featured mints or collections yet — click ★ on any mint or collection to feature it' : 'no featured mints or collections yet'}
               isMobile={isMobile}
             />
