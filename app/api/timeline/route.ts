@@ -142,7 +142,9 @@ export async function GET(req: NextRequest) {
   // collection sample so paginated pages don't empty out prematurely.
   const needsLargerSample = sort === 'trending' || featured || filterToCreators
   const fetchLimit = needsLargerSample ? Math.max(page * limit, 200) : page * limit
+  const fanoutStart = performance.now()
   const results = await Promise.all(collections.map((c) => fetchCollection(c, fetchLimit)))
+  const fanoutMs = Math.round(performance.now() - fanoutStart)
 
   // Merge and deduplicate
   const seen = new Set<string>()
@@ -456,6 +458,16 @@ export async function GET(req: NextRequest) {
   const cacheControl = viewerDependent
     ? 'private, no-store'
     : 'public, s-maxage=30, stale-while-revalidate=120'
+
+  // Observability for the #1 scaling cliff: the cross-collection fan-out grows
+  // O(tracked collections). Logging only the slow tail keeps noise low while
+  // surfacing when the fan-out latency starts to bite (the trigger to move to
+  // a materialized feed — see REMEDIATION_PLAYBOOK.md §B1).
+  if (fanoutMs > 1500) {
+    console.warn('[timeline] slow fanout', {
+      ms: fanoutMs, collections: collections.length, merged: merged.length, scope,
+    })
+  }
 
   return NextResponse.json(
     { status: 'success', moments, pagination: { page, limit, total_pages } },

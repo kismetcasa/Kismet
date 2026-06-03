@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
     const { mp4, poster, thumbhash } = await transcodeGifToMp4Node(gif)
 
     // Debit the platform upload budget for the bytes we're about to store.
-    const withinQuota = await consumeUserQuota('upload-bytes', address, mp4.byteLength + poster.byteLength)
+    const withinQuota = await consumeUserQuota('upload-bytes', address, mp4.byteLength + poster.byteLength, { failClosed: true })
     if (!withinQuota) {
       return errorResponse(429, 'Daily upload size limit reached — try again tomorrow')
     }

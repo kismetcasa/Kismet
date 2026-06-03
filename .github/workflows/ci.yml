@@ -32,6 +32,7 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
       # typecheck + lint + resource-hint CORS + per-route bundle-size.
       - run: npm run check
+      - run: npm test
       # NON-blocking for now: the dependency tree carries known critical/high
       # advisories (transitive, via the Arweave/Turbo + Coinbase CDP subtrees)
       # that Dependabot security updates will clear. Drop `continue-on-error`

@@ -1,26 +1,26 @@
-import { createPublicClient, http } from 'viem'
+import { createPublicClient, http, fallback } from 'viem'
 import { base } from 'viem/chains'
 
-// Prefers a server-only BASE_RPC_URL, falling back to NEXT_PUBLIC_BASE_RPC_URL
-// (the same env var the wagmi config reads on the client) so server-side reads
-// use a configured paid RPC instead of Base's public endpoint. Falls through
-// to undefined/public when both are unset —
-// transport: http() with no URL hits mainnet.base.org which rate-limits
-// aggressively under load and surfaces as "over rate limit" errors in
-// the airdrop authorize precheck and similar paths.
+// Server-side Base client. Prefers a server-only BASE_RPC_URL over the
+// NEXT_PUBLIC_ one (so the paid key driving server reads isn't inlined into
+// the client bundle), falling through to undefined/public when both are unset
+// (http() with no URL hits mainnet.base.org, which rate-limits aggressively
+// under load). Adds a second provider for failover when BASE_RPC_URL_FALLBACK
+// is set.
 //
 // Cached at module scope: viem's client is stateless and undici already
 // keeps sockets alive across `fetch()` calls, so re-creating the client
 // per request was pure allocation overhead.
 function createClient() {
-  return createPublicClient({
-    chain: base,
-    // Prefer a server-only key (BASE_RPC_URL) for server-side reads so the
-    // paid endpoint isn't the NEXT_PUBLIC_ one inlined into the client bundle.
-    // Falls back to the public var when unset (current behavior → non-breaking).
-    // Mirrors MAINNET_RPC_URL's server-only pattern for ENS in /api/profile.
-    transport: http(process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL),
-  })
+  const primary = process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL
+  // viem `fallback` is deterministic FAILOVER (primary first; advance to the
+  // next only on a retryable transport error — 429/timeout/5xx), NOT load-
+  // balancing. It deliberately does NOT fail over on contract reverts, so
+  // there's no double-execution. Added only when a distinct fallback provider
+  // is configured → a single transport (non-breaking) when unset.
+  const backup = process.env.BASE_RPC_URL_FALLBACK
+  const transport = backup ? fallback([http(primary), http(backup)]) : http(primary)
+  return createPublicClient({ chain: base, transport })
 }
 
 let cached: ReturnType<typeof createClient> | undefined

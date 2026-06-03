@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
   // (.env.example) are the controls. Turbo calls sign() once per uploadFile, so
   // one debit == one upload. Debit after validation so a malformed body can't
   // burn the bucket.
-  const withinQuota = await consumeUserQuota('sign-calls', address, 1)
+  const withinQuota = await consumeUserQuota('sign-calls', address, 1, { failClosed: true })
   if (!withinQuota) {
     return errorResponse(429, 'Daily upload signing limit reached — try again tomorrow')
   }

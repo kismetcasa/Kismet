@@ -112,14 +112,17 @@ return 1
 /**
  * Atomically debit `n` against the kind's day + week buckets. Returns true
  * when allowed (under cap), false when the debit would exceed either cap.
- * Fails OPEN (true) on a Redis hiccup — same policy as the rate limiter, and
- * the reason a transient outage can never block a legitimate mint. Admin and
+ * Fails OPEN on a Redis hiccup BY DEFAULT — same policy as the rate limiter,
+ * so a transient outage can't block a legitimate mint. Spend-bearing callers
+ * pass `{ failClosed: true }` to DENY instead, so an outage can't let platform
+ * spend (Arweave credit, sponsored gas) run unbounded. Admin and
  * non-positive/empty inputs bypass.
  */
 export async function consumeUserQuota(
   kind: QuotaKind,
   address: string,
   n: number = 1,
+  opts: { failClosed?: boolean } = {},
 ): Promise<boolean> {
   if (n <= 0 || !address) return true
   if (isAdmin(address)) return true
@@ -135,6 +138,12 @@ export async function consumeUserQuota(
     // (fail open) — same policy as the catch below and the rate limiter.
     return raw !== 0 && raw !== '0'
   } catch {
-    return true
+    // Redis unavailable — we can't enforce the cap. Availability-critical
+    // callers fail OPEN (default) so a transient outage doesn't block them.
+    // SPEND-critical callers (sign/upload/mint/write/distribute) pass
+    // failClosed so platform spend can't run unbounded during an outage:
+    // a denial is recoverable, an uncapped drain is not. The bounded funder
+    // float remains the operational backstop either way.
+    return !opts.failClosed
   }
 }

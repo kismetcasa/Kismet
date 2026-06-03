@@ -167,7 +167,7 @@ export async function proxyMintRequest(
   // Per-address daily/weekly cap on platform-paid mint/write operations.
   // Debited AFTER the gates so a blocked or pass-less caller doesn't burn
   // their bucket. Admin bypasses inside consumeUserQuota.
-  const withinQuota = await consumeUserQuota(action, account, 1)
+  const withinQuota = await consumeUserQuota(action, account, 1, { failClosed: true })
   if (!withinQuota) {
     return errorResponse(429, `Daily ${action} limit reached — try again tomorrow`)
   }
