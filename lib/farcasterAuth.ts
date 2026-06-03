@@ -4,10 +4,12 @@ import { SITE_URL } from './siteUrl'
 import { getVerifiedAddressesByFid } from './farcasterProfile'
 import { getFidProfile, getProfile } from './profile'
 
-// Quick Auth verifies JWTs **locally** via asymmetric signature check
-// against Farcaster's published public key — no per-request network round
-// trip. The client is a thin holder for that key plus the issuer/audience
-// constraints. One module-level instance is enough.
+// Quick Auth verifies a JWT's signature against the issuer's JWKS
+// (auth.farcaster.xyz/.well-known/jwks.json). The key set is fetched once and
+// cached in-process, so steady-state verification is local/CPU-only — but cold
+// starts and key rotations make a network call, so the runtime needs egress to
+// auth.farcaster.xyz. Keep ONE module-level client so the JWKS cache is shared
+// across requests (a per-request client would re-fetch the key set).
 const client = createClient()
 
 // The JWT's `aud` claim is the bare domain (no scheme, no path). Match
@@ -162,8 +164,10 @@ export async function setKismetIdentityAddress(
  * or the FID has no primary Ethereum address. Treat null as "not
  * authenticated" — the caller should fall through to the cookie path.
  *
- * Verification is local (no network call) — only the FID→address lookup
- * touches the network, and that's cached.
+ * JWT verification checks the signature against the issuer's JWKS, fetched
+ * once and cached in-process (local/CPU-only in steady state; a cold start or
+ * key rotation makes a network call). The FID→address lookup also touches the
+ * network and is cached.
  *
  * Returns the user's CHOSEN identity address (which falls back to FC
  * primary when unset), not the strict primary, so every authenticated

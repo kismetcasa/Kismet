@@ -58,6 +58,15 @@ async function raceFetchGateways(
  * range-request support for seeking and resume.
  */
 export async function GET(req: NextRequest) {
+  // No per-IP request-count rate limit here, deliberately: <video> in the
+  // Mini App + Safari path (see videoGatewayUrls in lib/media/gateway.ts)
+  // streams through this proxy via Range requests — many per playthrough —
+  // and that audience is largely mobile behind carrier-grade NAT, so a
+  // count-based per-IP cap would 429 legitimate viewers (collateral across a
+  // shared IP) while barely bounding the real resource (egress bytes, not
+  // request count). The controls that fit a streaming media proxy are the
+  // per-request MAX_DECLARED_BYTES cap below and a CDN in front
+  // (see REMEDIATION_PLAYBOOK.md §B5).
   const u = req.nextUrl.searchParams.get('u')
   if (!u) return new Response('missing u', { status: 400 })
   // SSRF: proxy our gateway pool only, never arbitrary outbound.

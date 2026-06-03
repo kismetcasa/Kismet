@@ -1,0 +1,26 @@
+# Dependabot version updates. (Security updates are enabled separately in
+# repo Settings → Code security → Dependabot security updates — those raise
+# PRs for the known critical/high advisories and, for npm, bump the PARENT
+# package when that's the only way to fix a vulnerable transitive dependency,
+# e.g. the @ardrive/turbo-sdk → @dha-team/arbundles chain.)
+#
+# Note: this file only takes effect once it lands on the default branch.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Collapse routine minor/patch churn into one PR to cut review noise;
+      # majors still come as individual PRs so breaking changes are visible.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
