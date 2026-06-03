@@ -8,7 +8,7 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
-import { thumbhashToBlurDataURL, thumbhashToRatio, thumbhashToTint } from '@/lib/media/thumbhash'
+import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { FeatureStar } from './FeatureStar'
@@ -28,14 +28,14 @@ const DEFAULT_RATIO = 1
 const MIN_RATIO = 0.5
 const MAX_RATIO = 2.0
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
-// Neutral light tint when the moment has no thumbhash to sample.
-const NEUTRAL_TINT = 'hsl(0, 0%, 88%)'
+// Box background — a soft yellow-cream off-white. One knob to tune.
+const DISPLAY_BG = '#faf6c4'
 
 /**
  * Mint Pass Display — the single curated desktop hero atop the featured tab.
  * A three-column band: [title · by · @artist] | artwork | [collection], on a
- * light box tinted to the artwork's own palette (black text). The artwork is
- * centered and sized to its own aspect ratio (no crop, no letterbox).
+ * soft cream box with black text. The artwork is centered and sized to its own
+ * aspect ratio (no crop, no letterbox).
  *
  * Click targets: the @artist goes to the artist's profile; clicking anywhere
  * else on the left (or the artwork) opens the moment; the right text opens the
@@ -96,7 +96,6 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   const isTextMoment = media.kind === 'text'
   const blurPreview = useMemo(() => thumbhashToBlurDataURL(meta.kismet_thumbhash), [meta.kismet_thumbhash])
   const thumbRatio = useMemo(() => thumbhashToRatio(meta.kismet_thumbhash), [meta.kismet_thumbhash])
-  const tint = useMemo(() => thumbhashToTint(meta.kismet_thumbhash), [meta.kismet_thumbhash])
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
 
   // Exact natural ratio (once the image loads) wins; the thumbhash ratio is the
@@ -111,12 +110,11 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   const momentHref = `/moment/${address}/${tokenId}`
   const profileHref = creatorAddress ? `/profile/${creatorAddress}` : undefined
   const title = meta.name ?? `#${tokenId}`
-  const boxBg = tint ?? NEUTRAL_TINT
 
   return (
     <article
-      className="relative flex border border-line overflow-hidden transition-colors duration-500"
-      style={{ height: DESKTOP_H, backgroundColor: boxBg }}
+      className="relative flex border border-line overflow-hidden"
+      style={{ height: DESKTOP_H, backgroundColor: DISPLAY_BG }}
     >
       {/* Left — click anywhere opens the moment; the @artist opens the artist. */}
       <div
@@ -156,7 +154,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
       <Link
         href={momentHref}
         className="relative flex-shrink-0 max-w-[70%] block"
-        style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H, backgroundColor: boxBg }}
+        style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H, backgroundColor: DISPLAY_BG }}
       >
         {isVideo && media.src && !mediaError ? (
           <MomentVideo
