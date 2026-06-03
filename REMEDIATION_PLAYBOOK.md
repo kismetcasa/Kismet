@@ -65,11 +65,11 @@ wrong). Those are collected first.
    to mint-time. Push for normal creators; **pull-at-read for high-fan-out
    collections/creators** (the "blue-chip" tier), merged at read time.
    ([ByteByteGo — News Feed](https://bytebytego.com/courses/system-design-interview/design-a-news-feed-system), [High Scalability — Instagram](https://highscalability.com/designing-instagram/))
-6. **Dependabot _security_ updates beat hand-written `overrides`** for the transitive
-   vulns: for npm, Dependabot "will raise a PR that also updates the parent dependency
-   if it's the only way to fix the transitive dependency" — exactly the
-   turbo-sdk→arbundles case.
-   ([GitHub — Dependabot security updates](https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates))
+6. **Transitive npm vulns usually fix at the _parent_, not the leaf.** A hand-written
+   root `override` can pin the vulnerable leaf, but the real fix is often bumping the
+   parent that depends on it — exactly the turbo-sdk→arbundles case. Verify any bump
+   with `npm ci` + build rather than a blind `--force`.
+   ([npm overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/))
 7. **`revalidateTag`/`revalidatePath` do not purge the CDN.** They invalidate the
    Next server cache only; a CDN in front keeps serving its copy until `s-maxage`
    expires. Wire a **CDN purge (HTML _and_ RSC variants)** into every on-demand
@@ -231,14 +231,14 @@ wrong). Those are collected first.
 
 ### B11. Dependencies & CI  ·  Verdict: **CONFIRMED, sharper levers (see A6)**
 - Gate CI on **`npm audit --audit-level=high`** (block the 3 critical / 8 high; report
-  the moderate/low tail). Enable **Dependabot security updates** (bumps the parent when
-  that's the only fix). Use **`overrides`** only root-level and prefer **nested/`$`-scoped**
+  the moderate/low tail). Fix the transitive vulns by **bumping the parent** package
+  (often the only fix); use **`overrides`** only root-level and prefer **nested/`$`-scoped**
   forms for the `elliptic`/`secp256k1`/`ethers` leaves, verified by `npm ci` + build;
   never blind `--force` (semver-major). Triage the 67 by **reachability/VEX** — not all
   are exploitable. Add GitHub Actions (least-priv `GITHUB_TOKEN: contents: read`,
   `npm ci`, Node matrix, `.next/cache` caching) + branch protection requiring the check
   + SHA-pinned Actions; track posture with **OpenSSF Scorecard**.
-  ([npm audit](https://docs.npmjs.com/cli/v11/commands/npm-audit/), [Dependabot](https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates), [overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/), [OWASP A06](https://owasp.org/Top10/2021/A06_2021-Vulnerable_and_Outdated_Components/), [GH Actions Node](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs), [Scorecard](https://github.com/ossf/scorecard/blob/main/docs/checks.md))
+  ([npm audit](https://docs.npmjs.com/cli/v11/commands/npm-audit/), [overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/), [OWASP A06](https://owasp.org/Top10/2021/A06_2021-Vulnerable_and_Outdated_Components/), [GH Actions Node](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs), [Scorecard](https://github.com/ossf/scorecard/blob/main/docs/checks.md))
 
 ### B12. Retries / overload (cross-cutting)  ·  Verdict: **add what's missing**
 - Wherever the app retries an upstream/Redis/RPC call, use **finite attempts +
@@ -270,7 +270,7 @@ adds error-budget/SLO prioritization and explicit failure-mode reasoning.
 | Unbounded retries risk a storm | SRE *retry budget*; Azure *Retry Storm antipattern* | Finite retries + backoff **+ jitter** + circuit breaker |
 | `/api/img`, gas, Arweave, RPC = unbounded paid consumption | OWASP **API4:2023** | Rate-limit; max sizes; per-identity + global caps; budget alerts |
 | ar://+ipfs:// fetch proxy | OWASP **A10 / API7 SSRF** | Allow-list schema/destination; no redirects (already done — keep it) |
-| 67 npm vulns (3 crit / 8 high) | OWASP **A06 Vulnerable & Outdated Components** | SCA in CI; Dependabot; remove unused; patch cadence |
+| 67 npm vulns (3 crit / 8 high) | OWASP **A06 Vulnerable & Outdated Components** | SCA in CI; bump parents; remove unused; patch cadence |
 | RPC key in client bundle | AWS Security *strong identity / no static creds*; 12-Factor *config* | Server-only key / proxy; rotate; domain-restrict if client-side |
 | No caching pressure relief on hot reads | Azure *Cache-Aside + Materialized View*; AWS Perf *mechanical sympathy* | Cache-aside; precompute; right datastore per access pattern |
 | No SLOs / observability | SRE *four golden signals + error budgets*; AWS OpEx *observability* | Instrument golden signals; SLOs to rank fixes |
@@ -288,7 +288,7 @@ simultaneously a security *and* a cost finding — which is exactly the Arweave 
 **Now (days):**
 1. **CDN in front of `/api/img` + static/feed GETs** (immutable content → edge offload; the CDN — not a request-count limit — is the control for the Range-streaming `/api/img`); add a per-IP rate limit to `/api/listings POST`. ([Next CDN](https://nextjs.org/docs/app/guides/cdn-caching), [API4](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/))
 2. **Server-only RPC key + viem `fallback` (rank, batch); decouple readiness from RPC** (degrade not gate). ([viem](https://github.com/wevm/viem/blob/main/site/pages/docs/clients/transports/fallback.md), [SRE](https://sre.google/sre-book/addressing-cascading-failures/))
-3. **CI** (`npm run check` + `npm audit --audit-level=high` + build, least-priv token, branch protection) + **Dependabot security updates**; schedule the critical arbundles/turbo-sdk + axios/CDP upgrades. ([GH Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs), [Dependabot](https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates))
+3. **CI** (`npm run check` + `npm audit --audit-level=high` + build, least-priv token, branch protection); schedule the critical arbundles/turbo-sdk + axios/CDP upgrades. ([GH Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs))
 4. **Uniform per-call timeouts + circuit breaker** on inprocess; **Turbo `shareCredits`** approvals + balance alerts; fix Quick Auth client reuse + egress; parse `failedTokens`. ([Azure CB](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker), [Turbo](https://docs.ardrive.io/docs/turbo/credit-sharing.html))
 
 **Next (weeks):**
@@ -308,7 +308,7 @@ Redis/Upstash/DB: [Upstash pricing](https://upstash.com/docs/redis/overall/prici
 Next.js: [self-hosting](https://nextjs.org/docs/app/guides/self-hosting) · [cacheHandler](https://nextjs.org/docs/app/api-reference/config/next-config-js/incrementalCacheHandlerPath) · [CDN caching](https://nextjs.org/docs/app/guides/cdn-caching) · [@fortedigital handler](https://github.com/fortedigital/nextjs-cache-handler) · [Next 15](https://nextjs.org/blog/next-15)
 Web3: [viem fallback](https://github.com/wevm/viem/blob/main/site/pages/docs/clients/transports/fallback.md) · [viem http](https://github.com/wevm/viem/blob/main/site/pages/docs/clients/transports/http.md) · [Alchemy retries](https://docs.alchemy.com/reference/how-to-implement-retries) · [getAssetTransfers](https://docs.alchemy.com/reference/alchemy-getassettransfers) · [Turbo SDK](https://github.com/ardriveapp/pub-docs/blob/production/docs/src/docs/turbo/turbo-sdk/index.md) · [Turbo credit-sharing](https://docs.ardrive.io/docs/turbo/credit-sharing.html)
 Farcaster: [notifications spec](https://miniapps.farcaster.xyz/docs/guides/notifications) · [miniapp-core schema](https://github.com/farcasterxyz/miniapps/blob/main/packages/miniapp-core/src/schemas/notifications.ts) · [quick-auth verifyJwtWithJwks](https://github.com/farcasterxyz/quick-auth/blob/main/quick-auth/src/actions/verifyJwtWithJwks.ts) · [Farcaster API ref](https://docs.farcaster.xyz/reference/farcaster/api) · [Neynar](https://docs.neynar.com/docs/fetching-farcaster-user-based-on-ethereum-address)
-Supply chain/CI: [npm audit](https://docs.npmjs.com/cli/v11/commands/npm-audit/) · [npm overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/) · [Dependabot](https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates) · [GH Actions Node](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs) · [OpenSSF Scorecard](https://github.com/ossf/scorecard/blob/main/docs/checks.md)
+Supply chain/CI: [npm audit](https://docs.npmjs.com/cli/v11/commands/npm-audit/) · [npm overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/) · [GH Actions Node](https://docs.github.com/en/actions/tutorials/build-and-test-code/nodejs) · [OpenSSF Scorecard](https://github.com/ossf/scorecard/blob/main/docs/checks.md)
 Frameworks: [AWS Well-Architected Reliability](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/design-principles.html) · [AWS review process](https://docs.aws.amazon.com/wellarchitected/latest/framework/the-review-process.html) · [SRE cascading failures](https://sre.google/sre-book/addressing-cascading-failures/) · [SRE handling overload](https://sre.google/sre-book/handling-overload/) · [SRE monitoring](https://sre.google/sre-book/monitoring-distributed-systems/) · [Azure patterns](https://learn.microsoft.com/en-us/azure/architecture/patterns/) · [Azure retry-storm](https://learn.microsoft.com/en-us/azure/architecture/antipatterns/retry-storm/) · [12-Factor](https://12factor.net/) · [OWASP Top 10 2021](https://owasp.org/Top10/2021/) · [OWASP API Top 10 2023](https://owasp.org/API-Security/editions/2023/en/0x11-t10/) · [OWASP ASVS](https://owasp.org/www-project-application-security-verification-standard/) · [OWASP WSTG](https://owasp.org/www-project-web-security-testing-guide/)
 
 _Sourcing caveat: several official doc hosts (nextjs.org, redis.io, Upstash, Alchemy,
