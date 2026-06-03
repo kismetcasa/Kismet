@@ -77,22 +77,21 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'tokenId required')
   }
   const member = `${collectionAddress.toLowerCase()}:${body.tokenId}`
+  const now = Date.now()
 
-  // Mint Pass Display and small-feature are mutually exclusive tiers for a
-  // mint: promoting to one clears the other so it can never render in both
-  // the showcase and the grid simultaneously.
+  // A Mint Pass Display is a featured mint with desktop-hero treatment: it
+  // lives in BOTH sets (DISPLAY ⊆ FEATURED). Keeping it in FEATURED_KEY means
+  // it still renders as a normal featured card in the grid on mobile/miniapp,
+  // where the hero layout isn't used — no separate mobile code path needed.
   if (body.type === 'momentDisplay') {
     await Promise.all([
-      redis.zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: Date.now(), member }),
-      redis.zrem(FEATURED_KEY, member),
+      redis.zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: now, member }),
+      redis.zadd(FEATURED_KEY, { score: now, member }),
     ])
     return NextResponse.json({ featured: true })
   }
 
-  await Promise.all([
-    redis.zadd(FEATURED_KEY, { score: Date.now(), member }),
-    redis.zrem(FEATURED_MOMENT_DISPLAYS_KEY, member),
-  ])
+  await redis.zadd(FEATURED_KEY, { score: now, member })
   return NextResponse.json({ featured: true })
 }
 
@@ -122,9 +121,19 @@ export async function DELETE(req: NextRequest) {
     return errorResponse(400, 'tokenId required')
   }
   const member = `${collectionAddress.toLowerCase()}:${body.tokenId}`
-  await redis.zrem(
-    body.type === 'momentDisplay' ? FEATURED_MOMENT_DISPLAYS_KEY : FEATURED_KEY,
-    member,
-  )
+
+  // Demoting a Mint Pass Display drops only the hero treatment — it stays a
+  // normal featured card. Unfeaturing a mint clears any hero treatment too
+  // (a mint can't be displayed if it isn't featured), preserving DISPLAY ⊆
+  // FEATURED.
+  if (body.type === 'momentDisplay') {
+    await redis.zrem(FEATURED_MOMENT_DISPLAYS_KEY, member)
+    return NextResponse.json({ featured: false })
+  }
+
+  await Promise.all([
+    redis.zrem(FEATURED_KEY, member),
+    redis.zrem(FEATURED_MOMENT_DISPLAYS_KEY, member),
+  ])
   return NextResponse.json({ featured: false })
 }

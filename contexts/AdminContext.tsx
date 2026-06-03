@@ -33,15 +33,20 @@ interface AdminContextValue {
   startSession: () => Promise<void>
   featuredKeys: Set<string>
   featuredCollectionAddrs: Set<string>
-  // Mints promoted to a Mint Pass Display — rendered at collection scale as a
-  // full-bleed showcase in the featured tab. Keyed `<addr>:<tokenId>` (lower-
-  // case addr), mutually exclusive with featuredKeys.
+  // Mints promoted to a Mint Pass Display — rendered as the desktop hero in
+  // the featured tab. Keyed `<addr>:<tokenId>` (lowercase addr). A subset of
+  // featuredKeys (DISPLAY ⊆ FEATURED), so a display also shows as a normal
+  // featured card on mobile.
   mintPassKeys: Set<string>
+  // Bumped on every successful curation toggle (and ONLY then — not by the
+  // initial /api/featured load). Lets the featured tab remount-to-refetch on
+  // a real change without remounting when the sets merely finish loading.
+  featuredRevision: number
   toggleFeatured: (collectionAddress: string, tokenId: string) => Promise<void>
   toggleFeaturedCollection: (collectionAddress: string) => Promise<void>
   // Long-press affordance on the star: promote/demote a mint to a Mint Pass
-  // Display. Promoting clears any small-feature on the same mint (and vice
-  // versa) so the two tiers never overlap.
+  // Display. Promoting also features the mint (DISPLAY ⊆ FEATURED); demoting
+  // leaves it featured.
   toggleMintPassDisplay: (collectionAddress: string, tokenId: string) => Promise<void>
   // Run `fn` with a valid privileged session in scope. Auto-prompts a
   // one-time SIWE signature + login round-trip if no session is active.
@@ -59,6 +64,7 @@ const AdminContext = createContext<AdminContextValue>({
   featuredKeys: new Set(),
   featuredCollectionAddrs: new Set(),
   mintPassKeys: new Set(),
+  featuredRevision: 0,
   toggleFeatured: async () => {},
   toggleFeaturedCollection: async () => {},
   toggleMintPassDisplay: async () => {},
@@ -80,6 +86,11 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const [featuredKeys, setFeaturedKeys] = useState<Set<string>>(new Set())
   const [featuredCollectionAddrs, setFeaturedCollectionAddrs] = useState<Set<string>>(new Set())
   const [mintPassKeys, setMintPassKeys] = useState<Set<string>>(new Set())
+  // Curation-change counter. Bumped by the toggles below (not the initial
+  // fetch) so the featured tab can key off it to remount-and-refetch on a real
+  // change without the wasteful double-fetch when the sets first populate.
+  const [featuredRevision, setFeaturedRevision] = useState(0)
+  const bumpFeaturedRevision = useCallback(() => setFeaturedRevision((v) => v + 1), [])
 
   function applySession(s: AdminSession | null) {
     sessionRef.current = s
@@ -274,10 +285,9 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
-        // Promoting to small-feature clears any Mint Pass Display on the same
-        // mint — the server enforces this too; mirror it locally so the star
-        // doesn't briefly show both states.
-        if (!isFeatured) {
+        // Unfeaturing cascades: a mint that isn't featured can't be a Mint
+        // Pass Display, so drop any hero treatment too (server does the same).
+        if (isFeatured) {
           setMintPassKeys((prev) => {
             if (!prev.has(key)) return prev
             const next = new Set(prev)
@@ -285,11 +295,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
             return next
           })
         }
+        bumpFeaturedRevision()
       } catch (err) {
         toastError('Featured update', err)
       }
     },
-    [address, isAdmin, isCurator, ensureSession, featuredKeys],
+    [address, isAdmin, isCurator, ensureSession, featuredKeys, bumpFeaturedRevision],
   )
 
   const toggleMintPassDisplay = useCallback(
@@ -317,21 +328,23 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
-        // Promoting to a Mint Pass Display clears any small-feature on the
-        // same mint (mutual exclusivity, mirrored from the server).
+        // Promoting to a Mint Pass Display also features the mint (DISPLAY ⊆
+        // FEATURED) so it still shows as a normal card on mobile. Demoting
+        // leaves it featured.
         if (!isDisplay) {
           setFeaturedKeys((prev) => {
-            if (!prev.has(key)) return prev
+            if (prev.has(key)) return prev
             const next = new Set(prev)
-            next.delete(key)
+            next.add(key)
             return next
           })
         }
+        bumpFeaturedRevision()
       } catch (err) {
         toastError('Mint Pass Display update', err)
       }
     },
-    [address, isAdmin, isCurator, ensureSession, mintPassKeys],
+    [address, isAdmin, isCurator, ensureSession, mintPassKeys, bumpFeaturedRevision],
   )
 
   const withSession = useCallback(
@@ -369,11 +382,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
+        bumpFeaturedRevision()
       } catch (err) {
         toastError('Featured update', err)
       }
     },
-    [address, isAdmin, isCurator, ensureSession, featuredCollectionAddrs],
+    [address, isAdmin, isCurator, ensureSession, featuredCollectionAddrs, bumpFeaturedRevision],
   )
 
   // Memoized so useAdmin() consumers only re-render when these fields
@@ -392,6 +406,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       featuredKeys,
       featuredCollectionAddrs,
       mintPassKeys,
+      featuredRevision,
       toggleFeatured,
       toggleFeaturedCollection,
       toggleMintPassDisplay,
@@ -400,7 +415,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     [
       isAdmin, isCurator, session, address,
       startSession,
-      featuredKeys, featuredCollectionAddrs, mintPassKeys,
+      featuredKeys, featuredCollectionAddrs, mintPassKeys, featuredRevision,
       toggleFeatured, toggleFeaturedCollection, toggleMintPassDisplay, withSession,
     ],
   )

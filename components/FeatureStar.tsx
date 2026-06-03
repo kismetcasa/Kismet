@@ -91,9 +91,10 @@ export function FeatureStar({ address, tokenId, className = '' }: FeatureStarPro
     clearHold()
     if (wasHold) return // display toggle already fired on completion
     if (elapsed < TAP_MAX_MS) {
-      // Tap: on a current display, clear it; otherwise toggle small-feature.
-      if (isDisplay) toggleMintPassDisplay(address, tokenId)
-      else toggleFeatured(address, tokenId)
+      // Tap toggles the featured tier. Unfeaturing a display cascades the
+      // hero treatment off too (handled in toggleFeatured), so a tap on any
+      // state resolves correctly without a special case here.
+      toggleFeatured(address, tokenId)
     }
     // Between TAP_MAX_MS and HOLD_MS → aborted hold → intentional no-op.
   }

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import type { MomentDetail } from '@/lib/inprocess'
+import { shortAddress, type Moment } from '@/lib/inprocess'
+import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
@@ -11,108 +12,119 @@ import { MomentVideo } from './MomentVideo'
 import { FeatureStar } from './FeatureStar'
 
 interface FeaturedMomentProps {
-  address: string
-  tokenId: string
   /**
-   * Above-the-fold hint. The first Mint Pass Display leads the featured tab,
-   * so its artwork is the LCP candidate — forwarded to the media so it loads
-   * eagerly instead of behind hydration.
+   * The hero mint — passed straight from FeaturedFeed's already-fetched
+   * featured timeline (the display mint is also in FEATURED_KEY). The Moment
+   * is server-enriched with creator + collection chip + inline metadata, so
+   * this component needs no fetch of its own.
    */
+  moment: Moment
+  /** Above-the-fold hint — the hero leads the featured tab and is the LCP. */
   priority?: boolean
 }
 
-// Default frame ratio before the artwork's own ratio is known (square). Kept
-// until the thumbhash (and then the full image) report the real shape.
+// Fixed showcase height (≈ a CollectionRow). Desktop-only by construction —
+// FeaturedFeed renders this only on web; on mobile/miniapp the same mint rides
+// the featured grid as a normal card — so there's no responsive layout here.
+const DESKTOP_H = 560
 const DEFAULT_RATIO = 1
-// Target showcase height on desktop (≈ a CollectionRow). The frame is width-
-// driven (aspect-ratio derives height from a definite width — the robust,
-// widely-supported pattern), so to land on this height we cap the desktop
-// width at height×ratio; the height then resolves to ~this value for any ratio.
-const DESKTOP_MAX_H = 560
-// Clamp the frame to a sane range so an extreme panorama / column can't blow
-// the layout out; within this band the box matches the artwork exactly, so
-// object-contain fills it with no letterbox. Beyond it (rare), the whole piece
-// still shows — letterboxed in the clamped box, never cropped.
+// Bound the artwork so an extreme panorama/column can't starve the flanking
+// text columns. Within the band the box matches the artwork exactly, so
+// object-contain fills it with no letterbox; beyond it the whole piece still
+// shows, letterboxed, never cropped.
 const MIN_RATIO = 0.5
 const MAX_RATIO = 2.0
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
 
 /**
- * Mint Pass Display — a single mint rendered at collection scale as a
- * full-bleed showcase. The frame hugs the artwork's own aspect ratio (derived
- * from the thumbhash up front, refined to the image's exact natural ratio on
- * load) so the image fills the box as tightly as possible — edge-to-edge with
- * no letterbox in the common case, and never cropped. The card is image-only —
- * clicking opens the moment's detail overlay (title, creator, collect, …) via
- * the standard intercepting route.
+ * Mint Pass Display — the single curated desktop hero atop the featured tab.
+ * A three-column band: [title · by · @artist] | artwork | [collection]. The
+ * artwork is centered and sized to its own aspect ratio (no crop, no
+ * letterbox); the left text links to the moment detail page and the right
+ * text to the collection page.
  *
- * Self-contained: fetches its own MomentDetail and renders nothing if the
- * moment fails to load or is hidden, so a stale curation can never leave a
- * broken showcase in the feed.
+ * Presentational: the Moment is handed in fully-formed, so there's no fetch,
+ * loading, or hidden-gating here (the timeline already filtered hidden mints).
  */
-export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentProps) {
-  const [detail, setDetail] = useState<MomentDetail | null>(null)
-  const [failed, setFailed] = useState(false)
-  const [imgError, setImgError] = useState(false)
-  const [videoError, setVideoError] = useState(false)
+export function FeaturedMoment({ moment, priority }: FeaturedMomentProps) {
+  const { address, token_id: tokenId } = moment
+  const meta = moment.metadata ?? {}
+  const [mediaError, setMediaError] = useState(false)
   const [naturalRatio, setNaturalRatio] = useState<number | null>(null)
 
+  // Artist label — seeded from the server-enriched Moment so it paints
+  // immediately, then upgraded from the profile cache for FC-only creators
+  // whose username isn't stitched server-side.
+  const creatorAddress = moment.creator?.address
+  const seedArtist = creatorAddress
+    ? moment.creator?.username
+      ? `@${moment.creator.username}`
+      : shortAddress(creatorAddress)
+    : null
+  const [resolvedArtist, setResolvedArtist] = useState<string | null>(null)
+  const artist = resolvedArtist ?? seedArtist
   useEffect(() => {
-    let cancelled = false
-    const params = new URLSearchParams({
-      collectionAddress: address,
-      tokenId,
-      chainId: '8453',
-    })
-    fetch(`/api/moment?${params}`)
-      .then((r) => (r.ok ? (r.json() as Promise<MomentDetail>) : Promise.reject()))
-      .then((d) => { if (!cancelled) setDetail(d) })
-      .catch(() => { if (!cancelled) setFailed(true) })
-    return () => { cancelled = true }
-  }, [address, tokenId])
+    if (!creatorAddress || moment.creator?.username) return
+    fetchCreatorProfile(creatorAddress)
+      .then(({ name }) => {
+        const isUsername = !!name && name !== shortAddress(creatorAddress)
+        setResolvedArtist(isUsername ? `@${name}` : shortAddress(creatorAddress))
+      })
+      .catch(() => {})
+  }, [creatorAddress, moment.creator?.username])
 
-  const meta = detail?.metadata ?? {}
+  // Collection label — the timeline already stitches the chip; fall back to
+  // the short contract address.
+  const collection = moment.kismetCollection?.name ?? shortAddress(address)
+
   const media = resolveMomentMedia(meta)
   const isVideo = media.kind === 'video'
   const isTextMoment = media.kind === 'text'
-  const blurPreview = useMemo(
-    () => thumbhashToBlurDataURL(meta.kismet_thumbhash),
-    [meta.kismet_thumbhash],
-  )
-  const thumbRatio = useMemo(
-    () => thumbhashToRatio(meta.kismet_thumbhash),
-    [meta.kismet_thumbhash],
-  )
+  const blurPreview = useMemo(() => thumbhashToBlurDataURL(meta.kismet_thumbhash), [meta.kismet_thumbhash])
+  const thumbRatio = useMemo(() => thumbhashToRatio(meta.kismet_thumbhash), [meta.kismet_thumbhash])
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
 
   // Exact natural ratio (once the image loads) wins; the thumbhash ratio is the
-  // shift-free initial guess; square is the pre-data fallback.
+  // shift-free initial guess; square is the fallback.
   const aspectRatio = clampRatio(naturalRatio ?? thumbRatio ?? DEFAULT_RATIO)
   const handleNaturalSize = useCallback((w: number, h: number) => {
     if (w > 0 && h > 0) setNaturalRatio(w / h)
   }, [])
 
-  if (failed || detail?.hidden) return null
-  const loading = !detail
   const momentHref = `/moment/${address}/${tokenId}`
-
-  // Width-driven aspect-ratio frame: width fills the column (mobile) but is
-  // capped on desktop at height×ratio via a CSS var, so the height lands at
-  // ~DESKTOP_MAX_H for any ratio. mx-auto centers the capped frame; max-height
-  // is a safety for extreme portraits on short viewports.
-  const frameStyle = {
-    aspectRatio,
-    maxHeight: '85vh',
-    '--mp-w': `calc(${DESKTOP_MAX_H}px * ${aspectRatio})`,
-  } as React.CSSProperties
+  const title = meta.name ?? `#${tokenId}`
 
   return (
     <article
-      className="relative w-full lg:max-w-[var(--mp-w)] mx-auto bg-[#161616] border border-line overflow-hidden group"
-      style={frameStyle}
+      className="relative flex border border-line bg-[#161616] overflow-hidden"
+      style={{ height: DESKTOP_H }}
     >
-      <Link href={momentHref} className="absolute inset-0 block bg-surface" aria-label={meta.name ?? `moment #${tokenId}`}>
-        {isVideo && media.src && !videoError ? (
+      {/* Left — title · by · artist → moment detail */}
+      <Link
+        href={momentHref}
+        className="group/l flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1.5 px-6"
+      >
+        <span className="font-mono text-ink text-lg xl:text-xl leading-snug line-clamp-3 group-hover/l:text-dim transition-colors">
+          {title}
+        </span>
+        {artist && (
+          <>
+            <span className="font-mono text-muted text-xs">by</span>
+            <span className="font-mono text-dim text-sm truncate max-w-full group-hover/l:text-ink transition-colors">
+              {artist}
+            </span>
+          </>
+        )}
+      </Link>
+
+      {/* Center — artwork, sized to its own ratio. max-w caps it so the
+          flanking text always has room; a too-wide piece on a narrow desktop
+          letterboxes (object-contain) instead of overflowing the row. */}
+      <div
+        className="relative flex-shrink-0 bg-surface max-w-[70%]"
+        style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H }}
+      >
+        {isVideo && media.src && !mediaError ? (
           <MomentVideo
             src={media.src}
             poster={media.poster}
@@ -120,59 +132,55 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
             showPosterLayer
             className="w-full h-full object-contain"
             priority={priority}
-            onAllError={() => setVideoError(true)}
+            onAllError={() => setMediaError(true)}
           />
-        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
+        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
           <MomentImage
             src={media.src}
-            alt={meta.name ?? 'moment'}
+            alt={title}
             fill
-            // The frame is sized to the artwork's own ratio, so object-contain
-            // fills it edge-to-edge in the common case — and on the rare
-            // mismatch (approximate ratio mid-load, or a clamped extreme) it
-            // shows the whole piece letterboxed rather than cropping it.
             className="object-contain"
-            sizes="(max-width: 1024px) 100vw, 80vw"
+            // No preferProxy: the hero is the LCP, so let next/image optimize
+            // (AVIF/WebP + downscale via `sizes`) rather than serving the raw
+            // bytes. Matches how the same mint's image is handled in the grid
+            // (MomentCard) and the detail view (MomentDetailView); MomentImage
+            // still falls back to the proxy if the optimizer 413s heavy art.
+            sizes="60vw"
             mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
             thumbhash={meta.kismet_thumbhash}
             priority={priority}
-            preferProxy
             onNaturalSize={handleNaturalSize}
-            onAllError={() => setImgError(true)}
+            onAllError={() => setMediaError(true)}
           />
         ) : isTextMoment ? (
-          <div className="w-full h-full flex flex-col p-6 sm:p-10 bg-gradient-to-br from-raised to-surface overflow-hidden">
+          <div className="w-full h-full flex flex-col p-8 bg-gradient-to-br from-raised to-surface overflow-hidden">
             <span className="text-[10px] font-mono text-muted uppercase tracking-widest mb-3">writing</span>
-            {meta.name && (
-              <p className="text-base sm:text-xl font-mono text-ink mb-3 truncate">{meta.name}</p>
-            )}
+            {meta.name && <p className="text-xl font-mono text-ink mb-3 truncate">{meta.name}</p>}
             {textSnippet && (
-              <p className="text-sm sm:text-base font-mono text-[#bbb] leading-relaxed whitespace-pre-wrap">
-                {textSnippet}
-              </p>
-            )}
-            {!meta.name && !textSnippet && (
-              <p className="text-sm font-mono text-[#bbb]">untitled</p>
+              <p className="text-sm font-mono text-[#bbb] leading-relaxed whitespace-pre-wrap">{textSnippet}</p>
             )}
           </div>
         ) : blurPreview ? (
-          <span
-            aria-hidden
-            className="absolute inset-0 bg-cover bg-center"
-            style={{ backgroundImage: `url(${blurPreview})` }}
-          />
-        ) : loading ? (
-          <span aria-hidden className="absolute inset-0 bg-accent/10 animate-pulse" />
+          <span aria-hidden className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${blurPreview})` }} />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <span className="text-line font-mono text-xs">no preview</span>
           </div>
         )}
-      </Link>
 
-      {/* Admin feature control — tap to feature, hold to toggle this Mint
-          Pass Display. Sibling above the link so its taps never navigate. */}
-      <FeatureStar address={address} tokenId={tokenId} className="absolute top-2 left-2" />
+        {/* Admin control — tap to feature, hold to set this Mint Pass Display. */}
+        <FeatureStar address={address} tokenId={tokenId} className="absolute top-2 left-2" />
+      </div>
+
+      {/* Right — collection → collection page */}
+      <Link
+        href={`/collection/${address}`}
+        className="group/r flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6"
+      >
+        <span className="font-mono text-ink text-base xl:text-lg leading-snug line-clamp-3 group-hover/r:text-dim transition-colors">
+          {collection}
+        </span>
+      </Link>
     </article>
   )
 }
