@@ -35,8 +35,9 @@ jobs:
       - run: npm test
       # NON-blocking for now: the dependency tree carries known critical/high
       # advisories (transitive, via the Arweave/Turbo + Coinbase CDP subtrees)
-      # that Dependabot security updates will clear. Drop `continue-on-error`
-      # to make new critical/high vulns block merges once the tree is clean.
+      # to be cleared by scheduled manual upgrades / package.json overrides.
+      # Drop `continue-on-error` to make new critical/high vulns block merges
+      # once the tree is clean.
       - name: npm audit (non-blocking until the tree is clean)
         continue-on-error: true
         run: npm audit --audit-level=high
