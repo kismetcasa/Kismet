@@ -20,22 +20,27 @@ interface FeaturedMomentProps {
   priority?: boolean
 }
 
-// Fixed showcase height (≈ a CollectionRow). Desktop-only by construction —
-// FeaturedFeed renders this only on web; on mobile/miniapp the mint shows as a
-// normal card — so there's no responsive layout here.
+// Max showcase height; the box shrinks below this so it always hugs the
+// artwork (no dead space above/below). Desktop-only by construction.
 const DESKTOP_H = 560
-const DEFAULT_RATIO = 1
-const MIN_RATIO = 0.5
-const MAX_RATIO = 2.0
+// Fraction of the row the artwork may occupy, leaving room for the flanking
+// text. The artwork takes the smaller of (height × ratio) and this.
+const ART_MAX_W = '60%'
+// Pre-load guess until the thumbhash (then the image) reports the real shape.
+const DEFAULT_RATIO = 1.5
+// Safety bounds only — wide enough that no real artwork is clamped (which is
+// what would reintroduce letterbox), narrow enough to avoid degenerate boxes.
+const MIN_RATIO = 0.2
+const MAX_RATIO = 5
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
-// Box background — a soft yellow-cream off-white. One knob to tune.
-const DISPLAY_BG = '#faf6c4'
+// Box background — a burnt orange. Black text clears ~4.9:1 on it. One knob.
+const DISPLAY_BG = '#cc5500'
 
 /**
  * Mint Pass Display — the single curated desktop hero atop the featured tab.
- * A three-column band: [title · by · @artist] | artwork | [collection], on a
- * soft cream box with black text. The artwork is centered and sized to its own
- * aspect ratio (no crop, no letterbox).
+ * A three-column band: [title · by · @artist] | artwork | [collection] on a
+ * burnt-orange box with black text. The box hugs the artwork's aspect ratio
+ * (no crop, no letterbox), and the flanking columns match its height.
  *
  * Click targets: the @artist goes to the artist's profile; clicking anywhere
  * else on the left (or the artwork) opens the moment; the right text opens the
@@ -99,7 +104,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
 
   // Exact natural ratio (once the image loads) wins; the thumbhash ratio is the
-  // shift-free initial guess; square is the pre-data fallback.
+  // shift-free initial guess; a landscape guess covers the pre-data window.
   const aspectRatio = clampRatio(naturalRatio ?? thumbRatio ?? DEFAULT_RATIO)
   const handleNaturalSize = useCallback((w: number, h: number) => {
     if (w > 0 && h > 0) setNaturalRatio(w / h)
@@ -114,7 +119,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
   return (
     <article
       className="relative flex border border-line overflow-hidden"
-      style={{ height: DESKTOP_H, backgroundColor: DISPLAY_BG }}
+      style={{ backgroundColor: DISPLAY_BG }}
     >
       {/* Left — click anywhere opens the moment; the @artist opens the artist. */}
       <div
@@ -122,7 +127,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
         className="flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1.5 px-6 cursor-pointer hover:bg-black/5 transition-colors"
       >
         {loading ? (
-          <span aria-hidden className="h-5 w-2/3 bg-black/10 animate-pulse" />
+          <span aria-hidden className="h-5 w-2/3 bg-black/15 animate-pulse" />
         ) : (
           <>
             <span className="font-mono text-[#0d0d0d] text-lg xl:text-xl leading-snug line-clamp-3">
@@ -130,7 +135,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
             </span>
             {artist && (
               <>
-                <span className="font-mono text-[#666] text-xs">by</span>
+                <span className="font-mono text-black/60 text-xs">by</span>
                 {profileHref ? (
                   <Link
                     href={profileHref}
@@ -148,13 +153,17 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
         )}
       </div>
 
-      {/* Center — artwork, sized to its own ratio. max-w caps it so the
-          flanking text always has room; a too-wide piece on a narrow desktop
-          letterboxes (object-contain) instead of overflowing the row. */}
+      {/* Center — artwork, sized to its own ratio so the box hugs it (no dead
+          space). Height follows the ratio up to DESKTOP_H; width is capped at
+          ART_MAX_W so the flanking text always has room. */}
       <Link
         href={momentHref}
-        className="relative flex-shrink-0 max-w-[70%] block"
-        style={{ width: `calc(${DESKTOP_H}px * ${aspectRatio})`, height: DESKTOP_H, backgroundColor: DISPLAY_BG }}
+        className="relative flex-none block overflow-hidden"
+        style={{
+          width: `min(calc(${DESKTOP_H}px * ${aspectRatio}), ${ART_MAX_W})`,
+          aspectRatio,
+          backgroundColor: DISPLAY_BG,
+        }}
       >
         {isVideo && media.src && !mediaError ? (
           <MomentVideo
@@ -184,19 +193,19 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
           />
         ) : isTextMoment ? (
           <div className="w-full h-full flex flex-col p-8 overflow-hidden">
-            <span className="text-[10px] font-mono text-[#666] uppercase tracking-widest mb-3">writing</span>
+            <span className="text-[10px] font-mono text-black/60 uppercase tracking-widest mb-3">writing</span>
             {meta.name && <p className="text-xl font-mono text-[#0d0d0d] mb-3 truncate">{meta.name}</p>}
             {textSnippet && (
-              <p className="text-sm font-mono text-[#444] leading-relaxed whitespace-pre-wrap">{textSnippet}</p>
+              <p className="text-sm font-mono text-black/80 leading-relaxed whitespace-pre-wrap">{textSnippet}</p>
             )}
           </div>
         ) : blurPreview ? (
           <span aria-hidden className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${blurPreview})` }} />
         ) : loading ? (
-          <span aria-hidden className="absolute inset-0 bg-black/5 animate-pulse" />
+          <span aria-hidden className="absolute inset-0 bg-black/10 animate-pulse" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <span className="text-[#666] font-mono text-xs">no preview</span>
+            <span className="text-black/50 font-mono text-xs">no preview</span>
           </div>
         )}
 
@@ -211,7 +220,7 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
         className="flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6 hover:bg-black/5 transition-colors"
       >
         {loading ? (
-          <span aria-hidden className="h-4 w-1/2 bg-black/10 animate-pulse" />
+          <span aria-hidden className="h-4 w-1/2 bg-black/15 animate-pulse" />
         ) : collection ? (
           <span className="font-mono text-[#0d0d0d] text-base xl:text-lg leading-snug line-clamp-3 hover:underline">
             {collection}
