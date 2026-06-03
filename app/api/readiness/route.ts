@@ -3,11 +3,18 @@ import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
 
 /**
- * Readiness probe. 200 when this pod can serve a typical request; 503
- * when Redis or the Base RPC is unreachable. Coolify reads the 503 to
- * remove the pod from the LB without restarting it (cf. /api/health for
- * restart). Per-check timeout so a hung TCP connection doesn't hold
- * Coolify's probe open until its own HTTP timeout fires.
+ * Readiness probe. 200 when this pod can serve a typical request; 503 only
+ * when Redis is unreachable. Redis is the single hard gate — without it the
+ * pod can't serve sessions or feeds. Base RPC is checked but NON-gating: it's
+ * needed by only a few flows (mint verification, on-chain permission reads),
+ * so a provider blip must not fail readiness and pull every pod from the LB,
+ * darkening read-only browsing over a dependency most requests never touch
+ * (SRE "Addressing Cascading Failures": don't let a non-essential dependency
+ * flip the health check and cascade the outage). RPC trouble surfaces as
+ * `degraded:true` for observability. Coolify reads the 503 to remove the pod
+ * from the LB without restarting it (cf. /api/health for restart). Per-check
+ * timeout so a hung TCP connection doesn't hold Coolify's probe open until its
+ * own HTTP timeout fires.
  */
 export const dynamic = 'force-dynamic'
 
@@ -52,9 +59,13 @@ export async function GET() {
     check('redis', () => redis.ping()),
     check('rpc', () => serverBaseClient().getBlockNumber()),
   ])
-  const ready = redisCheck.ok && rpcCheck.ok
+  // Redis is the only hard gate (see the module docstring). RPC failure is
+  // reported as `degraded` but does NOT fail readiness — gating on it would
+  // let a Base RPC blip evict every pod and cascade a full outage.
+  const ready = redisCheck.ok
+  const degraded = !rpcCheck.ok
   return NextResponse.json(
-    { ready, redis: redisCheck, rpc: rpcCheck, timestamp: Date.now() },
+    { ready, degraded, redis: redisCheck, rpc: rpcCheck, timestamp: Date.now() },
     {
       status: ready ? 200 : 503,
       headers: { 'Cache-Control': 'no-store' },

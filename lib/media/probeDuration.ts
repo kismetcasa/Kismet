@@ -6,7 +6,7 @@ const MAX_SOURCE_BYTES = 100 * 1024 * 1024
 /**
  * Probe a video file for its duration in seconds via the existing
  * ffmpeg.wasm singleton. Returns null on any read error so callers can
- * skip the durationSec field in the mint payload — SharedVideoProvider
+ * skip the durationSec field in the mint payload — InlineVideo
  * falls back to its current loadedmetadata-driven tier detection when
  * the field is absent.
  *

@@ -19,6 +19,7 @@ import {
 import { USDC_BASE } from '@/lib/zoraMint'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const ZERO_BYTES32 = '0x' + '0'.repeat(64)
@@ -288,6 +289,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  // Listing creation does EIP-712 signature recovery + on-chain royalty reads
+  // + Redis writes per call; cap per-IP so it can't be spammed. The signature
+  // + blacklist checks below gate WHO can list; this gates the rate.
+  if (!(await checkRateLimit(`listings-post:${getClientIp(req)}`, 20, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
   try {
     const body = await req.json() as {
       collectionAddress: string

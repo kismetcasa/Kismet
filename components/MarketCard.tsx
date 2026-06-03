@@ -5,6 +5,7 @@ import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'w
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
+import { Pin } from 'lucide-react'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
@@ -35,9 +36,16 @@ interface MarketCardProps {
    * row of a market grid doesn't lazy-load behind hydration.
    */
   priority?: boolean
+  /**
+   * Owner-only "pin to profile" affordance, mirroring MomentCard. Provided
+   * by ProfileView only on the owner's own Listings; `pinned` drives the
+   * filled/outline pushpin overlaid bottom-left of the thumbnail.
+   */
+  pinned?: boolean
+  onTogglePin?: () => void
 }
 
-export function MarketCard({ listing, onRemove, compact, showCreator, priority }: MarketCardProps) {
+export function MarketCard({ listing, onRemove, compact, showCreator, priority, pinned, onTogglePin }: MarketCardProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
@@ -148,6 +156,23 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority }
     <div className="bg-[#161616] border border-line flex flex-col">
       {/* Thumbnail */}
       <div className="relative aspect-square bg-surface overflow-hidden">
+        {/* Owner-only "pin to profile" toggle — see MomentCard. The thumbnail
+            isn't a navigation link here, so stopPropagation alone suffices. */}
+        {onTogglePin && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onTogglePin()
+            }}
+            className={`absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center transition-colors ${
+              pinned ? 'text-accent' : 'text-faint hover:text-dim'
+            }`}
+            title={pinned ? 'Unpin from profile' : 'Pin to profile'}
+            aria-label={pinned ? 'Unpin from profile' : 'Pin to profile'}
+          >
+            <Pin size={15} fill={pinned ? 'currentColor' : 'none'} strokeWidth={1.5} />
+          </button>
+        )}
         {listing.image ? (
           <MomentImage
             src={listing.image}

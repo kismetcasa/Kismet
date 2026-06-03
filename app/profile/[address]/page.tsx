@@ -13,6 +13,11 @@ interface Props {
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  // Wrap in try/catch because error.tsx does NOT catch generateMetadata
+  // throws (vercel/next.js#49925). The canonical-profile resolution does
+  // several Redis reads; a transient Upstash blip would otherwise crash
+  // the page rather than just degrade SEO.
+  try {
   const { address } = await params
   if (!isAddress(address)) return { title: 'Profile — Kismet Art' }
 
@@ -80,6 +85,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     // og:image — also expose the raw avatar so platforms that prefer a
     // square asset can use it.
     ...(avatarUrl ? { icons: { icon: avatarUrl } } : {}),
+  }
+  } catch (err) {
+    console.error('[generateMetadata] profile', err)
+    return { title: 'Profile — Kismet Art' }
   }
 }
 

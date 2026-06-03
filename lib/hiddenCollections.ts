@@ -16,9 +16,15 @@ import { memoize } from './memoCache'
 const HIDDEN_KEY = 'kismetart:hidden-collections'
 
 export async function isCollectionHidden(address: string): Promise<boolean> {
-  // Upstash returns number (0 | 1); Boolean() handles either shape defensively.
-  const result = await redis.sismember(HIDDEN_KEY, address.toLowerCase())
-  return Boolean(result)
+  // Route the single-key check through the cached set: a hot SSR path
+  // (every moment + collection page render) used to fire its own
+  // SISMEMBER per call, swamping Redis with reads of a set that
+  // already changes only on hide/unhide writes. Now: one SMEMBERS
+  // per pod per memoize TTL, then O(1) cache hits. Throw propagates
+  // (not "fail open to visible") so the error boundary catches it —
+  // a Redis blip must NEVER briefly reveal hidden content.
+  const hidden = await getHiddenCollectionsSet()
+  return hidden.has(address.toLowerCase())
 }
 
 export async function hideCollection(address: string): Promise<void> {
@@ -35,11 +41,11 @@ export async function unhideCollection(address: string): Promise<void> {
 
 /**
  * Bulk lookup for filtering a collections feed. Single Redis call; returns
- * a Set of lowercase addresses for O(1) membership checks. Memoized 60s;
+ * a Set of lowercase addresses for O(1) membership checks. Memoized 5 min;
  * the set changes only on hide/unhide writes which invalidate own-pod.
  */
 async function _getHiddenCollectionsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
-export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 60_000)
+export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 5 * 60_000)

@@ -5,14 +5,11 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
-import { SharedVideoZIndexProvider } from '@/providers/SharedVideoProvider'
 
-// Stacking invariant: BACKDROP < VIDEO < CHROME. Live in document.body's
-// stacking context so each comparison holds without nesting. Constants
-// rather than literals so the invariant is obvious in one place — an
-// off-by-one and the X disappears behind the video.
+// Stacking invariant: BACKDROP < CHROME. The detail video is now an inline
+// element inside the backdrop's content, so it stacks naturally above the
+// backdrop and below the close chrome without a dedicated z-index.
 const Z_BACKDROP = 50
-const Z_VIDEO = 55
 const Z_CHROME = 60
 
 /**
@@ -80,9 +77,7 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
             if (e.target === e.currentTarget) dismiss()
           }}
         >
-          <SharedVideoZIndexProvider zIndex={Z_VIDEO}>
-            {children}
-          </SharedVideoZIndexProvider>
+          {children}
         </div>
       </div>
       {/* Close button rendered OUTSIDE the backdrop wrapper so it stacks

@@ -86,13 +86,14 @@ export interface Moment {
   // Set to true by the timeline API when a hidden moment is returned to its
   // creator on their own profile feed, so the UI can show the hidden badge.
   hidden?: boolean
-  // Server-stitched by /api/timeline so MomentCard doesn't have to fire
-  // a follow-up /api/moment per card (N+1 client round-trips eliminated).
-  // Optional because (a) other callers of MomentCard pass moments from
-  // sources that don't enrich, (b) the per-moment upstream fetch may
-  // legitimately fail without poisoning the whole timeline response —
-  // MomentCard's existing per-card fetch is the fallback in both cases.
-  // Shape matches MomentDetail.saleConfig for trivial assignability.
+  // Optional sale config. NOTE: /api/timeline does NOT currently stitch this
+  // — server-side per-moment enrichment was reverted because the cold-cache
+  // fan-out latency stacked onto mobile hydration (see the comment near the
+  // end of app/api/timeline/route.ts). MomentCard's per-card /api/moment
+  // fetch is the canonical price path for feed moments today. This field
+  // stays so the fast path still fires for any caller that DOES supply it
+  // (and so a future warm-cache enrichment can populate it without a type
+  // change). Shape matches MomentDetail.saleConfig for trivial assignability.
   saleConfig?: {
     type?: 'fixedPrice' | 'erc20Mint'
     pricePerToken: string
@@ -110,7 +111,7 @@ export interface Moment {
   // Video duration in whole seconds, server-stitched from MomentMeta
   // by /api/timeline. Populated only for Kismet-minted moments that
   // sent durationSec at mint time. Consumed by PaginatedGrid to seed
-  // lib/media/durationCache so SharedVideoProvider can pick long-form
+  // lib/media/durationCache so InlineVideo can pick long-form
   // preload at element-create time instead of waiting for loadedmetadata.
   kismet_duration_sec?: number
 }

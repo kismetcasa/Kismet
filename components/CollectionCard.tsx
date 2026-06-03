@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { isOperatorAddress } from '@/lib/config'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
 
@@ -86,6 +87,14 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
     (c.ethEligibleTokenIds && c.ethEligibleTokenIds.length > 0) ||
     (c.usdcEligibleTokenIds && c.usdcEligibleTokenIds.length > 0)
 
+  // When a collection has no cover image set (or every gateway errored on
+  // the one we have), paint the thumbhash blur instead of a blank "no
+  // preview" tile — matches MomentCard's fallback chain.
+  const blurPreview = useMemo(
+    () => thumbhashToBlurDataURL(c.metadata?.kismet_thumbhash),
+    [c.metadata?.kismet_thumbhash],
+  )
+
   return (
     // No content-visibility:auto — iOS WebKit doesn't reliably un-skip
     // on fast scroll (same reason MomentCard dropped it).
@@ -107,6 +116,12 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
             priority={priority}
             preferProxy
             thumbhash={c.metadata.kismet_thumbhash}
+          />
+        ) : blurPreview ? (
+          <span
+            aria-hidden
+            className="absolute inset-0 bg-cover bg-center"
+            style={{ backgroundImage: `url(${blurPreview})` }}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">

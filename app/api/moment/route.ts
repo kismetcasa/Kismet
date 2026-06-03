@@ -3,7 +3,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
-import { fetchCreatorFromTimeline } from '@/lib/momentDetail'
+import { fetchCreatorFromTimeline, getKvCreatorAddress } from '@/lib/momentDetail'
 import { errorResponse } from '@/lib/apiResponse'
 
 export async function GET(req: NextRequest) {
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 
   const url = inprocessUrl('/moment', { collectionAddress, tokenId, chainId })
 
-  const [upstream, momentHidden, collectionHidden, creator] = await Promise.all([
+  const [upstream, momentHidden, collectionHidden, timelineCreator, kvCreator] = await Promise.all([
     fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
@@ -32,6 +32,7 @@ export async function GET(req: NextRequest) {
     isMomentHidden(collectionAddress, tokenId),
     isCollectionHidden(collectionAddress),
     fetchCreatorFromTimeline(collectionAddress, tokenId, chainId),
+    getKvCreatorAddress(collectionAddress, tokenId),
   ])
   const text = await upstream.text()
   let data: Record<string, unknown>
@@ -50,5 +51,13 @@ export async function GET(req: NextRequest) {
   // The collection admin's unhide affordance lives on the collection page,
   // not here — they navigate there to flip the master toggle.
   const hidden = momentHidden || collectionHidden
+  // Prefer the KV creator (the real minter EOA the mint-proxy wrote at mint
+  // time) over inprocess's timeline attribution, which credits the collection's
+  // operator/defaultAdmin for delegated mints. Username is left null so the
+  // client resolves it from the corrected address. Mirrors the moment detail
+  // page's creator priority.
+  const creator = kvCreator
+    ? { address: kvCreator, username: null }
+    : timelineCreator
   return NextResponse.json({ ...data, hidden, creator }, { status: upstream.status })
 }

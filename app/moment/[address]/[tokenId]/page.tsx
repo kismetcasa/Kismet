@@ -15,6 +15,7 @@ import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { getListings } from '@/lib/listings'
+import { safeRead } from '@/lib/redisRead'
 import { SITE_URL } from '@/lib/siteUrl'
 import { MomentDetailView } from '@/components/MomentDetailView'
 
@@ -70,6 +71,12 @@ const getInitialCollectionMeta = cache(async (
 })
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  // Wrap the body in try/catch because error.tsx does NOT catch
+  // generateMetadata throws in production (vercel/next.js#49925). Only
+  // global-error.tsx would catch this otherwise, and a metadata-only
+  // failure shouldn't blow up the whole page — return a safe fallback
+  // title so the page still renders with degraded SEO/embed.
+  try {
   const { address, tokenId } = await params
   if (!isAddress(address) || !isValidTokenId(tokenId)) {
     return { title: 'Moment — Kismet' }
@@ -110,8 +117,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // moves from primary-sale collect to secondary-market purchase. Same
   // action.url either way — the moment page is where the listing is
   // surfaced for purchase. getListings caps its scan at 500 so this is
-  // bounded even on hot collections.
-  const { listings: collectionListings } = await getListings({ collection: address })
+  // bounded even on hot collections. On Redis failure, degrade to
+  // "Collect" — losing the button-text refinement is invisible compared
+  // to throwing on a non-essential SSR read.
+  const { listings: collectionListings } = await safeRead(
+    'getListings:moment-metadata',
+    () => getListings({ collection: address }),
+    { listings: [], total: 0 },
+  )
   const hasActiveListing = collectionListings.some((l) => l.tokenId === tokenId)
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
@@ -143,6 +156,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       ...(imageUrl ? { images: [imageUrl] } : {}),
     },
     other: fcEmbed,
+  }
+  } catch (err) {
+    console.error('[generateMetadata] moment', err)
+    return { title: 'Moment — Kismet' }
   }
 }
 
@@ -223,8 +240,8 @@ export default async function MomentPage({ params }: Props) {
           on cold-cache share-link landings (FC casts, X shares). Skip
           for image/text moments and when no animation_url is set.
           No crossorigin attribute: must match the no-cors mode of the
-          <video> element this preload is feeding (SharedVideoProvider's
-          createVideo doesn't set crossOrigin). A mismatched preload
+          <video> element this preload is feeding (InlineVideo doesn't set
+          crossOrigin). A mismatched preload
           ends up in a different cache partition and Chrome warns
           "preload was not used" — the bytes are wasted. */}
       {detail?.metadata?.animation_url &&

@@ -15,9 +15,11 @@ export async function isMomentHidden(
   collectionAddress: string,
   tokenId: string,
 ): Promise<boolean> {
-  // Upstash returns number (0 | 1); Boolean() handles either shape defensively.
-  const result = await redis.sismember(HIDDEN_KEY, member(collectionAddress, tokenId))
-  return Boolean(result)
+  // Route through the cached set — see isCollectionHidden for rationale.
+  // Throw propagates so a Redis blip never reveals hidden content; the
+  // error boundary catches it at the SSR layer.
+  const hidden = await getHiddenMomentsSet()
+  return hidden.has(member(collectionAddress, tokenId))
 }
 
 export async function hideMoment(
@@ -41,11 +43,11 @@ export async function unhideMoment(
 /**
  * Bulk lookup for filtering a feed of moments. Single Redis call; returns
  * a Set keyed on `<lowercaseAddr>:<tokenId>` for O(1) membership checks.
- * Memoized 60s; the underlying set changes only on hide/unhide writes,
+ * Memoized 5 min; the underlying set changes only on hide/unhide writes,
  * which invalidate own-pod immediately.
  */
 async function _getHiddenMomentsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
-export const getHiddenMomentsSet = memoize(_getHiddenMomentsSet, 60_000)
+export const getHiddenMomentsSet = memoize(_getHiddenMomentsSet, 5 * 60_000)

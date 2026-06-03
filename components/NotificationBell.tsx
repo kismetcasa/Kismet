@@ -10,7 +10,11 @@ interface NotificationBellProps {
   address: string
 }
 
-const POLL_INTERVAL_MS = 30_000
+// 60s matches GitHub's canonical X-Poll-Interval for the notifications API
+// and is the threshold below which industry-standard apps consider polling
+// abusive. Combined with the cached-count path on /api/notifications/unread,
+// this drops per-user Redis traffic from ~6 ops every 30s to ~3 ops every 60s.
+const POLL_INTERVAL_MS = 60_000
 
 export function NotificationBell({ address }: NotificationBellProps) {
   const pathname = usePathname()

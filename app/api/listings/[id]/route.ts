@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
+import { bestEffort } from '@/lib/bestEffort'
+import { getGateConfig } from '@/lib/gate'
 import { getListing, updateListingStatus } from '@/lib/listings'
+import { creditValidityOnce, recordPlatformTx } from '@/lib/pass-validity'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { writeNotification } from '@/lib/notifications'
@@ -143,6 +146,49 @@ export async function PATCH(
         listingId: listing.id,
       }),
     )
+
+    // Kismet secondary-sale validity transfer for the Pass collection.
+    // The fill is on-chain-verified above (findFulfillmentInLogs matched
+    // this listing's orderHash, recipient===signer, receipt success), so
+    // the buyer is provably the on-chain recipient — safe to credit
+    // synchronously instead of waiting on the webhook.
+    //
+    // Two parallel after() writes, both idempotent against later retries
+    // or webhook delivery:
+    //   1. recordPlatformTx flags the fill so when the webhook eventually
+    //      delivers the Transfer event, processTransfer's to-credit path
+    //      converges through the same creditValidityOnce key (no-op).
+    //      Without the flag, the webhook would treat the sale as
+    //      off-platform and skip crediting — leaving the buyer with no
+    //      validity until live reconciliation rejects them too.
+    //   2. creditValidityOnce credits the buyer now, so the new owner's
+    //      gate check passes on their very next mint attempt (no
+    //      30-second webhook wait, no Alchemy dependency).
+    //
+    // Seller decrement is handled automatically by the webhook's
+    // unconditional `!isMint` from-decrement (see processTransfer); live
+    // reconciliation in hasValidPass is a second-layer safety if the
+    // webhook is delayed or missed.
+    const txHash = body.txHash as string
+    const buyer = signer.toLowerCase()
+    const gateConfig = await getGateConfig()
+    if (
+      gateConfig.passCollection
+      && listing.collectionAddress.toLowerCase() === gateConfig.passCollection
+    ) {
+      const passCollection = gateConfig.passCollection
+      after(() => recordPlatformTx(txHash).catch(
+        bestEffort('listings.filled.recordPlatformTx', { txHash, buyer }),
+      ))
+      after(() => creditValidityOnce({
+        collection: passCollection,
+        address: buyer,
+        txHash,
+        tokenId: listing.tokenId,
+      }).catch(
+        bestEffort('listings.filled.creditValidityOnce', { txHash, buyer, passCollection }),
+      ))
+    }
   }
 
   return NextResponse.json({ ok: true })

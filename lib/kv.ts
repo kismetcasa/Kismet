@@ -8,10 +8,10 @@ import { memoize } from './memoCache'
 // In-memory TTL for the hot collection-set getters below. These read
 // SMEMBERS on every request from a wide range of routes (timeline,
 // search, featured, collections feed) but the underlying sets change
-// rarely — a new collection deploy is once-a-day at most. 60s is short
+// rarely — a new collection deploy is once-a-day at most. 5 min is short
 // enough to be invisible to users (cross-pod, worst case) and the
 // per-write invalidators below make own-pod consistency immediate.
-const SET_CACHE_TTL_MS = 60_000
+const SET_CACHE_TTL_MS = 5 * 60_000
 
 // Per-collection set of "authorized creators": addresses an admin
 // granted ADMIN to via the post-deploy panel. Stored as JSON-encoded
@@ -91,13 +91,18 @@ async function _getUserCollections(): Promise<string[]> {
 }
 export const getUserCollections = memoize(_getUserCollections, SET_CACHE_TTL_MS)
 
+// Note: NO try/catch wrapping the SMEMBERS. The earlier `catch { return new Set() }`
+// silently turned every Redis failure into "no created mints", which the
+// timeline's scope=standalone filter then read as "filter everything out" —
+// blanking the mints/trending feeds for a full 60s after recovery (memoize
+// cached the empty result as a successful read). Letting the throw propagate
+// means memoize won't cache the failure, the next call retries, and the
+// caller in app/api/timeline/route.ts handles the throw by skipping the
+// filter for THIS request (showing unfiltered moments — safer degradation
+// than blank).
 async function _getCreatedMintsSet(): Promise<Set<string>> {
-  try {
-    const members = (await redis.smembers(CREATED_MINTS_KEY)) as string[]
-    return new Set(members.map((m) => m.toLowerCase()))
-  } catch {
-    return new Set()
-  }
+  const members = (await redis.smembers(CREATED_MINTS_KEY)) as string[]
+  return new Set(members.map((m) => m.toLowerCase()))
 }
 export const getCreatedMintsSet = memoize(_getCreatedMintsSet, SET_CACHE_TTL_MS)
 

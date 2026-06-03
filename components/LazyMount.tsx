@@ -19,17 +19,18 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 const EAGER_MOUNT_COUNT = 4
 
 // Mount this far before the viewport — just enough to hide pop-in on a
-// normal scroll while the browser fetches/decodes the image.
+// normal scroll while the browser fetches/decodes the image. Kept tight on
+// purpose: a larger margin mounts more heavy cards at once, which lengthens
+// the render-in burst. Reducing per-card mount cost is the lever for pop-in,
+// not a wider margin.
 const MOUNT_MARGIN = '200px'
 
 // Unmount once a card is this far OUTSIDE the viewport. Deliberately huge
 // relative to MOUNT_MARGIN: the gap is hysteresis so a card lingering near
-// one edge can't thrash mount↔unmount, and it sits far beyond the
-// SharedVideoProvider's video IntersectionObserver margins (150px short /
-// 200% long) + RELEASE_HOLD_MS. By the time a card is 3000px offscreen its
-// pooled <video> has long since paused and dropped out of the active slot
-// set, so unmounting the card (and releasing its slot) causes none of the
-// acquire/release churn that the near-viewport case would.
+// one edge can't thrash mount↔unmount. By the time a card is 3000px
+// offscreen its inline <video> has long since been paused by its own
+// IntersectionObserver, so unmounting the card frees the element + decoder
+// cleanly with no churn.
 const UNMOUNT_MARGIN = '3000px'
 
 interface LazyMountProps {
@@ -59,7 +60,7 @@ const DEFAULT_PLACEHOLDER = (
 /**
  * Mount the wrapped content while it's near the viewport and UNMOUNT it
  * once it scrolls far away (`UNMOUNT_MARGIN`), reclaiming its DOM nodes,
- * decoded poster bitmap, and pooled video slot. Bidirectional windowing —
+ * decoded poster bitmap, and inline video element + decoder. Bidirectional windowing —
  * the wrapper div persists across mount/unmount so the two
  * IntersectionObservers keep tracking it, and the rendered height is
  * snapshotted before unmount and reapplied as the placeholder's

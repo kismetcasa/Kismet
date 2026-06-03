@@ -16,9 +16,8 @@ interface Props {
  * Intercepting route for /moment/[address]/[tokenId]. Fires when the
  * user navigates to a moment URL from inside the app (e.g. clicking a
  * card on the feed). Renders the detail view as an overlay over the
- * still-mounted feed — feed scroll position is preserved, the card's
- * video keeps playing (or, with SharedVideoProvider, the same video
- * element CSS-transitions from the card to the overlay's slot).
+ * still-mounted feed — feed scroll position is preserved and the card's
+ * video keeps playing underneath while the detail's own video opens above.
  *
  * Direct URL loads (refresh, share link) bypass interception and hit
  * the canonical /moment/[address]/[tokenId]/page.tsx instead, which

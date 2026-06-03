@@ -1,9 +1,10 @@
 import { createPublicClient, http } from 'viem'
 import { base } from 'viem/chains'
 
-// Honors NEXT_PUBLIC_BASE_RPC_URL (same env var the wagmi config reads on
-// the client) so server-side reads use the configured paid RPC instead of
-// Base's public endpoint. Falls through to undefined/public when unset —
+// Prefers a server-only BASE_RPC_URL, falling back to NEXT_PUBLIC_BASE_RPC_URL
+// (the same env var the wagmi config reads on the client) so server-side reads
+// use a configured paid RPC instead of Base's public endpoint. Falls through
+// to undefined/public when both are unset —
 // transport: http() with no URL hits mainnet.base.org which rate-limits
 // aggressively under load and surfaces as "over rate limit" errors in
 // the airdrop authorize precheck and similar paths.
@@ -14,7 +15,11 @@ import { base } from 'viem/chains'
 function createClient() {
   return createPublicClient({
     chain: base,
-    transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
+    // Prefer a server-only key (BASE_RPC_URL) for server-side reads so the
+    // paid endpoint isn't the NEXT_PUBLIC_ one inlined into the client bundle.
+    // Falls back to the public var when unset (current behavior → non-breaking).
+    // Mirrors MAINNET_RPC_URL's server-only pattern for ENS in /api/profile.
+    transport: http(process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL),
   })
 }
 

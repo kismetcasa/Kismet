@@ -131,8 +131,8 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
 
   return (
     // <lg: single horizontal scroll (cover-card first, then ~320px
-    // moment cards). lg+: cover-left + grid-right. SharedVideoProvider's
-    // clip-path keeps position:fixed videos inside the mobile scroller.
+    // moment cards). lg+: cover-left + grid-right. Inline videos scroll
+    // natively inside the scroller (clipped by its overflow).
     <article className="flex flex-col lg:flex-row border border-line bg-[#161616] overflow-hidden">
       <div className="hidden lg:flex flex-col lg:flex-shrink-0 lg:w-96 xl:w-96 lg:border-r lg:border-line">
         <Link

@@ -33,8 +33,21 @@ interface AdminContextValue {
   startSession: () => Promise<void>
   featuredKeys: Set<string>
   featuredCollectionAddrs: Set<string>
+  // Mints promoted to a Mint Pass Display — rendered as the desktop hero in
+  // the featured tab. Keyed `<addr>:<tokenId>` (lowercase addr). A subset of
+  // featuredKeys (DISPLAY ⊆ FEATURED), so a display also shows as a normal
+  // featured card on mobile.
+  mintPassKeys: Set<string>
+  // Bumped on every successful curation toggle (and ONLY then — not by the
+  // initial /api/featured load). Lets the featured tab remount-to-refetch on
+  // a real change without remounting when the sets merely finish loading.
+  featuredRevision: number
   toggleFeatured: (collectionAddress: string, tokenId: string) => Promise<void>
   toggleFeaturedCollection: (collectionAddress: string) => Promise<void>
+  // Long-press affordance on the star: promote/demote a mint to a Mint Pass
+  // Display. Promoting also features the mint (DISPLAY ⊆ FEATURED); demoting
+  // leaves it featured.
+  toggleMintPassDisplay: (collectionAddress: string, tokenId: string) => Promise<void>
   // Run `fn` with a valid privileged session in scope. Auto-prompts a
   // one-time SIWE signature + login round-trip if no session is active.
   // Returns whatever `fn` returns, or null if unprivileged / cancelled.
@@ -50,8 +63,11 @@ const AdminContext = createContext<AdminContextValue>({
   startSession: async () => {},
   featuredKeys: new Set(),
   featuredCollectionAddrs: new Set(),
+  mintPassKeys: new Set(),
+  featuredRevision: 0,
   toggleFeatured: async () => {},
   toggleFeaturedCollection: async () => {},
+  toggleMintPassDisplay: async () => {},
   withSession: async () => null,
 })
 
@@ -69,6 +85,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const sessionRef = useRef<AdminSession | null>(null)
   const [featuredKeys, setFeaturedKeys] = useState<Set<string>>(new Set())
   const [featuredCollectionAddrs, setFeaturedCollectionAddrs] = useState<Set<string>>(new Set())
+  const [mintPassKeys, setMintPassKeys] = useState<Set<string>>(new Set())
+  // Curation-change counter. Bumped by the toggles below (not the initial
+  // fetch) so the featured tab can key off it to remount-and-refetch on a real
+  // change without the wasteful double-fetch when the sets first populate.
+  const [featuredRevision, setFeaturedRevision] = useState(0)
+  const bumpFeaturedRevision = useCallback(() => setFeaturedRevision((v) => v + 1), [])
 
   function applySession(s: AdminSession | null) {
     sessionRef.current = s
@@ -145,6 +167,16 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
             new Set(
               d.featuredCollections.map(
                 (f: { collectionAddress: string }) => f.collectionAddress.toLowerCase(),
+              ),
+            ),
+          )
+        }
+        if (Array.isArray(d.mintPassDisplays)) {
+          setMintPassKeys(
+            new Set(
+              d.mintPassDisplays.map(
+                (f: { collectionAddress: string; tokenId: string }) =>
+                  `${f.collectionAddress.toLowerCase()}:${f.tokenId}`,
               ),
             ),
           )
@@ -253,11 +285,66 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
+        // Unfeaturing cascades: a mint that isn't featured can't be a Mint
+        // Pass Display, so drop any hero treatment too (server does the same).
+        if (isFeatured) {
+          setMintPassKeys((prev) => {
+            if (!prev.has(key)) return prev
+            const next = new Set(prev)
+            next.delete(key)
+            return next
+          })
+        }
+        bumpFeaturedRevision()
       } catch (err) {
         toastError('Featured update', err)
       }
     },
-    [address, isAdmin, isCurator, ensureSession, featuredKeys],
+    [address, isAdmin, isCurator, ensureSession, featuredKeys, bumpFeaturedRevision],
+  )
+
+  const toggleMintPassDisplay = useCallback(
+    async (collectionAddress: string, tokenId: string) => {
+      if (!address || (!isAdmin && !isCurator)) return
+      const s = await ensureSession()
+      if (!s) return // user cancelled signing
+
+      const key = `${collectionAddress.toLowerCase()}:${tokenId}`
+      const isDisplay = mintPassKeys.has(key)
+
+      try {
+        const res = await fetch('/api/featured', {
+          method: isDisplay ? 'DELETE' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'momentDisplay', collectionAddress, tokenId }),
+        })
+        if (!res.ok) {
+          const d = await res.json()
+          throw new Error(d.error ?? 'Failed')
+        }
+        setMintPassKeys((prev) => {
+          const next = new Set(prev)
+          if (isDisplay) next.delete(key)
+          else next.add(key)
+          return next
+        })
+        // Promoting to a Mint Pass Display also features the mint (DISPLAY ⊆
+        // FEATURED) so it still shows as a normal card on mobile. Demoting
+        // leaves it featured.
+        if (!isDisplay) {
+          setFeaturedKeys((prev) => {
+            if (prev.has(key)) return prev
+            const next = new Set(prev)
+            next.add(key)
+            return next
+          })
+        }
+        bumpFeaturedRevision()
+      } catch (err) {
+        toastError('Mint Pass Display update', err)
+      }
+    },
+    [address, isAdmin, isCurator, ensureSession, mintPassKeys, bumpFeaturedRevision],
   )
 
   const withSession = useCallback(
@@ -295,11 +382,12 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           else next.add(key)
           return next
         })
+        bumpFeaturedRevision()
       } catch (err) {
         toastError('Featured update', err)
       }
     },
-    [address, isAdmin, isCurator, ensureSession, featuredCollectionAddrs],
+    [address, isAdmin, isCurator, ensureSession, featuredCollectionAddrs, bumpFeaturedRevision],
   )
 
   // Memoized so useAdmin() consumers only re-render when these fields
@@ -317,15 +405,18 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       startSession,
       featuredKeys,
       featuredCollectionAddrs,
+      mintPassKeys,
+      featuredRevision,
       toggleFeatured,
       toggleFeaturedCollection,
+      toggleMintPassDisplay,
       withSession,
     }),
     [
       isAdmin, isCurator, session, address,
       startSession,
-      featuredKeys, featuredCollectionAddrs,
-      toggleFeatured, toggleFeaturedCollection, withSession,
+      featuredKeys, featuredCollectionAddrs, mintPassKeys, featuredRevision,
+      toggleFeatured, toggleFeaturedCollection, toggleMintPassDisplay, withSession,
     ],
   )
 

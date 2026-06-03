@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { isProxiable, proxyUrl } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { MomentImg } from './MomentImage'
-import { SharedVideoSlot } from './SharedVideoSlot'
+import { InlineVideo } from './InlineVideo'
 
 interface MomentVideoProps {
   /** Raw URI for the video media: ar://, ipfs://, or https://. */
@@ -15,14 +15,10 @@ interface MomentVideoProps {
   poster?: string
   /** Base64 thumbhash — drives the blur placeholder on the poster layer. */
   thumbhash?: string
-  /** Render the poster as a static <img> layer behind the video slot.
-   *  On for card/modal/detail surfaces; off for the lightbox where the
-   *  video sizes itself via max-w/max-h with no relative parent. */
+  /** Render the poster as a static <img> layer behind the video. On for
+   *  card/detail surfaces (the video is absolutely positioned over it); off
+   *  when the video sizes itself in-flow via the passed className. */
   showPosterLayer?: boolean
-  /** Z-index for the persistent video element while this surface owns
-   *  it. Default (10) sits above page content; overlay surfaces should
-   *  pass a higher value, OR wrap in <SharedVideoZIndexProvider>. */
-  zIndex?: number
   /** Show native controls — implies "committed viewing" and disables
    *  the off-screen auto-pause behaviour. Detail page, lightbox. */
   controls?: boolean
@@ -40,23 +36,20 @@ interface MomentVideoProps {
 
 /**
  * Per-surface "view" of a video moment. Composes:
- *   - Poster image layer (MomentImg, per-surface, cheap to re-mount)
- *   - Thumbhash blur layer (per-surface, instant on paint)
- *   - SharedVideoSlot — anchor for the persistent video element that
- *     lives in the root layout's SharedVideoProvider pool
+ *   - Poster image layer (MomentImg, instant on paint)
+ *   - Thumbhash blur layer (instant on paint)
+ *   - InlineVideo — a normal in-flow <video> the browser lays out
  *
- * The slot pattern means the actual <video> element survives across
- * route transitions (Plan C). Surfaces unmount; the element doesn't.
- * On the next surface that registers a slot for the same src, the
- * element CSS-positions to overlay the new slot. Same element, same
- * decoder, no re-decode flicker, currentTime preserved natively.
+ * The video lives in the card's own DOM (no position:fixed pool), so it can
+ * never park over the wrong card or smear on momentum scroll. currentTime is
+ * carried across surfaces by src (InlineVideo's session memory) so the detail
+ * resumes where the card left off; the poster covers the brief re-decode.
  */
 export function MomentVideo({
   src,
   poster,
   thumbhash,
   showPosterLayer,
-  zIndex,
   controls,
   className,
   onAllError,
@@ -129,12 +122,15 @@ export function MomentVideo({
           style={{ backgroundImage: `url(${blurDataURL})` }}
         />
       )}
-      <SharedVideoSlot
+      <InlineVideo
         src={src}
         controls={!!controls}
-        zIndex={zIndex}
         onError={() => setVideoFailed(true)}
-        className={className}
+        // When a poster layer sits behind it, the video overlays it
+        // (absolute inset-0); otherwise it sizes itself in-flow.
+        className={
+          showPosterLayer ? `absolute inset-0 ${className ?? ''}`.trim() : className
+        }
       />
     </>
   )

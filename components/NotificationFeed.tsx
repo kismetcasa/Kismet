@@ -65,7 +65,8 @@ function loadOrder(): NotificationType[] {
   }
 }
 
-const POLL_INTERVAL_MS = 30_000
+// 60s matches NotificationBell — see comment there for rationale.
+const POLL_INTERVAL_MS = 60_000
 
 export function NotificationFeed() {
   const { ensureSession } = useUploadSession()

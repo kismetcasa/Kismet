@@ -28,10 +28,10 @@
  */
 
 export type EventName =
-  | 'video_ttff'         // play() → first timeupdate, ms
   | 'image_lcp'          // PerformanceObserver largest-contentful-paint, ms
   | 'optimizer_400'      // Next.js /_next/image returned 400 — counter
-  | 'pool_eviction'      // SharedVideoProvider idle-over-cap eviction — counter
+  | 'feed_render'        // first feed page: data-present render → painted, ms
+  | 'long_task'          // PerformanceObserver longtask duration (Chromium), ms
 
 const STORAGE_KEY = 'kismet_telemetry'
 
@@ -52,8 +52,27 @@ if (typeof window !== 'undefined') {
 }
 
 function formatValue(name: EventName, value: number): string {
-  if (name === 'video_ttff' || name === 'image_lcp') return `${Math.round(value)}ms`
+  if (name === 'image_lcp' || name === 'feed_render' || name === 'long_task')
+    return `${Math.round(value)}ms`
   return String(Math.round(value))
+}
+
+// Whether operator telemetry is on for this session. Lets UI (the on-screen
+// perf badge) mount only when an operator opted in — never for normal users.
+export function isTelemetryEnabled(): boolean {
+  return enabled
+}
+
+// Minimal in-page pub/sub so an on-screen readout can show values without a
+// console — the only practical way to read perf inside the Farcaster iOS
+// WebView (no DevTools, no URL bar). Listeners fire only while enabled.
+type PerfListener = (name: EventName, value: number) => void
+const listeners = new Set<PerfListener>()
+export function onPerf(cb: PerfListener): () => void {
+  listeners.add(cb)
+  return () => {
+    listeners.delete(cb)
+  }
 }
 
 /**
@@ -63,4 +82,5 @@ function formatValue(name: EventName, value: number): string {
 export function trackPerf(name: EventName, value: number): void {
   if (!enabled || !Number.isFinite(value)) return
   console.log(`[telemetry] ${name}=${formatValue(name, value)}`)
+  listeners.forEach((l) => l(name, value))
 }

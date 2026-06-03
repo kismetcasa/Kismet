@@ -3,7 +3,7 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Star, Copy, Check, EyeOff, ArrowUpRight } from 'lucide-react'
+import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import {
@@ -19,7 +19,7 @@ import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent, fetchTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
-import { useAdmin } from '@/contexts/AdminContext'
+import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
@@ -77,13 +77,22 @@ interface MomentCardProps {
    * "list" for "view profile".
    */
   profileCta?: boolean
+  /**
+   * Owner-only "pin to profile" affordance. When `onTogglePin` is provided
+   * (ProfileView passes it only on the owner's own profile) a pushpin button
+   * overlays the image bottom-left; `pinned` drives its filled/outline state.
+   * Visitors never receive these, so the React.memo equality (and the price/
+   * collection lookups) stay intact for every feed and non-owner profile.
+   */
+  pinned?: boolean
+  onTogglePin?: () => void
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -117,7 +126,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
-  const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { collect, status: collectStatus } = useDirectCollect()
@@ -148,12 +156,32 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     })
   }, [moment.address, moment.kismetCollection])
 
+  // Defer the per-card price fetch + the two on-chain reads off the initial
+  // mount path. Firing them on mount stacks a network + RPC + re-render burst
+  // onto the synchronous commit where a page of cards mounts at once — the
+  // open-feed freeze. Waiting for idle keeps that commit light; price/supply
+  // still popcorn in a beat later, and the collect button stays gated on
+  // collectReady until they land.
+  const [deferReady, setDeferReady] = useState(false)
+  useEffect(() => {
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    if (w.requestIdleCallback) {
+      const h = w.requestIdleCallback(() => setDeferReady(true), { timeout: 1500 })
+      return () => w.cancelIdleCallback?.(h)
+    }
+    const t = setTimeout(() => setDeferReady(true), 300)
+    return () => clearTimeout(t)
+  }, [])
+
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
     args: connectedAddress ? [connectedAddress, BigInt(moment.token_id)] : undefined,
-    query: { enabled: !!connectedAddress },
+    query: { enabled: deferReady && !!connectedAddress },
   })
   const owned = ownedBalance ? Number(ownedBalance) : 0
 
@@ -162,27 +190,26 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     abi: ZORA_1155_TOKEN_INFO_ABI,
     functionName: 'getTokenInfo',
     args: [BigInt(moment.token_id)],
+    query: { enabled: deferReady },
   })
   const maxSupply = tokenInfo?.maxSupply
   const totalMinted = tokenInfo?.totalMinted
 
   const meta = moment.metadata ?? {}
-  const isFeatured = featuredKeys.has(`${moment.address.toLowerCase()}:${moment.token_id}`)
 
   // Price + currency. hidePriceSupply only controls badge rendering —
   // compact contexts still need these state values to drive collect.
   //
   // Two paths:
-  //   1. Fast path: /api/timeline now enriches each moment with its
-  //      saleConfig server-side. When present, populate state directly
-  //      and skip the round-trip entirely — the discover feed paints
-  //      with prices already in place instead of popcorning them in.
-  //   2. Fallback: callers that pass moments from sources that don't
-  //      enrich (FeaturedFeed inputs from non-timeline routes, third-
-  //      party usages, or a timeline call where the per-moment upstream
-  //      fetch happened to fail) still get correct behavior via the
-  //      per-card /api/moment fetch — exact same logic that was here
-  //      before, just gated on absence.
+  //   1. Fast path: if a caller supplies moment.saleConfig, populate state
+  //      directly and skip the round-trip. NOTE: /api/timeline does NOT stitch
+  //      saleConfig today (server-side enrichment was reverted — see the
+  //      comment near the end of app/api/timeline/route.ts), so feed moments
+  //      fall through to path 2. This branch stays for any caller that does
+  //      supply it (and for a future warm-cache enrichment).
+  //   2. Canonical path for feed moments: fetch /api/moment per card. Deferred
+  //      to idle (see deferReady) so it doesn't fire during the render-in
+  //      window; price/supply popcorn in a beat later.
   useEffect(() => {
     if (moment.saleConfig) {
       // Match the fetch path's implicit error swallowing (the .catch
@@ -198,6 +225,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       } catch {}
       return
     }
+    // Held until idle (see deferReady) so the fetch doesn't fire during the
+    // render-in window. The saleConfig fast-path above still runs immediately
+    // when present.
+    if (!deferReady) return
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
@@ -212,7 +243,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         setCurrency(cur)
       })
       .catch(() => {})
-  }, [moment.address, moment.token_id, moment.saleConfig])
+  }, [moment.address, moment.token_id, moment.saleConfig, deferReady])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
@@ -292,8 +323,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     [meta.kismet_thumbhash],
   )
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
-  // Seed the duration cache for SharedVideoProvider.createVideo to read
-  // before this card's SharedVideoSlot effect fires. Idempotent (Map.set
+  // Seed the duration cache for InlineVideo to read before it mounts.
+  // Idempotent (Map.set
   // with same value) so re-renders are free. Skipped for non-video and
   // for moments without the server-stitched kismet_duration_sec field
   // (older mints predating the durationSec write at /api/collections POST).
@@ -314,8 +345,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       {/* Media — wrapped in <Link> so the click triggers Next.js's
           intercepting route at app/@modal/(.)moment/.../page.tsx. The
           feed stays mounted; the detail page renders as an overlay
-          above. Combined with SharedVideoProvider, the same <video>
-          element CSS-transitions from card to overlay without re-mount.
+          above, with the card's inline video still playing underneath.
           Direct URL load of /moment/X bypasses the interception and
           hits the canonical detail page. */}
       <Link
@@ -333,28 +363,38 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         }}
         className={`cursor-pointer relative bg-surface overflow-hidden block ${fillCell && compact ? 'flex-1 min-h-0' : 'aspect-square'}`}
       >
-        {isAdmin && (
-          <button
-            onClick={(e) => {
-              // Star sits inside the <Link>; preventDefault stops the
-              // navigation that would otherwise fire, stopPropagation
-              // belt-and-suspenders any future ancestor click handler.
-              e.preventDefault()
-              e.stopPropagation()
-              toggleFeatured(moment.address, moment.token_id)
-            }}
-            className={`absolute top-1.5 left-1.5 z-10 min-w-10 min-h-10 flex items-center justify-center transition-colors ${
-              isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
-            }`}
-            title={isFeatured ? 'Unfeature' : 'Feature'}
-          >
-            <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-          </button>
-        )}
+        {/* Feature control (admin-only; FeatureStar self-gates). Tap to
+            feature, hold to set as a Mint Pass Display. Sits inside the
+            <Link>; the button's own pointer handlers stop navigation. */}
+        <FeatureStar
+          address={moment.address}
+          tokenId={moment.token_id}
+          className="absolute top-1.5 left-1.5"
+        />
         {moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
             <EyeOff size={10} className="text-muted" />
           </span>
+        )}
+        {/* Owner-only "pin to profile" toggle. Bottom-left — the one image
+            corner no other overlay claims (admin star = top-left, hidden
+            badge = top-right, valid-Pass = bottom-right). preventDefault
+            stops the wrapping <Link> from navigating on tap. */}
+        {onTogglePin && (
+          <button
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onTogglePin()
+            }}
+            className={`absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center transition-colors ${
+              pinned ? 'text-accent' : 'text-faint hover:text-dim'
+            }`}
+            title={pinned ? 'Unpin from profile' : 'Pin to profile'}
+            aria-label={pinned ? 'Unpin from profile' : 'Pin to profile'}
+          >
+            <Pin size={15} fill={pinned ? 'currentColor' : 'none'} strokeWidth={1.5} />
+          </button>
         )}
         {/* Valid-Pass overlay. Shown on the holder's profile collected list
             so they can confirm at a glance that their Pass currently grants

@@ -59,9 +59,10 @@ const REL_ATTR = /\brel\s*=\s*['"](\w[\w\-]*)['"]/i
 const HREF_ATTR = /\bhref\s*=\s*['"]([^'"]+)['"]/i
 const CROSSORIGIN_ATTR = /\bcross[Oo]rigin\s*=\s*['"]?([^\s/'">]*)['"]?/i
 
-// Video: <video> with explicit src — only catches static src strings,
-// not the dynamic SharedVideoProvider.createVideo() case. SharedVideoProvider
-// is audited manually; this script catches NEW link/video pairs added later.
+// Video: <video> with explicit src — only catches static src strings, not
+// InlineVideo's dynamic gateway src. InlineVideo's <video> is no-cors by
+// default (no crossOrigin), matching the non-crossorigin arweave preconnect;
+// audited manually. This script catches NEW link/video pairs added later.
 const VIDEO_TAG_RE = /<video\b([^>]+?)(?:\/?>|>)/g
 const IMG_TAG_RE = /<img\b([^>]+?)(?:\/?>|>)/g
 const SRC_ATTR = /\bsrc\s*=\s*['"]([^'"]+)['"]/i

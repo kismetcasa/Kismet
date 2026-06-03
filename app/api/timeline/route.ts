@@ -192,7 +192,7 @@ export async function GET(req: NextRequest) {
       ...(needsCreatorOverride
         ? { creator: { address: meta.creator, username: null } }
         : {}),
-      // Surfaced for the client durationCache so SharedVideoProvider can
+      // Surfaced for the client durationCache so InlineVideo can
       // skip the metadata→auto preload upgrade dance for long-form.
       ...(hasDuration ? { kismet_duration_sec: meta.durationSec } : {}),
     }
@@ -214,12 +214,21 @@ export async function GET(req: NextRequest) {
   // via MintForm + covers minted at Create-Collection time) appear.
   // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
   // remain visible in user-history surfaces.
+  //
+  // If the createdMints lookup fails (Upstash blip), skip the filter for
+  // this request rather than serve an empty feed. Showing some unfiltered
+  // moments briefly is strictly better UX than "no moments yet" — and the
+  // next request retries the lookup (memoize doesn't cache the throw).
   if (scope === 'standalone' && !singleCollection) {
-    const createdMints = await getCreatedMintsSet()
-    merged = merged.filter((m: unknown) => {
-      const moment = m as { address?: string; token_id?: string }
-      return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
-    })
+    try {
+      const createdMints = await getCreatedMintsSet()
+      merged = merged.filter((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string }
+        return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+      })
+    } catch (err) {
+      console.warn('[timeline] standalone filter skipped (Redis unavailable):', err)
+    }
   }
 
   // Creator filter (Featured / Profile feeds). Matches if the moment's
@@ -428,8 +437,28 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // Cache policy. A request is viewer-dependent — and therefore must never
+  // be served from a shared cache — when it filters/reorders by who's asking:
+  //   - creator=  : profile feed; the hidden-moment block below reveals the
+  //                 OWNER's own hidden moments (isOwnProfile), so the body
+  //                 differs for the creator vs everyone else.
+  //   - collector= / airdroppable= : address-scoped personal feeds.
+  //   - following= : reorders to bubble the caller's follows to the top.
+  // Everything else (trending, featured, the default newest feed, a single
+  // collection, the curated creators= roster) is identical for every viewer:
+  // the session cookie is read above but only consumed when creatorSet is set,
+  // which none of these set. Those get a short shared-cache window with a
+  // stale-while-revalidate tail so the first click on trending/main is served
+  // from the edge in ~tens of ms and refreshed in the background, instead of
+  // re-running the cross-collection fan-out + merge on every cold hit.
+  const viewerDependent =
+    !!creatorRaw || !!collectorRaw || !!airdroppable || !!followingParam
+  const cacheControl = viewerDependent
+    ? 'private, no-store'
+    : 'public, s-maxage=30, stale-while-revalidate=120'
+
   return NextResponse.json(
     { status: 'success', moments, pagination: { page, limit, total_pages } },
-    { headers: { 'Cache-Control': 'private, no-store' } },
+    { headers: { 'Cache-Control': cacheControl } },
   )
 }

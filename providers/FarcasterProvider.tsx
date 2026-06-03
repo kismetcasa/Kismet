@@ -394,13 +394,11 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // sub-tab bars, draggable section headers — and without this
         // flag the host's swipe-down-to-close detector intercepts
         // start-of-scroll on the feed, begins to animate the modal
-        // away, then aborts when our content actually responds. The
-        // side effects of that aborted animation (iframe transform,
-        // mid-animation resize events) fire our SharedVideoProvider's
-        // scroll/resize handlers against half-resolved geometry,
-        // producing the "video positioned over wrong card / blank
-        // white space below the nav" glitches that appear ONLY in
-        // Mini App and NOT in mobile web. Per the canonical SDK
+        // away, then aborts when our content actually responds. That
+        // aborted animation produces "blank white space below the nav"
+        // glitches that appear ONLY in Mini App and NOT in mobile web,
+        // so we suppress the host gesture on our scroll surfaces. Per the
+        // canonical SDK
         // (@farcaster/miniapp-core/src/actions/Ready.ts), this is
         // the documented mechanism for apps in our category.
         //

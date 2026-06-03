@@ -1,6 +1,7 @@
 import { redis } from './redis'
 import { getFollowers, isFollowing } from './follows'
 import { KEY_PROFILES } from './profile'
+import { safeRead } from './redisRead'
 import { randomUUID } from 'crypto'
 
 export const ALL_NOTIFICATION_TYPES = [
@@ -50,6 +51,11 @@ export interface Notification {
 type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'>
 
 const MAX_PER_USER = 200
+// Notifications older than this are dropped lazily on each loadAndAnnotate
+// call (see the ZREMRANGEBYSCORE prepended below). Replaces the previous
+// per-5min background sweep that walked every profile in KEY_PROFILES —
+// (1+N) commands per tick scaled linearly with total wallets ever connected.
+const NOTIF_TTL_SECONDS = 60 * 24 * 60 * 60   // 60 days
 const FOLLOW_DEDUP_WINDOW_SECS = 7 * 24 * 60 * 60
 // Coalesces same-shape bursts (collect-all firing Promise.all-style, or a
 // seller listing several editions back-to-back) into one notification per
@@ -68,6 +74,13 @@ const keyLastRead = (a: string) => `kismetart:notif-last-read:${a.toLowerCase()}
 const keyReadIds = (a: string) => `kismetart:notif-read-ids:${a.toLowerCase()}`
 const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
+const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
+
+// Cache window for the precomputed unread count. Matches the bell-poll
+// interval — within one poll cycle, most users hit the cache; the value
+// is invalidated by every priority write/read so true changes still
+// reflect immediately on the next poll.
+const UNREAD_COUNT_CACHE_TTL_SECS = 60
 
 const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
@@ -77,7 +90,7 @@ interface MomentMeta {
   name?: string
   // Video duration in whole seconds, captured client-side at mint time
   // via FFprobe. Read by /api/timeline + surfaced as moment.kismet_duration_sec
-  // so SharedVideoProvider can pick the long-form preload strategy at
+  // so InlineVideo can pick the long-form preload strategy at
   // element-create time instead of waiting for loadedmetadata.
   durationSec?: number
 }
@@ -165,6 +178,14 @@ export async function writeNotification(input: NotificationInput): Promise<void>
     })
     await redis.zremrangebyrank(keyNotif(recipient), 0, -MAX_PER_USER - 1)
 
+    // Invalidate the precomputed unread count so the next bell poll
+    // recomputes. Only matters for priority notifications (non-priority
+    // never enter the count), so we skip the DEL for non-priority writes
+    // to keep the steady-state Redis traffic minimal.
+    if (priority) {
+      void invalidateUnreadCount(recipient)
+    }
+
     // Parallel transport: Farcaster native push. Imported lazily so the
     // non-FC code path (writes purely to the in-app bell) never pulls
     // farcasterProfile + the FC dispatch helpers into its module graph.
@@ -219,8 +240,20 @@ interface NotificationListResult {
 // Loads every stored notification for `address`, parses each entry, drops
 // muted-actor rows, and stamps a computed `read` flag. Shared by the list +
 // unread-count callers so the parse/mute/read invariants stay in sync.
+//
+// The leading ZREMRANGEBYSCORE drops entries older than NOTIF_TTL_SECONDS
+// on every read — lazy cleanup that replaces a per-5min background sweep
+// across every profile in KEY_PROFILES. Pattern: BullMQ's
+// `removeOnComplete` lazy-removal. The result is discarded (the count of
+// removed entries is uninteresting to callers); the cleanup completes
+// before the ZRANGE in actual execution because Promise.all preserves
+// command order on the wire for ordered SDKs, and worst case (cleanup
+// happens after read) the stale entries are returned once and dropped
+// next call — no correctness impact, just a one-poll display lag.
 async function loadAndAnnotate(address: string): Promise<Notification[]> {
-  const [raws, lastRead, readIdsArr, mutedArr] = await Promise.all([
+  const cutoff = Math.floor(Date.now() / 1000) - NOTIF_TTL_SECONDS
+  const [, raws, lastRead, readIdsArr, mutedArr] = await Promise.all([
+    redis.zremrangebyscore(keyNotif(address), 0, cutoff).catch(() => 0),
     redis.zrange(keyNotif(address), 0, -1, { rev: true }) as Promise<string[]>,
     redis.get<string>(keyLastRead(address)),
     redis.smembers(keyReadIds(address)) as Promise<string[]>,
@@ -257,9 +290,42 @@ export async function getNotifications(
   return { notifications: all.slice(start, start + limit), total, page }
 }
 
+// Source-of-truth count: walks every notification and counts priority+unread.
+// Expensive (1 ZRANGE + 1 GET + 2 SMEMBERS = 4 Redis ops); use getUnreadCountCached
+// from the polling path. Still exported so admin/debug surfaces can force a recount.
 export async function getUnreadCount(address: string): Promise<number> {
   const all = await loadAndAnnotate(address)
   return all.reduce((acc, n) => acc + (n.priority && !n.read ? 1 : 0), 0)
+}
+
+// Cache-aside read used by the notification-bell poll path. Most polls now
+// hit the cache (1 GET); the expensive 4-op recompute only fires on cache
+// miss after invalidation or TTL expiry. This replaces the prior pattern
+// where every 30s poll re-walked every notification. See lib/redisRead for
+// the failure semantics (safeRead returns the fallback null on Redis failure,
+// which forces a recompute — no stale-empty trap).
+export async function getUnreadCountCached(address: string): Promise<number> {
+  const cached = await safeRead(
+    'notif-unread-count-get',
+    () => redis.get<number>(keyUnreadCount(address)),
+    null,
+  )
+  if (typeof cached === 'number') return cached
+  const count = await getUnreadCount(address)
+  await safeRead(
+    'notif-unread-count-set',
+    () => redis.set(keyUnreadCount(address), count, { ex: UNREAD_COUNT_CACHE_TTL_SECS }),
+    undefined,
+  )
+  return count
+}
+
+// Invalidate the cached count for `address`. Called from every priority
+// write + every read-marking path so the next poll recomputes from source.
+// Best-effort: a DEL failure just means the next poll reads a slightly
+// stale value for up to UNREAD_COUNT_CACHE_TTL_SECS.
+export async function invalidateUnreadCount(address: string): Promise<void> {
+  await safeRead('notif-unread-count-del', () => redis.del(keyUnreadCount(address)), undefined)
 }
 
 export async function markAllRead(address: string): Promise<void> {
@@ -268,6 +334,7 @@ export async function markAllRead(address: string): Promise<void> {
     redis.set(keyLastRead(address), String(now)),
     redis.del(keyReadIds(address)),
   ])
+  void invalidateUnreadCount(address)
 }
 
 // SADD+EXPIRE in MULTI/EXEC so a dropped EXPIRE can't leave the key
@@ -279,6 +346,11 @@ export async function markOneRead(address: string, id: string): Promise<void> {
     .sadd(keyReadIds(address), id)
     .expire(keyReadIds(address), READ_IDS_TTL_SECS)
     .exec()
+  // The marked-read notification might have been priority — invalidate so
+  // the next poll recomputes. False positive (non-priority notif marked
+  // read) just causes one extra recompute; cheaper than tracking priority
+  // per id here.
+  void invalidateUnreadCount(address)
 }
 
 /**
