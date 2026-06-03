@@ -27,6 +27,9 @@ jobs:
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: '1'
+          # Match the Dockerfile: this build OOMs at Node's default heap once
+          # sharp's type defs + the bundler load. 4096 is proven-good.
+          NODE_OPTIONS: '--max-old-space-size=4096'
       # typecheck + lint + resource-hint CORS + per-route bundle-size.
       - run: npm run check
       # NON-blocking for now: the dependency tree carries known critical/high
