@@ -2,7 +2,6 @@ import { redis } from './redis'
 import { getFollowers, isFollowing } from './follows'
 import { KEY_PROFILES } from './profile'
 import { safeRead } from './redisRead'
-import { randomUUID } from 'crypto'
 
 export const ALL_NOTIFICATION_TYPES = [
   'collect',
@@ -159,7 +158,7 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       if (!acquired) return
     }
 
-    const id = randomUUID()
+    const id = crypto.randomUUID()
     const timestamp = Math.floor(Date.now() / 1000)
     const priority = await isPriority(input.recipient, input.type, input.actor, input.price)
     const recipient = input.recipient.toLowerCase()
