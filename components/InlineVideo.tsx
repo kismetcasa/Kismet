@@ -45,10 +45,11 @@ interface InlineVideoProps {
  *     resume position survives), seeded from the duration cache with no
  *     metadata round-trip
  *   - feed playback is governed centrally by lib/media/feedPlayback: only the
- *     nearest few cards play (capped for the iOS decoder budget) and they
- *     start once scrolling settles, while a buffer-ahead window warms upcoming
- *     videos (preload=auto) so landing on one is instant. Committed (detail)
- *     videos bypass the coordinator and play on mount.
+ *     nearest on-screen cards play (capped for the iOS decoder budget) and they
+ *     keep playing through a scroll, pausing only when they leave view, while a
+ *     buffer-ahead window warms upcoming videos (preload=auto) so landing on one
+ *     is instant. Committed (detail) videos bypass the coordinator and play on
+ *     mount.
  *   - gateway fallback walk on a <video> error
  *   - currentTime resume across surfaces
  *   - feed quiets while a committed (detail) video is open (videoFocus)
@@ -128,8 +129,8 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
 
     // Register with the central feed coordinator. It calls back with this
     // card's current {play, buffer} grant whenever the ranking changes
-    // (scroll start/stop, a sibling mounting/unmounting, a detail video
-    // opening). We translate that into preload (buffer) + play/pause (play).
+    // (a card moving in/out of view, a sibling mounting/unmounting, a detail
+    // video opening). We translate that into preload (buffer) + play/pause.
     // Nothing here moves the element, so it can't reintroduce the old
     // fixed-overlay positioning bug — only decode/buffer state changes.
     const reg = registerFeedVideo((slot) => {
@@ -139,24 +140,27 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     })
 
     // One IntersectionObserver reports this card's distance to the viewport
-    // centre + whether it's actually on screen. rootMargin '100%' = "within
-    // one viewport above/below", so cards are reported (and warmed) before
-    // they scroll in. The rects come from the entry the browser already
-    // computed — no main-thread getBoundingClientRect, no layout thrash.
+    // centre + whether it actually overlaps the viewport. rootMargin '100%' =
+    // "within one viewport above/below", so approaching cards are reported (and
+    // warmed) before they scroll in, while PLAY gates on true-viewport overlap
+    // (computed from the rect below) so a just-off-screen card never wins a
+    // decode slot. The rects come from the entry the browser already computed —
+    // no main-thread getBoundingClientRect, no layout thrash.
     const io = new IntersectionObserver(
       ([entry]) => {
         if (!entry) return
-        const rb = entry.rootBounds
-        const viewportCentre = rb
-          ? (rb.top + rb.bottom) / 2
-          : typeof window !== 'undefined'
-            ? window.innerHeight / 2
-            : 0
         const br = entry.boundingClientRect
-        const distance = Math.abs((br.top + br.bottom) / 2 - viewportCentre)
-        reg.update(distance, entry.isIntersecting)
+        // True viewport height (NOT the rootMargin-expanded root): the
+        // boundingClientRect is viewport-relative, so top=0 is the viewport top.
+        const vpH =
+          typeof window !== 'undefined' && window.innerHeight
+            ? window.innerHeight
+            : entry.rootBounds?.height ?? 0
+        const distance = Math.abs((br.top + br.bottom) / 2 - vpH / 2)
+        const visible = br.bottom > 0 && br.top < vpH
+        reg.update(distance, visible)
       },
-      { threshold: [0, 0.5, 1], rootMargin: '100% 0px' },
+      { threshold: [0, 0.25, 0.5, 0.75, 1], rootMargin: '100% 0px' },
     )
     io.observe(el)
     return () => {
