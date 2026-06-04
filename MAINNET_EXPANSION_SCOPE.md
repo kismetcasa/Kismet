@@ -1,7 +1,8 @@
 # Ethereum Mainnet Expansion — Full Scope
 
-> Status: **Phase 1 (foundation) landed; Base-default, mainnet flag-gated off.**
-> Author pass: 2026-06-04.
+> Status: **Phase 1 (foundation) landed — lean chain registry + parameterized
+> core libs, Base-default and byte-identical.** Mainnet is not yet exposed; the
+> enable flag and chain-aware callers land in Phase 2. Author pass: 2026-06-04.
 >
 > **Confirmed decisions** (see §6): mainnet minting is **user-paid / direct
 > on-chain** (no relay dependency); the Creator Pass gate is **Base-only**; Base
@@ -327,33 +328,47 @@ Then mechanical refactors:
 - [ ] **Decide gas economics** (see §0, §6): sponsor mainnet gas or go user-paid.
 
 ### Phase 1 — Foundation (Base default, zero behavior change) ✅ DONE
-- [x] Add `lib/chains.ts` (§4) — registry + `getChain` / `getChainOrDefault` /
-      `enabledChains` / explorer + RPC helpers + capability flags.
-- [x] Refactor `zoraMint`, `rpc`, `useEnsureBase`, `seaport`, `intent`,
-      `saleConfig`, `collections` to be chain-parameterized, defaulting to `8453`
+- [x] Add `lib/chains.ts` (§4) — the registry: per-chain `ChainConfig` data
+      (addresses, USDC, Seaport, explorer host, `label`) + capability flags
+      (`sponsoredMint`, `gated`, `factoryVerified`) + `getChain` /
+      `isSupportedChainId` / `publicRpcUrl` / `serverRpcUrl`. Both mainnet
+      addresses verified against `1.json` and EIP-55 checksum-validated.
+- [x] Refactor `zoraMint`, `rpc`, `useEnsureBase`, `seaport`, `saleConfig`,
+      `collections`, `wagmi` to be chain-parameterized, defaulting to `8453`
       (Base behavior byte-identical). Back-compat aliases kept: `USDC_BASE`,
       `ZORA_FIXED_PRICE_STRATEGY`, `ZORA_ERC20_MINTER`, `SEAPORT_DOMAIN`,
-      `KISMET_INTENT_DOMAIN`, `serverBaseClient`, `useEnsureBase`,
-      `FACTORY_ADDRESS`.
+      `serverBaseClient`, `useEnsureBase`, `FACTORY_ADDRESS`.
 - [x] `serverClient(chainId)` factory (per-chain cache); `serverBaseClient()`
       kept as the Base alias.
-- [x] Upgrade `lib/wagmi.ts` to drive RPC from the registry and give mainnet
+- [x] `lib/wagmi.ts` drives RPC from the registry and gives mainnet
       `batch: { multicall: true }`.
-- [x] Add `NEXT_PUBLIC_ENABLE_MAINNET` flag (default off) + document the mainnet
-      RPC graduating to protocol-grade.
 - [x] `npm run check` green (typecheck + lint + resource-hints + bundle) and a
-      full `npm run build`; **no UI exposes mainnet yet** (flag off, no caller
-      passes a non-Base chain).
+      full `npm run build`; **no UI exposes mainnet yet** (no caller passes a
+      non-Base chain).
 
-New chain-aware APIs now available for Phases 2–4: `fixedPriceStrategy(id)`,
-`erc20Minter(id)`, `usdcAddress(id)`, `buildEthMintCall({…, chainId})`,
-`buildUsdcMintCall({…, chainId})`, `fetchEligibleTokens(…, chainId)`,
-`readSalePricePerToken(…, chainId)`, `serverClient(id)`, `useEnsureChain()`,
-`seaportDomain(id)`, `intentDomain(id)`, `explorerTxUrl/TokenUrl/AddressUrl(id, …)`.
+**No-bloat discipline:** Phase 1 ships only what current code calls plus the
+registry spec data. Run-time logic for *later* phases was intentionally NOT
+added here — `enabledChains` / `isMainnetEnabled` + the `NEXT_PUBLIC_ENABLE_MAINNET`
+flag, the explorer URL builders, `getChainOrDefault`, and `intentDomain` all move
+to the phase that first consumes them (Phase 2 / Phase 4). The registry holds
+per-chain *facts*; consuming *logic* lives with its consumer.
+
+Chain-aware seams now live for Phases 2–4 (each defaults to Base): `getChain(id)`,
+`fixedPriceStrategy(id)`, `erc20Minter(id)`, `usdcAddress(id)`,
+`buildEthMintCall({…, chainId})`, `buildUsdcMintCall({…, chainId})`,
+`fetchEligibleTokens(…, chainId)`, `readSalePricePerToken(…, chainId)`,
+`serverClient(id)`, `useEnsureChain()`, `seaportDomain(id)`.
 
 ### Phase 2 — Read model multichain (show mainnet content)
+- [ ] Introduce the enablement + display helpers here (deferred from Phase 1, now
+      that they have consumers): `isMainnetEnabled()` + `enabledChains()` /
+      `enabledChainIds()` reading `NEXT_PUBLIC_ENABLE_MAINNET` (add the flag to
+      `.env.example`); `getChainOrDefault()` for tolerant render-path lookups; and
+      `explorerTxUrl` / `explorerTokenUrl` (+ `explorerAddressUrl` if a caller
+      needs it) for chain-correct links.
 - [ ] Replace every hardcoded `chain_id=8453` (§3.C) with the **moment's own
-      `chain_id`** for single-item reads.
+      `chain_id`** for single-item reads (use `String(getChain(id).chainId)` for
+      the In Process REST `chain_id` param).
 - [ ] Aggregate feeds (`timeline`/discover, `collections`, `featured`, `search`,
       profile) **fan out across `enabledChains()`** and merge by `created_at`.
       Decide: native multichain timeline (if In Process supports it) vs. N calls
@@ -479,26 +494,30 @@ Pick **one** mint model for mainnet (see §6 decision):
 
 ## 9. Appendix — canonical addresses to encode in `lib/chains.ts`
 
+All values below are EIP-55 checksum-validated and verified against In Process's
+`1.json` / `8453.json` (and Circle for USDC). ✅ = present in `lib/chains.ts`.
+
 ```
-Base (8453)
-  fixedPriceStrategy 0x2994762aA0E4C750c51f333C10d81961faEBE785
-  erc20Minter        0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014
-  factory            0x540C18B7f99b3b599c6FeB99964498931c211858   (docs / current)
-  usdc               0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-  seaport 1.5        0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC
-  multicall3         0xcA11bde05977b3631167028862bE2a173976CA11
-  explorer           https://basescan.org
+Base (8453)                                                           [in registry]
+  fixedPriceStrategy 0x2994762aA0E4C750c51f333C10d81961faEBE785       ✅
+  erc20Minter        0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014       ✅
+  factory            0x540C18B7f99b3b599c6FeB99964498931c211858       ✅ (docs / current)
+  usdc               0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913       ✅
+  seaport 1.5        0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC       ✅
+  explorer           https://basescan.org                            ✅
 
-Ethereum (1)
-  fixedPriceStrategy 0xe0d3febE1c17DDA1086e89B638Ab54955FE2eF8a
-  erc20Minter        0x0676b307D53EA7ED80b20643E1Ac57A78Ce12f87
-  factory            ⚠️ VERIFY — analog of 0x540C18B7… (NOT assumed = 1.json FACTORY_PROXY 0x2bf5…)
-  usdc               0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
-  seaport 1.5        0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC
-  multicall3         0xcA11bde05977b3631167028862bE2a173976CA11
-  explorer           https://etherscan.io
+Ethereum (1)                                                         [in registry]
+  fixedPriceStrategy 0xe0d3febE1c17DDA1086e89B638Ab54955FE2eF8a       ✅
+  erc20Minter        0x0676b307D53EA7ED80b20643E1Ac57A78Ce12f87       ✅
+  factory            0x2bf5EBEEb028D5F9E02F0F432Ebb1a192F5528F1       ✅ but factoryVerified=false
+                     ⚠️ = 1.json FACTORY_PROXY; NOT confirmed as the createContract
+                        entrypoint (Base's docs factory 0x540C… ≠ Base FACTORY_PROXY). Verify in Phase 0.
+  usdc               0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48       ✅
+  seaport 1.5        0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC       ✅
+  explorer           https://etherscan.io                            ✅
 
-Chain-agnostic (do NOT key by chain)
-  KISMET_REFERRAL    0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75   (treasury — confirm)
-  OPEN_EDITION_MINT_SIZE 18446744073709551615
+Chain-agnostic (NOT keyed by chain — kept as existing constants, not in the registry)
+  multicall3            0xcA11bde05977b3631167028862bE2a173976CA11   (lib/zoraMint.ts MULTICALL3_ADDRESS)
+  KISMET_REFERRAL       0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75   (lib/zoraMint.ts — treasury, confirm)
+  OPEN_EDITION_MINT_SIZE 18446744073709551615                        (lib/zoraMint.ts)
 ```

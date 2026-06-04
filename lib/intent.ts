@@ -1,5 +1,4 @@
 import { keccak256, toBytes } from 'viem'
-import { BASE_CHAIN_ID } from './chains'
 
 /**
  * Intent message format for per-action authorization, using EIP-712 typed
@@ -60,17 +59,6 @@ export const KISMET_INTENT_DOMAIN = {
   version: '1',
   chainId: 8453,
 } as const
-
-/**
- * Per-chain intent domain. Binds a mint/write intent to a specific chain so a
- * Base intent can't be replayed as a mainnet mint (the domain separator
- * differs by chainId). Defaults to Base, matching KISMET_INTENT_DOMAIN. Used by
- * the multichain mint path; client signer and server verifier must pass the
- * same target chainId.
- */
-export function intentDomain(chainId: number = BASE_CHAIN_ID) {
-  return { name: 'Kismet' as const, version: '1' as const, chainId }
-}
 
 /**
  * Type schema for a mint/write intent. Every economically-relevant field

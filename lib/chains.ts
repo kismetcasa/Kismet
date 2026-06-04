@@ -4,8 +4,7 @@ import type { Address, Chain } from 'viem'
 /**
  * Chain registry — the single source of truth for every chain-specific fact:
  * In Process / Zora protocol contract addresses, currency tokens, the
- * marketplace (Seaport) deployment, explorer hosts, RPC env resolution, and
- * the In Process REST `chain_id` selector.
+ * marketplace (Seaport) deployment, explorer hosts, and RPC env resolution.
  *
  * Everything that used to hardcode `8453`, `base`, a contract address, or
  * `basescan.org` should read from here instead. See MAINNET_EXPANSION_SCOPE.md.
@@ -56,13 +55,6 @@ export interface ChainConfig {
    *  domain `chainId` is what differs — see `seaportDomain`). */
   seaport: Address
 
-  // ── Shared deterministic infra (identical on every EVM chain) ──
-  multicall3: Address
-
-  // ── In Process REST ──
-  /** Value to pass as `chainId` / `chain_id` to api.inprocess.world. */
-  inprocessChainId: string
-
   // ── Capability flags (product decisions) ──
   /** Base: gasless relay. Mainnet: false (user-paid direct on-chain). */
   sponsoredMint: boolean
@@ -73,9 +65,8 @@ export interface ChainConfig {
   explorer: string
 }
 
-// Same on every chain (deterministic CREATE2 deployments).
+// Seaport 1.5 — same deterministic address on every chain.
 const SEAPORT_1_5: Address = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC'
-const MULTICALL3: Address = '0xcA11bde05977b3631167028862bE2a173976CA11'
 
 export const CHAINS: Record<SupportedChainId, ChainConfig> = {
   [BASE_CHAIN_ID]: {
@@ -88,8 +79,6 @@ export const CHAINS: Record<SupportedChainId, ChainConfig> = {
     factoryVerified: true,
     usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     seaport: SEAPORT_1_5,
-    multicall3: MULTICALL3,
-    inprocessChainId: String(BASE_CHAIN_ID),
     sponsoredMint: true,
     gated: true,
     explorer: 'https://basescan.org',
@@ -108,8 +97,6 @@ export const CHAINS: Record<SupportedChainId, ChainConfig> = {
     factoryVerified: false,
     usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     seaport: SEAPORT_1_5,
-    multicall3: MULTICALL3,
-    inprocessChainId: String(MAINNET_CHAIN_ID),
     sponsoredMint: false,
     gated: false,
     explorer: 'https://etherscan.io',
@@ -127,42 +114,6 @@ export function getChain(id: number): ChainConfig {
     throw new Error(`Unsupported chainId: ${id}`)
   }
   return CHAINS[id]
-}
-
-/** Tolerant lookup — falls back to the default chain. Use for display paths
- *  that may receive a stale/missing `chain_id` and should degrade gracefully
- *  rather than throw (explorer links, feed rendering). */
-export function getChainOrDefault(id: number | string | undefined | null): ChainConfig {
-  const n = typeof id === 'string' ? Number(id) : id
-  return isSupportedChainId(n ?? undefined) ? CHAINS[n as SupportedChainId] : CHAINS[DEFAULT_CHAIN_ID]
-}
-
-/** Mainnet ships behind a flag so the foundation can land dark. Default off. */
-export function isMainnetEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_ENABLE_MAINNET === 'true'
-}
-
-export function enabledChainIds(): SupportedChainId[] {
-  return isMainnetEnabled() ? [BASE_CHAIN_ID, MAINNET_CHAIN_ID] : [BASE_CHAIN_ID]
-}
-
-export function enabledChains(): ChainConfig[] {
-  return enabledChainIds().map((id) => CHAINS[id])
-}
-
-// ── Explorer URL builders ──────────────────────────────────────────────────
-
-export function explorerTxUrl(chainId: number, hash: string): string {
-  return `${getChainOrDefault(chainId).explorer}/tx/${hash}`
-}
-
-export function explorerTokenUrl(chainId: number, address: string, tokenId?: string): string {
-  const url = `${getChainOrDefault(chainId).explorer}/token/${address}`
-  return tokenId ? `${url}?a=${tokenId}` : url
-}
-
-export function explorerAddressUrl(chainId: number, address: string): string {
-  return `${getChainOrDefault(chainId).explorer}/address/${address}`
 }
 
 // ── RPC resolution ─────────────────────────────────────────────────────────
