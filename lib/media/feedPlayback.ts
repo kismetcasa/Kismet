@@ -1,40 +1,39 @@
 // Central coordinator for FEED (non-committed) inline video playback.
 //
-// Each mounted feed <video> registers here and reports its distance to the
-// viewport centre (read straight off its IntersectionObserver entry — no
-// main-thread layout). The coordinator ranks every registered video by that
+// Each mounted feed <video> registers here and reports, from its
+// IntersectionObserver, its distance to the viewport centre and whether it is
+// actually on screen. The coordinator ranks every registered video by that
 // distance and hands back two booleans per video:
 //
-//   • play   — may actively decode + present. Capped at MAX_CONCURRENT_PLAY
-//              (the iOS WebKit simultaneous-decoder budget) and suppressed
-//              entirely while the user is actively scrolling or while a
-//              committed/detail video owns the screen. The poster/thumbhash
-//              layer carries the visual in the meantime, so the feed never
-//              breaks on a fast flick — we simply don't spin up new decoders
-//              mid-scroll, then start the nearest few the instant it settles.
-//   • buffer — may warm its bytes + first frame ahead of time (preload=auto).
-//              The BUFFER_AHEAD nearest videos are warmed — including ones
-//              just off-screen — so the card you land on plays instantly
-//              instead of spinning up cold.
+//   • play   — the nearest ON-SCREEN videos play, capped at MAX_CONCURRENT_PLAY
+//              (the iOS WebKit simultaneous-decoder budget). Distance ranking
+//              makes this centre-biased — on a 2-col grid the centre row plays.
+//              Videos keep playing THROUGH a scroll and pause only when they
+//              leave the viewport: there is no blanket "pause during scroll",
+//              so the feed stays lively and a video is already playing when you
+//              land on it (Goal 3), while the cap bounds the iOS budget (Goal 2).
+//   • buffer — the BUFFER_AHEAD nearest videos warm their bytes + first frame
+//              (preload=auto), including ones just off-screen, so a video plays
+//              the instant it enters view.
 //
-// Crucially this only toggles play/pause/preload on elements the browser lays
-// out in-flow. Nothing is positioned or transformed, so it cannot reintroduce
-// the fixed-overlay "video parks over the wrong card / smears on momentum
-// scroll" bug class that the inline-video migration removed — that was a
-// *positioning* failure; this touches only *decode/buffer* state.
+// Play gates on TRUE-viewport overlap (computed by InlineVideo from the entry
+// rect), not the wide buffer rootMargin — so a just-off-screen card can be
+// warmed but never wins a decode slot.
 //
-// MAX_CONCURRENT_PLAY and BUFFER_AHEAD are deliberately small and are the two
-// knobs to tune on-device (the real iOS ceiling is empirical + device/version
-// dependent and not officially published).
+// Nothing here moves an element — only play/pause/preload toggle — so it can't
+// reintroduce the fixed-overlay positioning bug the inline migration removed.
+//
+// Deliberately NO per-video play-dwell and NO scroll-gate: a fast flick can
+// briefly cycle the capped (≤3) set of decoders. If on-device testing shows
+// that churn stutters, the cheapest fix is a short per-video play-dwell (start
+// a video only after it's been a play candidate for ~120ms) — strictly better
+// than a global scroll-gate because it never pauses an already-playing video.
+// Add it only if measured to be needed.
 
 import { committedActive, onCommittedChange } from './videoFocus'
 
 const MAX_CONCURRENT_PLAY = 3
 const BUFFER_AHEAD = 5
-// Quiet window after the last scroll tick before we treat the feed as settled
-// and let the nearest videos start. `scrollend` isn't reliable across the iOS
-// webview versions we target, so a short debounce is the portable signal.
-const SETTLE_MS = 140
 
 export interface FeedVideoSlot {
   /** May actively play (decode + present). */
@@ -46,14 +45,14 @@ export interface FeedVideoSlot {
 interface Reg {
   /** px from the element centre to the viewport centre; smaller = nearer. */
   distance: number
-  intersecting: boolean
+  /** Actually overlapping the true viewport (a play candidate). */
+  visible: boolean
   notify: (slot: FeedVideoSlot) => void
   last: FeedVideoSlot
 }
 
 const regs = new Map<number, Reg>()
 let nextId = 1
-let scrolling = false
 let rafQueued = false
 let installed = false
 
@@ -64,23 +63,23 @@ let installed = false
  * unmount.
  */
 export function registerFeedVideo(notify: (slot: FeedVideoSlot) => void): {
-  update: (distance: number, intersecting: boolean) => void
+  update: (distance: number, visible: boolean) => void
   release: () => void
 } {
   ensureInstalled()
   const id = nextId++
   regs.set(id, {
     distance: Number.POSITIVE_INFINITY,
-    intersecting: false,
+    visible: false,
     notify,
     last: { play: false, buffer: false },
   })
   return {
-    update(distance, intersecting) {
+    update(distance, visible) {
       const r = regs.get(id)
-      if (!r || (r.distance === distance && r.intersecting === intersecting)) return
+      if (!r || (r.distance === distance && r.visible === visible)) return
       r.distance = distance
-      r.intersecting = intersecting
+      r.visible = visible
       schedule()
     },
     release() {
@@ -90,7 +89,7 @@ export function registerFeedVideo(notify: (slot: FeedVideoSlot) => void): {
   }
 }
 
-// Coalesce bursts of IO callbacks / scroll ticks into one recompute per frame.
+// Coalesce bursts of IO callbacks into one recompute per frame.
 function schedule(): void {
   if (rafQueued || typeof window === 'undefined') return
   rafQueued = true
@@ -106,13 +105,16 @@ function recompute(): void {
   let playing = 0
   for (let i = 0; i < ranked.length; i++) {
     const r = ranked[i]
-    const canPlay =
-      !scrolling && !committed && r.intersecting && playing < MAX_CONCURRENT_PLAY
+    // The nearest on-screen videos play, capped — centre-biased by the ranking.
+    // No scroll-gate: a visible video keeps playing through a scroll.
+    const canPlay = !committed && r.visible && playing < MAX_CONCURRENT_PLAY
     if (canPlay) playing++
-    // A playing video is always also buffered; otherwise the BUFFER_AHEAD
-    // nearest videos warm regardless of whether they're on screen yet, so
-    // landing on the next row is instant.
-    const buffer = canPlay || i < BUFFER_AHEAD
+    // The nearest BUFFER_AHEAD videos stay in the "loaded" window; everything
+    // else is released by InlineVideo to free the iOS media-element budget
+    // (pausing alone does NOT free a decoder). When a committed/detail video is
+    // open the feed is hidden behind it, so drop the whole feed out of the
+    // window — releasing its decoders so the detail's fresh element loads now.
+    const buffer = !committed && (canPlay || i < BUFFER_AHEAD)
     if (canPlay !== r.last.play || buffer !== r.last.buffer) {
       r.last = { play: canPlay, buffer }
       r.notify(r.last)
@@ -123,24 +125,6 @@ function recompute(): void {
 function ensureInstalled(): void {
   if (installed || typeof window === 'undefined') return
   installed = true
-
-  let settleTimer: ReturnType<typeof setTimeout> | undefined
-  const settle = () => {
-    if (!scrolling) return
-    scrolling = false
-    schedule()
-  }
-  const onScroll = () => {
-    if (!scrolling) {
-      scrolling = true
-      schedule()
-    }
-    clearTimeout(settleTimer)
-    settleTimer = setTimeout(settle, SETTLE_MS)
-  }
-  // Passive + capture so we observe the document scroll and any nested
-  // scroller without ever blocking the scroll itself.
-  window.addEventListener('scroll', onScroll, { passive: true, capture: true })
   // A detail/lightbox video opening or closing changes who may play.
   onCommittedChange(schedule)
 }

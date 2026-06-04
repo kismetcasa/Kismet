@@ -14,6 +14,13 @@ import { LRUCache } from '@/lib/lruCache'
 // not by this flag.)
 const LONG_FORM_DURATION_THRESHOLD_S = 60
 
+// How long a feed video may sit OUTSIDE the loaded window before its media
+// element is released — dropping the source + load() to free the iOS decoder,
+// which pausing alone does NOT do. The delay is scroll hysteresis: a card that
+// briefly dips out of the window mid-scroll isn't torn down. A detail video
+// opening releases the feed immediately instead (it needs the budget now).
+const RELEASE_DELAY_MS = 500
+
 // Resume position by canonical src, session-scoped. Updated on timeupdate so a
 // detail opened over a still-playing card picks up where the card is, and so
 // the value survives the card unmounting (LazyMount recycling). The old pool
@@ -45,10 +52,11 @@ interface InlineVideoProps {
  *     resume position survives), seeded from the duration cache with no
  *     metadata round-trip
  *   - feed playback is governed centrally by lib/media/feedPlayback: only the
- *     nearest few cards play (capped for the iOS decoder budget) and they
- *     start once scrolling settles, while a buffer-ahead window warms upcoming
- *     videos (preload=auto) so landing on one is instant. Committed (detail)
- *     videos bypass the coordinator and play on mount.
+ *     nearest on-screen cards play (capped for the iOS decoder budget) and they
+ *     keep playing through a scroll, pausing only when they leave view, while a
+ *     buffer-ahead window warms upcoming videos (preload=auto) so landing on one
+ *     is instant. Committed (detail) videos bypass the coordinator and play on
+ *     mount.
  *   - gateway fallback walk on a <video> error
  *   - currentTime resume across surfaces
  *   - feed quiets while a committed (detail) video is open (videoFocus)
@@ -88,6 +96,12 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   // of this and always play.
   const slotRef = useRef<FeedVideoSlot>({ play: false, buffer: false })
   const [buffering, setBuffering] = useState(false)
+  // Released = media element unloaded to free its decoder. On iOS, pausing a
+  // <video> does NOT free the decoder — only unloading does — so a feed of
+  // paused-but-loaded videos exhausts the device's media-element budget and
+  // new / scrolled-back / detail videos then stall. Far feed videos release;
+  // the near (loaded-window) ones stay alive for instant resume.
+  const [released, setReleased] = useState(false)
 
   const tryPlay = () => {
     const el = ref.current
@@ -128,8 +142,8 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
 
     // Register with the central feed coordinator. It calls back with this
     // card's current {play, buffer} grant whenever the ranking changes
-    // (scroll start/stop, a sibling mounting/unmounting, a detail video
-    // opening). We translate that into preload (buffer) + play/pause (play).
+    // (a card moving in/out of view, a sibling mounting/unmounting, a detail
+    // video opening). We translate that into preload (buffer) + play/pause.
     // Nothing here moves the element, so it can't reintroduce the old
     // fixed-overlay positioning bug — only decode/buffer state changes.
     const reg = registerFeedVideo((slot) => {
@@ -139,24 +153,27 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     })
 
     // One IntersectionObserver reports this card's distance to the viewport
-    // centre + whether it's actually on screen. rootMargin '100%' = "within
-    // one viewport above/below", so cards are reported (and warmed) before
-    // they scroll in. The rects come from the entry the browser already
-    // computed — no main-thread getBoundingClientRect, no layout thrash.
+    // centre + whether it actually overlaps the viewport. rootMargin '100%' =
+    // "within one viewport above/below", so approaching cards are reported (and
+    // warmed) before they scroll in, while PLAY gates on true-viewport overlap
+    // (computed from the rect below) so a just-off-screen card never wins a
+    // decode slot. The rects come from the entry the browser already computed —
+    // no main-thread getBoundingClientRect, no layout thrash.
     const io = new IntersectionObserver(
       ([entry]) => {
         if (!entry) return
-        const rb = entry.rootBounds
-        const viewportCentre = rb
-          ? (rb.top + rb.bottom) / 2
-          : typeof window !== 'undefined'
-            ? window.innerHeight / 2
-            : 0
         const br = entry.boundingClientRect
-        const distance = Math.abs((br.top + br.bottom) / 2 - viewportCentre)
-        reg.update(distance, entry.isIntersecting)
+        // True viewport height (NOT the rootMargin-expanded root): the
+        // boundingClientRect is viewport-relative, so top=0 is the viewport top.
+        const vpH =
+          typeof window !== 'undefined' && window.innerHeight
+            ? window.innerHeight
+            : entry.rootBounds?.height ?? 0
+        const distance = Math.abs((br.top + br.bottom) / 2 - vpH / 2)
+        const visible = br.bottom > 0 && br.top < vpH
+        reg.update(distance, visible)
       },
-      { threshold: [0, 0.5, 1], rootMargin: '100% 0px' },
+      { threshold: [0, 0.25, 0.5, 0.75, 1], rootMargin: '100% 0px' },
     )
     io.observe(el)
     return () => {
@@ -167,6 +184,43 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     // would re-run this effect every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controls, src])
+
+  // Release / restore the media element to bound the device's decoder budget.
+  // When a feed video falls out of the loaded window (buffer=false), free its
+  // decoder after a short hysteresis delay — immediately if a detail video is
+  // waiting for budget. When it re-enters the window the source is restored and
+  // it reloads (warm from cache) + seeks to the saved position. Committed
+  // (detail) videos never release.
+  useEffect(() => {
+    if (controls) return
+    if (buffering) {
+      setReleased(false)
+      return
+    }
+    const t = setTimeout(
+      () => setReleased(true),
+      committedActive() ? 0 : RELEASE_DELAY_MS,
+    )
+    return () => clearTimeout(t)
+  }, [buffering, controls])
+
+  // Free the decoder once released: preserve the position, then load() to abort
+  // the resource (the render has already cleared the src attribute). The poster
+  // / thumbhash layer behind the video carries the visual while it's unloaded.
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !released) return
+    if (Number.isFinite(el.currentTime) && el.currentTime > 0) {
+      currentTimeMemory.set(src, el.currentTime)
+    }
+    try {
+      el.removeAttribute('src')
+      el.load()
+    } catch {
+      /* load can throw mid-state; ignore */
+    }
+    setLoaded(false)
+  }, [released, src])
 
   // Persist position on unmount (covers a card recycled by LazyMount before a
   // timeupdate fires). The element is stable for this src (keyed on it), so
@@ -221,13 +275,13 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     <video
       ref={ref}
       key={src}
-      src={gateways[gatewayIndex] ?? src}
+      src={released ? undefined : (gateways[gatewayIndex] ?? src)}
       className={className}
       muted
       loop={!isLongForm}
       playsInline
       controls={controls}
-      preload={controls || buffering ? 'auto' : 'metadata'}
+      preload={controls || buffering ? 'auto' : 'none'}
       // Fade in over the poster/thumbhash layer once the first frame is ready.
       style={{ opacity: loaded ? 1 : 0, transition: 'opacity 0.2s ease' }}
       onError={handleError}
