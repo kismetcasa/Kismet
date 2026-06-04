@@ -7,8 +7,11 @@ import { acquireCommitted, committedActive } from '@/lib/media/videoFocus'
 import { registerFeedVideo, type FeedVideoSlot } from '@/lib/media/feedPlayback'
 import { LRUCache } from '@/lib/lruCache'
 
-// Duration past which a video is treated as long-form: preload its body and
-// don't loop (so the resume position survives), matching the old pool.
+// Duration past which a video is treated as long-form: don't loop, so the
+// resume position survives a re-open. Seeded from the duration cache so the
+// decision is known at element-create time with no metadata round-trip.
+// (Preload is driven by the feed buffer window — see lib/media/feedPlayback —
+// not by this flag.)
 const LONG_FORM_DURATION_THRESHOLD_S = 60
 
 // Resume position by canonical src, session-scoped. Updated on timeupdate so a
@@ -37,11 +40,15 @@ interface InlineVideoProps {
  * iOS momentum scroll (the bug class the pool kept reintroducing), and the
  * per-card acquire/append/getBoundingClientRect work on mount disappears.
  *
- * Behaviour carried over from the pool:
- *   - autoplay muted loop inline for short clips; preload=auto + no loop for
- *     long-form (seeded from the duration cache, no metadata round-trip)
- *   - play on-screen / pause off-screen for feed cards (bounds active
- *     decoders); committed videos play on mount and aren't auto-paused
+ * Behaviour:
+ *   - muted inline playback; short clips loop, long-form doesn't (so the
+ *     resume position survives), seeded from the duration cache with no
+ *     metadata round-trip
+ *   - feed playback is governed centrally by lib/media/feedPlayback: only the
+ *     nearest few cards play (capped for the iOS decoder budget) and they
+ *     start once scrolling settles, while a buffer-ahead window warms upcoming
+ *     videos (preload=auto) so landing on one is instant. Committed (detail)
+ *     videos bypass the coordinator and play on mount.
  *   - gateway fallback walk on a <video> error
  *   - currentTime resume across surfaces
  *   - feed quiets while a committed (detail) video is open (videoFocus)
