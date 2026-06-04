@@ -521,3 +521,94 @@ Chain-agnostic (NOT keyed by chain — kept as existing constants, not in the re
   KISMET_REFERRAL       0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75   (lib/zoraMint.ts — treasury, confirm)
   OPEN_EDITION_MINT_SIZE 18446744073709551615                        (lib/zoraMint.ts)
 ```
+
+---
+
+## 10. Phase 2 — detailed implementation plan (read model → multichain)
+
+> Prepared 2026-06-04. Lands as **dark plumbing** (defaults to Base, zero visible
+> change) — same safety posture as Phase 1. Flag-gated by `NEXT_PUBLIC_ENABLE_MAINNET`.
+
+### 10.1 Dependency findings (In Process docs, verified)
+- `/timeline` accepts `collection`, **`chain_id`** (default 8453), `limit`, `page`,
+  `artist`, `hidden`, `type`. **One chain per call.**
+- `/collections` accepts `artist`, **`chain_id`** (default 8453), `limit`, `page`,
+  and **returns each collection's `chainId`** in the response. One chain per call.
+- **⚠️ Empirical check (do first, ~5 min):** the docs only document Base. Before
+  flipping the flag, confirm `GET /timeline?chain_id=1` and
+  `GET /collections?chain_id=1` actually return live mainnet data. If In Process's
+  read indexer isn't live on chain 1 yet, Phase 2 still lands safely (Base-default)
+  but mainnet feeds stay empty until it is.
+
+### 10.2 Core idea
+Every read hardcodes `chain_id=8453` (§3.C). A collection lives on exactly **one**
+chain; a moment inherits its collection's chain. So: resolve the chain from the
+item for single reads, and query each collection on **its own** chain in the
+fan-out. **The fan-out is NOT doubled** — each collection is still one call, just
+on the right chain. Only the per-artist profile merge adds one `/collections` call
+per enabled chain.
+
+### 10.3 Data model
+- Add `chainId?: number` to `CollectionMeta` (`lib/kv.ts`). On read, missing →
+  `8453` (legacy = Base), mirroring the `currency='eth'` legacy default in listings.
+- Add `getCollectionChainId(address): Promise<number>` (reads collection-meta,
+  defaults 8453, cached) — the address→chain resolver for moment/collection routes
+  that only have an address in the URL.
+- `/api/collections` POST accepts + validates (`isSupportedChainId`) + stores
+  `chainId`. Until Phase 4, every deploy is Base so this writes 8453; the plumbing
+  is then ready for Phase 4's mainnet deploys with no further read-model work.
+
+### 10.4 Where mainnet content comes from (Phase 2 ↔ Phase 4 coupling)
+Our tracked set is all-Base today, so nothing renders on mainnet until a mainnet
+collection enters it — which happens when a user deploys on mainnet (Phase 4,
+user-paid) or we manually register a known In Process mainnet collection to test.
+**Recommendation: land Phase 2 before Phase 4** so mainnet deploys render correctly
+from the first one. Test vector in the meantime: hand-register one mainnet In
+Process collection and flip the flag in a preview env.
+
+### 10.5 Helpers to (re)introduce here (deferred from Phase 1, now with consumers)
+`isMainnetEnabled()`, `enabledChainIds()`, `enabledChains()` (+ add
+`NEXT_PUBLIC_ENABLE_MAINNET` to `.env.example`); `getChainOrDefault()`;
+`explorerTxUrl()` / `explorerTokenUrl()` (+ `explorerAddressUrl()` only if a
+caller needs it).
+
+### 10.6 File-by-file (ordered)
+1. `lib/chains.ts` — add the §10.5 helpers.
+2. `lib/kv.ts` — `CollectionMeta.chainId`; `getCollectionChainId()`; persist
+   chainId in `addTrackedCollection`.
+3. `lib/registerCollection.ts` + `app/api/collections/route.ts` (POST) — carry +
+   validate + store `chainId`.
+4. `lib/inprocess.ts` — `fetchCollectionMoments(addr, { chainId })`; stop
+   hardcoding `'8453'`.
+5. `app/api/timeline/route.ts` — `fetchCollection(collection, limit, chainId)`;
+   resolve each collection's chain via `getCollectionMetaBatch` (default 8453)
+   before the fan-out.
+6. `lib/momentDetail.ts`, `app/api/moment/route.ts`, `app/api/moment/comments` —
+   resolve chain via `getCollectionChainId(address)` (already chainId-param'd).
+7. `app/api/collection/route.ts`, `app/collection/[address]/page.tsx` +
+   `opengraph-image.tsx` — resolve chain by address.
+8. `components/MomentCard.tsx`, `MomentDetailView.tsx`, `CollectionView.tsx` —
+   on-chain reads via `usePublicClient({ chainId: moment.chain_id })`; explorer
+   links via `explorerTxUrl/TokenUrl`.
+9. `app/api/featured/collections-hydrated`, `lib/coverMomentSynthesis.ts`,
+   `lib/collectionCache.ts`, `lib/search.ts` — thread chainId.
+10. `app/api/collections` GET `?artist` — merge In Process `/collections` across
+    `enabledChains()` (response carries each row's `chainId`) + the KV fallback.
+
+### 10.7 Out of scope for Phase 2 (stays Base until Phase 3)
+Server-side **write/verify** reads — collect receipt, distribute, listings royalty
++ fill, airdrop receipt — stay on `serverBaseClient()` (Base). Phase 2 is
+read-only display + feeds; Phase 3 chain-parameterizes those via
+`serverClient(chainId)`.
+
+### 10.8 Testing
+- Flag **off**: byte-identical to today (every default is 8453).
+- Flag **on** + one hand-registered mainnet collection: it appears in feeds, its
+  moments render, explorer links go to etherscan; collect/list still Base-only.
+- Empirical: `/timeline?chain_id=1` returns data.
+
+### 10.9 Risks
+- Moment-detail chain resolution adds a KV read per detail page → cache
+  `getCollectionChainId`; fallback for unknown addresses = try Base then mainnet
+  (≤2 upstream calls).
+- Fan-out latency unchanged (one call per collection, on its chain) — not doubled.
