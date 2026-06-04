@@ -1,10 +1,19 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAccount, useBalance, useReadContract, useSignMessage } from 'wagmi'
+import { useAccount, useBalance, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
+import { zeroAddress } from 'viem'
 import { toast } from 'sonner'
-import { BASE_CHAIN_ID } from '@/lib/chains'
+import { BASE_CHAIN_ID, getChain } from '@/lib/chains'
 import { ERC20_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI, usdcAddress } from '@/lib/zoraMint'
+import {
+  SPLIT_MAIN_ABI,
+  splitMainAddress,
+  reconstructSplitParams,
+  DISTRIBUTOR_FEE,
+} from '@/lib/splitMain'
+import { useEnsureChain } from '@/lib/useEnsureBase'
+import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { formatPrice } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
 import type { SplitRecipient } from '@/lib/splits'
@@ -70,6 +79,8 @@ interface SplitsState {
 export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isCreator, isAdmin, isPlatformAdmin, currency }: Options): SplitsState {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
+  const { writeContractAsync } = useWriteContract()
+  const ensureChain = useEnsureChain()
   const [hasSplits, setHasSplits] = useState(false)
   const [recipients, setRecipients] = useState<SplitRecipient[]>([])
   const [distributing, setDistributing] = useState(false)
@@ -136,16 +147,60 @@ export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isC
         )
 
   async function distribute(currency: CollectCurrency) {
-    // Mainnet distribute is deferred — display reads above are chain-aware so
-    // the pending balance is correct, but the sponsored relay distribution
-    // stays Base-only for now. Guard the action with a clear message.
-    if (chainId !== BASE_CHAIN_ID) {
-      toast.error('Distribution on Ethereum is coming soon')
-      return
-    }
     if (!splitAddress) { toast.error('Split address not found'); return }
     if (!connectedAddress) { toast.error('Wallet not connected'); return }
     const addr = splitAddress
+
+    // Non-sponsored chains (mainnet): user-paid 0xSplits-direct. Base keeps the
+    // sponsored relay below, byte-for-byte unchanged. 0xSplits distribute is
+    // permissionless — whoever clicks pays gas; funds still flow only to the
+    // fixed recipients.
+    if (!getChain(chainId).sponsoredMint) {
+      // Gated until SplitMain is confirmed on-chain for this chain (and we mint
+      // v1 splits there). Until then, preserve the prior "coming soon" UX.
+      if (!getChain(chainId).splitsVerified) {
+        toast.error('Distribution on Ethereum is coming soon')
+        return
+      }
+      if (recipients.length < 2) {
+        toast.error('Split recipients not loaded yet')
+        return
+      }
+      setDistributing(true)
+      try {
+        await ensureChain(chainId)
+        // Rebuild the exact params the split was created with (same helper used
+        // at mint) — SplitMain's hash check reverts on any mismatch.
+        const { accounts, percentAllocations } = reconstructSplitParams(recipients)
+        const hash =
+          currency === 'usdc'
+            ? await writeContractAsync({
+                chainId,
+                address: splitMainAddress(chainId),
+                abi: SPLIT_MAIN_ABI,
+                functionName: 'distributeERC20',
+                args: [addr, usdcAddress(chainId), accounts, percentAllocations, DISTRIBUTOR_FEE, zeroAddress],
+                dataSuffix: BUILDER_DATA_SUFFIX,
+              })
+            : await writeContractAsync({
+                chainId,
+                address: splitMainAddress(chainId),
+                abi: SPLIT_MAIN_ABI,
+                functionName: 'distributeETH',
+                args: [addr, accounts, percentAllocations, DISTRIBUTOR_FEE, zeroAddress],
+                dataSuffix: BUILDER_DATA_SUFFIX,
+              })
+        setDistributeHash(hash)
+        toast.success('Distributed!', { id: 'distribute' })
+      } catch (err) {
+        toastError('Distribution', err, { id: 'distribute' })
+      } finally {
+        setDistributing(false)
+      }
+      return
+    }
+
+    // Base: sponsored relay (unchanged).
     setDistributing(true)
     try {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)

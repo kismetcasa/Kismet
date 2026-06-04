@@ -55,6 +55,16 @@ export interface ChainConfig {
    *  domain `chainId` is what differs — see `seaportDomain`). */
   seaport: Address
 
+  // ── Splits (0xSplits v1 SplitMain) ──
+  /** 0xSplits v1 SplitMain singleton — same deterministic address on every
+   *  chain. Used ONLY on user-paid chains (we create + distribute the split
+   *  client-side and own its params). Base splits go through the In Process
+   *  relay and never touch this address. */
+  splitMain: Address
+  /** True once SplitMain is confirmed on-chain for this chain. Gates the
+   *  user-paid distribute path (`useMomentSplits`); Base is unaffected (relay). */
+  splitsVerified: boolean
+
   // ── Capability flags (product decisions) ──
   /** Base: gasless relay. Mainnet: false (user-paid direct on-chain). */
   sponsoredMint: boolean
@@ -68,6 +78,10 @@ export interface ChainConfig {
 // Seaport 1.5 — same deterministic address on every chain.
 const SEAPORT_1_5: Address = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC'
 
+// 0xSplits v1 SplitMain — same deterministic CREATE2 address on every chain
+// (Ethereum mainnet confirmed on etherscan; Base shares it). See lib/splitMain.ts.
+const SPLIT_MAIN_V1: Address = '0x2ed6c4B5DA6378c7897AC67Ba9e43102Feb694EE'
+
 export const CHAINS: Record<SupportedChainId, ChainConfig> = {
   [BASE_CHAIN_ID]: {
     chainId: BASE_CHAIN_ID,
@@ -79,6 +93,8 @@ export const CHAINS: Record<SupportedChainId, ChainConfig> = {
     factoryVerified: true,
     usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     seaport: SEAPORT_1_5,
+    splitMain: SPLIT_MAIN_V1,
+    splitsVerified: false, // Base uses the relay for distribute; flag unused here
     sponsoredMint: true,
     gated: true,
     explorer: 'https://basescan.org',
@@ -97,6 +113,11 @@ export const CHAINS: Record<SupportedChainId, ChainConfig> = {
     factoryVerified: false,
     usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     seaport: SEAPORT_1_5,
+    splitMain: SPLIT_MAIN_V1,
+    // ⚠️ false until SplitMain v1 is confirmed on-chain (mainnet is etherscan-
+    // verified; flip to true after confirming + that we create v1 splits). Gates
+    // the user-paid distribute path in useMomentSplits.
+    splitsVerified: false,
     sponsoredMint: false,
     gated: false,
     explorer: 'https://etherscan.io',
