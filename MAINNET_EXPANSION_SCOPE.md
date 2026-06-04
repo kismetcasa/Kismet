@@ -959,3 +959,50 @@ the moment (already wired). The chip drives the `sponsoredMint` branch + `ensure
 - Resolve `splitAddress` on mainnet from KV (we stored it) vs on-chain
   `getCreatorRewardRecipient` (only if we also set it). Recommend KV.
 - One recorder endpoint for image+text+mainnet, or extend `mint-proxy`?
+
+### 12.13 Documentation alignment (verified against In Process docs, 2026-06)
+Researched `github.com/sweetmantech/docs-in-process` (the hosted `docs.inprocess.world`
+is bot-blocked — the repo is the source of truth). The design is aligned;
+verifications and refinements below.
+
+**Confirmed**
+- **Create wires the split exactly as §12.5.1 plans.** `POST /api/moment/create`
+  (no API key, no signature) accepts a `splits[]` array (min 2, sum 100% — matches
+  `validateSplitsArray`) and, per the docs, "creates and deploys a splits contract,
+  automatically setting it as the payout recipient." Client-side mainnet reproduces
+  this one step: `createSplit` → set the split as `fundsRecipient`/payoutRecipient.
+- **The relay is Base-hardwired → Option A is impossible for mint.** `/moment/create`
+  takes **no `chainId`**; its response is fixed `chainId: 8453`. In Process *cannot*
+  mint on mainnet even if asked — so decision #1 (user-paid, Option B) is the only
+  path, a constraint not a preference. Same for the text variant
+  `/moment/create/writing` (confirmed to exist).
+- **createContract payload matches our `FACTORY_ABI`** (contractURI, name,
+  defaultRoyaltyConfiguration{royaltyMintSchedule,royaltyBPS,royaltyRecipient},
+  defaultAdmin, setupActions[]). In Process makes the *smart wallet* the
+  defaultAdmin+royaltyRecipient; Kismet makes the *user* defaultAdmin — our
+  divergence is intentional and is exactly what lets a mainnet creator self-mint
+  (§12.4) with no smart-wallet grant.
+- **`updateRoyaltiesForToken` is the royalty-recipient mechanism** (setup-actions
+  doc) — confirms §12.5.1 step 3 (point secondary royalties + creator rewards at the
+  split via this call). Documented setup order: setupNewToken → updateTokenURI →
+  updateRoyaltiesForToken → setSale; `addPermission` grants the strategy MINTER.
+- **Read API is multichain-shaped.** `/timeline?chain_id=` (default 8453) and
+  `/collection?chainId=` (default 8453) both return `chain_id` per item. Our code
+  already mirrors the docs' *inconsistent* casing (`/timeline`,`/collections` →
+  `chain_id`; `/collection` → `chainId`) — verified in-code, no bug.
+
+**Refinements**
+- **Distribute DOES take `chainId` (default 8453); create does not.** Unlike mint,
+  distribute has a *theoretical* relay path on mainnet (Option A) — but it'd be
+  sponsored (their gas) and In Process has no mainnet deployment, so Option B
+  (user-paid 0xSplits-direct, §12.7) stands.
+- **The docs never name 0xSplits / SplitMain / a version.** Blocker #3 cannot be
+  closed from docs — it requires inspecting one live Base split's bytecode on-chain.
+
+**External unknowns the docs CONFIRM are still open (gate the flag)**
+1. `protocol-deployments.mdx` lists **only Base + Base Sepolia** — no mainnet
+   factory. `factoryVerified=false` is correct; must ask In Process (blocker #1).
+2. The read API accepts `chain_id` but the docs **nowhere confirm chainId 1 is
+   indexed/live** — the §10.1 empirical `GET /timeline?chain_id=1` check is THE gate
+   (blocker #2).
+3. 0xSplits version unconfirmed by docs (blocker #3 — on-chain inspection).
