@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { wagmiConfig } from '@/lib/wagmi'
 import { AdminProvider } from '@/contexts/AdminContext'
 import { WalletConnectKeepalive } from '@/hooks/useWalletConnectKeepalive'
+import { BaseAppAutoConnect } from '@/hooks/useBaseAppAutoConnect'
 
 import '@rainbow-me/rainbowkit/styles.css'
 
@@ -18,6 +19,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <WagmiProvider config={wagmiConfig}>
       <WalletConnectKeepalive />
       <QueryClientProvider client={queryClient}>
+        {/* Must be inside QueryClientProvider — connect() is a react-query mutation. */}
+        <BaseAppAutoConnect />
         <RainbowKitProvider
           initialChain={base}
           theme={darkTheme({
