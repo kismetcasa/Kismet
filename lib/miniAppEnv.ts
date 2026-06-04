@@ -2,19 +2,22 @@
 // the FarcasterProvider bootstrap — no SDK, no async, safe to call on render.
 
 // True only inside the Base App's (or Coinbase Wallet's) *mobile in-app
-// browser*, by its WebView UA token ("CipherBrowser" is Coinbase's WebView
-// suffix; the Base App — renamed from Coinbase Wallet — kept the
-// "CoinbaseWallet" token). These inject a wallet that discovery can't surface,
-// reached via a plain injected() connector (see lib/wagmi.ts and
-// hooks/useBaseAppAutoConnect).
+// browser*, which injects a wallet that discovery can't surface (reached via a
+// plain injected() connector — see lib/wagmi.ts and hooks/useBaseAppAutoConnect).
 //
-// Deliberately UA-only — NOT the provider's isCoinbaseWallet flag, which the
-// desktop Coinbase *extension* also sets, where an on-load auto-connect would
-// pop an unsolicited prompt. The UA token appears only in the mobile WebView.
+// Primary signal: Coinbase's WebView UA token ("CipherBrowser"; the Base App,
+// renamed from Coinbase Wallet, kept "CoinbaseWallet"). Fallback: the injected
+// isCoinbaseWallet flag, gated to mobile — the desktop *extension* sets that
+// flag too, but extensions can't run on mobile, so (flag && mobile) still pins
+// the in-app browser (surviving a UA-token rename) while the desktop extension,
+// where an on-load auto-connect would pop an unsolicited prompt, never matches.
 export function isCoinbaseWebView(): boolean {
   if (typeof window === 'undefined') return false
   const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
-  return /CipherBrowser|CoinbaseWallet/i.test(ua)
+  if (/CipherBrowser|CoinbaseWallet/i.test(ua)) return true
+  const eth = (window as { ethereum?: { isCoinbaseWallet?: boolean } }).ethereum
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
+  return eth?.isCoinbaseWallet === true && isMobile
 }
 
 // True only for a *potential* Farcaster Mini App host: an embedded context
