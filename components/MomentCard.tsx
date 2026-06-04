@@ -412,25 +412,43 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             onAllError={() => setVideoError(true)}
           />
         ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
-          <MomentImage
-            src={media.src}
-            alt={meta.name ?? 'moment'}
-            fill
-            className="object-contain transition-transform duration-500 group-hover:scale-105"
-            onAllError={() => setImgError(true)}
-            // Compact mode packs cards 2-6 across (profile grids and the
-            // discover grid view). At ~16vw on desktop the feed-mode
-            // default (33vw) would have the browser fetch 2x larger
-            // images than rendered. Each branch is the actual width.
-            sizes={compact
-              ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
-              : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
-            // Force the gif mime so MomentImage skips the optimizer (which
-            // flattens animation) and streams the animated bytes via /api/img.
-            mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
-            thumbhash={meta.kismet_thumbhash}
-            priority={priority}
-          />
+          // Animated GIFs decode continuously on iOS (no pause) and pin memory
+          // even off-screen — a primary OOM-crash contributor. While a GIF card
+          // isn't settled in view, show the static thumbhash so scrolling /
+          // off-screen GIFs hold no decoder; the animated GIF remounts (warm
+          // from cache) when the card settles back. Static images are cheap
+          // (optimized, no animation) and aren't gated.
+          media.kind === 'gif' && !inView ? (
+            blurPreview ? (
+              <span
+                aria-hidden
+                className="absolute inset-0 bg-cover bg-center"
+                style={{ backgroundImage: `url(${blurPreview})` }}
+              />
+            ) : (
+              <span aria-hidden className="absolute inset-0 bg-accent/10 animate-pulse" />
+            )
+          ) : (
+            <MomentImage
+              src={media.src}
+              alt={meta.name ?? 'moment'}
+              fill
+              className="object-contain transition-transform duration-500 group-hover:scale-105"
+              onAllError={() => setImgError(true)}
+              // Compact mode packs cards 2-6 across (profile grids and the
+              // discover grid view). At ~16vw on desktop the feed-mode
+              // default (33vw) would have the browser fetch 2x larger
+              // images than rendered. Each branch is the actual width.
+              sizes={compact
+                ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
+                : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
+              // Force the gif mime so MomentImage skips the optimizer (which
+              // flattens animation) and streams the animated bytes via /api/img.
+              mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
+              thumbhash={meta.kismet_thumbhash}
+              priority={priority}
+            />
+          )
         ) : isTextMoment ? (
           <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-raised to-[#0a0a0a]">
             <span className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">writing</span>

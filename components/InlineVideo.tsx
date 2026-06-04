@@ -275,7 +275,12 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     <video
       ref={ref}
       key={src}
-      src={released ? undefined : (gateways[gatewayIndex] ?? src)}
+      // Detail (controls) videos append #t=0.001 so iOS paints the first frame
+      // during load — iOS never preloads otherwise, so the slot shows a black
+      // box until playback starts (worst for poster-less / thumbhash-less
+      // moments). Feed videos omit it (their poster layer covers them) to avoid
+      // forcing frame loads that fight the decoder budget.
+      src={released ? undefined : (gateways[gatewayIndex] ?? src) + (controls ? '#t=0.001' : '')}
       className={className}
       muted
       loop={!isLongForm}
