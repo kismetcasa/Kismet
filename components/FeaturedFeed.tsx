@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { Moment } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
+import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
 import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
@@ -33,6 +34,13 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   // returns, not when both endpoints have. null = pending, [] = empty.
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
+  // "Are we inside a Farcaster/Base host?" — the correct axis for the web-only
+  // hero, independent of the UA-based isMobile (which can't tell a desktop
+  // miniapp from desktop web, and misses the iOS RN-webview UA). Resolved
+  // client-side in an effect so it's immune to HTML caching; starts false so
+  // SSR/first render matches, then gates the hero off if we're embedded.
+  const [inMiniApp, setInMiniApp] = useState(false)
+  useEffect(() => { setInMiniApp(isPotentialMiniAppEnv()) }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -58,11 +66,15 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   }
 
   // The desktop hero (web-only) is the curated Mint Pass Display — one at a
-  // time. Render it from its ref (FeaturedMoment self-fetches) so it shows
-  // even when it isn't a standalone featured-timeline mint (e.g. a mint inside
-  // a featured collection). On mobile/miniapp there's no hero — the mint shows
-  // in the feed as a normal card / collection-row member instead.
-  const displayKey = !isMobile && mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
+  // time. Gated on three independent signals so it shows ONLY on desktop web:
+  //   • !inMiniApp  — never inside a Farcaster/Base host (any device size)
+  //   • !isMobile   — UA belt: skips the mount entirely on detected mobile
+  //   • FeaturedMoment's `hidden lg:flex` — CSS belt for narrow viewports
+  // Rendered from its ref (FeaturedMoment self-fetches) so it shows even for a
+  // mint inside a featured collection. On mobile/miniapp there's no hero — the
+  // mint shows in the feed as a normal card / collection-row member instead.
+  const displayKey =
+    !isMobile && !inMiniApp && mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
   const colon = displayKey ? displayKey.indexOf(':') : -1
   const hero = displayKey && colon > 0
     ? (
