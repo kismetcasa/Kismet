@@ -261,11 +261,16 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
       </article>
 
       {/* Below lg — the same mint as a normal feed card. `lg:hidden` keeps it
-          out of the desktop view, where the hero above takes over. This is the
-          mobile/miniapp experience: an ordinary MomentCard, unchanged. */}
+          out of the desktop view, where the hero takes over. Mirrors how
+          CollectionRow renders its mobile presentation: priority={false}, so
+          while this card is display:none on desktop it never fetches its image
+          (lazy + no layout box → never intersects), and at the top of the
+          mobile feed it still paints promptly off its thumbhash blur.
+          showCreator follows the resolved artist so the chip is dropped exactly
+          when the hero drops its @artist line — never a dead /profile/ link. */}
       {cardMoment && (
         <div className="lg:hidden">
-          <MomentCard moment={cardMoment} showCreator priority={priority} />
+          <MomentCard moment={cardMoment} showCreator={!!creatorAddress} priority={false} />
         </div>
       )}
     </>

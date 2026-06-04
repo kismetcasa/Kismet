@@ -33,10 +33,11 @@ interface AdminContextValue {
   startSession: () => Promise<void>
   featuredKeys: Set<string>
   featuredCollectionAddrs: Set<string>
-  // Mints promoted to a Mint Pass Display — rendered as the desktop hero in
-  // the featured tab. Keyed `<addr>:<tokenId>` (lowercase addr). A subset of
-  // featuredKeys (DISPLAY ⊆ FEATURED), so a display also shows as a normal
-  // featured card on mobile.
+  // Mints promoted to a Mint Pass Display — the curated showcase atop the
+  // featured tab. FeaturedMoment renders it as a rich hero on desktop and an
+  // ordinary card on mobile (CSS picks which by viewport). Keyed
+  // `<addr>:<tokenId>` (lowercase addr). A subset of featuredKeys
+  // (DISPLAY ⊆ FEATURED), so demoting it leaves it featured rather than gone.
   mintPassKeys: Set<string>
   // Bumped on every successful curation toggle (and ONLY then — not by the
   // initial /api/featured load). Lets the featured tab remount-to-refetch on

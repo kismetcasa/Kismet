@@ -79,10 +79,10 @@ export async function POST(req: NextRequest) {
   const member = `${collectionAddress.toLowerCase()}:${body.tokenId}`
   const now = Date.now()
 
-  // A Mint Pass Display is a featured mint with desktop-hero treatment: it
-  // lives in BOTH sets (DISPLAY ⊆ FEATURED). Keeping it in FEATURED_KEY means
-  // it still renders as a normal featured card in the grid on mobile/miniapp,
-  // where the hero layout isn't used — no separate mobile code path needed.
+  // A Mint Pass Display is a featured mint with showcase treatment: it lives in
+  // BOTH sets (DISPLAY ⊆ FEATURED). Keeping it in FEATURED_KEY means demoting it
+  // (zrem from DISPLAYS only, below) leaves it a normal featured card rather
+  // than making it vanish from the tab.
   if (body.type === 'momentDisplay') {
     await Promise.all([
       redis.zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: now, member }),
