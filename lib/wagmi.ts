@@ -4,6 +4,7 @@ import { base, mainnet } from 'wagmi/chains'
 import { connectorsForWallets, getDefaultWallets } from '@rainbow-me/rainbowkit'
 import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector'
 import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
+import { publicRpcUrl } from '@/lib/chains'
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
 
@@ -149,19 +150,16 @@ export const wagmiConfig = createConfig({
     ...rainbowKitConnectors,
   ],
   // `client` factory (not `transports`) because Multicall3 batching is
-  // a viem Client option, not an http transport option.
+  // a viem Client option, not an http transport option. Both supported chains
+  // get multicall batching: Base drives mints/collects, and mainnet now serves
+  // protocol reads (collect/list eligibility) in addition to ENS — viem's ENS
+  // actions are unaffected by batching. Per-chain RPC URL comes from the chain
+  // registry (NEXT_PUBLIC_*_RPC_URL).
   client({ chain }) {
-    if (chain.id === base.id) {
-      return createClient({
-        chain,
-        transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL, { batch: true }),
-        batch: { multicall: true },
-      })
-    }
-    // Mainnet is only used for client-side ENS resolution via useEnsName.
     return createClient({
       chain,
-      transport: http(process.env.NEXT_PUBLIC_MAINNET_RPC_URL),
+      transport: http(publicRpcUrl(chain.id), { batch: true }),
+      batch: { multicall: true },
     })
   },
   ssr: true,

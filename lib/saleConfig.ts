@@ -1,12 +1,13 @@
 import type { Address, Chain, Client, Transport } from 'viem'
 import { getBlock, multicall, readContract } from 'viem/actions'
 import {
-  USDC_BASE,
   ZORA_1155_TOKEN_INFO_ABI,
-  ZORA_ERC20_MINTER,
-  ZORA_FIXED_PRICE_STRATEGY,
+  erc20Minter,
+  fixedPriceStrategy,
   isOpenEdition,
+  usdcAddress,
 } from './zoraMint'
+import { BASE_CHAIN_ID } from './chains'
 
 // FixedPriceSaleStrategy.sale(target, tokenId) — the canonical view returning
 // the SalesConfig struct (see zora protocol-deployments). Tokens whose sale
@@ -93,10 +94,14 @@ export interface EligibleToken {
 
 export type SaleCurrency = 'eth' | 'usdc'
 
-const STRATEGY_BY_CURRENCY = {
-  eth: { address: ZORA_FIXED_PRICE_STRATEGY, abi: FPSS_SALE_ABI },
-  usdc: { address: ZORA_ERC20_MINTER, abi: ERC20_MINTER_SALE_ABI },
-} as const
+// Resolve the (address, abi) pair for a currency on a given chain. The
+// strategy addresses differ per chain (see lib/chains.ts), so this can't be a
+// static map — it's keyed by chainId at call time.
+function strategyFor(currency: SaleCurrency, chainId: number) {
+  return currency === 'eth'
+    ? { address: fixedPriceStrategy(chainId), abi: FPSS_SALE_ABI }
+    : { address: erc20Minter(chainId), abi: ERC20_MINTER_SALE_ABI }
+}
 
 // Generic over chain so callers can pass the wagmi-typed client (Base) or
 // a server-side createPublicClient without re-typing.
@@ -126,6 +131,7 @@ export async function fetchEligibleTokens(
   tokenIds: bigint[],
   currency: SaleCurrency,
   account?: Address,
+  chainId: number = BASE_CHAIN_ID,
 ): Promise<EligibleToken[]> {
   if (tokenIds.length === 0) return []
 
@@ -139,7 +145,7 @@ export async function fetchEligibleTokens(
   } catch {
     now = BigInt(Math.floor(Date.now() / 1000))
   }
-  const strategy = STRATEGY_BY_CURRENCY[currency]
+  const strategy = strategyFor(currency, chainId)
 
   // First pass: read sale config + token info for every candidate in one
   // multicall. Even-indexed slot is the sale read; odd is getTokenInfo.
@@ -185,7 +191,7 @@ export async function fetchEligibleTokens(
     // USDC (decimals + approve target). Skip exotic currencies cleanly.
     if (
       currency === 'usdc' &&
-      sale.currency?.toLowerCase() !== USDC_BASE.toLowerCase()
+      sale.currency?.toLowerCase() !== usdcAddress(chainId).toLowerCase()
     ) {
       continue
     }
@@ -255,8 +261,9 @@ export async function readSalePricePerToken(
   collection: Address,
   tokenId: bigint,
   currency: SaleCurrency,
+  chainId: number = BASE_CHAIN_ID,
 ): Promise<bigint | null> {
-  const strategy = STRATEGY_BY_CURRENCY[currency]
+  const strategy = strategyFor(currency, chainId)
   try {
     const sale = await readContract(client, {
       address: strategy.address,

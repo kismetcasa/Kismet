@@ -1,6 +1,11 @@
 # Ethereum Mainnet Expansion — Full Scope
 
-> Status: **Design / scope** (no code changed yet). Author pass: 2026-06-04.
+> Status: **Phase 1 (foundation) landed; Base-default, mainnet flag-gated off.**
+> Author pass: 2026-06-04.
+>
+> **Confirmed decisions** (see §6): mainnet minting is **user-paid / direct
+> on-chain** (no relay dependency); the Creator Pass gate is **Base-only**; Base
+> stays the default chain and mainnet ships behind `NEXT_PUBLIC_ENABLE_MAINNET`.
 > Goal: let users **deploy, mint, collect, list, and buy** on **Ethereum Mainnet
 > (chainId 1)** priced in **ETH or USDC**, now that In Process has deployed its
 > 1155 protocol to mainnet — without regressing the existing Base (8453) product.
@@ -321,17 +326,30 @@ Then mechanical refactors:
       `/moment`) return chain-1 data with `chain_id=1`.
 - [ ] **Decide gas economics** (see §0, §6): sponsor mainnet gas or go user-paid.
 
-### Phase 1 — Foundation (Base default, zero behavior change)
-- [ ] Add `lib/chains.ts` (§4).
-- [ ] Refactor `zoraMint`, `rpc`, `useEnsureBase`, `seaport`, `intent`,
-      `saleConfig` to be chain-parameterized, defaulting to `8453`.
-- [ ] `serverClient(chainId)` factory; migrate `serverBaseClient()` callers behind
-      the alias.
-- [ ] Upgrade `lib/wagmi.ts` mainnet transport to `batch: { multicall: true }`.
-- [ ] Add `NEXT_PUBLIC_ENABLE_MAINNET` flag (default off) + mainnet protocol RPC
-      env (`NEXT_PUBLIC_MAINNET_RPC_URL` / `MAINNET_RPC_URL` — note today these
-      are ENS-purposed and may be under-provisioned for protocol read volume).
-- [ ] CI/typecheck green; **no UI exposes mainnet yet.**
+### Phase 1 — Foundation (Base default, zero behavior change) ✅ DONE
+- [x] Add `lib/chains.ts` (§4) — registry + `getChain` / `getChainOrDefault` /
+      `enabledChains` / explorer + RPC helpers + capability flags.
+- [x] Refactor `zoraMint`, `rpc`, `useEnsureBase`, `seaport`, `intent`,
+      `saleConfig`, `collections` to be chain-parameterized, defaulting to `8453`
+      (Base behavior byte-identical). Back-compat aliases kept: `USDC_BASE`,
+      `ZORA_FIXED_PRICE_STRATEGY`, `ZORA_ERC20_MINTER`, `SEAPORT_DOMAIN`,
+      `KISMET_INTENT_DOMAIN`, `serverBaseClient`, `useEnsureBase`,
+      `FACTORY_ADDRESS`.
+- [x] `serverClient(chainId)` factory (per-chain cache); `serverBaseClient()`
+      kept as the Base alias.
+- [x] Upgrade `lib/wagmi.ts` to drive RPC from the registry and give mainnet
+      `batch: { multicall: true }`.
+- [x] Add `NEXT_PUBLIC_ENABLE_MAINNET` flag (default off) + document the mainnet
+      RPC graduating to protocol-grade.
+- [x] `npm run check` green (typecheck + lint + resource-hints + bundle) and a
+      full `npm run build`; **no UI exposes mainnet yet** (flag off, no caller
+      passes a non-Base chain).
+
+New chain-aware APIs now available for Phases 2–4: `fixedPriceStrategy(id)`,
+`erc20Minter(id)`, `usdcAddress(id)`, `buildEthMintCall({…, chainId})`,
+`buildUsdcMintCall({…, chainId})`, `fetchEligibleTokens(…, chainId)`,
+`readSalePricePerToken(…, chainId)`, `serverClient(id)`, `useEnsureChain()`,
+`seaportDomain(id)`, `intentDomain(id)`, `explorerTxUrl/TokenUrl/AddressUrl(id, …)`.
 
 ### Phase 2 — Read model multichain (show mainnet content)
 - [ ] Replace every hardcoded `chain_id=8453` (§3.C) with the **moment's own
@@ -398,26 +416,29 @@ Pick **one** mint model for mainnet (see §6 decision):
 
 ---
 
-## 6. Decisions required (with recommendations)
+## 6. Decisions (✅ = confirmed by the team)
 
 1. **Mainnet mint model — sponsored vs user-paid?**
-   *Recommend **user-paid (Option B)*** for mainnet. Sponsoring L1 gas for free/
-   cheap mints is a runaway cost and depends on unproven relay `chainId` support.
-   Keep Base sponsored (cheap, great UX).
+   ✅ **CONFIRMED: user-paid / direct on-chain** for mainnet (Option B). No
+   platform L1-gas exposure; no dependency on relay `chainId` support. Base stays
+   sponsored. Encoded as `CHAINS[1].sponsoredMint = false`.
 2. **Chain-selection UX — per-action selector vs global toggle?**
    *Recommend a **per-action selector*** (a chain chip in MintForm / Create, and
    inferred-from-the-moment for collect/buy/list). A global toggle invites
-   wrong-chain mistakes.
+   wrong-chain mistakes. *(Open — finalize before Phase 4 UI.)*
 3. **Curated Discover / `PLATFORM_COLLECTION` on mainnet?**
    *Recommend **creator-collections-only on mainnet at launch*** (no curated
    mainnet platform collection). Discover stays Base-curated; mainnet content
-   surfaces through profiles/collections/market. Revisit later.
-4. **Pass gate on mainnet?** *Recommend **Base-only Pass*** (Phase 5).
+   surfaces through profiles/collections/market. *(Open — revisit at Phase 2.)*
+4. **Pass gate on mainnet?** ✅ **CONFIRMED: Base-only Pass.** Encoded as
+   `CHAINS[1].gated = false`; the gate check stays Base-pinned (Phase 5).
 5. **Treasury recipients on mainnet** (`KISMET_REFERRAL`, `CREATE_REFERRAL`,
    `RESIDENCIES_ADDRESS`) — these are EOAs and work on any chain. *Recommend
    **reuse the same addresses***, but get explicit treasury sign-off (the
-   `zoraMint.ts` TREASURY-CRITICAL note applies per chain).
-6. **Default chain** — *Recommend **Base stays default***; mainnet is opt-in.
+   `zoraMint.ts` TREASURY-CRITICAL note applies per chain). *(Open — treasury
+   sign-off before Phase 4.)*
+6. **Default chain** — ✅ **CONFIRMED: Base stays default**; mainnet is opt-in
+   behind `NEXT_PUBLIC_ENABLE_MAINNET`.
 
 ---
 

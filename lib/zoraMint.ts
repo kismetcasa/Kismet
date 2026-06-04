@@ -7,6 +7,7 @@ import {
   type Hex,
   type PublicClient,
 } from 'viem'
+import { BASE_CHAIN_ID, getChain } from './chains'
 
 // Zora 1155 protocol — Base mainnet (chainId 8453).
 //
@@ -26,11 +27,28 @@ import {
 // ERC20_MINTER below is the canonical Zora ERC20Minter on Base (shared across
 // inprocess and Zora-native collections — Zora doesn't fork ERC20Minter the
 // way the FPSS deployment splits).
-export const ZORA_FIXED_PRICE_STRATEGY: Address = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
-export const ZORA_ERC20_MINTER: Address = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014'
+// Base-mainnet aliases, retained for back-compat with the many call sites that
+// import these names. The canonical values now live in the chain registry
+// (lib/chains.ts); the chain-keyed accessors below (fixedPriceStrategy /
+// erc20Minter / usdcAddress) are the forward-looking, multichain API.
+export const ZORA_FIXED_PRICE_STRATEGY: Address = getChain(BASE_CHAIN_ID).fixedPriceStrategy
+export const ZORA_ERC20_MINTER: Address = getChain(BASE_CHAIN_ID).erc20Minter
 
 // Native USDC on Base (Circle).
-export const USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+export const USDC_BASE: Address = getChain(BASE_CHAIN_ID).usdc
+
+/** Per-chain In Process FixedPriceSaleStrategy (ETH sales). */
+export function fixedPriceStrategy(chainId: number): Address {
+  return getChain(chainId).fixedPriceStrategy
+}
+/** Per-chain In Process / Zora ERC20Minter (USDC sales). */
+export function erc20Minter(chainId: number): Address {
+  return getChain(chainId).erc20Minter
+}
+/** Per-chain canonical USDC. */
+export function usdcAddress(chainId: number): Address {
+  return getChain(chainId).usdc
+}
 
 // Single recipient for ALL Kismet platform rewards: Zora's mint-referral split,
 // createReferral on collection deploy, etc. Hardcoded so we can't typo it
@@ -240,12 +258,14 @@ export function buildEthMintCall(params: {
   mintFee: bigint
   pricePerToken: bigint
   comment: string
+  /** Target chain. Defaults to Base so existing call sites are unchanged. */
+  chainId?: number
 }) {
   return {
     abi: ZORA_1155_MINT_ABI,
     functionName: 'mint',
     args: [
-      ZORA_FIXED_PRICE_STRATEGY,
+      fixedPriceStrategy(params.chainId ?? BASE_CHAIN_ID),
       params.tokenId,
       params.quantity,
       [KISMET_REFERRAL],
@@ -276,6 +296,8 @@ export function buildUsdcMintCall(params: {
   quantity: bigint
   pricePerToken: bigint
   comment: string
+  /** Target chain. Defaults to Base so existing call sites are unchanged. */
+  chainId?: number
 }) {
   return {
     abi: ZORA_ERC20_MINTER_ABI,
@@ -286,7 +308,7 @@ export function buildUsdcMintCall(params: {
       params.collection,
       params.tokenId,
       params.pricePerToken * params.quantity,
-      USDC_BASE,
+      usdcAddress(params.chainId ?? BASE_CHAIN_ID),
       KISMET_REFERRAL,
       params.comment,
     ],

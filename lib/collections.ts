@@ -1,7 +1,9 @@
 import { encodeFunctionData, type Address } from 'viem'
 import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
+import { BASE_CHAIN_ID, getChain } from './chains'
 
-// inprocess's Base Mainnet ZORA 1155 Contract Factory.
+// inprocess's Base Mainnet ZORA 1155 Contract Factory (the `createContract`
+// entrypoint). Canonical value lives in the chain registry (lib/chains.ts).
 // Source: https://github.com/sweetmantech/docs-in-process/blob/main/docs/pages/protocol-deployments.mdx
 // (Sepolia testnet uses 0x6832A997D8616707C7b68721D6E9332E77da7F6C — different
 // address; the testnet address has no code on Base mainnet, which is why every
@@ -9,7 +11,11 @@ import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
 // This is Zora's factory bytecode (verified on basescan), so our FACTORY_ABI
 // matches; using the inprocess-documented deployment ensures the resulting
 // collection is tracked by their indexer.
-export const FACTORY_ADDRESS = '0x540C18B7f99b3b599c6FeB99964498931c211858' as const
+//
+// MULTICHAIN NOTE: this is Base-only. The mainnet `createContract` factory is
+// NOT yet verified (getChain(1).factoryVerified === false) — do not point the
+// deploy path at mainnet until it is. See MAINNET_EXPANSION_SCOPE.md §1.3.
+export const FACTORY_ADDRESS: Address = getChain(BASE_CHAIN_ID).factory
 
 // Zora's Fixed Price Sale Strategy on Base mainnet — single source of truth
 // in lib/zoraMint.ts. Re-exported as a local const here so deploy + collect

@@ -5,10 +5,12 @@ import {
   type Address,
   type Hex,
 } from 'viem'
-import { USDC_BASE } from './zoraMint'
+import { usdcAddress } from './zoraMint'
+import { BASE_CHAIN_ID, getChain } from './chains'
 
-// Seaport 1.5 — deployed on Base mainnet
-export const SEAPORT_ADDRESS = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC' as const
+// Seaport 1.5 — same deterministic address on Base and Ethereum mainnet. The
+// per-chain difference is the EIP-712 domain's chainId (see seaportDomain).
+export const SEAPORT_ADDRESS: Address = getChain(BASE_CHAIN_ID).seaport
 
 const ItemType = {
   NATIVE: 0,
@@ -88,12 +90,19 @@ export interface SerializedOrderComponents {
 
 // ─── EIP-712 ────────────────────────────────────────────────────────────────
 
-export const SEAPORT_DOMAIN = {
-  name: 'Seaport' as const,
-  version: '1.5' as const,
-  chainId: 8453,
-  verifyingContract: SEAPORT_ADDRESS,
+// Per-chain Seaport EIP-712 domain. The chainId binds an order to one chain —
+// a Base listing signature can't be replayed to fill on mainnet and vice versa.
+export function seaportDomain(chainId: number = BASE_CHAIN_ID) {
+  return {
+    name: 'Seaport' as const,
+    version: '1.5' as const,
+    chainId,
+    verifyingContract: SEAPORT_ADDRESS,
+  }
 }
+
+// Back-compat — the Base Seaport domain. Prefer seaportDomain(listing.chainId).
+export const SEAPORT_DOMAIN = seaportDomain(BASE_CHAIN_ID)
 
 export const SEAPORT_ORDER_TYPES = {
   OrderComponents: [
@@ -315,6 +324,7 @@ export function buildSellOrder({
   royaltyAmount,
   counter,
   currency = 'eth',
+  chainId = BASE_CHAIN_ID,
 }: {
   offerer: Address
   collectionAddress: Address
@@ -324,17 +334,19 @@ export function buildSellOrder({
   royaltyAmount: bigint
   counter: bigint
   currency?: 'eth' | 'usdc'
+  /** Target chain for USDC token resolution. Defaults to Base. */
+  chainId?: number
 }): OrderComponents {
   const now = BigInt(Math.floor(Date.now() / 1000))
 
   // Consideration items declare WHAT the buyer pays. ETH listings use NATIVE
   // (token = 0x0, value sent with fulfillOrder). USDC listings use ERC20
-  // (token = USDC_BASE, no value; Seaport pulls USDC via transferFrom after
-  // the buyer approves it). The signed order hash includes these items, so
-  // an ETH order can never be filled with USDC and vice versa.
+  // (token = the chain's USDC, no value; Seaport pulls USDC via transferFrom
+  // after the buyer approves it). The signed order hash includes these items,
+  // so an ETH order can never be filled with USDC and vice versa.
   const isUsdc = currency === 'usdc'
   const considerationItemType = isUsdc ? ItemType.ERC20 : ItemType.NATIVE
-  const considerationToken: Address = isUsdc ? USDC_BASE : ZERO_ADDRESS
+  const considerationToken: Address = isUsdc ? usdcAddress(chainId) : ZERO_ADDRESS
 
   const consideration: ConsiderationItem[] = [
     {

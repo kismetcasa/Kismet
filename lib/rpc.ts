@@ -1,32 +1,44 @@
 import { createPublicClient, http } from 'viem'
-import { base } from 'viem/chains'
+import {
+  BASE_CHAIN_ID,
+  DEFAULT_CHAIN_ID,
+  getChain,
+  serverRpcUrl,
+  type ChainConfig,
+  type SupportedChainId,
+} from './chains'
 
-// Prefers a server-only BASE_RPC_URL, falling back to NEXT_PUBLIC_BASE_RPC_URL
-// (the same env var the wagmi config reads on the client) so server-side reads
-// use a configured paid RPC instead of Base's public endpoint. Falls through
-// to undefined/public when both are unset —
-// transport: http() with no URL hits mainnet.base.org which rate-limits
-// aggressively under load and surfaces as "over rate limit" errors in
-// the airdrop authorize precheck and similar paths.
+// Server-side public client, one per chain. Prefers a server-only RPC URL
+// (BASE_RPC_URL / MAINNET_RPC_URL), falling back to the NEXT_PUBLIC_ one so
+// server reads use a configured paid endpoint instead of the public node
+// (which rate-limits aggressively under load). See lib/chains.ts serverRpcUrl.
 //
-// Cached at module scope: viem's client is stateless and undici already
-// keeps sockets alive across `fetch()` calls, so re-creating the client
-// per request was pure allocation overhead.
-function createClient() {
+// Clients are cached per chain at module scope: viem's client is stateless and
+// undici keeps sockets alive across fetch() calls, so re-creating per request
+// is pure allocation overhead.
+function createClient(cfg: ChainConfig) {
   return createPublicClient({
-    chain: base,
-    // Prefer a server-only key (BASE_RPC_URL) for server-side reads so the
-    // paid endpoint isn't the NEXT_PUBLIC_ one inlined into the client bundle.
-    // Falls back to the public var when unset (current behavior → non-breaking).
-    // Mirrors MAINNET_RPC_URL's server-only pattern for ENS in /api/profile.
-    transport: http(process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL),
+    chain: cfg.chain,
+    transport: http(serverRpcUrl(cfg.chainId)),
   })
 }
 
-let cached: ReturnType<typeof createClient> | undefined
+const cache = new Map<SupportedChainId, ReturnType<typeof createClient>>()
 
-export function serverBaseClient() {
+/** Server public client for `chainId` (defaults to Base). Throws on an
+ *  unsupported chain so a bad id surfaces immediately rather than reading the
+ *  wrong network. */
+export function serverClient(chainId: number = DEFAULT_CHAIN_ID) {
+  const cfg = getChain(chainId)
+  const cached = cache.get(cfg.chainId)
   if (cached) return cached
-  cached = createClient()
-  return cached
+  const client = createClient(cfg)
+  cache.set(cfg.chainId, client)
+  return client
+}
+
+/** Back-compat alias — the Base server client. Prefer `serverClient(chainId)`
+ *  in new code so the read targets the moment's / collection's actual chain. */
+export function serverBaseClient() {
+  return serverClient(BASE_CHAIN_ID)
 }
