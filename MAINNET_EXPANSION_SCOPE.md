@@ -495,11 +495,13 @@ Pick **one** mint model for mainnet (see §6 decision):
    sign-off before Phase 4.)*
 6. **Default chain** — ✅ **CONFIRMED: Base stays default**; mainnet is opt-in
    behind `NEXT_PUBLIC_ENABLE_MAINNET`.
-7. **Distribute on mainnet** — ✅ **CONFIRMED: defer.** Distribute stays Base-only
-   for Phase 3 (split-balance display reads are chain-aware; the action +
-   `/api/distribute` relay stay Base). `useMomentSplits.distribute()` guards
-   non-Base with a "coming soon" message. Revisit as a fast-follow via either the
-   In Process relay (if it supports mainnet) or a user-paid 0xSplits-direct call.
+7. **Distribute on mainnet** — ✅ **CONFIRMED: user-paid 0xSplits-direct**
+   (Option B), designed in §12.7. Base distribute stays relayed/sponsored
+   (unchanged). Mainnet calls `SplitMain.distributeETH/ERC20` from the user's
+   wallet (permissionless); allocation params are recovered deterministically
+   from the stored recipients because we create the split client-side (§12.5.1),
+   so there is no param-recovery problem on mainnet. Ships incrementally — the
+   Phase 3 "coming soon" guard becomes the `sponsoredMint` branch.
 
 ---
 
@@ -566,6 +568,12 @@ Chain-agnostic (NOT keyed by chain — kept as existing constants, not in the re
   multicall3            0xcA11bde05977b3631167028862bE2a173976CA11   (lib/zoraMint.ts MULTICALL3_ADDRESS)
   KISMET_REFERRAL       0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75   (lib/zoraMint.ts — treasury, confirm)
   OPEN_EDITION_MINT_SIZE 18446744073709551615                        (lib/zoraMint.ts)
+
+0xSplits v1 (for user-paid mainnet split create + distribute — Phase 4 §12)
+  SplitMain  0x2ed6c4B5DA6378c7897AC67Ba9e43102Feb694EE   same deterministic addr on Base + mainnet
+             ⚠️ mainnet confirmed (etherscan); verify Base deployment + that In Process uses v1
+                by inspecting one existing Base split's bytecode. Add to the registry per-chain
+                with a `splitsVerified` gate (mirrors factory/factoryVerified). distributorFee = 0.
 ```
 
 ---
@@ -775,3 +783,179 @@ read shim.
 - Mainnet gas is user-paid (expected) but higher — surface it in the UX
   (collect/airdrop confirm copy).
 - Per-chain `serverClient` RPC quota on mainnet (provision a real key).
+
+---
+
+## 12. Phase 4 — detailed plan (user-paid mainnet: deploy, mint, splits, distribute)
+
+> **Principle (same posture as Phases 1–3):** Base is untouched — every relayed
+> Base flow stays exactly as-is. Each change is *additive* or branches once on
+> `getChain(chainId).sponsoredMint` (Base `true` → relay; mainnet `false` →
+> client-side, user-paid). Flag-gated by `NEXT_PUBLIC_ENABLE_MAINNET`.
+> **Started:** `hooks/useClientMint.ts` + `buildMomentMintActions()`
+> (`lib/collections.ts`) — the client mint engine (ETH/FixedPrice), defaults to
+> Base, nothing wired in yet.
+
+### 12.1 Every mainnet action, by status
+| Action | Base (unchanged) | Mainnet today | Mainnet plan |
+|---|---|---|---|
+| collect / collect-all | user-paid | ✅ done (Ph3) | — |
+| list / buy / cancel | user-paid | ✅ done (Ph3) | — |
+| airdrop / grant | user-paid | ✅ done (Ph3) | — |
+| **deploy** | user-paid | blocked | verify factory (§1.3) + chain selector — §12.4 |
+| **mint (image)** | relay | — | `useClientMint` + split-create + USDC + record — §12.5 |
+| **write (text)** | relay | — | same engine, text URI — §12.5 |
+| **update-URI** | relay | — | direct `updateTokenURI` — §12.6 |
+| **create split** | In Process | — | client `SplitMain.createSplit` — §12.5.1 |
+| **distribute** | relay | "coming soon" | client `SplitMain.distributeETH/ERC20` — §12.7 |
+| **withdraw split** | relay (implicit) | — | client `SplitMain.withdraw` — §12.7 |
+
+Six of nine flows already run on mainnet (Phase 3). The remaining four — deploy,
+mint/write, update-URI, distribute/withdraw — are the user-paid build, all
+client-side direct-to-chain (no relay).
+
+### 12.2 The branch (one conditional per sponsored flow)
+`sponsoredMint` already encodes the decision. At each relayed call site:
+```
+if (getChain(chainId).sponsoredMint) {   // Base
+  await fetch('/api/mint', …)             // existing relay — untouched
+} else {                                  // mainnet
+  await clientMint(…)                      // useClientMint
+}
+```
+Same shape for write / update-URI / distribute. Base path byte-for-byte unchanged.
+
+### 12.3 Registry additions (`lib/chains.ts`)
+Add the 0xSplits singleton + a verified gate, mirroring `factory`/`factoryVerified`:
+```
+splitMain:      '0x2ed6c4B5DA6378c7897AC67Ba9e43102Feb694EE'  // v1, same on both chains
+splitsVerified: boolean   // false until confirmed on-chain (§12.10)
+```
+- 0xSplits **v1 `SplitMain`** is the same deterministic address on Base + mainnet
+  (mainnet confirmed on etherscan). Verify the Base deployment **and** that
+  In Process uses v1 by inspecting one existing Base split's bytecode (§12.10).
+- `DISTRIBUTOR_FEE = 0` (chain-agnostic const) — In Process creates fee-less
+  splits; matching keeps allocations exactly `pct × 10_000` (§12.7).
+
+### 12.4 Deploy (`CreateCollectionForm`) — blocked on §1.3
+- Chain selector → deploy via `getChain(id).factory`; `ensureChain`; explorer on
+  the chosen chain. Code is small; **gated on `factoryVerified` flipping true** —
+  the mainnet `createContract` entrypoint is still unconfirmed (§1.3).
+- **Simpler than Base:** *skip* the operator-smart-wallet ADMIN grant — there is
+  no relay to authorize on mainnet. The deployer is `defaultAdmin`, which is
+  exactly the authority `setupNewToken` needs for the client mint (§12.5). A
+  self-deployed mainnet collection is mintable by its creator with no extra grant.
+- Deploy is the **prerequisite** for mainnet mint: until it ships there are no
+  In-Process-style mainnet collections to mint into.
+
+### 12.5 Mint (image) + Write (text) — `useClientMint`
+Engine landed: `buildMomentMintActions` → `multicall([assumeLastTokenId,
+setupNewToken, addPermission(MINTER→strategy), setSale, adminMint])`, user-paid.
+What the relay did for free that the client path must reproduce:
+
+**12.5.1 Create the split — the one genuinely new on-chain step.**
+On Base, In Process creates the 0xSplits split and wires it as the payout. On
+mainnet, before the mint multicall:
+1. `validateSplitsArray` (existing) → sorted `accounts[]`, integer `pct[]`
+   summing to 100.
+2. `SplitMain.createSplit(accounts, pct.map(p => p*10_000), 0 /*fee*/,
+   0x0 /*controller = immutable*/)` from the user's wallet → `splitAddr`.
+   (`pct × 10_000` is exact: 100 × 10 000 = 1e6 = `PERCENTAGE_SCALE`, no remainder.)
+3. Pass `splitAddr` as `fundsRecipient` in the mint's `setSale` (sale proceeds →
+   split). To mirror Base fully (creator-reward + secondary royalties → split),
+   also append `updateRoyaltiesForToken(tokenId, {recipient: splitAddr, …})` to
+   the multicall — optional for MVP (primary sale proceeds are the bulk).
+4. **Payoff:** because *we* created it with these exact params, distribute (§12.7)
+   needs no param recovery — it is deterministic from the stored recipients.
+   0/1-recipient moments skip the split: `fundsRecipient = creator`.
+
+**12.5.2 USDC path.** `buildMomentMintActions` is ETH/FixedPrice. USDC needs the
+`ERC20Minter.setSale(tokenId, {…, currency: usdc, pricePerToken})` write encoding
+(we have only the *read* ABI in `lib/saleConfig.ts`). Add the fragment + a
+currency branch in the builder. The collect side already does USDC on both chains.
+
+**12.5.3 Recording / indexing.** The relay records moment-meta, registers the
+collection, and In Process indexes it. Client-side mainnet must do the first two
+itself — a new `POST /api/mint/record` (or an extended recorder) that, after the
+multicall receipt, writes:
+- `setStoredSplits(collection, tokenId, recipients)` + `splitAddr` + `chainId`
+  (extend `lib/splits.ts` value shape *additively* — distribute reads it back).
+- `moment-meta` (creator EOA, name, price, currency, chainId) — the same KV the
+  distribute + notification paths already read.
+- `POST /api/collections` (Phase 2) to register the collection as tracked on
+  chain 1 so the read model queries it.
+- Feed visibility still depends on **In Process indexing chain 1** (§12.10 / §10.1).
+
+**12.5.4 Gates.** `mint-proxy` gates are bypassed when the relay is skipped:
+- **Intent / EIP-712:** *unneeded* on mainnet — the user signs the real tx, which
+  *is* the auth. The `KISMET_INTENT_DOMAIN` chain-pinning issue disappears.
+- **Pass:** Base-only by decision #4 — N/A.
+- **Blacklist / pause / quota:** these protect *sponsored* gas. On user-paid
+  mainnet the minter pays their own gas, so the abuse calculus differs. We
+  **cannot** block a permissionless on-chain mint, but we **can** refuse to
+  index/surface it — enforce blacklist + pause at `/api/mint/record`. Honest
+  limitation: mainnet moderation is index-level, not chain-level (§12.9).
+
+### 12.6 Update token URI — client-side
+`PATCH /moment` relay → direct `updateTokenURI(tokenId, newURI)` on the collection
+(caller holds ADMIN). Small new hook; low priority (metadata edits are rare).
+
+### 12.7 Distribute + withdraw — client-side (`useMomentSplits`)
+Display reads are already chain-aware. Replace the `chainId !== BASE_CHAIN_ID`
+"coming soon" guard (`useMomentSplits.ts:142`) with a `sponsoredMint` branch:
+- **Base:** existing signed `POST /api/distribute` relay — untouched.
+- **Mainnet (user-paid):**
+  1. `ensureChain(chainId)`.
+  2. Recover params from stored recipients: `accounts = sorted addresses`,
+     `allocations = pct × 10_000`, `distributorFee = 0` (deterministic, §12.5.1).
+  3. `SplitMain.distributeETH(split, accounts, allocations, 0, distributorAddr)`
+     for ETH; `distributeERC20(split, usdc, accounts, allocations, 0,
+     distributorAddr)` for USDC. **Permissionless** — whoever clicks (recipient /
+     creator / admin) pays the gas; funds still flow only to the fixed recipients.
+- **Withdraw (the second hop):** `distributeETH` moves funds from the split clone
+  into each recipient's *internal* SplitMain balance; recipients pull to their
+  wallet via `SplitMain.withdraw(account, withdrawETH=1, [usdc?])`. On Base this is
+  cheap/relayed; on mainnet each recipient pays their own withdraw. Surface a
+  per-recipient "Withdraw" action (read `getETHBalance`/`getERC20Balance(account)`
+  on SplitMain for what's claimable).
+- **Base splits stay on the relay**, so no param recovery for In-Process-created
+  splits is ever needed (their scaling/fee is theirs, not ours).
+
+### 12.8 Chain-selector UX (decision #2)
+Per-action chip in `MintForm` / `CreateCollectionForm` (not a global toggle —
+avoids wrong-chain mints). Collect / buy / list / distribute infer the chain from
+the moment (already wired). The chip drives the `sponsoredMint` branch + `ensureChain`.
+
+### 12.9 Moderation on user-paid mainnet
+- We can't prevent a permissionless mint; moderation is **index-level** (refuse to
+  track/surface). Acceptable: an un-indexed mainnet moment is invisible in-app.
+- No platform gas to bound → drop the quota on the mainnet path; keep
+  blacklist/pause at the recorder.
+- Treasury EOAs (`KISMET_REFERRAL` / `CREATE_REFERRAL`) work on any chain — passed
+  client-side as today; treasury sign-off (#5) still applies.
+
+### 12.10 Phase 0 blockers (confirm before flipping the flag)
+1. **Mainnet `createContract` factory** (§1.3) — gates deploy → gates everything.
+2. **In Process indexes chain 1** (§10.1) — gates feed visibility.
+3. **0xSplits version + Base address** — confirm In Process uses v1 `SplitMain`
+   and that `0x2ed6…694EE` is the Base deployment (inspect one Base split's code).
+   Flips `splitsVerified`.
+4. **EIP-1271 / listings** (§11.5) — undeployed smart-wallet sellers on mainnet.
+5. **(Optional) In Process mainnet relay/paymaster roadmap** — if yes, sponsored
+   mainnet becomes free later (Option A) with no rework.
+
+### 12.11 Testing
+- Flag off: byte-identical (every default Base; nothing calls the client mint).
+- Flag on + verified mainnet collection: deploy → mint (ETH + USDC, with + without
+  splits) → collect → distribute → withdraw, all on chain 1, user-paid; the split
+  created client-side distributes with no relay; KV-stored recipients reconstruct
+  the exact on-chain allocations.
+- Base unchanged: mint/distribute still relay; a Base split still distributes via
+  In Process.
+
+### 12.12 Open questions
+- Creator-reward/royalty recipient → split on mainnet (full Base parity) vs
+  sale-proceeds-only for MVP? (§12.5.1 step 3.)
+- Resolve `splitAddress` on mainnet from KV (we stored it) vs on-chain
+  `getCreatorRewardRecipient` (only if we also set it). Recommend KV.
+- One recorder endpoint for image+text+mainnet, or extend `mint-proxy`?
