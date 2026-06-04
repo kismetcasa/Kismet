@@ -324,12 +324,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   )
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   // Seed the duration cache for InlineVideo to read before it mounts.
-  // Idempotent (Map.set
-  // with same value) so re-renders are free. Skipped for non-video and
-  // for moments without the server-stitched kismet_duration_sec field
-  // (older mints predating the durationSec write at /api/collections POST).
-  if (isVideo && meta.animation_url && moment.kismet_duration_sec) {
-    setVideoDuration(resolveUri(meta.animation_url), moment.kismet_duration_sec)
+  // CRITICAL: key on media.src — the exact raw ar://|ipfs:// URI that
+  // InlineVideo reads back with (getVideoDuration(src)). The old key
+  // resolveUri(meta.animation_url) produced the resolved https gateway
+  // URL, which never matched media.src, so isLongForm was permanently
+  // false and long-form videos were stuck on preload="metadata" + loop
+  // (the resume-position-survives behavior never engaged). media.src also
+  // covers content.uri-only videos that have no animation_url set.
+  // Idempotent (same key+value) so re-renders are free; skipped for
+  // non-video and for moments lacking the server-stitched duration.
+  if (isVideo && media.src && moment.kismet_duration_sec) {
+    setVideoDuration(media.src, moment.kismet_duration_sec)
   }
   return (
     // content-visibility / contain-intrinsic-size were here originally

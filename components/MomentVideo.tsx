@@ -111,6 +111,13 @@ export function MomentVideo({
 
   const showImageLayer = showPosterLayer && !!poster && !posterFailed
   const showThumbhashLayer = showPosterLayer && !showImageLayer && !!blurDataURL
+  // Neither a poster nor a thumbhash (older mints predating the thumbhash
+  // write): without this the slot would sit on the parent's flat surface
+  // colour until the video's first frame decodes (the video starts at
+  // opacity:0 and only fades in on loadeddata). Paint the same branded pulse
+  // MomentImage uses so a video card never shows an empty tile during the
+  // render-in window; the video fades in over it once a frame is ready.
+  const showSkeleton = showPosterLayer && !showImageLayer && !showThumbhashLayer
 
   return (
     <>
@@ -120,6 +127,12 @@ export function MomentVideo({
           aria-hidden
           className="absolute inset-0 bg-cover bg-center pointer-events-none"
           style={{ backgroundImage: `url(${blurDataURL})` }}
+        />
+      )}
+      {showSkeleton && (
+        <span
+          aria-hidden
+          className="absolute inset-0 bg-accent/10 animate-pulse pointer-events-none"
         />
       )}
       <InlineVideo

@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { videoGatewayUrls } from '@/lib/media/gateway'
 import { getVideoDuration } from '@/lib/media/durationCache'
-import { acquireCommitted, committedActive, onCommittedChange } from '@/lib/media/videoFocus'
+import { acquireCommitted, committedActive } from '@/lib/media/videoFocus'
+import { registerFeedVideo, type FeedVideoSlot } from '@/lib/media/feedPlayback'
+import { LRUCache } from '@/lib/lruCache'
 
 // Duration past which a video is treated as long-form: preload its body and
 // don't loop (so the resume position survives), matching the old pool.
@@ -14,7 +16,7 @@ const LONG_FORM_DURATION_THRESHOLD_S = 60
 // the value survives the card unmounting (LazyMount recycling). The old pool
 // got this for free by keeping one element; with separate inline elements we
 // carry just the timestamp.
-const currentTimeMemory = new Map<string, number>()
+const currentTimeMemory = new LRUCache<string, number>(256)
 
 interface InlineVideoProps {
   /** Canonical video URI (ar://, ipfs://, https://). */
@@ -69,10 +71,16 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     unmuteTriedRef.current = false
   }, [src])
 
-  // Feed cards: want-to-play tracks viewport intersection. Committed videos
-  // always want to play. Kept in a ref so the event handlers and the IO share
-  // one source of truth without re-subscribing.
-  const wantPlayRef = useRef(controls)
+  // Feed playback is governed centrally by lib/media/feedPlayback: one
+  // coordinator ranks every mounted feed video by distance to the viewport
+  // centre and grants at most MAX_CONCURRENT_PLAY "play" slots (capped for the
+  // iOS decoder budget) plus a slightly larger "buffer" window. `slotRef`
+  // mirrors the latest grant for the event handlers; `buffering` drives the
+  // preload attribute and only flips when the buffer window changes (rare),
+  // so the extra render is negligible. Committed (detail) videos bypass all
+  // of this and always play.
+  const slotRef = useRef<FeedVideoSlot>({ play: false, buffer: false })
+  const [buffering, setBuffering] = useState(false)
 
   const tryPlay = () => {
     const el = ref.current
@@ -98,31 +106,55 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
       el.play().catch(() => {})
       return
     }
-    if (wantPlayRef.current && !committedActive()) el.play().catch(() => {})
+    if (slotRef.current.play && !committedActive()) el.play().catch(() => {})
     else el.pause()
   }
 
   useEffect(() => {
     // Committed (detail) videos: claim focus so the feed quiets behind them,
-    // and skip the off-screen observer — they own the viewport while open.
+    // and skip the feed coordinator — they own the viewport while open and
+    // always play.
     if (controls) return acquireCommitted()
 
     const el = ref.current
     if (!el) return
+
+    // Register with the central feed coordinator. It calls back with this
+    // card's current {play, buffer} grant whenever the ranking changes
+    // (scroll start/stop, a sibling mounting/unmounting, a detail video
+    // opening). We translate that into preload (buffer) + play/pause (play).
+    // Nothing here moves the element, so it can't reintroduce the old
+    // fixed-overlay positioning bug — only decode/buffer state changes.
+    const reg = registerFeedVideo((slot) => {
+      slotRef.current = slot
+      setBuffering(slot.buffer)
+      tryPlay()
+    })
+
+    // One IntersectionObserver reports this card's distance to the viewport
+    // centre + whether it's actually on screen. rootMargin '100%' = "within
+    // one viewport above/below", so cards are reported (and warmed) before
+    // they scroll in. The rects come from the entry the browser already
+    // computed — no main-thread getBoundingClientRect, no layout thrash.
     const io = new IntersectionObserver(
       ([entry]) => {
-        wantPlayRef.current = !!entry?.isIntersecting
-        tryPlay()
+        if (!entry) return
+        const rb = entry.rootBounds
+        const viewportCentre = rb
+          ? (rb.top + rb.bottom) / 2
+          : typeof window !== 'undefined'
+            ? window.innerHeight / 2
+            : 0
+        const br = entry.boundingClientRect
+        const distance = Math.abs((br.top + br.bottom) / 2 - viewportCentre)
+        reg.update(distance, entry.isIntersecting)
       },
-      // 100px lead so a card starts playing just before it scrolls in.
-      { threshold: 0.01, rootMargin: '100px' },
+      { threshold: [0, 0.5, 1], rootMargin: '100% 0px' },
     )
     io.observe(el)
-    // Re-evaluate when a committed video opens/closes.
-    const off = onCommittedChange(tryPlay)
     return () => {
       io.disconnect()
-      off()
+      reg.release()
     }
     // tryPlay is intentionally omitted — it only reads refs, and adding it
     // would re-run this effect every render.
@@ -188,7 +220,7 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
       loop={!isLongForm}
       playsInline
       controls={controls}
-      preload={controls || isLongForm ? 'auto' : 'metadata'}
+      preload={controls || buffering ? 'auto' : 'metadata'}
       // Fade in over the poster/thumbhash layer once the first frame is ready.
       style={{ opacity: loaded ? 1 : 0, transition: 'opacity 0.2s ease' }}
       onError={handleError}
