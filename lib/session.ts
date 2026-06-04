@@ -1,7 +1,7 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { safeRead } from './redisRead'
-import { randomBytes } from 'crypto'
+import { randomHex } from './random'
 import type { NextRequest, NextResponse } from 'next/server'
 import { verifyFarcasterJwt } from './farcasterAuth'
 
@@ -23,7 +23,7 @@ const key = (token: string) => `kismetart:session:${token}`
 export async function createSession(address: string): Promise<string> {
   // 256-bit token, matching the admin session in /api/auth/login. (UUID v4's
   // ~122 bits was already safe; this just aligns both session families.)
-  const token = randomBytes(32).toString('hex')
+  const token = randomHex(32)
   await redis.setex(key(token), SESSION_TTL_SECONDS, address.toLowerCase())
   return token
 }

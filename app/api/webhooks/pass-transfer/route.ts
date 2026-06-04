@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import crypto from 'crypto'
+import crypto from 'node:crypto'
 import { errorResponse } from '@/lib/apiResponse'
 import { getGateConfig } from '@/lib/gate'
 import { processTransfer } from '@/lib/pass-validity'

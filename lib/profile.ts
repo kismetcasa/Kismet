@@ -1,7 +1,7 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
-import { randomBytes } from 'crypto'
+import { randomHex } from './random'
 
 export interface Profile {
   address: string
@@ -198,7 +198,7 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
 // so this single helper covers both SIWE-formatted user login and the
 // freeform-message paths (profile update, follow, listing PATCH, …).
 export async function createNonce(address: string): Promise<string> {
-  const nonce = randomBytes(16).toString('hex')
+  const nonce = randomHex(16)
   await redis.setex(keyNonce(address), 300, nonce)
   return nonce
 }

@@ -1,5 +1,5 @@
 import 'server-only'
-import { randomBytes } from 'crypto'
+import { randomHex } from './random'
 import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import {
@@ -35,7 +35,7 @@ interface IntentNonceIssue {
 }
 
 export async function issueIntentNonce(): Promise<IntentNonceIssue> {
-  const nonce = randomBytes(16).toString('hex')
+  const nonce = randomHex(16)
   const expiresAt = Math.floor(Date.now() / 1000) + NONCE_TTL_SECONDS
   await redis.set(intentNonceKey(nonce), '1', { nx: true, ex: NONCE_TTL_SECONDS })
   return { nonce, expiresAt }

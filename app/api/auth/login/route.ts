@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { randomBytes } from 'crypto'
+import { randomHex } from '@/lib/random'
 import { redis } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from '@/lib/config'
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
   // Issue an opaque session token. 32 random bytes = 256 bits, well beyond
   // any practical brute force. The token never leaves Redis + the cookie;
   // there's no JWT to forge offline.
-  const token = randomBytes(32).toString('hex')
+  const token = randomHex(32)
   await redis.set(adminSessionKey(token), signer, { ex: ADMIN_SESSION_TTL_SECONDS })
 
   const res = NextResponse.json({ ok: true, address: signer })
