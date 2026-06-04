@@ -20,6 +20,8 @@ export interface NotifyAirdropPayload {
   tokenId: string
   recipients: string[]
   txHash: string
+  // Chain the airdrop tx landed on. Omitted → Base (server default).
+  chainId?: number
 }
 
 export async function notifyAirdropWithBackoff(

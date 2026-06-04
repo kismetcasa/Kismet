@@ -6,7 +6,8 @@ import { redis, TRENDING_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { recordCollected } from '@/lib/collected'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverClient } from '@/lib/rpc'
+import { BASE_CHAIN_ID, isSupportedChainId } from '@/lib/chains'
 import { readSalePricePerToken } from '@/lib/saleConfig'
 import { errorResponse } from '@/lib/apiResponse'
 import { bestEffort } from '@/lib/bestEffort'
@@ -39,6 +40,7 @@ async function verifyMintOnChain(
   collection: string,
   tokenId: string,
   account: string,
+  chainId: number,
 ): Promise<boolean> {
   const cacheKey = `verify:collect:${txHash}:${collection}:${tokenId}:${account}`
   const cached = await redis.get(cacheKey).catch(() => null)
@@ -46,7 +48,7 @@ async function verifyMintOnChain(
   if (cached === '0') return false
 
   try {
-    const receipt = await serverBaseClient().getTransactionReceipt({ hash: txHash })
+    const receipt = await serverClient(chainId).getTransactionReceipt({ hash: txHash })
     if (receipt.status !== 'success') {
       await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
       return false
@@ -104,7 +106,7 @@ export async function POST(req: NextRequest) {
   if (!allowed) return errorResponse(429, 'Too many requests')
 
   const body = (await req.json().catch(() => null)) as {
-    moment?: { collectionAddress?: string; tokenId?: string }
+    moment?: { collectionAddress?: string; tokenId?: string; chainId?: number }
     account?: string
     amount?: number
     comment?: string
@@ -117,6 +119,8 @@ export async function POST(req: NextRequest) {
 
   const collectionAddress = body.moment?.collectionAddress
   const rawTokenId = body.moment?.tokenId
+  // Chain the mint landed on (sent by the collect hooks). Unknown/legacy → Base.
+  const chainId = isSupportedChainId(body.moment?.chainId) ? body.moment!.chainId! : BASE_CHAIN_ID
   const account = body.account?.toLowerCase()
   const amount = Number(body.amount ?? 1)
   // Validate comment shape + length before persisting it on the notification.
@@ -163,7 +167,7 @@ export async function POST(req: NextRequest) {
 
   const collectionLower = collectionAddress.toLowerCase()
 
-  const verified = await verifyMintOnChain(txHash as Hex, collectionLower, tokenId, account)
+  const verified = await verifyMintOnChain(txHash as Hex, collectionLower, tokenId, account, chainId)
   if (!verified) {
     return errorResponse(403, 'Mint not verified on-chain')
   }
@@ -241,10 +245,11 @@ export async function POST(req: NextRequest) {
   let derivedPrice: bigint | null = null
   if (currency) {
     derivedPrice = await readSalePricePerToken(
-      serverBaseClient(),
+      serverClient(chainId),
       collectionLower as Address,
       BigInt(tokenId),
       currency,
+      chainId,
     )
   }
   const finalPrice = derivedPrice !== null ? derivedPrice.toString() : pricePerToken

@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'wagmi'
-import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Pin } from 'lucide-react'
@@ -10,11 +9,12 @@ import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { BuyButton } from './BuyButton'
 import { MomentImage } from './MomentImage'
 import Link from 'next/link'
 import type { Listing } from '@/lib/listings'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { useEnsureChain } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
@@ -47,12 +47,13 @@ interface MarketCardProps {
 }
 
 export function MarketCard({ listing, onRemove, compact, showCreator, priority, pinned, onTogglePin }: MarketCardProps) {
+  const chainId = listing.chainId ?? BASE_CHAIN_ID
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
   const { signMessageAsync } = useSignMessage()
-  const publicClient = usePublicClient()
-  const ensureBase = useEnsureBase()
+  const publicClient = usePublicClient({ chainId })
+  const ensureChain = useEnsureChain()
   const [creatorName, setCreatorName] = useState(() => shortAddress(listing.creatorAddress ?? ''))
   const [sellerName, setSellerName] = useState(() => shortAddress(listing.seller))
   const [cancelling, setCancelling] = useState(false)
@@ -98,12 +99,12 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
     toast.loading('Cancel listing in wallet…', { id: 'cancel' })
 
     try {
-      await ensureBase()
+      await ensureChain(chainId)
       const order = deserializeOrder(listing.orderComponents)
 
       // On-chain cancel so the signed order can never be filled
       const hash = await writeContractAsync({
-        chainId: base.id,
+        chainId,
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'cancel',

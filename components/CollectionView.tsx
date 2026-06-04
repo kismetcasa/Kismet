@@ -204,7 +204,7 @@ export function CollectionView({
     reset: resetGrant,
     busy: authorizing,
     receipt: authorizeReceipt,
-  } = useGrantPermission()
+  } = useGrantPermission(chainId)
 
   // ─── Authorized creators (ADMIN tier) ───────────────────────────────
   // The collection-page authorization surface. Per-token airdrop
@@ -220,7 +220,7 @@ export function CollectionView({
     busy: creatorGranting,
     hash: creatorHash,
     receipt: creatorReceipt,
-  } = useGrantPermission()
+  } = useGrantPermission(chainId)
   const creatorTxPending = !!creatorHash && !creatorReceipt
   const isCreatorBusy = creatorGranting || creatorTxPending
   const [creatorInput, setCreatorInput] = useState('')
@@ -239,6 +239,7 @@ export function CollectionView({
     refetch: refetchCreators,
   } = useAuthorizedCreators(
     canGrantHere ? (address as `0x${string}`) : undefined,
+    chainId,
   )
 
   // Mainnet client for client-side ENS resolution. Wagmi already
@@ -1009,6 +1010,7 @@ export function CollectionView({
             <CollectAllAction
               plain
               collectionAddress={address}
+              chainId={chainId}
               ethEligibleTokenIds={collectableIds}
               usdcEligibleTokenIds={collectableIds}
             />

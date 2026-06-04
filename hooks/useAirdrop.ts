@@ -1,17 +1,19 @@
 'use client'
 
 import { useWriteContract } from 'wagmi'
-import { base } from 'wagmi/chains'
 import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { BASE_CHAIN_ID } from '@/lib/chains'
+import { useEnsureChain } from '@/lib/useEnsureBase'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 export interface AirdropRequest {
   collectionAddress: `0x${string}`
   tokenId: bigint
   recipients: `0x${string}`[]
+  /** Chain the collection lives on. Defaults to Base. */
+  chainId?: number
 }
 
 /**
@@ -49,19 +51,20 @@ export interface AirdropRequest {
  */
 export function useAirdrop() {
   const { writeContractAsync } = useWriteContract()
-  const ensureBase = useEnsureBase()
+  const ensureChain = useEnsureChain()
 
   async function airdrop({
     collectionAddress,
     tokenId,
     recipients,
+    chainId = BASE_CHAIN_ID,
   }: AirdropRequest): Promise<`0x${string}`> {
     if (recipients.length === 0) throw new Error('No recipients')
-    await ensureBase()
+    await ensureChain(chainId)
 
     if (recipients.length === 1) {
       return await writeContractAsync({
-        chainId: base.id,
+        chainId,
         address: collectionAddress,
         abi: COLLECTION_ABI,
         functionName: 'adminMint',
@@ -82,7 +85,7 @@ export function useAirdrop() {
       }),
     )
     return await writeContractAsync({
-      chainId: base.id,
+      chainId,
       address: collectionAddress,
       abi: ZORA_MULTICALL_ABI,
       functionName: 'multicall',

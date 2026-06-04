@@ -282,6 +282,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       currency,
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
+      chainId: momentChainId,
     })
     if (result) {
       setCollected(true)
@@ -580,6 +581,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : owned > 0 ? (
             <ListButton
               collectionAddress={moment.address}
+              chainId={momentChainId}
               tokenId={moment.token_id}
               name={meta.name}
               image={meta.image ? resolveUri(meta.image) : undefined}
@@ -625,6 +627,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <div className="flex-1 min-w-0">
               <ListButton
                 collectionAddress={moment.address}
+                chainId={momentChainId}
                 tokenId={moment.token_id}
                 name={meta.name}
                 image={meta.image ? resolveUri(meta.image) : undefined}

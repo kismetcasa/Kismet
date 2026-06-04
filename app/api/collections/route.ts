@@ -251,7 +251,7 @@ export async function GET(req: NextRequest) {
           loadCollectionMeta(address, chainId),
           loadCollectAllEligibility(address, chainId, hiddenMoments),
         ])
-        return { ...metaPart, ...eligibility }
+        return { ...metaPart, ...eligibility, chainId }
       }),
     )
     // Indexer-lagging deploys have no `created_at` (KV fallback shape) —

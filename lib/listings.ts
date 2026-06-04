@@ -1,5 +1,6 @@
 import { after } from 'next/server'
 import { redis } from './redis'
+import { BASE_CHAIN_ID } from './chains'
 import { bestEffort } from './bestEffort'
 import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
@@ -19,6 +20,10 @@ export interface Listing {
   // 'eth' for native; 'usdc' for ERC20 USDC consideration. Older rows minted
   // before USDC support are read with a default of 'eth' (see getListing).
   currency: 'eth' | 'usdc'
+  // Chain the listing's collection + Seaport order live on. Older rows minted
+  // before multichain are read with a default of Base (see getListing) —
+  // mirrors the `currency='eth'` legacy default.
+  chainId?: number
   orderComponents: SerializedOrderComponents
   signature: string
   createdAt: number       // ms
@@ -95,8 +100,9 @@ export async function getListing(id: string): Promise<Listing | null> {
   const listing: Listing = typeof raw === 'string' ? JSON.parse(raw) : raw
   // Legacy rows minted before USDC support don't carry a currency field —
   // default to ETH so MarketCard / BuyButton don't accidentally enter the
-  // USDC code path.
+  // USDC code path. Same for chainId (pre-multichain rows) → Base.
   if (!listing.currency) listing.currency = 'eth'
+  if (!listing.chainId) listing.chainId = BASE_CHAIN_ID
   return listing
 }
 
@@ -110,6 +116,7 @@ async function getListingsBatch(ids: string[]): Promise<(Listing | null)[]> {
     if (!raw) return null
     const listing: Listing = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (!listing.currency) listing.currency = 'eth'
+    if (!listing.chainId) listing.chainId = BASE_CHAIN_ID
     return listing
   })
 }

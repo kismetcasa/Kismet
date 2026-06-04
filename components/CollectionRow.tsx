@@ -14,6 +14,8 @@ import { LazyMount } from './LazyMount'
 
 export interface FeaturedCollectionRow {
   contractAddress: string
+  // Chain the collection lives on (from the hydrator). Drives CollectAllAction.
+  chainId?: number
   name?: string
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
   // Token ID minted as the collection cover at deploy time. Set by
@@ -120,6 +122,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         </Link>
         <CollectAllAction
           collectionAddress={c.contractAddress}
+          chainId={c.chainId}
           ethEligibleTokenIds={c.ethEligibleTokenIds}
           ethEligibleTotalWei={c.ethEligibleTotalWei}
           usdcEligibleTokenIds={c.usdcEligibleTokenIds}
@@ -196,6 +199,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
             </Link>
             <CollectAllAction
               collectionAddress={c.contractAddress}
+              chainId={c.chainId}
               ethEligibleTokenIds={c.ethEligibleTokenIds}
               ethEligibleTotalWei={c.ethEligibleTotalWei}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds}

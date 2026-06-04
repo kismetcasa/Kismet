@@ -10,14 +10,15 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
-  SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
   EIP2981_ABI,
   deserializeOrder,
+  seaportDomain,
   type SerializedOrderComponents,
 } from '@/lib/seaport'
-import { USDC_BASE } from '@/lib/zoraMint'
-import { serverBaseClient } from '@/lib/rpc'
+import { usdcAddress } from '@/lib/zoraMint'
+import { BASE_CHAIN_ID, isSupportedChainId } from '@/lib/chains'
+import { serverClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
@@ -38,8 +39,9 @@ function validateOrderShape(args: {
   tokenId: string
   price: bigint
   currency: 'eth' | 'usdc'
+  chainId: number
 }): { error: string; status: number } | null {
-  const { serialized, collectionAddress, tokenId, price, currency } = args
+  const { serialized, collectionAddress, tokenId, price, currency, chainId } = args
 
   if (!Array.isArray(serialized.offer) || serialized.offer.length !== 1) {
     return { error: 'Order must offer exactly one item', status: 400 }
@@ -91,7 +93,7 @@ function validateOrderShape(args: {
     return { error: 'Order must have at least one consideration item', status: 400 }
   }
   const expectedItemType = currency === 'usdc' ? 1 : 0
-  const expectedToken = currency === 'usdc' ? USDC_BASE.toLowerCase() : ZERO_ADDRESS
+  const expectedToken = currency === 'usdc' ? usdcAddress(chainId).toLowerCase() : ZERO_ADDRESS
   let totalConsideration = 0n
   for (const item of serialized.consideration) {
     if (!isAddress(item.recipient)) {
@@ -161,14 +163,15 @@ async function verifyRoyalty(args: {
   tokenId: string
   price: bigint
   consideration: SerializedOrderComponents['consideration']
+  chainId: number
 }): Promise<{ error: string; status: number } | null> {
-  const { collection, tokenId, price, consideration } = args
+  const { collection, tokenId, price, consideration, chainId } = args
 
   let expectedReceiver: string | null = null
   let expectedAmount = 0n
   let supportsEip2981 = true
   try {
-    const [receiver, amount] = (await serverBaseClient().readContract({
+    const [receiver, amount] = (await serverClient(chainId).readContract({
       address: collection as `0x${string}`,
       abi: EIP2981_ABI,
       functionName: 'royaltyInfo',
@@ -305,6 +308,7 @@ export async function POST(req: NextRequest) {
       royaltyReceiver: string
       royaltyAmount: string
       currency?: 'eth' | 'usdc'
+      chainId?: number
       orderComponents: SerializedOrderComponents
       signature: string
       expiresAt: number
@@ -321,6 +325,12 @@ export async function POST(req: NextRequest) {
       orderComponents, signature, expiresAt,
     } = body
     const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
+    // Chain the order was signed for. Unknown/omitted → Base; an explicit
+    // unsupported chain is rejected (the Seaport domain wouldn't match).
+    if (body.chainId !== undefined && !isSupportedChainId(body.chainId)) {
+      return errorResponse(400, 'unsupported chainId')
+    }
+    const chainId = isSupportedChainId(body.chainId) ? body.chainId : BASE_CHAIN_ID
 
     if (!isAddress(collectionAddress)) {
       return errorResponse(400, 'Invalid collectionAddress')
@@ -386,6 +396,7 @@ export async function POST(req: NextRequest) {
       tokenId,
       price: BigInt(price),
       currency,
+      chainId,
     })
     if (shapeErr) return errorResponse(shapeErr.status, shapeErr.error)
 
@@ -397,7 +408,7 @@ export async function POST(req: NextRequest) {
     try {
       sigValid = await verifyTypedData({
         address: seller as `0x${string}`,
-        domain: SEAPORT_DOMAIN,
+        domain: seaportDomain(chainId),
         types: SEAPORT_ORDER_TYPES,
         primaryType: 'OrderComponents',
         message: {
@@ -432,6 +443,7 @@ export async function POST(req: NextRequest) {
       tokenId,
       price: BigInt(price),
       consideration: orderComponents.consideration,
+      chainId,
     })
     if (royaltyErr) return errorResponse(royaltyErr.status, royaltyErr.error)
 
@@ -444,6 +456,7 @@ export async function POST(req: NextRequest) {
       royaltyReceiver,
       royaltyAmount,
       currency,
+      chainId,
       orderComponents,
       signature,
       expiresAt,

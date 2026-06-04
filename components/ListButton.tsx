@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useAccount, useReadContract, useWriteContract, usePublicClient } from 'wagmi'
-import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useSignTypedData } from 'wagmi'
 import { parseEther, parseUnits } from 'viem'
@@ -13,12 +12,13 @@ import {
   SEAPORT_ABI,
   ERC1155_ABI,
   EIP2981_ABI,
-  SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
   buildSellOrder,
+  seaportDomain,
   serializeOrder,
 } from '@/lib/seaport'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { BASE_CHAIN_ID } from '@/lib/chains'
+import { useEnsureChain } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
@@ -27,6 +27,9 @@ type ListCurrency = 'eth' | 'usdc'
 interface ListButtonProps {
   collectionAddress: string
   tokenId: string
+  // Chain the moment lives on. Drives the Seaport order's domain + the
+  // approval/royalty reads + writes. Defaults to Base.
+  chainId?: number
   name?: string
   image?: string
   creatorAddress?: string
@@ -40,6 +43,7 @@ interface ListButtonProps {
 export function ListButton({
   collectionAddress,
   tokenId,
+  chainId = BASE_CHAIN_ID,
   name,
   image,
   creatorAddress,
@@ -51,8 +55,8 @@ export function ListButton({
   const { openConnectModal } = useConnectModal()
   const { signTypedDataAsync } = useSignTypedData()
   const { writeContractAsync } = useWriteContract()
-  const ensureBase = useEnsureBase()
-  const publicClient = usePublicClient()
+  const ensureChain = useEnsureChain()
+  const publicClient = usePublicClient({ chainId })
 
   const [showForm, setShowForm] = useState(false)
   const [priceInput, setPriceInput] = useState('')
@@ -61,6 +65,7 @@ export function ListButton({
   const [step, setStep] = useState<'idle' | 'approving' | 'signing' | 'submitting'>('idle')
 
   const { data: balance } = useReadContract({
+    chainId,
     address: collectionAddress as Address,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
@@ -71,6 +76,7 @@ export function ListButton({
   const holdsToken = balance !== undefined && (balance as bigint) > 0n
 
   const { data: isApproved, refetch: refetchApproval } = useReadContract({
+    chainId,
     address: collectionAddress as Address,
     abi: ERC1155_ABI,
     functionName: 'isApprovedForAll',
@@ -101,14 +107,14 @@ export function ListButton({
     const priceTotal = currency === 'usdc' ? parseUnits(priceInput, 6) : parseEther(priceInput)
 
     try {
-      await ensureBase()
+      await ensureChain(chainId)
 
       // 1. Approve Seaport to transfer tokens if needed
       if (!isApproved) {
         setStep('approving')
         toast.loading('Approving Seaport…', { id: 'list' })
         const hash = await writeContractAsync({
-          chainId: base.id,
+          chainId,
           address: collectionAddress as Address,
           abi: ERC1155_ABI,
           functionName: 'setApprovalForAll',
@@ -164,13 +170,14 @@ export function ListButton({
         royaltyAmount,
         counter,
         currency,
+        chainId,
       })
 
       // 5. Sign with EIP-712
       setStep('signing')
       toast.loading('Sign listing in wallet…', { id: 'list' })
       const signature = await signTypedDataAsync({
-        domain: SEAPORT_DOMAIN,
+        domain: seaportDomain(chainId),
         types: SEAPORT_ORDER_TYPES,
         primaryType: 'OrderComponents',
         message: {
@@ -203,6 +210,7 @@ export function ListButton({
           royaltyReceiver,
           royaltyAmount: royaltyAmount.toString(),
           currency,
+          chainId,
           orderComponents: serializeOrder(order),
           signature,
           expiresAt: Number(order.endTime) * 1000,

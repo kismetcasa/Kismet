@@ -4,17 +4,15 @@ import { useCallback, useRef, useState } from 'react'
 import {
   useAccount,
   useConfig,
-  usePublicClient,
   useSendCalls,
-  useWalletClient,
   useWriteContract,
 } from 'wagmi'
-import { getAccount, waitForCallsStatus } from '@wagmi/core'
-import { base } from 'wagmi/chains'
+import { getAccount, getPublicClient, getWalletClient, waitForCallsStatus } from '@wagmi/core'
 import { toast } from 'sonner'
 import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem'
 import { isValidTokenId } from '@/lib/address'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { useEnsureChain } from '@/lib/useEnsureBase'
+import { BASE_CHAIN_ID, getChain } from '@/lib/chains'
 import { isUserRejection, walkError } from '@/lib/toast'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
@@ -24,12 +22,12 @@ import {
   ERC20_ABI,
   MAX_COLLECT_ALL_BATCH,
   MULTICALL3_ADDRESS,
-  USDC_BASE,
-  ZORA_ERC20_MINTER,
   buildEthMintCall,
   buildMulticall3Batch,
   buildUsdcMintCall,
+  erc20Minter,
   readMintFeeWithBound,
+  usdcAddress,
 } from '@/lib/zoraMint'
 
 type Status =
@@ -45,10 +43,13 @@ const TOAST_ID = 'collect-all'
 
 export interface CollectAllArgs {
   collectionAddress: Address
+  // Chain the collection lives on. A collect-all targets one collection, so
+  // it's single-chain — no cross-chain batching. Defaults to Base.
+  chainId?: number
   // Server-pre-filtered ETH-eligible token IDs from collection hydrators.
   // Re-checked client-side at click time (sale state may have shifted).
   ethCandidateTokenIds: string[]
-  // Server-pre-filtered USDC-eligible token IDs (currency === USDC_BASE).
+  // Server-pre-filtered USDC-eligible token IDs (currency === the chain's USDC).
   // Same re-check semantics as the ETH list.
   usdcCandidateTokenIds: string[]
 }
@@ -141,11 +142,9 @@ function isUnsupportedMethodError(err: unknown): boolean {
 export function useCollectAll(): UseCollectAllReturn {
   const { address } = useAccount()
   const config = useConfig()
-  const publicClient = usePublicClient({ chainId: base.id })
   const { sendCallsAsync } = useSendCalls()
-  const { data: walletClient } = useWalletClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
-  const ensureBase = useEnsureBase()
+  const ensureChain = useEnsureChain()
   const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect all')
   const [status, setStatus] = useState<Status>('idle')
   // Lets the recovery flow's post-reconnect retry re-invoke the latest
@@ -162,12 +161,15 @@ export function useCollectAll(): UseCollectAllReturn {
   const collectAll = useCallback(
     async (args: CollectAllArgs) => {
       const isRetryAfterRecovery = consumeRetryFlag()
-      const { ethCandidateTokenIds, usdcCandidateTokenIds } = args
+      const { ethCandidateTokenIds, usdcCandidateTokenIds, chainId = BASE_CHAIN_ID } = args
 
       if (!address) {
         toast.error('Connect a wallet to collect')
         return null
       }
+      // Public client for the collection's chain (wagmi configures both Base +
+      // mainnet). Resolved per-call so the batch reads/sends on the right chain.
+      const publicClient = getPublicClient(config, { chainId })
       if (!publicClient) {
         toast.error('Network unavailable')
         return null
@@ -195,10 +197,10 @@ export function useCollectAll(): UseCollectAllReturn {
       inFlightRef.current = true
 
       setStatus('preparing')
-      toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
+      toast.loading('Switch network if prompted…', { id: TOAST_ID })
 
       try {
-        await ensureBase()
+        await ensureChain(chainId)
 
         // Fresh eligibility re-check with the connected account so we can
         // skip tokens already at the per-account cap. A revert in any single
@@ -211,6 +213,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 ethIds.map(BigInt),
                 'eth',
                 address,
+                chainId,
               )
             : Promise.resolve<EligibleToken[]>([]),
           usdcIds.length > 0
@@ -220,6 +223,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 usdcIds.map(BigInt),
                 'usdc',
                 address,
+                chainId,
               )
             : Promise.resolve<EligibleToken[]>([]),
         ])
@@ -256,6 +260,7 @@ export function useCollectAll(): UseCollectAllReturn {
               mintFee,
               pricePerToken: e.pricePerToken,
               comment: DEFAULT_COLLECT_COMMENT,
+              chainId,
             })
             segments.push({
               call: {
@@ -278,23 +283,26 @@ export function useCollectAll(): UseCollectAllReturn {
         // ─── USDC leg ────────────────────────────────────────────────────
         if (usdcBatch.length > 0) {
           const usdcTotal = usdcBatch.reduce((sum, e) => sum + e.pricePerToken, 0n)
+          // USDC token + ERC20Minter strategy differ per chain.
+          const usdc = usdcAddress(chainId)
+          const minter = erc20Minter(chainId)
 
           // Bounded approve — exact batch total, never MaxUint256. Skip the
           // approve call entirely if existing allowance already covers it.
           const currentAllowance = await publicClient.readContract({
-            address: USDC_BASE,
+            address: usdc,
             abi: ERC20_ABI,
             functionName: 'allowance',
-            args: [address, ZORA_ERC20_MINTER],
+            args: [address, minter],
           })
           if (currentAllowance < usdcTotal) {
             segments.push({
               call: {
-                to: USDC_BASE,
+                to: usdc,
                 data: encodeFunctionData({
                   abi: ERC20_ABI,
                   functionName: 'approve',
-                  args: [ZORA_ERC20_MINTER, usdcTotal],
+                  args: [minter, usdcTotal],
                 }) as Hex,
               },
               // Approve is a setup call, not a mint. No records to attribute.
@@ -310,10 +318,11 @@ export function useCollectAll(): UseCollectAllReturn {
               quantity: 1n,
               pricePerToken: e.pricePerToken,
               comment: DEFAULT_COLLECT_COMMENT,
+              chainId,
             })
             segments.push({
               call: {
-                to: ZORA_ERC20_MINTER,
+                to: minter,
                 data: encodeFunctionData({ abi, functionName, args }) as Hex,
               },
               records: [{
@@ -333,8 +342,8 @@ export function useCollectAll(): UseCollectAllReturn {
         // could have switched networks during the eligibility re-check
         // window. Reading via getAccount(config) bypasses any closure
         // staleness from the hook's render-time useAccount snapshot.
-        if (getAccount(config).chainId !== base.id) {
-          throw new Error('Switched off Base — retry to continue')
+        if (getAccount(config).chainId !== chainId) {
+          throw new Error('Switched networks — retry to continue')
         }
 
         setStatus('minting')
@@ -364,7 +373,7 @@ export function useCollectAll(): UseCollectAllReturn {
           // Errors (user reject, RPC blip, revert) propagate to the outer
           // try/catch and render via toastError, same as any other path.
           const hash = await writeContractAsync({
-            chainId: base.id,
+            chainId,
             address: MULTICALL3_ADDRESS,
             ...buildMulticall3Batch(
               segments.map((s) => ({
@@ -403,7 +412,7 @@ export function useCollectAll(): UseCollectAllReturn {
         try {
           const { id } = await sendCallsAsync({
             calls,
-            chainId: base.id,
+            chainId,
             experimental_fallback: true,
             capabilities: builderCodeCapabilities,
           })
@@ -430,6 +439,7 @@ export function useCollectAll(): UseCollectAllReturn {
           // User cancellations and unrelated errors keep their original
           // surface so the catch block below can render the right toast.
           if (isUserRejection(err) || !isUnsupportedMethodError(err)) throw err
+          const walletClient = await getWalletClient(config, { chainId }).catch(() => null)
           if (!walletClient) throw err
 
           setStatus('confirming')
@@ -464,7 +474,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 to: call.to,
                 data: call.data,
                 value: call.value ?? 0n,
-                chain: base,
+                chain: getChain(chainId).chain,
                 dataSuffix: BUILDER_DATA_SUFFIX,
               })
               const r = await publicClient.waitForTransactionReceipt({
@@ -554,7 +564,7 @@ export function useCollectAll(): UseCollectAllReturn {
                 moment: {
                   collectionAddress,
                   tokenId: entry.tokenId,
-                  chainId: base.id,
+                  chainId,
                 },
                 account: address,
                 amount: 1,
@@ -606,7 +616,7 @@ export function useCollectAll(): UseCollectAllReturn {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [address, config, sendCallsAsync, writeContractAsync, ensureChain, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectAllRef.current = collectAll

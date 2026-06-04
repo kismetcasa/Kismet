@@ -3,12 +3,13 @@ import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverClient } from '@/lib/rpc'
 import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
 import {
   addAuthorizedCreator,
   removeAuthorizedCreator,
   getAuthorizedCreators,
+  getCollectionChainId,
   getCollectionMeta,
   type AuthorizedCreator,
 } from '@/lib/kv'
@@ -74,9 +75,9 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'Invalid smartWallet')
   }
 
-  // 1. Caller must hold ADMIN on the collection.
+  // 1. Caller must hold ADMIN on the collection — read on its own chain.
   try {
-    const client = serverBaseClient()
+    const client = serverClient(await getCollectionChainId(collection))
     const perms = await readPermissions(
       client,
       collection as Address,
@@ -147,7 +148,7 @@ export async function DELETE(req: NextRequest) {
     return errorResponse(400, 'Invalid eoa')
   }
   try {
-    const client = serverBaseClient()
+    const client = serverClient(await getCollectionChainId(collection))
     const perms = await readPermissions(
       client,
       collection as Address,

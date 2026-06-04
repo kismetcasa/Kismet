@@ -9,7 +9,8 @@ import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverClient } from '@/lib/rpc'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { findFulfillmentInLogs } from '@/lib/seaport'
 
 export async function PATCH(
@@ -101,7 +102,7 @@ export async function PATCH(
     // doesn't reject a real sale. 10s upper bound on the wait.
     let onchainOk = false
     try {
-      const receipt = await serverBaseClient().waitForTransactionReceipt({
+      const receipt = await serverClient(listing.chainId ?? BASE_CHAIN_ID).waitForTransactionReceipt({
         hash: body.txHash as Hex,
         timeout: 10_000,
         pollingInterval: 500,

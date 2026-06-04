@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { Plus, X } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
+import { BASE_CHAIN_ID, explorerTxUrl } from '@/lib/chains'
 import { MomentImage } from './MomentImage'
 import { toastError } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
@@ -29,6 +30,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   // (batched). Bypasses inprocess's relay entirely so we're not
   // chasing whichever wallet they route under our shared API key.
   const { airdrop } = useAirdrop()
+  const [selected, setSelected] = useState<Moment | null>(null)
+  // The selected moment's chain drives the delegate-grant + airdrop writes +
+  // the notify/verify + the explorer link. Defaults to Base.
+  const selectedChainId = selected?.chain_id ?? BASE_CHAIN_ID
   // Per-token ADMIN delegation: lets the moment admin grant another
   // wallet permission to airdrop this specific moment from their own
   // wallet. Same useGrantPermission primitive that powers the
@@ -38,9 +43,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     reset: resetDelegateGrant,
     busy: delegating,
     receipt: delegateReceipt,
-  } = useGrantPermission()
-
-  const [selected, setSelected] = useState<Moment | null>(null)
+  } = useGrantPermission(selectedChainId)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [recipientInput, setRecipientInput] = useState('')
   const [delegateInput, setDelegateInput] = useState('')
@@ -258,6 +261,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         collectionAddress: selected.address as `0x${string}`,
         tokenId: BigInt(selected.token_id),
         recipients: activeRecipients as `0x${string}`[],
+        chainId: selectedChainId,
       })
       setResultHash(txHash)
       setRecipients([])
@@ -278,6 +282,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         tokenId: String(selected.token_id),
         recipients: activeRecipients,
         txHash,
+        chainId: selectedChainId,
       }).then(() => refreshQuota())
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
@@ -440,7 +445,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
 
       {resultHash && (
         <a
-          href={`https://basescan.org/tx/${resultHash}`}
+          href={explorerTxUrl(selectedChainId, resultHash)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs font-mono text-muted hover:text-dim transition-colors"

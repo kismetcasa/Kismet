@@ -1,9 +1,11 @@
 # Ethereum Mainnet Expansion — Full Scope
 
-> Status: **Phases 1–2 landed.** P1 = chain registry + parameterized core libs.
-> P2 = read model fully multichain (feeds, search, moment/collection pages,
-> hydration) behind `NEXT_PUBLIC_ENABLE_MAINNET` (default off → Base-only and
-> byte-identical). Write/collect paths remain Base (Phase 3). Author pass: 2026-06-04.
+> Status: **Phases 1–3 landed.** P1 = chain registry + parameterized core libs.
+> P2 = read model fully multichain. P3 = direct on-chain flows multichain
+> (collect / collect-all / list / buy / cancel / airdrop / grant), all user-paid.
+> All behind `NEXT_PUBLIC_ENABLE_MAINNET` (default off → Base-only, byte-identical).
+> Remaining: distribute on mainnet (deferred) + Phase 4 (sponsored mint/deploy +
+> Pass gate). Author pass: 2026-06-04.
 >
 > **Confirmed decisions** (see §6): mainnet minting is **user-paid / direct
 > on-chain** (no relay dependency); the Creator Pass gate is **Base-only**; Base
@@ -404,21 +406,36 @@ Chain-aware seams now live for Phases 2–4 (each defaults to Base): `getChain(i
 - A mainnet card's **collect button** is enabled but Base-targeted until Phase 3 —
   only reachable with the flag on + a registered mainnet collection (test only).
 
-### Phase 3 — Direct on-chain flows multichain (collect / list / buy / admin)
-These are user-paid and **do not depend on the relay** — lowest risk, high value.
-- [ ] `useDirectCollect`, `useCollectAll`: derive `chainId` from the moment;
-      `ensureChain(chainId)`; registry addresses; pin `publicClient`/`walletClient`
-      to that chain. (Collect-all **cannot batch across chains** — group by chain.)
-- [ ] Listings: **persist `chainId` on the `Listing` record** (`lib/listings.ts`);
-      `buildSellOrder`/`SEAPORT_DOMAIN` per chain; `BuyButton`/`ListButton`/
-      `MarketCard` ensure + read the listing's chain.
-- [ ] `/api/listings` royalty (EIP-2981) read + `/api/listings/[id]` fill receipt
-      via `serverClient(listing.chainId)`.
-- [ ] `/api/collect` + `/api/airdrop/notify` receipt verification via
-      `serverClient(body.chainId)` (client already sends `chainId` in the collect
-      body — generalize it from `base.id`).
-- [ ] `useAirdrop`, `useGrantPermission`, `useMomentSplits`, `/api/distribute`:
-      thread chain (distribute already sends a chainId — make it dynamic).
+### Phase 3 — Direct on-chain flows multichain (collect / list / buy / admin) ✅ DONE
+All user-paid, **no relay dependency**. Every chainId defaults to Base, so the
+flag-off behavior is byte-identical.
+- [x] `useDirectCollect` / `useCollectAll`: `chainId` arg (collect-all is
+      single-collection = single-chain); `ensureChain`; per-call clients via
+      `getPublicClient`/`getWalletClient(config, { chainId })`; chain-keyed
+      `usdcAddress`/`erc20Minter`; `buildEth/UsdcMintCall({…, chainId})`; record the
+      chain. `MomentCard` / `MomentDetailView` / `CollectAllAction` pass the chain;
+      the hydrated-collection responses now carry `chainId` so `CollectionRow` /
+      `CollectionCard` thread it.
+- [x] Listings: **`Listing.chainId`** (legacy-default Base) in `lib/listings.ts`;
+      `seaportDomain(chainId)` + `buildSellOrder({…, chainId})` in `ListButton`;
+      `BuyButton` / `MarketCard` ensure + read `listing.chainId`. `/api/listings`
+      POST validates + stores `chainId`, verifies the order with `seaportDomain` +
+      reads royalty/USDC on `serverClient(chainId)`; `/api/listings/[id]` fill
+      receipt on `serverClient(listing.chainId)`.
+- [x] `/api/collect` + `/api/airdrop/notify` verify the receipt on
+      `serverClient(body.chainId)`; the collect hooks + `AirdropForm` send the chain.
+- [x] `useAirdrop` (chain in `AirdropRequest`), `useGrantPermission(chainId)`,
+      `useAuthorizedCreators(collection, chainId)` + the authorized-creators route
+      (admin check on `serverClient(getCollectionChainId)`); `AirdropForm` /
+      `CollectionView` pass the collection chain; explorer links via the registry.
+- [x] `useMomentSplits`: split-balance **display reads** are chain-aware; the
+      **distribute action stays Base** (mainnet distribute deferred, §6.7) — guarded
+      with a clear "coming soon" message on a non-Base moment.
+- [x] `npm run check` + full build green. Flag off → byte-identical.
+
+**Deferred from Phase 3:** mainnet **distribute** (§6.7 decision — Base-only for
+now; the relayed `/api/distribute` + its reads stay Base). Phase 4 = sponsored
+mint/deploy + Pass gate. KV key chain-scoping still deferred (improbable collision).
 
 ### Phase 4 — Mint + deploy on mainnet (the headline)
 Pick **one** mint model for mainnet (see §6 decision):
@@ -478,6 +495,11 @@ Pick **one** mint model for mainnet (see §6 decision):
    sign-off before Phase 4.)*
 6. **Default chain** — ✅ **CONFIRMED: Base stays default**; mainnet is opt-in
    behind `NEXT_PUBLIC_ENABLE_MAINNET`.
+7. **Distribute on mainnet** — ✅ **CONFIRMED: defer.** Distribute stays Base-only
+   for Phase 3 (split-balance display reads are chain-aware; the action +
+   `/api/distribute` relay stay Base). `useMomentSplits.distribute()` guards
+   non-Base with a "coming soon" message. Revisit as a fast-follow via either the
+   In Process relay (if it supports mainnet) or a user-paid 0xSplits-direct call.
 
 ---
 
@@ -644,11 +666,11 @@ read-only display + feeds; Phase 3 chain-parameterizes those via
 
 ## 11. Phase 3 — detailed implementation plan (direct on-chain flows → multichain)
 
-> Prepared 2026-06-04. Scope: **collect / collect-all / list / buy / cancel /
-> airdrop / grant** — all **user-paid, direct on-chain** (no relay), so no
-> dependency on In Process's relay. Distribute is the one relayed flow (see
-> §11.6 fork). Same dark posture: every chainId defaults to Base; with the flag
-> off there are no mainnet moments to act on, so behavior is unchanged.
+> ✅ **Implemented** (see the Phase 3 DONE checklist in §5 for the as-built
+> summary). Scope: **collect / collect-all / list / buy / cancel / airdrop /
+> grant** — all user-paid, direct on-chain (no relay). Distribute was **deferred**
+> per the §6.7 decision (the §11.6 fork → Option C). Every chainId defaults to
+> Base; with the flag off behavior is byte-identical.
 
 ### 11.1 chainId propagation (mostly already wired by Phase 2)
 - **Moment-scoped** flows read `momentChainId` (already in `MomentCard`,

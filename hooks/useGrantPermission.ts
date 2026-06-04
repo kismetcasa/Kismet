@@ -7,7 +7,6 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from 'wagmi'
-import { base } from 'wagmi/chains'
 import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import {
@@ -16,7 +15,8 @@ import {
   PERMISSION_BIT_MINTER,
 } from '@/lib/permissions'
 import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { BASE_CHAIN_ID } from '@/lib/chains'
+import { useEnsureChain } from '@/lib/useEnsureBase'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
 /** String alias over the bigint constants — call-sites use the bit
@@ -118,19 +118,19 @@ async function filterRedundant(
  * isn't prompted for redundant writes. RPC read failures fall through
  * as "unknown" = keep the op (chain safely no-ops redundant writes).
  */
-export function useGrantPermission() {
+export function useGrantPermission(chainId: number = BASE_CHAIN_ID) {
   const { address: connected } = useAccount()
-  const publicClient = usePublicClient({ chainId: base.id })
+  const publicClient = usePublicClient({ chainId })
   const { writeContractAsync } = useWriteContract()
-  const ensureBase = useEnsureBase()
+  const ensureChain = useEnsureChain()
 
   const [busy, setBusy] = useState(false)
   const [hash, setHash] = useState<`0x${string}` | undefined>(undefined)
   const { data: receipt } = useWaitForTransactionReceipt({
     hash,
-    // Pin to Base so the receipt is read from the same chain the grant tx
-    // was written to, regardless of the connector's currently-reported chain.
-    chainId: base.id,
+    // Pin to the collection's chain so the receipt is read from the same chain
+    // the grant tx was written to, regardless of the connector's reported chain.
+    chainId,
     query: { enabled: !!hash },
   })
 
@@ -146,14 +146,14 @@ export function useGrantPermission() {
     try {
       const filtered = await filterRedundant(publicClient, ops)
       if (filtered.length === 0) return 'already'
-      await ensureBase()
+      await ensureChain(chainId)
       // Single op: direct addPermission/removePermission saves the
       // multicall dispatch overhead and gives etherscan a recognizable
       // tx label. Multiple ops: route through inherited multicall.
       if (filtered.length === 1) {
         const op = filtered[0]
         const txHash = await writeContractAsync({
-          chainId: base.id,
+          chainId,
           address: collection,
           abi: COLLECTION_ABI,
           functionName:
@@ -173,7 +173,7 @@ export function useGrantPermission() {
         }),
       )
       const txHash = await writeContractAsync({
-        chainId: base.id,
+        chainId,
         address: collection,
         abi: ZORA_MULTICALL_ABI,
         functionName: 'multicall',

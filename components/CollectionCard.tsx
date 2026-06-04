@@ -17,6 +17,9 @@ import { CollectAllAction } from './CollectAllAction'
  */
 export interface CollectionDisplay {
   contractAddress: string
+  // Chain the collection lives on (from /api/collections?feed=1). Drives the
+  // collect-all execution chain. Optional/legacy → Base in CollectAllAction.
+  chainId?: number
   name?: string
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
   // inprocess `/api/collection` (singular) extras — used when present
@@ -156,6 +159,7 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
           {hasCollectAll ? (
             <CollectAllAction
               collectionAddress={c.contractAddress}
+              chainId={c.chainId}
               ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}
               compact
@@ -180,6 +184,7 @@ export function CollectionCard({ collection, priority, compact, showCreator }: C
           {hasCollectAll && (
             <CollectAllAction
               collectionAddress={c.contractAddress}
+              chainId={c.chainId}
               ethEligibleTokenIds={c.ethEligibleTokenIds ?? []}
               ethEligibleTotalWei={c.ethEligibleTotalWei ?? '0'}
               usdcEligibleTokenIds={c.usdcEligibleTokenIds ?? []}

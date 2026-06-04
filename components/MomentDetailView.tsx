@@ -391,6 +391,7 @@ export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, in
   } = useMomentSplits({
     address,
     tokenId,
+    chainId,
     isCreator,
     isAdmin: isMomentAdmin,
     isPlatformAdmin: isAdmin,
@@ -525,6 +526,7 @@ export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, in
       currency: inferCollectCurrency(detail.saleConfig),
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
+      chainId,
     })
     if (result) {
       setCollected(true)
@@ -1445,6 +1447,7 @@ export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, in
               <div className="flex-1 min-w-0">
                 <ListButton
                   collectionAddress={address}
+                  chainId={chainId}
                   tokenId={tokenId}
                   name={meta.name}
                   image={meta.image ? resolveUri(meta.image) : undefined}

@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { useAccount, useBalance, useReadContract, useSignMessage } from 'wagmi'
-import { base } from 'viem/chains'
 import { toast } from 'sonner'
-import { ERC20_ABI, USDC_BASE, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
+import { BASE_CHAIN_ID } from '@/lib/chains'
+import { ERC20_ABI, ZORA_CREATOR_REWARD_RECIPIENT_ABI, usdcAddress } from '@/lib/zoraMint'
 import { formatPrice } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
 import type { SplitRecipient } from '@/lib/splits'
@@ -13,6 +13,10 @@ import type { CollectCurrency } from '@/hooks/useDirectCollect'
 interface Options {
   address: string
   tokenId: string
+  // Chain the moment lives on. Drives the split-balance display reads. The
+  // distribute *action* stays Base-only for now (mainnet distribute deferred) —
+  // distribute() guards on this. Defaults to Base.
+  chainId?: number
   // Creator (resolved EOA) or a moment admin per the parent view. Either
   // grants distribute rights; recipients are detected here from the stored
   // split list. The distribute API authorizes the same roles.
@@ -63,7 +67,7 @@ interface SplitsState {
  * for USDC moments, else it defaults to ETH and distributes nothing from a
  * USDC split).
  */
-export function useMomentSplits({ address, tokenId, isCreator, isAdmin, isPlatformAdmin, currency }: Options): SplitsState {
+export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isCreator, isAdmin, isPlatformAdmin, currency }: Options): SplitsState {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
   const [hasSplits, setHasSplits] = useState(false)
@@ -93,6 +97,7 @@ export function useMomentSplits({ address, tokenId, isCreator, isAdmin, isPlatfo
   const canDistribute = hasSplits && (isCreator || isAdmin || isPlatformAdmin || !!viewerRecipient)
 
   const { data: splitAddress } = useReadContract({
+    chainId,
     address: address as `0x${string}`,
     abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
     functionName: 'getCreatorRewardRecipient',
@@ -106,11 +111,12 @@ export function useMomentSplits({ address, tokenId, isCreator, isAdmin, isPlatfo
   // gated to the relevant currency via `enabled`.
   const { data: ethBalance } = useBalance({
     address: splitAddress,
-    chainId: base.id,
+    chainId,
     query: { enabled: canDistribute && !!splitAddress && currency === 'eth' },
   })
   const { data: usdcBalance } = useReadContract({
-    address: USDC_BASE,
+    chainId,
+    address: usdcAddress(chainId),
     abi: ERC20_ABI,
     functionName: 'balanceOf',
     args: splitAddress ? [splitAddress] : undefined,
@@ -130,6 +136,13 @@ export function useMomentSplits({ address, tokenId, isCreator, isAdmin, isPlatfo
         )
 
   async function distribute(currency: CollectCurrency) {
+    // Mainnet distribute is deferred — display reads above are chain-aware so
+    // the pending balance is correct, but the sponsored relay distribution
+    // stays Base-only for now. Guard the action with a clear message.
+    if (chainId !== BASE_CHAIN_ID) {
+      toast.error('Distribution on Ethereum is coming soon')
+      return
+    }
     if (!splitAddress) { toast.error('Split address not found'); return }
     if (!connectedAddress) { toast.error('Wallet not connected'); return }
     const addr = splitAddress

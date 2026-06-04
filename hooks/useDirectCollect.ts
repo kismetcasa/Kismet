@@ -1,21 +1,22 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { useAccount, useConfig, useWriteContract } from 'wagmi'
+import { getPublicClient } from '@wagmi/core'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { useEnsureChain } from '@/lib/useEnsureBase'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import {
   ERC20_ABI,
-  USDC_BASE,
-  ZORA_ERC20_MINTER,
   buildEthMintCall,
   buildUsdcMintCall,
+  erc20Minter,
   readMintFeeWithBound,
+  usdcAddress,
 } from '@/lib/zoraMint'
 
 type CollectStatus =
@@ -37,6 +38,8 @@ export interface CollectArgs {
   currency: CollectCurrency
   amount?: number
   comment?: string
+  /** Chain the moment lives on. Defaults to Base. */
+  chainId?: number
 }
 
 interface UseDirectCollectReturn {
@@ -71,9 +74,9 @@ const TOAST_ID = 'direct-collect'
  */
 export function useDirectCollect(): UseDirectCollectReturn {
   const { address } = useAccount()
-  const publicClient = usePublicClient({ chainId: base.id })
+  const config = useConfig()
   const { writeContractAsync } = useWriteContract()
-  const ensureBase = useEnsureBase()
+  const ensureChain = useEnsureChain()
   const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect')
   const [status, setStatus] = useState<CollectStatus>('idle')
   // Lets the recovery flow's post-reconnect retry re-invoke the latest
@@ -98,12 +101,17 @@ export function useDirectCollect(): UseDirectCollectReturn {
         currency,
         amount = 1,
         comment = '',
+        chainId = BASE_CHAIN_ID,
       } = args
 
       if (!address) {
         toast.error('Connect a wallet to collect')
         return null
       }
+      // Public client for the moment's chain (wagmi configures both Base +
+      // mainnet — see lib/wagmi.ts). Resolved per-call so a mixed feed collects
+      // each card on its own chain.
+      const publicClient = getPublicClient(config, { chainId })
       if (!publicClient) {
         toast.error('Network unavailable')
         return null
@@ -127,10 +135,10 @@ export function useDirectCollect(): UseDirectCollectReturn {
       inFlightRef.current = true
 
       setStatus('preparing')
-      toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
+      toast.loading('Switch network if prompted…', { id: TOAST_ID })
 
       try {
-        await ensureBase()
+        await ensureChain(chainId)
 
         const tokenIdBn = BigInt(tokenId)
         const quantity = BigInt(Math.max(1, Math.floor(amount)))
@@ -148,7 +156,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
           toast.loading('Confirm mint in wallet…', { id: TOAST_ID })
 
           hash = await writeContractAsync({
-            chainId: base.id,
+            chainId,
             address: collectionAddress,
             ...buildEthMintCall({
               tokenId: tokenIdBn,
@@ -157,16 +165,20 @@ export function useDirectCollect(): UseDirectCollectReturn {
               mintFee,
               pricePerToken,
               comment,
+              chainId,
             }),
             dataSuffix: BUILDER_DATA_SUFFIX,
           })
         } else {
-          // ERC20 (USDC) path: check allowance, approve if short, then mint.
+          // ERC20 (USDC) path: check allowance, approve if short, then mint —
+          // all on the moment's chain (USDC token + ERC20Minter differ per chain).
+          const usdc = usdcAddress(chainId)
+          const minter = erc20Minter(chainId)
           const currentAllowance = await publicClient.readContract({
-            address: USDC_BASE,
+            address: usdc,
             abi: ERC20_ABI,
             functionName: 'allowance',
-            args: [address, ZORA_ERC20_MINTER],
+            args: [address, minter],
           })
 
           if (currentAllowance < totalPrice) {
@@ -174,11 +186,11 @@ export function useDirectCollect(): UseDirectCollectReturn {
             toast.loading('Approve USDC in wallet… (1 of 2)', { id: TOAST_ID })
 
             const approveHash = await writeContractAsync({
-              chainId: base.id,
-              address: USDC_BASE,
+              chainId,
+              address: usdc,
               abi: ERC20_ABI,
               functionName: 'approve',
-              args: [ZORA_ERC20_MINTER, totalPrice],
+              args: [minter, totalPrice],
               dataSuffix: BUILDER_DATA_SUFFIX,
             })
 
@@ -193,8 +205,8 @@ export function useDirectCollect(): UseDirectCollectReturn {
           toast.loading('Confirm mint in wallet… (2 of 2)', { id: TOAST_ID })
 
           hash = await writeContractAsync({
-            chainId: base.id,
-            address: ZORA_ERC20_MINTER,
+            chainId,
+            address: minter,
             ...buildUsdcMintCall({
               collection: collectionAddress,
               tokenId: tokenIdBn,
@@ -202,6 +214,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               quantity,
               pricePerToken,
               comment,
+              chainId,
             }),
             dataSuffix: BUILDER_DATA_SUFFIX,
           })
@@ -226,7 +239,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              moment: { collectionAddress, tokenId, chainId: base.id },
+              moment: { collectionAddress, tokenId, chainId },
               account: address,
               amount: Number(quantity),
               comment,
@@ -259,7 +272,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         inFlightRef.current = false
       }
     },
-    [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [address, config, writeContractAsync, ensureChain, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectRef.current = collect

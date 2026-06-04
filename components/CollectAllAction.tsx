@@ -4,10 +4,14 @@ import { formatEther, formatUnits } from 'viem'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { MAX_COLLECT_ALL_BATCH } from '@/lib/zoraMint'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { useCollectAll } from '@/hooks/useCollectAll'
 
 interface CollectAllActionProps {
   collectionAddress: string
+  // Chain the collection lives on. Defaults to Base. The eligible token lists
+  // were already computed on this chain server-side; this drives execution.
+  chainId?: number
   // ETH-eligible tokens (FixedPriceSaleStrategy). Either or both of the eth/
   // usdc lists may be empty; the button hides only when both are empty.
   ethEligibleTokenIds: string[]
@@ -89,6 +93,7 @@ function statusLabel(status: ReturnType<typeof useCollectAll>['status']): string
  */
 export function CollectAllAction({
   collectionAddress,
+  chainId = BASE_CHAIN_ID,
   ethEligibleTokenIds,
   ethEligibleTotalWei,
   usdcEligibleTokenIds,
@@ -115,6 +120,7 @@ export function CollectAllAction({
     }
     collectAll({
       collectionAddress: collectionAddress as `0x${string}`,
+      chainId,
       ethCandidateTokenIds: ethEligibleTokenIds,
       usdcCandidateTokenIds: usdcEligibleTokenIds,
     })

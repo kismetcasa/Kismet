@@ -34,6 +34,8 @@ const MAX_HYDRATED_COLLECTIONS = 20
 
 interface HydratedFeaturedCollection {
   contractAddress: string
+  // Chain the collection lives on — drives CollectAllAction's execution chain.
+  chainId: number
   name?: string
   // kismet_thumbhash flows through so the CollectionRow client can
   // dedupe cover-vs-first-mint by image content, not just URL.
@@ -265,6 +267,7 @@ export async function GET() {
 
         return {
           contractAddress: address,
+          chainId,
           name: collection.name,
           metadata: collection.metadata,
           coverTokenId,

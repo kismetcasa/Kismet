@@ -2,15 +2,15 @@
 
 import { useState } from 'react'
 import { useAccount, useSignMessage, useWriteContract, usePublicClient } from 'wagmi'
-import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import type { Hex } from 'viem'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
-import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
+import { ERC20_ABI, usdcAddress } from '@/lib/zoraMint'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { formatPrice } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
-import { useEnsureBase } from '@/lib/useEnsureBase'
+import { useEnsureChain } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 
@@ -29,12 +29,14 @@ interface BuyButtonProps {
 const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as Hex
 
 export function BuyButton({ listing, onBought, className = '', compact = false }: BuyButtonProps) {
+  // The order was signed for the listing's chain; fulfill it there.
+  const chainId = listing.chainId ?? BASE_CHAIN_ID
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
   const { signMessageAsync } = useSignMessage()
-  const publicClient = usePublicClient()
-  const ensureBase = useEnsureBase()
+  const publicClient = usePublicClient({ chainId })
+  const ensureChain = useEnsureChain()
   const [loading, setLoading] = useState(false)
   const [bought, setBought] = useState(false)
 
@@ -55,16 +57,17 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
 
     setLoading(true)
     try {
-      await ensureBase()
+      await ensureChain(chainId)
       const order = deserializeOrder(listing.orderComponents)
 
       // USDC path — buyer must approve Seaport to pull USDC before fulfillOrder.
       // Per-buy approve (not max) so the spending allowance is bounded; the
       // trade-off is one extra tx per purchase, which the user agreed to.
       if (currency === 'usdc') {
+        const usdc = usdcAddress(chainId)
         toast.loading('Checking USDC allowance…', { id: 'buy' })
         const allowance = (await publicClient.readContract({
-          address: USDC_BASE,
+          address: usdc,
           abi: ERC20_ABI,
           functionName: 'allowance',
           args: [address, SEAPORT_ADDRESS],
@@ -73,8 +76,8 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
         if (allowance < priceTotal) {
           toast.loading('Approve USDC in wallet… (1 of 2)', { id: 'buy' })
           const approveHash = await writeContractAsync({
-            chainId: base.id,
-            address: USDC_BASE,
+            chainId,
+            address: usdc,
             abi: ERC20_ABI,
             functionName: 'approve',
             args: [SEAPORT_ADDRESS, priceTotal],
@@ -93,7 +96,7 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
       }
 
       const hash = await writeContractAsync({
-        chainId: base.id,
+        chainId,
         address: SEAPORT_ADDRESS,
         abi: SEAPORT_ABI,
         functionName: 'fulfillOrder',

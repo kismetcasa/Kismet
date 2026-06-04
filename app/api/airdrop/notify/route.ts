@@ -12,7 +12,8 @@ import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { recordPlatformTx } from '@/lib/pass-validity'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { redis } from '@/lib/redis'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverClient } from '@/lib/rpc'
+import { BASE_CHAIN_ID, isSupportedChainId } from '@/lib/chains'
 import { errorResponse } from '@/lib/apiResponse'
 
 /**
@@ -63,6 +64,7 @@ async function verifyAirdropOnChain(
   tokenId: string,
   sender: string,
   claimedRecipients: string[],
+  chainId: number,
 ): Promise<{ ok: true; verified: Set<string> } | { ok: false }> {
   const cacheKey = `verify:airdrop:${txHash}:${collection}:${tokenId}:${sender}`
   const cached = await redis.get<string>(cacheKey).catch(() => null)
@@ -76,7 +78,7 @@ async function verifyAirdropOnChain(
   }
 
   try {
-    const receipt = await serverBaseClient().getTransactionReceipt({ hash: txHash })
+    const receipt = await serverClient(chainId).getTransactionReceipt({ hash: txHash })
     if (receipt.status !== 'success') return { ok: false }
 
     const expectedTokenId = BigInt(tokenId)
@@ -132,10 +134,13 @@ export async function POST(req: NextRequest) {
     tokenId?: string | number
     recipients?: string[]
     txHash?: string
+    chainId?: number
   } | null
 
   if (!body) return errorResponse(400, 'Invalid body')
 
+  // Chain the airdrop tx landed on (sent by the form). Unknown/legacy → Base.
+  const chainId = isSupportedChainId(body.chainId) ? body.chainId : BASE_CHAIN_ID
   const sender = body.sender?.toLowerCase()
   const collectionAddress = body.collectionAddress?.toLowerCase()
   const rawTokenId = body.tokenId !== undefined && body.tokenId !== null ? String(body.tokenId) : null
@@ -199,6 +204,7 @@ export async function POST(req: NextRequest) {
     tokenId,
     sender,
     validRecipients,
+    chainId,
   )
   if (!verifyResult.ok) {
     return errorResponse(403, 'Airdrop not verified on-chain')

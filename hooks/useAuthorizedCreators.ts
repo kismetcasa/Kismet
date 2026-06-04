@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Address } from 'viem'
 import { usePublicClient } from 'wagmi'
-import { base } from 'wagmi/chains'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit } from '@/lib/permissions'
 
@@ -28,8 +28,8 @@ export interface AuthorizedCreatorEntry {
  * against on-chain perms so a row revoked outside our UI renders as
  * stale instead of as a live authorization.
  */
-export function useAuthorizedCreators(collection: Address | undefined) {
-  const publicClient = usePublicClient({ chainId: base.id })
+export function useAuthorizedCreators(collection: Address | undefined, chainId: number = BASE_CHAIN_ID) {
+  const publicClient = usePublicClient({ chainId })
   const [creators, setCreators] = useState<AuthorizedCreatorEntry[]>([])
   const [loading, setLoading] = useState(false)
 
