@@ -86,10 +86,12 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     )
     : null
 
-  // Show the display mint exactly once — as the hero above. Pull it out of the
-  // standalone-moments grid here, and out of any collection row it belongs to
-  // below (safeCollections), so it never double-appears: beside the desktop
-  // hero, or beside the promoted card the hero renders below lg.
+  // The display mint leads the tab as the hero above, so pull it out of the
+  // loose standalone grid here — otherwise (DISPLAY ⊆ FEATURED) it would also
+  // sit as a duplicate card beside the desktop hero / below the promoted card
+  // the hero renders at <lg. It is intentionally left IN its collection row,
+  // though: a collection should show its full contents, including the member
+  // that happens to be the current hero.
   const gridMoments = displayKey
     ? moments.filter((m) => keyOf(m) !== displayKey)
     : moments
@@ -101,23 +103,18 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     | { kind: 'moments'; items: Moment[] }
     | { kind: 'collection'; row: FeaturedCollectionRow }
 
-  // Strip the display mint from its collection row too (see gridMoments) so the
-  // hero is its only appearance. CollectionRow already renders a graceful
-  // "no moments yet" if this empties a single-mint collection's preview.
-  const safeCollections = displayKey
-    ? (collections ?? []).map((c) => ({ ...c, moments: c.moments.filter((m) => keyOf(m) !== displayKey) }))
-    : (collections ?? [])
+  const featuredCollections = collections ?? []
   const blocks: Block[] = []
   let mIdx = 0
   let cIdx = 0
-  while (mIdx < gridMoments.length || cIdx < safeCollections.length) {
+  while (mIdx < gridMoments.length || cIdx < featuredCollections.length) {
     const take = Math.min(STRIDE, gridMoments.length - mIdx)
     if (take > 0) {
       blocks.push({ kind: 'moments', items: gridMoments.slice(mIdx, mIdx + take) })
       mIdx += take
     }
-    if (cIdx < safeCollections.length) {
-      blocks.push({ kind: 'collection', row: safeCollections[cIdx++] })
+    if (cIdx < featuredCollections.length) {
+      blocks.push({ kind: 'collection', row: featuredCollections[cIdx++] })
     }
   }
 
