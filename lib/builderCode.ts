@@ -22,8 +22,17 @@ import { concat, size, stringToHex, toHex, type Hex } from 'viem'
 // configured.
 const ERC8021_MARKER = '0x80218021802180218021802180218021' as const
 
+// Kismet's Builder Code, issued at base.dev. Public (it travels in tx
+// calldata) and app-identifying, not a secret and not environment-
+// specific — every Kismet deploy attributes to the same app — so it's
+// the baked-in default. NEXT_PUBLIC_BUILDER_CODE can override it (e.g. a
+// throwaway code for a fork). Encodes to base.dev's published string
+// 0x62635f70383736776231630b0080218021802180218021802180218021,
+// verified byte-for-byte.
+const KISMET_BUILDER_CODE = 'bc_p876wb1c'
+
 function encodeBuilderSuffix(): Hex | undefined {
-  const code = process.env.NEXT_PUBLIC_BUILDER_CODE?.trim()
+  const code = process.env.NEXT_PUBLIC_BUILDER_CODE?.trim() || KISMET_BUILDER_CODE
   if (!code) return undefined
   try {
     const codeHex = stringToHex(code)
