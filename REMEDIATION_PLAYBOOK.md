@@ -250,6 +250,46 @@ wrong). Those are collected first.
   error budgets** so remediation is prioritized by data, not feel.
   ([SRE monitoring](https://sre.google/sre-book/monitoring-distributed-systems/), [SRE SLOs](https://sre.google/sre-book/service-level-objectives/))
 
+### B13. Arweave/Turbo transitive CVE chain — reachability + root overrides  ·  Verdict: **NOT reachable on our path; fixed via root `overrides` (verified)**
+- The `npm audit` findings under `@ardrive/turbo-sdk` are pulled in by Turbo's
+  **unused** multi-chain payment/signer features, not the upload path. The app signs
+  ANS-104 data items with the **RSA Arweave signer (signatureType 1)**: `ArweaveSigner
+  → Rsa4096Pss` signs via node `crypto` `createSign(…RSA_PSS_PADDING)`, and Turbo's HTTP
+  client is native **`fetch`** to fixed hosts (`upload.ardrive.io/tx`). Per-finding
+  reachability (tarball-verified):
+  - **elliptic** (GHSA-vjh7-7g9h-fjfh, **CRITICAL**): imported only by the
+    **EthereumSigner** and `@cosmjs/crypto` (Cosmos payments). Exploit needs elliptic's
+    ECDSA `.sign()` called with attacker-controlled malformed input — never invoked (we
+    sign with RSA). Patched in **6.6.1**; the flagged copy was `6.5.4` via
+    `@ethersproject/signing-key`.
+  - **axios** (GHSA-3p68-rc4w-qgx5, SSRF): only in `@cosmjs/tendermint-rpc`; the
+    upload path uses `fetch`, not axios. SSRF needs a configured proxy + `NO_PROXY`
+    reliance + attacker-influenced host — none present. Patched **1.17.0**.
+  - **tmp** (GHSA-ph9p-34f9-6g65): an `optionalDependency` used only by arbundles'
+    disk file-bundle helpers, not the `streamSigner` upload path; needs
+    attacker-controlled `prefix`/`postfix`. Patched **0.2.6+**.
+  - **undici** (≤6.23.0): only via `@permaweb/aoconnect` (AO); client-side, needs an
+    attacker-controlled server. No 5.x patch exists → must move to **6.x**.
+- **Fix applied** — root `overrides` (the same approach Turbo pins in its monorepo
+  `resolutions`): `elliptic ^6.6.1`, `axios ^1.17.0`, `tmp ^0.2.7`, `undici ^6.24.0`.
+  Verified by `npm install` + `next build` + a **runtime module-load** of
+  `@ardrive/turbo-sdk` and `warp-isomorphic` under undici 6 (loads clean; AO path
+  unused). **Result: 67 vulns (3 critical / 7 high) → 59 (0 critical / 4 high)** — the
+  Arweave chain is cleared, so CI's `npm audit --audit-level=high` is one step
+  (the `ws` finding below) from blocking.
+- **Remaining `ws` HIGH** (8.0.0–8.20.0) is the **wallet stack**
+  (wagmi → walletconnect → reown), not Arweave; the tree carries several `ws` majors,
+  so it needs its own pass (`ws ^8.18.0` resolves the 8.x copy to 8.21.0). Out of scope
+  for this finding.
+- **One real (non-dependency) gap:** `/api/sign` will sign *any* 48-byte hash for an
+  authenticated user, so the platform key can be coerced into signing a data item the
+  user fully constructed (billed to the platform wallet). The 48-byte length check
+  blocks cross-protocol signing-oracle abuse but not this; today it's bounded
+  operationally by per-user quota + a deliberately small Turbo balance (`.env.example`).
+  Full fix = have the server reconstruct the data item from approved fields rather than
+  trust a bare hash.
+  ([elliptic advisory](https://github.com/advisories/GHSA-vjh7-7g9h-fjfh), [arbundles ArweaveSigner](https://github.com/dha-team/arbundles/blob/main/src/signing/chains/ArweaveSigner.ts), [Rsa4096Pss](https://github.com/dha-team/arbundles/blob/main/src/signing/keys/Rsa4096Pss.ts), [ANS-104](https://github.com/ArweaveTeam/arweave-standards/blob/master/ans/ANS-104.md), [npm overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/), [OpenVEX](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md))
+
 ---
 
 ## C. Methodology validation — the audit's conclusions hold up against the canonical frameworks
