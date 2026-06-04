@@ -109,10 +109,12 @@ function recompute(): void {
     // No scroll-gate: a visible video keeps playing through a scroll.
     const canPlay = !committed && r.visible && playing < MAX_CONCURRENT_PLAY
     if (canPlay) playing++
-    // A playing video is always buffered; otherwise the BUFFER_AHEAD nearest
-    // videos warm regardless of whether they're on screen yet, so landing on
-    // the next row is instant.
-    const buffer = canPlay || i < BUFFER_AHEAD
+    // The nearest BUFFER_AHEAD videos stay in the "loaded" window; everything
+    // else is released by InlineVideo to free the iOS media-element budget
+    // (pausing alone does NOT free a decoder). When a committed/detail video is
+    // open the feed is hidden behind it, so drop the whole feed out of the
+    // window — releasing its decoders so the detail's fresh element loads now.
+    const buffer = !committed && (canPlay || i < BUFFER_AHEAD)
     if (canPlay !== r.last.play || buffer !== r.last.buffer) {
       r.last = { play: canPlay, buffer }
       r.notify(r.last)

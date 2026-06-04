@@ -14,6 +14,13 @@ import { LRUCache } from '@/lib/lruCache'
 // not by this flag.)
 const LONG_FORM_DURATION_THRESHOLD_S = 60
 
+// How long a feed video may sit OUTSIDE the loaded window before its media
+// element is released — dropping the source + load() to free the iOS decoder,
+// which pausing alone does NOT do. The delay is scroll hysteresis: a card that
+// briefly dips out of the window mid-scroll isn't torn down. A detail video
+// opening releases the feed immediately instead (it needs the budget now).
+const RELEASE_DELAY_MS = 500
+
 // Resume position by canonical src, session-scoped. Updated on timeupdate so a
 // detail opened over a still-playing card picks up where the card is, and so
 // the value survives the card unmounting (LazyMount recycling). The old pool
@@ -89,6 +96,12 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   // of this and always play.
   const slotRef = useRef<FeedVideoSlot>({ play: false, buffer: false })
   const [buffering, setBuffering] = useState(false)
+  // Released = media element unloaded to free its decoder. On iOS, pausing a
+  // <video> does NOT free the decoder — only unloading does — so a feed of
+  // paused-but-loaded videos exhausts the device's media-element budget and
+  // new / scrolled-back / detail videos then stall. Far feed videos release;
+  // the near (loaded-window) ones stay alive for instant resume.
+  const [released, setReleased] = useState(false)
 
   const tryPlay = () => {
     const el = ref.current
@@ -172,6 +185,43 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controls, src])
 
+  // Release / restore the media element to bound the device's decoder budget.
+  // When a feed video falls out of the loaded window (buffer=false), free its
+  // decoder after a short hysteresis delay — immediately if a detail video is
+  // waiting for budget. When it re-enters the window the source is restored and
+  // it reloads (warm from cache) + seeks to the saved position. Committed
+  // (detail) videos never release.
+  useEffect(() => {
+    if (controls) return
+    if (buffering) {
+      setReleased(false)
+      return
+    }
+    const t = setTimeout(
+      () => setReleased(true),
+      committedActive() ? 0 : RELEASE_DELAY_MS,
+    )
+    return () => clearTimeout(t)
+  }, [buffering, controls])
+
+  // Free the decoder once released: preserve the position, then load() to abort
+  // the resource (the render has already cleared the src attribute). The poster
+  // / thumbhash layer behind the video carries the visual while it's unloaded.
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !released) return
+    if (Number.isFinite(el.currentTime) && el.currentTime > 0) {
+      currentTimeMemory.set(src, el.currentTime)
+    }
+    try {
+      el.removeAttribute('src')
+      el.load()
+    } catch {
+      /* load can throw mid-state; ignore */
+    }
+    setLoaded(false)
+  }, [released, src])
+
   // Persist position on unmount (covers a card recycled by LazyMount before a
   // timeupdate fires). The element is stable for this src (keyed on it), so
   // capturing it at effect time and reading currentTime in cleanup yields the
@@ -225,13 +275,13 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     <video
       ref={ref}
       key={src}
-      src={gateways[gatewayIndex] ?? src}
+      src={released ? undefined : (gateways[gatewayIndex] ?? src)}
       className={className}
       muted
       loop={!isLongForm}
       playsInline
       controls={controls}
-      preload={controls || buffering ? 'auto' : 'metadata'}
+      preload={controls || buffering ? 'auto' : 'none'}
       // Fade in over the poster/thumbhash layer once the first frame is ready.
       style={{ opacity: loaded ? 1 : 0, transition: 'opacity 0.2s ease' }}
       onError={handleError}
