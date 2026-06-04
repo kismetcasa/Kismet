@@ -1,9 +1,10 @@
 import { createConfig, http, type CreateConnectorFn } from 'wagmi'
+import { injected } from 'wagmi/connectors'
 import { createClient } from 'viem'
 import { base, mainnet } from 'wagmi/chains'
 import { connectorsForWallets, getDefaultWallets } from '@rainbow-me/rainbowkit'
 import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector'
-import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
+import { isCoinbaseWebView, isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
 
@@ -20,14 +21,12 @@ if (!projectId) {
 }
 
 // Manual config (rather than RainbowKit's `getDefaultConfig`) is required
-// because we need to prepend a non-RainbowKit connector — the Farcaster
-// Mini App connector — to the connectors array. RainbowKit's wallet list
-// is preserved via getDefaultWallets() → connectorsForWallets() so the
-// regular-web UX is unchanged: same modal, same wallet options. (That list
-// already includes Base Account, and wagmi's EIP-6963 discovery — on by
-// default — picks up the Base App's injected provider, so the Base App's
-// "standard web app" wallet path is fully covered without a bespoke
-// connector here.)
+// because we register non-RainbowKit connectors — the Farcaster Mini App
+// connector and a plain injected() for Coinbase WebViews — in the connectors
+// array below. RainbowKit's wallet list is preserved via getDefaultWallets()
+// → connectorsForWallets(), so the regular-web modal is unchanged — and it
+// already includes Base Account (Base's other recommended connector), so only
+// injected(), for the in-app browser, needs adding here.
 const { wallets } = getDefaultWallets()
 const rainbowKitConnectors = connectorsForWallets(wallets, {
   appName: 'Kismet',
@@ -132,20 +131,23 @@ function farcasterMiniAppTimeBounded(): CreateConnectorFn {
 
 export const wagmiConfig = createConfig({
   chains: [base, mainnet],
-  // Farcaster connector FIRST (when present) so wagmi's reconnect-on-mount
-  // tries it before any RainbowKit wallet. We only register it in embedded
-  // contexts (iframe / RN WebView) that are NOT a Coinbase WebView — a
-  // regular browser tab is never a Farcaster host, and the Base App (which
-  // dropped the Mini App spec in April 2026) is a Coinbase WebView that
-  // looks embedded but auto-connects via its injected provider through
-  // wagmi's EIP-6963 discovery. isPotentialMiniAppEnv() short-circuits
-  // both cases to false, so the FC connector is omitted and the standard
-  // web wallet path runs without a guaranteed-unauthorized probe burning
-  // the 1.5s timeout. SSR also returns false (no window) so the server
-  // build simply omits the FC connector — the client config is
-  // authoritative for runtime connection behavior.
+  // Two non-RainbowKit connectors, each gated to its environment and mutually
+  // exclusive (isCoinbaseWebView() implies isPotentialMiniAppEnv() is false):
+  //   1. Farcaster Mini App connector FIRST so wagmi's reconnect-on-mount
+  //      tries it before any RainbowKit wallet. Registered only in real
+  //      embedded Farcaster contexts (iframe / RN WebView); time-bounded so a
+  //      dead host bridge can't pin wagmi's serial reconnect on the 1.5s
+  //      timeout.
+  //   2. injected() for Coinbase WebViews (the Base App + Coinbase Wallet
+  //      browser). They dropped the Mini App spec and inject an EIP-1193
+  //      provider that is NOT announced over EIP-6963, so RainbowKit's
+  //      discovery never surfaces it. This plain connector targets that
+  //      window.ethereum; hooks/useBaseAppAutoConnect connects it on mount.
+  // Both gates return false during SSR (no window), so the server build omits
+  // both — the client config is authoritative at runtime.
   connectors: [
     ...(isPotentialMiniAppEnv() ? [farcasterMiniAppTimeBounded()] : []),
+    ...(isCoinbaseWebView() ? [injected()] : []),
     ...rainbowKitConnectors,
   ],
   // `client` factory (not `transports`) because Multicall3 batching is

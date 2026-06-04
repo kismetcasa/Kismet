@@ -1,25 +1,37 @@
-// Cheap, synchronous pre-flight shared by the wagmi config (to decide
-// whether to register the Farcaster Mini App connector) and the
-// FarcasterProvider bootstrap. Farcaster hosts always render Mini Apps in
-// an iframe (web) or a React Native WebView (mobile), so a regular browser
-// tab short-circuits to false without touching the SDK.
+// Cheap, synchronous environment pre-flights shared by the wagmi config and
+// the FarcasterProvider bootstrap — no SDK, no async, safe to call on render.
+
+// True only inside the Base App's (or Coinbase Wallet's) *mobile in-app
+// browser*, by its WebView UA token ("CipherBrowser" is Coinbase's WebView
+// suffix; the Base App — renamed from Coinbase Wallet — kept the
+// "CoinbaseWallet" token). These inject a wallet that discovery can't surface,
+// reached via a plain injected() connector (see lib/wagmi.ts and
+// hooks/useBaseAppAutoConnect).
 //
-// Coinbase WebView (Base App + Coinbase Wallet mobile dapp browser) is
-// explicitly excluded — those are embedded WebViews but NOT Farcaster
-// hosts. The Base App dropped the Mini App spec on April 9, 2026 (per
-// docs.base.org/apps/guides/migrate-to-standard-web-app); Coinbase Wallet
-// mobile was never a Mini App host. In both, wagmi's EIP-6963 auto-
-// discovery picks up the injected provider directly — registering the FC
-// connector would just burn the eth_accounts probe (and the 1.5s timeout
-// in lib/wagmi.ts) before falling through, producing visible flicker.
+// Deliberately UA-only — NOT the provider's isCoinbaseWallet flag, which the
+// desktop Coinbase *extension* also sets, where an on-load auto-connect would
+// pop an unsolicited prompt. The UA token appears only in the mobile WebView.
+export function isCoinbaseWebView(): boolean {
+  if (typeof window === 'undefined') return false
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
+  return /CipherBrowser|CoinbaseWallet/i.test(ua)
+}
+
+// True only for a *potential* Farcaster Mini App host: an embedded context
+// (iframe on web, RN WebView on mobile) that is NOT a Coinbase context. A
+// regular browser tab short-circuits to false without touching the SDK; the
+// FarcasterProvider bootstrap then confirms with sdk.isInMiniApp().
 export function isPotentialMiniAppEnv(): boolean {
   if (typeof window === 'undefined') return false
   try {
-    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
-    // CipherBrowser is Coinbase's WebView UA suffix; the Base App UA
-    // also carries "CoinbaseWallet" (the app was renamed from Coinbase
-    // Wallet but kept the UA token). Either match → not a Mini App env.
-    if (/CipherBrowser|CoinbaseWallet/i.test(ua)) return false
+    // Coinbase contexts are not Farcaster hosts, so the FC connector and the
+    // bootstrap are skipped for them — registering the FC connector would just
+    // burn its eth_accounts probe (and the 1.5s timeout in lib/wagmi.ts)
+    // before falling through, producing visible flicker. Exclude both the
+    // mobile in-app browser (UA) and any Coinbase-injected provider (the
+    // isCoinbaseWallet flag — also covers the desktop extension inside an
+    // embed, where the iframe check below would otherwise return true).
+    if (isCoinbaseWebView()) return false
     const eth = (window as { ethereum?: { isCoinbaseWallet?: boolean } }).ethereum
     if (eth?.isCoinbaseWallet === true) return false
     const inIframe = window.self !== window.top
@@ -29,8 +41,8 @@ export function isPotentialMiniAppEnv(): boolean {
     return inIframe || inReactNativeWebView
   } catch {
     // Cross-origin iframe access throws on `window.top` — that itself is a
-    // strong signal we're embedded. (Base App can't reach here: it's a
-    // same-origin WebView so the UA short-circuit above runs first.)
+    // strong signal we're embedded. (A Coinbase WebView can't reach here: it's
+    // a same-origin WebView so the UA short-circuit above runs first.)
     return true
   }
 }
