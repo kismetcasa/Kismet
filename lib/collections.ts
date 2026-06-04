@@ -1,5 +1,11 @@
 import { encodeFunctionData, type Address } from 'viem'
-import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY, fixedPriceStrategy } from './zoraMint'
+import {
+  OPEN_EDITION_MINT_SIZE,
+  ZORA_FIXED_PRICE_STRATEGY,
+  fixedPriceStrategy,
+  erc20Minter,
+  usdcAddress,
+} from './zoraMint'
 import { BASE_CHAIN_ID, getChain } from './chains'
 
 // inprocess's Base Mainnet ZORA 1155 Contract Factory (the `createContract`
@@ -128,6 +134,27 @@ const COLLECTION_ABI = [
     inputs: [],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  {
+    // Per-token royalty config. Used to route a token's secondary royalties +
+    // creator-reward recipient to a split (so getCreatorRewardRecipient resolves
+    // it). Tuple matches ICreatorRoyaltiesControl.RoyaltyConfiguration.
+    name: 'updateRoyaltiesForToken',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'tokenId', type: 'uint256' },
+      {
+        type: 'tuple',
+        name: 'newConfiguration',
+        components: [
+          { name: 'royaltyMintSchedule', type: 'uint32' },
+          { name: 'royaltyBPS', type: 'uint32' },
+          { name: 'royaltyRecipient', type: 'address' },
+        ],
+      },
+    ],
+    outputs: [],
+  },
 ] as const
 
 const FIXED_PRICE_SALE_STRATEGY_ABI = [
@@ -146,6 +173,33 @@ const FIXED_PRICE_SALE_STRATEGY_ABI = [
           { name: 'maxTokensPerAddress', type: 'uint64' },
           { name: 'pricePerToken', type: 'uint96' },
           { name: 'fundsRecipient', type: 'address' },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+] as const
+
+// ERC20Minter.setSale — the USDC analog of FIXED_PRICE_SALE_STRATEGY_ABI.
+// pricePerToken widens to uint256 and the struct carries a trailing `currency`
+// field. Matches ERC20_MINTER_SALE_ABI (the read side) in lib/saleConfig.ts.
+const ERC20_MINTER_SET_SALE_ABI = [
+  {
+    name: 'setSale',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'tokenId', type: 'uint256' },
+      {
+        type: 'tuple',
+        name: 'salesConfig',
+        components: [
+          { name: 'saleStart', type: 'uint64' },
+          { name: 'saleEnd', type: 'uint64' },
+          { name: 'maxTokensPerAddress', type: 'uint64' },
+          { name: 'pricePerToken', type: 'uint256' },
+          { name: 'fundsRecipient', type: 'address' },
+          { name: 'currency', type: 'address' },
         ],
       },
     ],
@@ -297,8 +351,24 @@ interface MomentMintParams {
    * create can't shift the id out from under our setSale/adminMint.
    */
   newTokenId: bigint
-  /** Target chain — selects the FixedPrice strategy address. Defaults to Base. */
+  /** Target chain — selects the strategy + USDC addresses. Defaults to Base. */
   chainId?: number
+  /**
+   * Sale currency. 'eth' (default) → FixedPriceSaleStrategy; 'usdc' →
+   * ERC20Minter (grants MINTER to the ERC20 strategy and writes the USDC
+   * currency into the sale config). `pricePerTokenWei` is base units either way
+   * (wei for ETH, 6-decimal units for USDC).
+   */
+  currency?: 'eth' | 'usdc'
+  /**
+   * When set, append `updateRoyaltiesForToken` to route secondary royalties +
+   * the creator-reward recipient to this address (the split). This is what
+   * makes `getCreatorRewardRecipient(tokenId)` resolve the split — the mainnet
+   * distribute path (useMomentSplits) relies on it, mirroring In Process on Base.
+   */
+  royaltyRecipient?: Address
+  /** Royalty basis points written alongside `royaltyRecipient` (default 0). */
+  royaltyBps?: number
 }
 
 // Builds the `multicall(bytes[])` sequence that creates + sells + (optionally)
@@ -320,7 +390,11 @@ export function buildMomentMintActions(params: MomentMintParams): `0x${string}`[
   const lastTokenId = newTokenId - 1n
   const maxSupply = params.maxSupply ?? OPEN_EDITION_MINT_SIZE
   const mintCount = params.mintToCreatorCount ?? 1
-  const strategy = fixedPriceStrategy(params.chainId ?? BASE_CHAIN_ID)
+  const chainId = params.chainId ?? BASE_CHAIN_ID
+  // ETH → FixedPriceSaleStrategy; USDC → ERC20Minter. The chosen strategy gets
+  // the per-token MINTER grant and is the callSale target.
+  const useUsdc = params.currency === 'usdc'
+  const strategy = useUsdc ? erc20Minter(chainId) : fixedPriceStrategy(chainId)
 
   const actions: `0x${string}`[] = []
 
@@ -343,7 +417,7 @@ export function buildMomentMintActions(params: MomentMintParams): `0x${string}`[
     }),
   )
 
-  // 3. Grant MINTER permission to the FixedPrice sale strategy for this token.
+  // 3. Grant MINTER permission to the sale strategy for this token.
   actions.push(
     encodeFunctionData({
       abi: COLLECTION_ABI,
@@ -352,21 +426,37 @@ export function buildMomentMintActions(params: MomentMintParams): `0x${string}`[
     }),
   )
 
-  // 4. Configure the sale: price + window + fundsRecipient.
-  const saleData = encodeFunctionData({
-    abi: FIXED_PRICE_SALE_STRATEGY_ABI,
-    functionName: 'setSale',
-    args: [
-      newTokenId,
-      {
-        saleStart: params.saleStart,
-        saleEnd: params.saleEnd,
-        maxTokensPerAddress: 0n, // 0 = unlimited per address
-        pricePerToken: params.pricePerTokenWei,
-        fundsRecipient: params.fundsRecipient,
-      },
-    ],
-  })
+  // 4. Configure the sale: price + window + fundsRecipient (+ currency for USDC).
+  const saleData = useUsdc
+    ? encodeFunctionData({
+        abi: ERC20_MINTER_SET_SALE_ABI,
+        functionName: 'setSale',
+        args: [
+          newTokenId,
+          {
+            saleStart: params.saleStart,
+            saleEnd: params.saleEnd,
+            maxTokensPerAddress: 0n, // 0 = unlimited per address
+            pricePerToken: params.pricePerTokenWei,
+            fundsRecipient: params.fundsRecipient,
+            currency: usdcAddress(chainId),
+          },
+        ],
+      })
+    : encodeFunctionData({
+        abi: FIXED_PRICE_SALE_STRATEGY_ABI,
+        functionName: 'setSale',
+        args: [
+          newTokenId,
+          {
+            saleStart: params.saleStart,
+            saleEnd: params.saleEnd,
+            maxTokensPerAddress: 0n, // 0 = unlimited per address
+            pricePerToken: params.pricePerTokenWei,
+            fundsRecipient: params.fundsRecipient,
+          },
+        ],
+      })
   actions.push(
     encodeFunctionData({
       abi: COLLECTION_ABI,
@@ -375,7 +465,27 @@ export function buildMomentMintActions(params: MomentMintParams): `0x${string}`[
     }),
   )
 
-  // 5. (Optional) admin-mint copies to the creator.
+  // 5. (Optional) route secondary royalties + the creator-reward recipient to a
+  //    split, so getCreatorRewardRecipient resolves it (mainnet distribute
+  //    depends on this; mirrors In Process's Base behavior).
+  if (params.royaltyRecipient) {
+    actions.push(
+      encodeFunctionData({
+        abi: COLLECTION_ABI,
+        functionName: 'updateRoyaltiesForToken',
+        args: [
+          newTokenId,
+          {
+            royaltyMintSchedule: 0,
+            royaltyBPS: params.royaltyBps ?? 0,
+            royaltyRecipient: params.royaltyRecipient,
+          },
+        ],
+      }),
+    )
+  }
+
+  // 6. (Optional) admin-mint copies to the creator.
   if (mintCount > 0) {
     actions.push(
       encodeFunctionData({
