@@ -36,7 +36,7 @@ export default function Error({
   return (
     <div role="alert" className="max-w-md mx-auto py-16 px-4 text-center font-mono">
       <h2 className="text-sm text-ink mb-2">something went wrong</h2>
-      <p className="text-xs text-muted mb-4">we've been notified.</p>
+      <p className="text-xs text-muted mb-4">we&apos;ve been notified.</p>
       {error.digest && (
         <p className="text-[10px] text-faint mb-4">
           reference: <code>{error.digest}</code>
