@@ -324,10 +324,14 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           throw new Error(d.error ?? 'Failed')
         }
         setMintPassKeys((prev) => {
-          const next = new Set(prev)
-          if (isDisplay) next.delete(key)
-          else next.add(key)
-          return next
+          if (isDisplay) {
+            const next = new Set(prev)
+            next.delete(key)
+            return next
+          }
+          // Single display at a time ("latest wins") — mirror the server
+          // clearing the set on promote, so exactly one mint is ever the hero.
+          return new Set([key])
         })
         // Promoting to a Mint Pass Display also features the mint (DISPLAY ⊆
         // FEATURED) so it still shows as a normal card on mobile. Demoting

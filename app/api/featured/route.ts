@@ -84,6 +84,11 @@ export async function POST(req: NextRequest) {
   // (zrem from DISPLAYS only, below) leaves it a normal featured card rather
   // than making it vanish from the tab.
   if (body.type === 'momentDisplay') {
+    // Single display at a time ("latest wins"): clear any existing display
+    // first so exactly one mint is ever the hero. We only del the displays
+    // set — cleared members stay in FEATURED_KEY, so a previously-displayed
+    // mint demotes to an ordinary featured card rather than vanishing.
+    await redis.del(FEATURED_MOMENT_DISPLAYS_KEY)
     await Promise.all([
       redis.zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: now, member }),
       redis.zadd(FEATURED_KEY, { score: now, member }),

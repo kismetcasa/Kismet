@@ -19,6 +19,10 @@ interface FeaturedMomentProps {
   tokenId: string
   /** Above-the-fold hint — the hero leads the featured tab and is the LCP. */
   priority?: boolean
+  /** Reports whether this slot paints anything. A configured display still
+   *  renders null when its mint is hidden or the fetch fails; the feed uses
+   *  this so its empty state shows a message instead of a blank tab then. */
+  onResolved?: (hasContent: boolean) => void
 }
 
 // Max showcase height; the box shrinks below this so it always hugs the
@@ -58,7 +62,7 @@ const DISPLAY_BG = '#cc5500'
  * both presentations from that single fetch. Renders nothing if the moment
  * fails to load or is hidden.
  */
-export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentProps) {
+export function FeaturedMoment({ address, tokenId, priority, onResolved }: FeaturedMomentProps) {
   const router = useRouter()
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [failed, setFailed] = useState(false)
@@ -137,7 +141,13 @@ export function FeaturedMoment({ address, tokenId, priority }: FeaturedMomentPro
     }
   }, [detail, address, tokenId, creatorAddress, creatorUsername])
 
-  if (failed || detail?.hidden) return null
+  // Whether the hero will paint. It returns null just below for a hidden or
+  // failed mint; report that up so the feed shows its empty message instead of
+  // a blank tab when this display is the only featured content.
+  const blank = failed || !!detail?.hidden
+  useEffect(() => { onResolved?.(!blank) }, [blank, onResolved])
+
+  if (blank) return null
   const loading = !detail
   const momentHref = `/moment/${address}/${tokenId}`
   const profileHref = creatorAddress ? `/profile/${creatorAddress}` : undefined

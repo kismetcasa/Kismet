@@ -33,6 +33,11 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   // returns, not when both endpoints have. null = pending, [] = empty.
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
+  // Whether the hero (if one is configured) actually paints — FeaturedMoment
+  // reports false when its mint is hidden or the fetch fails. Starts true so the
+  // empty message stays suppressed while the hero loads (no flash), then
+  // corrects if it turns out blank. Resets on each remount (featuredRevision).
+  const [heroHasContent, setHeroHasContent] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -70,9 +75,13 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   const hero = displayKey && colon > 0
     ? (
       <FeaturedMoment
+        // Key by the mint so a different display mounts a fresh instance,
+        // never inheriting the prior one's fetch/ratio/resolved state.
+        key={displayKey}
         address={displayKey.slice(0, colon)}
         tokenId={displayKey.slice(colon + 1)}
         priority
+        onResolved={setHeroHasContent}
       />
     )
     : null
@@ -114,9 +123,11 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
 
   // Wait for collections too before showing empty — otherwise the tab
   // flashes "empty" between moments resolving empty and collections done.
-  // Skip it when the hero leads the tab so it never reads "nothing here"
-  // above the showcase. (hero is null here by the guard.)
-  if (blocks.length === 0 && collections !== null && !hero) {
+  // Gate on what the hero actually PAINTS, not just that one is configured:
+  // FeaturedMoment renders null for a hidden/failed display, and `hero` is a
+  // truthy element regardless — so without heroHasContent a sole hidden/failed
+  // display would leave the tab blank (no showcase AND no message).
+  if (blocks.length === 0 && collections !== null && !(hero && heroHasContent)) {
     return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
   }
 
