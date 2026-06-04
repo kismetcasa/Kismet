@@ -33,10 +33,11 @@ interface AdminContextValue {
   startSession: () => Promise<void>
   featuredKeys: Set<string>
   featuredCollectionAddrs: Set<string>
-  // Mints promoted to a Mint Pass Display — rendered as the desktop hero in
-  // the featured tab. Keyed `<addr>:<tokenId>` (lowercase addr). A subset of
-  // featuredKeys (DISPLAY ⊆ FEATURED), so a display also shows as a normal
-  // featured card on mobile.
+  // Mints promoted to a Mint Pass Display — the curated showcase atop the
+  // featured tab. FeaturedMoment renders it as a rich hero on desktop and an
+  // ordinary card on mobile (CSS picks which by viewport). Keyed
+  // `<addr>:<tokenId>` (lowercase addr). A subset of featuredKeys
+  // (DISPLAY ⊆ FEATURED), so demoting it leaves it featured rather than gone.
   mintPassKeys: Set<string>
   // Bumped on every successful curation toggle (and ONLY then — not by the
   // initial /api/featured load). Lets the featured tab remount-to-refetch on
@@ -323,10 +324,14 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           throw new Error(d.error ?? 'Failed')
         }
         setMintPassKeys((prev) => {
-          const next = new Set(prev)
-          if (isDisplay) next.delete(key)
-          else next.add(key)
-          return next
+          if (isDisplay) {
+            const next = new Set(prev)
+            next.delete(key)
+            return next
+          }
+          // Single display at a time ("latest wins") — mirror the server
+          // clearing the set on promote, so exactly one mint is ever the hero.
+          return new Set([key])
         })
         // Promoting to a Mint Pass Display also features the mint (DISPLAY ⊆
         // FEATURED) so it still shows as a normal card on mobile. Demoting

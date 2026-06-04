@@ -25,14 +25,19 @@ interface FeaturedFeedProps {
 
 export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedProps) {
   // Which featured mints are Mint Pass Displays — sourced from AdminContext
-  // (already fetched for the feature stars) so the hero reuses the mint's data
-  // straight from the featured timeline below, with no extra /api/featured or
-  // /api/moment round-trips.
+  // (already fetched for the feature stars), so picking the display mint costs
+  // no extra /api/featured round-trip here. FeaturedMoment self-fetches that
+  // one mint's detail; mintPassKeys only tells us which key it is.
   const { mintPassKeys } = useAdmin()
   // Per-endpoint state so the moments grid paints when /api/timeline
   // returns, not when both endpoints have. null = pending, [] = empty.
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
+  // Whether the hero (if one is configured) actually paints — FeaturedMoment
+  // reports false when its mint is hidden or the fetch fails. Starts true so the
+  // empty message stays suppressed while the hero loads (no flash), then
+  // corrects if it turns out blank. Resets on each remount (featuredRevision).
+  const [heroHasContent, setHeroHasContent] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -57,28 +62,36 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
   }
 
-  // The desktop hero (web-only) is the curated Mint Pass Display — one at a
-  // time. Render it from its ref (FeaturedMoment self-fetches) so it shows
-  // even when it isn't a standalone featured-timeline mint (e.g. a mint inside
-  // a featured collection). On mobile/miniapp there's no hero — the mint shows
-  // in the feed as a normal card / collection-row member instead.
-  const displayKey = !isMobile && mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
+  // The curated Mint Pass Display — one at a time, always leading the tab.
+  // FeaturedMoment renders it in two CSS-toggled presentations (a rich hero at
+  // lg+, an ordinary card below lg), so the VIEWPORT alone — not a device/UA/
+  // miniapp guess — decides which one shows. That's why there's no isMobile/
+  // inMiniApp gate here: the same node is correct on web, mobile, and every
+  // embed. FeaturedMoment self-fetches, so it shows even for a mint that only
+  // appears inside a featured collection (never as a standalone timeline mint).
+  const displayKey = mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
+  const keyOf = (m: Moment) => `${m.address?.toLowerCase()}:${m.token_id}`
   const colon = displayKey ? displayKey.indexOf(':') : -1
   const hero = displayKey && colon > 0
     ? (
       <FeaturedMoment
+        // Key by the mint so a different display mounts a fresh instance,
+        // never inheriting the prior one's fetch/ratio/resolved state.
+        key={displayKey}
         address={displayKey.slice(0, colon)}
         tokenId={displayKey.slice(colon + 1)}
         priority
+        onResolved={setHeroHasContent}
       />
     )
     : null
 
-  // Pull the hero mint out of the standalone-moments grid so it isn't shown
-  // twice. (A copy may still appear inside its own collection row below — the
-  // collection's full set is intentionally left complete.)
+  // Show the display mint exactly once — as the hero above. Pull it out of the
+  // standalone-moments grid here, and out of any collection row it belongs to
+  // below (safeCollections), so it never double-appears: beside the desktop
+  // hero, or beside the promoted card the hero renders below lg.
   const gridMoments = displayKey
-    ? moments.filter((m) => `${m.address?.toLowerCase()}:${m.token_id}` !== displayKey)
+    ? moments.filter((m) => keyOf(m) !== displayKey)
     : moments
 
   // Interleave: STRIDE moments → 1 collection → STRIDE moments → ...
@@ -88,7 +101,12 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     | { kind: 'moments'; items: Moment[] }
     | { kind: 'collection'; row: FeaturedCollectionRow }
 
-  const safeCollections = collections ?? []
+  // Strip the display mint from its collection row too (see gridMoments) so the
+  // hero is its only appearance. CollectionRow already renders a graceful
+  // "no moments yet" if this empties a single-mint collection's preview.
+  const safeCollections = displayKey
+    ? (collections ?? []).map((c) => ({ ...c, moments: c.moments.filter((m) => keyOf(m) !== displayKey) }))
+    : (collections ?? [])
   const blocks: Block[] = []
   let mIdx = 0
   let cIdx = 0
@@ -105,9 +123,11 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
 
   // Wait for collections too before showing empty — otherwise the tab
   // flashes "empty" between moments resolving empty and collections done.
-  // Skip it when the hero leads the tab so it never reads "nothing here"
-  // above the showcase. (hero is null here by the guard.)
-  if (blocks.length === 0 && collections !== null && !hero) {
+  // Gate on what the hero actually PAINTS, not just that one is configured:
+  // FeaturedMoment renders null for a hidden/failed display, and `hero` is a
+  // truthy element regardless — so without heroHasContent a sole hidden/failed
+  // display would leave the tab blank (no showcase AND no message).
+  if (blocks.length === 0 && collections !== null && !(hero && heroHasContent)) {
     return <div className="py-8 text-center text-xs font-mono text-muted">{emptyMessage}</div>
   }
 

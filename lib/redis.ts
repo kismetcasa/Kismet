@@ -30,8 +30,10 @@ export const redis = new Redis({
 export const FEATURED_KEY = 'kismetart:featured'
 export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 // Mint Pass Display — individual mints curated to render at collection scale
-// (a full-bleed showcase card) in the featured tab. Kept distinct from
-// FEATURED_KEY (the small featured grid) and mutually exclusive with it: a
-// mint is either a small feature or a Mint Pass Display, never both.
+// (a full-bleed showcase) atop the featured tab. A SUBSET of FEATURED_KEY
+// (DISPLAY ⊆ FEATURED): promoting writes the member to BOTH sets, so demoting
+// it (zrem from this set only) leaves it an ordinary featured card instead of
+// dropping it from the tab. Single display at a time — promoting clears this
+// set first (see /api/featured POST).
 export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'

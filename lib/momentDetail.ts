@@ -2,6 +2,7 @@ import { cache } from 'react'
 import { inprocessUrl, type MomentDetail } from './inprocess'
 import { isMomentHidden } from './hiddenMoments'
 import { getMomentMeta } from './notifications'
+import { resolveCanonicalProfile } from './addressUnion'
 
 /**
  * Look up a token's creator via the inprocess timeline endpoint, which
@@ -53,9 +54,10 @@ export async function fetchCreatorFromTimeline(
  * The 60s revalidate is the same window the /api/moment proxy uses, so
  * client and server reads stay consistent on first paint. Hidden state
  * is read uncached from KV alongside the fetch and merged in — same
- * shape /api/moment returns. Creator is stitched from the timeline
- * lookup so downstream consumers (page metadata, OG image card) don't
- * have to guess momentAdmins[0].
+ * shape /api/moment returns. Creator prefers the KV minter EOA (the real
+ * artist) over inprocess's timeline attribution, with the artist's username
+ * resolved server-side so page metadata + the OG share card read the real
+ * name (no momentAdmins[0] guessing, no operator mis-attribution).
  */
 export const fetchMomentDetail = cache(async (
   address: string,
@@ -63,13 +65,28 @@ export const fetchMomentDetail = cache(async (
 ): Promise<MomentDetail | null> => {
   try {
     const url = inprocessUrl('/moment', { collectionAddress: address, tokenId, chainId: '8453' })
-    const [res, hidden, creator] = await Promise.all([
+    const [res, hidden, timelineCreator, kvCreator] = await Promise.all([
       fetch(url, { next: { revalidate: 60 } }),
       isMomentHidden(address, tokenId),
       fetchCreatorFromTimeline(address, tokenId),
+      getKvCreatorAddress(address, tokenId),
     ])
     if (!res.ok) return null
     const data = (await res.json()) as MomentDetail
+    // Prefer the KV minter EOA (the real artist) over inprocess's timeline
+    // attribution (the collection operator for delegated mints) — same priority
+    // as /api/moment and the detail page. Unlike /api/moment (which leaves the
+    // name for the client to resolve), resolve the artist's username server-side
+    // here: the consumers are the page metadata + OG share card, which have no
+    // client to do it. resolveCanonicalProfile covers every identity model
+    // (address-keyed, FID-keyed, sibling-inherited) + the FC-username fallback,
+    // matching the profile page. Non-Kismet mints (no KV entry) keep the
+    // timeline creator.
+    let creator = timelineCreator
+    if (kvCreator) {
+      const { profile, farcaster } = await resolveCanonicalProfile(kvCreator)
+      creator = { address: kvCreator, username: profile.username || farcaster?.username || null }
+    }
     return { ...data, hidden, creator }
   } catch {
     return null
