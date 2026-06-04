@@ -71,6 +71,18 @@ interface MomentMetadataInline {
 }
 
 // Moment object as returned by GET /api/timeline (metadata inlined)
+export interface MomentSaleConfig {
+  /** Zora sale strategy: fixedPrice = ETH (FixedPriceSaleStrategy),
+   *  erc20Mint = USDC (ERC20Minter). Drives inferCollectCurrency. */
+  type?: 'fixedPrice' | 'erc20Mint'
+  /** Price per token in base units (wei for ETH, 6-dp for USDC). */
+  pricePerToken: string
+  saleStart?: string
+  saleEnd?: string
+  /** ERC20 currency address (USDC) when type === 'erc20Mint'. */
+  currency?: string
+}
+
 export interface Moment {
   address: string
   token_id: string
@@ -94,13 +106,7 @@ export interface Moment {
   // stays so the fast path still fires for any caller that DOES supply it
   // (and so a future warm-cache enrichment can populate it without a type
   // change). Shape matches MomentDetail.saleConfig for trivial assignability.
-  saleConfig?: {
-    type?: 'fixedPrice' | 'erc20Mint'
-    pricePerToken: string
-    saleStart?: string
-    saleEnd?: string
-    currency?: string
-  }
+  saleConfig?: MomentSaleConfig
   // Server-stitched chip metadata. Undefined = route didn't enrich
   // (client falls back). Defined-with-null-name = known contract, no
   // chip (suppress without re-fetching).

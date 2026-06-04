@@ -1,15 +1,19 @@
-// Client-side memo of video durations keyed by canonical src URL.
-// Populated by PaginatedGrid as soon as /api/timeline responses arrive
-// (the route surfaces durationSec via the KV stitch onto each Moment's
-// kismet_duration_sec field). Read by InlineVideo to pick the long-form preload strategy at
+// Client-side memo of video durations keyed by the RAW media URI
+// (ar://|ipfs://|https://) — the exact string InlineVideo reads back with
+// (getVideoDuration(src), where src is resolveMomentMedia's media.src).
+// Populated by MomentCard from each Moment's server-stitched
+// kismet_duration_sec field (KV-stitched onto the /api/timeline response).
+// Read by InlineVideo to pick the long-form preload strategy at
 // element-create time, skipping the round trip to `loadedmetadata`.
 //
-// Module-level so it survives unmounts within a session — the same
-// video re-mounted on a different feed reuses the seeded value.
-// Cleared automatically when the tab unloads; no LRU needed at typical
-// catalog sizes.
+// LRU-bounded (not a bare Map) so a long browse session over a large video
+// catalog can't grow it without bound — matches the other browser-side
+// caches (momentCache, textCache, profileCache, …). Entries are tiny
+// (string → int) so the cap is generous; it exists purely as a ceiling.
 
-const cache = new Map<string, number>()
+import { LRUCache } from '@/lib/lruCache'
+
+const cache = new LRUCache<string, number>(512)
 
 export function setVideoDuration(src: string, durationSec: number): void {
   if (!src || !Number.isFinite(durationSec) || durationSec <= 0) return

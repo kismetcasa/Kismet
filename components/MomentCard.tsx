@@ -13,7 +13,6 @@ import {
   inferCollectCurrency,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
-  type MomentDetail,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -30,6 +29,8 @@ import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { setVideoDuration } from '@/lib/media/durationCache'
 import { ProfileAvatar } from './ProfileAvatar'
+import { useInViewDwell } from '@/hooks/useInViewDwell'
+import { useMomentSale } from '@/hooks/useMomentSale'
 
 interface MomentCardProps {
   moment: Moment
@@ -102,9 +103,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const prefetchedRef = useRef<string>('')
   const [imgError, setImgError] = useState(false)
   const [videoError, setVideoError] = useState(false)
-  const [price, setPrice] = useState<string | null>(null)
-  const [pricePerToken, setPricePerToken] = useState<bigint | null>(null)
-  const [currency, setCurrency] = useState<CollectCurrency | null>(null)
+  // Card root — observed by the in-view dwell gate that drives the lazy
+  // price/RPC reads below.
+  const articleRef = useRef<HTMLElement>(null)
   // Seed with the inprocess-provided username when available so we never
   // flash a raw address for users who set their name on inprocess but not
   // on Kismet. Falls back to shortAddress until Kismet's profile cache
@@ -156,32 +157,24 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     })
   }, [moment.address, moment.kismetCollection])
 
-  // Defer the per-card price fetch + the two on-chain reads off the initial
-  // mount path. Firing them on mount stacks a network + RPC + re-render burst
-  // onto the synchronous commit where a page of cards mounts at once — the
-  // open-feed freeze. Waiting for idle keeps that commit light; price/supply
-  // still popcorn in a beat later, and the collect button stays gated on
-  // collectReady until they land.
-  const [deferReady, setDeferReady] = useState(false)
-  useEffect(() => {
-    const w = window as Window & {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
-      cancelIdleCallback?: (handle: number) => void
-    }
-    if (w.requestIdleCallback) {
-      const h = w.requestIdleCallback(() => setDeferReady(true), { timeout: 1500 })
-      return () => w.cancelIdleCallback?.(h)
-    }
-    const t = setTimeout(() => setDeferReady(true), 300)
-    return () => clearTimeout(t)
-  }, [])
+  // Gate the per-card price read + the two on-chain reads on an in-view dwell:
+  // they fire only once the card has settled within ~200px of the viewport for
+  // ~150ms. A fast flick never trips the dwell, so cards the user scrolls
+  // straight past do zero network + zero RPC — this is what keeps the feed from
+  // breaking on a fast scroll. (Replaces the old blind requestIdleCallback /
+  // setTimeout(300) that fired for every mounted card and degraded to a fixed
+  // timer on iOS, where requestIdleCallback is unsupported.)
+  const inView = useInViewDwell(articleRef, { rootMargin: '200px', dwellMs: 150 })
 
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
     args: connectedAddress ? [connectedAddress, BigInt(moment.token_id)] : undefined,
-    query: { enabled: deferReady && !!connectedAddress },
+    // staleTime: a scroll-back remount reads the cached balance instead of
+    // re-issuing the (multicall-batched) eth_call. Collect explicitly refetches
+    // after a successful mint, so ownership never goes stale.
+    query: { enabled: inView && !!connectedAddress, staleTime: 30_000 },
   })
   const owned = ownedBalance ? Number(ownedBalance) : 0
 
@@ -190,60 +183,48 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     abi: ZORA_1155_TOKEN_INFO_ABI,
     functionName: 'getTokenInfo',
     args: [BigInt(moment.token_id)],
-    query: { enabled: deferReady },
+    query: { enabled: inView, staleTime: 30_000 },
   })
   const maxSupply = tokenInfo?.maxSupply
   const totalMinted = tokenInfo?.totalMinted
 
   const meta = moment.metadata ?? {}
 
-  // Price + currency. hidePriceSupply only controls badge rendering —
-  // compact contexts still need these state values to drive collect.
+  // Price + currency. hidePriceSupply only controls badge rendering — compact
+  // contexts still need these values to drive collect.
   //
-  // Two paths:
-  //   1. Fast path: if a caller supplies moment.saleConfig, populate state
-  //      directly and skip the round-trip. NOTE: /api/timeline does NOT stitch
-  //      saleConfig today (server-side enrichment was reverted — see the
-  //      comment near the end of app/api/timeline/route.ts), so feed moments
-  //      fall through to path 2. This branch stays for any caller that does
-  //      supply it (and for a future warm-cache enrichment).
-  //   2. Canonical path for feed moments: fetch /api/moment per card. Deferred
-  //      to idle (see deferReady) so it doesn't fire during the render-in
-  //      window; price/supply popcorn in a beat later.
-  useEffect(() => {
-    if (moment.saleConfig) {
-      // Match the fetch path's implicit error swallowing (the .catch
-      // below covers the same setters). Without this, a malformed
-      // pricePerToken string in an enriched timeline response would
-      // throw out of BigInt() and bubble as an unhandled effect error
-      // instead of letting the card render with un-set price state.
-      try {
-        const cur = inferCollectCurrency(moment.saleConfig)
-        setPrice(formatPrice(moment.saleConfig.pricePerToken, cur))
-        setPricePerToken(BigInt(moment.saleConfig.pricePerToken))
-        setCurrency(cur)
-      } catch {}
-      return
+  // saleConfig source, in priority order:
+  //   1. moment.saleConfig — the fast path when a caller (or a future warm-
+  //      cache enrichment) stitched it. /api/timeline does NOT today, so feed
+  //      cards fall through to (2).
+  //   2. useMomentSale — a dwell-gated react-query read that coalesces every
+  //      visible card's request into one /api/moments batch call (see
+  //      hooks/useMomentSale): cached, deduped, and only fired once the card
+  //      has dwelt in view, so a fast scroll past never fetches.
+  const { data: saleData } = useMomentSale(
+    moment.address,
+    moment.token_id,
+    inView && !moment.saleConfig,
+  )
+  const { price, pricePerToken, currency } = useMemo<{
+    price: string | null
+    pricePerToken: bigint | null
+    currency: CollectCurrency | null
+  }>(() => {
+    const sc = moment.saleConfig ?? saleData ?? null
+    if (!sc) return { price: null, pricePerToken: null, currency: null }
+    try {
+      const cur = inferCollectCurrency(sc)
+      return {
+        price: formatPrice(sc.pricePerToken, cur),
+        pricePerToken: BigInt(sc.pricePerToken),
+        currency: cur,
+      }
+    } catch {
+      // Malformed pricePerToken — render with un-set price rather than throw.
+      return { price: null, pricePerToken: null, currency: null }
     }
-    // Held until idle (see deferReady) so the fetch doesn't fire during the
-    // render-in window. The saleConfig fast-path above still runs immediately
-    // when present.
-    if (!deferReady) return
-    const params = new URLSearchParams({
-      collectionAddress: moment.address,
-      tokenId: moment.token_id,
-      chainId: '8453',
-    })
-    fetch(`/api/moment?${params}`)
-      .then((r) => r.ok ? r.json() as Promise<MomentDetail> : Promise.reject())
-      .then((detail) => {
-        const cur = inferCollectCurrency(detail.saleConfig)
-        setPrice(formatPrice(detail.saleConfig.pricePerToken, cur))
-        setPricePerToken(BigInt(detail.saleConfig.pricePerToken))
-        setCurrency(cur)
-      })
-      .catch(() => {})
-  }, [moment.address, moment.token_id, moment.saleConfig, deferReady])
+  }, [moment.saleConfig, saleData])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
@@ -324,12 +305,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   )
   const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
   // Seed the duration cache for InlineVideo to read before it mounts.
-  // Idempotent (Map.set
-  // with same value) so re-renders are free. Skipped for non-video and
-  // for moments without the server-stitched kismet_duration_sec field
-  // (older mints predating the durationSec write at /api/collections POST).
-  if (isVideo && meta.animation_url && moment.kismet_duration_sec) {
-    setVideoDuration(resolveUri(meta.animation_url), moment.kismet_duration_sec)
+  // CRITICAL: key on media.src — the exact raw ar://|ipfs:// URI that
+  // InlineVideo reads back with (getVideoDuration(src)). The old key
+  // resolveUri(meta.animation_url) produced the resolved https gateway
+  // URL, which never matched media.src, so isLongForm was permanently
+  // false and long-form videos were stuck on preload="metadata" + loop
+  // (the resume-position-survives behavior never engaged). media.src also
+  // covers content.uri-only videos that have no animation_url set.
+  // Idempotent (same key+value) so re-renders are free; skipped for
+  // non-video and for moments lacking the server-stitched duration.
+  if (isVideo && media.src && moment.kismet_duration_sec) {
+    setVideoDuration(media.src, moment.kismet_duration_sec)
   }
   return (
     // content-visibility / contain-intrinsic-size were here originally
@@ -340,6 +326,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     // savings on the desktop browsers that DO honour the property
     // aren't worth the visible breakage on the primary mobile path.
     <article
+      ref={articleRef}
       className={`group flex flex-col bg-[#161616] border border-line overflow-hidden${fillCell && compact ? ' h-full' : ''}`}
     >
       {/* Media — wrapped in <Link> so the click triggers Next.js's
