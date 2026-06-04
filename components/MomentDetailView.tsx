@@ -10,6 +10,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { BASE_CHAIN_ID, explorerTokenUrl, explorerTxUrl } from '@/lib/chains'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
@@ -46,6 +47,10 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 interface Props {
   address: string
   tokenId: string
+  // Chain the moment lives on (resolved server-side by the page). Drives the
+  // display-side on-chain reads + inprocess fetches + explorer links. Defaults
+  // to Base. Write paths (collect/send/edit) remain Base-targeted until Phase 3.
+  chainId?: number
   initialDetail?: MomentDetail | null
   // Optional name/image/description we already have locally (from KV at deploy
   // time for cover tokens). Renders instantly while inprocess catches up; gets
@@ -83,7 +88,7 @@ interface Props {
   inOverlay?: boolean
 }
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
+export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
   const router = useRouter()
   const { address: connectedAddress, isConnected } = useAccount()
 
@@ -201,6 +206,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const { ensureSession } = useUploadSession()
 
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
+    chainId,
     address: address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
@@ -323,6 +329,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Polled so "X collected" updates after a fresh collect without waiting
   // for the inprocess indexer.
   const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
+    chainId,
     address: address as `0x${string}`,
     abi: ZORA_1155_TOKEN_INFO_ABI,
     functionName: 'getTokenInfo',
@@ -410,7 +417,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
     const tryFetch = async () => {
       if (cancelled) return
-      const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
+      const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: String(chainId) })
       try {
         const res = await fetch(`/api/moment?${params}`)
         if (!res.ok) throw new Error('not ok')
@@ -430,7 +437,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     }
     tryFetch()
     return () => { cancelled = true }
-  }, [address, tokenId, initialDetail])
+  }, [address, tokenId, chainId, initialDetail])
 
   // Fetch creator profile via shared cache
   useEffect(() => {
@@ -453,7 +460,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (getCachedComments(address, tokenId)) return
     setCommentsLoading(true)
     try {
-      const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
+      const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: String(chainId) })
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
@@ -466,7 +473,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     } finally {
       setCommentsLoading(false)
     }
-  }, [address, tokenId])
+  }, [address, tokenId, chainId])
 
   useEffect(() => { fetchComments() }, [fetchComments])
 
@@ -573,7 +580,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   function handleCopyScan() {
-    const url = `https://basescan.org/token/${address}?a=${tokenId}`
+    const url = explorerTokenUrl(chainId, address, tokenId)
     navigator.clipboard.writeText(url).catch(() => {})
     setScanCopied(true)
     setTimeout(() => setScanCopied(false), 1500)
@@ -1389,7 +1396,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               </button>
               {distributeHash && (
                 <a
-                  href={`https://basescan.org/tx/${distributeHash}`}
+                  href={explorerTxUrl(chainId, distributeHash)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-[10px] font-mono text-muted hover:text-dim"

@@ -5,7 +5,7 @@ import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import { CollectionView } from '@/components/CollectionView'
-import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
+import { getCollectionMeta as getKvCollectionMeta, getCollectionChainId, getUserCollections } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
@@ -36,13 +36,13 @@ interface CollectionDetail {
   }
 }
 
-async function fetchCollectionDetail(address: string): Promise<CollectionDetail | null> {
+async function fetchCollectionDetail(address: string, chainId: number): Promise<CollectionDetail | null> {
   // GET /api/collection (singular) returns enriched data: default_admin
   // (with username), payout_recipient, timestamps. We use this on the
   // collection detail page; the plural endpoint already powers the
   // lightweight metadata fetch below.
   try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
+    const url = inprocessUrl('/collection', { collectionAddress: address, chainId })
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 120 },
@@ -56,10 +56,11 @@ async function fetchCollectionDetail(address: string): Promise<CollectionDetail 
 }
 
 async function fetchCollectionMeta(
-  address: string
+  address: string,
+  chainId: number,
 ): Promise<{ name?: string; image?: string; description?: string; kismet_thumbhash?: string } | null> {
   try {
-    const url = inprocessUrl('/collections', { address, chain_id: '8453' })
+    const url = inprocessUrl('/collections', { address, chain_id: chainId })
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 120 },
@@ -90,9 +91,9 @@ async function loadKvFallback(
 // it. limit=1 keeps the upstream fetch cheap. Returns null on indexer lag
 // or empty contracts — caller falls through to the existing render rather
 // than 404, so the user never hits a dead URL on a brand-new wrapper.
-async function findFirstMomentTokenId(address: string): Promise<string | null> {
+async function findFirstMomentTokenId(address: string, chainId: number): Promise<string | null> {
   try {
-    const url = inprocessUrl('/timeline', { collection: address, limit: 1, chain_id: '8453' })
+    const url = inprocessUrl('/timeline', { collection: address, limit: 1, chain_id: chainId })
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
@@ -111,11 +112,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // even when the KV/inprocess fetch fails.
   try {
   const { address } = await params
+  const chainId = await getCollectionChainId(address)
   // KV is written at deploy time and is always fast; only fall back to
   // inprocess (fetchCollectionMeta) when KV has nothing.
   const [kvMeta, inprocessMeta] = await Promise.all([
     getKvCollectionMeta(address),
-    fetchCollectionMeta(address),
+    fetchCollectionMeta(address, chainId),
   ])
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
@@ -169,6 +171,10 @@ export default async function CollectionPage({ params }: Props) {
 
   if (!isAddress(address)) notFound()
 
+  // Resolve the collection's chain once (KV, default Base) and thread it
+  // through every inprocess read + the client view.
+  const chainId = await getCollectionChainId(address)
+
   // Non-curated contracts shouldn't render as a curated-collection page.
   // The two cases this catches:
   //   1. Auto-deploy wrappers from MintForm — single-token contracts the
@@ -188,7 +194,7 @@ export default async function CollectionPage({ params }: Props) {
   const userCreated = await getUserCollections()
   const isCurated = userCreated.some((a) => a.toLowerCase() === lowerAddr)
   if (!isCurated) {
-    const tokenId = await findFirstMomentTokenId(address)
+    const tokenId = await findFirstMomentTokenId(address, chainId)
     if (tokenId) redirect(`/moment/${address}/${tokenId}`)
   }
 
@@ -204,9 +210,9 @@ export default async function CollectionPage({ params }: Props) {
   // Moments are fetched client-side in CollectionView so the header renders
   // immediately from the fast KV + inprocess-detail fetches below.
   const [meta, kvMeta, detail, hidden] = await Promise.all([
-    fetchCollectionMeta(address),
+    fetchCollectionMeta(address, chainId),
     getKvCollectionMeta(address),
-    fetchCollectionDetail(address),
+    fetchCollectionDetail(address, chainId),
     isCollectionHidden(address),
   ])
 
@@ -271,6 +277,7 @@ export default async function CollectionPage({ params }: Props) {
   return (
     <CollectionView
       address={address}
+      chainId={chainId}
       collectionName={displayMeta?.name}
       collectionImage={displayMeta?.image}
       collectionThumbhash={displayMeta?.kismet_thumbhash}

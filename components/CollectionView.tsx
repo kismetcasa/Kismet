@@ -10,6 +10,7 @@ import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { toastError } from '@/lib/toast'
@@ -58,6 +59,9 @@ function AvatarRow({
 
 interface CollectionViewProps {
   address: string
+  // Chain the collection lives on (resolved server-side by the page). Drives
+  // the per-token getTokenInfo multicall. Defaults to Base.
+  chainId?: number
   collectionName?: string
   collectionImage?: string
   collectionThumbhash?: string
@@ -86,6 +90,7 @@ function formatCreatedDate(iso: string): string {
 
 export function CollectionView({
   address,
+  chainId = BASE_CHAIN_ID,
   collectionName,
   collectionImage,
   collectionThumbhash,
@@ -611,6 +616,7 @@ export function CollectionView({
   // exists upstream. Batched into one multicall by wagmi.
   const { data: tokenInfos } = useReadContracts({
     contracts: loadedMoments.map((m) => ({
+      chainId,
       address: m.address as `0x${string}`,
       abi: ZORA_1155_TOKEN_INFO_ABI,
       functionName: 'getTokenInfo' as const,

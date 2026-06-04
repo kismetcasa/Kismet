@@ -33,6 +33,10 @@ export interface RegisterCollectionPayload {
   // Base64 thumbhash for the cover — surfaces as a blurDataURL placeholder
   // on the collection page before Arweave metadata is fetched.
   kismet_thumbhash?: string
+  // Chain the collection was deployed on (8453 Base / 1 Ethereum). Omitted =
+  // Base (current deploy path is Base-only until the mainnet deploy flow lands).
+  // The server validates + stores it so read-model fan-out queries the right chain.
+  chainId?: number
 }
 
 export async function registerCollectionWithBackoff(

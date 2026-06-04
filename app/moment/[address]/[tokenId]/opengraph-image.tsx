@@ -2,6 +2,7 @@ import { ImageResponse } from 'next/og'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchMomentDetail } from '@/lib/momentDetail'
+import { getCollectionChainId } from '@/lib/kv'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import {
   shareCard,
@@ -51,7 +52,8 @@ export default async function Image({ params }: Props) {
     // enrichment, detail.creator is always undefined here and the
     // "by <creator>" line at the bottom of the share card never
     // renders.
-    const detail = await fetchMomentDetail(address, tokenId)
+    const chainId = await getCollectionChainId(address)
+    const detail = await fetchMomentDetail(address, tokenId, chainId)
     if (detail) {
       if (detail.metadata?.name) title = detail.metadata.name
       if (detail.creator) {

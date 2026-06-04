@@ -4,6 +4,7 @@ import { getSessionAddress } from '@/lib/session'
 import { getMomentMeta } from '@/lib/notifications'
 import { hideMoment, unhideMoment, isMomentHidden } from '@/lib/hiddenMoments'
 import { inprocessUrl } from '@/lib/inprocess'
+import { getCollectionChainId } from '@/lib/kv'
 import { errorResponse } from '@/lib/apiResponse'
 
 interface HideBody {
@@ -53,10 +54,11 @@ export async function POST(req: NextRequest) {
 
   if (!creatorLower) {
     try {
+      const chainId = await getCollectionChainId(collectionAddress)
       const url = inprocessUrl('/timeline', {
         collection: collectionAddress,
         limit: 50,
-        chain_id: '8453',
+        chain_id: chainId,
       })
       const res = await fetch(url, {
         headers: { Accept: 'application/json' },

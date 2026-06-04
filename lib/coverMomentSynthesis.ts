@@ -1,4 +1,5 @@
 import { inprocessUrl, type Moment, type MomentDetail } from './inprocess'
+import { BASE_CHAIN_ID } from './chains'
 import { getCollectionMeta } from './kv'
 import { getMomentMeta } from './notifications'
 
@@ -32,6 +33,7 @@ import { getMomentMeta } from './notifications'
 export async function synthesizeMissingCoverMoment(
   collectionAddress: string,
   existingMoments: { token_id?: string | number }[],
+  chainId: number = BASE_CHAIN_ID,
 ): Promise<Moment | null> {
   const collMeta = await getCollectionMeta(collectionAddress).catch(() => null)
   const coverTokenId = collMeta?.coverTokenId
@@ -39,8 +41,8 @@ export async function synthesizeMissingCoverMoment(
   if (existingMoments.some((m) => String(m.token_id) === coverTokenId)) return null
 
   const [detail, collInfo, momentMeta] = await Promise.all([
-    fetchMomentDetail(collectionAddress, coverTokenId),
-    fetchCollectionCreatedAt(collectionAddress),
+    fetchMomentDetail(collectionAddress, coverTokenId, chainId),
+    fetchCollectionCreatedAt(collectionAddress, chainId),
     getMomentMeta(collectionAddress, coverTokenId).catch(() => null),
   ])
 
@@ -58,7 +60,7 @@ export async function synthesizeMissingCoverMoment(
   return {
     address: collectionAddress.toLowerCase(),
     token_id: coverTokenId,
-    chain_id: 8453,
+    chain_id: chainId,
     uri: detail.uri,
     creator: { address: creatorAddress, hidden: false },
     admins: detail.momentAdmins.map((a) => ({ address: a.toLowerCase(), hidden: false })),
@@ -75,12 +77,13 @@ export async function synthesizeMissingCoverMoment(
 async function fetchMomentDetail(
   address: string,
   tokenId: string,
+  chainId: number,
 ): Promise<MomentDetail | null> {
   try {
     const url = inprocessUrl('/moment', {
       collectionAddress: address,
       tokenId,
-      chainId: '8453',
+      chainId,
     })
     const res = await fetch(url, { next: { revalidate: 60 } })
     if (!res.ok) return null
@@ -93,11 +96,12 @@ async function fetchMomentDetail(
 
 async function fetchCollectionCreatedAt(
   address: string,
+  chainId: number,
 ): Promise<{ created_at?: string } | null> {
   try {
     const url = inprocessUrl('/collection', {
       collectionAddress: address,
-      chainId: '8453',
+      chainId,
     })
     const res = await fetch(url, { next: { revalidate: 60 } })
     if (!res.ok) return null

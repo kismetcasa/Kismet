@@ -1,6 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
+import { getCollectionChainId } from '@/lib/kv'
 import {
   shareCard,
   SHARE_CARD_SIZE,
@@ -26,9 +27,9 @@ interface CollectionRow {
   creator?: { address: string; username?: string | null }
 }
 
-async function fetchCollection(address: string): Promise<CollectionRow | null> {
+async function fetchCollection(address: string, chainId: number): Promise<CollectionRow | null> {
   try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
+    const url = inprocessUrl('/collection', { collectionAddress: address, chainId })
     // 24h cache — see opengraph-image.tsx in moment route for rationale.
     // Collection metadata is similarly long-lived; the extra freshness of
     // a 5min TTL isn't worth the inprocess fetch traffic.
@@ -47,7 +48,8 @@ export default async function Image({ params }: Props) {
   let creator = ''
 
   if (isAddress(address)) {
-    const row = await fetchCollection(address)
+    const chainId = await getCollectionChainId(address)
+    const row = await fetchCollection(address, chainId)
     if (row?.metadata?.name) title = row.metadata.name
     if (row?.creator) {
       creator = row.creator.username || shortAddress(row.creator.address)

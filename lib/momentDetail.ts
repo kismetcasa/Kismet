@@ -1,5 +1,6 @@
 import { cache } from 'react'
 import { inprocessUrl, type MomentDetail } from './inprocess'
+import { BASE_CHAIN_ID } from './chains'
 import { isMomentHidden } from './hiddenMoments'
 import { getMomentMeta } from './notifications'
 import { resolveCanonicalProfile } from './addressUnion'
@@ -15,7 +16,7 @@ import { resolveCanonicalProfile } from './addressUnion'
 export async function fetchCreatorFromTimeline(
   collectionAddress: string,
   tokenId: string,
-  chainId: string = '8453',
+  chainId: string | number = BASE_CHAIN_ID,
 ): Promise<{ address: string; username: string | null } | null> {
   try {
     const url = inprocessUrl('/timeline', {
@@ -62,13 +63,14 @@ export async function fetchCreatorFromTimeline(
 export const fetchMomentDetail = cache(async (
   address: string,
   tokenId: string,
+  chainId: number = BASE_CHAIN_ID,
 ): Promise<MomentDetail | null> => {
   try {
-    const url = inprocessUrl('/moment', { collectionAddress: address, tokenId, chainId: '8453' })
+    const url = inprocessUrl('/moment', { collectionAddress: address, tokenId, chainId })
     const [res, hidden, timelineCreator, kvCreator] = await Promise.all([
       fetch(url, { next: { revalidate: 60 } }),
       isMomentHidden(address, tokenId),
-      fetchCreatorFromTimeline(address, tokenId),
+      fetchCreatorFromTimeline(address, tokenId, chainId),
       getKvCreatorAddress(address, tokenId),
     ])
     if (!res.ok) return null

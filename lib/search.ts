@@ -1,4 +1,5 @@
-import { getTrackedCollections } from './kv'
+import { getTrackedCollections, getCollectionChainIdMap } from './kv'
+import { BASE_CHAIN_ID, isChainEnabled } from './chains'
 import { resolveUri, fetchCollectionMoments } from './inprocess'
 import { getHiddenMomentsSet } from './hiddenMoments'
 import { getHiddenCollectionsSet } from './hiddenCollections'
@@ -34,19 +35,25 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
     getHiddenUsersSet(),
   ])
   // Skip hidden collections at fan-out time so we don't waste upstream
-  // requests fetching moments we'd discard. Cap is applied after the skip.
-  const collections = allCollections
-    .filter((c) => !hiddenCollections.has(c.toLowerCase()))
+  // requests fetching moments we'd discard. Resolve each collection's chain
+  // (one MGET) and drop those on chains not currently enabled BEFORE the cap,
+  // so the search budget lands on enabled-chain collections. Cap applied last.
+  const visibleCollections = allCollections.filter((c) => !hiddenCollections.has(c.toLowerCase()))
+  const chainMap = await getCollectionChainIdMap(visibleCollections)
+  const collections = visibleCollections
+    .filter((c) => isChainEnabled(chainMap.get(c.toLowerCase())))
     .slice(0, MAX_SEARCH_COLLECTIONS)
   // allSettled instead of all so one slow upstream doesn't poison the
   // whole search. fetchCollectionMoments already swallows errors and
   // returns [], so settled is mostly belt-and-suspenders for unexpected
-  // throw paths (e.g. AbortError on timeout).
+  // throw paths (e.g. AbortError on timeout). Each collection is queried on
+  // its own chain.
   const settled = await Promise.allSettled(
     collections.map((c) =>
       fetchCollectionMoments(c, {
         revalidate: 30,
         timeoutMs: PER_COLLECTION_TIMEOUT_MS,
+        chainId: chainMap.get(c.toLowerCase()) ?? BASE_CHAIN_ID,
       }),
     ),
   )

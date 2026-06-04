@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCreatedMintsSet, getCollectionChainIdMap, type CollectionScope } from '@/lib/kv'
+import { BASE_CHAIN_ID, isChainEnabled } from '@/lib/chains'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, FEATURED_KEY, TRENDING_KEY } from '@/lib/redis'
 import { getCollectedMembers } from '@/lib/collected'
@@ -13,8 +14,8 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 
-async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
-  const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
+async function fetchCollection(collection: string, limit: number, chainId: number): Promise<unknown[]> {
+  const url = inprocessUrl('/timeline', { collection, limit, chain_id: chainId })
   let moments: unknown[] = []
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' }, next: { revalidate: 30 } })
@@ -24,6 +25,11 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
   } catch {
     moments = []
   }
+
+  // Stamp the chain we queried onto every row so client cards drive their
+  // on-chain reads (balance/supply) on the right chain even if inprocess omits
+  // chain_id from the row. We queried this exact chain, so it's authoritative.
+  moments = moments.map((m) => ({ ...(m as Record<string, unknown>), chain_id: chainId }))
 
   // Cover-mints created at deploy time via factory setupAction never reach
   // inprocess's /moment/create endpoint, so they don't enter the /timeline
@@ -36,6 +42,7 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
   const synthCover = await synthesizeMissingCoverMoment(
     collection,
     moments as { token_id?: string }[],
+    chainId,
   )
   if (synthCover) moments.push(synthCover)
 
@@ -142,7 +149,19 @@ export async function GET(req: NextRequest) {
   // collection sample so paginated pages don't empty out prematurely.
   const needsLargerSample = sort === 'trending' || featured || filterToCreators
   const fetchLimit = needsLargerSample ? Math.max(page * limit, 200) : page * limit
-  const results = await Promise.all(collections.map((c) => fetchCollection(c, fetchLimit)))
+  // Resolve each collection's chain (one MGET) and drop collections on chains
+  // not currently enabled — mainnet stays hidden until NEXT_PUBLIC_ENABLE_MAINNET
+  // is on. Legacy/missing chainId defaults to Base, so Base behavior is
+  // unchanged. Each surviving collection is fetched on its own chain.
+  const chainMap = await getCollectionChainIdMap(collections)
+  const enabledCollections = collections.filter((c) =>
+    isChainEnabled(chainMap.get(c.toLowerCase())),
+  )
+  const results = await Promise.all(
+    enabledCollections.map((c) =>
+      fetchCollection(c, fetchLimit, chainMap.get(c.toLowerCase()) ?? BASE_CHAIN_ID),
+    ),
+  )
 
   // Merge and deduplicate
   const seen = new Set<string>()

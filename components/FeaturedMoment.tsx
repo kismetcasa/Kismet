@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { shortAddress, type Moment, type MomentDetail } from '@/lib/inprocess'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
@@ -75,7 +76,10 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
 
   useEffect(() => {
     let cancelled = false
-    const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
+    // No chainId param — the route resolves the moment's chain from the
+    // collection's KV meta (default Base) and echoes it back as detail.chainId,
+    // which we thread into the mobile card's on-chain reads below.
+    const params = new URLSearchParams({ collectionAddress: address, tokenId })
     fetch(`/api/moment?${params}`)
       .then((r) => (r.ok ? (r.json() as Promise<MomentDetail>) : Promise.reject()))
       .then((d) => { if (!cancelled) setDetail(d) })
@@ -132,6 +136,7 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
     return {
       address,
       token_id: tokenId,
+      chain_id: detail.chainId ?? BASE_CHAIN_ID,
       uri: detail.uri ?? '',
       creator: { address: creatorAddress ?? '', username: creatorUsername ?? undefined, hidden: false },
       admins: [],

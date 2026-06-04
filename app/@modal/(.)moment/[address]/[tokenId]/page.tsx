@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { EyeOff } from 'lucide-react'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
+import { getCollectionChainId } from '@/lib/kv'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { MomentDetailView } from '@/components/MomentDetailView'
@@ -40,11 +41,14 @@ export default async function ModalMomentPage({ params }: Props) {
   const { address, tokenId } = await params
   if (!isAddress(address) || !isValidTokenId(tokenId)) notFound()
 
+  // Resolve the moment's chain (KV by collection address, default Base).
+  const chainId = await getCollectionChainId(address)
+
   // Detail fetch + viewer resolution + KV creator lookup are
   // independent — run them in parallel so the overlay's TTFB isn't
   // gated on session verify or the extra Redis read.
   const [detail, viewer, kvCreatorAddress] = await Promise.all([
-    fetchMomentDetail(address, tokenId),
+    fetchMomentDetail(address, tokenId, chainId),
     resolveViewer(),
     getKvCreatorAddress(address, tokenId),
   ])
@@ -88,6 +92,7 @@ export default async function ModalMomentPage({ params }: Props) {
       <MomentDetailView
         address={address}
         tokenId={tokenId}
+        chainId={chainId}
         initialDetail={detail}
         kvCreatorAddress={kvCreatorAddress}
         inOverlay

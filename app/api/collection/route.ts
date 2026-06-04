@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { getCollectionChainId } from '@/lib/kv'
 import { errorResponse } from '@/lib/apiResponse'
 
 /**
@@ -14,11 +15,12 @@ import { errorResponse } from '@/lib/apiResponse'
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collectionAddress = searchParams.get('collectionAddress') ?? searchParams.get('address')
-  const chainId = searchParams.get('chainId') ?? '8453'
 
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return errorResponse(400, 'Invalid collectionAddress')
   }
+
+  const chainId = searchParams.get('chainId') ?? String(await getCollectionChainId(collectionAddress))
 
   const url = inprocessUrl('/collection', { collectionAddress, chainId })
 

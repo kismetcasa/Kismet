@@ -116,6 +116,50 @@ export function getChain(id: number): ChainConfig {
   return CHAINS[id]
 }
 
+/** Tolerant lookup — falls back to the default chain. Use for display / render
+ *  paths that may receive a stale or missing `chain_id` and should degrade
+ *  gracefully rather than throw (explorer links, feed rendering). */
+export function getChainOrDefault(id: number | string | undefined | null): ChainConfig {
+  const n = typeof id === 'string' ? Number(id) : id
+  return isSupportedChainId(n) ? CHAINS[n] : CHAINS[DEFAULT_CHAIN_ID]
+}
+
+// ── Enablement (read-model fan-out gating) ───────────────────────────────────
+
+/** Mainnet ships behind a flag so the read model fans out across chains only
+ *  when explicitly enabled. Default off → Base-only (current behavior). */
+export function isMainnetEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ENABLE_MAINNET === 'true'
+}
+
+/** Chains the app currently reads/fans out across. Base always; mainnet only
+ *  when the flag is on. Used to gate which tracked collections are queried. */
+export function enabledChainIds(): SupportedChainId[] {
+  return isMainnetEnabled() ? [BASE_CHAIN_ID, MAINNET_CHAIN_ID] : [BASE_CHAIN_ID]
+}
+
+export function enabledChains(): ChainConfig[] {
+  return enabledChainIds().map((id) => CHAINS[id])
+}
+
+/** True when `chainId` is one the app should currently surface. A
+ *  missing/legacy chain (undefined) is treated as Base. */
+export function isChainEnabled(chainId: number | undefined | null): boolean {
+  const id = chainId ?? DEFAULT_CHAIN_ID
+  return enabledChainIds().includes(id as SupportedChainId)
+}
+
+// ── Explorer URL builders ────────────────────────────────────────────────────
+
+export function explorerTxUrl(chainId: number, hash: string): string {
+  return `${getChainOrDefault(chainId).explorer}/tx/${hash}`
+}
+
+export function explorerTokenUrl(chainId: number, address: string, tokenId?: string): string {
+  const url = `${getChainOrDefault(chainId).explorer}/token/${address}`
+  return tokenId ? `${url}?a=${tokenId}` : url
+}
+
 // ── RPC resolution ─────────────────────────────────────────────────────────
 
 /** Client-safe public RPC URL (NEXT_PUBLIC_* — inlined into the bundle). */

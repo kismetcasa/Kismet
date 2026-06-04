@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { getCollectionChainId } from '@/lib/kv'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { fetchCreatorFromTimeline, getKvCreatorAddress } from '@/lib/momentDetail'
@@ -10,7 +11,6 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collectionAddress = searchParams.get('collectionAddress')
   const tokenId = searchParams.get('tokenId')
-  const chainId = searchParams.get('chainId') ?? '8453'
 
   if (!collectionAddress || !tokenId) {
     return errorResponse(400, 'collectionAddress and tokenId are required')
@@ -21,6 +21,10 @@ export async function GET(req: NextRequest) {
   if (!isValidTokenId(tokenId)) {
     return errorResponse(400, 'Invalid tokenId')
   }
+
+  // Client may pass the moment's chain explicitly (from the feed's chain_id);
+  // otherwise resolve it from KV by address. Defaults to Base for legacy rows.
+  const chainId = searchParams.get('chainId') ?? String(await getCollectionChainId(collectionAddress))
 
   const url = inprocessUrl('/moment', { collectionAddress, tokenId, chainId })
 
@@ -59,5 +63,7 @@ export async function GET(req: NextRequest) {
   const creator = kvCreator
     ? { address: kvCreator, username: null }
     : timelineCreator
-  return NextResponse.json({ ...data, hidden, creator }, { status: upstream.status })
+  // Echo the resolved chain so clients that fetched by address+tokenId (no feed
+  // row) can drive their on-chain reads on the right chain.
+  return NextResponse.json({ ...data, hidden, creator, chainId: Number(chainId) }, { status: upstream.status })
 }

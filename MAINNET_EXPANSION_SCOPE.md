@@ -1,8 +1,9 @@
 # Ethereum Mainnet Expansion — Full Scope
 
-> Status: **Phase 1 (foundation) landed — lean chain registry + parameterized
-> core libs, Base-default and byte-identical.** Mainnet is not yet exposed; the
-> enable flag and chain-aware callers land in Phase 2. Author pass: 2026-06-04.
+> Status: **Phases 1–2 landed.** P1 = chain registry + parameterized core libs.
+> P2 = read model fully multichain (feeds, search, moment/collection pages,
+> hydration) behind `NEXT_PUBLIC_ENABLE_MAINNET` (default off → Base-only and
+> byte-identical). Write/collect paths remain Base (Phase 3). Author pass: 2026-06-04.
 >
 > **Confirmed decisions** (see §6): mainnet minting is **user-paid / direct
 > on-chain** (no relay dependency); the Creator Pass gate is **Base-only**; Base
@@ -359,26 +360,49 @@ Chain-aware seams now live for Phases 2–4 (each defaults to Base): `getChain(i
 `fetchEligibleTokens(…, chainId)`, `readSalePricePerToken(…, chainId)`,
 `serverClient(id)`, `useEnsureChain()`, `seaportDomain(id)`.
 
-### Phase 2 — Read model multichain (show mainnet content)
-- [ ] Introduce the enablement + display helpers here (deferred from Phase 1, now
-      that they have consumers): `isMainnetEnabled()` + `enabledChains()` /
-      `enabledChainIds()` reading `NEXT_PUBLIC_ENABLE_MAINNET` (add the flag to
-      `.env.example`); `getChainOrDefault()` for tolerant render-path lookups; and
-      `explorerTxUrl` / `explorerTokenUrl` (+ `explorerAddressUrl` if a caller
-      needs it) for chain-correct links.
-- [ ] Replace every hardcoded `chain_id=8453` (§3.C) with the **moment's own
-      `chain_id`** for single-item reads (use `String(getChain(id).chainId)` for
-      the In Process REST `chain_id` param).
-- [ ] Aggregate feeds (`timeline`/discover, `collections`, `featured`, `search`,
-      profile) **fan out across `enabledChains()`** and merge by `created_at`.
-      Decide: native multichain timeline (if In Process supports it) vs. N calls
-      merged server-side (watch the cold-cache fan-out latency the timeline route
-      already warns about).
-- [ ] `MomentCard` / `MomentDetailView` / `CollectionView`: on-chain reads via
-      `usePublicClient({ chainId: moment.chainId })` and `serverClient(...)`;
-      explorer links via registry.
-- [ ] Carry `chainId` on the moment-meta KV (`setMomentMeta`) so notifications,
-      collected lists, and trending keys are chain-scoped where it matters.
+### Phase 2 — Read model multichain (show mainnet content) ✅ DONE
+- [x] Re-introduced the enablement + display helpers (with consumers):
+      `isMainnetEnabled()` / `enabledChainIds()` / `enabledChains()` /
+      `isChainEnabled()` reading `NEXT_PUBLIC_ENABLE_MAINNET` (flag re-added to
+      `.env.example`); `getChainOrDefault()`; `explorerTxUrl` / `explorerTokenUrl`.
+- [x] **Data model:** `CollectionMeta.chainId` (legacy-default Base) +
+      `getCollectionChainId()` / `getCollectionChainIdMap()` resolvers;
+      `/api/collections` POST validates + stores `chainId` and verifies admin on
+      the collection's own chain (`serverClient(chainId)`); `registerCollection`
+      carries `chainId`.
+- [x] Replaced every read-path `chain_id=8453` (§3.C) with the resolved chain:
+      `lib/inprocess.fetchCollectionMoments`, `lib/momentDetail`,
+      `lib/coverMomentSynthesis`, `lib/kv` (search backfill), `/api/moment`,
+      `/api/moment/comments`, `/api/moment/hide`, `/api/collection`,
+      `/api/collections` (single + feed + artist), `/api/timeline`,
+      `/api/featured/collections-hydrated`, the collection + moment SSR pages
+      (incl. the `@modal` intercept) and their OG images.
+- [x] **Fan-out:** feeds / search / collections / featured resolve each
+      collection's chain (one MGET) and **gate by `isChainEnabled`** so mainnet
+      stays hidden while the flag is off. Each collection is queried on its own
+      chain (one call — not doubled, since collections are single-chain). The
+      artist `/collections` path fans out across `enabledChains()` and merges.
+      The `/api/timeline` fan-out **stamps the queried chain onto every row** so
+      client cards read the right chain even if inprocess omits `chain_id`.
+- [x] `MomentCard` / `MomentDetailView` / `CollectionView` / `FeaturedMoment`:
+      display on-chain reads (`balanceOf` / `getTokenInfo`) pinned to the moment's
+      chain via `usePublicClient({ chainId })`; price/comments fetches pass the
+      chain; explorer links via the registry. `/api/moment` echoes the resolved
+      `chainId` so `FeaturedMoment` (fetched by address+tokenId, no feed row) can
+      drive the mobile card's reads correctly.
+- [x] `npm run check` green (typecheck + lint + resource-hints + bundle) + full
+      build. Flag **off** → byte-identical to today (every default is Base).
+
+**Explicitly deferred from Phase 2 (correctly out of scope):**
+- Write/collect/verify paths stay Base (§10.7): `useDirectCollect`,
+  `useCollectAll`, listings, airdrop, `/api/distribute` (+ its creator-verify
+  read), `/api/moment/update-uri`, `useMomentSplits`, the intent domain, and the
+  `/api/payments` panel (part of the splits/distribute flow). These are Phase 3.
+- KV **key** chain-scoping (`trending` / `collected` / `moment-meta` keyed by
+  `address:tokenId`): deferred. A same-address-on-both-chains collision is
+  improbable (factory deploys differ per chain); revisit with Phase 3 if observed.
+- A mainnet card's **collect button** is enabled but Base-targeted until Phase 3 —
+  only reachable with the flag on + a registered mainnet collection (test only).
 
 ### Phase 3 — Direct on-chain flows multichain (collect / list / buy / admin)
 These are user-paid and **do not depend on the relay** — lowest risk, high value.
@@ -526,8 +550,11 @@ Chain-agnostic (NOT keyed by chain — kept as existing constants, not in the re
 
 ## 10. Phase 2 — detailed implementation plan (read model → multichain)
 
-> Prepared 2026-06-04. Lands as **dark plumbing** (defaults to Base, zero visible
-> change) — same safety posture as Phase 1. Flag-gated by `NEXT_PUBLIC_ENABLE_MAINNET`.
+> ✅ **Implemented** (see the Phase 2 DONE checklist in §5 for the as-built
+> summary + deferrals). Landed as **dark plumbing** (defaults to Base, zero
+> visible change) — same safety posture as Phase 1. Flag-gated by
+> `NEXT_PUBLIC_ENABLE_MAINNET`. The §10.6 empirical `chain_id=1` check (10.1)
+> still needs a network path to In Process before flipping the flag on.
 
 ### 10.1 Dependency findings (In Process docs, verified)
 - `/timeline` accepts `collection`, **`chain_id`** (default 8453), `limit`, `page`,

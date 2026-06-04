@@ -3,7 +3,8 @@ import { getAddress, type Address } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { canonicalMediaId } from '@/lib/media/canonicalMediaId'
 import { redis, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverClient } from '@/lib/rpc'
+import { BASE_CHAIN_ID, isChainEnabled, isSupportedChainId } from '@/lib/chains'
 import { INPROCESS_API, type Moment } from '@/lib/inprocess'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -96,8 +97,6 @@ export async function GET() {
     return NextResponse.json({ collections: [] })
   }
 
-  const client = serverBaseClient()
-
   const collections = await Promise.all(
     refs.map(async (ref): Promise<HydratedFeaturedCollection | null> => {
       // Trust-boundary validation: refuse a featured entry whose address
@@ -114,30 +113,34 @@ export async function GET() {
         return null
       }
       try {
-        // KV lookup runs in parallel with inprocess — needed for (a) the
-        // metadata fallback below when inprocess hasn't indexed yet, and
-        // (b) coverTokenId resolution further down. Memoized + cached
-        // upstream so this is cheap.
+        // Resolve the collection's chain first (one fast KV GET) so the
+        // inprocess fetches + eligibility reads below all target the right
+        // chain. kvMeta also serves the metadata fallback (when inprocess
+        // hasn't indexed yet) and coverTokenId resolution further down.
+        const kvMeta = await getCollectionMeta(ref.address)
+        const chainId = isSupportedChainId(kvMeta?.chainId) ? (kvMeta!.chainId as number) : BASE_CHAIN_ID
+        // Hide featured collections on chains not currently enabled (mainnet
+        // stays dark until NEXT_PUBLIC_ENABLE_MAINNET is on).
+        if (!isChainEnabled(chainId)) return null
         // Short read timeout per inprocess fetch. These are idempotent reads,
-        // so failing fast is correct — and each resolves to null on
-        // timeout/error INDEPENDENTLY of the KV lookup, so a stalled gateway
-        // degrades the row to its KV-stored name/cover instead of dropping it
-        // (which is what a shared Promise.all rejection would do).
-        const [collRes, tlRes, kvMeta] = await Promise.all([
-          fetch(`${INPROCESS_API}/collection/${address}`, {
+        // so failing fast is correct — each resolves to null on timeout/error
+        // INDEPENDENTLY, so a stalled gateway degrades the row to its KV-stored
+        // name/cover instead of dropping it (which is what a shared Promise.all
+        // rejection would do).
+        const [collRes, tlRes] = await Promise.all([
+          fetch(`${INPROCESS_API}/collection/${address}?chain_id=${chainId}`, {
             headers: { Accept: 'application/json' },
             next: { revalidate: 60 },
             signal: AbortSignal.timeout(8_000),
           }).catch(() => null),
           fetch(
-            `${INPROCESS_API}/timeline?collection=${address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=8453`,
+            `${INPROCESS_API}/timeline?collection=${address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=${chainId}`,
             {
               headers: { Accept: 'application/json' },
               next: { revalidate: 60 },
               signal: AbortSignal.timeout(8_000),
             },
           ).catch(() => null),
-          getCollectionMeta(ref.address),
         ])
 
         const collection = collRes?.ok ? await collRes.json() : {}
@@ -220,9 +223,10 @@ export async function GET() {
         // they share no state. enrichMomentsWithKismetMeta runs after so it
         // resolves the creator chip against the corrected address below.
         const visibleSlice = visibleMoments.slice(0, ROW_DISPLAY_LIMIT)
+        const client = serverClient(chainId)
         const [ethEligible, usdcEligible, momentMetas] = await Promise.all([
-          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'eth') : [],
-          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'usdc') : [],
+          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'eth', undefined, chainId) : [],
+          tokenIds.length > 0 ? fetchEligibleTokens(client, address, tokenIds, 'usdc', undefined, chainId) : [],
           getMomentMetaBatch(
             visibleSlice.map((m) => ({ address: m.address, tokenId: m.token_id })),
           ),

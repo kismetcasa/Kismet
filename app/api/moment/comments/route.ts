@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { getCollectionChainId } from '@/lib/kv'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -15,7 +16,6 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collectionAddress = searchParams.get('collectionAddress')
   const tokenId = searchParams.get('tokenId')
-  const chainId = searchParams.get('chainId') ?? '8453'
   const offset = searchParams.get('offset') ?? '0'
 
   if (!collectionAddress || !tokenId) {
@@ -30,6 +30,9 @@ export async function GET(req: NextRequest) {
   if (!/^\d+$/.test(offset)) {
     return errorResponse(400, 'Invalid offset')
   }
+
+  // Client may pass the moment's chain explicitly; otherwise resolve by address.
+  const chainId = searchParams.get('chainId') ?? String(await getCollectionChainId(collectionAddress))
 
   const url = inprocessUrl('/moment/comments', {
     collectionAddress,

@@ -6,7 +6,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { resolveUri } from '@/lib/inprocess'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import { isVideoMoment } from '@/lib/media/isVideo'
-import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
+import { getCollectionMeta as getKvCollectionMeta, getCollectionChainId, getUserCollections } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { PLATFORM_COLLECTION } from '@/lib/config'
@@ -81,8 +81,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!isAddress(address) || !isValidTokenId(tokenId)) {
     return { title: 'Moment — Kismet' }
   }
+  const chainId = await getCollectionChainId(address)
   const [detail, fallback] = await Promise.all([
-    fetchMomentDetail(address, tokenId),
+    fetchMomentDetail(address, tokenId, chainId),
     getFallbackMeta(address, tokenId),
   ])
   const meta = detail?.metadata ?? fallback
@@ -170,6 +171,10 @@ export default async function MomentPage({ params }: Props) {
   // upstream fetch + KV reads on garbage routes.
   if (!isAddress(address) || !isValidTokenId(tokenId)) notFound()
 
+  // Resolve the moment's chain once (KV by collection address, default Base)
+  // and thread it through the detail fetch + the client view's on-chain reads.
+  const chainId = await getCollectionChainId(address)
+
   // Resolve the viewer up front so we can decide whether to hand the full
   // detail (with metadata) to the client or render a server-side placeholder
   // that doesn't leak the moment's metadata via the React-props payload.
@@ -179,7 +184,7 @@ export default async function MomentPage({ params }: Props) {
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
   const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress] = await Promise.all([
-    fetchMomentDetail(address, tokenId),
+    fetchMomentDetail(address, tokenId, chainId),
     getFallbackMeta(address, tokenId),
     getInitialCollectionMeta(address),
     getKvCreatorAddress(address, tokenId),
@@ -255,6 +260,7 @@ export default async function MomentPage({ params }: Props) {
       <MomentDetailView
         address={address}
         tokenId={tokenId}
+        chainId={chainId}
         initialDetail={detail}
         fallbackMeta={fallbackMeta}
         initialCollectionMeta={initialCollectionMeta}

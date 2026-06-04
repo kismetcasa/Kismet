@@ -1,5 +1,6 @@
 import { formatEther, formatUnits } from 'viem'
 import { USDC_BASE } from './zoraMint'
+import { BASE_CHAIN_ID } from './chains'
 
 export const INPROCESS_API = 'https://api.inprocess.world/api'
 
@@ -162,6 +163,11 @@ export function resolveUri(uri: string): string {
 export interface MomentDetail {
   uri: string
   owner: string
+  // Chain the moment lives on, echoed back by /api/moment (resolved server-side
+  // from the collection's KV meta, default Base). Lets clients that fetch a
+  // moment by address+tokenId — without a feed row carrying chain_id — drive
+  // their on-chain reads on the right chain (e.g. FeaturedMoment).
+  chainId?: number
   saleConfig: {
     type?: 'fixedPrice' | 'erc20Mint'
     pricePerToken: string
@@ -274,18 +280,19 @@ export function formatRelativeTime(timestamp: number): string {
  */
 export async function fetchCollectionMoments(
   collectionAddress: string,
-  options: { revalidate?: number; limit?: number; timeoutMs?: number } = {},
+  options: { revalidate?: number; limit?: number; timeoutMs?: number; chainId?: number } = {},
 ): Promise<Moment[]> {
   // Default to a bounded read so a new caller that forgets `timeoutMs` can't
   // reintroduce an indefinite hang — opting out must be explicit (pass 0).
-  const { revalidate = 60, limit = 50, timeoutMs = 8_000 } = options
+  // chainId defaults to Base so existing callers are unchanged.
+  const { revalidate = 60, limit = 50, timeoutMs = 8_000, chainId = BASE_CHAIN_ID } = options
   const controller = timeoutMs ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {
     const url = inprocessUrl('/timeline', {
       collection: collectionAddress,
       limit,
-      chain_id: '8453',
+      chain_id: chainId,
     })
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
@@ -294,7 +301,11 @@ export async function fetchCollectionMoments(
     })
     if (!res.ok) return []
     const data = await res.json()
-    return Array.isArray(data.moments) ? data.moments : []
+    // Stamp the queried chain onto every row so downstream consumers can drive
+    // chain-correct reads even if inprocess omits chain_id from the row.
+    return Array.isArray(data.moments)
+      ? (data.moments as Moment[]).map((m) => ({ ...m, chain_id: chainId }))
+      : []
   } catch {
     return []
   } finally {

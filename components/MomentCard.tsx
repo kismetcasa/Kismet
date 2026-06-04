@@ -15,6 +15,7 @@ import {
   type Moment,
   type MomentDetail,
 } from '@/lib/inprocess'
+import { BASE_CHAIN_ID } from '@/lib/chains'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent, fetchTextContent } from '@/lib/textCache'
@@ -96,6 +97,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
+  // Chain the moment lives on — drives the display-side on-chain reads
+  // (balance/supply) and the price/comments fetches. Defaults to Base for
+  // legacy feed rows without a chain_id. Collect remains Base-targeted (Phase 3).
+  const momentChainId = moment.chain_id ?? BASE_CHAIN_ID
   const router = useRouter()
   // Dedups onMouseEnter prefetches per card identity — without this every
   // re-entry refires comments + text + route prefetches.
@@ -177,6 +182,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }, [])
 
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
+    chainId: momentChainId,
     address: moment.address as `0x${string}`,
     abi: ERC1155_ABI,
     functionName: 'balanceOf',
@@ -186,6 +192,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const owned = ownedBalance ? Number(ownedBalance) : 0
 
   const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
+    chainId: momentChainId,
     address: moment.address as `0x${string}`,
     abi: ZORA_1155_TOKEN_INFO_ABI,
     functionName: 'getTokenInfo',
@@ -232,7 +239,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     const params = new URLSearchParams({
       collectionAddress: moment.address,
       tokenId: moment.token_id,
-      chainId: '8453',
+      chainId: String(momentChainId),
     })
     fetch(`/api/moment?${params}`)
       .then((r) => r.ok ? r.json() as Promise<MomentDetail> : Promise.reject())
@@ -243,11 +250,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         setCurrency(cur)
       })
       .catch(() => {})
-  }, [moment.address, moment.token_id, moment.saleConfig, deferReady])
+  }, [moment.address, moment.token_id, moment.saleConfig, deferReady, momentChainId])
 
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
-    const params = new URLSearchParams({ collectionAddress: moment.address, tokenId: moment.token_id, chainId: '8453' })
+    const params = new URLSearchParams({ collectionAddress: moment.address, tokenId: moment.token_id, chainId: String(momentChainId) })
     fetch(`/api/moment/comments?${params}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (data) setCachedComments(moment.address, moment.token_id, data.comments ?? []) })

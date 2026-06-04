@@ -3,13 +3,20 @@ import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverClient } from '@/lib/rpc'
+import {
+  BASE_CHAIN_ID,
+  enabledChainIds,
+  isChainEnabled,
+  isSupportedChainId,
+} from '@/lib/chains'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import {
   getTrackedCollections,
   getUserCollections,
   addTrackedCollection,
   getCollectionsByArtist,
+  getCollectionChainId,
   getCollectionMeta,
   getCollectionMetaBatch,
   markCreatedMint,
@@ -32,9 +39,12 @@ const FEED_ELIGIBLE_TOKEN_LIMIT = 20
 
 // Fetch the rich collection record from inprocess, falling back to local KV
 // when the indexer hasn't yet picked up a freshly-deployed collection.
-async function loadCollectionMeta(address: string): Promise<Record<string, unknown>> {
+async function loadCollectionMeta(
+  address: string,
+  chainId: number = BASE_CHAIN_ID,
+): Promise<Record<string, unknown>> {
   try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
+    const url = inprocessUrl('/collection', { collectionAddress: address, chainId })
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
@@ -85,10 +95,11 @@ interface CollectAllEligibility {
 
 // Resolve ETH- and USDC-eligible token IDs + totals for a collection so the
 // card can render a one-click "collect all" CTA. Returns empty fields on
-// any failure — the action component then hides itself.
+// any failure — the action component then hides itself. Reads sale config on
+// the collection's own chain (eligibility addresses differ per chain).
 async function loadCollectAllEligibility(
-  client: ReturnType<typeof serverBaseClient>,
   address: string,
+  chainId: number,
   hiddenMoments: Set<string>,
 ): Promise<CollectAllEligibility> {
   const empty: CollectAllEligibility = {
@@ -101,7 +112,7 @@ async function loadCollectAllEligibility(
     const tlUrl = inprocessUrl('/timeline', {
       collection: address,
       limit: FEED_ELIGIBLE_TOKEN_LIMIT,
-      chain_id: '8453',
+      chain_id: chainId,
     })
     const tlRes = await fetch(tlUrl, {
       headers: { Accept: 'application/json' },
@@ -117,9 +128,10 @@ async function loadCollectAllEligibility(
       .filter((m) => m.token_id && !hiddenMoments.has(`${(m.address ?? lowerAddr).toLowerCase()}:${m.token_id}`))
       .map((m) => BigInt(m.token_id as string))
     if (visibleIds.length === 0) return empty
+    const client = serverClient(chainId)
     const [ethEligible, usdcEligible] = await Promise.all([
-      fetchEligibleTokens(client, address as Address, visibleIds, 'eth'),
-      fetchEligibleTokens(client, address as Address, visibleIds, 'usdc'),
+      fetchEligibleTokens(client, address as Address, visibleIds, 'eth', undefined, chainId),
+      fetchEligibleTokens(client, address as Address, visibleIds, 'usdc', undefined, chainId),
     ])
     return {
       ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
@@ -162,8 +174,9 @@ export async function GET(req: NextRequest) {
     if (!userCreated.some((a) => a.toLowerCase() === lowerAddr) || hiddenSet.has(lowerAddr)) {
       return NextResponse.json({ contractAddress: singleAddress })
     }
+    const chainId = await getCollectionChainId(singleAddress)
     try {
-      const url = inprocessUrl('/collection', { collectionAddress: singleAddress, chainId: '8453' })
+      const url = inprocessUrl('/collection', { collectionAddress: singleAddress, chainId })
       const res = await fetch(url, {
         headers: { Accept: 'application/json' },
         next: { revalidate: 120 },
@@ -208,9 +221,10 @@ export async function GET(req: NextRequest) {
     // MGET via getCollectionMetaBatch — same cost as a single Redis call,
     // not per-collection. Auto-deploy wrappers without a stored meta
     // entry are kept (artist unknown ≠ hidden).
-    const metaByAddr = hiddenUsers.size > 0
-      ? await getCollectionMetaBatch(userCreated)
-      : new Map<string, { artist?: string }>()
+    // One MGET serves both the hidden-users artist cascade and per-collection
+    // chain resolution. (Previously fetched only when hiddenUsers were set;
+    // now always, because the chain gate below needs each collection's chainId.)
+    const metaByAddr = await getCollectionMetaBatch(userCreated)
     const visible = userCreated.filter((addr) => {
       const lower = addr.toLowerCase()
       if (hiddenSet.has(lower)) return false
@@ -218,19 +232,24 @@ export async function GET(req: NextRequest) {
         const artist = metaByAddr.get(lower)?.artist?.toLowerCase()
         if (artist && hiddenUsers.has(artist)) return false
       }
+      // Drop collections on chains not currently enabled (mainnet stays
+      // hidden until NEXT_PUBLIC_ENABLE_MAINNET is on). Legacy/missing
+      // chainId defaults to Base, so existing collections are unaffected.
+      if (!isChainEnabled(metaByAddr.get(lower)?.chainId)) return false
       return true
     })
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
-    const client = serverBaseClient()
     const hydrated = await Promise.all(
       visible.map(async (address) => {
-        // Hydrate metadata + bulk-collect eligibility in parallel. Mirrors
-        // /api/featured/collections-hydrated so the discovery grid surfaces
-        // the same one-click "collect all" UX as the featured rows.
+        // Hydrate metadata + bulk-collect eligibility in parallel, each on the
+        // collection's own chain. Mirrors /api/featured/collections-hydrated so
+        // the discovery grid surfaces the same one-click "collect all" UX.
+        const stored = metaByAddr.get(address.toLowerCase())?.chainId
+        const chainId = isSupportedChainId(stored) ? stored : BASE_CHAIN_ID
         const [metaPart, eligibility] = await Promise.all([
-          loadCollectionMeta(address),
-          loadCollectAllEligibility(client, address, hiddenMoments),
+          loadCollectionMeta(address, chainId),
+          loadCollectAllEligibility(address, chainId, hiddenMoments),
         ])
         return { ...metaPart, ...eligibility }
       }),
@@ -280,78 +299,74 @@ export async function GET(req: NextRequest) {
         headers: { 'Cache-Control': 'private, no-store' },
       })
     }
-    const url = inprocessUrl('/collections', { artist, limit: 100 })
-    try {
-      const [res, userCreated, kvOwned, hiddenSet] = await Promise.all([
-        fetch(url, {
-          headers: { Accept: 'application/json' },
-          next: { revalidate: 120 },
-        }),
-        getUserCollections(),
-        getCollectionsByArtist(artist),
-        getHiddenCollectionsSet(),
-      ])
-      const text = await res.text()
-      const data = JSON.parse(text)
-      // Filter to curated only — auto-deploy wrappers go in Mints feed.
-      const userSet = new Set(userCreated.map((a: string) => a.toLowerCase()))
-      const inprocessAddrs = new Set<string>()
-      if (Array.isArray(data.collections)) {
-        data.collections = data.collections.filter(
-          (c: { contractAddress?: string }) => {
-            if (!c.contractAddress) return false
-            const lower = c.contractAddress.toLowerCase()
-            if (!userSet.has(lower)) return false
-            inprocessAddrs.add(lower)
-            return isOwnProfile || !hiddenSet.has(lower)
+    // Fan out the artist's collections across every enabled chain (the
+    // /collections response carries each row's chainId). Per-chain failures
+    // degrade to [] so one slow/broken upstream can't blank the profile, and
+    // each helper below has its own try/catch returning a safe default — so no
+    // outer catch is needed for the inprocess-down case (it reduces to KV-only).
+    const chainIds = enabledChainIds()
+    const [chainResults, userCreated, kvOwned, hiddenSet] = await Promise.all([
+      Promise.all(
+        chainIds.map(async (cid): Promise<Array<Record<string, unknown>>> => {
+          try {
+            const url = inprocessUrl('/collections', { artist, limit: 100, chain_id: cid })
+            const res = await fetch(url, {
+              headers: { Accept: 'application/json' },
+              next: { revalidate: 120 },
+            })
+            if (!res.ok) return []
+            const text = await res.text()
+            const d = JSON.parse(text) as { collections?: unknown }
+            return Array.isArray(d.collections) ? (d.collections as Array<Record<string, unknown>>) : []
+          } catch {
+            return []
           }
-        )
-      } else {
-        data.collections = []
-      }
-      // KV fallback for collections the indexer hasn't picked up yet.
-      for (const meta of kvOwned) {
-        const lower = meta.address.toLowerCase()
-        if (inprocessAddrs.has(lower)) continue
-        if (!isOwnProfile && hiddenSet.has(lower)) continue
-        data.collections.push({
-          contractAddress: meta.address,
-          name: meta.name,
-          metadata: {
-            name: meta.name,
-            image: meta.image,
-            description: meta.description,
-          },
-        })
-      }
-      return NextResponse.json(data, {
-        status: res.status,
-        headers: { 'Cache-Control': 'private, no-store' },
-      })
-    } catch {
-      // Inprocess down — fall back to local KV only. viewer + isOwnProfile
-      // are already in scope from the gate hoist above.
-      const [kvOwned, hiddenSet] = await Promise.all([
-        getCollectionsByArtist(artist),
-        getHiddenCollectionsSet(),
-      ])
-      return NextResponse.json(
-        {
-          collections: kvOwned
-            .filter((meta) => isOwnProfile || !hiddenSet.has(meta.address.toLowerCase()))
-            .map((meta) => ({
-              contractAddress: meta.address,
-              name: meta.name,
-              metadata: {
-                name: meta.name,
-                image: meta.image,
-                description: meta.description,
-              },
-            })),
-        },
-        { headers: { 'Cache-Control': 'private, no-store' } },
-      )
+        }),
+      ),
+      getUserCollections(),
+      getCollectionsByArtist(artist),
+      getHiddenCollectionsSet(),
+    ])
+
+    // Filter to curated only — auto-deploy wrappers go in the Mints feed.
+    const userSet = new Set(userCreated.map((a) => a.toLowerCase()))
+    const inprocessAddrs = new Set<string>()
+    const collections: Array<Record<string, unknown>> = []
+    for (const c of chainResults.flat()) {
+      const addr = typeof c.contractAddress === 'string' ? c.contractAddress : null
+      if (!addr) continue
+      const lower = addr.toLowerCase()
+      if (!userSet.has(lower) || inprocessAddrs.has(lower)) continue
+      // Track every curated match (even hidden) so the KV fallback below
+      // doesn't re-add it; hidden ones are then excluded from the output.
+      inprocessAddrs.add(lower)
+      if (!isOwnProfile && hiddenSet.has(lower)) continue
+      collections.push(c)
     }
+
+    // KV fallback for collections the indexer hasn't picked up yet. Skip any on
+    // a not-yet-enabled chain so mainnet stays hidden while the flag is off.
+    for (const meta of kvOwned) {
+      const lower = meta.address.toLowerCase()
+      if (inprocessAddrs.has(lower)) continue
+      if (!isOwnProfile && hiddenSet.has(lower)) continue
+      if (!isChainEnabled(meta.chainId)) continue
+      collections.push({
+        contractAddress: meta.address,
+        name: meta.name,
+        chainId: meta.chainId ?? BASE_CHAIN_ID,
+        metadata: {
+          name: meta.name,
+          image: meta.image,
+          description: meta.description,
+        },
+      })
+    }
+
+    return NextResponse.json(
+      { collections },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    )
   }
 
   const collections = await getTrackedCollections()
@@ -384,6 +399,8 @@ export async function POST(req: NextRequest) {
     // Base64 thumbhash for the cover — surfaced as blurDataURL on the
     // collection page before the Arweave metadata fetch lands.
     kismet_thumbhash?: string
+    // Chain the collection was deployed on. Omitted/invalid → Base.
+    chainId?: number
   }
   try {
     body = await req.json()
@@ -394,17 +411,25 @@ export async function POST(req: NextRequest) {
   if (!body.address || !isAddress(body.address)) {
     return errorResponse(400, 'valid address required')
   }
+  // Resolve + validate the target chain. Unknown/omitted defaults to Base, so
+  // the existing Base deploy path is unchanged; an explicit unsupported chain
+  // is rejected rather than silently coerced.
+  if (body.chainId !== undefined && !isSupportedChainId(body.chainId)) {
+    return errorResponse(400, 'unsupported chainId')
+  }
+  const chainId = isSupportedChainId(body.chainId) ? body.chainId : BASE_CHAIN_ID
   // Caller must claim themselves as the artist (no spoofing).
   if (!body.artist || body.artist.toLowerCase() !== sessionAddress) {
     return errorResponse(403, 'artist must match session address')
   }
 
   // Caller must hold ADMIN on chain (tokenId 0 = collection-wide row).
-  // Outer retry rides out RPC propagation lag for fresh deploys —
-  // readPermissions retries on throw, this loop retries on a definitive
-  // perms=0 read since the deploy tx may have landed but a slow replica
-  // hasn't synced yet.
-  const client = serverBaseClient()
+  // Read on the collection's own chain so registering a mainnet collection
+  // verifies against mainnet. Outer retry rides out RPC propagation lag for
+  // fresh deploys — readPermissions retries on throw, this loop retries on a
+  // definitive perms=0 read since the deploy tx may have landed but a slow
+  // replica hasn't synced yet.
+  const client = serverClient(chainId)
   let isAdmin = false
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -457,6 +482,7 @@ export async function POST(req: NextRequest) {
       image: body.image,
       description: body.description,
       artist: sessionAddress,
+      chainId,
       ...(body.kismet_thumbhash ? { kismet_thumbhash: body.kismet_thumbhash } : {}),
       // Persist so the featured-collection row can dedupe this token
       // from its mint-card grid without inferring it every request.

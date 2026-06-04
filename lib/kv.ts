@@ -1,5 +1,6 @@
 import { redis } from './redis'
 import { PLATFORM_COLLECTION } from './config'
+import { BASE_CHAIN_ID, isChainEnabled, isSupportedChainId } from './chains'
 import { inprocessUrl } from './inprocess'
 import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
@@ -42,6 +43,10 @@ export interface CollectionMeta {
   description?: string
   artist?: string // lowercased deployer address
   kismet_thumbhash?: string
+  // Chain the collection lives on (8453 Base / 1 Ethereum). Absent on legacy
+  // rows registered before multichain — read paths default those to Base via
+  // getCollectionChainId (mirrors the listings `currency='eth'` legacy default).
+  chainId?: number
   // Token ID minted as the collection cover at deploy time (Kismet
   // create-form flow with mint-cover enabled — currently always '1').
   // The featured-collection row dedupes this token from its mint-card
@@ -167,6 +172,36 @@ export async function getCollectionMeta(
   }
 }
 
+/**
+ * Resolve the chain a collection lives on from its KV meta. Defaults to Base
+ * for legacy rows (registered before multichain) and for collections we don't
+ * track — the safe, behavior-preserving default. The single address→chain
+ * resolver for read routes that only have an address (moment/collection pages).
+ */
+export async function getCollectionChainId(address: string): Promise<number> {
+  const meta = await getCollectionMeta(address).catch(() => null)
+  return isSupportedChainId(meta?.chainId) ? (meta!.chainId as number) : BASE_CHAIN_ID
+}
+
+/**
+ * Batch address→chainId map for fan-out routes. Every requested address is
+ * present in the result (default Base), so callers can read it unconditionally.
+ * Keys are lowercased.
+ */
+export async function getCollectionChainIdMap(
+  addresses: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (addresses.length === 0) return out
+  const metas = await getCollectionMetaBatch(addresses)
+  for (const address of addresses) {
+    const lower = address.toLowerCase()
+    const stored = metas.get(lower)?.chainId
+    out.set(lower, isSupportedChainId(stored) ? (stored as number) : BASE_CHAIN_ID)
+  }
+  return out
+}
+
 // Batch variant. Missing addresses (auto-deploy wrappers, non-platform
 // contracts) are omitted from the returned map.
 export async function getCollectionMetaBatch(
@@ -215,9 +250,12 @@ export async function getCollectionsByArtist(
 
 // Cover-image fallback for KV entries registered before the cover flow
 // shipped. 5min upstream cache bounds the per-search fan-out.
-async function fetchInprocessCollectionImage(address: string): Promise<string | undefined> {
+async function fetchInprocessCollectionImage(
+  address: string,
+  chainId: number = BASE_CHAIN_ID,
+): Promise<string | undefined> {
   try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
+    const url = inprocessUrl('/collection', { collectionAddress: address, chainId })
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 300 },
@@ -254,17 +292,21 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
     const address = addresses[i].toLowerCase()
     if (hiddenCollections.has(address)) continue
     const meta: CollectionMeta = typeof raw === 'string' ? JSON.parse(raw) : raw
+    // Hide collections on chains not currently enabled (mainnet stays dark
+    // until the flag is on). Legacy/missing chainId defaults to Base.
+    if (!isChainEnabled(meta.chainId)) continue
     if (meta.artist && hiddenUsers.has(meta.artist.toLowerCase())) continue
     if (meta.name.toLowerCase().includes(q) || address.startsWith(q)) {
       results.push(meta)
       if (results.length >= 20) break
     }
   }
-  // Backfill missing cover images from inprocess (scoped to matches).
+  // Backfill missing cover images from inprocess (scoped to matches), each on
+  // the collection's own chain.
   return Promise.all(
     results.map(async (meta) => {
       if (meta.image) return meta
-      const image = await fetchInprocessCollectionImage(meta.address)
+      const image = await fetchInprocessCollectionImage(meta.address, meta.chainId ?? BASE_CHAIN_ID)
       return image ? { ...meta, image } : meta
     }),
   )
