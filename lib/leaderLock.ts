@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto'
+import { randomHex } from './random'
 import { redis } from './redis'
 
 /**
@@ -30,7 +30,7 @@ export async function withLeaderLock<T>(
   fn: () => Promise<T>,
 ): Promise<T | null> {
   const lockKey = `kismetart:lock:${label}`
-  const token = randomBytes(16).toString('hex')
+  const token = randomHex(16)
   const acquired = (await redis.set(lockKey, token, { nx: true, ex: ttlSec })) === 'OK'
   if (!acquired) return null
   try {

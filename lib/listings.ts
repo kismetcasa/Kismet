@@ -1,7 +1,6 @@
 import { after } from 'next/server'
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
-import { randomUUID } from 'crypto'
 import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
 
@@ -62,7 +61,7 @@ export async function createListing(
 
   const listing: Listing = {
     ...data,
-    id: randomUUID(),
+    id: crypto.randomUUID(),
     createdAt: Date.now(),
     status: 'active',
   }
