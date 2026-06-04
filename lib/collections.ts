@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Address } from 'viem'
-import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
+import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY, fixedPriceStrategy } from './zoraMint'
 import { BASE_CHAIN_ID, getChain } from './chains'
 
 // inprocess's Base Mainnet ZORA 1155 Contract Factory (the `createContract`
@@ -115,6 +115,17 @@ const COLLECTION_ABI = [
       { name: 'tokenId', type: 'uint256' },
       { name: 'user', type: 'address' },
     ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    // The id the NEXT setupNewToken will assign (Zora initializes it to 1;
+    // token 0 is the collection-wide permission scope). Read before a
+    // client-side mint so we can target the new token's id and guard the
+    // batch with assumeLastTokenIdMatches(nextTokenId - 1).
+    name: 'nextTokenId',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
     outputs: [{ name: '', type: 'uint256' }],
   },
 ] as const
@@ -260,6 +271,117 @@ export function buildCoverTokenSetupActions(
         abi: COLLECTION_ABI,
         functionName: 'adminMint',
         args: [params.creator, tokenId, BigInt(mintCount), '0x' as `0x${string}`],
+      }),
+    )
+  }
+
+  return actions
+}
+
+interface MomentMintParams {
+  tokenURI: string
+  maxSupply?: bigint
+  createReferral: Address
+  pricePerTokenWei: bigint
+  saleStart: bigint
+  saleEnd: bigint
+  /** Sale-proceeds recipient: the creator EOA, or a split contract address. */
+  fundsRecipient: Address
+  /** Recipient of the admin-minted creator copies (typically the creator EOA). */
+  creator: Address
+  mintToCreatorCount?: number
+  /**
+   * The id `setupNewToken` will assign on this collection — read from the
+   * collection's `nextTokenId()` immediately before building. The batch is
+   * guarded with `assumeLastTokenIdMatches(newTokenId - 1)` so a concurrent
+   * create can't shift the id out from under our setSale/adminMint.
+   */
+  newTokenId: bigint
+  /** Target chain — selects the FixedPrice strategy address. Defaults to Base. */
+  chainId?: number
+}
+
+// Builds the `multicall(bytes[])` sequence that creates + sells + (optionally)
+// mints a copy of a NEW token on an EXISTING collection, submitted directly
+// from the user's wallet (see hooks/useClientMint.ts). This is the user-paid
+// analog of the In Process /moment/create relay — the path mainnet must use
+// since that relay is Base-only (MAINNET_EXPANSION_SCOPE.md §6.1, Phase 4 B).
+//
+// Identical action SHAPE to buildCoverTokenSetupActions (the deploy-time cover
+// token), differing only in (a) the live `newTokenId` instead of a fixed `1`,
+// and (b) a chain-keyed strategy address instead of the Base constant. Kept as
+// a separate function so the treasury-sensitive deploy path stays byte-for-byte
+// unchanged; unify the two if/when this graduates past prototype. The minter's
+// EOA must hold collection-wide ADMIN — setupNewToken reverts otherwise (a
+// self-deployed collection grants its deployer ADMIN, so this holds for a
+// creator minting into their own collection).
+export function buildMomentMintActions(params: MomentMintParams): `0x${string}`[] {
+  const { newTokenId } = params
+  const lastTokenId = newTokenId - 1n
+  const maxSupply = params.maxSupply ?? OPEN_EDITION_MINT_SIZE
+  const mintCount = params.mintToCreatorCount ?? 1
+  const strategy = fixedPriceStrategy(params.chainId ?? BASE_CHAIN_ID)
+
+  const actions: `0x${string}`[] = []
+
+  // 1. Assert the collection's last token id, so the token we create is
+  //    exactly `newTokenId`. Reverts the whole batch on any mismatch.
+  actions.push(
+    encodeFunctionData({
+      abi: COLLECTION_ABI,
+      functionName: 'assumeLastTokenIdMatches',
+      args: [lastTokenId],
+    }),
+  )
+
+  // 2. Create the token with its metadata URI and supply cap.
+  actions.push(
+    encodeFunctionData({
+      abi: COLLECTION_ABI,
+      functionName: 'setupNewTokenWithCreateReferral',
+      args: [params.tokenURI, maxSupply, params.createReferral],
+    }),
+  )
+
+  // 3. Grant MINTER permission to the FixedPrice sale strategy for this token.
+  actions.push(
+    encodeFunctionData({
+      abi: COLLECTION_ABI,
+      functionName: 'addPermission',
+      args: [newTokenId, strategy, PERMISSION_BIT_MINTER],
+    }),
+  )
+
+  // 4. Configure the sale: price + window + fundsRecipient.
+  const saleData = encodeFunctionData({
+    abi: FIXED_PRICE_SALE_STRATEGY_ABI,
+    functionName: 'setSale',
+    args: [
+      newTokenId,
+      {
+        saleStart: params.saleStart,
+        saleEnd: params.saleEnd,
+        maxTokensPerAddress: 0n, // 0 = unlimited per address
+        pricePerToken: params.pricePerTokenWei,
+        fundsRecipient: params.fundsRecipient,
+      },
+    ],
+  })
+  actions.push(
+    encodeFunctionData({
+      abi: COLLECTION_ABI,
+      functionName: 'callSale',
+      args: [newTokenId, strategy, saleData],
+    }),
+  )
+
+  // 5. (Optional) admin-mint copies to the creator.
+  if (mintCount > 0) {
+    actions.push(
+      encodeFunctionData({
+        abi: COLLECTION_ABI,
+        functionName: 'adminMint',
+        args: [params.creator, newTokenId, BigInt(mintCount), '0x' as `0x${string}`],
       }),
     )
   }
