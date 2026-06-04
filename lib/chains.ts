@@ -138,10 +138,6 @@ export function enabledChainIds(): SupportedChainId[] {
   return isMainnetEnabled() ? [BASE_CHAIN_ID, MAINNET_CHAIN_ID] : [BASE_CHAIN_ID]
 }
 
-export function enabledChains(): ChainConfig[] {
-  return enabledChainIds().map((id) => CHAINS[id])
-}
-
 /** True when `chainId` is one the app should currently surface. A
  *  missing/legacy chain (undefined) is treated as Base. */
 export function isChainEnabled(chainId: number | undefined | null): boolean {

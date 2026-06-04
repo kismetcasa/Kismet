@@ -292,7 +292,7 @@ export interface ChainConfig {
 
 export const CHAINS: Record<SupportedChainId, ChainConfig> = { /* … */ }
 export function getChain(id: number): ChainConfig // throws on unsupported
-export function enabledChains(): ChainConfig[]    // honors NEXT_PUBLIC_ENABLE_MAINNET
+export function enabledChainIds(): SupportedChainId[] // honors NEXT_PUBLIC_ENABLE_MAINNET
 ```
 
 Then mechanical refactors:
@@ -362,8 +362,8 @@ Chain-aware seams now live for Phases 2–4 (each defaults to Base): `getChain(i
 
 ### Phase 2 — Read model multichain (show mainnet content) ✅ DONE
 - [x] Re-introduced the enablement + display helpers (with consumers):
-      `isMainnetEnabled()` / `enabledChainIds()` / `enabledChains()` /
-      `isChainEnabled()` reading `NEXT_PUBLIC_ENABLE_MAINNET` (flag re-added to
+      `isMainnetEnabled()` / `enabledChainIds()` / `isChainEnabled()` reading
+      `NEXT_PUBLIC_ENABLE_MAINNET` (flag re-added to
       `.env.example`); `getChainOrDefault()`; `explorerTxUrl` / `explorerTokenUrl`.
 - [x] **Data model:** `CollectionMeta.chainId` (legacy-default Base) +
       `getCollectionChainId()` / `getCollectionChainIdMap()` resolvers;
@@ -381,7 +381,7 @@ Chain-aware seams now live for Phases 2–4 (each defaults to Base): `getChain(i
       collection's chain (one MGET) and **gate by `isChainEnabled`** so mainnet
       stays hidden while the flag is off. Each collection is queried on its own
       chain (one call — not doubled, since collections are single-chain). The
-      artist `/collections` path fans out across `enabledChains()` and merges.
+      artist `/collections` path fans out across `enabledChainIds()` and merges.
       The `/api/timeline` fan-out **stamps the queried chain onto every row** so
       client cards read the right chain even if inprocess omits `chain_id`.
 - [x] `MomentCard` / `MomentDetailView` / `CollectionView` / `FeaturedMoment`:
@@ -594,8 +594,8 @@ from the first one. Test vector in the meantime: hand-register one mainnet In
 Process collection and flip the flag in a preview env.
 
 ### 10.5 Helpers to (re)introduce here (deferred from Phase 1, now with consumers)
-`isMainnetEnabled()`, `enabledChainIds()`, `enabledChains()` (+ add
-`NEXT_PUBLIC_ENABLE_MAINNET` to `.env.example`); `getChainOrDefault()`;
+`isMainnetEnabled()`, `enabledChainIds()` (+ add `NEXT_PUBLIC_ENABLE_MAINNET` to
+`.env.example`); `getChainOrDefault()`;
 `explorerTxUrl()` / `explorerTokenUrl()` (+ `explorerAddressUrl()` only if a
 caller needs it).
 
@@ -620,7 +620,7 @@ caller needs it).
 9. `app/api/featured/collections-hydrated`, `lib/coverMomentSynthesis.ts`,
    `lib/collectionCache.ts`, `lib/search.ts` — thread chainId.
 10. `app/api/collections` GET `?artist` — merge In Process `/collections` across
-    `enabledChains()` (response carries each row's `chainId`) + the KV fallback.
+    `enabledChainIds()` (response carries each row's `chainId`) + the KV fallback.
 
 ### 10.7 Out of scope for Phase 2 (stays Base until Phase 3)
 Server-side **write/verify** reads — collect receipt, distribute, listings royalty
