@@ -639,3 +639,117 @@ read-only display + feeds; Phase 3 chain-parameterizes those via
   `getCollectionChainId`; fallback for unknown addresses = try Base then mainnet
   (≤2 upstream calls).
 - Fan-out latency unchanged (one call per collection, on its chain) — not doubled.
+
+---
+
+## 11. Phase 3 — detailed implementation plan (direct on-chain flows → multichain)
+
+> Prepared 2026-06-04. Scope: **collect / collect-all / list / buy / cancel /
+> airdrop / grant** — all **user-paid, direct on-chain** (no relay), so no
+> dependency on In Process's relay. Distribute is the one relayed flow (see
+> §11.6 fork). Same dark posture: every chainId defaults to Base; with the flag
+> off there are no mainnet moments to act on, so behavior is unchanged.
+
+### 11.1 chainId propagation (mostly already wired by Phase 2)
+- **Moment-scoped** flows read `momentChainId` (already in `MomentCard`,
+  `MomentDetailView`, `FeaturedMoment`): collect, list, splits/distribute.
+- **Collection-scoped** flows read the page-resolved `chainId` (already a
+  `CollectionView` prop): airdrop, grant, collect-all.
+- **Listing-scoped** flows read `listing.chainId` (new field, §11.2): buy, cancel.
+
+### 11.2 Data model
+- Add `chainId?: number` to the `Listing` interface (`lib/listings.ts`).
+  `createListing` accepts it; `getListing` / `getListingsBatch` default missing →
+  Base (mirrors the existing `currency='eth'` legacy default).
+- `/api/listings` POST validates (`isSupportedChainId`) + stores `chainId`.
+
+### 11.3 Client hooks/components (swap `useEnsureBase`→`useEnsureChain`, pin chainId)
+- `hooks/useDirectCollect.ts` — add `chainId` to `CollectArgs`; `ensureChain(id)`;
+  `usePublicClient({ chainId })`; `buildEthMintCall/{Usdc}({…, chainId})`;
+  `usdcAddress(id)` + `erc20Minter(id)` for the USDC allowance/approve/mint;
+  record `chainId`. `MomentCard` / `MomentDetailView` pass `momentChainId`.
+- `hooks/useCollectAll.ts` — add `chainId` to `CollectAllArgs`; pin
+  `publicClient`/`walletClient`/`sendCallsAsync`/`writeContractAsync` to it; the
+  `getAccount(config).chainId !== base.id` guard → `!== chainId`;
+  `walletClient.sendTransaction({ chain: getChain(id).chain })`; `usdcAddress(id)`,
+  `erc20Minter(id)` (MULTICALL3 is chain-agnostic). Single-collection invocation =
+  single chain, so no cross-chain batching problem. `CollectAllAction` passes the
+  collection's chain (surface `chainId` on the hydrated-collection payload).
+- `components/ListButton.tsx` — `chainId` prop; `ensureChain`; `seaportDomain(id)`
+  for the signature; `buildSellOrder({…, chainId})`; pinned writes/reads; POST
+  includes `chainId`.
+- `components/BuyButton.tsx` + `components/MarketCard.tsx` — derive chain from
+  `listing.chainId`; `ensureChain`; `usdcAddress(id)`; pinned `fulfillOrder` /
+  `cancel` writes + receipt reads.
+- `hooks/useAirdrop.ts` — `chainId` in `AirdropRequest`; `ensureChain`; pinned
+  `adminMint`/multicall writes. `AirdropForm` passes the collection chain + posts
+  `chainId` to `/api/airdrop/notify`.
+- `hooks/useGrantPermission.ts` — `chainId` param; `usePublicClient({ chainId })`,
+  `useWaitForTransactionReceipt({ chainId })`, `ensureChain`, pinned writes.
+  `CollectionView` / `AirdropForm` / `MomentDetailView` pass the collection chain.
+- Explorer links in these surfaces (airdrop/grant/collect toasts) → registry
+  `explorerTxUrl(chainId, …)`.
+
+### 11.4 Server verification (→ `serverClient(chainId)`)
+- `/api/collect` — `verifyMintOnChain` + `readSalePricePerToken` on
+  `serverClient(body.moment.chainId)` (client already sends it; generalize from
+  `base.id`).
+- `/api/listings` POST — `verifyRoyalty` on `serverClient(chainId)`; signature
+  verify with `seaportDomain(chainId)`; `validateOrderShape` USDC token →
+  `usdcAddress(chainId)`.
+- `/api/listings/[id]` PATCH — fill-receipt read on `serverClient(listing.chainId)`
+  (`findFulfillmentInLogs` is domain-agnostic — no change).
+- `/api/airdrop/notify` — `verifyAirdropOnChain` on `serverClient(body.chainId)`.
+- `/api/collection/authorized-creators` — perms reads on the collection's chain
+  (grant flow).
+
+### 11.5 EIP-1271 caveat (listings)
+The listing signature is verified server-side with `verifyTypedData` via
+`serverClient(listing.chainId)`. A seller using a smart wallet that isn't yet
+deployed on mainnet would fail ERC-1271 verification — same counterfactual-wallet
+caveat as the Phase 4 intent path (§0). Mitigate with ERC-6492 or require the
+order be EOA-signed on mainnet. Verify in Phase 0.
+
+### 11.6 ⚠️ Decision — distribute on mainnet (the one relayed flow)
+`/api/distribute` relays through In Process (sponsored) with `chainId`.
+`useMomentSplits` display reads (balance via `useBalance({ chainId })` /
+`usdcAddress(id)`) are trivially chain-aware, but the distribute **action** forks:
+- **Option A — relay** (send `chainId: 1` to In Process `/distribute`): depends on
+  their relay supporting mainnet — the same unknown as the mint relay.
+- **Option B — user-paid 0xSplits-direct** (recommended, consistent with the
+  mint decision): call the split contract's `distribute` from the user's wallet
+  (0xSplits distribution is permissionless). Needs the per-chain 0xSplits
+  `SplitMain`/distribute ABI; no relay dependency, no platform gas.
+- **Option C — defer:** keep distribute Base-only for Phase 3 (display reads
+  multichain), ship mainnet distribute as a fast-follow. Distribution is a
+  late-lifecycle action, so this is low-impact.
+Recommend **B**, or **C** if we want to ship Phase 3 without the 0xSplits-direct
+work.
+
+### 11.7 Out of scope (Phase 4)
+Sponsored mint + deploy on mainnet (`MintForm` / `CreateCollectionForm` /
+`mint-proxy` / intent domain) and the Pass gate. Phase 3 leaves those Base-only.
+
+### 11.8 KV key chain-scoping (revisit)
+`trending` / `collected` / `moment-meta` / collect+airdrop idempotency keys are
+`address:tokenId`. Phase 3 is where the collect/airdrop **recording** could append
+chain to these keys if a same-address-cross-chain collision is ever observed
+(improbable — factory deploys differ per chain). Recommend leaving as-is unless
+observed; if changed, do it once across all four key families with a default-Base
+read shim.
+
+### 11.9 Testing
+- Flag off: byte-identical (every default is Base).
+- Flag on + a registered mainnet collection: collect (ETH + USDC), collect-all,
+  list, buy, cancel, airdrop, grant all execute on chain 1 with the mainnet
+  strategy/USDC addresses; server verification reads chain 1; a Base order can't
+  be filled on mainnet (domain `chainId` binding) and vice-versa.
+- Mixed feed: a Base card and a mainnet card on the same page each collect on
+  their own chain (wallet prompts the right switch).
+
+### 11.10 Risks
+- Distribute relay (§11.6) — pick B/C to avoid the relay dependency.
+- EIP-1271 on mainnet for undeployed smart-wallet sellers (§11.5).
+- Mainnet gas is user-paid (expected) but higher — surface it in the UX
+  (collect/airdrop confirm copy).
+- Per-chain `serverClient` RPC quota on mainnet (provision a real key).
