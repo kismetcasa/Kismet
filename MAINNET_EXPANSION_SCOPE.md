@@ -792,9 +792,22 @@ read shim.
 > Base flow stays exactly as-is. Each change is *additive* or branches once on
 > `getChain(chainId).sponsoredMint` (Base `true` → relay; mainnet `false` →
 > client-side, user-paid). Flag-gated by `NEXT_PUBLIC_ENABLE_MAINNET`.
-> **Started:** `hooks/useClientMint.ts` + `buildMomentMintActions()`
-> (`lib/collections.ts`) — the client mint engine (ETH/FixedPrice), defaults to
-> Base, nothing wired in yet.
+> **As-built (this branch):**
+> - ✅ **Distribute (user-paid):** `useMomentSplits.distribute()` branches on
+>   `sponsoredMint` — Base relay unchanged; mainnet calls
+>   `SplitMain.distributeETH/ERC20` directly (gated by `splitsVerified`).
+>   Foundation in `lib/splitMain.ts` (v1 SplitMain ABI/address +
+>   `reconstructSplitParams`) and `lib/chains.ts` (`splitMain`, `splitsVerified`).
+> - ✅ **Mint engine (complete):** `useClientMint` + `buildMomentMintActions`
+>   create a moment client-side, user-paid — ETH **and** USDC, with optional
+>   client-side 0xSplits `createSplit` wiring the split as fundsRecipient +
+>   royalty recipient. Verified by typecheck/lint/build; not yet exercised
+>   on-chain (no test runner; unreachable until deploy + indexing land).
+> - ⬜ **Remaining wiring:** the MintForm / CreateCollectionForm chain selector +
+>   the `/api/mint/record` recorder that calls the engine (§12.5.3, §12.8), and
+>   deploy (§12.4, blocked on the factory). Deferred deliberately — it touches the
+>   Base-critical mint flow and can't be tested until the Phase 0 externals clear,
+>   so it ships as a reviewed unit rather than untested surgery into the core path.
 
 ### 12.1 Every mainnet action, by status
 | Action | Base (unchanged) | Mainnet today | Mainnet plan |
