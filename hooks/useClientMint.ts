@@ -123,21 +123,29 @@ export function useClientMint() {
     if (splits && splits.length >= 2) {
       const { accounts, percentAllocations } = reconstructSplitParams(splits)
       const splitMain = splitMainAddress(chainId)
+      // Immutable splits are deterministic (CREATE2 over the params), so the
+      // address is known up front — and re-creating an existing one reverts.
+      // Predict it, then deploy only if it isn't there yet: this makes a retry
+      // after a failed mint safe, and an identical recipient set simply reuses
+      // its split (every recipient still gets their exact % of the pooled funds).
       splitAddress = await publicClient.readContract({
         address: splitMain,
         abi: SPLIT_MAIN_ABI,
         functionName: 'predictImmutableSplitAddress',
         args: [accounts, percentAllocations, DISTRIBUTOR_FEE],
       })
-      const createHash = await writeContractAsync({
-        chainId,
-        address: splitMain,
-        abi: SPLIT_MAIN_ABI,
-        functionName: 'createSplit',
-        args: [accounts, percentAllocations, DISTRIBUTOR_FEE, zeroAddress], // controller=0 → immutable
-        dataSuffix: BUILDER_DATA_SUFFIX,
-      })
-      await publicClient.waitForTransactionReceipt({ hash: createHash })
+      const deployed = await publicClient.getCode({ address: splitAddress })
+      if (!deployed || deployed === '0x') {
+        const createHash = await writeContractAsync({
+          chainId,
+          address: splitMain,
+          abi: SPLIT_MAIN_ABI,
+          functionName: 'createSplit',
+          args: [accounts, percentAllocations, DISTRIBUTOR_FEE, zeroAddress], // controller=0 → immutable
+          dataSuffix: BUILDER_DATA_SUFFIX,
+        })
+        await publicClient.waitForTransactionReceipt({ hash: createHash })
+      }
     }
 
     const fundsRecipient = splitAddress ?? payoutRecipient ?? creator

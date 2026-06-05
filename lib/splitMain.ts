@@ -22,14 +22,10 @@ export const SPLIT_MAIN_ABI = parseAbi([
   'function predictImmutableSplitAddress(address[] accounts, uint32[] percentAllocations, uint32 distributorFee) view returns (address)',
   'function distributeETH(address split, address[] accounts, uint32[] percentAllocations, uint32 distributorFee, address distributorAddress)',
   'function distributeERC20(address split, address token, address[] accounts, uint32[] percentAllocations, uint32 distributorFee, address distributorAddress)',
-  'function withdraw(address account, uint256 withdrawETH, address[] tokens)',
-  'function getETHBalance(address account) view returns (uint256)',
-  'function getERC20Balance(address account, address token) view returns (uint256)',
-  'event CreateSplit(address indexed split)',
 ])
 
-/** 0xSplits PERCENTAGE_SCALE — allocations are expressed in millionths (1e6). */
-export const PERCENTAGE_SCALE = 1_000_000
+// 0xSplits PERCENTAGE_SCALE — allocations are expressed in millionths (1e6).
+const PERCENTAGE_SCALE = 1_000_000
 
 /**
  * We create fee-less splits (matching In Process's behavior), so allocations
