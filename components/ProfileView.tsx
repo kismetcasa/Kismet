@@ -1154,13 +1154,11 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
             .map((section) => {
               const count = sectionCount[section]
               return (
-                <div key={section} data-section={section} className="border-t border-line">
-                  {/* Featured sections don't collapse — no dropdown chevron. */}
-                  <div className="flex items-center py-4">
-                    <h2 className="text-xs font-mono text-dim uppercase tracking-wider">
-                      {showcaseSectionLabel[section]}{count !== null ? ` (${count})` : ''}
-                    </h2>
-                  </div>
+                <div key={section} className="border-t border-line">
+                  {/* Featured sections don't collapse — always expanded, no chevron. */}
+                  <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
+                    {showcaseSectionLabel[section]}{count !== null ? ` (${count})` : ''}
+                  </h2>
                   <div className="pb-8">{sectionContent[section]}</div>
                 </div>
               )
