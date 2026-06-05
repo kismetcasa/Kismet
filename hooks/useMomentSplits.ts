@@ -22,9 +22,9 @@ import type { CollectCurrency } from '@/hooks/useDirectCollect'
 interface Options {
   address: string
   tokenId: string
-  // Chain the moment lives on. Drives the split-balance display reads. The
-  // distribute *action* stays Base-only for now (mainnet distribute deferred) —
-  // distribute() guards on this. Defaults to Base.
+  // Chain the moment lives on. Drives the balance reads + the distribute/withdraw
+  // path: Base uses the sponsored relay; mainnet is user-paid 0xSplits-direct
+  // (gated by splitsVerified). Defaults to Base.
   chainId?: number
   // Creator (resolved EOA) or a moment admin per the parent view. Either
   // grants distribute rights; recipients are detected here from the stored
@@ -63,6 +63,15 @@ interface SplitsState {
   distribute: (currency: CollectCurrency) => Promise<void>
   distributing: boolean
   distributeHash: string | null
+  // User-paid chains only (mainnet): after a distribute, the connected
+  // recipient's share sits in SplitMain until they pull it. `claimableFormatted`
+  // is their withdrawable balance; `withdraw` is the pull. Base settles via the
+  // relay, so these stay inert there (hasClaimable false).
+  claimableFormatted: string | undefined
+  hasClaimable: boolean
+  withdraw: (currency: CollectCurrency) => Promise<void>
+  withdrawing: boolean
+  withdrawHash: string | null
 }
 
 /**
@@ -85,6 +94,8 @@ export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isC
   const [recipients, setRecipients] = useState<SplitRecipient[]>([])
   const [distributing, setDistributing] = useState(false)
   const [distributeHash, setDistributeHash] = useState<string | null>(null)
+  const [withdrawing, setWithdrawing] = useState(false)
+  const [withdrawHash, setWithdrawHash] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -145,6 +156,35 @@ export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isC
           ((pendingRaw * BigInt(viewerRecipient.percentAllocation)) / 100n).toString(),
           currency,
         )
+
+  // On user-paid chains, distribute pushes each recipient's share into SplitMain
+  // (not their wallet). The connected recipient pulls it with withdraw; read
+  // their claimable balance to drive that button. Inert on Base (relay-settled).
+  const claimableEnabled =
+    !getChain(chainId).sponsoredMint &&
+    getChain(chainId).splitsVerified &&
+    !!viewerRecipient &&
+    !!connectedAddress
+  const { data: claimableEth } = useReadContract({
+    chainId,
+    address: splitMainAddress(chainId),
+    abi: SPLIT_MAIN_ABI,
+    functionName: 'getETHBalance',
+    args: connectedAddress ? [connectedAddress] : undefined,
+    query: { enabled: claimableEnabled && currency === 'eth' },
+  })
+  const { data: claimableUsdc } = useReadContract({
+    chainId,
+    address: splitMainAddress(chainId),
+    abi: SPLIT_MAIN_ABI,
+    functionName: 'getERC20Balance',
+    args: connectedAddress ? [connectedAddress, usdcAddress(chainId)] : undefined,
+    query: { enabled: claimableEnabled && currency === 'usdc' },
+  })
+  const claimableRaw = currency === 'usdc' ? claimableUsdc : claimableEth
+  const hasClaimable = claimableRaw !== undefined && claimableRaw > 0n
+  const claimableFormatted =
+    claimableRaw === undefined ? undefined : formatPrice(claimableRaw.toString(), currency)
 
   async function distribute(currency: CollectCurrency) {
     if (!splitAddress) { toast.error('Split address not found'); return }
@@ -235,6 +275,36 @@ export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isC
     }
   }
 
+  // User-paid 2nd hop: pull the connected recipient's withdrawable balance out
+  // of SplitMain to their wallet. Permissionless on 0xSplits (funds always go to
+  // `account`), so the connected recipient withdraws their own. Base settles via
+  // the relay, so this is a no-op there.
+  async function withdraw(currency: CollectCurrency) {
+    if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    if (getChain(chainId).sponsoredMint) return
+    setWithdrawing(true)
+    try {
+      await ensureChain(chainId)
+      const hash = await writeContractAsync({
+        chainId,
+        address: splitMainAddress(chainId),
+        abi: SPLIT_MAIN_ABI,
+        functionName: 'withdraw',
+        args:
+          currency === 'usdc'
+            ? [connectedAddress, 0n, [usdcAddress(chainId)]]
+            : [connectedAddress, 1n, []],
+        dataSuffix: BUILDER_DATA_SUFFIX,
+      })
+      setWithdrawHash(hash)
+      toast.success('Withdrawn to your wallet!', { id: 'withdraw' })
+    } catch (err) {
+      toastError('Withdraw', err, { id: 'withdraw' })
+    } finally {
+      setWithdrawing(false)
+    }
+  }
+
   return {
     hasSplits,
     recipients,
@@ -247,5 +317,10 @@ export function useMomentSplits({ address, tokenId, chainId = BASE_CHAIN_ID, isC
     distribute,
     distributing,
     distributeHash,
+    claimableFormatted,
+    hasClaimable,
+    withdraw,
+    withdrawing,
+    withdrawHash,
   }
 }

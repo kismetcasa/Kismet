@@ -388,6 +388,11 @@ export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, in
     distribute,
     distributing,
     distributeHash,
+    claimableFormatted,
+    hasClaimable,
+    withdraw,
+    withdrawing,
+    withdrawHash,
   } = useMomentSplits({
     address,
     tokenId,
@@ -556,6 +561,11 @@ export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, in
   async function handleDistribute() {
     if (!detail) { toast.error('Moment details still loading'); return }
     await distribute(inferCollectCurrency(detail.saleConfig))
+  }
+
+  async function handleWithdraw() {
+    if (!detail) { toast.error('Moment details still loading'); return }
+    await withdraw(inferCollectCurrency(detail.saleConfig))
   }
 
   // In a Mini App, share = open the Farcaster cast composer with the
@@ -1404,6 +1414,27 @@ export function MomentDetailView({ address, tokenId, chainId = BASE_CHAIN_ID, in
                   className="text-[10px] font-mono text-muted hover:text-dim"
                 >
                   distributed: {distributeHash.slice(0, 10)}…{distributeHash.slice(-8)}
+                </a>
+              )}
+              {/* User-paid 2nd hop — pull the connected recipient's share out of
+                  the split to their wallet (mainnet only; inert on Base). */}
+              {hasClaimable && (
+                <button
+                  onClick={handleWithdraw}
+                  disabled={withdrawing}
+                  className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+                >
+                  {withdrawing ? 'withdrawing…' : `withdraw ${claimableFormatted} to your wallet`}
+                </button>
+              )}
+              {withdrawHash && (
+                <a
+                  href={explorerTxUrl(chainId, withdrawHash)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] font-mono text-muted hover:text-dim"
+                >
+                  withdrawn: {withdrawHash.slice(0, 10)}…{withdrawHash.slice(-8)}
                 </a>
               )}
             </div>
