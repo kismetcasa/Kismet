@@ -792,8 +792,11 @@ read shim.
 > Base flow stays exactly as-is. Each change is *additive* or branches once on
 > `getChain(chainId).sponsoredMint` (Base `true` → relay; mainnet `false` →
 > client-side, user-paid). Flag-gated by `NEXT_PUBLIC_ENABLE_MAINNET`.
-> **As-built (this branch):** the full user-paid mainnet vertical **except deploy**
-> is implemented and `npm run check`-green. All Base-safe: every path defaults to
+> **As-built (this branch):** the user-paid mainnet vertical — **image** mint into an
+> existing collection, the Phase-3 flows (collect / list / buy / airdrop / grant), and
+> split distribute/withdraw — is implemented and `npm run check`-green. Three writes
+> remain **deferred on mainnet** (still Base-relay only, UI-gated off there): **deploy
+> (§12.4), text/write moments, and update-URI.** All Base-safe: every path defaults to
 > Base and is reachable only behind `NEXT_PUBLIC_ENABLE_MAINNET` / `splitsVerified`
 > / `factoryVerified`. Not yet exercised on-chain (no test runner; unreachable
 > until a mainnet collection exists — i.e. until deploy + the factory land) — and,
@@ -818,6 +821,12 @@ read shim.
 >   `verifyDeployPermissions` receipt-watcher, operator ADMIN grants) and fully
 >   blocked on the unconfirmed factory, so it ships as one testable unit once the
 >   factory's confirmed rather than untested surgery now.
+> - ⬜ **Text/write moments on mainnet:** the `useClientMint` engine is URI-agnostic
+>   (it already handles text), but MintForm gates text off on mainnet ("coming soon").
+>   Unblock is a one-line UI change once deploy lands.
+> - ⬜ **Update-URI on mainnet:** `MomentDetailView` still POSTs the edit to the Base
+>   relay (`chainId: 8453` hardcoded, :858); the client-side `updateTokenURI` (§12.6)
+>   is not wired yet. Unreachable today (no mainnet moments) and Base-safe.
 
 ### 12.1 Every mainnet action, by status
 | Action | Base (unchanged) | Mainnet today | Mainnet plan |
