@@ -1091,14 +1091,14 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       )}
 
 
-      {/* Owner-only hint: the public profile is curation-driven, and an owner
-          only ever sees this (full) dashboard — so without this they'd have no
-          way to know visitors currently see just their details. */}
+      {/* Owner-only curation hint, shown only when nothing is pinned: an owner
+          only ever sees this (full) dashboard, so without it they'd have no
+          prompt to feature artworks on their otherwise detail-only profile. */}
       {ownerHasNoPins && !previewPublic && (
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4 flex items-center gap-3">
           <p className="flex-1 min-w-0 text-xs font-mono text-muted leading-relaxed">
-            Visitors see only the moments you <span className="text-dim">pin</span>. Tap the
-            {' '}<span className="text-dim">pin</span> on any moment below to feature it on your profile
+            Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
+            {' '}<span className="text-dim">Pin</span> up to 4 mints, collects and listings each
           </p>
           <button
             onClick={() => setPreviewPublic(true)}
