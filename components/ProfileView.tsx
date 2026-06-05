@@ -967,10 +967,9 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
-            {/* Owner-only "public view" toggle. With pins it sits here under the
-                follower count; with no pins it lives in the hint box below.
-                In preview it becomes the exit control — the one piece of owner
-                chrome kept visible so the preview is always escapable. */}
+            {/* Owner-only "public view" toggle — always under the follower
+                count. Flips to the exit control while previewing: the one piece
+                of owner chrome kept visible so the preview stays escapable. */}
             {isOwner &&
               (previewPublic ? (
                 <button
@@ -979,14 +978,14 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 >
                   exit public view
                 </button>
-              ) : !ownerHasNoPins ? (
+              ) : (
                 <button
                   onClick={() => setPreviewPublic(true)}
                   className="self-start mt-2 text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
                 >
                   public view
                 </button>
-              ) : null)}
+              ))}
           </div>
         </div>
 
@@ -1122,17 +1121,11 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
           only ever sees this (full) dashboard, so without it they'd have no
           prompt to feature artworks on their otherwise detail-only profile. */}
       {ownerHasNoPins && !previewPublic && (
-        <div className="border border-line bg-surface/40 px-4 py-3 mb-4 flex items-center gap-3">
-          <p className="flex-1 min-w-0 text-xs font-mono text-muted leading-relaxed">
+        <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
+          <p className="text-xs font-mono text-muted leading-relaxed">
             Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
             {' '}<span className="text-dim">Pin</span> up to 4 mints, collects and listings each
           </p>
-          <button
-            onClick={() => setPreviewPublic(true)}
-            className="flex-shrink-0 whitespace-nowrap text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
-          >
-            public view
-          </button>
         </div>
       )}
 
