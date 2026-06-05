@@ -1,5 +1,6 @@
 'use client'
 
+import { useRef } from 'react'
 import { useConfig, useWriteContract } from 'wagmi'
 import { getPublicClient } from '@wagmi/core'
 import { zeroAddress, type Address } from 'viem'
@@ -90,8 +91,22 @@ export function useClientMint() {
   const config = useConfig()
   const { writeContractAsync } = useWriteContract()
   const ensureChain = useEnsureChain()
+  // Synchronous re-entrance latch — a double-tap before the caller's `minting`
+  // state disables the button could otherwise fire two mints (two tokens). The
+  // idempotency check keeps the split safe; this stops the duplicate token.
+  const inFlightRef = useRef(false)
 
   async function mint(req: ClientMintRequest): Promise<ClientMintResult> {
+    if (inFlightRef.current) throw new Error('A mint is already in progress')
+    inFlightRef.current = true
+    try {
+      return await runMint(req)
+    } finally {
+      inFlightRef.current = false
+    }
+  }
+
+  async function runMint(req: ClientMintRequest): Promise<ClientMintResult> {
     const {
       collectionAddress,
       tokenURI,

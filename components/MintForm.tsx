@@ -30,6 +30,9 @@ import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
+import { BASE_CHAIN_ID, MAINNET_CHAIN_ID, getChain, isMainnetEnabled } from '@/lib/chains'
+import { useClientMint } from '@/hooks/useClientMint'
+import { ChainIcon } from './ChainIcon'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -136,6 +139,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
   // Admin is gate-exempt server-side; skip the pass CTA for them.
   const { isAdmin } = useAdmin()
+  // User-paid client-side mint engine — used only on non-sponsored chains
+  // (mainnet); Base still goes through the sponsored relay below.
+  const clientMint = useClientMint()
   // null = auto-deploy a fresh collection on submit. Initialized from the
   // URL/prop hint when present; cleared back to null via the × button.
   const [selectedCollection, setSelectedCollection] = useState<CollectionOption | null>(() => {
@@ -309,6 +315,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [description, setDescription] = useState('')
   const [price, setPrice] = useState('0')
   const [priceCurrency, setPriceCurrency] = useState<PriceCurrency>('eth')
+  // Chain the moment mints on. Defaults to Base; only switchable when mainnet
+  // is enabled (the chain chip by the price field). Drives the relay-vs-direct
+  // branch in handleMint.
+  const [mintChainId, setMintChainId] = useState<number>(BASE_CHAIN_ID)
   const [maxSupply, setMaxSupply] = useState('')
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
@@ -569,6 +579,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     if (residenciesOverCap) {
       toast.error(`Lower residencies to ${residenciesMax}% or remove a recipient — each split needs at least 1%`)
       return
+    }
+    // Ethereum is user-paid + media-only for now, and mints into an EXISTING
+    // collection (mainnet deploy lands separately). Block the unsupported combos
+    // cleanly rather than mis-routing them to the Base relay.
+    if (!getChain(mintChainId).sponsoredMint) {
+      if (mintMode === 'text') { toast.error('Text moments on Ethereum are coming soon'); return }
+      if (!targetCollection) { toast.error('Pick a collection to mint into on Ethereum'); return }
     }
 
     const rawPrice = is11 ? '0' : price.trim()
@@ -916,6 +933,47 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           )
         }
 
+        // ── Ethereum mainnet: user-paid client-side mint (no sponsored relay) ──
+        if (!getChain(mintChainId).sponsoredMint) {
+          setStep('minting')
+          toast.loading('Confirm in wallet…', { id: 'mint' })
+          const { hash, tokenId } = await clientMint.mint({
+            collectionAddress: targetCollection! as `0x${string}`,
+            tokenURI: metadataUri,
+            price: BigInt(priceInBaseUnits),
+            currency: priceCurrency,
+            maxSupply: maxSupplyVal !== undefined ? BigInt(maxSupplyVal) : undefined,
+            mintToCreatorCount: 1,
+            creator: address! as `0x${string}`,
+            createReferral: CREATE_REFERRAL as `0x${string}`,
+            splits: finalSplits ?? undefined,
+            chainId: mintChainId,
+          })
+          // Record off-chain (moment-meta + splits) — the relay does this for
+          // Base. Best-effort: the mint is real on chain regardless of this.
+          await fetch('/api/mint/record', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              collectionAddress: targetCollection,
+              tokenId: tokenId.toString(),
+              chainId: mintChainId,
+              creator: address,
+              name: name.trim(),
+              ...(typeof durationSec === 'number' && durationSec > 0 ? { durationSec } : {}),
+              ...(finalSplits ? { splits: finalSplits } : {}),
+            }),
+          }).catch(() => {})
+          setResult({ hash, contractAddress: targetCollection!, tokenId: tokenId.toString() })
+          setStep('done')
+          toast.success('Minted!', { id: 'mint', description: `Token #${tokenId}` })
+          if (isInMiniApp) {
+            hapticNotifySuccess()
+            maybePromptCollectNotifs()
+          }
+          return
+        }
+
         setStep('minting')
         toast.loading('Minting moment…', { id: 'mint' })
 
@@ -1255,17 +1313,35 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={is11 ? '0' : price}
               disabled={is11}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-20 disabled:opacity-50 disabled:cursor-not-allowed"
             />
-            <button
-              type="button"
-              onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
-              disabled={is11}
-              title="toggle currency"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-mono text-dim hover:text-ink transition-colors px-1.5 py-0.5 rounded disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-dim"
-            >
-              {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
-            </button>
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPriceCurrency((c) => c === 'eth' ? 'usdc' : 'eth')}
+                disabled={is11}
+                title="toggle currency"
+                className="text-xs font-mono text-dim hover:text-ink transition-colors px-1.5 py-0.5 rounded disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-dim"
+              >
+                {priceCurrency === 'eth' ? 'ETH' : 'USDC'}
+              </button>
+              {/* Chain indicator — Base's blue square / Ethereum's diamond. A
+                  toggle when mainnet is enabled, a static "on Base" badge else. */}
+              {isMainnetEnabled() ? (
+                <button
+                  type="button"
+                  onClick={() => setMintChainId((c) => (c === BASE_CHAIN_ID ? MAINNET_CHAIN_ID : BASE_CHAIN_ID))}
+                  title={`Minting on ${getChain(mintChainId).label} — tap to switch chain`}
+                  className="flex items-center hover:opacity-80 transition-opacity"
+                >
+                  <ChainIcon chainId={mintChainId} className="w-4 h-4" />
+                </button>
+              ) : (
+                <span title="Minting on Base" className="flex items-center">
+                  <ChainIcon chainId={BASE_CHAIN_ID} className="w-4 h-4" />
+                </span>
+              )}
+            </div>
           </div>
           {price === '0' && !is11 && (
             <p className="text-xs text-muted font-mono mt-1">free mint</p>
