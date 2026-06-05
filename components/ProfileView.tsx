@@ -630,18 +630,36 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   // and the remainder scrolls inside the box. Skeleton uses the same
   // shell so the loading state doesn't visually flip when content arrives.
   const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
+  // Curated showcase layout (visitor view / owner "public view"), mirroring
+  // the featured tab's CollectionRow: a horizontal snap-swipe of fixed-width
+  // cards on phones, and a four-up row on web (lg+). A section holds at most
+  // MAX_PINS_PER_CATEGORY (4) cards — keep the lg column count and the skeleton
+  // cap below in sync with that cap (and the hint copy). The dense dashboard
+  // grid (GRID_CLASSES) still drives the owner's full mint/collected lists.
+  const SHOWCASE_ROW_CLASSES =
+    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:overflow-visible'
+  const SHOWCASE_ITEM_CLASSES = 'w-64 flex-shrink-0 snap-start lg:w-auto'
   // ~3 rows worth of compact cards across breakpoints — a single value
   // is approximate (row height varies with card width) but lands close
   // enough that users see ~3 rows on mobile and ~3 rows on desktop.
   const SCROLL_BOX_CLASSES = 'max-h-[52rem] overflow-y-auto'
 
-  const skeleton = (n: number) => (
-    <div className={GRID_CLASSES}>
-      {Array.from({ length: n }).map((_, i) => (
-        <div key={i} className="aspect-square bg-surface animate-pulse border border-raised" />
-      ))}
-    </div>
-  )
+  const skeleton = (n: number) =>
+    pinnedView ? (
+      // Showcase loading state: same swipe/four-up shell as the cards, capped
+      // at the per-category pin limit (4) so it doesn't flash extra tiles.
+      <div className={SHOWCASE_ROW_CLASSES}>
+        {Array.from({ length: Math.min(n, 4) }).map((_, i) => (
+          <div key={i} className={`${SHOWCASE_ITEM_CLASSES} aspect-square bg-surface animate-pulse border border-raised`} />
+        ))}
+      </div>
+    ) : (
+      <div className={GRID_CLASSES}>
+        {Array.from({ length: n }).map((_, i) => (
+          <div key={i} className="aspect-square bg-surface animate-pulse border border-raised" />
+        ))}
+      </div>
+    )
 
   const sectionLabel: Record<SectionId, string> = {
     mints: 'Mints',
@@ -660,16 +678,25 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
   }
-  // Single layout for all card-based sections: compact vertical grid
-  // inside a scroll-clipped box. The box's max-h kicks in only when
-  // content exceeds it — short sections render their natural height
-  // with no scrollbar. `index` is passed to renderCard so callers can
-  // flag the first row's worth of cards (one row at lg+ = 6 cards) as
-  // priority loads — those are above the fold and shouldn't lazy-load.
-  // Each item is also wrapped in MaybeLazy so mobile UAs defer mount
-  // for items past the eager window — desktop renders are inline
-  // Fragments via MaybeLazy's lazy=false branch.
+  // Card-based sections render one of two layouts. The curated SHOWCASE
+  // (visitor / public-view, ≤4 cards) is a horizontal snap-swipe on phones and
+  // a four-up row on web — no scroll-box or lazy-mount needed at that size. The
+  // owner DASHBOARD (full mint/collected/listing lists) keeps the dense grid
+  // inside a scroll-clipped box; `index` lets callers flag the first row (lg+ =
+  // 6 cards) as priority, and each item is MaybeLazy so mobile defers mount of
+  // items past the eager window (desktop renders inline via lazy=false).
   function renderCardCollection<T>(items: T[], renderCard: (item: T, index: number) => React.ReactNode, getItemKey: (item: T) => string) {
+    if (pinnedView) {
+      return (
+        <div className={SHOWCASE_ROW_CLASSES}>
+          {items.map((it, index) => (
+            <div key={getItemKey(it)} className={SHOWCASE_ITEM_CLASSES}>
+              {renderCard(it, index)}
+            </div>
+          ))}
+        </div>
+      )
+    }
     return (
       <div className={SCROLL_BOX_CLASSES}>
         <div className={GRID_CLASSES}>
@@ -940,10 +967,9 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
-            {/* Owner-only "public view" toggle. With pins it sits here under the
-                follower count; with no pins it lives in the hint box below.
-                In preview it becomes the exit control — the one piece of owner
-                chrome kept visible so the preview is always escapable. */}
+            {/* Owner-only "public view" toggle — always under the follower
+                count. Flips to the exit control while previewing: the one piece
+                of owner chrome kept visible so the preview stays escapable. */}
             {isOwner &&
               (previewPublic ? (
                 <button
@@ -952,14 +978,14 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 >
                   exit public view
                 </button>
-              ) : !ownerHasNoPins ? (
+              ) : (
                 <button
                   onClick={() => setPreviewPublic(true)}
                   className="self-start mt-2 text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
                 >
                   public view
                 </button>
-              ) : null)}
+              ))}
           </div>
         </div>
 
@@ -1091,21 +1117,15 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       )}
 
 
-      {/* Owner-only hint: the public profile is curation-driven, and an owner
-          only ever sees this (full) dashboard — so without this they'd have no
-          way to know visitors currently see just their details. */}
+      {/* Owner-only curation hint, shown only when nothing is pinned: an owner
+          only ever sees this (full) dashboard, so without it they'd have no
+          prompt to feature artworks on their otherwise detail-only profile. */}
       {ownerHasNoPins && !previewPublic && (
-        <div className="border border-line bg-surface/40 px-4 py-3 mb-4 flex items-center gap-3">
-          <p className="flex-1 min-w-0 text-xs font-mono text-muted leading-relaxed">
-            Visitors see only the moments you <span className="text-dim">pin</span>. Tap the
-            {' '}<span className="text-dim">pin</span> on any moment below to feature it on your profile
+        <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
+          <p className="text-xs font-mono text-muted leading-relaxed">
+            Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
+            {' '}<span className="text-dim">Pin</span> up to 4 mints, collects and listings each
           </p>
-          <button
-            onClick={() => setPreviewPublic(true)}
-            className="flex-shrink-0 whitespace-nowrap text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
-          >
-            public view
-          </button>
         </div>
       )}
 
