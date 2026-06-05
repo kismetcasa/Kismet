@@ -1124,7 +1124,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
             Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
-            {' '}<span className="text-dim">Pin</span> up to 4 mints, collects and listings each.
+            {' '}<span className="text-dim">Pin</span> up to 4 of each of your mints, collects and listings.
           </p>
         </div>
       )}
