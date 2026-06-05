@@ -557,9 +557,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       {/* Actions row. Default: [price|supply] [list] [collect] in one flex
           row. Compact: stacked — [price · supply] inline above the collect
           button — because the price/supply box's 56px min-widths combined
-          (112px) overflow a ~130px-wide compact card. */}
+          (112px) overflow a ~130px-wide compact card. mt-auto pins the row to
+          the card's bottom so equal-height grid rows keep their actions
+          aligned (no-op when the card isn't stretched). */}
       {compact ? (
-        <div className="px-2 pb-2 flex flex-col gap-1">
+        <div className="px-2 pb-2 flex flex-col gap-1 mt-auto">
           {!hidePriceSupply && owned === 0 && !collected && (
             <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
               <span className="text-[10px] font-mono accent-grad truncate">{price ?? '…'}</span>
@@ -600,7 +602,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           )}
         </div>
       ) : (
-        <div className="px-4 pb-4 flex gap-2 items-stretch">
+        <div className="px-4 pb-4 flex gap-2 items-stretch mt-auto">
           {!showProfileCta && !hidePriceSupply && owned === 0 && !collected && (
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
