@@ -241,6 +241,10 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   const [followLoading, setFollowLoading] = useState(false)
   const [addrCopied, setAddrCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
+  // Owner-only "public view" preview: render the profile exactly as a visitor
+  // sees it (no pushpins / edit / curate / owner-only sections) so the owner
+  // can check their curation, then toggle back out.
+  const [previewPublic, setPreviewPublic] = useState(false)
 
   // Pinned showcase refs per category. Drives the visitor's curated view and
   // the owner's per-card pin toggle state.
@@ -294,6 +298,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   useEffect(() => {
     setActiveList(null)
     setListAddresses([])
+    setPreviewPublic(false)
   }, [address])
 
   useEscapeKey(useCallback(() => setActiveList(null), []), !!activeList)
@@ -575,6 +580,12 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     }
   }
 
+  // Render-as-a-visitor flag. True for a real visitor OR when the owner has
+  // toggled the public-view preview. Owner-only CHROME (pushpins, edit, curate,
+  // the owner section branch) gates on this so the preview is faithful; the
+  // DATA fetches still key off the real `isOwner`.
+  const asVisitor = !isOwner || previewPublic
+
   // Owner-only pin props for a card; {} for visitors so MomentCard/MarketCard
   // render no toggle and keep their memoized identity in every non-owner feed.
   // Membership is a plain .includes over the capped (≤4) ref array — no Set.
@@ -583,7 +594,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     collectionAddress: string,
     tokenId: string,
   ): { pinned?: boolean; onTogglePin?: () => void } {
-    if (!isOwner) return {}
+    if (asVisitor) return {}
     return {
       pinned: pins[category].includes(`${collectionAddress.toLowerCase()}:${tokenId}`),
       onTogglePin: () => togglePin(category, collectionAddress, tokenId),
@@ -593,11 +604,12 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   // Pinned-showcase derivations. A visitor (`!isOwner`) sees ONLY the owner's
   // pinned moments — filtered from the already-loaded arrays, which keeps the
   // render self-validating (a pin can only show content the owner truly
-  // minted/collected/listed). Owners always see their full dashboard so they
-  // can curate. With no pins, a visitor's view has no sections at all — just
-  // the profile header (identity only). orderByPins runs only on the visitor
-  // path; for an owner the full arrays pass straight through.
-  const pinnedView = !isOwner
+  // minted/collected/listed). Owners see their full dashboard so they can
+  // curate — unless they toggle the public-view preview (`asVisitor`), which
+  // renders the visitor path. With no pins, a visitor's view has no sections at
+  // all — just the profile header (identity only). orderByPins runs only on the
+  // visitor path; off it the full arrays pass straight through.
+  const pinnedView = asVisitor
   const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
   const displayMoments = pinnedView ? orderByPins(moments, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.mints) : moments
@@ -826,7 +838,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
       {/* Owner-only permissions banner. Hidden when missingCount is 0
           to keep healthy profiles uncluttered. */}
-      {isOwner && ownCollectionsMissingAdmin > 0 && (
+      {!asVisitor && ownCollectionsMissingAdmin > 0 && (
         <Link
           href="/permissions"
           role="alert"
@@ -854,7 +866,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         <div className="flex items-center gap-6">
           <div className="relative">
             {!loadingProfile ? (
-              <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={isOwner} onEdit={openEdit} />
+              <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor} onEdit={openEdit} />
             ) : (
               <div className="w-20 h-20 rounded-full bg-raised animate-pulse" />
             )}
@@ -867,7 +879,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 ) : (
                   <>
                     <p className="text-ink font-mono text-sm truncate">{displayName}</p>
-                    {isOwner && (
+                    {!asVisitor && (
                       <button onClick={openEdit} className="flex-shrink-0 p-1 text-muted hover:text-dim transition-colors" title="Edit profile">
                         <Pencil size={12} />
                       </button>
@@ -928,6 +940,26 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
+            {/* Owner-only "public view" toggle. With pins it sits here under the
+                follower count; with no pins it lives in the hint box below.
+                In preview it becomes the exit control — the one piece of owner
+                chrome kept visible so the preview is always escapable. */}
+            {isOwner &&
+              (previewPublic ? (
+                <button
+                  onClick={() => setPreviewPublic(false)}
+                  className="self-start mt-2 text-xs font-mono px-2.5 py-1 border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors"
+                >
+                  exit public view
+                </button>
+              ) : !ownerHasNoPins ? (
+                <button
+                  onClick={() => setPreviewPublic(true)}
+                  className="self-start mt-2 text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+                >
+                  public view
+                </button>
+              ) : null)}
           </div>
         </div>
 
@@ -1015,7 +1047,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       )}
 
       {/* Edit profile panel */}
-      {editing && isOwner && (
+      {editing && !asVisitor && (
         <div className="border border-line p-4 flex flex-col gap-4">
           <p className="text-xs font-mono text-dim uppercase tracking-wider">Edit Profile</p>
           {/* Mini-App-only wallet picker. Renders nothing on web or when
@@ -1062,12 +1094,18 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       {/* Owner-only hint: the public profile is curation-driven, and an owner
           only ever sees this (full) dashboard — so without this they'd have no
           way to know visitors currently see just their details. */}
-      {ownerHasNoPins && (
-        <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
-          <p className="text-xs font-mono text-muted leading-relaxed">
+      {ownerHasNoPins && !previewPublic && (
+        <div className="border border-line bg-surface/40 px-4 py-3 mb-4 flex items-center gap-3">
+          <p className="flex-1 min-w-0 text-xs font-mono text-muted leading-relaxed">
             Visitors see only the moments you <span className="text-dim">pin</span>. Tap the
             {' '}<span className="text-dim">pin</span> on any moment below to feature it on your profile
           </p>
+          <button
+            onClick={() => setPreviewPublic(true)}
+            className="flex-shrink-0 whitespace-nowrap text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+          >
+            public view
+          </button>
         </div>
       )}
 
