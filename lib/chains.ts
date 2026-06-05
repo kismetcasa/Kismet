@@ -103,12 +103,16 @@ export const CHAINS: Record<SupportedChainId, ChainConfig> = {
     chainId: MAINNET_CHAIN_ID,
     chain: mainnet,
     label: 'Ethereum',
+    // ✅ Verified against in-process-protocol/addresses/1.json — In Process's full
+    // 1155 protocol IS deployed on Ethereum mainnet (~2026-05).
     fixedPriceStrategy: '0xe0d3febE1c17DDA1086e89B638Ab54955FE2eF8a',
     erc20Minter: '0x0676b307D53EA7ED80b20643E1Ac57A78Ce12f87',
-    // ⚠️ UNVERIFIED — placeholder is 1155-deployments/1.json FACTORY_PROXY, which
-    // is NOT confirmed to be the `createContract` entrypoint (the Base docs
-    // factory 0x540C… differs from Base's FACTORY_PROXY). factoryVerified=false
-    // keeps the deploy path off mainnet until In Process confirms this address.
+    // ⚠️ = 1.json FACTORY_PROXY, still UNVERIFIED *for indexing*. The Base
+    // precedent proves we can't assume it: In Process's production Base factory
+    // (0x540C…, what our indexed deploys call) matches NEITHER their 8453.json
+    // FACTORY_PROXY (0x4c6b…) NOR their creator-subgraph config — so 0x2bf5… is
+    // not safe to assume as the factory their API indexes on mainnet. Resolve via
+    // test-deploy → GET /timeline?chain_id=1, or ask In Process. See scope §12.10.
     factory: '0x2bf5EBEEb028D5F9E02F0F432Ebb1a192F5528F1',
     factoryVerified: false,
     usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',

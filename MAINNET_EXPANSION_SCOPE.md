@@ -948,11 +948,28 @@ the moment (already wired). The chip drives the `sponsoredMint` branch + `ensure
   client-side as today; treasury sign-off (#5) still applies.
 
 ### 12.10 Phase 0 blockers (confirm before flipping the flag)
+> **Researched `sweetmantech/in-process-protocol` (2026-06):** In Process's full
+> 1155 protocol **IS deployed on Ethereum mainnet** (`addresses/1.json`, ~2026-05;
+> 12 chains total). Our registry strategies are verified against it
+> (`FIXED_PRICE_SALE_STRATEGY 0xe0d3…`, `ERC20_MINTER 0x0676…`). This flips the
+> keystone from "unknown" to **yes** — see the per-blocker updates below.
+
 1. **Mainnet `createContract` factory** (§1.3) — gates deploy → gates everything.
-2. **In Process indexes chain 1** (§10.1) — gates feed visibility.
-3. **0xSplits version + Base address** — confirm In Process uses v1 `SplitMain`
-   and that `0x2ed6…694EE` is the Base deployment (inspect one Base split's code).
-   Flips `splitsVerified`.
+   The factory their **indexer** watches is still unresolved, and the repo proves
+   the caution is warranted: In Process's production *Base* factory (`0x540C…`,
+   what our indexed deploys use) matches **neither** their `8453.json` FACTORY_PROXY
+   (`0x4c6b…`) **nor** their `creator-subgraph` config (upstream Zora `0x777777…`
+   addresses). So the mainnet FACTORY_PROXY (`0x2bf5…`) **cannot be assumed** to be
+   the indexed factory. Resolve empirically (test-deploy via `0x2bf5…` →
+   `GET /timeline?chain_id=1`) or ask In Process for the mainnet factory their API
+   indexes. `factoryVerified=false` stays correct.
+2. **In Process indexes chain 1** (§10.1) — gates feed visibility. **Now likely
+   positive** (they deployed the protocol on mainnet, so an indexer almost
+   certainly follows), but still needs the empirical `GET /timeline?chain_id=1`
+   check — coupled to #1, one test-deploy resolves both.
+3. **0xSplits SplitMain** — `0x2ed6…694EE` is **etherscan-confirmed on mainnet**;
+   we mint v1 splits ourselves so the version is our choice. Flip `splitsVerified`
+   once a mainnet split exists to distribute (i.e. after the mint path is wired).
 4. **EIP-1271 / listings** (§11.5) — undeployed smart-wallet sellers on mainnet.
 5. **(Optional) In Process mainnet relay/paymaster roadmap** — if yes, sponsored
    mainnet becomes free later (Option A) with no rework.
