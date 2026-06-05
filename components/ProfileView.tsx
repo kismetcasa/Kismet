@@ -974,14 +974,14 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
               (previewPublic ? (
                 <button
                   onClick={() => setPreviewPublic(false)}
-                  className="self-start mt-2 text-xs font-mono px-2.5 py-1 border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors"
+                  className="self-start mt-3 text-xs font-mono px-2.5 py-1 border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors"
                 >
                   exit public view
                 </button>
               ) : (
                 <button
                   onClick={() => setPreviewPublic(true)}
-                  className="self-start mt-2 text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+                  className="self-start mt-3 text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
                 >
                   public view
                 </button>
@@ -1124,7 +1124,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
             Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
-            {' '}<span className="text-dim">Pin</span> up to 4 mints, collects and listings each
+            {' '}<span className="text-dim">Pin</span> up to 4 of each of your mints, collects and listings.
           </p>
         </div>
       )}
