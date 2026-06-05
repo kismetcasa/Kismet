@@ -117,13 +117,10 @@ export function LazyMount({
   return (
     <div
       ref={ref}
-      // Mounted: a single-cell grid that stretches the card to fill the
-      // wrapper. In a row that sizes items to the tallest (every card grid),
-      // the wrapper is itself stretched to the row height, so this makes a
-      // lazy-mounted card match the eager (direct grid-item) cards beside it —
-      // the same equal-height trick the profile showcase uses inline. A no-op
-      // wherever the wrapper isn't stretched (single-column feed, the
-      // horizontal swipe's fixed-width items).
+      // Mounted: a single-cell grid (grid-rows-1) that stretches the card to
+      // fill the wrapper, so in a row sized to its tallest item (every card
+      // grid) a lazy card matches the eager direct-grid-item cards beside it.
+      // No-op where the wrapper isn't stretched (single-column feed, swipe).
       className={mounted ? 'grid grid-rows-1' : (placeholderClassName ?? 'bg-[#161616] border border-line overflow-hidden')}
       style={!mounted && heightRef.current ? { minHeight: heightRef.current } : undefined}
       aria-hidden={mounted ? undefined : true}

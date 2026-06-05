@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
@@ -1133,7 +1133,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       {ownerHasNoPins && !previewPublic && (
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
-            Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
+            Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it on your profile.
             {' '}<span className="text-dim">Pin</span> up to 4 of your mints, collects and listings.
           </p>
         </div>
