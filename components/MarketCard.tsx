@@ -210,8 +210,11 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
         )}
       </div>
 
-      {/* Info */}
-      <div className={`${compact ? 'p-2 gap-2' : 'p-4 gap-3'} flex flex-col`}>
+      {/* Info — flex-1 + justify-between pins the buy/cancel button to the
+          card's bottom edge so a row of cards stretched to equal height (grids
+          everywhere; the profile showcase) keeps its actions aligned, matching
+          MomentCard / CollectionCard. A no-op when the card isn't stretched. */}
+      <div className={`${compact ? 'p-2 gap-2' : 'p-4 gap-3'} flex flex-col flex-1 justify-between`}>
         <div>
           <p className={`${compact ? 'text-[11px] mb-1' : 'text-sm mb-1.5'} font-mono text-ink truncate`}>
             {listing.name ?? 'untitled'}

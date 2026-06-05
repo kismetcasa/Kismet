@@ -117,7 +117,11 @@ export function LazyMount({
   return (
     <div
       ref={ref}
-      className={mounted ? undefined : (placeholderClassName ?? 'bg-[#161616] border border-line overflow-hidden')}
+      // Mounted: a single-cell grid (grid-rows-1) that stretches the card to
+      // fill the wrapper, so in a row sized to its tallest item (every card
+      // grid) a lazy card matches the eager direct-grid-item cards beside it.
+      // No-op where the wrapper isn't stretched (single-column feed, swipe).
+      className={mounted ? 'grid grid-rows-1' : (placeholderClassName ?? 'bg-[#161616] border border-line overflow-hidden')}
       style={!mounted && heightRef.current ? { minHeight: heightRef.current } : undefined}
       aria-hidden={mounted ? undefined : true}
     >

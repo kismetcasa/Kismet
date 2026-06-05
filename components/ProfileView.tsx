@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
@@ -638,7 +638,11 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   // grid (GRID_CLASSES) still drives the owner's full mint/collected lists.
   const SHOWCASE_ROW_CLASSES =
     'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:overflow-visible'
-  const SHOWCASE_ITEM_CLASSES = 'w-64 flex-shrink-0 snap-start lg:w-auto'
+  // grid grid-rows-1 makes the card fill the cell so every box in a section
+  // row is the same height regardless of content (price loaded, owned, text
+  // moment): the row stretches items to the tallest, this stretches the card
+  // to fill that height in turn.
+  const SHOWCASE_ITEM_CLASSES = 'grid grid-rows-1 w-64 flex-shrink-0 snap-start lg:w-auto'
   // ~3 rows worth of compact cards across breakpoints — a single value
   // is approximate (row height varies with card width) but lands close
   // enough that users see ~3 rows on mobile and ~3 rows on desktop.
@@ -668,6 +672,12 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     payments: 'Sales',
     airdrops: 'Airdrops',
     curate: 'Curate',
+  }
+  // Public showcase reframes the owner's raw categories as a curated reel.
+  const showcaseSectionLabel: Record<PinCategory, string> = {
+    mints: 'Featured Mints',
+    collected: 'Prized Possessions',
+    listings: 'Curated Listings',
   }
   const sectionCount: Record<SectionId, number | null> = {
     mints: loadingMoments ? null : displayMoments.length,
@@ -751,7 +761,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : renderCardCollection(
             displayMoments,
-            (m, index) => <MomentCard moment={m} hidePriceSupply compact showCreator priority={index < 6} {...ownerPinProps('mints', m.address, m.token_id)} />,
+            (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} {...ownerPinProps('mints', m.address, m.token_id)} />,
             (m) => m.id ?? `${m.address}-${m.token_id}`,
           )
     ),
@@ -759,7 +769,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           displayCollected,
-          (m, index) => <MomentCard moment={m} hidePriceSupply compact showCreator priority={index < 6} passBadge={passBadge ?? undefined} {...ownerPinProps('collected', m.address, m.token_id)} />,
+          (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} passBadge={passBadge ?? undefined} {...ownerPinProps('collected', m.address, m.token_id)} />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : displayListings.length === 0
@@ -1123,7 +1133,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       {ownerHasNoPins && !previewPublic && (
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
-            Tap the <span className="text-dim">pin</span> on any artwork below to feature it on your profile.
+            Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it on your profile.
             {' '}<span className="text-dim">Pin</span> up to 4 of your mints, collects and listings.
           </p>
         </div>
@@ -1134,40 +1144,22 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
           drag-reorderable — it stays pinned to the bottom. */}
       <div ref={sectionContainerRef} className="flex flex-col">
         {pinnedView ? (
-          // Visitor curated view: only the owner's pinned Mints / Collected /
-          // Listings, empty categories hidden, fixed order, non-draggable.
+          // Public showcase: the owner's featured Mints / Collected / Listings,
+          // renamed and always-expanded (a curated reel — no collapse), empty
+          // categories hidden, fixed order, non-draggable.
           (['mints', 'collected', 'listings'] as const)
             // Only categories the owner pinned into; show a skeleton while that
             // category's source loads, then hide it if nothing renders.
             .filter((section) => pins[section].length > 0 && (pinSectionLoading[section] || (sectionCount[section] ?? 0) > 0))
             .map((section) => {
-              const isCollapsed = sectionCollapsed[section] ?? false
               const count = sectionCount[section]
               return (
-                <div key={section} data-section={section} className="border-t border-line">
-                  <div
-                    onClick={() => toggleCollapsed(section)}
-                    onKeyDown={(e) => {
-                      if (e.target !== e.currentTarget) return
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        toggleCollapsed(section)
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    aria-expanded={!isCollapsed}
-                    className="flex items-center gap-2 py-4 select-none cursor-pointer"
-                  >
-                    <ChevronRight
-                      size={12}
-                      className={`text-muted transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
-                    />
-                    <h2 className="text-xs font-mono text-dim uppercase tracking-wider">
-                      {sectionLabel[section]}{count !== null ? ` (${count})` : ''}
-                    </h2>
-                  </div>
-                  {!isCollapsed && <div className="pb-8">{sectionContent[section]}</div>}
+                <div key={section} className="border-t border-line">
+                  {/* Featured sections don't collapse — always expanded, no chevron. */}
+                  <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
+                    {showcaseSectionLabel[section]}{count !== null ? ` (${count})` : ''}
+                  </h2>
+                  <div className="pb-8">{sectionContent[section]}</div>
                 </div>
               )
             })
