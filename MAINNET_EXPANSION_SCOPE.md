@@ -796,7 +796,9 @@ read shim.
 > is implemented and `npm run check`-green. All Base-safe: every path defaults to
 > Base and is reachable only behind `NEXT_PUBLIC_ENABLE_MAINNET` / `splitsVerified`
 > / `factoryVerified`. Not yet exercised on-chain (no test runner; unreachable
-> until a mainnet collection exists — i.e. until deploy + the factory land).
+> until a mainnet collection exists — i.e. until deploy + the factory land) — and,
+> per the 2026-06-05 In Process reply, **not renderable until their REST API serves
+> `chain_id=1`** (§12.10).
 > - ✅ **Mint engine + MintForm wiring:** `useClientMint` + `buildMomentMintActions`
 >   (ETH **and** USDC, client-side 0xSplits `createSplit` wiring the split as
 >   fundsRecipient + royalty recipient, idempotent, re-entrance-latched). MintForm
@@ -961,6 +963,16 @@ the moment (already wired). The chip drives the `sponsoredMint` branch + `ensure
 > 12 chains total). Our registry strategies are verified against it
 > (`FIXED_PRICE_SALE_STRATEGY 0xe0d3…`, `ERC20_MINTER 0x0676…`). This flips the
 > keystone from "unknown" to **yes** — see the per-blocker updates below.
+>
+> **⛔ Update (2026-06-05, direct from In Process team):** *"We are supporting
+> indexer. but API is not yet."* → their on-chain **indexer follows mainnet**, but
+> the **REST API (`api.inprocess.world`) does NOT serve `chain_id=1` yet.** Our
+> read model is **100% REST-API** (`/timeline`, `/collection`, `/collections`,
+> `/moment`, `/comments`, `/payments`), so **mainnet content is invisible in-app
+> until their API ships chain 1** — regardless of the factory or a successful
+> deploy. **This, not the factory, is now the critical-path gate, with an ETA that
+> is upstream (not ours to control).** Posture is unchanged: flag off, branch
+> dormant, code green.
 
 1. **Mainnet `createContract` factory** (§1.3) — gates deploy → gates everything.
    The factory their **indexer** watches is still unresolved, and the repo proves
@@ -971,10 +983,12 @@ the moment (already wired). The chip drives the `sponsoredMint` branch + `ensure
    the indexed factory. Resolve empirically (test-deploy via `0x2bf5…` →
    `GET /timeline?chain_id=1`) or ask In Process for the mainnet factory their API
    indexes. `factoryVerified=false` stays correct.
-2. **In Process indexes chain 1** (§10.1) — gates feed visibility. **Now likely
-   positive** (they deployed the protocol on mainnet, so an indexer almost
-   certainly follows), but still needs the empirical `GET /timeline?chain_id=1`
-   check — coupled to #1, one test-deploy resolves both.
+2. **In Process serves chain 1** (§10.1) — **resolved by the 2026-06-05 reply:
+   indexer = ✅ yes; REST API = ❌ not yet.** Because our read model reads the API
+   (not the indexer), the **API half gates feed visibility — and it's open upstream
+   with no ETA.** A subgraph-direct read model could bypass the API but is a large
+   parallel build, throwaway once their API ships chain 1 — not worth it for
+   uncertain demand. **This is now the top blocker.**
 3. **0xSplits SplitMain** — `0x2ed6…694EE` is **etherscan-confirmed on mainnet**;
    we mint v1 splits ourselves so the version is our choice. Flip `splitsVerified`
    once a mainnet split exists to distribute (i.e. after the mint path is wired).
