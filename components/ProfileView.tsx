@@ -1066,8 +1066,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
             Visitors see only the moments you <span className="text-dim">pin</span>. Tap the
-            {' '}<span className="text-dim">pin</span> on any moment below to feature it — until then,
-            your public profile shows just your details.
+            {' '}<span className="text-dim">pin</span> on any moment below to feature it on your profile
           </p>
         </div>
       )}
