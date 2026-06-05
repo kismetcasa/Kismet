@@ -528,7 +528,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {!compact && collectionName && (
+        {/* Collection chip — skipped when it merely echoes the title (a
+            single-mint collection named after its moment) so the same name
+            isn't shown twice; that slot just stays empty. */}
+        {!compact && collectionName && collectionName !== meta.name && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
