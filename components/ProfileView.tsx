@@ -630,13 +630,19 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   // and the remainder scrolls inside the box. Skeleton uses the same
   // shell so the loading state doesn't visually flip when content arrives.
   const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
+  // The curated showcase (visitor view / owner "public view") shows at most
+  // MAX_PINS_PER_CATEGORY (4) per section, so it lays them out as one row of
+  // four on tablet+ and a 2×2 block on phones — not the dense dashboard grid,
+  // which would strand four cards in a half-empty 6-up row. Keep the column
+  // count in sync with that cap (and the hint copy). Chosen by pinnedView.
+  const PINNED_GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-4 gap-3'
   // ~3 rows worth of compact cards across breakpoints — a single value
   // is approximate (row height varies with card width) but lands close
   // enough that users see ~3 rows on mobile and ~3 rows on desktop.
   const SCROLL_BOX_CLASSES = 'max-h-[52rem] overflow-y-auto'
 
   const skeleton = (n: number) => (
-    <div className={GRID_CLASSES}>
+    <div className={pinnedView ? PINNED_GRID_CLASSES : GRID_CLASSES}>
       {Array.from({ length: n }).map((_, i) => (
         <div key={i} className="aspect-square bg-surface animate-pulse border border-raised" />
       ))}
@@ -672,7 +678,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   function renderCardCollection<T>(items: T[], renderCard: (item: T, index: number) => React.ReactNode, getItemKey: (item: T) => string) {
     return (
       <div className={SCROLL_BOX_CLASSES}>
-        <div className={GRID_CLASSES}>
+        <div className={pinnedView ? PINNED_GRID_CLASSES : GRID_CLASSES}>
           {items.map((it, index) => (
             <MaybeLazy key={getItemKey(it)} index={index} lazy={isMobile}>
               {() => renderCard(it, index)}
