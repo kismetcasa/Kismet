@@ -158,8 +158,8 @@ export function ProfileThemeBackdrop({ theme, inView }: { theme: ProfileTheme; i
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute -inset-x-4 top-0 -z-10 overflow-hidden"
-      style={{ height: 'min(42vh, 420px)', ...rootVars } as CSSProperties}
+      className="pointer-events-none absolute -inset-x-4 inset-y-0 -z-10 overflow-hidden"
+      style={{ ...rootVars } as CSSProperties}
     >
       <div className="absolute inset-0" style={{ background: baseGradient, ...anim(hueAnim) }} />
       {mediaUrl ? (
