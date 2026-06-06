@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "check:resource-hints": "node scripts/check-resource-hint-cors.mjs",
     "check:bundle": "node scripts/check-bundle-size.mjs",
-    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle",
+    "verify:agent": "node scripts/verify-agent-collect.mjs && node scripts/verify-agent-buy.mjs && node scripts/verify-agent-list.mjs && node scripts/verify-agent-collect-batch.mjs && node scripts/verify-agent-skill.mjs && node --experimental-strip-types scripts/verify-agent-scout.ts",
+    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },
   "dependencies": {

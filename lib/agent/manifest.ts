@@ -84,6 +84,19 @@ export function getAgentManifest(origin: string): AgentManifest {
         },
       },
       {
+        verb: 'collect',
+        summary: 'Collect several moments in one approval (basket / Propose).',
+        endpoint: '/api/agent/prepare-collect-batch',
+        method: 'POST',
+        executes: 'send_calls',
+        record: 'POST /api/collect (one per item, shared txHash)',
+        input: {
+          items: 'array of { collection, tokenId } or { url } (max 20)',
+          account: 'Base Account address',
+          comment: 'optional',
+        },
+      },
+      {
         verb: 'buy',
         summary: 'Fulfill a Seaport listing (secondary sale).',
         endpoint: '/api/agent/prepare-buy',

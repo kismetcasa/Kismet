@@ -47,3 +47,19 @@ POST BASE/api/collect    (record.bodyTemplate with txHash filled)
 `/api/collect` independently verifies the mint on-chain before crediting, so this
 is safe to call and idempotent. If it returns non-2xx the mint still happened —
 just report that recording lagged.
+
+## Batch — collect several in one approval
+
+To collect a basket (e.g. the user said "collect these" or you're proposing a
+curated set), use the batch endpoint instead of N single collects:
+
+```
+POST BASE/api/agent/prepare-collect-batch
+{ "items": [ { "collection": "0x…", "tokenId": "1" }, { "url": "BASE/moment/0x…/2" } ],
+  "account": "0xYourBaseAccount" }
+```
+
+It returns one `calls` batch (a single `send_calls` approval — USDC items share
+one summed approve) plus a `records[]` array (one `/api/collect` per item). After
+the single approval confirms, POST each `records[]` entry with the **same**
+txHash. Unavailable items come back in `skipped`.

@@ -56,6 +56,9 @@ export interface AgentActionEnvelope {
   summary: string
   /** Follow-up record call to make after approval. */
   record?: AgentRecordHint
+  /** Batch variant: one record call per item, all against the same txHash
+   *  (each /api/collect verifies its own token against the shared receipt). */
+  records?: AgentRecordHint[]
   /** Spend ceiling the agent should honor (and surface to the user). */
   caps?: { maxValue: string; currency: 'eth' | 'usdc' }
 }
