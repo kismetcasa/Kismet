@@ -761,7 +761,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : renderCardCollection(
             displayMoments,
-            (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} {...ownerPinProps('mints', m.address, m.token_id)} />,
+            (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} isMobile={isMobile} {...ownerPinProps('mints', m.address, m.token_id)} />,
             (m) => m.id ?? `${m.address}-${m.token_id}`,
           )
     ),
@@ -769,7 +769,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           displayCollected,
-          (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} passBadge={passBadge ?? undefined} {...ownerPinProps('collected', m.address, m.token_id)} />,
+          (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} passBadge={passBadge ?? undefined} isMobile={isMobile} {...ownerPinProps('collected', m.address, m.token_id)} />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : displayListings.length === 0

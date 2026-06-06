@@ -246,6 +246,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               compact
               priority={priority && idx === 0}
               fillCell
+              isMobile={isMobile}
             />
           ))
         )}

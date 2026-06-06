@@ -162,6 +162,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
                     <MomentCard
                       moment={m}
                       priority={i === 0 && idx < 3}
+                      isMobile={isMobile}
                     />
                   )}
                 </MaybeLazy>
