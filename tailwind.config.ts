@@ -28,7 +28,13 @@ const config: Config = {
         // (borders, rings, opacity-tinted backgrounds), so they sit on
         // this color while text + button-fill surfaces use the full
         // gradient via .accent-grad / .accent-grad-hover.
-        accent: '#ff87ce',
+        //
+        // Var-backed (`--accent` is an "R G B" triplet, default = the pink
+        // below) so a scoped override — e.g. a content-themed profile root —
+        // re-skins EVERY accent surface and its /opacity variants with zero
+        // component changes. The app is pixel-identical wherever no theme
+        // overrides `--accent`.
+        accent: 'rgb(var(--accent) / <alpha-value>)',
       },
     },
   },

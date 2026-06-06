@@ -1,4 +1,4 @@
-import { rgbaToThumbHash, thumbHashToDataURL, thumbHashToApproximateAspectRatio } from 'thumbhash'
+import { rgbaToThumbHash, thumbHashToDataURL, thumbHashToApproximateAspectRatio, thumbHashToAverageRGBA } from 'thumbhash'
 import { LRUCache } from '@/lib/lruCache'
 
 // Decoded blur data-URLs keyed by the source base64 thumbhash. The decode is
@@ -94,5 +94,19 @@ export function thumbhashToRatio(b64: string | undefined): number | undefined {
     return thumbHashToApproximateAspectRatio(bytes)
   } catch {
     return undefined
+  }
+}
+
+// Average RGB (0-255) encoded in a base64 thumbhash — a zero-fetch color seed
+// used as the profile-theme palette-extraction fallback. null on malformed or
+// missing input. Client-safe (atob, no Node Buffer).
+export function thumbhashAverageRgb(b64: string | undefined): [number, number, number] | null {
+  if (!b64) return null
+  try {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const { r, g, b } = thumbHashToAverageRGBA(bytes)
+    return [r * 255, g * 255, b * 255]
+  } catch {
+    return null
   }
 }

@@ -7,6 +7,11 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
+import { PaletteRing } from './PaletteRing'
+import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
+import { CustomizePanel } from './CustomizePanel'
+import { themeCssVars } from '@/lib/themeStyle'
+import type { ProfileTheme } from '@/lib/profileTheme'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import { CuratePanel } from './CuratePanel'
@@ -20,6 +25,7 @@ import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useLongPressDrag } from '@/hooks/useLongPressDrag'
+import { useInViewDwell } from '@/hooks/useInViewDwell'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
@@ -168,6 +174,28 @@ function FollowRow({ addr, onClose, onNameLoaded }: { addr: string; onClose: () 
   )
 }
 
+// ─── provenance chip ─────────────────────────────────────────────────────────
+
+// Small credit linking a themed profile back to the moment its palette came
+// from — attribution plus a discovery path to the source. Renders nothing if
+// the stored ref is malformed; the name falls back when older themes lack it.
+function ProvenanceChip({ theme }: { theme: ProfileTheme }) {
+  const i = theme.momentRef.indexOf(':')
+  const coll = i < 0 ? '' : theme.momentRef.slice(0, i)
+  const tid = i < 0 ? '' : theme.momentRef.slice(i + 1)
+  if (!coll || !tid) return null
+  return (
+    <Link
+      href={`/moment/${coll}/${tid}`}
+      className="self-start inline-flex items-center gap-1.5 max-w-full text-[11px] font-mono text-muted hover:text-dim transition-colors"
+      title={`Theme derived from ${theme.momentName ?? 'this moment'}`}
+    >
+      <span aria-hidden className="text-accent">✦</span>
+      <span className="truncate">themed from {theme.momentName ?? 'this moment'}</span>
+    </Link>
+  )
+}
+
 // ─── component ───────────────────────────────────────────────────────────────
 
 interface ProfileViewProps {
@@ -180,6 +208,14 @@ interface ProfileViewProps {
    * eager rendering exactly as before this prop existed.
    */
   isMobile?: boolean
+  /**
+   * Content-derived theme, read SSR by the page wrapper. When present, its
+   * palette re-skins the accent surfaces (scoped `--accent`) and paints the
+   * avatar ring. Null/undefined → the brand default stands. Applies in every
+   * view (owner dashboard, owner public-view preview, and visitors) — it's how
+   * the profile looks; `asVisitor` independently controls the sections.
+   */
+  theme?: ProfileTheme | null
 }
 
 interface Profile {
@@ -193,7 +229,7 @@ interface Profile {
   updatedAt: number
 }
 
-export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
+export function ProfileView({ address, isMobile = false, theme: initialTheme }: ProfileViewProps) {
   const { address: connectedAddress } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
@@ -245,6 +281,27 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
   // sees it (no pushpins / edit / curate / owner-only sections) so the owner
   // can check their curation, then toggle back out.
   const [previewPublic, setPreviewPublic] = useState(false)
+  // Theme as state (seeded from the SSR prop) so the Customize panel applies a
+  // new theme live — the re-skin, avatar ring, and backdrop update with no reload.
+  const [theme, setTheme] = useState<ProfileTheme | null>(initialTheme ?? null)
+  const [customizing, setCustomizing] = useState(false)
+  // ProfileView is reused across /profile/[address] navigations (hence the
+  // address-keyed resets below), so re-seed the theme from the new SSR value and
+  // close the panel when the address changes. Done during render — React's
+  // adjust-state-on-prop-change pattern — so the new profile never paints the
+  // previous theme's backdrop/ring/accent for a frame. An optimistic setTheme
+  // survives because `address` hasn't changed.
+  const [seededAddr, setSeededAddr] = useState(address)
+  if (address !== seededAddr) {
+    setSeededAddr(address)
+    setTheme(initialTheme ?? null)
+    setCustomizing(false)
+  }
+  // One in-view signal for the whole themed header — drives both the backdrop's
+  // animation pause and the avatar bloom glow, so they stop together off-screen
+  // (one observer, not two).
+  const headerRef = useRef<HTMLDivElement>(null)
+  const headerInView = useInViewDwell(headerRef, { rootMargin: '0px' })
 
   // Pinned showcase refs per category. Drives the visitor's curated view and
   // the owner's per-card pin toggle state.
@@ -872,7 +929,10 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
     profile?.displayName || profile?.username || profile?.ensName || shortAddress(address)
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12">
+    <div
+      className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12"
+      style={theme ? themeCssVars(theme) : undefined}
+    >
       {/* Owner-only permissions banner. Hidden when missingCount is 0
           to keep healthy profiles uncluttered. */}
       {!asVisitor && ownCollectionsMissingAdmin > 0 && (
@@ -898,12 +958,37 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         </Link>
       )}
 
-      {/* Profile header */}
-      <div className="flex flex-col gap-4">
+      {/* Profile header — `relative isolate` so the themed backdrop band can
+          sit behind the header (-z) yet paint above main's opaque bg. It's a
+          modal-free region, so isolating it can't trap ProfileView's overlays. */}
+      <div ref={headerRef} className="relative isolate flex flex-col gap-4">
+        {theme && <ProfileThemeBackdrop theme={theme} inView={headerInView} />}
         <div className="flex items-center gap-6">
           <div className="relative">
+            {/* Bloom glow behind the avatar — the bloom effect extended to the
+                avatar so it breathes with the backdrop. Behind + non-interactive
+                so it never blocks the edit control; reduced-motion viewers get a
+                static halo (the keyframe lives only in the no-preference query). */}
+            {theme && theme.motion?.bloom && (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -inset-6 rounded-full"
+                style={{
+                  zIndex: -1,
+                  background: `radial-gradient(circle, ${theme.palette.primary}40, transparent 70%)`,
+                  animation: 'kf-theme-bloom 6s ease-in-out infinite',
+                  animationPlayState: headerInView ? 'running' : 'paused',
+                }}
+              />
+            )}
             {!loadingProfile ? (
-              <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor} onEdit={openEdit} />
+              theme ? (
+                <PaletteRing stops={theme.palette.ringStops} ringStart={theme.geometry.ringStart} size={80}>
+                  <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor} onEdit={openEdit} />
+                </PaletteRing>
+              ) : (
+                <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor} onEdit={openEdit} />
+              )
             ) : (
               <div className="w-20 h-20 rounded-full bg-raised animate-pulse" />
             )}
@@ -977,6 +1062,7 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
+            {theme && <ProvenanceChip theme={theme} />}
             {/* Owner-only "public view" toggle — always under the follower
                 count. Flips to the exit control while previewing: the one piece
                 of owner chrome kept visible so the preview stays escapable. */}
@@ -989,17 +1075,40 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
                   exit public view
                 </button>
               ) : (
-                <button
-                  onClick={() => setPreviewPublic(true)}
-                  className="self-start mt-3 text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
-                >
-                  public view
-                </button>
+                <div className="self-start mt-3 flex items-center gap-2">
+                  <button
+                    onClick={() => setPreviewPublic(true)}
+                    className="text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+                  >
+                    public view
+                  </button>
+                  <button
+                    onClick={() => setCustomizing(true)}
+                    className="text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+                  >
+                    ✦ customize
+                  </button>
+                </div>
               ))}
           </div>
         </div>
 
       </div>
+
+      {/* Customize-profile panel — owner-only content-derived theme picker.
+          Lifts the chosen theme to state so the re-skin / ring / backdrop
+          apply live (no reload). Owner-gated twice: the trigger is owner-only,
+          and the route re-validates ownership server-side. */}
+      {customizing && isOwner && (
+        <CustomizePanel
+          address={address}
+          moments={moments}
+          collected={collected}
+          theme={theme}
+          onThemeChange={setTheme}
+          onClose={() => setCustomizing(false)}
+        />
+      )}
 
       {/* Following / Followers modal */}
       {activeList && (

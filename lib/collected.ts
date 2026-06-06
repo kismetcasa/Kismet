@@ -33,3 +33,19 @@ export async function getCollectedMembers(collector: string): Promise<string[]> 
     return []
   }
 }
+
+// Single-membership check (ZSCORE) — cheaper than fetching the whole set when
+// you only need to know whether one ref was collected (e.g. validating a
+// theme-source moment belongs to the owner). false on any error.
+export async function isCollected(
+  collector: string,
+  collection: string,
+  tokenId: string,
+): Promise<boolean> {
+  try {
+    const score = await redis.zscore(keyCollected(collector), member(collection, tokenId))
+    return score !== null && score !== undefined
+  } catch {
+    return false
+  }
+}
