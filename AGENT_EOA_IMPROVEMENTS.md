@@ -70,6 +70,37 @@ have cost security for no tap reduction, so we don't do it.** Plus the explicit 
 guardrails (see `AGENT_UI_WIRING.md`) ensure the upcoming collecting-account UI never
 regresses the per-action EOA path.
 
+## Follow-up research — permit (gasless approve) vs EIP-5792 batch buy
+
+Re-evaluated the two "optional future" items for necessity / best practice.
+
+### Permit / Permit2 (gasless approve) — **declined** (not best practice for us)
+EIP-2612 `permit` (USDC supports it on Base) and Permit2 only collapse
+approve + action into one **when the spender contract consumes the signature** in
+the same call. Our spenders — the Zora `ERC20Minter` (collect) and Seaport (buy) —
+do **not** accept a permit, so permit would be a **standalone gasless signature that
+sets the allowance, then a separate action**: same tap count, plus added
+signature-phishing surface. For our build the right tool is **EIP-5792 batching**
+(works regardless of the downstream contract) + exact on-chain approve for non-5792
+wallets — which we already do. So permit is not adopted. (Lowest-value option: permit
+could replace an EOA's on-chain approve to save *gas* — no tap reduction.)
+
+### EIP-5792 batch buy — **implemented** (best practice; we were inconsistent)
+We already batch approve + mint for collect (`useCollectAll`) but `BuyButton` did a
+sequential approve → fulfill. Brought buy to parity: the **first-time USDC buy** now
+batches `approve + fulfillOrder` into ONE wallet approval on EIP-5792 wallets
+(Coinbase Smart Wallet, MetaMask v12+, Rainbow…), approve still **exact** (never
+MaxUint256). Unchanged: ETH buy (single fulfill), repeat USDC buy (allowance covers →
+single fulfill), and the **sequential fallback** for non-5792 wallets (identical to
+the old path — no EOA/legacy regression). fulfill is always the last call, so its
+receipt carries the `OrderFulfilled` the backend decodes; with the earlier signature
+drop, a USDC buy is now **1 tap on 5792 wallets, 2 on legacy** (was 2 / 3). The
+`isUnsupportedMethodError` helper was lifted into `lib/toast.ts` (shared by collect-all
+and buy) to avoid duplicating the fallback logic.
+
+Verified: typecheck, lint, `verify:agent` green. *(Live wallet smoke test still
+pending — CI has no wallet/RPC.)*
+
 ### Sources
 - Our code: `hooks/useCollectAll.ts` (exact-approve policy), `components/BuyButton.tsx`,
   `app/api/listings/[id]/route.ts` (txHash-only "filled").

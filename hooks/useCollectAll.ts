@@ -15,7 +15,7 @@ import { toast } from 'sonner'
 import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { isUserRejection, walkError } from '@/lib/toast'
+import { isUnsupportedMethodError, isUserRejection } from '@/lib/toast'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
 import { fetchEligibleTokens, type EligibleToken } from '@/lib/saleConfig'
@@ -72,24 +72,6 @@ interface CallSegment {
 interface UseCollectAllReturn {
   collectAll: (args: CollectAllArgs) => Promise<{ minted: number } | null>
   status: Status
-}
-
-// wagmi's experimental_fallback only triggers on viem's
-// MethodNotSupportedRpcError. Coinbase Wallet (mobile / WalletConnect path)
-// returns a generic InternalRpcError whose `details` carries "this request
-// method is not supported" — same intent, wrong shape, fallback never fires.
-// Scoped to "method"-related wording so we don't false-positive on
-// unrelated errors like "chain is not supported".
-const UNSUPPORTED_METHOD_RE = /method (?:is )?not supported|method not found|request method is not supported|unsupported (?:rpc )?method/i
-const UNSUPPORTED_METHOD_NAME_RE = /MethodNotSupportedRpcError|UnsupportedNonOptionalCapability|UnsupportedProviderMethodError/i
-
-function isUnsupportedMethodError(err: unknown): boolean {
-  if (typeof err === 'string') return UNSUPPORTED_METHOD_RE.test(err)
-  return walkError(err, (e) =>
-    (typeof e.name === 'string' && UNSUPPORTED_METHOD_NAME_RE.test(e.name)) ||
-    (typeof e.details === 'string' && UNSUPPORTED_METHOD_RE.test(e.details)) ||
-    (typeof e.message === 'string' && UNSUPPORTED_METHOD_RE.test(e.message)),
-  )
 }
 
 /**

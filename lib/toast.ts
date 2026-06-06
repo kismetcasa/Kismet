@@ -72,6 +72,31 @@ export function isAuthError(err: unknown): boolean {
   )
 }
 
+// wagmi's experimental_fallback only triggers on viem's
+// MethodNotSupportedRpcError. Coinbase Wallet (mobile / WalletConnect path)
+// returns a generic InternalRpcError whose `details` carries "this request
+// method is not supported" — same intent, wrong shape, so the built-in fallback
+// never fires. Scoped to "method"-related wording so we don't false-positive on
+// unrelated errors like "chain is not supported".
+const UNSUPPORTED_METHOD_RE = /method (?:is )?not supported|method not found|request method is not supported|unsupported (?:rpc )?method/i
+const UNSUPPORTED_METHOD_NAME_RE = /MethodNotSupportedRpcError|UnsupportedNonOptionalCapability|UnsupportedProviderMethodError/i
+
+/**
+ * True when the error means the wallet doesn't support EIP-5792
+ * (wallet_sendCalls). Used to decide whether to fall back to sequential
+ * eth_sendTransaction. Safe to act on ONLY pre-submission — a batch that may
+ * have already landed must not be re-dispatched (double-spend). Shared by the
+ * collect-all and buy batch paths.
+ */
+export function isUnsupportedMethodError(err: unknown): boolean {
+  if (typeof err === 'string') return UNSUPPORTED_METHOD_RE.test(err)
+  return walkError(err, (e) =>
+    (typeof e.name === 'string' && UNSUPPORTED_METHOD_NAME_RE.test(e.name)) ||
+    (typeof e.details === 'string' && UNSUPPORTED_METHOD_RE.test(e.details)) ||
+    (typeof e.message === 'string' && UNSUPPORTED_METHOD_RE.test(e.message)),
+  )
+}
+
 /**
  * Pull a concise, human-readable line out of an arbitrary error. viem's
  * BaseError stuffs a multi-line wall (calldata, args, docs link, version)
