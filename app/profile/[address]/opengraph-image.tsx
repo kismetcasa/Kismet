@@ -3,6 +3,7 @@ import { isAddress } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { getProfileTheme, type ProfileTheme } from '@/lib/profileTheme'
 
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
 // image and the Farcaster Mini App embed image. Matches the styling of
@@ -13,6 +14,12 @@ import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 // FC pfp (when verified) preferred over Kismet upload; both fall back
 // to the address-derived gradient blockie that ProfileAvatar uses on
 // the web side, keeping a consistent visual identity across surfaces.
+//
+// When the profile has a content-derived theme, the card reflects it: a dark
+// palette-gradient background, a LINEAR approximation of the avatar palette ring
+// (Satori has no conic-gradient), an accented label, and a palette swatch strip.
+// No moment art is fetched — Satori can't blur it, and the palette reads cleaner
+// with no added fetch/SSRF surface.
 
 export const size = { width: 1200, height: 800 }
 export const contentType = 'image/png'
@@ -48,13 +55,21 @@ export default async function Image({ params }: Props) {
   let displayName = isAddress(address) ? shortAddress(address) : address
   let secondary = ''
   let avatarUrl: string | null = null
+  let theme: ProfileTheme | null = null
 
   if (isAddress(address)) {
     // Sibling-aware: when the queried address has no Kismet profile but
     // a sibling FC-verified address does, the helper surfaces the
     // sibling's username/avatar so share cards still read as "@kismetcasa"
     // rather than the raw hex when the user shares any of their wallets.
-    const { profile, farcaster } = await resolveProfileWithSiblings(address)
+    //
+    // The theme read is parallelized with the profile resolve (both hit Redis),
+    // so the themed card adds no latency; safeRead degrades to null on failure.
+    const [{ profile, farcaster }, t] = await Promise.all([
+      resolveProfileWithSiblings(address),
+      getProfileTheme(address),
+    ])
+    theme = t
     // Display chain: explicit Kismet username > FC username > FC display
     // name > shortAddress. Matches the precedence in /api/profile and
     // components/Nav.tsx.
@@ -90,6 +105,41 @@ export default async function Image({ params }: Props) {
     ? addressToGradient(address)
     : { from: '#444', to: '#222', angle: 135 }
 
+  // Themed card bg uses the palette's dimmed backdrop stops (L<=0.13 by
+  // construction, so #efefef text stays comfortably above 10:1).
+  const cardBg = theme
+    ? `linear-gradient(${theme.geometry.angle}deg, ${theme.palette.bgFrom}, ${theme.palette.bgTo})`
+    : 'linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%)'
+
+  // Avatar disc (address-gradient bg + optional pfp). img works inside
+  // ImageResponse as long as the URL is reachable; if it fails Satori falls
+  // through to the gradient parent so a broken pfp never produces a blank slot.
+  // Wrapped in the palette ring below when themed.
+  const avatarCircle = (
+    <div
+      style={{
+        width: 240,
+        height: 240,
+        borderRadius: 9999,
+        background: `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`,
+        overflow: 'hidden',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {avatarUrl && (
+        <img
+          src={avatarUrl}
+          alt=""
+          width={240}
+          height={240}
+          style={{ width: 240, height: 240, objectFit: 'cover' }}
+        />
+      )}
+    </div>
+  )
+
   return new ImageResponse(
     (
       <div
@@ -98,7 +148,7 @@ export default async function Image({ params }: Props) {
           width: '100%',
           display: 'flex',
           flexDirection: 'column',
-          backgroundImage: 'linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%)',
+          backgroundImage: cardBg,
           padding: '72px',
           justifyContent: 'space-between',
         }}
@@ -113,7 +163,7 @@ export default async function Image({ params }: Props) {
           <div style={{ fontSize: 28, letterSpacing: 6, color: '#666' }}>
             KISMET ART
           </div>
-          <div style={{ fontSize: 20, letterSpacing: 4, color: '#444' }}>
+          <div style={{ fontSize: 20, letterSpacing: 4, color: theme ? theme.palette.primary : '#444' }}>
             PROFILE
           </div>
         </div>
@@ -127,33 +177,22 @@ export default async function Image({ params }: Props) {
             marginTop: -40,
           }}
         >
-          {/* Avatar — 240x240 circle. img tag works inside ImageResponse
-              as long as the URL is reachable from the server; FC pfp
-              hosts (imagedelivery.net, etc.) all are. If the img fails
-              to load Satori falls through to the gradient parent so a
-              broken pfp URL never produces a blank slot. */}
-          <div
-            style={{
-              width: 240,
-              height: 240,
-              borderRadius: 9999,
-              background: `linear-gradient(${grad.angle}deg, ${grad.from}, ${grad.to})`,
-              overflow: 'hidden',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            {avatarUrl && (
-              <img
-                src={avatarUrl}
-                alt=""
-                width={240}
-                height={240}
-                style={{ width: 240, height: 240, objectFit: 'cover' }}
-              />
-            )}
-          </div>
+          {/* Palette ring (themed) — a LINEAR gradient border around the avatar,
+              approximating the web's conic ring (Satori has no conic-gradient). */}
+          {theme ? (
+            <div
+              style={{
+                display: 'flex',
+                padding: 10,
+                borderRadius: 9999,
+                background: `linear-gradient(${theme.geometry.ringStart}deg, ${theme.palette.ringStops.join(', ')})`,
+              }}
+            >
+              {avatarCircle}
+            </div>
+          ) : (
+            avatarCircle
+          )}
           <div
             style={{
               fontSize: 96,
@@ -177,6 +216,19 @@ export default async function Image({ params }: Props) {
               }}
             >
               {secondary}
+            </div>
+          )}
+          {/* Palette swatch strip — the clearest "themed" signal. marginLeft
+              (not flex gap) for spacing, since Satori's gap support is version-
+              dependent. */}
+          {theme && (
+            <div style={{ display: 'flex', marginTop: 32 }}>
+              {theme.palette.ringStops.slice(0, 5).map((c, i) => (
+                <div
+                  key={i}
+                  style={{ width: 56, height: 14, borderRadius: 7, background: c, marginLeft: i ? 10 : 0 }}
+                />
+              ))}
             </div>
           )}
         </div>

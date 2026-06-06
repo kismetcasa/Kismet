@@ -14,6 +14,10 @@
   --safe-bottom: 0px;
   --safe-left: 0px;
   --safe-right: 0px;
+  /* Accent as an "R G B" triplet so Tailwind's `accent` token is opacity-aware
+     (rgb(var(--accent) / <alpha>)). Default is the brand pink #ff87ce; a themed
+     profile overrides --accent on its root to re-skin every accent surface. */
+  --accent: 255 135 206;
   /* Brand gradient — sampled directly from public/logo.png (clockwise
    * petal sweep). Stops trace the hues that read across the logo
    * left-to-right: violet (top-left petal) → cyan (top) → pink/magenta
@@ -119,8 +123,8 @@ input[type='number'] {
  * so it harmonizes with `border-accent`/`text-accent` surfaces. Hover
  * fills with the full brand gradient + dark text. */
 .btn-accent {
-  border: 1px solid #ff87ce;
-  color: #ff87ce;
+  border: 1px solid rgb(var(--accent));
+  color: rgb(var(--accent));
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
@@ -143,4 +147,36 @@ input[type='number'] {
 @keyframes feature-hold {
   from { stroke-dashoffset: 100; }
   to { stroke-dashoffset: 0; }
+}
+
+/* Themed-profile ambient motion (the bloom / mesh / hue toggles).
+ *
+ * Defined ONLY inside the no-preference query: a viewer who asks for reduced
+ * motion gets the static backdrop regardless of what the profile owner enabled
+ * — the viewer's OS preference wins. The owner's per-effect on/off is applied
+ * in React (a layer's `animation` is only set when that effect is enabled), and
+ * the in-view pause is JS (animation-play-state), so this block is purely the
+ * keyframes. transform/opacity (bloom, mesh) are GPU-composited; hue-rotate is
+ * heavier, so it runs slow, is paused off-screen, and is never applied to the
+ * blurred image layer (which already carries blur+saturate).
+ *
+ * --mesh-dx/dy (seeded drift vector) and --hue-from/to (oscillation bounds) are
+ * set inline on the backdrop root and resolved here by inheritance. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes kf-theme-bloom {
+    0%, 100% { opacity: 0.4; transform: scale(1); }
+    50%      { opacity: 0.7; transform: scale(1.06); }
+  }
+  @keyframes kf-theme-mesh {
+    from { transform: translate3d(calc(-1 * var(--mesh-dx, 0px)), calc(-1 * var(--mesh-dy, 0px)), 0) scale(1.08); }
+    to   { transform: translate3d(var(--mesh-dx, 0px), var(--mesh-dy, 0px), 0) scale(1.08); }
+  }
+  @keyframes kf-theme-hue {
+    from { filter: hue-rotate(var(--hue-from, 0deg)); }
+    to   { filter: hue-rotate(var(--hue-to, 0deg)); }
+  }
+  @keyframes kf-theme-hue-cycle {
+    from { filter: hue-rotate(0deg); }
+    to   { filter: hue-rotate(360deg); }
+  }
 }

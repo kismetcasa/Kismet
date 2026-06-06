@@ -7,6 +7,7 @@ import { SITE_URL } from '@/lib/siteUrl'
 import { shortAddress } from '@/lib/inprocess'
 import { isMobileUA } from '@/lib/serverDevice'
 import { ProfileView } from '@/components/ProfileView'
+import { getProfileTheme } from '@/lib/profileTheme'
 
 interface Props {
   params: Promise<{ address: string }>
@@ -103,15 +104,19 @@ export default async function ProfilePage({ params }: Props) {
   // on the same URL. 307 (not 308) because the canonical can flip
   // back if the user switches again; we don't want browsers to cache
   // an outdated redirect.
-  const canonical = await resolveCanonicalProfile(address)
+  // Resolve canonical (for the redirect), the content theme, and the mobile
+  // flag in parallel. The theme read is keyed on the requested address — wasted
+  // only on the rare non-canonical request that then redirects; on canonical
+  // URLs (the norm) it's the right key and adds no latency. This single small
+  // GET is the theme feature's only per-view Redis cost. isMobile: server-side
+  // UA detection so the lazy-mount decision is baked into the SSR HTML.
+  const [canonical, theme, isMobile] = await Promise.all([
+    resolveCanonicalProfile(address),
+    getProfileTheme(address),
+    isMobileUA(),
+  ])
   if (canonical.canonicalAddress.toLowerCase() !== address.toLowerCase()) {
     redirect(`/profile/${canonical.canonicalAddress}`)
   }
-  // Server-side UA detection so the lazy-mount decision is baked into
-  // the SSR HTML. ProfileView renders multiple grids of MomentCards
-  // directly (no PaginatedGrid wrapper) — on mobile we wrap items
-  // beyond EAGER_MOUNT_COUNT in LazyMount so heavy profile pages
-  // don't re-pay the full mount cost on every click-through.
-  const isMobile = await isMobileUA()
-  return <ProfileView address={address} isMobile={isMobile} />
+  return <ProfileView address={address} isMobile={isMobile} theme={theme} />
 }
