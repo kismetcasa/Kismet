@@ -8,6 +8,7 @@ import { fetchCreatorFromTimeline, getKvCreatorAddress } from '@/lib/momentDetai
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashAverageRgb } from '@/lib/media/thumbhash'
 import { isCollected } from '@/lib/collected'
+import { getListingForToken } from '@/lib/listings'
 import { extractPalette, paletteFromColor, themeGeometry } from '@/lib/colorExtract'
 import { getProfileTheme, setProfileTheme, clearProfileTheme, type ProfileTheme, type ThemeMotion } from '@/lib/profileTheme'
 
@@ -49,8 +50,10 @@ async function fetchMoment(
   }
 }
 
-// Restrict theme sources to the owner's own mints OR collected moments, both
-// unioned across FC sibling wallets (expandToFidSiblings includes the canonical).
+// Restrict theme sources to moments the owner actually owns — minted, collected,
+// or actively listed — unioned across FC sibling wallets (expandToFidSiblings
+// includes the canonical). Sequential + short-circuit: the common collected case
+// resolves in one read; the (2-read) listing check only runs when collected misses.
 async function ownsMoment(
   canonical: string,
   collectionAddress: string,
@@ -59,7 +62,10 @@ async function ownsMoment(
 ): Promise<boolean> {
   const siblings = (await expandToFidSiblings(canonical)).map((a) => a.toLowerCase())
   if (creator && siblings.includes(creator)) return true // minted by them
-  for (const s of siblings) if (await isCollected(s, collectionAddress, tokenId)) return true
+  for (const s of siblings) {
+    if (await isCollected(s, collectionAddress, tokenId)) return true // collected
+    if (await getListingForToken(collectionAddress, tokenId, s)) return true // actively listed by them
+  }
   return false
 }
 
@@ -104,7 +110,7 @@ export async function POST(
   const moment = await fetchMoment(collectionAddress, tokenId)
   if (!moment) return errorResponse(404, 'Moment not found')
   if (!(await ownsMoment(auth.canonical, collectionAddress, tokenId, moment.creator))) {
-    return errorResponse(403, 'You can only theme from your own mints or collected moments')
+    return errorResponse(403, 'You can only theme from your own mints, collected, or listed moments')
   }
 
   const md = moment.metadata
