@@ -80,6 +80,113 @@ comes from wagmi (`accounts[1]` / `wallet_getSubAccount`), not `sdk.subAccount.g
 The provider refactor (§3) + the connector config (§1) are the **smoke-test-gated**
 wiring that makes it live — intentionally not applied blind here.
 
+## Deep-dive: verified handling of each piece
+
+Researched against the installed RainbowKit/wagmi/@base-org types + the Base docs
+RainbowKit integration page (search-confirmed; docs.base.org blocks fetch).
+
+### Piece 1 — `lib/wagmi.ts` (the every-user change)
+
+**Current:** `connectors: [farcasterMiniApp?(gated), injected?(Coinbase WebView), …rainbowKitConnectors]`,
+where `rainbowKitConnectors = connectorsForWallets(getDefaultWallets().wallets, …)`.
+So the Base Account/Coinbase entry comes from RainbowKit's **default list** — which
+takes **no per-wallet options**, so we can't attach `subAccounts` there.
+
+**Verified facts:**
+- `@wagmi/connectors@6.2.0` `baseAccount` connector params = `createBaseAccountSDK`
+  params incl. **`subAccounts`** + `paymasterUrls` (confirmed in `baseAccount.d.ts`).
+- RainbowKit ships a **`baseAccount` wallet** that wraps it; per the Base docs
+  RainbowKit page it **supports `subAccounts`** (`creation`/`defaultAccount`/
+  `funding`) — though the installed `.d.ts` call signature only *types* `{appName,
+  appIcon}`, so **verify the exact options arg accepts `subAccounts`** against the
+  live Base RainbowKit page (or pin a known-good version). The Dec-2025
+  `coinbaseWallet` connector also gained Sub Account + Paymaster config.
+
+**Approach (do not blind-edit):** stop using `getDefaultWallets()` for the Base
+entry; build an explicit RainbowKit **custom wallet list** via `connectorsForWallets`
+that includes a **configured** Base Account wallet, e.g.:
+
+```ts
+import { baseAccount } from '@rainbow-me/rainbowkit/wallets'
+import { getCryptoKeyAccount } from '@base-org/account'
+
+baseAccount({
+  appName: 'Kismet',
+  appIcon: process.env.NEXT_PUBLIC_FARCASTER_ICON_URL,
+  subAccounts: {
+    creation: 'on-connect',
+    defaultAccount: 'universal',     // keep the user's main identity primary
+    funding: 'spend-permissions',    // tap-free auto-funding within the cap
+    toOwnerAccount: getCryptoKeyAccount,
+  },
+  // paymasterUrls: { 8453: process.env.NEXT_PUBLIC_PAYMASTER_URL! },
+})
+```
+
+Replace the default Coinbase/Base entry with this one (avoid a **duplicate** Base
+Account row in the modal); keep the other default wallets + the Farcaster/injected
+gating untouched.
+
+**Base App nuance:** post-April-2026 the Base App runs apps as standard web apps and
+uses the `baseAccount` + `injected` connectors. Today our Base App path is `injected()`
+only (no `subAccounts` config). **Verify** whether the Base App injected provider
+honors the sub-account RPCs, or whether the configured `baseAccount` connector should
+be the Base App path too (it likely should). The Farcaster connector may be vestigial
+for the Base App post-migration.
+
+**Smoke test before ship (mandatory — breaks all connections if wrong):** normal
+connect on web (RainbowKit modal shows ONE Base Account, no dupes), connect in the
+**Base App**, connect in a **Farcaster** mini-app, and an EOA connect (MetaMask) —
+all must still work; then confirm a sub-account is provisioned on a Base Account.
+
+### Piece 2 — `baseAccount.ts` refactor + mount `AutoCollectPanel`
+
+**Provider (replace the standalone SDK):** get the **connected** provider from wagmi
+and pass it to the `@base-org/account/spend-permission` utilities (they take a
+`provider`):
+
+```ts
+const { connector, addresses } = useAccount()
+const provider = (await connector?.getProvider()) as ProviderInterface
+// requestSpendPermission({ account: universal, spender: subAccount, token: USDC,
+//   chainId: 8453, allowance, periodInDays, provider })
+```
+
+Remove `getCollectingSdk()`/`createBaseAccountSDK` from `baseAccount.ts` (that second
+SDK = a second session / double connect). **Sub-account address** comes from wagmi
+once the connector has `subAccounts` (defaultAccount:'universal'): `addresses?.[1]`
+(or `wallet_getSubAccount`). **Tap-free collect** (later phase): wagmi `useSendCalls`
+from the sub-account; `funding:'spend-permissions'` auto-funds from the parent.
+Keep the EIP-5792 `wallet_getCallsStatus` `status===200` gate already fixed.
+
+**Mount in ProfileView (owner section):** render owner-only + **lazy-loaded** so the
+heavy `@base-org/account` dep stays out of the profile's initial bundle (the profile
+route is ~380 kB; a static import would likely trip `check:bundle`):
+
+```ts
+import dynamic from 'next/dynamic'
+const AutoCollectPanel = dynamic(
+  () => import('@/components/AutoCollectPanel').then((m) => m.AutoCollectPanel),
+  { ssr: false },
+)
+// …in the owner area (e.g. near the public-view toggle / above the sections grid):
+{isOwner && <AutoCollectPanel />}
+```
+
+`AutoCollectPanel` already self-gates on `useSmartWalletAgentEligibility`, so an
+eligible owner sees setup/manage and an EOA owner sees the soft note.
+
+**Verify at smoke test:** `connector.getProvider()` returns an EIP-1193 provider that
+supports `coinbase_fetchPermissions` / spend-permission RPCs on each connector
+(RainbowKit baseAccount, Base App injected); `addresses?.[1]` resolves the sub-account;
+and run `next build` + `check:bundle` after mounting (the lazy import should keep the
+profile route under threshold).
+
+### Sequencing
+Apply Piece 1 + Piece 2 **together** behind one smoke test (Piece 2's provider
+refactor is non-functional until Piece 1 configures the connector). Until then,
+`AutoCollectPanel` stays unmounted.
+
 ### Sources
 - Installed types: `@wagmi/connectors@6.2.0` (`baseAccount.d.ts`),
   `@base-org/account@2.4.0`.
