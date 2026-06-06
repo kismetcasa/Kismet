@@ -27,6 +27,19 @@ export interface AgentRecordHint {
   method: 'POST' | 'PATCH'
   url: string
   bodyTemplate: Record<string, unknown>
+  /**
+   * When set, the record call requires a wallet message signature first (via
+   * Base MCP's `sign`). Flow: GET `noncePath` → `{ nonce }`; personal_sign the
+   * `messageTemplate` with `<nonce>` filled; then send `bodyTemplate` with the
+   * `<nonce>` and `<signature>` placeholders filled in. Used by Buy to flip the
+   * order-book listing to "filled" (the backend requires a buyer signature so a
+   * third party can't mark arbitrary listings sold).
+   */
+  preSign?: {
+    noncePath: string
+    messageTemplate: string
+    via: 'personal_sign'
+  }
 }
 
 export interface AgentActionEnvelope {
