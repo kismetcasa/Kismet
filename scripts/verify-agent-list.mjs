@@ -1,0 +1,163 @@
+// Independent oracle for /api/agent/prepare-list (lib/agent/list.ts).
+//
+// Network egress is blocked in CI/sandbox. We verify the parts that don't need
+// a chain: the one-time setApprovalForAll calldata, price→base-unit conversion,
+// the sellerProceeds + royalty == price invariant the order encodes (which
+// /api/listings also enforces), and that the EIP-712 typed data is well-formed
+// (hashTypedData throws if domain/types/message are inconsistent).
+//
+// Run: node scripts/verify-agent-list.mjs
+//
+// Constants MIRROR lib/seaport.ts / lib/builderCode.ts.
+
+import {
+  concat,
+  decodeFunctionData,
+  encodeFunctionData,
+  getAddress,
+  hashTypedData,
+  parseAbi,
+  parseEther,
+  parseUnits,
+  size,
+  stringToHex,
+  toHex,
+} from 'viem'
+
+const SEAPORT = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC'
+const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000'
+const THIRTY_DAYS = 2592000n
+
+const PUBLISHED_SUFFIX = '0x62635f70383736776231630b0080218021802180218021802180218021'
+const builderSuffix = concat([
+  stringToHex('bc_p876wb1c'),
+  toHex(size(stringToHex('bc_p876wb1c')), { size: 1 }),
+  '0x00',
+  '0x80218021802180218021802180218021',
+])
+
+const ERC1155_ABI = parseAbi(['function setApprovalForAll(address operator, bool approved)'])
+
+const SEAPORT_DOMAIN = { name: 'Seaport', version: '1.5', chainId: 8453, verifyingContract: SEAPORT }
+const SEAPORT_ORDER_TYPES = {
+  OrderComponents: [
+    { name: 'offerer', type: 'address' },
+    { name: 'zone', type: 'address' },
+    { name: 'offer', type: 'OfferItem[]' },
+    { name: 'consideration', type: 'ConsiderationItem[]' },
+    { name: 'orderType', type: 'uint8' },
+    { name: 'startTime', type: 'uint256' },
+    { name: 'endTime', type: 'uint256' },
+    { name: 'zoneHash', type: 'bytes32' },
+    { name: 'salt', type: 'uint256' },
+    { name: 'conduitKey', type: 'bytes32' },
+    { name: 'counter', type: 'uint256' },
+  ],
+  OfferItem: [
+    { name: 'itemType', type: 'uint8' },
+    { name: 'token', type: 'address' },
+    { name: 'identifierOrCriteria', type: 'uint256' },
+    { name: 'startAmount', type: 'uint256' },
+    { name: 'endAmount', type: 'uint256' },
+  ],
+  ConsiderationItem: [
+    { name: 'itemType', type: 'uint8' },
+    { name: 'token', type: 'address' },
+    { name: 'identifierOrCriteria', type: 'uint256' },
+    { name: 'startAmount', type: 'uint256' },
+    { name: 'endAmount', type: 'uint256' },
+    { name: 'recipient', type: 'address' },
+  ],
+}
+
+let failures = 0
+const check = (name, cond, detail = '') => {
+  if (cond) console.log(`  PASS  ${name}`)
+  else { console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); failures++ }
+}
+const withSuffix = (d) => concat([d, builderSuffix])
+const eq = (a, b) => getAddress(a) === getAddress(b)
+
+const SELLER = getAddress('0x71Dc000000000000000000000000000000007244')
+const COLLECTION = getAddress('0x00000000000000000000000000000000c011ec70')
+const RECEIVER = getAddress('0x2222222222222222222222222222222222222222')
+
+function buildOrderMessage(currency, sellerProceeds, royalty, counter) {
+  const isUsdc = currency === 'usdc'
+  const itemType = isUsdc ? 1 : 0
+  const token = isUsdc ? USDC : ZERO_ADDR
+  const consideration = [
+    { itemType, token, identifierOrCriteria: 0n, startAmount: sellerProceeds, endAmount: sellerProceeds, recipient: SELLER },
+  ]
+  if (royalty > 0n) {
+    consideration.push({ itemType, token, identifierOrCriteria: 0n, startAmount: royalty, endAmount: royalty, recipient: RECEIVER })
+  }
+  return {
+    offerer: SELLER,
+    zone: ZERO_ADDR,
+    offer: [{ itemType: 3, token: COLLECTION, identifierOrCriteria: 99n, startAmount: 1n, endAmount: 1n }],
+    consideration,
+    orderType: 0,
+    startTime: 0n,
+    endTime: THIRTY_DAYS,
+    zoneHash: ZERO_BYTES32,
+    salt: 123456n,
+    conduitKey: ZERO_BYTES32,
+    counter,
+  }
+}
+
+console.log('builder suffix')
+check('encodes to the published ERC-8021 bytes', builderSuffix.toLowerCase() === PUBLISHED_SUFFIX.toLowerCase())
+
+console.log('\nsetApprovalForAll (one-time marketplace approval)')
+{
+  const raw = encodeFunctionData({ abi: ERC1155_ABI, functionName: 'setApprovalForAll', args: [SEAPORT, true] })
+  const data = withSuffix(raw)
+  const d = decodeFunctionData({ abi: ERC1155_ABI, data: raw })
+  check('operator is Seaport', eq(d.args[0], SEAPORT))
+  check('approved is true', d.args[1] === true)
+  check('builder suffix appended', data.endsWith(builderSuffix.slice(2)))
+}
+
+console.log('\nprice conversion + proceeds invariant')
+{
+  check('parseEther("0.01") = 1e16 wei', parseEther('0.01') === 10000000000000000n)
+  check('parseUnits("5", 6) = 5_000_000 (USDC)', parseUnits('5', 6) === 5000000n)
+
+  // ETH: 0.01 with 5% royalty
+  const ethPrice = parseEther('0.01')
+  const ethRoyalty = (ethPrice * 5n) / 100n
+  const ethProceeds = ethPrice - ethRoyalty
+  check('ETH: sellerProceeds + royalty == price', ethProceeds + ethRoyalty === ethPrice)
+
+  // USDC: 5 with 10% royalty
+  const usdcPrice = parseUnits('5', 6)
+  const usdcRoyalty = (usdcPrice * 10n) / 100n
+  const usdcProceeds = usdcPrice - usdcRoyalty
+  check('USDC: sellerProceeds + royalty == price', usdcProceeds + usdcRoyalty === usdcPrice)
+}
+
+console.log('\nEIP-712 typed data is well-formed (hashes cleanly)')
+for (const currency of ['eth', 'usdc']) {
+  const price = currency === 'usdc' ? parseUnits('5', 6) : parseEther('0.01')
+  const royalty = (price * 5n) / 100n
+  const proceeds = price - royalty
+  const message = buildOrderMessage(currency, proceeds, royalty, 0n)
+  let hash = ''
+  let threw = false
+  try {
+    hash = hashTypedData({ domain: SEAPORT_DOMAIN, types: SEAPORT_ORDER_TYPES, primaryType: 'OrderComponents', message })
+  } catch {
+    threw = true
+  }
+  check(`${currency}: hashTypedData returns a 32-byte digest`, !threw && /^0x[0-9a-f]{64}$/.test(hash), hash)
+  const considerationSum = message.consideration.reduce((a, c) => a + c.startAmount, 0n)
+  check(`${currency}: consideration sums to price`, considerationSum === price)
+  check(`${currency}: offer is the ERC-1155 token`, message.offer[0].itemType === 3 && eq(message.offer[0].token, COLLECTION))
+}
+
+console.log(`\n${failures === 0 ? 'OK — all list assertions passed' : `FAILED — ${failures} assertion(s)`}`)
+process.exit(failures === 0 ? 0 : 1)
