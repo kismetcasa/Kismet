@@ -18,13 +18,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { parseUnits } from 'viem'
 import { useSmartWalletAgentEligibility } from '@/hooks/useSmartWalletAgentEligibility'
 import { useCollectingAccount } from '@/hooks/useCollectingAccount'
+import { useUploadSession } from '@/hooks/useUploadSession'
 import type { BudgetUsage, Scout } from '@/lib/agent/scout/engine'
 import { runScout, type ScoutRunSummary } from '@/lib/agent/scout/runScout'
 
+/** A watched artist, resolved from a username or pasted address. */
+export interface WatchedArtist {
+  address: string
+  username?: string
+}
+
 export interface ScoutConfigInput {
   name?: string
-  /** Watched artist addresses (lowercased). */
-  creators: string[]
+  /** Watched artists (address + optional display username). */
+  artists: WatchedArtist[]
   /** USDC budget per period (human decimal, e.g. "20"). */
   allowanceUsdc: string
   periodInDays: number
@@ -36,6 +43,7 @@ export interface ScoutConfigInput {
 interface ScoutState {
   scout: Scout | null
   usage: BudgetUsage | null
+  artistLabels: Record<string, string> | null
 }
 
 const DAY = 86_400
@@ -44,7 +52,8 @@ const BUDGET_WINDOW_DAYS = 365 // permission validity window for the engine's so
 export function useScout() {
   const { eligible, loading: eligLoading } = useSmartWalletAgentEligibility()
   const ac = useCollectingAccount()
-  const [{ scout, usage }, setState] = useState<ScoutState>({ scout: null, usage: null })
+  const { ensureSession } = useUploadSession()
+  const [{ scout, usage, artistLabels }, setState] = useState<ScoutState>({ scout: null, usage: null, artistLabels: null })
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
   const [lastRun, setLastRun] = useState<ScoutRunSummary | null>(null)
@@ -64,7 +73,7 @@ export function useScout() {
         const r = await fetch('/api/agent/scout')
         if (r.ok) {
           const d = (await r.json()) as ScoutState
-          if (!cancelled) setState({ scout: d.scout ?? null, usage: d.usage ?? null })
+          if (!cancelled) setState({ scout: d.scout ?? null, usage: d.usage ?? null, artistLabels: d.artistLabels ?? null })
         }
       } catch {
         /* keep null; the panel shows setup */
@@ -97,9 +106,15 @@ export function useScout() {
     async (cfg: ScoutConfigInput): Promise<void> => {
       setError(null)
       try {
-        // Ensure the on-chain Spend Permission exists for this allowance/period.
+        // 1. Establish the SIWE session FIRST so the config save can't 401 after
+        //    we've granted the on-chain budget (which would orphan the budget).
+        await ensureSession()
+        // 2. Grant/extend the on-chain Spend Permission for this allowance/period.
         await ac.setBudgetAllowance(cfg.allowanceUsdc, cfg.periodInDays)
         const now = Math.floor(Date.now() / 1000)
+        const creators = cfg.artists.map((a) => a.address.toLowerCase())
+        const labels: Record<string, string> = {}
+        for (const a of cfg.artists) if (a.username) labels[a.address.toLowerCase()] = a.username
         const draft: Partial<Scout> = {
           name: cfg.name,
           mode: 'auto',
@@ -113,7 +128,7 @@ export function useScout() {
           },
           policy: {
             collections: [],
-            creators: cfg.creators.map((c) => c.toLowerCase()),
+            creators,
             blockedCollections: [],
             blockedCreators: [],
             maxItemPrice: parseUnits(cfg.maxItemPriceUsdc, 6).toString(),
@@ -124,30 +139,35 @@ export function useScout() {
         const r = await fetch('/api/agent/scout', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scout: draft }),
+          body: JSON.stringify({ scout: draft, artistLabels: labels }),
         })
         if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error ?? 'Could not save')
         const d = (await r.json()) as ScoutState
-        setState({ scout: d.scout, usage: d.usage })
+        setState({ scout: d.scout, usage: d.usage, artistLabels: d.artistLabels ?? null })
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not save the agent')
         throw e
       }
     },
-    [ac],
+    [ac, ensureSession],
   )
 
-  const persistUsage = useCallback(async (s: Scout, u: BudgetUsage) => {
-    try {
-      await fetch('/api/agent/scout', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scout: s, usage: u }),
-      })
-    } catch {
-      /* best-effort; on-chain cap is the real guard */
-    }
-  }, [])
+  // Always re-send artistLabels on writes so a usage/status PUT doesn't wipe the
+  // saved display names (the route stores exactly what it's given).
+  const persistUsage = useCallback(
+    async (s: Scout, u: BudgetUsage, labels: Record<string, string> | null) => {
+      try {
+        await fetch('/api/agent/scout', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scout: s, usage: u, artistLabels: labels ?? {} }),
+        })
+      } catch {
+        /* best-effort; on-chain cap is the real guard */
+      }
+    },
+    [],
+  )
 
   /** Run the scout now (or auto). Single-flight; no-op unless active + budget. */
   const run = useCallback(async (): Promise<void> => {
@@ -161,15 +181,15 @@ export function useScout() {
     setError(null)
     try {
       const { summary, usage: nextUsage } = await runScout(scout, usage, ac.budget)
-      setState({ scout, usage: nextUsage })
+      setState((prev) => ({ ...prev, usage: nextUsage }))
       setLastRun(summary)
-      void persistUsage(scout, nextUsage)
+      void persistUsage(scout, nextUsage, artistLabels)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Run failed')
     } finally {
       setRunning(false)
     }
-  }, [scout, usage, running, ac.status?.isActive, ac.budget, persistUsage])
+  }, [scout, usage, running, ac.status?.isActive, ac.budget, persistUsage, artistLabels])
 
   const setActive = useCallback(
     async (active: boolean): Promise<void> => {
@@ -180,13 +200,13 @@ export function useScout() {
         await fetch('/api/agent/scout', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scout: next, usage }),
+          body: JSON.stringify({ scout: next, usage, artistLabels: artistLabels ?? {} }),
         })
       } catch {
         /* optimistic; revert on next load if it failed */
       }
     },
-    [scout, usage],
+    [scout, usage, artistLabels],
   )
 
   // Auto-run once on open for an active 'auto' scout (after the budget status
@@ -205,6 +225,7 @@ export function useScout() {
     loading: eligLoading || loading,
     scout,
     usage,
+    artistLabels,
     ac,
     running,
     lastRun,

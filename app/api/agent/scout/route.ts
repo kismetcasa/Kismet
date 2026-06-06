@@ -23,7 +23,11 @@ export async function GET(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
   const record = await getScout(owner)
-  return NextResponse.json({ scout: record?.scout ?? null, usage: record?.usage ?? null })
+  return NextResponse.json({
+    scout: record?.scout ?? null,
+    usage: record?.usage ?? null,
+    artistLabels: record?.artistLabels ?? null,
+  })
 }
 
 export async function DELETE(req: NextRequest) {
@@ -40,7 +44,11 @@ export async function PUT(req: NextRequest) {
     return errorResponse(429, 'Too many requests')
   }
 
-  let body: { scout?: Partial<Scout>; usage?: { periodStart?: number; spentThisPeriod?: string; itemsThisPeriod?: number } }
+  let body: {
+    scout?: Partial<Scout>
+    usage?: { periodStart?: number; spentThisPeriod?: string; itemsThisPeriod?: number }
+    artistLabels?: Record<string, unknown>
+  }
   try {
     body = (await req.json()) as typeof body
   } catch {
@@ -116,9 +124,21 @@ export async function PUT(req: NextRequest) {
     usage = existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
   }
 
-  const record: ScoutRecord = { scout, usage }
+  // Display-only labels: keep only entries whose key is a watched creator, with
+  // a short string value. Falls back to the existing labels on a usage-only PUT.
+  const creatorSet = new Set<string>(creators)
+  let artistLabels: Record<string, string> | undefined
+  if (body.artistLabels && typeof body.artistLabels === 'object') {
+    artistLabels = {}
+    for (const [k, v] of Object.entries(body.artistLabels)) {
+      const addr = k.toLowerCase()
+      if (creatorSet.has(addr) && typeof v === 'string' && v.trim()) artistLabels[addr] = v.trim().slice(0, 40)
+    }
+  }
+
+  const record: ScoutRecord = { scout, usage, ...(artistLabels ? { artistLabels } : {}) }
   await saveScout(record)
-  return NextResponse.json({ scout, usage })
+  return NextResponse.json({ scout, usage, artistLabels: artistLabels ?? null })
 }
 
 function isPositiveIntStr(v: unknown): v is string {

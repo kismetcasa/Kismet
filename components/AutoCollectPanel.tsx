@@ -4,9 +4,10 @@
  * Auto-collect Scout — setup + management (owner profile, smart-wallet only).
  *
  * The user-facing surface for the budgeted, artist-watching auto-collect agent
- * (Mode A). The user picks artists to watch, a USDC budget, and per-item / per-
- * period caps; the agent then collects new drops from those artists, popup-less,
- * within the on-chain Spend Permission. Runs on open (auto) and on demand.
+ * (Mode A). The user picks artists to watch (by username or address), a USDC
+ * budget, and per-item / per-period caps; the agent then collects new drops from
+ * those artists, popup-less, within the on-chain Spend Permission. Runs on open
+ * (auto) and on demand.
  *
  * Gated by useScout → useSmartWalletAgentEligibility: EOAs can't grant the Spend
  * Permission a scout needs, so they see only a soft note and the per-action
@@ -15,9 +16,9 @@
  * smoke test (no wallet/RPC in CI).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { formatUnits, isAddress } from 'viem'
-import { useScout, type ScoutConfigInput } from '@/hooks/useScout'
+import { useScout, type ScoutConfigInput, type WatchedArtist } from '@/hooks/useScout'
 
 const PERIODS = [
   { label: 'per day', days: 1 },
@@ -26,20 +27,60 @@ const PERIODS = [
 ] as const
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
+const label = (a: WatchedArtist) => a.username || short(a.address)
 
 export function AutoCollectPanel() {
   const sc = useScout()
   const [editing, setEditing] = useState(false)
 
   // Setup form state.
-  const [artists, setArtists] = useState<string[]>([])
+  const [artists, setArtists] = useState<WatchedArtist[]>([])
   const [artistInput, setArtistInput] = useState('')
+  const [results, setResults] = useState<WatchedArtist[]>([])
+  const [searching, setSearching] = useState(false)
   const [amount, setAmount] = useState('')
   const [periodDays, setPeriodDays] = useState<number>(7)
   const [maxItem, setMaxItem] = useState('')
   const [maxItems, setMaxItems] = useState('5')
 
   const busy = sc.running || sc.ac.phase !== 'idle'
+  const typedIsAddress = isAddress(artistInput.trim())
+
+  // Debounced username→artist search (skip when the input is already an address).
+  useEffect(() => {
+    const q = artistInput.trim()
+    if (q.length < 2 || isAddress(q)) {
+      setResults([])
+      setSearching(false)
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
+        if (r.ok) {
+          const d = (await r.json()) as { users?: Array<{ address?: string; username?: string }> }
+          if (!cancelled) {
+            setResults(
+              (d.users ?? [])
+                .filter((u) => u.address && isAddress(u.address))
+                .slice(0, 6)
+                .map((u) => ({ address: u.address!.toLowerCase(), username: u.username || undefined })),
+            )
+          }
+        }
+      } catch {
+        /* ignore; user can paste an address */
+      } finally {
+        if (!cancelled) setSearching(false)
+      }
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [artistInput])
 
   if (sc.loading) return null
 
@@ -55,11 +96,11 @@ export function AutoCollectPanel() {
     )
   }
 
-  function addArtist() {
-    const a = artistInput.trim().toLowerCase()
-    if (!isAddress(a) || artists.includes(a)) return
+  function addArtist(a: WatchedArtist) {
+    if (!isAddress(a.address) || artists.some((x) => x.address === a.address)) return
     setArtists((xs) => [...xs, a])
     setArtistInput('')
+    setResults([])
   }
 
   async function save() {
@@ -69,7 +110,7 @@ export function AutoCollectPanel() {
     if (artists.length === 0 || !amount || Number.isNaN(v) || v <= 0) return
     if (!maxItem || Number.isNaN(mi) || mi <= 0 || !Number.isInteger(n) || n < 1) return
     const cfg: ScoutConfigInput = {
-      creators: artists,
+      artists,
       allowanceUsdc: amount,
       periodInDays: periodDays,
       maxItemPriceUsdc: maxItem,
@@ -83,10 +124,9 @@ export function AutoCollectPanel() {
     }
   }
 
-  // Prefill the form from an existing scout when editing.
   function startEdit() {
     if (sc.scout) {
-      setArtists(sc.scout.policy.creators)
+      setArtists(sc.scout.policy.creators.map((addr) => ({ address: addr, username: sc.artistLabels?.[addr] })))
       setAmount(formatUnits(BigInt(sc.scout.budget.allowance), 6))
       setPeriodDays(Math.max(1, Math.round(sc.scout.budget.periodSeconds / 86_400)))
       setMaxItem(formatUnits(BigInt(sc.scout.policy.maxItemPrice), 6))
@@ -98,6 +138,9 @@ export function AutoCollectPanel() {
   const status = sc.ac.status
   const active = sc.scout?.status === 'active'
   const showForm = !sc.scout || editing
+  const watching = sc.scout
+    ? sc.scout.policy.creators.map((a) => sc.artistLabels?.[a] || short(a)).join(', ')
+    : ''
 
   return (
     <div className="border border-line p-4 space-y-3">
@@ -118,8 +161,8 @@ export function AutoCollectPanel() {
       {sc.scout && !editing && (
         <>
           <p className="text-xs font-mono text-dim leading-relaxed">
-            {active ? 'Watching' : 'Paused —'} {sc.scout.policy.creators.length} artist
-            {sc.scout.policy.creators.length === 1 ? '' : 's'}
+            {active ? 'Watching' : 'Paused — '}
+            {watching || `${sc.scout.policy.creators.length} artists`}
             {status ? ` · $${formatUnits(status.remainingSpend, 6)} left · resets ${status.nextPeriodStart.toLocaleDateString()}` : ''}
           </p>
 
@@ -172,38 +215,64 @@ export function AutoCollectPanel() {
           {/* Artists */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-mono uppercase tracking-wider text-dim">Watch artists</label>
-            <div className="flex gap-2">
-              <input
-                value={artistInput}
-                placeholder="0x… artist address"
-                onChange={(e) => setArtistInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    addArtist()
-                  }
-                }}
-                disabled={busy}
-                className="flex-1 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
-              />
-              <button
-                onClick={addArtist}
-                disabled={busy || !isAddress(artistInput.trim())}
-                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 border border-line text-dim hover:border-accent hover:text-accent transition-colors disabled:opacity-40"
-              >
-                add
-              </button>
+            <div className="relative">
+              <div className="flex gap-2">
+                <input
+                  value={artistInput}
+                  placeholder="search a username, or paste 0x…"
+                  onChange={(e) => setArtistInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      if (typedIsAddress) addArtist({ address: artistInput.trim().toLowerCase() })
+                      else if (results[0]) addArtist(results[0])
+                    }
+                  }}
+                  disabled={busy}
+                  className="flex-1 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                />
+                <button
+                  onClick={() => typedIsAddress && addArtist({ address: artistInput.trim().toLowerCase() })}
+                  disabled={busy || !typedIsAddress}
+                  title={typedIsAddress ? 'Add this address' : 'Search by username, then pick a result'}
+                  className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 border border-line text-dim hover:border-accent hover:text-accent transition-colors disabled:opacity-40"
+                >
+                  add
+                </button>
+              </div>
+
+              {/* Search dropdown */}
+              {!typedIsAddress && artistInput.trim().length >= 2 && (searching || results.length > 0) && (
+                <div className="absolute z-10 left-0 right-0 mt-1 bg-surface border border-line max-h-44 overflow-y-auto">
+                  {searching && results.length === 0 ? (
+                    <div className="px-2 py-2 text-[10px] font-mono text-faint">searching…</div>
+                  ) : (
+                    results.map((u) => (
+                      <button
+                        key={u.address}
+                        onClick={() => addArtist(u)}
+                        disabled={artists.some((x) => x.address === u.address)}
+                        className="w-full text-left px-2 py-1.5 text-xs font-mono text-ink hover:bg-raised transition-colors disabled:opacity-40 flex items-center justify-between gap-2"
+                      >
+                        <span className="truncate">{u.username || short(u.address)}</span>
+                        <span className="text-[10px] text-faint shrink-0">{short(u.address)}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
+
             {artists.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {artists.map((a) => (
                   <span
-                    key={a}
+                    key={a.address}
                     className="inline-flex items-center gap-1 text-[10px] font-mono text-dim border border-line px-1.5 py-0.5"
                   >
-                    {short(a)}
+                    {label(a)}
                     <button
-                      onClick={() => setArtists((xs) => xs.filter((x) => x !== a))}
+                      onClick={() => setArtists((xs) => xs.filter((x) => x.address !== a.address))}
                       disabled={busy}
                       className="text-faint hover:text-accent transition-colors disabled:opacity-50"
                       aria-label="remove"
