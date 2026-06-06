@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -25,6 +26,16 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
+
+// Auto-collect (agent) setup panel — owner-only, smart-wallet-gated. Pulls in
+// @base-org/account (21 MB), so it's code-split via next/dynamic with ssr:false
+// to keep it out of the profile route's initial JS; it loads on the client only
+// when an owner views their own profile. The panel self-gates on
+// useSmartWalletAgentEligibility (EOA owners see a soft note, not the setup UI).
+const AutoCollectPanel = dynamic(
+  () => import('./AutoCollectPanel').then((m) => m.AutoCollectPanel),
+  { ssr: false },
+)
 
 interface Payment {
   id: string
@@ -1126,6 +1137,14 @@ export function ProfileView({ address, isMobile = false }: ProfileViewProps) {
         </div>
       )}
 
+
+      {/* Owner-only auto-collect (agent) setup. Owner chrome — hidden while
+          previewing public view. Self-gates on smart-wallet eligibility. */}
+      {isOwner && !previewPublic && (
+        <div className="mb-4">
+          <AutoCollectPanel />
+        </div>
+      )}
 
       {/* Owner-only curation hint, shown only when nothing is pinned: an owner
           only ever sees this (full) dashboard, so without it they'd have no

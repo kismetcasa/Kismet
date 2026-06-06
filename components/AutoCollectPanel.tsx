@@ -7,10 +7,11 @@
  * useSmartWalletAgentEligibility (sub-accounts/spend-permissions need a smart
  * wallet — EOAs can't), and built on the stable useCollectingAccount interface.
  *
- * NOTE: goes live once the wagmi `baseAccount` connector is configured with
- * `subAccounts` and the wrapper uses the connected provider — see
- * AGENT_SUBACCOUNT_INTEGRATION.md (smoke-test-gated). Mount in ProfileView's
- * owner section once that wiring lands; until then it's intentionally unmounted.
+ * Wiring: the wagmi `baseAccount` connector is configured with `subAccounts` in
+ * lib/wagmi.ts, and lib/agent/scout/baseAccount.ts drives the flow through that
+ * connected provider (see AGENT_SUBACCOUNT_INTEGRATION.md). Mounted (code-split,
+ * ssr:false) in ProfileView's owner section. Live runtime behavior still needs a
+ * Base Account smoke test (no wallet/RPC in CI).
  */
 
 import { useState } from 'react'

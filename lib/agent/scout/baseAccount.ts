@@ -3,39 +3,48 @@
 /**
  * Mode A wiring — in-session, popup-less collecting via a Base Sub Account.
  *
- * Verified against the installed @base-org/account@2.4.0 type definitions (the
- * authoritative source; docs.base.org blocks automated fetch). The exact calls
- * used here are typed against that package:
- *   - createBaseAccountSDK({ subAccounts }) → { getProvider, subAccount }
- *   - getCryptoKeyAccount() — the non-extractable browser key that signs the
- *     sub-account (Mode A: no Kismet-held key)
+ * Uses the WAGMI-CONNECTED provider (not a standalone SDK). The Base Account
+ * wallet is configured with `subAccounts` on the wagmi `baseAccount` connector
+ * in lib/wagmi.ts, so the user's single wagmi session already owns the
+ * collecting sub-account and a connected EIP-1193 provider. We read that
+ * provider + the universal/sub addresses from the wagmi config singleton
+ * (`getAccount`), so there is no second SDK session and no double connect.
+ *
+ * Verified against the installed @base-org/account@2.4.0 types (the
+ * authoritative source; docs.base.org blocks automated fetch):
  *   - requestSpendPermission / getPermissionStatus / fetchPermissions /
- *     requestRevoke (@base-org/account/spend-permission)
+ *     requestRevoke (@base-org/account/spend-permission) — each takes the
+ *     connected `provider: ProviderInterface`.
+ *   - getCryptoKeyAccount (the non-extractable browser key that signs the
+ *     sub-account, Mode A: no Kismet-held key) is wired as the connector's
+ *     `toOwnerAccount` in lib/wagmi.ts.
  *
  * Model (see AGENT_SUBACCOUNT_DESIGN.md): the user's universal Base Account owns
  * a "Kismet collecting" sub-account; a USDC Spend Permission caps the budget;
- * the sub-account auto-funds from the parent within that cap and signs collects
- * with the browser key — no per-collect popup.
+ * the sub-account auto-funds from the parent within that cap (connector
+ * `funding: 'spend-permissions'`) and signs collects with the browser key — no
+ * per-collect popup.
  *
  * RUNTIME-PENDING (type-verified, needs a live wallet smoke test): on-connect
- * sub-account provisioning, wallet_sendCalls auto-funding within the permission,
- * and paymaster/gas. These are standard SDK behaviors but can't be exercised in
- * CI (no browser/wallet/RPC).
+ * sub-account provisioning surfacing as accounts[1], wallet_sendCalls
+ * auto-funding within the permission, and paymaster/gas. These are standard SDK
+ * behaviors but can't be exercised in CI (no browser/wallet/RPC).
  */
 
-import { createBaseAccountSDK, getCryptoKeyAccount } from '@base-org/account'
 import {
   fetchPermissions,
   getPermissionStatus,
   requestRevoke,
   requestSpendPermission,
 } from '@base-org/account/spend-permission'
+import type { ProviderInterface } from '@base-org/account'
+import { getAccount } from '@wagmi/core'
+import { wagmiConfig } from '@/lib/wagmi'
 import { USDC_BASE } from '@/lib/zoraMint'
 import type { AgentCall } from '@/lib/agent/types'
 
 const BASE_CHAIN_ID = 8453
 const BASE_CHAIN_HEX = '0x2105' as const // 8453
-const APP_NAME = 'Kismet'
 
 /** The granted Spend Permission shape, derived from the SDK so we don't depend
  *  on a deep type import. */
@@ -49,43 +58,30 @@ export interface CollectingAccounts {
   subAccount: `0x${string}`
 }
 
-let sdkSingleton: ReturnType<typeof createBaseAccountSDK> | null = null
-
-/** The Base Account SDK configured for Kismet's collecting sub-account. */
-export function getCollectingSdk(): ReturnType<typeof createBaseAccountSDK> {
-  if (sdkSingleton) return sdkSingleton
-  const paymasterUrl = process.env.NEXT_PUBLIC_PAYMASTER_URL
-  sdkSingleton = createBaseAccountSDK({
-    appName: APP_NAME,
-    appLogoUrl: process.env.NEXT_PUBLIC_FARCASTER_ICON_URL ?? null,
-    appChainIds: [BASE_CHAIN_ID],
-    subAccounts: {
-      // Provision the collecting sub-account on connect, signed by a
-      // non-extractable browser key (Mode A — no Kismet-held key). Keep the
-      // universal account primary so the user's identity/profile is unchanged.
-      creation: 'on-connect',
-      defaultAccount: 'universal',
-      // Auto-fund the sub-account from the parent within the granted Spend
-      // Permission — this is what makes collecting popup-less.
-      funding: 'spend-permissions',
-      toOwnerAccount: getCryptoKeyAccount,
-    },
-    ...(paymasterUrl ? { paymasterUrls: { [BASE_CHAIN_ID]: paymasterUrl } } : {}),
-  })
-  return sdkSingleton
+/** The wagmi-connected EIP-1193 provider + the universal/sub addresses for the
+ *  active session. With the connector's `subAccounts` config and
+ *  `defaultAccount: 'universal'`, wagmi reports accounts as [universal, sub]. */
+async function getConnected(): Promise<{
+  provider: ProviderInterface
+  universal: `0x${string}`
+  subAccount?: `0x${string}`
+}> {
+  const acct = getAccount(wagmiConfig)
+  if (!acct.connector || !acct.address) throw new Error('No Base Account connected')
+  const provider = (await acct.connector.getProvider()) as unknown as ProviderInterface
+  return { provider, universal: acct.address, subAccount: acct.addresses?.[1] }
 }
 
-/** Connect the Base Account and resolve the collecting sub-account (created
- *  on-connect). Returns both addresses. */
+/** Resolve the collecting sub-account (provisioned on-connect). Prefers the
+ *  address wagmi already surfaced; falls back to asking the provider directly
+ *  (creation:'on-connect' provisions it on the first accounts request). */
 export async function connectCollectingAccount(): Promise<CollectingAccounts> {
-  const sdk = getCollectingSdk()
-  const provider = sdk.getProvider()
+  const { provider, universal, subAccount } = await getConnected()
+  if (subAccount) return { universal, subAccount }
   const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as `0x${string}`[]
-  const universal = accounts[0]
-  if (!universal) throw new Error('No Base Account connected')
-  const sub = await sdk.subAccount.get()
-  if (!sub?.address) throw new Error('Kismet collecting account was not provisioned')
-  return { universal, subAccount: sub.address }
+  const sub = accounts[1]
+  if (!sub) throw new Error('Kismet collecting account was not provisioned')
+  return { universal, subAccount: sub }
 }
 
 /** Grant the collecting budget: a USDC Spend Permission from the universal
@@ -98,7 +94,7 @@ export async function grantCollectingBudget(params: {
   periodInDays: number
   end?: Date
 }): Promise<CollectingBudget> {
-  const sdk = getCollectingSdk()
+  const { provider } = await getConnected()
   return requestSpendPermission({
     account: params.universal,
     spender: params.subAccount,
@@ -107,7 +103,7 @@ export async function grantCollectingBudget(params: {
     allowance: params.allowance,
     periodInDays: params.periodInDays,
     ...(params.end ? { end: params.end } : {}),
-    provider: sdk.getProvider(),
+    provider,
   })
 }
 
@@ -116,12 +112,12 @@ export async function findCollectingBudget(
   universal: `0x${string}`,
   subAccount: `0x${string}`,
 ): Promise<CollectingBudget | null> {
-  const sdk = getCollectingSdk()
+  const { provider } = await getConnected()
   const perms = await fetchPermissions({
     account: universal,
     chainId: BASE_CHAIN_ID,
     spender: subAccount,
-    provider: sdk.getProvider(),
+    provider,
   })
   return perms[0] ?? null
 }
@@ -134,8 +130,8 @@ export async function getCollectingBudgetStatus(budget: CollectingBudget): Promi
 /** Revoke the collecting budget on-chain (the user can also do this at
  *  account.base.app). */
 export async function revokeCollectingBudget(budget: CollectingBudget): Promise<`0x${string}`> {
-  const sdk = getCollectingSdk()
-  return requestRevoke({ provider: sdk.getProvider(), permission: budget })
+  const { provider } = await getConnected()
+  return requestRevoke({ provider, permission: budget })
 }
 
 /** Send a prepared collect batch FROM the sub-account — popup-less; the SDK
@@ -145,8 +141,8 @@ export async function sendCollectCallsFromSubAccount(
   subAccount: `0x${string}`,
   calls: readonly AgentCall[],
 ): Promise<string> {
-  const sdk = getCollectingSdk()
-  const result = (await sdk.getProvider().request({
+  const { provider } = await getConnected()
+  const result = (await provider.request({
     method: 'wallet_sendCalls',
     params: [
       {
@@ -164,7 +160,7 @@ export async function sendCollectCallsFromSubAccount(
 /** Poll the EIP-5792 bundle until it lands; returns the on-chain tx hash that
  *  /api/collect verifies. */
 export async function waitForCollectTxHash(bundleId: string, timeoutMs = 60_000): Promise<`0x${string}`> {
-  const provider = getCollectingSdk().getProvider()
+  const { provider } = await getConnected()
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const res = (await provider.request({

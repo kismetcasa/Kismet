@@ -79,10 +79,18 @@ we document and scope accordingly.
 - **Mint:** excluded per #1. SKILL.md + manifest omit it. ✓
 
 ### H. Base App / Base Account path (Sub Accounts, Spend Permissions) — IMPLEMENTED, type-verified
-- Mode A (in-session, popup-less collecting) wired against the installed SDK types:
-  `createBaseAccountSDK({ subAccounts })`, `getCryptoKeyAccount`,
-  `requestSpendPermission` / `getPermissionStatus` / `fetchPermissions` /
-  `requestRevoke`, `wallet_sendCalls` from the sub-account. ✓ (typecheck-clean)
+- Mode A (in-session, popup-less collecting) wired through the **wagmi-connected
+  provider**: the `baseAccount` connector is configured with `subAccounts`
+  (`creation`/`defaultAccount`/`funding`/`toOwnerAccount: getCryptoKeyAccount`)
+  in `lib/wagmi.ts`, and `baseAccount.ts` drives `requestSpendPermission` /
+  `getPermissionStatus` / `fetchPermissions` / `requestRevoke` +
+  `wallet_sendCalls` from the sub-account against that provider (via
+  `getAccount(wagmiConfig)`). No standalone `createBaseAccountSDK` / second
+  session. ✓ (typecheck + build + bundle clean; see
+  `AGENT_SUBACCOUNT_INTEGRATION.md` → "Implemented (this turn)")
+- `AutoCollectPanel` mounted owner-only in ProfileView, code-split
+  (`next/dynamic`, `ssr:false`) so the 21 MB SDK stays out of the profile route's
+  initial JS. ✓
 - Funds never reach a Kismet address; the user owns + revokes the sub-account. ✓
 - **Live smoke test pending** (no wallet/RPC in CI) — checklist in
   `AGENT_SUBACCOUNT_DESIGN.md` §8.

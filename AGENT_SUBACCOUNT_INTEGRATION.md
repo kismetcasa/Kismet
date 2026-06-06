@@ -5,6 +5,77 @@
 > types (docs.base.org / wagmi.sh block automated fetch; shipped types are
 > authoritative). Corrects the standalone-SDK approach in `lib/agent/scout/baseAccount.ts`.
 
+## Implemented (this turn) — Pieces 1 + 2 applied, gates green
+
+Both pieces are now wired (CI gates can't exercise a live wallet, but everything
+statically verifiable is green: `tsc --noEmit`, `eslint`, `next build`, and
+`check:bundle` — the profile route did **not** grow, so the 21 MB SDK stayed in a
+lazy chunk).
+
+**Piece 1 — `lib/wagmi.ts`.** Rather than rebuild a wallet from scratch, the
+shipped code **reuses RainbowKit's `baseAccount` wallet for its metadata**
+(`rkBaseAccount(params)` → correct icon/name/`id:"baseAccount"`) and **overrides
+only `createConnector`** to build the wagmi `baseAccount` connector *with* the
+`subAccounts` config. The "Popular" group is built explicitly (mirroring
+`getDefaultWallets()`) with this wallet swapped in for the default Base Account
+entry — same modal contents/order, now sub-account-capable.
+
+> **Bundle-safety (important):** `toOwnerAccount` must load the SDK via a
+> **dynamic** `import('@base-org/account')`, never a static top-level import —
+> `@base-org/account` is **21 MB**, and a static import in `lib/wagmi.ts` (loaded
+> by every page via the Providers tree) would balloon the shared bundle. The
+> dynamic import mirrors how the wagmi connector itself lazy-loads the SDK; the
+> chunk only loads when a Base Account actually signs.
+
+```ts
+const baseAccountWithSubAccounts = (params: { appName: string; appIcon?: string }): Wallet => {
+  const wallet = rkBaseAccount(params)            // reuse RK metadata (icon/name/id)
+  return {
+    ...wallet,
+    createConnector: (walletDetails) => {         // override only the connector
+      const connector = baseAccountConnector({
+        appName: params.appName,
+        appLogoUrl: process.env.NEXT_PUBLIC_FARCASTER_ICON_URL ?? params.appIcon ?? undefined,
+        subAccounts: {
+          creation: 'on-connect',
+          defaultAccount: 'universal',
+          funding: 'spend-permissions',
+          toOwnerAccount: async () => {
+            const { getCryptoKeyAccount } = await import('@base-org/account') // dynamic!
+            return getCryptoKeyAccount()
+          },
+        },
+        preference: { telemetry: false },
+      })
+      return createConnector((config) => ({ ...connector(config), ...walletDetails }))
+    },
+  }
+}
+```
+
+**Piece 2 — `lib/agent/scout/baseAccount.ts` + mount.** The wrapper now reads the
+**wagmi-connected provider** from the config singleton via
+`getAccount(wagmiConfig)` (no standalone `createBaseAccountSDK`, no second
+session). `universal = account.address`, `subAccount = account.addresses?.[1]`
+(fallback: `eth_requestAccounts` → `[1]`). `ProviderInterface` is imported
+**type-only** (erased; zero bundle cost). `AutoCollectPanel` is mounted in
+ProfileView's owner area via `next/dynamic(..., { ssr: false })` (a real
+code-split — keeps the SDK out of the profile route's initial JS), gated
+`{isOwner && !previewPublic && <AutoCollectPanel/>}` and self-gating on
+eligibility.
+
+**Field/signature checks (all against installed types):** `SubAccountOptions`
+= `creation`/`defaultAccount`/`funding`/`toOwnerAccount` ✓;
+`getCryptoKeyAccount(): Promise<{account: OneOf<WebAuthnAccount|LocalAccount>|null}>`
+≡ `ToOwnerAccountFn` ✓; spend-permission utils each take `provider:
+ProviderInterface` ✓; RainbowKit `Wallet`/`CreateWalletFn` accept the
+`{appName, appIcon?}` factory ✓.
+
+**Still smoke-test-gated (no wallet/RPC in CI):** real connects on web / Base App
+/ Farcaster / EOA (modal shows ONE Base Account, all connect); a Base Account
+provisions a sub-account surfaced as `addresses[1]`; the connected provider
+honors the spend-permission RPCs; a budget grant + tap-free collect round-trip.
+
 ## The finding
 
 `@wagmi/connectors` exports a first-class **`baseAccount`** connector, and:
