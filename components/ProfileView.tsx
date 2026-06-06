@@ -302,6 +302,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // (one observer, not two).
   const headerRef = useRef<HTMLDivElement>(null)
   const headerInView = useInViewDwell(headerRef, { rootMargin: '0px' })
+  const closeCustomize = useCallback(() => setCustomizing(false), [])
 
   // Pinned showcase refs per category. Drives the visitor's curated view and
   // the owner's per-card pin toggle state.
@@ -1104,9 +1105,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           address={address}
           moments={moments}
           collected={collected}
+          listings={listings}
           theme={theme}
           onThemeChange={setTheme}
-          onClose={() => setCustomizing(false)}
+          onClose={closeCustomize}
         />
       )}
 
