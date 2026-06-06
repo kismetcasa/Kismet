@@ -1,4 +1,5 @@
 import { headers } from 'next/headers'
+import { isMobileUaString } from './deviceUA'
 
 /**
  * Server-side mobile detection from the request's User-Agent header.
@@ -22,6 +23,7 @@ import { headers } from 'next/headers'
  */
 export async function isMobileUA(): Promise<boolean> {
   const h = await headers()
-  const ua = h.get('user-agent') ?? ''
-  return /Mobile|Android|iPhone|iPad|iPod/i.test(ua)
+  // Shares the UA test with the client (isMobileDevice) via lib/deviceUA so the
+  // SSR-baked `isMobile` prop and runtime decisions can never disagree.
+  return isMobileUaString(h.get('user-agent') ?? '')
 }

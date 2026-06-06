@@ -6,7 +6,7 @@
 // distance and hands back two booleans per video:
 //
 //   • play   — the nearest ON-SCREEN videos play, capped at MAX_CONCURRENT_PLAY
-//              (the iOS WebKit simultaneous-decoder budget). Distance ranking
+//              (the iOS WebKit decoder budget, mobile only). Distance ranking
 //              makes this centre-biased — on a 2-col grid the centre row plays.
 //              Videos keep playing THROUGH a scroll and pause only when they
 //              leave the viewport: there is no blanket "pause during scroll",
@@ -31,9 +31,20 @@
 // Add it only if measured to be needed.
 
 import { committedActive, onCommittedChange } from './videoFocus'
+import { isMobileDevice } from '../deviceUA'
 
-const MAX_CONCURRENT_PLAY = 3
-const BUFFER_AHEAD = 5
+// Device-gated — the mobile/web split for video. iOS WebKit caps how many
+// <video> decoders can be live at once and mobile has tighter memory, so on
+// mobile we play only the nearest few and release the rest (the release in
+// InlineVideo cascades off the buffer window below). Desktop has neither limit:
+// Infinity disables BOTH the play cap and the decoder release — a video is
+// released only once it falls OUT of the buffer window, which can't happen when
+// the window is unbounded — so desktop plays every visible video and keeps them
+// all warm. Read once at module load on the client; the coordinator is
+// client-only (see ensureInstalled), so the server's value is never used.
+const MOBILE = isMobileDevice()
+const MAX_CONCURRENT_PLAY = MOBILE ? 3 : Infinity
+const BUFFER_AHEAD = MOBILE ? 5 : Infinity
 
 export interface FeedVideoSlot {
   /** May actively play (decode + present). */
