@@ -136,7 +136,8 @@ and "where did my moments go?".
    post-mint prompt** (creator vs collector intent)?
 2. **Recipient = main collection** (do the sender/recipient split) so tap-free
    collects show in the user's Collected section?
-3. **Gating:** collecting account is **Base Account/smart-wallet only**; EOAs stay
-   per-action with a soft note?
+3. **Gating:** collecting account is **Base Account / smart-wallet only — required**
+   (EOAs cannot own sub-accounts or grant Spend Permissions; verified — see
+   `AGENT_ACCOUNTING_AND_ELIGIBILITY.md`). EOAs stay per-action with a soft note.
 4. **Naming:** "Collecting account" vs "Auto-collect" vs "Kismet wallet" — pick the
    copy.

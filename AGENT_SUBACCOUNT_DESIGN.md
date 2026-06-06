@@ -206,8 +206,10 @@ Shipped client modules:
   `collect` / `revoke` for the UI.
 
 v1 recipient = the **sub-account** (siloed "Kismet collection"), so the batch
-endpoint is reused unchanged. `mintTo = universal` (main collection) is the
-follow-up (needs a sender/recipient split on the endpoint — §5).
+endpoint is reused unchanged. **Superseded:** verified against the Base docs,
+`mintTo = universal` (the user's main collection) is supported best practice
+(recipient ≠ sender for smart-wallet/AA) and is the correct credit target — adopt
+it via the sender/recipient split. See `AGENT_ACCOUNTING_AND_ELIGIBILITY.md`.
 
 **Live smoke-test checklist** (can't run in CI — no wallet/RPC; everything above is
 type-verified only):
