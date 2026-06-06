@@ -218,6 +218,7 @@ function MomentFeed({
           compact={isGrid}
           showCreator
           priority={index < eagerCount}
+          isMobile={lazy}
         />
       )}
       empty={
@@ -701,6 +702,7 @@ function ArtistsFeed() {
           moment={m}
           profileCta
           priority={index < 3}
+          isMobile={lazy}
         />
       )}
       empty={

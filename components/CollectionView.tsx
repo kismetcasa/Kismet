@@ -1028,7 +1028,7 @@ export function CollectionView({
               const key = m.id || `${m.address}-${m.token_id}`
               return (
                 <MaybeLazy key={key} index={i} lazy={isMobile}>
-                  {() => <MomentCard moment={m} hidePriceSupply />}
+                  {() => <MomentCard moment={m} hidePriceSupply isMobile={isMobile} />}
                 </MaybeLazy>
               )
             })}

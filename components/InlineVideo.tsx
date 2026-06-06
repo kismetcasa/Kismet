@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { videoGatewayUrls } from '@/lib/media/gateway'
+import { videoGatewayUrls, isWebKitOnly } from '@/lib/media/gateway'
+import { isMobileDevice } from '@/lib/deviceUA'
 import { getVideoDuration } from '@/lib/media/durationCache'
 import { acquireCommitted, committedActive } from '@/lib/media/videoFocus'
 import { registerFeedVideo, type FeedVideoSlot } from '@/lib/media/feedPlayback'
@@ -74,6 +75,16 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     const d = getVideoDuration(src)
     return typeof d === 'number' && d > LONG_FORM_DURATION_THRESHOLD_S
   }, [src])
+
+  // #t=0.001 forces the first frame to paint during load — iOS WebKit won't
+  // preload on its own, so a poster-less detail video shows a black box until
+  // playback starts. Gated to iOS (mobile × WebKit): Chromium and desktop Safari
+  // preload fine, and the forced seek can stall a non-faststart file there, so
+  // they skip it. The engine×device split for the detail seek.
+  const seekToFirstFrame = useMemo(
+    () => controls && isMobileDevice() && isWebKitOnly(),
+    [controls],
+  )
 
   // One-shot guard for the detail's auto-unmute (below) so a deliberate
   // manual mute via the native controls isn't overridden on a later event.
@@ -275,12 +286,9 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
     <video
       ref={ref}
       key={src}
-      // Detail (controls) videos append #t=0.001 so iOS paints the first frame
-      // during load — iOS never preloads otherwise, so the slot shows a black
-      // box until playback starts (worst for poster-less / thumbhash-less
-      // moments). Feed videos omit it (their poster layer covers them) to avoid
-      // forcing frame loads that fight the decoder budget.
-      src={released ? undefined : (gateways[gatewayIndex] ?? src) + (controls ? '#t=0.001' : '')}
+      // #t=0.001 (iOS-only — see seekToFirstFrame above) paints the first frame
+      // during load. Feed videos omit it; their poster layer covers the slot.
+      src={released ? undefined : (gateways[gatewayIndex] ?? src) + (seekToFirstFrame ? '#t=0.001' : '')}
       className={className}
       muted
       loop={!isLongForm}

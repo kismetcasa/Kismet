@@ -87,13 +87,20 @@ interface MomentCardProps {
    */
   pinned?: boolean
   onTogglePin?: () => void
+  /**
+   * Device class (server-detected `isMobile`). When `false` (desktop) the GIF
+   * dwell-gate below is skipped, so desktop animates GIFs immediately instead
+   * of holding the static thumbhash until the card settles in view — an
+   * iOS-memory mitigation desktop doesn't need. Absent ⇒ treated as mobile.
+   */
+  isMobile?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin, isMobile }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -413,12 +420,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           />
         ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
           // Animated GIFs decode continuously on iOS (no pause) and pin memory
-          // even off-screen — a primary OOM-crash contributor. While a GIF card
-          // isn't settled in view, show the static thumbhash so scrolling /
-          // off-screen GIFs hold no decoder; the animated GIF remounts (warm
-          // from cache) when the card settles back. Static images are cheap
-          // (optimized, no animation) and aren't gated.
-          media.kind === 'gif' && !inView ? (
+          // even off-screen — a primary OOM-crash contributor. On MOBILE, while
+          // a GIF card isn't settled in view, show the static thumbhash so
+          // scrolling / off-screen GIFs hold no decoder; the animated GIF
+          // remounts (warm from cache) when the card settles back. Desktop has
+          // no such budget (isMobile === false) so it animates immediately.
+          // Static images are cheap (optimized, no animation) and aren't gated.
+          media.kind === 'gif' && !inView && isMobile !== false ? (
             blurPreview ? (
               <span
                 aria-hidden
