@@ -4,7 +4,7 @@ import { errorResponse } from '@/lib/apiResponse'
 import { getSessionAddress } from '@/lib/session'
 import { checkRateLimit } from '@/lib/ratelimit'
 import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
-import { freshUsage, type Scout } from '@/lib/agent/scout/engine'
+import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 
 export const runtime = 'nodejs'
 
@@ -36,7 +36,7 @@ export async function DELETE(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
-  if (!checkRateLimit(`agent-scout:${owner.toLowerCase()}`, 30, 60)) {
+  if (!(await checkRateLimit(`agent-scout:${owner.toLowerCase()}`, 30, 60))) {
     return errorResponse(429, 'Too many requests')
   }
 
@@ -96,18 +96,25 @@ export async function PUT(req: NextRequest) {
   }
 
   // Usage: a run reports updated usage (item count + on-chain-reconciled spend);
-  // accept it when well-formed. Otherwise preserve existing usage across config
-  // edits (so editing policy mid-period doesn't reset the item count), starting
-  // fresh on first create or a new period. The on-chain Spend Permission is the
-  // authoritative dollar cap regardless of what's stored here.
-  const existing = await getScout(owner)
+  // accept it when well-formed (the common path after a run) — and skip the
+  // extra read. Otherwise preserve existing usage across config edits (so editing
+  // policy mid-period doesn't reset the item count), starting fresh on first
+  // create or a new period. The on-chain Spend Permission is the authoritative
+  // dollar cap regardless of what's stored here.
   const u = body.usage
-  const usage =
-    u && Number.isInteger(u.periodStart) && Number.isInteger(u.itemsThisPeriod) && (u.itemsThisPeriod as number) >= 0 && isNonNegIntStr(u.spentThisPeriod)
-      ? { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: u.itemsThisPeriod as number }
-      : existing && existing.usage.periodStart >= scout.budget.start
-        ? existing.usage
-        : freshUsage(scout.budget, now)
+  let usage: BudgetUsage
+  if (
+    u &&
+    Number.isInteger(u.periodStart) &&
+    Number.isInteger(u.itemsThisPeriod) &&
+    (u.itemsThisPeriod as number) >= 0 &&
+    isNonNegIntStr(u.spentThisPeriod)
+  ) {
+    usage = { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: u.itemsThisPeriod as number }
+  } else {
+    const existing = await getScout(owner)
+    usage = existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
+  }
 
   const record: ScoutRecord = { scout, usage }
   await saveScout(record)

@@ -77,6 +77,20 @@ export function useScout() {
     }
   }, [eligible, eligLoading])
 
+  // For an EXISTING scout, silently resolve the collecting account + budget on
+  // load so the panel can show live status AND the auto-run gate (accounts +
+  // status.isActive) can fire. connectCollectingAccount reads the already-
+  // connected wagmi provider — no prompt in the normal case (the subAccounts
+  // connector provisions accounts[1] at wallet-connect time).
+  const acConnect = ac.connect
+  const connectTriedRef = useRef(false)
+  useEffect(() => {
+    if (connectTriedRef.current) return
+    if (loading || !scout || ac.accounts) return
+    connectTriedRef.current = true
+    void acConnect().catch(() => {})
+  }, [loading, scout, ac.accounts, acConnect])
+
   /** Persist config (+ grant/extend the on-chain budget if the allowance/period
    *  changed). Builds the engine budget snapshot from the user's inputs. */
   const saveConfig = useCallback(

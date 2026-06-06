@@ -3,18 +3,19 @@
 /**
  * Scout candidate discovery (Mode A, client-side) — "watch artists".
  *
- * For each watched artist we pull their recent moments from the SAME source the
- * profile uses for an artist's mints (`/api/timeline?creator=…`, which unions a
- * Farcaster artist's verified addresses), then resolve authoritative price +
- * currency in one batch via `/api/moments` (the canonical sale-config path).
- * The result is the ordered Candidate[] the pure engine plans against. Prices
- * are re-resolved on-chain again at execution time by prepare-collect-batch, so
- * any staleness here is bounded by the Spend Permission cap, not trusted.
+ * We pull the watched artists' recent moments in ONE request via the timeline's
+ * plural roster filter (`/api/timeline?creators=a,b,c`) — a single server-side
+ * fan-out filtered to the set, instead of N per-artist calls — then resolve
+ * authoritative price + currency in one batch via `/api/moments` (the canonical
+ * sale-config path). The result is the ordered Candidate[] the pure engine plans
+ * against. Prices are re-resolved on-chain again at execution time by
+ * prepare-collect-batch, so any staleness here is bounded by the Spend
+ * Permission cap, not trusted.
  */
 
 import type { Candidate, Currency } from './engine'
 
-const PER_ARTIST_LIMIT = 30
+const FEED_LIMIT = 50
 
 interface TimelineMoment {
   address?: string
@@ -31,25 +32,25 @@ interface SaleConfig {
 export async function discoverCandidates(creators: readonly string[]): Promise<Candidate[]> {
   if (creators.length === 0) return []
 
-  // 1. Each watched artist's recent moments (newest first, per the feed order).
-  const lists = await Promise.all(
-    creators.map(async (creator) => {
-      try {
-        const r = await fetch(`/api/timeline?creator=${creator}&limit=${PER_ARTIST_LIMIT}`)
-        if (!r.ok) return [] as TimelineMoment[]
-        const d = (await r.json()) as { moments?: TimelineMoment[] }
-        return Array.isArray(d.moments) ? d.moments : []
-      } catch {
-        return [] as TimelineMoment[]
-      }
-    }),
-  )
+  // 1. All watched artists' recent moments in a single timeline fan-out,
+  //    filtered to the roster (newest-first; the engine's greedy plan respects
+  //    that order).
+  let moments: TimelineMoment[] = []
+  try {
+    const roster = creators.map((c) => c.toLowerCase()).join(',')
+    const r = await fetch(`/api/timeline?creators=${roster}&limit=${FEED_LIMIT}`)
+    if (r.ok) {
+      const d = (await r.json()) as { moments?: TimelineMoment[] }
+      moments = Array.isArray(d.moments) ? d.moments : []
+    }
+  } catch {
+    return []
+  }
 
-  // Dedupe across artists (a collab can surface under two creators), preserving
-  // first-seen order so the engine's greedy plan respects feed ranking.
+  // Dedupe (a collab can surface twice), preserving first-seen feed order.
   const order: TimelineMoment[] = []
   const seen = new Set<string>()
-  for (const m of lists.flat()) {
+  for (const m of moments) {
     if (!m?.address || !m?.token_id) continue
     const k = `${m.address.toLowerCase()}:${m.token_id}`
     if (seen.has(k)) continue
