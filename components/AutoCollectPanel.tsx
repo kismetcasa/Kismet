@@ -38,6 +38,7 @@ export function AutoCollectPanel() {
   const [artistInput, setArtistInput] = useState('')
   const [results, setResults] = useState<WatchedArtist[]>([])
   const [searching, setSearching] = useState(false)
+  const [currency, setCurrency] = useState<'eth' | 'usdc'>('eth')
   const [amount, setAmount] = useState('')
   const [periodDays, setPeriodDays] = useState<number>(7)
   const [maxItem, setMaxItem] = useState('')
@@ -45,6 +46,11 @@ export function AutoCollectPanel() {
 
   const busy = sc.running || sc.ac.phase !== 'idle'
   const typedIsAddress = isAddress(artistInput.trim())
+  const sym = currency === 'eth' ? 'Ξ' : '$'
+  // The active scout's budget currency (for the status line, independent of the form).
+  const scoutCur = sc.scout?.budget.currency ?? 'usdc'
+  const scoutDec = scoutCur === 'eth' ? 18 : 6
+  const scoutSym = scoutCur === 'eth' ? 'Ξ' : '$'
 
   // Debounced username→artist search (skip when the input is already an address).
   useEffect(() => {
@@ -111,9 +117,10 @@ export function AutoCollectPanel() {
     if (!maxItem || Number.isNaN(mi) || mi <= 0 || !Number.isInteger(n) || n < 1) return
     const cfg: ScoutConfigInput = {
       artists,
-      allowanceUsdc: amount,
+      currency,
+      allowance: amount,
       periodInDays: periodDays,
-      maxItemPriceUsdc: maxItem,
+      maxItemPrice: maxItem,
       maxItemsPerPeriod: n,
     }
     try {
@@ -126,10 +133,13 @@ export function AutoCollectPanel() {
 
   function startEdit() {
     if (sc.scout) {
+      const cur = sc.scout.budget.currency
+      const dec = cur === 'eth' ? 18 : 6
+      setCurrency(cur)
       setArtists(sc.scout.policy.creators.map((addr) => ({ address: addr, username: sc.artistLabels?.[addr] })))
-      setAmount(formatUnits(BigInt(sc.scout.budget.allowance), 6))
+      setAmount(formatUnits(BigInt(sc.scout.budget.allowance), dec))
       setPeriodDays(Math.max(1, Math.round(sc.scout.budget.periodSeconds / 86_400)))
-      setMaxItem(formatUnits(BigInt(sc.scout.policy.maxItemPrice), 6))
+      setMaxItem(formatUnits(BigInt(sc.scout.policy.maxItemPrice), dec))
       setMaxItems(String(sc.scout.policy.maxItemsPerPeriod))
     }
     setEditing(true)
@@ -163,7 +173,7 @@ export function AutoCollectPanel() {
           <p className="text-xs font-mono text-dim leading-relaxed">
             {active ? 'Watching' : 'Paused — '}
             {watching || `${sc.scout.policy.creators.length} artists`}
-            {status ? ` · $${formatUnits(status.remainingSpend, 6)} left · resets ${status.nextPeriodStart.toLocaleDateString()}` : ''}
+            {status ? ` · ${scoutSym}${formatUnits(status.remainingSpend, scoutDec)} left · resets ${status.nextPeriodStart.toLocaleDateString()}` : ''}
           </p>
 
           {sc.lastRun && (
@@ -287,13 +297,27 @@ export function AutoCollectPanel() {
 
           {/* Budget */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-mono uppercase tracking-wider text-dim">Budget (USDC)</label>
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-mono uppercase tracking-wider text-dim">Budget</label>
+              <div className="flex gap-1">
+                {(['eth', 'usdc'] as const).map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setCurrency(c)}
+                    disabled={busy}
+                    className={`text-[10px] font-mono uppercase px-1.5 py-0.5 border transition-colors disabled:opacity-50 ${currency === c ? 'border-accent text-accent' : 'border-line text-dim hover:text-dim'}`}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="flex gap-2 items-center">
-              <span className="text-xs font-mono text-dim">$</span>
+              <span className="text-xs font-mono text-dim">{sym}</span>
               <input
                 value={amount}
                 inputMode="decimal"
-                placeholder="20"
+                placeholder={currency === 'eth' ? '0.01' : '20'}
                 onChange={(e) => {
                   const x = e.target.value
                   if (x === '' || /^\d*\.?\d*$/.test(x)) setAmount(x)
@@ -321,11 +345,11 @@ export function AutoCollectPanel() {
             <div className="space-y-1.5">
               <label className="text-[10px] font-mono uppercase tracking-wider text-dim">Max per item</label>
               <div className="flex items-center gap-1">
-                <span className="text-xs font-mono text-dim">$</span>
+                <span className="text-xs font-mono text-dim">{sym}</span>
                 <input
                   value={maxItem}
                   inputMode="decimal"
-                  placeholder="5"
+                  placeholder={currency === 'eth' ? '0.005' : '5'}
                   onChange={(e) => {
                     const x = e.target.value
                     if (x === '' || /^\d*\.?\d*$/.test(x)) setMaxItem(x)

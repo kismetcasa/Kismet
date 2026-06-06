@@ -3,6 +3,7 @@ import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { getSessionAddress } from '@/lib/session'
 import { checkRateLimit } from '@/lib/ratelimit'
+import { serverBaseClient } from '@/lib/rpc'
 import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
 import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 
@@ -42,6 +43,21 @@ export async function PUT(req: NextRequest) {
   if (!owner) return errorResponse(401, 'Sign in to continue')
   if (!(await checkRateLimit(`agent-scout:${owner.toLowerCase()}`, 30, 60))) {
     return errorResponse(429, 'Too many requests')
+  }
+
+  // Smart-wallet only (defense-in-depth behind the client eligibility gate): a
+  // scout needs a Spend Permission an EOA can't grant. Smart accounts (and
+  // ERC-7702-delegated EOAs) have code; plain EOAs return '0x'. Note: a
+  // counterfactual/undeployed Base Account also returns '0x' and is rejected
+  // until its first on-chain tx — acceptable for v1. Fail-open on RPC error so
+  // a flaky read can't block a legitimate user.
+  try {
+    const code = await serverBaseClient().getCode({ address: owner as `0x${string}` })
+    if (!code || code === '0x') {
+      return errorResponse(403, 'Auto-collect requires a Base Account (smart wallet)')
+    }
+  } catch {
+    /* fail-open: don't block on a transient RPC error */
   }
 
   let body: {
@@ -104,11 +120,11 @@ export async function PUT(req: NextRequest) {
   }
 
   // Usage: a run reports updated usage (item count + on-chain-reconciled spend);
-  // accept it when well-formed (the common path after a run) — and skip the
-  // extra read. Otherwise preserve existing usage across config edits (so editing
-  // policy mid-period doesn't reset the item count), starting fresh on first
-  // create or a new period. The on-chain Spend Permission is the authoritative
-  // dollar cap regardless of what's stored here.
+  // accept it when well-formed (the common path after a run). Otherwise preserve
+  // existing usage across config edits (so editing policy mid-period doesn't
+  // reset the item count), starting fresh on first create or a new period. The
+  // on-chain Spend Permission is the authoritative dollar cap regardless.
+  const existing = await getScout(owner)
   const u = body.usage
   let usage: BudgetUsage
   if (
@@ -118,9 +134,15 @@ export async function PUT(req: NextRequest) {
     (u.itemsThisPeriod as number) >= 0 &&
     isNonNegIntStr(u.spentThisPeriod)
   ) {
-    usage = { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: u.itemsThisPeriod as number }
+    // Anti-spoof: the item count must not DECREASE within the same period (a
+    // client can't reset its self-imposed item cap mid-period; legit rollover
+    // advances periodStart). The dollar cap is enforced on-chain regardless.
+    let items = u.itemsThisPeriod as number
+    if (existing && existing.usage.periodStart === u.periodStart && items < existing.usage.itemsThisPeriod) {
+      items = existing.usage.itemsThisPeriod
+    }
+    usage = { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: items }
   } else {
-    const existing = await getScout(owner)
     usage = existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
   }
 

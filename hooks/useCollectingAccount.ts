@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useState } from 'react'
-import { parseUnits } from 'viem'
+import { parseEther, parseUnits } from 'viem'
 import {
   type CollectingAccounts,
   type CollectingBudget,
@@ -69,7 +69,7 @@ export function useCollectingAccount() {
   }, [refreshStatus])
 
   const setBudgetAllowance = useCallback(
-    async (allowanceUsdc: string, periodInDays: number): Promise<CollectingBudget> => {
+    async (allowance: string, periodInDays: number, currency: 'eth' | 'usdc' = 'usdc'): Promise<CollectingBudget> => {
       const a = accounts ?? (await connect())
       setPhase('granting')
       setError(null)
@@ -77,7 +77,8 @@ export function useCollectingAccount() {
         const b = await grantCollectingBudget({
           universal: a.universal,
           subAccount: a.subAccount,
-          allowance: parseUnits(allowanceUsdc, 6),
+          currency,
+          allowance: currency === 'eth' ? parseEther(allowance) : parseUnits(allowance, 6),
           periodInDays,
         })
         setBudget(b)

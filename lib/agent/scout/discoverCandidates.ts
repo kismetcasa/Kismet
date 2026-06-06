@@ -14,8 +14,19 @@
  */
 
 import type { Candidate, Currency } from './engine'
+import { USDC_BASE } from '@/lib/zoraMint'
 
 const FEED_LIMIT = 50
+
+/** Mirror of lib/inprocess.inferCollectCurrency (kept inline so this client
+ *  module doesn't pull server code): type wins, else the USDC currency-address
+ *  fallback for type-less sales, else ETH. */
+function inferCurrency(sale: { type?: string; currency?: string }): Currency {
+  if (sale.type === 'erc20Mint') return 'usdc'
+  if (sale.type === 'fixedPrice') return 'eth'
+  if (sale.currency && sale.currency.toLowerCase() === USDC_BASE.toLowerCase()) return 'usdc'
+  return 'eth'
+}
 
 interface TimelineMoment {
   address?: string
@@ -75,7 +86,7 @@ export async function discoverCandidates(creators: readonly string[]): Promise<C
   for (const m of order) {
     const sale = sales[`${m.address!.toLowerCase()}:${m.token_id}`]
     if (!sale?.pricePerToken) continue
-    const currency: Currency = sale.type === 'erc20Mint' ? 'usdc' : 'eth'
+    const currency: Currency = inferCurrency(sale)
     candidates.push({
       collection: m.address!,
       tokenId: m.token_id!,

@@ -32,11 +32,13 @@ export interface ScoutConfigInput {
   name?: string
   /** Watched artists (address + optional display username). */
   artists: WatchedArtist[]
-  /** USDC budget per period (human decimal, e.g. "20"). */
-  allowanceUsdc: string
+  /** Budget currency: ETH (covers ETH drops + gas via MagicSpend) or USDC. */
+  currency: 'eth' | 'usdc'
+  /** Budget per period, human decimal (e.g. "0.01" ETH or "20" USDC). */
+  allowance: string
   periodInDays: number
-  /** Max USDC for a single collect (human decimal). */
-  maxItemPriceUsdc: string
+  /** Max for a single collect, human decimal in the budget currency. */
+  maxItemPrice: string
   maxItemsPerPeriod: number
 }
 
@@ -45,9 +47,6 @@ interface ScoutState {
   usage: BudgetUsage | null
   artistLabels: Record<string, string> | null
 }
-
-const DAY = 86_400
-const BUDGET_WINDOW_DAYS = 365 // permission validity window for the engine's soft active-check
 
 export function useScout() {
   const { eligible, loading: eligLoading } = useSmartWalletAgentEligibility()
@@ -109,9 +108,14 @@ export function useScout() {
         // 1. Establish the SIWE session FIRST so the config save can't 401 after
         //    we've granted the on-chain budget (which would orphan the budget).
         await ensureSession()
-        // 2. Grant/extend the on-chain Spend Permission for this allowance/period.
-        await ac.setBudgetAllowance(cfg.allowanceUsdc, cfg.periodInDays)
-        const now = Math.floor(Date.now() / 1000)
+        // 2. Grant/extend the on-chain Spend Permission (idempotent — a retry
+        //    reuses a matching active permission, no re-prompt/duplicate).
+        const budget = await ac.setBudgetAllowance(cfg.allowance, cfg.periodInDays, cfg.currency)
+        // 3. Build the engine budget snapshot from the REAL granted permission
+        //    (its on-chain window + allowance), so the engine and the chain share
+        //    one period window and the engine plans against the true allowance.
+        const p = budget.permission
+        const decimals = cfg.currency === 'eth' ? 18 : 6
         const creators = cfg.artists.map((a) => a.address.toLowerCase())
         const labels: Record<string, string> = {}
         for (const a of cfg.artists) if (a.username) labels[a.address.toLowerCase()] = a.username
@@ -120,18 +124,18 @@ export function useScout() {
           mode: 'auto',
           status: 'active',
           budget: {
-            currency: 'usdc',
-            allowance: parseUnits(cfg.allowanceUsdc, 6).toString(),
-            periodSeconds: Math.max(1, Math.floor(cfg.periodInDays * DAY)),
-            start: now,
-            end: now + BUDGET_WINDOW_DAYS * DAY,
+            currency: cfg.currency,
+            allowance: p.allowance,
+            periodSeconds: p.period,
+            start: p.start,
+            end: p.end,
           },
           policy: {
             collections: [],
             creators,
             blockedCollections: [],
             blockedCreators: [],
-            maxItemPrice: parseUnits(cfg.maxItemPriceUsdc, 6).toString(),
+            maxItemPrice: parseUnits(cfg.maxItemPrice, decimals).toString(),
             maxItemsPerPeriod: cfg.maxItemsPerPeriod,
             mediaTypes: [],
           },
@@ -173,14 +177,14 @@ export function useScout() {
   const run = useCallback(async (): Promise<void> => {
     if (!scout || !usage || running) return
     if (scout.status !== 'active') return
-    if (!ac.status?.isActive) {
+    if (!ac.accounts || !ac.status?.isActive) {
       setError('Your budget is inactive — top it up or set it again.')
       return
     }
     setRunning(true)
     setError(null)
     try {
-      const { summary, usage: nextUsage } = await runScout(scout, usage, ac.budget)
+      const { summary, usage: nextUsage } = await runScout(scout, usage, ac.budget, ac.accounts.subAccount)
       setState((prev) => ({ ...prev, usage: nextUsage }))
       setLastRun(summary)
       void persistUsage(scout, nextUsage, artistLabels)
@@ -189,7 +193,7 @@ export function useScout() {
     } finally {
       setRunning(false)
     }
-  }, [scout, usage, running, ac.status?.isActive, ac.budget, persistUsage, artistLabels])
+  }, [scout, usage, running, ac.accounts, ac.status?.isActive, ac.budget, persistUsage, artistLabels])
 
   const setActive = useCallback(
     async (active: boolean): Promise<void> => {
