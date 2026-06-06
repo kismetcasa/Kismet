@@ -5,62 +5,38 @@
 // plan must produce, and assert the selectors, decoded args, the treasury
 // referral recipient, the ETH value math, and the ERC-8021 builder suffix.
 //
-// Run: node scripts/verify-agent-collect.mjs
+// Run: node --experimental-strip-types scripts/verify-agent-collect.ts
 //
-// Constants below MIRROR lib/zoraMint.ts and lib/builderCode.ts. If those move,
-// update here too (this file is the cross-check, not the source of truth).
+// Treasury-critical constants + the builder suffix come from _agent-verify-helpers,
+// which imports them from the SAME production modules the route uses (not copies),
+// so a referral/minter/strategy change can't silently pass this oracle.
 
 import {
-  concat,
   decodeAbiParameters,
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
   getAddress,
   hexToBigInt,
-  parseAbi,
   parseAbiParameters,
-  size,
-  stringToHex,
   toHex,
 } from 'viem'
-
-const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
-const ERC20_MINTER = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014'
-const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-const REFERRAL = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
-
-// lib/builderCode.ts: KISMET_BUILDER_CODE + schema-0 ERC-8021 encoding, and the
-// published byte string it must equal.
-const KISMET_BUILDER_CODE = 'bc_p876wb1c'
-const ERC8021_MARKER = '0x80218021802180218021802180218021'
-const PUBLISHED_SUFFIX = '0x62635f70383736776231630b0080218021802180218021802180218021'
-const builderSuffix = concat([
-  stringToHex(KISMET_BUILDER_CODE),
-  toHex(size(stringToHex(KISMET_BUILDER_CODE)), { size: 1 }),
-  '0x00',
-  ERC8021_MARKER,
-])
-
-const MINT_1155_ABI = parseAbi([
-  'function mint(address minter, uint256 tokenId, uint256 quantity, address[] rewardsRecipients, bytes minterArguments) payable',
-])
-const ERC20_MINTER_ABI = parseAbi([
-  'function mint(address mintTo, uint256 quantity, address tokenAddress, uint256 tokenId, uint256 totalValue, address currency, address mintReferral, string comment)',
-])
-const ERC20_ABI = parseAbi(['function approve(address spender, uint256 value) returns (bool)'])
-
-let failures = 0
-const check = (name, cond, detail = '') => {
-  if (cond) console.log(`  PASS  ${name}`)
-  else {
-    console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`)
-    failures++
-  }
-}
-const withSuffix = (data) => concat([data, builderSuffix])
-const selector = (data) => data.slice(0, 10)
-const eq = (a, b) => getAddress(a) === getAddress(b)
+import {
+  ERC20_ABI,
+  ERC20_MINTER,
+  ERC20_MINTER_ABI,
+  FPSS,
+  MINT_1155_ABI,
+  PUBLISHED_SUFFIX,
+  REFERRAL,
+  USDC,
+  builderSuffix,
+  check,
+  eq,
+  report,
+  selector,
+  withSuffix,
+} from './_agent-verify-helpers.ts'
 
 console.log('builder suffix')
 check('encodes to the published ERC-8021 bytes', builderSuffix.toLowerCase() === PUBLISHED_SUFFIX.toLowerCase(), builderSuffix)
@@ -136,5 +112,4 @@ console.log('\nUSDC collect (ERC20Minter)')
   check('both calls carry the builder suffix', approve.endsWith(builderSuffix.slice(2)) && mint.endsWith(builderSuffix.slice(2)))
 }
 
-console.log(`\n${failures === 0 ? 'OK — all collect calldata assertions passed' : `FAILED — ${failures} assertion(s)`}`)
-process.exit(failures === 0 ? 0 : 1)
+report('OK — all collect calldata assertions passed')

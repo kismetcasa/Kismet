@@ -5,36 +5,33 @@
 // produce and assert selectors, the decoded order (offerer, consideration
 // count, signature, zero fulfiller conduit key), ETH value, and the suffix.
 //
-// Run: node scripts/verify-agent-buy.mjs
+// Run: node --experimental-strip-types scripts/verify-agent-buy.ts
 //
-// Constants MIRROR lib/seaport.ts / lib/zoraMint.ts / lib/builderCode.ts.
+// Treasury constants (USDC) + builder suffix come from _agent-verify-helpers
+// (sourced from production). The Seaport ABI/address are public protocol values.
 
 import {
-  concat,
   decodeFunctionData,
   encodeFunctionData,
   getAddress,
   hexToBigInt,
-  parseAbi,
-  size,
-  stringToHex,
   toHex,
 } from 'viem'
+import {
+  ERC20_ABI,
+  PUBLISHED_SUFFIX,
+  SEAPORT,
+  USDC,
+  ZERO_ADDR,
+  ZERO_BYTES32,
+  builderSuffix,
+  check,
+  eq,
+  report,
+  selector,
+  withSuffix,
+} from './_agent-verify-helpers.ts'
 
-const SEAPORT = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC'
-const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
-const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000'
-
-const PUBLISHED_SUFFIX = '0x62635f70383736776231630b0080218021802180218021802180218021'
-const builderSuffix = concat([
-  stringToHex('bc_p876wb1c'),
-  toHex(size(stringToHex('bc_p876wb1c')), { size: 1 }),
-  '0x00',
-  '0x80218021802180218021802180218021',
-])
-
-const ERC20_ABI = parseAbi(['function approve(address spender, uint256 value) returns (bool)'])
 // fulfillOrder((parameters,signature), fulfillerConduitKey) — mirrors SEAPORT_ABI.
 const SEAPORT_ABI = [
   {
@@ -83,22 +80,13 @@ const SEAPORT_ABI = [
     ],
     outputs: [{ name: 'fulfilled', type: 'bool' }],
   },
-]
-
-let failures = 0
-const check = (name, cond, detail = '') => {
-  if (cond) console.log(`  PASS  ${name}`)
-  else { console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); failures++ }
-}
-const withSuffix = (d) => concat([d, builderSuffix])
-const selector = (d) => d.slice(0, 10)
-const eq = (a, b) => getAddress(a) === getAddress(b)
+] as const
 
 const OFFERER = getAddress('0x1111111111111111111111111111111111111111')
 const COLLECTION = getAddress('0x00000000000000000000000000000000c011ec70')
 const SIG = '0xdeadbeef'
 
-function makeOrder(currency) {
+function makeOrder(currency: 'eth' | 'usdc') {
   const sellerProceeds = currency === 'usdc' ? 4500000n : 9000000000000000n
   const royalty = currency === 'usdc' ? 500000n : 1000000000000000n
   const itemType = currency === 'usdc' ? 1 : 0
@@ -162,5 +150,4 @@ console.log('\nUSDC buy (approve Seaport + fulfillOrder, no native value)')
   check('USDC fulfill carries no native value (value 0 in plan)', true)
 }
 
-console.log(`\n${failures === 0 ? 'OK — all buy calldata assertions passed' : `FAILED — ${failures} assertion(s)`}`)
-process.exit(failures === 0 ? 0 : 1)
+report('OK — all buy calldata assertions passed')

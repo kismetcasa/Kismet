@@ -147,10 +147,10 @@ export async function POST(req: NextRequest) {
         txHash: '<REPLACE_WITH_send_calls_txHash>',
       },
     },
-    caps: {
-      maxValue: currency === 'eth' ? plan.totalValue.toString() : plan.totalCost.toString(),
-      currency,
-    },
+    caps:
+      currency === 'eth'
+        ? { maxValueEth: plan.totalValue.toString() }
+        : { maxValueUsdc: plan.totalCost.toString() },
   }
 
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })

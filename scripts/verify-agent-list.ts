@@ -6,12 +6,12 @@
 // /api/listings also enforces), and that the EIP-712 typed data is well-formed
 // (hashTypedData throws if domain/types/message are inconsistent).
 //
-// Run: node scripts/verify-agent-list.mjs
+// Run: node --experimental-strip-types scripts/verify-agent-list.ts
 //
-// Constants MIRROR lib/seaport.ts / lib/builderCode.ts.
+// Builder suffix comes from _agent-verify-helpers (sourced from production). The
+// Seaport address/domain/types are public protocol values.
 
 import {
-  concat,
   decodeFunctionData,
   encodeFunctionData,
   getAddress,
@@ -19,28 +19,25 @@ import {
   parseAbi,
   parseEther,
   parseUnits,
-  size,
-  stringToHex,
-  toHex,
 } from 'viem'
+import {
+  PUBLISHED_SUFFIX,
+  SEAPORT,
+  USDC,
+  ZERO_ADDR,
+  ZERO_BYTES32,
+  builderSuffix,
+  check,
+  eq,
+  report,
+  withSuffix,
+} from './_agent-verify-helpers.ts'
 
-const SEAPORT = '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC'
-const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
-const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000'
 const THIRTY_DAYS = 2592000n
-
-const PUBLISHED_SUFFIX = '0x62635f70383736776231630b0080218021802180218021802180218021'
-const builderSuffix = concat([
-  stringToHex('bc_p876wb1c'),
-  toHex(size(stringToHex('bc_p876wb1c')), { size: 1 }),
-  '0x00',
-  '0x80218021802180218021802180218021',
-])
 
 const ERC1155_ABI = parseAbi(['function setApprovalForAll(address operator, bool approved)'])
 
-const SEAPORT_DOMAIN = { name: 'Seaport', version: '1.5', chainId: 8453, verifyingContract: SEAPORT }
+const SEAPORT_DOMAIN = { name: 'Seaport', version: '1.5', chainId: 8453, verifyingContract: SEAPORT } as const
 const SEAPORT_ORDER_TYPES = {
   OrderComponents: [
     { name: 'offerer', type: 'address' },
@@ -70,25 +67,24 @@ const SEAPORT_ORDER_TYPES = {
     { name: 'endAmount', type: 'uint256' },
     { name: 'recipient', type: 'address' },
   ],
-}
-
-let failures = 0
-const check = (name, cond, detail = '') => {
-  if (cond) console.log(`  PASS  ${name}`)
-  else { console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); failures++ }
-}
-const withSuffix = (d) => concat([d, builderSuffix])
-const eq = (a, b) => getAddress(a) === getAddress(b)
+} as const
 
 const SELLER = getAddress('0x71Dc000000000000000000000000000000007244')
 const COLLECTION = getAddress('0x00000000000000000000000000000000c011ec70')
 const RECEIVER = getAddress('0x2222222222222222222222222222222222222222')
 
-function buildOrderMessage(currency, sellerProceeds, royalty, counter) {
+function buildOrderMessage(currency: 'eth' | 'usdc', sellerProceeds: bigint, royalty: bigint, counter: bigint) {
   const isUsdc = currency === 'usdc'
   const itemType = isUsdc ? 1 : 0
   const token = isUsdc ? USDC : ZERO_ADDR
-  const consideration = [
+  const consideration: Array<{
+    itemType: number
+    token: `0x${string}`
+    identifierOrCriteria: bigint
+    startAmount: bigint
+    endAmount: bigint
+    recipient: `0x${string}`
+  }> = [
     { itemType, token, identifierOrCriteria: 0n, startAmount: sellerProceeds, endAmount: sellerProceeds, recipient: SELLER },
   ]
   if (royalty > 0n) {
@@ -141,7 +137,7 @@ console.log('\nprice conversion + proceeds invariant')
 }
 
 console.log('\nEIP-712 typed data is well-formed (hashes cleanly)')
-for (const currency of ['eth', 'usdc']) {
+for (const currency of ['eth', 'usdc'] as const) {
   const price = currency === 'usdc' ? parseUnits('5', 6) : parseEther('0.01')
   const royalty = (price * 5n) / 100n
   const proceeds = price - royalty
@@ -159,5 +155,4 @@ for (const currency of ['eth', 'usdc']) {
   check(`${currency}: offer is the ERC-1155 token`, message.offer[0].itemType === 3 && eq(message.offer[0].token, COLLECTION))
 }
 
-console.log(`\n${failures === 0 ? 'OK — all list assertions passed' : `FAILED — ${failures} assertion(s)`}`)
-process.exit(failures === 0 ? 0 : 1)
+report('OK — all list assertions passed')

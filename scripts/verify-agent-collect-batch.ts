@@ -3,53 +3,44 @@
 // The correctness that matters: a USDC basket must emit ONE approve to the
 // ERC20Minter for the SUMMED cost (not per-item approves, which would clobber
 // each other and revert later mints), then all mints; ETH mints each carry
-// their own hex-wei value. Re-derived with viem; run: node scripts/verify-agent-collect-batch.mjs
+// their own hex-wei value. Re-derived with viem.
+// Run: node --experimental-strip-types scripts/verify-agent-collect-batch.ts
+//
+// Treasury constants + builder suffix come from _agent-verify-helpers (sourced
+// from production, not hand-copied).
 
 import {
-  concat,
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
   getAddress,
   hexToBigInt,
-  parseAbi,
   parseAbiParameters,
-  size,
-  stringToHex,
   toHex,
 } from 'viem'
+import {
+  ERC20_ABI,
+  ERC20_MINTER,
+  ERC20_MINTER_ABI,
+  FPSS,
+  MINT_1155_ABI,
+  REFERRAL,
+  USDC,
+  builderSuffix,
+  check,
+  eq,
+  report,
+  selector,
+  withSuffix,
+} from './_agent-verify-helpers.ts'
 
-const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
-const ERC20_MINTER = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014'
-const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-const REFERRAL = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 const ACCOUNT = getAddress('0x71Dc000000000000000000000000000000007244')
 const COL_A = getAddress('0x00000000000000000000000000000000c0011eaa')
 const COL_B = getAddress('0x00000000000000000000000000000000c0011ebb')
 
-const builderSuffix = concat([
-  stringToHex('bc_p876wb1c'),
-  toHex(size(stringToHex('bc_p876wb1c')), { size: 1 }),
-  '0x00',
-  '0x80218021802180218021802180218021',
-])
-const withSuffix = (d) => concat([d, builderSuffix])
-
-const MINT_1155_ABI = parseAbi(['function mint(address minter, uint256 tokenId, uint256 quantity, address[] rewardsRecipients, bytes minterArguments) payable'])
-const ERC20_MINTER_ABI = parseAbi(['function mint(address mintTo, uint256 quantity, address tokenAddress, uint256 tokenId, uint256 totalValue, address currency, address mintReferral, string comment)'])
-const ERC20_ABI = parseAbi(['function approve(address spender, uint256 value) returns (bool)'])
-
-let failures = 0
-const check = (name, cond, detail = '') => {
-  if (cond) console.log(`  PASS  ${name}`)
-  else { console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); failures++ }
-}
-const selector = (d) => d.slice(0, 10)
-const eq = (a, b) => getAddress(a) === getAddress(b)
-
-const usdcMint = (collection, tokenId, total) =>
+const usdcMint = (collection: `0x${string}`, tokenId: bigint, total: bigint) =>
   withSuffix(encodeFunctionData({ abi: ERC20_MINTER_ABI, functionName: 'mint', args: [ACCOUNT, 1n, collection, tokenId, total, USDC, REFERRAL, ''] }))
-const ethMint = (tokenId, value) => ({
+const ethMint = (tokenId: bigint, value: bigint) => ({
   data: withSuffix(encodeFunctionData({ abi: MINT_1155_ABI, functionName: 'mint', args: [FPSS, tokenId, 1n, [REFERRAL], encodeAbiParameters(parseAbiParameters('address, string'), [ACCOUNT, ''])] })),
   value: toHex(value),
 })
@@ -77,13 +68,13 @@ console.log('mixed basket (2 USDC + 1 ETH), allowance short')
 
   check('exactly one approve in the batch', calls.filter((c) => selector(c.data) === approveSelector).length === 1)
   const approve = calls[0]
-  const da = decodeFunctionData({ abi: ERC20_ABI, data: approve.data.slice(0, 2 + 8 + 64 * 2) })
+  const da = decodeFunctionData({ abi: ERC20_ABI, data: approve.data.slice(0, 2 + 8 + 64 * 2) as `0x${string}` })
   check('approve targets the ERC20Minter', eq(da.args[0], ERC20_MINTER))
   check('approve amount == SUM of USDC costs (8 USDC)', da.args[1] === totalUsdc && totalUsdc === 8_000_000n)
   check('approve is first', selector(calls[0].data) === approveSelector)
   check('two USDC mints on the ERC20Minter, value 0x0', calls.filter((c) => eq(c.to, ERC20_MINTER) && selector(c.data) === usdcMintSelector && c.value === '0x0').length === 2)
   const eth = calls[3]
-  check('eth mint carries hex-wei value', selector(eth.data) === ethMintSelector && hexToBigInt(eth.value) === ethValue)
+  check('eth mint carries hex-wei value', selector(eth.data) === ethMintSelector && hexToBigInt(eth.value as `0x${string}`) === ethValue)
   check('all calls carry the builder suffix', calls.every((c) => c.data.endsWith(builderSuffix.slice(2))))
 }
 
@@ -109,5 +100,4 @@ console.log('\nall-ETH basket → no approve, native value sums')
   check('summed native value', hexToBigInt(calls[0].value) + hexToBigInt(calls[1].value) === v1 + v2)
 }
 
-console.log(`\n${failures === 0 ? 'OK — collect-batch calldata assertions passed' : `FAILED — ${failures} assertion(s)`}`)
-process.exit(failures === 0 ? 0 : 1)
+report('OK — collect-batch calldata assertions passed')

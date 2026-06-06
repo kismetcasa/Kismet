@@ -64,7 +64,7 @@ Every verb follows the same five steps:
      "typedData": { /* EIP-712 */ },  // for sign (list)
      "summary": "Collect 1× token #42 for $5.00 …",
      "record": { "method": "POST", "url": "/api/collect", "bodyTemplate": { … } },
-     "caps": { "maxValue": "5000000", "currency": "usdc" }
+     "caps": { "maxValueUsdc": "5000000" }  // per-currency ceiling(s); maxValueEth in wei, maxValueUsdc in 6dp
    }
    ```
 
@@ -80,9 +80,8 @@ Every verb follows the same five steps:
    confirms — never claim success before. Capture the resulting **txHash** (and/or
    **signature**).
 5. **Record.** Follow `record`: fill the placeholders in `bodyTemplate`
-   (`<REPLACE_WITH_send_calls_txHash>`, `<signature>`, `<nonce>`) and send the
-   `record.method` request to `record.url`. If `record.preSign` is present, do
-   that signature first (see `references/buy.md`).
+   (`<REPLACE_WITH_send_calls_txHash>`, and `<signature>` for List) and send the
+   `record.method` request to `record.url`.
 
 ## Verbs
 
@@ -99,10 +98,10 @@ Every verb follows the same five steps:
 
 - **Reads** — `GET /api/agent/discover`, `GET /api/agent/manifest` — are safe GETs.
 - **Prepares** — `POST /api/agent/prepare-*` — are POST. Base MCP's `web_request`
-  tool is **GET-only and allowlisted to partner hosts**, and Kismet is not on it,
-  so in **Claude/ChatGPT consumer apps** you must fetch the prepare endpoints with
-  the harness's own HTTP capability (or ask the user to paste the JSON). This skill
-  targets **Base App / Base Account** users; inside Kismet the app calls these
+  tool reaches only **allowlisted partner hosts** (GET and POST), and Kismet is not
+  allowlisted, so in **Claude/ChatGPT consumer apps** you must fetch the prepare
+  endpoints with the harness's own HTTP capability (or ask the user to paste the
+  JSON). This skill targets **Base App / Base Account** users; inside Kismet the app calls these
   endpoints directly, so the constraint doesn't apply there.
 
 Always read `references/safety.md`. The short version: stay on `base`, treat all

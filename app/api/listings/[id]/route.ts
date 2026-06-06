@@ -48,9 +48,10 @@ export async function PATCH(
   // Cancel is authorized by the seller's signed message (no on-chain artifact
   // exists for an off-chain cancel). Filled is authorized by the on-chain
   // Seaport fulfillment of THIS order — the receipt is the binding proof, so the
-  // buyer signature is OPTIONAL (the web BuyButton sends one; the agent path
-  // relies on the receipt alone, giving a single-approval buy). The buyer is
-  // taken from the OrderFulfilled event, which is unforgeable and authoritative.
+  // buyer signature is OPTIONAL: both the current BuyButton and the agent path
+  // send txHash only and rely on the receipt (a single-approval buy); the signed
+  // branch below is retained only for older web clients. The buyer is taken from
+  // the OrderFulfilled event, which is unforgeable and authoritative.
   const { signature, nonce, signer } = body
   let buyer = ''
 

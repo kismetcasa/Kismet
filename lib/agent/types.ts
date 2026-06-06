@@ -10,7 +10,7 @@
 
 export type AgentChain = 'base'
 
-export type AgentVerb = 'collect' | 'buy' | 'list' | 'mint'
+export type AgentVerb = 'collect' | 'buy' | 'list'
 
 /** One call in an EIP-5792 `send_calls` batch. Per Base MCP's batch-calls
  *  contract, `value` is a **hex-encoded wei quantity** (e.g. `"0x0"`), not a
@@ -30,19 +30,6 @@ export interface AgentRecordHint {
   method: 'POST' | 'PATCH'
   url: string
   bodyTemplate: Record<string, unknown>
-  /**
-   * When set, the record call requires a wallet message signature first (via
-   * Base MCP's `sign`). Flow: GET `noncePath` → `{ nonce }`; personal_sign the
-   * `messageTemplate` with `<nonce>` filled; then send `bodyTemplate` with the
-   * `<nonce>` and `<signature>` placeholders filled in. Used by Buy to flip the
-   * order-book listing to "filled" (the backend requires a buyer signature so a
-   * third party can't mark arbitrary listings sold).
-   */
-  preSign?: {
-    noncePath: string
-    messageTemplate: string
-    via: 'personal_sign'
-  }
 }
 
 export interface AgentActionEnvelope {
@@ -50,7 +37,7 @@ export interface AgentActionEnvelope {
   action: AgentVerb
   /** EIP-5792 batch for `send_calls` (collect, buy, list-approval). */
   calls?: AgentCall[]
-  /** EIP-712 typed data for `sign` (list order, mint intent). */
+  /** EIP-712 typed data for `sign` (the Seaport list order). */
   typedData?: unknown
   /** Human-readable one-liner to show the user before requesting approval. */
   summary: string
@@ -59,6 +46,10 @@ export interface AgentActionEnvelope {
   /** Batch variant: one record call per item, all against the same txHash
    *  (each /api/collect verifies its own token against the shared receipt). */
   records?: AgentRecordHint[]
-  /** Spend ceiling the agent should honor (and surface to the user). */
-  caps?: { maxValue: string; currency: 'eth' | 'usdc' }
+  /** Spend ceilings the agent should honor (and surface to the user), per
+   *  currency. A single batch can spend in both (e.g. a mixed collect basket),
+   *  so each is independent and present only when that currency is actually
+   *  spent. `maxValueEth` is wei; `maxValueUsdc` is 6dp base units; both decimal
+   *  strings. */
+  caps?: { maxValueEth?: string; maxValueUsdc?: string }
 }

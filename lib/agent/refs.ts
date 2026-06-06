@@ -39,8 +39,9 @@ export function parseMomentRef(input: {
 }
 
 /** Parse a Kismet moment URL: `…/moment/<collection>/<tokenId>`. Tolerates a
- *  missing scheme, a trailing slash, and any query/hash. */
-export function parseMomentUrl(raw: string): MomentRefResult {
+ *  missing scheme, a trailing slash, and any query/hash. Internal — callers use
+ *  `parseMomentRef`, which dispatches to this for the URL form. */
+function parseMomentUrl(raw: string): MomentRefResult {
   let pathname: string
   try {
     const u = new URL(raw.includes('://') ? raw : `https://${raw}`)

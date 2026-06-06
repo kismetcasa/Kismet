@@ -3,7 +3,7 @@ import {
   BaseError,
   ContractFunctionRevertedError,
   ContractFunctionZeroDataError,
-  verifyTypedData,
+  parseErc6492Signature,
 } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { isBlacklisted } from '@/lib/blacklist'
@@ -392,10 +392,15 @@ export async function POST(req: NextRequest) {
     // Verify the EIP-712 signature is from the offerer. Without this anyone
     // could spam-list tokens they don't own (Seaport reverts at fill time,
     // but the listing pollutes the marketplace until then).
+    //
+    // Use the CLIENT verifyTypedData (not viem's offline util) so EOA, ERC-1271
+    // smart-wallet, and ERC-6492 (counterfactual/undeployed Base Account)
+    // signatures all validate — the offline util does ECDSA-only and would 401
+    // every smart-wallet seller. Mirrors lib/intentAuth.ts / lib/siweLogin.ts.
     const order = deserializeOrder(orderComponents)
     let sigValid = false
     try {
-      sigValid = await verifyTypedData({
+      sigValid = await serverBaseClient().verifyTypedData({
         address: seller as `0x${string}`,
         domain: SEAPORT_DOMAIN,
         types: SEAPORT_ORDER_TYPES,
@@ -422,6 +427,14 @@ export async function POST(req: NextRequest) {
       return errorResponse(401, 'Signature does not match seller')
     }
 
+    // De-wrap an ERC-6492 signature before storing it. A smart-wallet seller
+    // whose account isn't yet deployed signs with a 6492 wrapper (factory +
+    // deploy calldata + inner sig); Seaport's on-chain EIP-1271 check can't
+    // process the wrapper, so persist the INNER signature (a no-op for plain
+    // EOA/1271 sigs). The order becomes fillable once the account is deployed
+    // (the seller's first on-chain tx); until then it's no worse than before.
+    const { signature: onchainSignature } = parseErc6492Signature(signature as `0x${string}`)
+
     // Verify the listing pays the EIP-2981 royalty receiver in full —
     // per-recipient tally across consideration items so a seller can't
     // route most of the royalty to a sock-puppet by giving 1 wei to the
@@ -445,7 +458,7 @@ export async function POST(req: NextRequest) {
       royaltyAmount,
       currency,
       orderComponents,
-      signature,
+      signature: onchainSignature,
       expiresAt,
       name: body.name,
       image: body.image,

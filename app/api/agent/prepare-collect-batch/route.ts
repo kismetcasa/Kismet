@@ -144,9 +144,11 @@ export async function POST(req: NextRequest) {
     calls: plan.calls,
     summary,
     records,
+    // A basket can mix ETH and USDC items, so surface BOTH ceilings — collapsing
+    // to one currency would silently drop the other's spend cap.
     caps: {
-      maxValue: plan.totalUsdcCost > 0n && plan.totalNativeValue === 0n ? plan.totalUsdcCost.toString() : plan.totalNativeValue.toString(),
-      currency: plan.totalUsdcCost > 0n && plan.totalNativeValue === 0n ? 'usdc' : 'eth',
+      ...(plan.totalNativeValue > 0n ? { maxValueEth: plan.totalNativeValue.toString() } : {}),
+      ...(plan.totalUsdcCost > 0n ? { maxValueUsdc: plan.totalUsdcCost.toString() } : {}),
     },
   }
 

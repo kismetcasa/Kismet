@@ -21,8 +21,9 @@ export const runtime = 'nodejs'
  * The listing must be active and not expired, and the buyer can't be the
  * seller — the same gates BuyButton applies. Marking the order-book listing
  * "filled" afterward stays on the existing /api/listings/[id] PATCH, which
- * re-decodes OrderFulfilled from the txHash and requires a buyer signature
- * (surfaced as record.preSign). See AGENT_COMMERCE_DESIGN.md.
+ * re-decodes the Seaport OrderFulfilled event from the txHash (matched to the
+ * listing's orderHash) and derives the buyer from it — so no buyer signature is
+ * needed. See AGENT_COMMERCE_DESIGN.md.
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-buy:${getClientIp(req)}`, 60, 60))) {
@@ -91,10 +92,7 @@ export async function POST(req: NextRequest) {
         txHash: '<REPLACE_WITH_send_calls_txHash>',
       },
     },
-    caps: {
-      maxValue: plan.price.toString(),
-      currency,
-    },
+    caps: currency === 'eth' ? { maxValueEth: plan.price.toString() } : { maxValueUsdc: plan.price.toString() },
   }
 
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
