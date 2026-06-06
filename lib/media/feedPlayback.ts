@@ -6,7 +6,7 @@
 // distance and hands back two booleans per video:
 //
 //   • play   — the nearest ON-SCREEN videos play, capped at MAX_CONCURRENT_PLAY
-//              (the iOS WebKit decoder budget, mobile only). Distance ranking
+//              (constrained: mobile + embedded iframe). Distance ranking
 //              makes this centre-biased — on a 2-col grid the centre row plays.
 //              Videos keep playing THROUGH a scroll and pause only when they
 //              leave the viewport: there is no blanket "pause during scroll",
@@ -32,19 +32,23 @@
 
 import { committedActive, onCommittedChange } from './videoFocus'
 import { isMobileDevice } from '../deviceUA'
+import { isInIframe } from './gateway'
 
-// Device-gated — the mobile/web split for video. iOS WebKit caps how many
-// <video> decoders can be live at once and mobile has tighter memory, so on
-// mobile we play only the nearest few and release the rest (the release in
-// InlineVideo cascades off the buffer window below). Desktop has neither limit:
-// Infinity disables BOTH the play cap and the decoder release — a video is
-// released only once it falls OUT of the buffer window, which can't happen when
-// the window is unbounded — so desktop plays every visible video and keeps them
-// all warm. Read once at module load on the client; the coordinator is
-// client-only (see ensureInstalled), so the server's value is never used.
-const MOBILE = isMobileDevice()
-const MAX_CONCURRENT_PLAY = MOBILE ? 3 : Infinity
-const BUFFER_AHEAD = MOBILE ? 5 : Infinity
+// The mobile/web split for video, capped on the two surfaces that are
+// resource-constrained for <video>:
+//   • mobile — iOS WebKit's small simultaneous-decoder budget + tighter memory.
+//   • iframe — a Mini App on Farcaster desktop runs embedded, sharing the host
+//     page's HTTP/2 pool; uncapped video floods it on cold load and starves the
+//     SDK chunk + ready() handshake, pinning the host splash.
+// STANDALONE desktop has neither limit, so Infinity disables BOTH the play cap
+// AND the decoder release (a video releases only once it leaves the buffer
+// window, impossible when the window is unbounded) — it plays every visible
+// video and keeps them warm. Read once at module load on the client; the
+// coordinator is client-only (see ensureInstalled), so the server value is
+// never used.
+const CONSTRAINED = isMobileDevice() || isInIframe()
+const MAX_CONCURRENT_PLAY = CONSTRAINED ? 3 : Infinity
+const BUFFER_AHEAD = CONSTRAINED ? 5 : Infinity
 
 export interface FeedVideoSlot {
   /** May actively play (decode + present). */
