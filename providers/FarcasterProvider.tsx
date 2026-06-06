@@ -260,19 +260,37 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let teardownFetch: (() => void) | null = null
 
+    // Dismiss the host splash exactly once, in EVERY path. The Mini App loading
+    // guide's #1 pitfall is an infinite/long splash from a ready() that never
+    // runs — so a slow context probe, a slow backend, or a throw must never gate
+    // it. Reassigned to the real ready() once the SDK loads; a no-op if the
+    // import fails or outside a real host (nothing to dismiss there).
+    let dismissSplash = (): Promise<void> => Promise.resolve()
+
     ;(async () => {
       try {
         // Dynamic import so the SDK is only fetched for users who land
         // inside a Farcaster host. Webpack code-splits this into its own
         // chunk, keeping the main bundle unaffected.
         const { sdk } = await import('@farcaster/miniapp-sdk')
+        let splashDismissed = false
+        dismissSplash = () => {
+          if (splashDismissed) return Promise.resolve()
+          splashDismissed = true
+          // disableNativeGestures: true — see the note at the call site below.
+          return sdk.actions.ready({ disableNativeGestures: true }).catch(() => {})
+        }
 
-        // sdk.isInMiniApp does its own context-verification round-trip
-        // with a 100ms default timeout, so this resolves quickly even
-        // when the pre-flight produced a false positive (e.g. an iframe
-        // preview that isn't actually a Farcaster host).
+        // sdk.isInMiniApp races a host context probe against the SDK's 1000ms
+        // timeout, returning false if the probe loses — a non-host iframe
+        // preview, OR a real host whose cold-load context arrives late. Either
+        // way we still dismiss the splash (a no-op when there's no host).
         const confirmed = await sdk.isInMiniApp()
-        if (cancelled || !confirmed) return
+        if (cancelled) return
+        if (!confirmed) {
+          await dismissSplash()
+          return
+        }
         isInMiniAppRef.current = true
 
         // Install the JWT interceptor up front so the /api/me fetch
@@ -405,7 +423,12 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // Trade-off: users can no longer swipe-down to dismiss the
         // Mini App — they use the host's X button. Acceptable for an
         // app with this much scrollable + interactive surface.
-        await sdk.actions.ready({ disableNativeGestures: true })
+        //
+        // Routed through dismissSplash (not a raw ready() call) so the
+        // splashDismissed guard owns the single ready() invocation: if a
+        // later throw lands us in the catch, its dismissSplash() is a no-op
+        // rather than a duplicate ready().
+        await dismissSplash()
         if (cancelled) return
 
         // --- Post-paint bootstrap ---
@@ -463,9 +486,12 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           if (opens === PROMPT_TARGET_OPEN) showAddKismetPrompt()
         }
       } catch (err) {
-        // Fail open: if anything in the bootstrap throws, behave as a
-        // regular web visit so the page still works.
+        // Fail open — but ALWAYS dismiss the splash first. A throw before the
+        // ready() call above would otherwise pin the host splash forever
+        // (the #1 Mini App loading pitfall). Idempotent: a no-op if ready()
+        // already ran.
         console.warn('[farcaster] mini app bootstrap failed', err)
+        await dismissSplash()
       }
     })()
 
