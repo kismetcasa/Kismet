@@ -168,6 +168,8 @@ exactly why this pivot costs no rework.
 | **B1** | unattended Scouts | Kismet server key as sub-account owner; server signer; Scout store + scheduler; dashboard (ledger, pause, revoke) |
 | **B2** | curated discovery feeds Scouts | x402 `tier=curated` |
 
+> **A1 + A2 are implemented and type-verified — see §8.**
+
 ## 7. Verify before building
 
 - Exact `@base-org/account` sub-account API (`subAccounts` config, `addOwner`/
@@ -177,6 +179,52 @@ exactly why this pivot costs no rework.
 - Paymaster / gas sponsorship for sub-account userOps.
 - Whether sub-account owner keys can be **contract-scoped** (session-key permissions)
   or are full owners (→ rely on the cap + ephemeral funding).
+
+## 8. Mode A — implemented (verified against `@base-org/account@2.4.0`)
+
+`docs.base.org` blocks automated fetch, so the **installed SDK type definitions**
+are the source of truth. The wrapper is typecheck-clean against them.
+
+Shipped client modules:
+
+- **`lib/agent/scout/baseAccount.ts`** — the verified wrapper:
+  - `getCollectingSdk()` → `createBaseAccountSDK({ subAccounts: { creation:
+    'on-connect', defaultAccount: 'universal', funding: 'spend-permissions',
+    toOwnerAccount: getCryptoKeyAccount }, paymasterUrls? })`
+  - `connectCollectingAccount()` → `eth_requestAccounts` + `subAccount.get()`
+  - `grantCollectingBudget()` → `requestSpendPermission({ account, spender:
+    subAccount, token: USDC, chainId: 8453, allowance, periodInDays, provider })`
+  - `findCollectingBudget` / `getCollectingBudgetStatus` / `revokeCollectingBudget`
+    → `fetchPermissions` / `getPermissionStatus` / `requestRevoke`
+  - `sendCollectCallsFromSubAccount()` → `wallet_sendCalls({ from: subAccount,
+    calls })` (popup-less; auto-funded within the permission) + `waitForCollectTxHash`
+    via `wallet_getCallsStatus`
+- **`lib/agent/scout/inSessionCollect.ts`** — connect → `POST /api/agent/
+  prepare-collect-batch` (account = subAccount) → send from the sub-account →
+  record each via the existing `/api/collect`.
+- **`hooks/useCollectingAccount.ts`** — `connect` / `setBudgetAllowance` /
+  `collect` / `revoke` for the UI.
+
+v1 recipient = the **sub-account** (siloed "Kismet collection"), so the batch
+endpoint is reused unchanged. `mintTo = universal` (main collection) is the
+follow-up (needs a sender/recipient split on the endpoint — §5).
+
+**Live smoke-test checklist** (can't run in CI — no wallet/RPC; everything above is
+type-verified only):
+1. On-connect sub-account provisioning — `subAccount.get()` returns an address.
+2. `requestSpendPermission` prompts once; `getPermissionStatus.remainingSpend`
+   reflects the allowance; `revokeCollectingBudget` clears it.
+3. `wallet_sendCalls` from the sub-account runs with **no per-collect popup** and
+   auto-funds USDC from the parent within the cap.
+4. `/api/collect` verifies each mint (TransferSingle → sub-account) and records it.
+5. Paymaster/gas: set `NEXT_PUBLIC_PAYMASTER_URL`; confirm gasless or fund gas.
+6. **Base App mini-app:** confirm the Base Account SDK provider works in the
+   Coinbase WebView (the mini-app currently uses the Farcaster connector +
+   injected provider — may need provider selection there).
+
+Not wired into a page yet (keeps the client bundle baseline unchanged); the hook
+is ready for a "Kismet collecting account" setup panel + a feed "collect basket"
+affordance.
 
 ### Sources
 - [ERC‑7895: API for Hierarchical Accounts](https://eips.ethereum.org/EIPS/eip-7895) ([PR #932](https://github.com/ethereum/ERCs/pull/932/files))
