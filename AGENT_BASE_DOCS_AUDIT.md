@@ -113,6 +113,27 @@ compliant (STOP gate, approval loop, send_calls contract, GET/POST scoping). The
 only un-exercised items are **live wallet smoke tests** (impossible in CI) and
 explicitly-deferred reach/UX follow-ups. Mint remains out of scope per #1.
 
+## Round 2 — EIP-5792 / SDK RPC-shape verification
+
+Verified every manual wallet RPC against the canonical specs + installed types
+(docs.base.org blocks fetch; installed types + EIPs are authoritative and current):
+
+| Call | Where | Spec check | Result |
+| --- | --- | --- | --- |
+| `wallet_getCapabilities` | `useSmartWalletAgentEligibility` | EIP-5792: params `[address,[chainIds]]`; `atomic.status` ∈ supported/ready/unsupported | ✅ matches |
+| `wallet_sendCalls` | `baseAccount.ts` | EIP-5792: `{version:"2.0.0", from, chainId(hex), atomicRequired, calls:[{to,data,value(hex)}]}` | ✅ matches |
+| `wallet_getCallsStatus` | `baseAccount.ts` | EIP-5792: `status` is **numeric** (100/200/400/500/600) | ⚠️ → **fixed** |
+| `waitForCallsStatus` | `BuyButton` | wagmi normalizes status to string `'success'` | ✅ correct (wagmi API) |
+| `viem.getCode` | `useSmartWalletAgentEligibility` | viem 2.47 client action | ✅ valid |
+| `requestSpendPermission` etc. | `baseAccount.ts` | `@base-org/account@2.4.0` types | ✅ matches |
+| `baseAccount({ subAccounts })` | integration spec | `@wagmi/connectors@6.2.0` types | ✅ matches |
+| `send_calls` value = hex; chain name | collect/buy/list/batch | EIP-5792 + Base batch-calls | ✅ matches (oracles) |
+
+**Fix applied:** `waitForCollectTxHash` now gates on the numeric EIP-5792
+`status === 200` (confirmed) before returning the receipt txHash, and throws on
+terminal failures (400/500/600) — previously it returned as soon as `receipts`
+appeared. (`BuyButton` was already correct via wagmi's normalized status.)
+
 ### Sources
 - [Custom Plugins](https://docs.base.org/ai-agents/plugins/custom-plugins) ·
   [Execute contract calls (`send_calls`)](https://docs.base.org/ai-agents/guides/batch-calls) ·

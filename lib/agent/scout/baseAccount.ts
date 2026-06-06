@@ -170,9 +170,15 @@ export async function waitForCollectTxHash(bundleId: string, timeoutMs = 60_000)
     const res = (await provider.request({
       method: 'wallet_getCallsStatus',
       params: [bundleId],
-    })) as { receipts?: Array<{ transactionHash?: `0x${string}` }> } | null
-    const txHash = res?.receipts?.[0]?.transactionHash
-    if (txHash) return txHash
+    })) as { status?: number; receipts?: Array<{ transactionHash?: `0x${string}` }> } | null
+    // EIP-5792 status codes: 100 pending, 200 confirmed, 400/500/600 failed.
+    if (res?.status === 200) {
+      const txHash = res.receipts?.[0]?.transactionHash
+      if (txHash) return txHash
+    }
+    if (res?.status === 400 || res?.status === 500 || res?.status === 600) {
+      throw new Error('Collect did not complete on-chain')
+    }
     await new Promise((r) => setTimeout(r, 1_500))
   }
   throw new Error('Timed out waiting for the collect to confirm')
