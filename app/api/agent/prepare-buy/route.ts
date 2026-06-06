@@ -79,19 +79,15 @@ export async function POST(req: NextRequest) {
     action: 'buy',
     calls: plan.calls,
     summary,
+    // Single-tap buy: marking the order-book listing filled needs no buyer
+    // signature — the PATCH route verifies the Seaport OrderFulfilled event from
+    // this txHash (matched to the listing's orderHash) and derives the buyer from
+    // it. So the only wallet interaction is the send_calls approval above.
     record: {
       method: 'PATCH',
       url: `/api/listings/${listing.id}`,
-      preSign: {
-        noncePath: `/api/profile/${account}/nonce`,
-        messageTemplate: `Mark Kismet listing filled\nListing: ${listing.id}\nBuyer: ${account.toLowerCase()}\nNonce: <nonce>`,
-        via: 'personal_sign',
-      },
       bodyTemplate: {
         status: 'filled',
-        signer: account,
-        nonce: '<nonce>',
-        signature: '<signature>',
         txHash: '<REPLACE_WITH_send_calls_txHash>',
       },
     },

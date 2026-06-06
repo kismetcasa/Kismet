@@ -189,7 +189,7 @@ message/typed-data signature. Both are taps in Base Account.
 6. Agent `POST /api/collect { …, txHash }` (on-chain-verified, idempotent).
 7. *"Collected — it's in your Base Account."*
 
-#### Buy — *"Buy the cheapest listing of token 7 in 0xabc…"* — **1 approval + 1 signature**
+#### Buy — *"Buy the cheapest listing of token 7 in 0xabc…"* — **1 approval**
 
 1. `get_wallets` → `account`.
 2. `GET /api/agent/discover?kind=listings&collection=0xabc…&account=…` → pick the
@@ -197,14 +197,15 @@ message/typed-data signature. Both are taps in Base Account.
 3. `POST /api/agent/prepare-buy { listingId, account }`.
 4. *"Buy ‘Title’ from 0x71Dc…7244 for 0.01 ETH."*
 5. `send_calls` → **Approve** → confirmed (txHash).
-6. **Mark filled** (bookkeeping): fetch nonce → `sign({ message })` (the second
-   tap) → `PATCH /api/listings/{id}`.
+6. **Mark filled** (no signature): `PATCH /api/listings/{id} { status:"filled", txHash }`.
+   The backend re-decodes `OrderFulfilled` from the txHash (matched to this
+   listing's order) and derives the buyer from it.
 7. *"Purchased."*
 
-> **Friction:** step 6 is a second tap for *off-chain* bookkeeping. The backend
-> already re-decodes `OrderFulfilled` from the txHash, so we *could* drop the
-> signature for the agent path and bind to the tx's fulfiller — a clear UX win to
-> consider (see Decisions).
+> **Resolved:** the "mark filled" PATCH no longer needs a buyer signature — the
+> on-chain receipt is the binding proof and the buyer is read from the event, so
+> Buy is a single approval. (The web BuyButton still sends its signature; that
+> path is unchanged.)
 
 #### List — *"List my ‘Sunset #3’ for 0.02 ETH"* (paste a URL works) — **2 taps first time, 1 after**
 
@@ -225,7 +226,7 @@ message/typed-data signature. Both are taps in Base Account.
 | --- | --- | --- |
 | Agent doesn't know the Kismet host | every verb | Hardcode the production origin in skill/plugin + manifest (1.7). |
 | Skill/manifest not served | install | Serve `agent-skill/` + doc, or publish a skills repo (1.7). |
-| Buy needs a 2nd tap (mark-filled) | Buy step 6 | Consider txHash-only filled for the agent path. |
+| ~~Buy needs a 2nd tap (mark-filled)~~ | Buy step 6 | **Resolved** — txHash-only filled; buyer derived from the OrderFulfilled event. |
 | List can be 2 taps the first time | List step 4–5 | Inherent (approval + signature); explain it in the summary (done). |
 | "Cheapest listing of token 7" | discovery | Free discover returns rows; ranking/filters are basic — the curated x402 tier is the upgrade. |
 | Token lands in the **smart wallet** | all | Correct + intended, but tell the user the Base Account is the holder (safety.md covers it). |
@@ -251,7 +252,9 @@ in service of making those two taps trustworthy and correct.
    `public/` on the Kismet app, or a separate `npx skills`-installable repo?
 3. **Kismet host:** confirm the production origin to hardcode into the
    skill/manifest.
-4. **Buy 2nd tap:** allow txHash-only "mark filled" for the agent path to save a
-   signature?
+4. ~~**Buy 2nd tap**~~ — **Done:** txHash-only "mark filled"; Buy is one approval.
 5. **Priority runtime:** optimize first for the **Base App** in-app experience,
    or the external Claude/ChatGPT connector?
+6. **List approval scope:** keep the standard collection-wide `setApprovalForAll`
+   to Seaport (industry norm, what the web app already does), or add an optional
+   auto-revoke for cautious sellers? (See safety note below.)

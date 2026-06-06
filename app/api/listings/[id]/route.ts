@@ -45,16 +45,19 @@ export async function PATCH(
     return errorResponse(409, 'Listing is already inactive')
   }
 
-  // Both branches require a signed message tied to the listing id + signer +
-  // nonce. The cancel branch must be from the seller; the filled branch must
-  // be from someone other than the seller (anti-self-mark, since legit buyers
-  // can't be the seller per fulfillOrder semantics).
+  // Cancel is authorized by the seller's signed message (no on-chain artifact
+  // exists for an off-chain cancel). Filled is authorized by the on-chain
+  // Seaport fulfillment of THIS order — the receipt is the binding proof, so the
+  // buyer signature is OPTIONAL (the web BuyButton sends one; the agent path
+  // relies on the receipt alone, giving a single-approval buy). The buyer is
+  // taken from the OrderFulfilled event, which is unforgeable and authoritative.
   const { signature, nonce, signer } = body
-  if (!signature || !nonce || !signer || !isAddress(signer)) {
-    return errorResponse(400, 'signature, nonce, and signer required')
-  }
+  let buyer = ''
 
   if (body.status === 'cancelled') {
+    if (!signature || !nonce || !signer || !isAddress(signer)) {
+      return errorResponse(400, 'signature, nonce, and signer required')
+    }
     if (signer.toLowerCase() !== listing.seller.toLowerCase()) {
       return errorResponse(403, 'Only the seller can cancel this listing')
     }
@@ -72,34 +75,19 @@ export async function PATCH(
       return errorResponse(401, 'Invalid or expired nonce')
     }
   } else {
-    // status === 'filled' — must be the buyer, AND there must be a real
-    // Seaport fulfillment tx whose OrderFulfilled event names this signer
-    // as the recipient. Signature alone was insufficient (any wallet that
-    // isn't the seller could sign), so any third party could fabricate
-    // sales — including pumping fake priority `sale` notifications into
-    // the seller's bell. The on-chain receipt is the binding gate.
-    if (signer.toLowerCase() === listing.seller.toLowerCase()) {
-      return errorResponse(403, 'Seller cannot mark own listing filled')
-    }
+    // status === 'filled'
     if (!body.txHash || !/^0x[0-9a-fA-F]{64}$/.test(body.txHash)) {
       return errorResponse(400, 'txHash required to mark filled')
     }
-    const message = `Mark Kismet listing filled\nListing: ${id}\nBuyer: ${signer.toLowerCase()}\nNonce: ${nonce}`
-    const verified = await verifyMessage({
-      address: signer as `0x${string}`,
-      message,
-      signature: signature as `0x${string}`,
-    })
-    if (!verified) {
-      return errorResponse(401, 'Signature verification failed')
-    }
 
-    // Receipt verification BEFORE nonce consumption — a verification-only
-    // failure shouldn't burn a legitimate buyer's nonce. waitForTransactionReceipt
-    // polls so a brief RPC propagation lag (buyer's client saw the receipt
-    // milliseconds ago; the server-side RPC node may not have indexed yet)
-    // doesn't reject a real sale. 10s upper bound on the wait.
-    let onchainOk = false
+    // On-chain fulfillment of THIS listing is the binding gate.
+    // findFulfillmentInLogs matches the listing's orderHash, so a txHash for any
+    // other order won't pass — and a Seaport order can only be fulfilled once, so
+    // no third party can fabricate this. waitForTransactionReceipt polls (10s) so
+    // a brief RPC propagation lag after the buyer's client saw the receipt doesn't
+    // reject a real sale. The buyer is the event recipient, not a self-claimed
+    // address — so a marker can't redirect the sale (or Pass validity) to anyone.
+    let onchainBuyer: string | null = null
     try {
       const receipt = await serverBaseClient().waitForTransactionReceipt({
         hash: body.txHash as Hex,
@@ -108,22 +96,44 @@ export async function PATCH(
       })
       if (receipt.status === 'success') {
         const found = findFulfillmentInLogs(listing, receipt.logs)
-        if (found && found.recipient.toLowerCase() === signer.toLowerCase()) {
-          onchainOk = true
-        }
+        if (found) onchainBuyer = found.recipient.toLowerCase()
       }
     } catch {
-      // Timeout / decode / RPC error — fail-closed; client can retry the
-      // PATCH if they hit a transient lag.
+      // Timeout / decode / RPC error — fail-closed; the client can retry.
     }
-    if (!onchainOk) {
+    if (!onchainBuyer) {
       return errorResponse(403, 'Fulfillment not verified on-chain for this listing')
     }
-
-    const valid = await consumeNonce(signer, nonce)
-    if (!valid) {
-      return errorResponse(401, 'Invalid or expired nonce')
+    if (onchainBuyer === listing.seller.toLowerCase()) {
+      return errorResponse(403, 'Seller cannot mark own listing filled')
     }
+
+    // Optional buyer signature. When the caller supplies one (web path), keep the
+    // strict checks: it must come from the on-chain buyer, and it burns a
+    // single-use nonce. The agent path omits it entirely — the receipt is proof.
+    if (signature !== undefined || nonce !== undefined || signer !== undefined) {
+      if (!signature || !nonce || !signer || !isAddress(signer)) {
+        return errorResponse(400, 'signature, nonce, and signer required when signing')
+      }
+      if (signer.toLowerCase() !== onchainBuyer) {
+        return errorResponse(403, 'signer must be the on-chain buyer')
+      }
+      const message = `Mark Kismet listing filled\nListing: ${id}\nBuyer: ${signer.toLowerCase()}\nNonce: ${nonce}`
+      const verified = await verifyMessage({
+        address: signer as `0x${string}`,
+        message,
+        signature: signature as `0x${string}`,
+      })
+      if (!verified) {
+        return errorResponse(401, 'Signature verification failed')
+      }
+      const valid = await consumeNonce(signer, nonce)
+      if (!valid) {
+        return errorResponse(401, 'Invalid or expired nonce')
+      }
+    }
+
+    buyer = onchainBuyer
   }
 
   await updateListingStatus(id, body.status as 'filled' | 'cancelled')
@@ -133,7 +143,7 @@ export async function PATCH(
       writeNotification({
         type: 'sale',
         recipient: listing.seller,
-        actor: signer.toLowerCase(),
+        actor: buyer,
         tokenAddress: listing.collectionAddress,
         tokenId: listing.tokenId,
         tokenName: listing.name,
@@ -170,7 +180,6 @@ export async function PATCH(
     // reconciliation in hasValidPass is a second-layer safety if the
     // webhook is delayed or missed.
     const txHash = body.txHash as string
-    const buyer = signer.toLowerCase()
     const gateConfig = await getGateConfig()
     if (
       gateConfig.passCollection

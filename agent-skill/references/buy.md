@@ -1,7 +1,8 @@
 # Buy (fulfill a listing)
 
-Buy a moment from a secondary-market Seaport listing. Find listings with
-`discover` (kind=listings) — each row gives you a `listingId`.
+Buy a moment from a secondary-market Seaport listing — **a single approval, no
+extra signature**. Find listings with `discover` (kind=listings) — each row gives
+you a `listingId`.
 
 ## 1. Prepare
 
@@ -31,25 +32,15 @@ send_calls({ chain: "base", calls })
 
 One approval. Wait for the confirmed **txHash**.
 
-## 3. Record (requires a signature first)
+## 3. Record (no signature)
 
-`record.preSign` is present because the backend requires a buyer signature to
-flip the order-book listing to "filled" (so nobody else can mark it sold):
+Fill the `txHash` placeholder in `record.bodyTemplate` and:
 
-1. `GET BASE` + `record.preSign.noncePath` → `{ nonce }`.
-2. Build the message from `record.preSign.messageTemplate`, replacing `<nonce>`.
-   Sign it as a plain message:
+```
+PATCH BASE/api/listings/{id}    ({ "status": "filled", "txHash": "0x…" })
+```
 
-   ```
-   sign({ message })          // personal_sign
-   ```
-
-3. Fill `record.bodyTemplate` (`<nonce>`, `<signature>`, and the `txHash`
-   placeholder) and:
-
-   ```
-   PATCH BASE/api/listings/{id}
-   ```
-
-   The backend re-decodes the Seaport `OrderFulfilled` event from your txHash, so
-   a bogus PATCH can't fake a sale.
+That's it — no buyer signature. The backend re-decodes the Seaport
+`OrderFulfilled` event from your txHash (matched to this listing's order) and
+derives the buyer from it, so a bogus PATCH can't fake a sale. If the PATCH lags,
+the purchase still happened on-chain; just report that recording lagged.
