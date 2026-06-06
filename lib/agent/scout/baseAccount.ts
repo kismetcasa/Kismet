@@ -29,6 +29,20 @@
  * sub-account provisioning surfacing as accounts[1], wallet_sendCalls
  * auto-funding within the permission, and paymaster/gas. These are standard SDK
  * behaviors but can't be exercised in CI (no browser/wallet/RPC).
+ *
+ * Build-warning note: `next build` prints "Attempted import error:
+ * 'requestSpendPermission'/'requestRevoke' is not exported from
+ * '@base-org/account/spend-permission'". This is BENIGN. `@base-org/account`'s
+ * package exports resolve `./spend-permission` per condition: the `browser`
+ * condition serves `index.js` (an un-bundled barrel that DOES `export *` these
+ * functions — confirmed present at runtime), while the `node` condition serves
+ * `index.node.js`, a bundle where the package's build dropped these two
+ * `export const`s (they appear as bare `withTelemetry(...)` expressions). This
+ * module is `'use client'` and only ever runs in the browser (AutoCollectPanel
+ * is mounted via next/dynamic ssr:false), so it always hits the working browser
+ * barrel; the warning comes only from Next's server-graph compile pass, which
+ * never executes this code. `fetchPermissions`/`getPermissionStatus` are
+ * unaffected because they survive both bundles.
  */
 
 import {
