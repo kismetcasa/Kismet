@@ -92,40 +92,83 @@ where `rainbowKitConnectors = connectorsForWallets(getDefaultWallets().wallets, 
 So the Base Account/Coinbase entry comes from RainbowKit's **default list** — which
 takes **no per-wallet options**, so we can't attach `subAccounts` there.
 
-**Verified facts:**
-- `@wagmi/connectors@6.2.0` `baseAccount` connector params = `createBaseAccountSDK`
-  params incl. **`subAccounts`** + `paymasterUrls` (confirmed in `baseAccount.d.ts`).
-- RainbowKit ships a **`baseAccount` wallet** that wraps it; per the Base docs
-  RainbowKit page it **supports `subAccounts`** (`creation`/`defaultAccount`/
-  `funding`) — though the installed `.d.ts` call signature only *types* `{appName,
-  appIcon}`, so **verify the exact options arg accepts `subAccounts`** against the
-  live Base RainbowKit page (or pin a known-good version). The Dec-2025
-  `coinbaseWallet` connector also gained Sub Account + Paymaster config.
+**Verified facts (read from the installed runtime source, not just `.d.ts`):**
+- `@wagmi/connectors@6.2.0` `baseAccount({ … })` **honors `subAccounts`/`paymasterUrls`.**
+  Its `getProvider()` does `createBaseAccountSDK({ ...parameters, appChainIds, preference })`
+  — i.e. it **spreads every parameter** into the SDK
+  (`node_modules/@wagmi/connectors/dist/esm/baseAccount.js`). ✅
+- **RainbowKit 2.2.10's `baseAccount` wallet DROPS `subAccounts`.** ❌ Its factory is
+  `({ appName, appIcon }) => …` and the body does
+  `const { preference, ...optionalConfig } = baseAccount` — destructuring off the
+  **function object itself**, not the options arg — so `optionalConfig` is `{}` and the
+  underlying connector is built with only `{ appName, appLogoUrl, preference }`
+  (`dist/wallets/walletConnectors/chunk-5C3SILBQ.js`). Passing `subAccounts` to it is a
+  **silent no-op**. This resolves the earlier "verify the options arg" item: it does **not**.
+- `getDefaultWallets()` (2.2.10) default list is
+  `[safeWallet, rainbowWallet, baseAccount, metaMaskWallet, walletConnectWallet]` — so
+  **today's Base Account entry is exactly that subAccounts-less wrapper.**
+- `connectorsForWallets` runs `uniqueBy(wallets, "id")` (keeps the **first** by `id`).
+  RainbowKit's wallet has `id: "baseAccount"`, so a second `baseAccount`-id wallet is
+  **discarded** — you must **replace** the entry in-list, not append (else the broken
+  default wins). This makes "no duplicate" a **correctness** requirement, not cosmetics.
 
-**Approach (do not blind-edit):** stop using `getDefaultWallets()` for the Base
-entry; build an explicit RainbowKit **custom wallet list** via `connectorsForWallets`
-that includes a **configured** Base Account wallet, e.g.:
+**Corrected approach (do not blind-edit):** don't use RainbowKit's `baseAccount` wallet.
+Build a **custom RainbowKit `Wallet`** (modeled on RK's own, but calling the **wagmi**
+connector directly with the full config) and put it in a custom `connectorsForWallets`
+list in place of the default `baseAccount`. RK calls each wallet factory with
+`{ projectId, appName, appIcon, options, walletConnectParameters }`, so take `appName`/
+`appIcon` from there:
 
 ```ts
-import { baseAccount } from '@rainbow-me/rainbowkit/wallets'
+import { createConnector } from 'wagmi'
+import { baseAccount as baseAccountConnector } from 'wagmi/connectors'
 import { getCryptoKeyAccount } from '@base-org/account'
+import type { Wallet } from '@rainbow-me/rainbowkit'
 
-baseAccount({
-  appName: 'Kismet',
-  appIcon: process.env.NEXT_PUBLIC_FARCASTER_ICON_URL,
-  subAccounts: {
-    creation: 'on-connect',
-    defaultAccount: 'universal',     // keep the user's main identity primary
-    funding: 'spend-permissions',    // tap-free auto-funding within the cap
-    toOwnerAccount: getCryptoKeyAccount,
+// RK 2.2.10's built-in `baseAccount` wallet silently drops subAccounts, so wrap
+// the wagmi connector ourselves. Keep id:"baseAccount" so it REPLACES (uniqueBy)
+// the default entry — exactly one Base Account row, with sub-accounts wired.
+const baseAccountWithSubAccounts = ({ appName, appIcon }: { appName?: string; appIcon?: string }): Wallet => ({
+  id: 'baseAccount',
+  name: 'Base Account',
+  shortName: 'Base Account',
+  rdns: 'app.base.account',
+  iconUrl: async () => process.env.NEXT_PUBLIC_FARCASTER_ICON_URL ?? '/icon.png', // needs a real asset
+  iconAccent: '#0000FF',
+  iconBackground: '#0000FF',
+  installed: true,
+  createConnector: (walletDetails) => {
+    const connector = baseAccountConnector({
+      appName: appName ?? 'Kismet',
+      appLogoUrl: appIcon ?? process.env.NEXT_PUBLIC_FARCASTER_ICON_URL ?? undefined,
+      subAccounts: {
+        creation: 'on-connect',
+        defaultAccount: 'universal',     // keep the user's main identity primary
+        funding: 'spend-permissions',    // tap-free auto-funding within the cap
+        toOwnerAccount: getCryptoKeyAccount,
+      },
+      // paymasterUrls: { 8453: process.env.NEXT_PUBLIC_PAYMASTER_URL! }, // gasless (optional)
+      preference: { telemetry: false },
+    })
+    return createConnector((config) => ({ ...connector(config), ...walletDetails }))
   },
-  // paymasterUrls: { 8453: process.env.NEXT_PUBLIC_PAYMASTER_URL! },
 })
 ```
 
-Replace the default Coinbase/Base entry with this one (avoid a **duplicate** Base
-Account row in the modal); keep the other default wallets + the Farcaster/injected
-gating untouched.
+Then build the list by swapping this in for the default `baseAccount` (keep the other
+default wallets, and the existing Farcaster/injected gating, untouched):
+
+```ts
+const { wallets } = getDefaultWallets()
+const customWallets = wallets.map((g) => ({
+  ...g,
+  wallets: g.wallets.map((w) => (w === baseAccount ? baseAccountWithSubAccounts : w)),
+}))
+const rainbowKitConnectors = connectorsForWallets(customWallets, { projectId, appName, appIcon })
+```
+
+(Or assemble the group list explicitly. The `iconUrl` must point at a real asset — RK
+throws on a bad `iconAccent`, and a missing icon renders blank in the modal.)
 
 **Base App nuance:** post-April-2026 the Base App runs apps as standard web apps and
 uses the `baseAccount` + `injected` connectors. Today our Base App path is `injected()`
