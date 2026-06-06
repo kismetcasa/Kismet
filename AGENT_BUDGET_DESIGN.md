@@ -77,6 +77,12 @@ with the Base Account SDK, and it executes through **Kismet's backend (the spend
 
 ---
 
+> **Superseded (executor choice):** the "Kismet as spender" model below is kept
+> for reference, but the chosen executor is a **Base Sub Account** —
+> see `AGENT_SUBACCOUNT_DESIGN.md`. Same Spend-Permission budget + cap, but funds
+> never reach a Kismet address. The budget primitive (Spend Permissions) and the
+> §4 constraints still apply.
+
 ## 3. Recommended wiring — Spend Permissions, Kismet as spender
 
 The minimal first version that delivers "set a collecting budget":
