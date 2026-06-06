@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAccount, useSignMessage, useWriteContract, usePublicClient } from 'wagmi'
+import { useAccount, useWriteContract, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -32,7 +32,6 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   const { writeContractAsync } = useWriteContract()
-  const { signMessageAsync } = useSignMessage()
   const publicClient = usePublicClient()
   const ensureBase = useEnsureBase()
   const [loading, setLoading] = useState(false)
@@ -130,22 +129,15 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
         throw new Error('Transaction reverted on-chain')
       }
 
-      // Mark filled — backend requires a signed message from the buyer so a
-      // third party can't flip arbitrary listings or fake "sale" notifications.
-      const nonceRes = await fetch(`/api/profile/${address}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
-      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
-      const message = `Mark Kismet listing filled\nListing: ${listing.id}\nBuyer: ${address.toLowerCase()}\nNonce: ${nonce}`
-      const signature = await signMessageAsync({ message })
-
+      // Mark the order-book listing filled. No buyer signature needed: the
+      // backend decodes the Seaport OrderFulfilled event from this txHash
+      // (matched to the listing's orderHash) and derives the buyer from it, so a
+      // bogus PATCH can't fake a sale. Dropping the signature makes a confirmed
+      // ETH purchase a single tap (USDC stays approve + fulfill).
       await fetch(`/api/listings/${listing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        // txHash is required server-side now — the backend decodes the
-        // Seaport OrderFulfilled event from this receipt to confirm the
-        // sale before flipping status. Without it the PATCH returns 400.
-        body: JSON.stringify({ status: 'filled', signature, nonce, signer: address, txHash: hash }),
+        body: JSON.stringify({ status: 'filled', txHash: hash }),
       })
 
       setBought(true)

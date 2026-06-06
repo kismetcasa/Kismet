@@ -21,6 +21,25 @@
 5. **Seamless continuity.** Popup-less/auto-collected moments must appear in the
    user's normal **Collected** section → mint to the **main collection** (see §5).
 
+## EOA guardrails (no regression)
+
+The collecting account is a smart-wallet-only upgrade, so the per-action path must
+stay intact for EOAs. Non-negotiable rules when we build the UI:
+
+1. **The default collect/buy/list path is unchanged for EOAs** — never gate an
+   existing action behind a collecting account, and never add a required step to it.
+2. **Smart-wallet features are conditionally rendered** — feature-detect the wallet
+   (connector / `isCoinbaseWebView`); only show the collecting-account UI when the
+   account is smart-wallet-capable.
+3. **EOAs get a soft nudge, not a wall** — e.g. "tap-free, budgeted collecting is
+   available with a Base Account / in the Base App," with the normal collect button
+   still right there.
+4. **Shared improvements ship to everyone** — wins that don't need a smart wallet
+   (e.g. the 1-tap buy, `AGENT_EOA_IMPROVEMENTS.md` B) apply to EOAs too, so the gap
+   narrows from both ends.
+5. **No security regression for the gap** — we do **not** weaken EOA flows to close
+   the gap (e.g. no max-approve; see `AGENT_EOA_IMPROVEMENTS.md` A).
+
 ## The setup-entry question, answered
 
 **Profile button: yes. Post-mint prompt: no. Best contextual trigger: at collect.**
