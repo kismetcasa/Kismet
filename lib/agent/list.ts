@@ -87,7 +87,7 @@ export function buildListPlan(input: ListPlanInput): ListPlan {
           data: withBuilderSuffix(
             encodeFunctionData({ abi: ERC1155_ABI, functionName: 'setApprovalForAll', args: [SEAPORT_ADDRESS, true] }),
           ),
-          value: '0',
+          value: '0x0',
         },
       ]
     : undefined

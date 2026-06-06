@@ -12,12 +12,15 @@ export type AgentChain = 'base'
 
 export type AgentVerb = 'collect' | 'buy' | 'list' | 'mint'
 
-/** One call in an EIP-5792 `send_calls` batch. `value` is a JSON-safe decimal
- *  string of native wei ('0' when none) since JSON can't carry a bigint. */
+/** One call in an EIP-5792 `send_calls` batch. Per Base MCP's batch-calls
+ *  contract, `value` is a **hex-encoded wei quantity** (e.g. `"0x0"`), not a
+ *  decimal string — the agent passes these straight into
+ *  `send_calls({ chain: "base", calls })`. `to` is required; `data`/`value`
+ *  may be `"0x"`/`"0x0"`. */
 export interface AgentCall {
   to: `0x${string}`
   data: `0x${string}`
-  value: string
+  value: `0x${string}`
 }
 
 /** What the assistant should POST/PATCH *after* the user approves, to record

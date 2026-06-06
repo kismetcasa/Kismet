@@ -44,7 +44,7 @@ Every verb follows the same five steps:
    {
      "chain": "base",                 // always base — never another chain
      "action": "collect",
-     "calls": [ { "to": "0x…", "data": "0x…", "value": "0" } ], // for send_calls
+     "calls": [ { "to": "0x…", "data": "0x…", "value": "0x0" } ], // for send_calls (value is hex wei)
      "typedData": { /* EIP-712 */ },  // for sign (list)
      "summary": "Collect 1× token #42 for $5.00 …",
      "record": { "method": "POST", "url": "/api/collect", "bodyTemplate": { … } },
@@ -53,7 +53,9 @@ Every verb follows the same five steps:
    ```
 
 4. **Show + execute.** Show the user `summary` and the price. Then:
-   - If `calls` is present → `send_calls({ chain: "base", calls })`.
+   - If `calls` is present → `send_calls({ chain: "base", calls })`. Pass the
+     `calls` array through as-is: each `value` is already hex wei (`"0x0"` when
+     none), `chain` is the top-level param.
    - If `typedData` is present → `sign(typedData)`.
    The user approves in their Base Account (one approval; `send_calls` batches an
    `approve` + the main call together). Wait for confirmation; capture the

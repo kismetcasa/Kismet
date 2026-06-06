@@ -17,6 +17,7 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   getAddress,
+  hexToBigInt,
   parseAbi,
   parseAbiParameters,
   size,
@@ -93,6 +94,8 @@ console.log('\nETH collect (FixedPriceStrategy)')
   const [decMintTo] = decodeAbiParameters(parseAbiParameters('address, string'), decoded.args[4])
   check('mintTo inside minterArguments is the account', eq(decMintTo, mintTo))
   check('value = (mintFee + price) * qty', expectedValue === 2222000000000000n)
+  // send_calls requires hex wei (not a decimal string).
+  check('value encodes as 0x-hex wei and round-trips', /^0x[0-9a-f]+$/.test(toHex(expectedValue)) && hexToBigInt(toHex(expectedValue)) === expectedValue)
 }
 
 // ── USDC collect ───────────────────────────────────────────────────────────

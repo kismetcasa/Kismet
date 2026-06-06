@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Hex } from 'viem'
+import { encodeFunctionData, toHex, type Hex } from 'viem'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import type { Listing } from '@/lib/listings'
@@ -74,15 +74,15 @@ export function buildBuyPlan(input: { listing: Listing; seaportUsdcAllowance: bi
       const approveData = withBuilderSuffix(
         encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [SEAPORT_ADDRESS, price] }),
       )
-      calls.push({ to: USDC_BASE, data: approveData, value: '0' })
+      calls.push({ to: USDC_BASE, data: approveData, value: '0x0' })
       approvalIncluded = true
     }
-    calls.push({ to: SEAPORT_ADDRESS, data: fulfillData, value: '0' })
+    calls.push({ to: SEAPORT_ADDRESS, data: fulfillData, value: '0x0' })
     return { calls, totalValue: 0n, price, currency, approvalIncluded }
   }
 
   return {
-    calls: [{ to: SEAPORT_ADDRESS, data: fulfillData, value: price.toString() }],
+    calls: [{ to: SEAPORT_ADDRESS, data: fulfillData, value: toHex(price) }],
     totalValue: price,
     price,
     currency,

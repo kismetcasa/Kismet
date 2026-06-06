@@ -14,6 +14,7 @@ import {
   decodeFunctionData,
   encodeFunctionData,
   getAddress,
+  hexToBigInt,
   parseAbi,
   size,
   stringToHex,
@@ -136,6 +137,8 @@ console.log('\nETH buy (Seaport fulfillOrder, native value)')
   // buy plan: single call to Seaport with value = price
   check('selector is fulfillOrder', selector(data) === expSelector)
   check('native value equals listing price', price === 10000000000000000n)
+  // send_calls requires hex wei (not a decimal string).
+  check('value encodes as 0x-hex wei and round-trips', /^0x[0-9a-f]+$/.test(toHex(price)) && hexToBigInt(toHex(price)) === price)
   check('builder suffix appended', data.endsWith(builderSuffix.slice(2)))
   const dec = decodeFunctionData({ abi: SEAPORT_ABI, data: raw })
   check('decoded offerer preserved', eq(dec.args[0].parameters.offerer, OFFERER))

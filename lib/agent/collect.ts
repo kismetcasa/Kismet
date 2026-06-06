@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Address } from 'viem'
+import { encodeFunctionData, toHex, type Address } from 'viem'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -61,7 +61,7 @@ export function buildCollectPlan(input: CollectPlanInput): CollectPlan {
       encodeFunctionData({ abi: mint.abi, functionName: mint.functionName, args: mint.args }),
     )
     return {
-      calls: [{ to: collection, data, value: mint.value.toString() }],
+      calls: [{ to: collection, data, value: toHex(mint.value) }],
       totalValue: mint.value,
       totalCost,
       approvalIncluded: false,
@@ -77,14 +77,14 @@ export function buildCollectPlan(input: CollectPlanInput): CollectPlan {
     const approveData = withBuilderSuffix(
       encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [ZORA_ERC20_MINTER, totalCost] }),
     )
-    calls.push({ to: USDC_BASE, data: approveData, value: '0' })
+    calls.push({ to: USDC_BASE, data: approveData, value: '0x0' })
     approvalIncluded = true
   }
   const mint = buildUsdcMintCall({ collection, tokenId, mintTo: account, quantity, pricePerToken, comment })
   const mintData = withBuilderSuffix(
     encodeFunctionData({ abi: mint.abi, functionName: mint.functionName, args: mint.args }),
   )
-  calls.push({ to: ZORA_ERC20_MINTER, data: mintData, value: '0' })
+  calls.push({ to: ZORA_ERC20_MINTER, data: mintData, value: '0x0' })
 
   return { calls, totalValue: 0n, totalCost, approvalIncluded }
 }
