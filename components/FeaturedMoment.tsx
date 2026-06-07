@@ -38,15 +38,15 @@ const DEFAULT_RATIO = 1.5
 const MIN_RATIO = 0.2
 const MAX_RATIO = 5
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
-// Box background — a burnt orange. Black text clears ~4.9:1 on it. One knob.
-const DISPLAY_BG = '#cc5500'
+// Box background — a soft gold. Dark text clears ~9.4:1 on it. One knob.
+const DISPLAY_BG = '#d4b062'
 
 /**
  * Mint Pass Display — the single curated mint atop the featured tab, rendered
  * in two CSS-toggled presentations so the *viewport* (never a JS device/UA
  * guess) picks which one paints:
  *   • lg and up → a rich three-column hero: [title · by · @artist] | artwork |
- *     [collection] on a burnt-orange box, the box hugging the artwork's aspect
+ *     [collection] on a soft-gold box, the box hugging the artwork's aspect
  *     ratio (no crop, no letterbox) with the flanking columns matching height.
  *   • below lg  → an ordinary <MomentCard>, identical to any other feed card.
  * `hidden lg:flex` / `lg:hidden` do the switch, so it stays correct on every
