@@ -11,11 +11,11 @@
  * sub-account (popup-less, auto-funded within the Spend Permission) → record
  * each collect on the existing on-chain-verified /api/collect.
  *
- * v1 keeps it consistent and reuses the endpoint unchanged by setting the
- * sub-account as both sender and recipient (`account = subAccount`), i.e. a
- * siloed "Kismet collection". Minting into the user's MAIN collection
- * (`mintTo = universal`) is a follow-up that needs the endpoint to separate
- * sender/allowance from recipient — see AGENT_SUBACCOUNT_DESIGN.md §5.
+ * Recipient: the sub-account is the SENDER (pays via the Spend Permission +
+ * holds the USDC approve), but mintTo is the user's UNIVERSAL Base Account, so
+ * collected NFTs land in the user's main collection and show on their profile.
+ * prepare-collect-batch takes `account` (sender) + `recipient` (mintTo) and uses
+ * `recipient` for the per-wallet eligibility check + the /api/collect record.
  */
 
 import type { AgentCall, AgentRecordHint } from '@/lib/agent/types'
@@ -49,13 +49,15 @@ interface BatchEnvelope {
 export async function collectInSession(items: CollectItemRef[]): Promise<InSessionCollectResult> {
   if (items.length === 0) throw new Error('Nothing to collect')
 
-  const { subAccount } = await connectCollectingAccount()
+  const { universal, subAccount } = await connectCollectingAccount()
 
-  // 1. Prepare the batch (mintTo = subAccount for v1 consistency).
+  // 1. Prepare the batch: the sub-account SENDS + pays (account), the user's
+  //    universal Base Account RECEIVES (recipient = mintTo), so collected NFTs
+  //    land in the user's main collection and show on their profile.
   const res = await fetch('/api/agent/prepare-collect-batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items, account: subAccount }),
+    body: JSON.stringify({ items, account: subAccount, recipient: universal }),
   })
   const env = (await res.json().catch(() => ({}))) as BatchEnvelope
   if (!res.ok) throw new Error(env.error ?? 'Could not prepare the collect')

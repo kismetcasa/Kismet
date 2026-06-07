@@ -157,14 +157,21 @@ export function useScout() {
   )
 
   // Always re-send artistLabels on writes so a usage/status PUT doesn't wipe the
-  // saved display names (the route stores exactly what it's given).
+  // saved display names (the route stores exactly what it's given). When a run
+  // collected something, pass `notify` so the server writes a "your agent
+  // collected N" notification.
   const persistUsage = useCallback(
-    async (s: Scout, u: BudgetUsage, labels: Record<string, string> | null) => {
+    async (
+      s: Scout,
+      u: BudgetUsage,
+      labels: Record<string, string> | null,
+      notify?: { collected: number; spent?: string; currency?: string },
+    ) => {
       try {
         await fetch('/api/agent/scout', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scout: s, usage: u, artistLabels: labels ?? {} }),
+          body: JSON.stringify({ scout: s, usage: u, artistLabels: labels ?? {}, ...(notify ? { notify } : {}) }),
         })
       } catch {
         /* best-effort; on-chain cap is the real guard */
@@ -173,7 +180,9 @@ export function useScout() {
     [],
   )
 
-  /** Run the scout now (or auto). Single-flight; no-op unless active + budget. */
+  /** Run the scout now (or auto). Single-flight per tab; a cross-tab/device run
+   *  lock prevents concurrent runs from double-collecting. No-op unless active +
+   *  budget. */
   const run = useCallback(async (): Promise<void> => {
     if (!scout || !usage || running) return
     if (scout.status !== 'active') return
@@ -184,10 +193,23 @@ export function useScout() {
     setRunning(true)
     setError(null)
     try {
-      const { summary, usage: nextUsage } = await runScout(scout, usage, ac.budget, ac.accounts.subAccount)
+      // Cross-tab/device run lock (best-effort; ~60s TTL). If another run holds
+      // it, skip — prevents two opens from collecting the same drops.
+      try {
+        const lk = await fetch('/api/agent/scout', { method: 'POST' })
+        if (lk.ok && ((await lk.json().catch(() => ({}))) as { acquired?: boolean }).acquired === false) return
+      } catch {
+        /* lock unavailable — the per-tab `running` guard still applies */
+      }
+
+      const { summary, usage: nextUsage } = await runScout(scout, usage, ac.budget, ac.accounts.universal)
       setState((prev) => ({ ...prev, usage: nextUsage }))
       setLastRun(summary)
-      void persistUsage(scout, nextUsage, artistLabels)
+      void persistUsage(scout, nextUsage, artistLabels, {
+        collected: summary.collected,
+        spent: summary.spent,
+        currency: scout.budget.currency,
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Run failed')
     } finally {

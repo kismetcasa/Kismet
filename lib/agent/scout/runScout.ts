@@ -34,11 +34,13 @@ export interface ScoutRunSummary {
   reason?: string
 }
 
-/** The sub-account's collected set as `collection:tokenId` keys (lowercased
- *  collection), matching the engine's already-collected key format. */
-async function fetchCollectedKeys(subAccount: string): Promise<Set<string>> {
+/** The recipient's collected set as `collection:tokenId` keys (lowercased
+ *  collection), matching the engine's already-collected key format. The
+ *  recipient is the user's universal account (mintTo), so this excludes drops
+ *  the user already owns. */
+async function fetchCollectedKeys(recipient: string): Promise<Set<string>> {
   try {
-    const r = await fetch(`/api/timeline?collector=${subAccount}&limit=200`)
+    const r = await fetch(`/api/timeline?collector=${recipient}&limit=200`)
     if (!r.ok) return new Set()
     const d = (await r.json()) as { moments?: Array<{ address?: string; token_id?: string }> }
     return new Set(
@@ -70,7 +72,7 @@ export async function runScout(
   scout: Scout,
   usage: BudgetUsage,
   budget: CollectingBudget | null,
-  subAccount: string | undefined,
+  recipient: string | undefined,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<{ summary: ScoutRunSummary; usage: BudgetUsage }> {
   if (scout.status !== 'active') {
@@ -89,7 +91,7 @@ export async function runScout(
   if (candidates.length === 0) {
     return { summary: { collected: 0, skipped: 0, spent: '0', reason: 'nothing new from your artists' }, usage: working }
   }
-  const alreadyCollected = subAccount ? await fetchCollectedKeys(subAccount) : undefined
+  const alreadyCollected = recipient ? await fetchCollectedKeys(recipient) : undefined
   const plan = planRun(scout, candidates, working, now, alreadyCollected)
   if (plan.toCollect.length === 0) {
     return {

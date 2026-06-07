@@ -3,20 +3,21 @@
 /**
  * Scout candidate discovery (Mode A, client-side) — "watch artists".
  *
- * We pull the watched artists' recent moments in ONE request via the timeline's
- * plural roster filter (`/api/timeline?creators=a,b,c`) — a single server-side
- * fan-out filtered to the set, instead of N per-artist calls — then resolve
- * authoritative price + currency in one batch via `/api/moments` (the canonical
- * sale-config path). The result is the ordered Candidate[] the pure engine plans
- * against. Prices are re-resolved on-chain again at execution time by
- * prepare-collect-batch, so any staleness here is bounded by the Spend
- * Permission cap, not trusted.
+ * We pull each watched artist's recent moments via the timeline's SINGULAR
+ * `creator=` query, which (unlike the plural `creators=` roster) is FID-expanded
+ * server-side — so it catches the artist's drops from ALL their verified wallets,
+ * not just the one address the user typed. Each candidate's `creator` is then
+ * RELABELED to the watched artist, so a sibling-wallet drop still satisfies the
+ * engine's creator-allowlist (which holds the user-entered addresses). Prices +
+ * currency come in one batch from `/api/moments` (the canonical sale-config
+ * path); they're re-resolved on-chain at execution by prepare-collect-batch, so
+ * any staleness here is bounded by the Spend Permission cap, not trusted.
  */
 
 import type { Candidate, Currency } from './engine'
 import { USDC_BASE } from '@/lib/zoraMint'
 
-const FEED_LIMIT = 50
+const PER_ARTIST_LIMIT = 30
 
 /** Mirror of lib/inprocess.inferCollectCurrency (kept inline so this client
  *  module doesn't pull server code): type wins, else the USDC currency-address
@@ -31,7 +32,6 @@ function inferCurrency(sale: { type?: string; currency?: string }): Currency {
 interface TimelineMoment {
   address?: string
   token_id?: string
-  creator?: { address?: string }
 }
 
 interface SaleConfig {
@@ -43,35 +43,37 @@ interface SaleConfig {
 export async function discoverCandidates(creators: readonly string[]): Promise<Candidate[]> {
   if (creators.length === 0) return []
 
-  // 1. All watched artists' recent moments in a single timeline fan-out,
-  //    filtered to the roster (newest-first; the engine's greedy plan respects
-  //    that order).
-  let moments: TimelineMoment[] = []
-  try {
-    const roster = creators.map((c) => c.toLowerCase()).join(',')
-    const r = await fetch(`/api/timeline?creators=${roster}&limit=${FEED_LIMIT}`)
-    if (r.ok) {
-      const d = (await r.json()) as { moments?: TimelineMoment[] }
-      moments = Array.isArray(d.moments) ? d.moments : []
-    }
-  } catch {
-    return []
-  }
+  // 1. Each watched artist's recent moments via the FID-expanded SINGULAR query,
+  //    tagged with the watched artist so a sibling-wallet drop is attributed to
+  //    the artist the user chose. Parallel; newest-first per artist.
+  const lists = await Promise.all(
+    creators.map(async (artist) => {
+      const watched = artist.toLowerCase()
+      try {
+        const r = await fetch(`/api/timeline?creator=${watched}&limit=${PER_ARTIST_LIMIT}`)
+        if (!r.ok) return [] as Array<{ m: TimelineMoment; watched: string }>
+        const d = (await r.json()) as { moments?: TimelineMoment[] }
+        return (Array.isArray(d.moments) ? d.moments : []).map((m) => ({ m, watched }))
+      } catch {
+        return [] as Array<{ m: TimelineMoment; watched: string }>
+      }
+    }),
+  )
 
-  // Dedupe (a collab can surface twice), preserving first-seen feed order.
-  const order: TimelineMoment[] = []
+  // Dedupe across artists (a collab can surface under two), preserving first-seen.
+  const order: Array<{ m: TimelineMoment; watched: string }> = []
   const seen = new Set<string>()
-  for (const m of moments) {
-    if (!m?.address || !m?.token_id) continue
-    const k = `${m.address.toLowerCase()}:${m.token_id}`
+  for (const e of lists.flat()) {
+    if (!e.m?.address || !e.m?.token_id) continue
+    const k = `${e.m.address.toLowerCase()}:${e.m.token_id}`
     if (seen.has(k)) continue
     seen.add(k)
-    order.push(m)
+    order.push(e)
   }
   if (order.length === 0) return []
 
   // 2. Resolve price + currency in one batch.
-  const ids = order.map((m) => `${m.address}:${m.token_id}`).join(',')
+  const ids = order.map((e) => `${e.m.address}:${e.m.token_id}`).join(',')
   let sales: Record<string, SaleConfig | null> = {}
   try {
     const r = await fetch(`/api/moments?ids=${encodeURIComponent(ids)}`)
@@ -81,17 +83,18 @@ export async function discoverCandidates(creators: readonly string[]): Promise<C
     return []
   }
 
-  // 3. Only items with a resolvable active sale become candidates.
+  // 3. Only items with a resolvable active sale become candidates. `creator` is
+  //    the WATCHED artist (relabeled) so the engine's creator-allowlist accepts
+  //    drops minted from the artist's other verified wallets.
   const candidates: Candidate[] = []
-  for (const m of order) {
+  for (const { m, watched } of order) {
     const sale = sales[`${m.address!.toLowerCase()}:${m.token_id}`]
     if (!sale?.pricePerToken) continue
-    const currency: Currency = inferCurrency(sale)
     candidates.push({
       collection: m.address!,
       tokenId: m.token_id!,
-      creator: m.creator?.address,
-      currency,
+      creator: watched,
+      currency: inferCurrency(sale),
       pricePerToken: sale.pricePerToken,
     })
   }

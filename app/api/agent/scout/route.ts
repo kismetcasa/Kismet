@@ -4,6 +4,8 @@ import { errorResponse } from '@/lib/apiResponse'
 import { getSessionAddress } from '@/lib/session'
 import { checkRateLimit } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
+import { redis } from '@/lib/redis'
+import { writeNotification } from '@/lib/notifications'
 import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
 import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 
@@ -64,6 +66,7 @@ export async function PUT(req: NextRequest) {
     scout?: Partial<Scout>
     usage?: { periodStart?: number; spentThisPeriod?: string; itemsThisPeriod?: number }
     artistLabels?: Record<string, unknown>
+    notify?: { collected?: unknown; spent?: unknown; currency?: unknown }
   }
   try {
     body = (await req.json()) as typeof body
@@ -160,7 +163,43 @@ export async function PUT(req: NextRequest) {
 
   const record: ScoutRecord = { scout, usage, ...(artistLabels ? { artistLabels } : {}) }
   await saveScout(record)
+
+  // When a run reports a collect, surface it in the owner's own bell (+ FC
+  // push). No actor — the user's own agent acted on their behalf — so
+  // writeNotification's self-mute doesn't apply; it's keyed to the owner.
+  // price is the run's total spend in base units (matches formatPrice).
+  const n = body.notify
+  if (n && typeof n.collected === 'number' && n.collected > 0) {
+    const currency = n.currency === 'eth' || n.currency === 'usdc' ? n.currency : undefined
+    await writeNotification({
+      type: 'autocollect',
+      recipient: owner.toLowerCase(),
+      amount: n.collected,
+      ...(isNonNegIntStr(n.spent) ? { price: n.spent } : {}),
+      ...(currency ? { currency } : {}),
+    })
+  }
+
   return NextResponse.json({ scout, usage, artistLabels: artistLabels ?? null })
+}
+
+/**
+ * Cross-tab/device run lock. A scout that auto-runs on open could fire from two
+ * tabs (or a phone + laptop) at once and double-collect the same drops. Each run
+ * first POSTs here to claim a short-lived lock; `acquired:false` means another
+ * run holds it and the caller skips. SET NX + a 60s TTL so an abandoned/crashed
+ * run self-heals. Fail-open (acquired:true) on a Redis transient so a flaky read
+ * can't permanently wedge runs — the on-chain Spend Permission is still the cap.
+ */
+export async function POST(req: NextRequest) {
+  const owner = await getSessionAddress(req)
+  if (!owner) return errorResponse(401, 'Sign in to continue')
+  try {
+    const ok = await redis.set(`kismetart:scout-run:${owner.toLowerCase()}`, '1', { nx: true, ex: 60 })
+    return NextResponse.json({ acquired: ok === 'OK' })
+  } catch {
+    return NextResponse.json({ acquired: true })
+  }
 }
 
 function isPositiveIntStr(v: unknown): v is string {
