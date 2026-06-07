@@ -35,7 +35,12 @@ export function isPlatformCollectComment(comment: string): boolean {
   const c = comment.trim().toLowerCase()
   if (!c) return true
   if (c === DEFAULT_COLLECT_COMMENT) return true
-  return LEGACY_DEFAULT_COLLECT_COMMENTS.includes(c as typeof LEGACY_DEFAULT_COLLECT_COMMENTS[number])
+  if (LEGACY_DEFAULT_COLLECT_COMMENTS.includes(c as typeof LEGACY_DEFAULT_COLLECT_COMMENTS[number])) return true
+  // Zora stamps "Collecting from the frame by <creator>" as the on-chain
+  // comment when a collect originates from its Farcaster Frame — an artifact
+  // of that path, not a comment the collector wrote. Prefix match because the
+  // trailing creator name varies; normalize it to the standard label too.
+  return c.startsWith('collecting from the frame')
 }
 
 interface SalesConfig {
