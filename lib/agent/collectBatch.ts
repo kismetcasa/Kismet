@@ -24,9 +24,11 @@ import type { AgentCall } from './types'
  *     (each call keeps its own value; send_calls totals them).
  *
  * Network-free: per-item price/currency/mintFee and the current allowance are
- * injected (resolved upstream), so this is unit-verifiable. mintTo is the
- * account on every item; builder suffix + Zora referral are preserved by the
- * shared builders.
+ * injected (resolved upstream), so this is unit-verifiable. `account` is the
+ * SENDER (pays USDC/value, holds the approve); `recipient` is mintTo (the NFT
+ * receiver) and defaults to `account`. They differ for the Scout, where the
+ * sub-account sends/pays but the user's universal account receives. Builder
+ * suffix + Zora referral are preserved by the shared builders.
  */
 export interface BatchCollectItem {
   collection: Address
@@ -50,12 +52,16 @@ export interface BatchCollectPlan {
 }
 
 export function buildCollectBatchPlan(params: {
+  /** Sender: pays USDC/value and holds the ERC20Minter approve (msg.sender). */
   account: Address
+  /** NFT recipient (mintTo). Defaults to `account`. */
+  recipient?: Address
   items: readonly BatchCollectItem[]
   /** Current account → ERC20Minter USDC allowance. */
   usdcAllowance: bigint
 }): BatchCollectPlan {
   const { account, items, usdcAllowance } = params
+  const recipient = params.recipient ?? account
 
   const usdcMintCalls: AgentCall[] = []
   const ethMintCalls: AgentCall[] = []
@@ -66,7 +72,7 @@ export function buildCollectBatchPlan(params: {
     if (it.currency === 'eth') {
       const m = buildEthMintCall({
         tokenId: it.tokenId,
-        mintTo: account,
+        mintTo: recipient,
         quantity: it.quantity,
         mintFee: it.mintFee,
         pricePerToken: it.pricePerToken,
@@ -83,7 +89,7 @@ export function buildCollectBatchPlan(params: {
       const m = buildUsdcMintCall({
         collection: it.collection,
         tokenId: it.tokenId,
-        mintTo: account,
+        mintTo: recipient,
         quantity: it.quantity,
         pricePerToken: it.pricePerToken,
         comment: it.comment,

@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json().catch(() => null)) as
-    | { items?: Array<{ collection?: unknown; tokenId?: unknown; url?: unknown }>; account?: unknown; comment?: unknown }
+    | { items?: Array<{ collection?: unknown; tokenId?: unknown; url?: unknown }>; account?: unknown; recipient?: unknown; comment?: unknown }
     | null
   if (!body || !Array.isArray(body.items) || body.items.length === 0) {
     return errorResponse(400, 'items[] is required')
@@ -40,8 +40,12 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, `Too many items (max ${MAX_BATCH})`)
   }
 
+  // `account` is the SENDER (pays USDC/value, holds the approve). `recipient` is
+  // mintTo + the per-wallet-eligibility subject + the recorded owner; it defaults
+  // to `account`. They differ for the Scout (sub-account sends, universal owns).
   const account = typeof body.account === 'string' ? body.account : ''
   if (!isAddress(account)) return errorResponse(400, 'Invalid account — pass the Base Account address from get_wallets')
+  const recipient = typeof body.recipient === 'string' && isAddress(body.recipient) ? body.recipient : account
   const comment = typeof body.comment === 'string' && body.comment.length <= 1000 ? body.comment : ''
 
   // Resolve refs first; reject the whole batch on a malformed one.
@@ -64,12 +68,12 @@ export async function POST(req: NextRequest) {
     for (const ref of refs) {
       let currency: 'eth' | 'usdc' | null = null
       let pricePerToken = 0n
-      const [eth] = await fetchEligibleTokens(client, ref.collection, [ref.tokenId], 'eth', account as Address)
+      const [eth] = await fetchEligibleTokens(client, ref.collection, [ref.tokenId], 'eth', recipient as Address)
       if (eth) {
         currency = 'eth'
         pricePerToken = eth.pricePerToken
       } else {
-        const [usdc] = await fetchEligibleTokens(client, ref.collection, [ref.tokenId], 'usdc', account as Address)
+        const [usdc] = await fetchEligibleTokens(client, ref.collection, [ref.tokenId], 'usdc', recipient as Address)
         if (usdc) {
           currency = 'usdc'
           pricePerToken = usdc.pricePerToken
@@ -116,14 +120,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const plan = buildCollectBatchPlan({ account: account as Address, items, usdcAllowance })
+  const plan = buildCollectBatchPlan({ account: account as Address, recipient: recipient as Address, items, usdcAllowance })
 
   const records: AgentRecordHint[] = items.map((it) => ({
     method: 'POST',
     url: '/api/collect',
     bodyTemplate: {
       moment: { collectionAddress: it.collection, tokenId: it.tokenId.toString(), chainId: 8453 },
-      account,
+      account: recipient,
       amount: Number(it.quantity),
       comment,
       pricePerToken: it.pricePerToken.toString(),

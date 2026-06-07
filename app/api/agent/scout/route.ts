@@ -3,8 +3,11 @@ import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { getSessionAddress } from '@/lib/session'
 import { checkRateLimit } from '@/lib/ratelimit'
+import { serverBaseClient } from '@/lib/rpc'
+import { redis } from '@/lib/redis'
+import { writeNotification } from '@/lib/notifications'
 import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
-import { freshUsage, type Scout } from '@/lib/agent/scout/engine'
+import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 
 export const runtime = 'nodejs'
 
@@ -23,7 +26,11 @@ export async function GET(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
   const record = await getScout(owner)
-  return NextResponse.json({ scout: record?.scout ?? null, usage: record?.usage ?? null })
+  return NextResponse.json({
+    scout: record?.scout ?? null,
+    usage: record?.usage ?? null,
+    artistLabels: record?.artistLabels ?? null,
+  })
 }
 
 export async function DELETE(req: NextRequest) {
@@ -36,11 +43,31 @@ export async function DELETE(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
-  if (!checkRateLimit(`agent-scout:${owner.toLowerCase()}`, 30, 60)) {
+  if (!(await checkRateLimit(`agent-scout:${owner.toLowerCase()}`, 30, 60))) {
     return errorResponse(429, 'Too many requests')
   }
 
-  let body: { scout?: Partial<Scout>; usage?: { periodStart?: number; spentThisPeriod?: string; itemsThisPeriod?: number } }
+  // Smart-wallet only (defense-in-depth behind the client eligibility gate): a
+  // scout needs a Spend Permission an EOA can't grant. Smart accounts (and
+  // ERC-7702-delegated EOAs) have code; plain EOAs return '0x'. Note: a
+  // counterfactual/undeployed Base Account also returns '0x' and is rejected
+  // until its first on-chain tx — acceptable for v1. Fail-open on RPC error so
+  // a flaky read can't block a legitimate user.
+  try {
+    const code = await serverBaseClient().getCode({ address: owner as `0x${string}` })
+    if (!code || code === '0x') {
+      return errorResponse(403, 'Auto-collect requires a Base Account (smart wallet)')
+    }
+  } catch {
+    /* fail-open: don't block on a transient RPC error */
+  }
+
+  let body: {
+    scout?: Partial<Scout>
+    usage?: { periodStart?: number; spentThisPeriod?: string; itemsThisPeriod?: number }
+    artistLabels?: Record<string, unknown>
+    notify?: { collected?: unknown; spent?: unknown; currency?: unknown }
+  }
   try {
     body = (await req.json()) as typeof body
   } catch {
@@ -96,22 +123,83 @@ export async function PUT(req: NextRequest) {
   }
 
   // Usage: a run reports updated usage (item count + on-chain-reconciled spend);
-  // accept it when well-formed. Otherwise preserve existing usage across config
-  // edits (so editing policy mid-period doesn't reset the item count), starting
-  // fresh on first create or a new period. The on-chain Spend Permission is the
-  // authoritative dollar cap regardless of what's stored here.
+  // accept it when well-formed (the common path after a run). Otherwise preserve
+  // existing usage across config edits (so editing policy mid-period doesn't
+  // reset the item count), starting fresh on first create or a new period. The
+  // on-chain Spend Permission is the authoritative dollar cap regardless.
   const existing = await getScout(owner)
   const u = body.usage
-  const usage =
-    u && Number.isInteger(u.periodStart) && Number.isInteger(u.itemsThisPeriod) && (u.itemsThisPeriod as number) >= 0 && isNonNegIntStr(u.spentThisPeriod)
-      ? { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: u.itemsThisPeriod as number }
-      : existing && existing.usage.periodStart >= scout.budget.start
-        ? existing.usage
-        : freshUsage(scout.budget, now)
+  let usage: BudgetUsage
+  if (
+    u &&
+    Number.isInteger(u.periodStart) &&
+    Number.isInteger(u.itemsThisPeriod) &&
+    (u.itemsThisPeriod as number) >= 0 &&
+    isNonNegIntStr(u.spentThisPeriod)
+  ) {
+    // Anti-spoof: the item count must not DECREASE within the same period (a
+    // client can't reset its self-imposed item cap mid-period; legit rollover
+    // advances periodStart). The dollar cap is enforced on-chain regardless.
+    let items = u.itemsThisPeriod as number
+    if (existing && existing.usage.periodStart === u.periodStart && items < existing.usage.itemsThisPeriod) {
+      items = existing.usage.itemsThisPeriod
+    }
+    usage = { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: items }
+  } else {
+    usage = existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
+  }
 
-  const record: ScoutRecord = { scout, usage }
+  // Display-only labels: keep only entries whose key is a watched creator, with
+  // a short string value. Falls back to the existing labels on a usage-only PUT.
+  const creatorSet = new Set<string>(creators)
+  let artistLabels: Record<string, string> | undefined
+  if (body.artistLabels && typeof body.artistLabels === 'object') {
+    artistLabels = {}
+    for (const [k, v] of Object.entries(body.artistLabels)) {
+      const addr = k.toLowerCase()
+      if (creatorSet.has(addr) && typeof v === 'string' && v.trim()) artistLabels[addr] = v.trim().slice(0, 40)
+    }
+  }
+
+  const record: ScoutRecord = { scout, usage, ...(artistLabels ? { artistLabels } : {}) }
   await saveScout(record)
-  return NextResponse.json({ scout, usage })
+
+  // When a run reports a collect, surface it in the owner's own bell (+ FC
+  // push). No actor — the user's own agent acted on their behalf — so
+  // writeNotification's self-mute doesn't apply; it's keyed to the owner.
+  // price is the run's total spend in base units (matches formatPrice).
+  const n = body.notify
+  if (n && typeof n.collected === 'number' && n.collected > 0) {
+    const currency = n.currency === 'eth' || n.currency === 'usdc' ? n.currency : undefined
+    await writeNotification({
+      type: 'autocollect',
+      recipient: owner.toLowerCase(),
+      amount: n.collected,
+      ...(isNonNegIntStr(n.spent) ? { price: n.spent } : {}),
+      ...(currency ? { currency } : {}),
+    })
+  }
+
+  return NextResponse.json({ scout, usage, artistLabels: artistLabels ?? null })
+}
+
+/**
+ * Cross-tab/device run lock. A scout that auto-runs on open could fire from two
+ * tabs (or a phone + laptop) at once and double-collect the same drops. Each run
+ * first POSTs here to claim a short-lived lock; `acquired:false` means another
+ * run holds it and the caller skips. SET NX + a 60s TTL so an abandoned/crashed
+ * run self-heals. Fail-open (acquired:true) on a Redis transient so a flaky read
+ * can't permanently wedge runs — the on-chain Spend Permission is still the cap.
+ */
+export async function POST(req: NextRequest) {
+  const owner = await getSessionAddress(req)
+  if (!owner) return errorResponse(401, 'Sign in to continue')
+  try {
+    const ok = await redis.set(`kismetart:scout-run:${owner.toLowerCase()}`, '1', { nx: true, ex: 60 })
+    return NextResponse.json({ acquired: ok === 'OK' })
+  } catch {
+    return NextResponse.json({ acquired: true })
+  }
 }
 
 function isPositiveIntStr(v: unknown): v is string {

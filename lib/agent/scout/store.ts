@@ -15,6 +15,10 @@ import type { BudgetUsage, Scout } from './engine'
 export interface ScoutRecord {
   scout: Scout
   usage: BudgetUsage
+  /** Display-only artist labels (lowercased address → username), so the panel
+   *  shows names on reload. The engine never reads this — policy.creators (the
+   *  addresses) is authoritative. */
+  artistLabels?: Record<string, string>
 }
 
 const key = (owner: string) => `kismetart:scout:${owner.toLowerCase()}`

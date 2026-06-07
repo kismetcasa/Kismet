@@ -25,6 +25,15 @@ if (typeof window === 'undefined' && (!url || !token)) {
 export const redis = new Redis({
   url: url ?? 'https://placeholder.upstash.io',
   token: token ?? 'placeholder',
+  // Auto-batch commands issued in the same tick (every `Promise.all([...])` of
+  // Redis calls, and any per-item fan-out loop) into ONE REST round trip instead
+  // of N. Upstash REST has real per-call latency, so this is the single highest-
+  // leverage optimization — it collapses the notification/airdrop fan-outs and
+  // dozens of parallel-read sites for free. Per-command promises still resolve/
+  // reject individually, so existing per-call `.catch()`/`safeRead` handling is
+  // unchanged; explicit `multi()`/`eval` (rate limit, graph writes) are atomic
+  // and unaffected.
+  enableAutoPipelining: true,
 })
 
 export const FEATURED_KEY = 'kismetart:featured'

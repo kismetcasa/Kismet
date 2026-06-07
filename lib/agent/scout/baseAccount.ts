@@ -60,6 +60,13 @@ import type { AgentCall } from '@/lib/agent/types'
 const BASE_CHAIN_ID = 8453
 const BASE_CHAIN_HEX = '0x2105' as const // 8453
 
+/** ERC-7528 native-asset sentinel — represents native ETH in a Spend Permission
+ *  (so an ETH budget funds ETH mints, and MagicSpend covers gas from the same
+ *  parent ETH). USDC budgets use USDC_BASE. */
+const NATIVE_ETH = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as const
+export type BudgetCurrency = 'eth' | 'usdc'
+const tokenFor = (c: BudgetCurrency): `0x${string}` => (c === 'eth' ? NATIVE_ETH : USDC_BASE)
+
 /** The granted Spend Permission shape, derived from the SDK so we don't depend
  *  on a deep type import. */
 export type CollectingBudget = Awaited<ReturnType<typeof requestSpendPermission>>
@@ -98,21 +105,45 @@ export async function connectCollectingAccount(): Promise<CollectingAccounts> {
   return { universal, subAccount: sub }
 }
 
-/** Grant the collecting budget: a USDC Spend Permission from the universal
- *  account to the sub-account (one signature). */
+/** Grant the collecting budget: an ETH or USDC Spend Permission from the
+ *  universal account to the sub-account (one signature). Idempotent — if an
+ *  active permission for this token already matches the requested allowance +
+ *  period, it's reused (so a retried save after a failed PUT doesn't re-prompt
+ *  the wallet or create a duplicate permission). */
 export async function grantCollectingBudget(params: {
   universal: `0x${string}`
   subAccount: `0x${string}`
-  /** USDC allowance per period, base units (6dp). */
+  currency: BudgetCurrency
+  /** Allowance per period, base units (wei for ETH, 6dp for USDC). */
   allowance: bigint
   periodInDays: number
   end?: Date
 }): Promise<CollectingBudget> {
+  const token = tokenFor(params.currency)
+  const periodSeconds = Math.max(1, Math.floor(params.periodInDays * 86_400))
+
+  // Reuse a matching, still-active permission (idempotent retry).
+  const existing = await findCollectingBudget(params.universal, params.subAccount, token)
+  if (existing) {
+    try {
+      const st = await getPermissionStatus(existing)
+      if (
+        st.isActive &&
+        existing.permission.allowance === params.allowance.toString() &&
+        existing.permission.period === periodSeconds
+      ) {
+        return existing
+      }
+    } catch {
+      /* fall through to a fresh grant */
+    }
+  }
+
   const { provider } = await getConnected()
   return requestSpendPermission({
     account: params.universal,
     spender: params.subAccount,
-    token: USDC_BASE,
+    token,
     chainId: BASE_CHAIN_ID,
     allowance: params.allowance,
     periodInDays: params.periodInDays,
@@ -121,10 +152,12 @@ export async function grantCollectingBudget(params: {
   })
 }
 
-/** Find an existing collecting budget (Spend Permission) for this pair, if any. */
+/** Find an existing collecting budget (Spend Permission) for this pair, optionally
+ *  filtered to a specific token so ETH and USDC budgets don't collide. */
 export async function findCollectingBudget(
   universal: `0x${string}`,
   subAccount: `0x${string}`,
+  token?: `0x${string}`,
 ): Promise<CollectingBudget | null> {
   const { provider } = await getConnected()
   const perms = await fetchPermissions({
@@ -133,6 +166,10 @@ export async function findCollectingBudget(
     spender: subAccount,
     provider,
   })
+  if (token) {
+    const t = token.toLowerCase()
+    return perms.find((p) => p.permission.token.toLowerCase() === t) ?? null
+  }
   return perms[0] ?? null
 }
 
