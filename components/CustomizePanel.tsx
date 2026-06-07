@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { toastError } from '@/lib/toast'
 import { MomentImage } from './MomentImage'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import type { Moment } from '@/lib/inprocess'
@@ -65,6 +66,11 @@ function SourceTile({ src, thumbhash, name, active, disabled, pending, onClick }
   src?: string; thumbhash?: string; name?: string; active: boolean; disabled: boolean; pending: boolean; onClick: () => void
 }) {
   const [failed, setFailed] = useState(false)
+  // When there's no still for the <img> (a poster-less video) or every gateway
+  // fails, fall back to the thumbhash blur so the tile still shows the moment's
+  // colors — and it's pickable, theming from that same thumbhash. Only a moment
+  // with neither a still nor a thumbhash stays "no preview".
+  const blur = thumbhash ? thumbhashToBlurDataURL(thumbhash) : undefined
   return (
     <button
       onClick={onClick}
@@ -74,6 +80,8 @@ function SourceTile({ src, thumbhash, name, active, disabled, pending, onClick }
     >
       {src && !failed ? (
         <MomentImage src={src} thumbhash={thumbhash} alt="" fill sizes="200px" className="object-cover" preferProxy onAllError={() => setFailed(true)} />
+      ) : blur ? (
+        <div className="absolute inset-0" style={{ backgroundImage: `url(${blur})`, backgroundSize: 'cover', backgroundPosition: 'center' }} />
       ) : (
         <div className="absolute inset-0 bg-surface flex items-center justify-center"><span className="text-line font-mono text-[9px]">no preview</span></div>
       )}
