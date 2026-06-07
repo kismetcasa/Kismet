@@ -176,7 +176,7 @@ export function AutoCollectPanel() {
             {status ? ` · ${scoutSym}${formatUnits(status.remainingSpend, scoutDec)} left · resets ${status.nextPeriodStart.toLocaleDateString()}` : ''}
           </p>
 
-          {sc.lastRun && (
+          {sc.lastRun ? (
             <p className="text-[10px] font-mono text-faint leading-relaxed">
               {sc.running
                 ? 'Checking your artists…'
@@ -184,7 +184,11 @@ export function AutoCollectPanel() {
                   ? `Last run: collected ${sc.lastRun.collected}${sc.lastRun.skipped ? `, skipped ${sc.lastRun.skipped}` : ''}.`
                   : `Last run: ${sc.lastRun.reason ?? 'nothing to collect'}.`}
             </p>
-          )}
+          ) : active ? (
+            <p className="text-[10px] font-mono text-faint leading-relaxed">
+              {sc.running ? 'Checking your artists…' : 'Runs automatically each time you open Kismet.'}
+            </p>
+          ) : null}
 
           <div className="flex flex-wrap gap-2">
             <button
@@ -218,8 +222,8 @@ export function AutoCollectPanel() {
       {showForm && (
         <div className="space-y-3">
           <p className="text-xs font-mono text-dim leading-relaxed">
-            Pick artists to watch and a budget. The agent collects their new drops, tap-free, up to
-            your caps. Your Base Account pays and receives; revoke anytime.
+            Pick artists to watch and a budget. Each time you open Kismet, the agent collects their
+            new drops tap-free, up to your caps. Your Base Account pays and receives; revoke anytime.
           </p>
 
           {/* Artists */}

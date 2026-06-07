@@ -78,6 +78,12 @@ export async function runScout(
   if (scout.status !== 'active') {
     return { summary: { collected: 0, skipped: 0, spent: '0', reason: 'paused' }, usage }
   }
+  // Propose mode is a designed-but-unshipped future (the engine supports it; no
+  // Propose UI yet). Until that surface exists, only 'auto' scouts execute — so
+  // a non-auto scout never auto-spends, including via a manual "Run now".
+  if (scout.mode !== 'auto') {
+    return { summary: { collected: 0, skipped: 0, spent: '0', reason: 'not in auto mode' }, usage }
+  }
 
   // 1. Anchor the period window + spend to on-chain truth; reset the item count
   //    when the on-chain period has rolled.
