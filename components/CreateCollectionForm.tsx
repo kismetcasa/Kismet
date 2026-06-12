@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { base, mainnet } from 'wagmi/chains'
@@ -33,6 +33,27 @@ interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
 }
 
+// One verified cover-upload session per picked file — same resume pattern
+// as MintForm's UploadedMediaSession. A propagation-verification false-
+// negative (or a rejected deploy signature) used to discard the finished
+// upload; the retry re-uploaded the same bytes under a NEW Arweave txid
+// (data-item ids hash a salted RSA-PSS signature, so identical bytes never
+// reuse an id), restarting the propagation clock from zero. Banking the
+// upload per source file turns a retry into a RESUME: the reused txid has
+// been propagating since the first attempt.
+interface CoverUploadSession {
+  source: File
+  imageUri: string
+  thumbhash: string | null
+  verifyFailures: number
+}
+
+// After this many failed verification windows against the same cached
+// upload, assume it's genuinely lost — or a gateway edge has its 404
+// pinned — and fall back to a fresh upload (new txid, new CDN cache keys)
+// on the next attempt.
+const MAX_REUSE_FAILURES = 3
+
 export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps = {}) {
   const router = useRouter()
   const { address, isConnected } = useAccount()
@@ -53,6 +74,23 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     onDrop: handleDrop,
     clear: clearFile,
   } = useFileUpload()
+
+  // Verified-upload session caches (see CoverUploadSession above). Refs,
+  // not state: they never drive rendering and must survive across submit
+  // attempts. jsonUploadRef maps serialized-JSON content → its uploaded
+  // txid so an unchanged contract-metadata payload reuses the previous
+  // attempt's upload instead of starting a brand-new one.
+  const coverUploadRef = useRef<CoverUploadSession | null>(null)
+  const jsonUploadRef = useRef(new Map<string, { uri: string; failures: number }>())
+
+  // Drop the banked upload when the user picks a different cover (or
+  // clears it) so a stale session can't be deployed by accident.
+  useEffect(() => {
+    if (coverUploadRef.current && coverUploadRef.current.source !== coverFile) {
+      coverUploadRef.current = null
+    }
+  }, [coverFile])
+
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [royaltyBps, setRoyaltyBps] = useState('500')
@@ -366,6 +404,26 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     router.push(`/collection/${collectionAddress}`)
   }, [step, collectionAddress, router])
 
+  // uploadJson with per-content reuse: identical JSON reuses the txid from
+  // a previous attempt so its propagation clock keeps running across
+  // retries; any field edit changes the key and uploads fresh. Entries are
+  // retired after MAX_REUSE_FAILURES failed verifications (bumpJsonFailure)
+  // so a genuinely lost upload self-heals with a fresh one.
+  async function uploadJsonCached(json: Record<string, unknown>, key: string): Promise<string> {
+    const hit = jsonUploadRef.current.get(key)
+    if (hit) return hit.uri
+    const uri = await uploadJson(json)
+    jsonUploadRef.current.set(key, { uri, failures: 0 })
+    return uri
+  }
+
+  function bumpJsonFailure(key: string) {
+    const entry = jsonUploadRef.current.get(key)
+    if (!entry) return
+    entry.failures += 1
+    if (entry.failures >= MAX_REUSE_FAILURES) jsonUploadRef.current.delete(key)
+  }
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
 
@@ -421,63 +479,85 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
       await ensureSession()
 
-      // Animated GIF covers → first-frame JPEG. Covers never render as
-      // animation, so the GIF bytes were wasted bandwidth. Best-effort.
-      //
-      // Video covers (drag-and-drop bypasses the picker's image-only
-      // accept) → first-frame JPEG, same idea. If extraction fails we
-      // throw rather than uploading the video as the cover image — the
-      // contract image would render broken everywhere downstream.
-      let imageFile: File = coverFile
-      if (canTranscode(coverFile)) {
-        setStep('preparing-image')
-        toast.loading('Optimizing cover for fast loading…', { id: 'create-collection' })
-        try {
-          imageFile = await extractGifPoster(coverFile)
-        } catch (err) {
-          console.warn('[CreateCollectionForm] GIF poster extraction failed; uploading original', err)
-        }
-      } else if (coverFile.type.startsWith('video/')) {
-        setStep('preparing-image')
-        toast.loading('Extracting poster from video…', { id: 'create-collection' })
-        const poster = await extractVideoPoster(coverFile)
-        if (!poster) {
-          throw new Error('Could not extract a poster frame from the video — upload an image instead')
-        }
-        imageFile = poster
-      }
+      // Resume path: reuse the verified cover upload from a previous
+      // attempt on this same file (settling false-negative or a rejected
+      // deploy signature). Skips re-deriving and re-uploading the cover;
+      // the reused txid has been propagating since that attempt, so the
+      // verification below typically passes immediately.
+      const cachedCover =
+        coverUploadRef.current &&
+        coverUploadRef.current.source === coverFile &&
+        coverUploadRef.current.verifyFailures < MAX_REUSE_FAILURES
+          ? coverUploadRef.current
+          : null
 
-      setStep('uploading-image')
-      setUploadProgress(0)
-      toast.loading('Uploading cover image…', { id: 'create-collection' })
-      const thumbhashPromise = generateThumbhash(imageFile)
-      const imageUri = await uploadToArweave(imageFile, (pct) => {
-        setUploadProgress(pct)
-        toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
-      })
-      setDeployedImageUri(imageUri)
+      let imageUri: string
+      let thumbhash: string | null
+      if (cachedCover) {
+        imageUri = cachedCover.imageUri
+        thumbhash = cachedCover.thumbhash
+        setDeployedImageUri(imageUri)
+        toast.loading('Resuming previous cover upload…', { id: 'create-collection' })
+      } else {
+        // Animated GIF covers → first-frame JPEG. Covers never render as
+        // animation, so the GIF bytes were wasted bandwidth. Best-effort.
+        //
+        // Video covers (drag-and-drop bypasses the picker's image-only
+        // accept) → first-frame JPEG, same idea. If extraction fails we
+        // throw rather than uploading the video as the cover image — the
+        // contract image would render broken everywhere downstream.
+        let imageFile: File = coverFile
+        if (canTranscode(coverFile)) {
+          setStep('preparing-image')
+          toast.loading('Optimizing cover for fast loading…', { id: 'create-collection' })
+          try {
+            imageFile = await extractGifPoster(coverFile)
+          } catch (err) {
+            console.warn('[CreateCollectionForm] GIF poster extraction failed; uploading original', err)
+          }
+        } else if (coverFile.type.startsWith('video/')) {
+          setStep('preparing-image')
+          toast.loading('Extracting poster from video…', { id: 'create-collection' })
+          const poster = await extractVideoPoster(coverFile)
+          if (!poster) {
+            throw new Error('Could not extract a poster frame from the video — upload an image instead')
+          }
+          imageFile = poster
+        }
+
+        setStep('uploading-image')
+        setUploadProgress(0)
+        toast.loading('Uploading cover image…', { id: 'create-collection' })
+        const thumbhashPromise = generateThumbhash(imageFile)
+        imageUri = await uploadToArweave(imageFile, (pct) => {
+          setUploadProgress(pct)
+          toast.loading(`Uploading image… ${pct}%`, { id: 'create-collection' })
+        })
+        setDeployedImageUri(imageUri)
+        thumbhash = await thumbhashPromise
+        // Upload done — bank the session so a verification false-negative
+        // below (or an aborted deploy after it) RESUMES this upload on the
+        // next attempt instead of re-uploading under a fresh txid.
+        coverUploadRef.current = {
+          source: coverFile,
+          imageUri,
+          thumbhash,
+          verifyFailures: 0,
+        }
+      }
 
       // The cover image URI gets baked into the metadata JSON which gets
       // baked into the on-chain contractURI. If Turbo's data hasn't
       // propagated to Arweave gateways by the time the moment renders,
       // the image is permanently broken — re-uploading doesn't help
-      // because the URI is fixed on-chain. Block on settlement first.
-      toast.loading('Verifying Arweave propagation…', { id: 'create-collection' })
-      const imageOk = await verifyArweaveAvailable(imageUri)
-      if (!imageOk) {
-        toast.error('Arweave is settling slowly', {
-          id: 'create-collection',
-          description:
-            'Your upload isn’t lost — give it a couple of minutes and try again. We blocked the deploy to avoid a permanently broken cover image.',
-        })
-        setStep('idle')
-        setUploadProgress(0)
-        return
-      }
+      // because the URI is fixed on-chain. Block on settlement before the
+      // deploy. 90s budget — covers can be large and the URI is permanent;
+      // a false-negative wastes the whole upload. Runs in parallel with
+      // the metadata upload below.
+      const imageVerify = verifyArweaveAvailable(imageUri, 90_000)
 
       setStep('uploading-metadata')
       toast.loading('Uploading collection metadata…', { id: 'create-collection' })
-      const thumbhash = await thumbhashPromise
       if (thumbhash) setCoverThumbhash(thumbhash)
       const metadata: Record<string, unknown> = {
         name: name.trim(),
@@ -486,7 +566,43 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         createReferral: CREATE_REFERRAL,
       }
-      const contractURI = await uploadJson(metadata)
+      const contractKey = JSON.stringify(metadata)
+      const contractURI = await uploadJsonCached(metadata, contractKey)
+
+      // contractURI is baked on-chain by the factory — and when mint-cover
+      // is on it doubles as the cover token's tokenURI — so gate on its
+      // propagation too. Previously unverified: a 404 at index time left
+      // the collection (and its cover moment) with broken metadata.
+      toast.loading('Verifying Arweave propagation…', { id: 'create-collection' })
+      const [imageOk, contractOk] = await Promise.all([
+        imageVerify,
+        verifyArweaveAvailable(contractURI),
+      ])
+      if (!imageOk || !contractOk) {
+        // Failure accounting: keep reusing these uploads on retry until
+        // the strike cap decides one is genuinely lost.
+        if (!imageOk && coverUploadRef.current) coverUploadRef.current.verifyFailures += 1
+        if (!contractOk) bumpJsonFailure(contractKey)
+        // The cover is the expensive artifact — "resumable" tracks it. A
+        // failed contract-metadata JSON re-uploads in seconds either way.
+        const resumable =
+          imageOk ||
+          (coverUploadRef.current !== null &&
+            coverUploadRef.current.verifyFailures < MAX_REUSE_FAILURES)
+        const failedParts = [
+          ...(!imageOk ? ['cover image'] : []),
+          ...(!contractOk ? ['collection metadata'] : []),
+        ].join(' + ')
+        toast.error('Arweave is settling slowly', {
+          id: 'create-collection',
+          description: resumable
+            ? `Not propagated yet: ${failedParts}. Your upload is saved — hit create again in a minute to resume without re-uploading.`
+            : `Not propagated yet: ${failedParts}. Give it a couple of minutes and try again. We blocked the deploy to avoid permanently broken collection metadata.`,
+        })
+        setStep('idle')
+        setUploadProgress(0)
+        return
+      }
 
       setStep('deploying')
       toast.loading(
