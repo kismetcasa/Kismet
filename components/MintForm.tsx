@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
 import { useAccount, useReadContract } from 'wagmi'
@@ -120,6 +120,35 @@ interface CollectionOption {
   // for collections deployed outside the Kismet flow.
   thumbhash?: string
 }
+
+// One verified-upload session per picked file. A propagation-verification
+// false-negative used to discard the finished upload: the retry re-uploaded
+// the same bytes under a NEW Arweave txid (data-item ids are the SHA-256 of
+// an RSA-PSS — i.e. salted — signature, so identical bytes never reuse an
+// id), restarting the gateway propagation clock from zero. During a
+// slow-settling window every attempt therefore failed identically, while
+// burning the user's sign-call/upload quotas and bandwidth each time.
+// Banking the upload products per source file turns a retry into a RESUME:
+// the reused txid has been propagating since the first attempt, so a later
+// attempt verifies almost immediately.
+interface UploadedMediaSession {
+  source: File
+  mediaFile: File
+  posterFile: File | null
+  needsServerTranscode: boolean
+  serverTranscode: { animationUri: string; posterUri: string; thumbhash: string | null } | null
+  mediaUri: string
+  posterUri: string | null
+  thumbhash: string | null
+  durationSec: number | null
+  verifyFailures: number
+}
+
+// After this many failed verification windows against the same cached
+// upload (~90s each for media), assume that upload is genuinely lost — or a
+// gateway edge has its 404 pinned — and fall back to a fresh upload (new
+// txid, new CDN cache keys) on the next attempt.
+const MAX_REUSE_FAILURES = 3
 
 // PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
 // case it leaks into the user-collection list from the indexer) but is
@@ -304,6 +333,24 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Maximum file size is 420 MB' }),
   })
+  // Verified-upload session caches (see UploadedMediaSession above). Refs,
+  // not state: they never drive rendering and must survive across submit
+  // attempts. jsonUploadRef maps serialized-JSON content → its uploaded
+  // txid, so an unchanged metadata payload reuses the previous attempt's
+  // upload (whose propagation clock has been running) instead of starting
+  // a brand-new one.
+  const mediaUploadRef = useRef<UploadedMediaSession | null>(null)
+  const jsonUploadRef = useRef(new Map<string, { uri: string; failures: number }>())
+
+  // Drop the banked upload when the user picks a different file (or clears
+  // it) so a stale session can't be minted by accident — and so it doesn't
+  // pin hundreds of MB of derived Files in memory.
+  useEffect(() => {
+    if (mediaUploadRef.current && mediaUploadRef.current.source !== file) {
+      mediaUploadRef.current = null
+    }
+  }, [file])
+
   const [textContent, setTextContent] = useState('')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -439,6 +486,26 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   }
 
   const TEXT_MAX = 5000
+
+  // uploadJson with per-content reuse: identical JSON reuses the txid from
+  // a previous attempt so its propagation clock keeps running across
+  // retries; any field edit changes the key and uploads fresh. Entries are
+  // retired after MAX_REUSE_FAILURES failed verifications (bumpJsonFailure)
+  // so a genuinely lost upload self-heals with a fresh one.
+  async function uploadJsonCached(json: Record<string, unknown>, key: string): Promise<string> {
+    const hit = jsonUploadRef.current.get(key)
+    if (hit) return hit.uri
+    const uri = await uploadJson(json)
+    jsonUploadRef.current.set(key, { uri, failures: 0 })
+    return uri
+  }
+
+  function bumpJsonFailure(key: string) {
+    const entry = jsonUploadRef.current.get(key)
+    if (!entry) return
+    entry.failures += 1
+    if (entry.failures >= MAX_REUSE_FAILURES) jsonUploadRef.current.delete(key)
+  }
 
   // Parse + commit the inline residencies edit. Integers only — the valid
   // range is [1, residenciesMax] where residenciesMax ≤ 99 (someone must keep
@@ -649,13 +716,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             image: generateTextCollectionCoverDataUri(resolvedCollectionName),
             createReferral: CREATE_REFERRAL,
           }
-          const collectionUri = await uploadJson(collectionMetadata)
+          const collectionKey = JSON.stringify(collectionMetadata)
+          const collectionUri = await uploadJsonCached(collectionMetadata, collectionKey)
           setStep('verifying-upload')
           toast.loading('Verifying Arweave propagation…', { id: 'mint' })
           const ok = await verifyArweaveAvailable(collectionUri)
           if (!ok) {
+            bumpJsonFailure(collectionKey)
             throw new Error(
-              'Arweave still settling (collection metadata not yet propagated) — try again in a minute',
+              'Arweave still settling (collection metadata not yet propagated) — mint again in a minute to resume this upload',
             )
           }
           contractField = { name: resolvedCollectionName, uri: collectionUri }
@@ -730,102 +799,158 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // media mode — ensure session once (cookie cached, no re-prompt)
         await ensureSession()
 
-        // GIFs get transcoded to MP4 + JPEG poster (10-50× smaller; plays
-        // through the existing <video> branch). Best-effort: any failure
-        // falls back to uploading the original GIF unchanged.
-        //
-        // Artist-uploaded videos (mp4/webm/mov/etc) skip the transcode but
-        // still need a poster — without one, `meta.image` would either be
-        // undefined (no preview anywhere) or, with the legacy fallback,
-        // the video URL itself (renders broken as an <img> src). Extract
-        // the first frame natively so every video moment has a real
-        // still-frame for cards, modals, og:image, and the detail page.
-        let mediaFile: File = file!
-        let posterFile: File | null = null
+        // Resume path: reuse the verified-upload session from a previous
+        // attempt on this same file (see UploadedMediaSession). Skips the
+        // prepare + upload work entirely and goes straight to verifying
+        // txids whose propagation clocks have been running since that
+        // attempt.
+        const cachedUpload =
+          mediaUploadRef.current &&
+          mediaUploadRef.current.source === file &&
+          mediaUploadRef.current.verifyFailures < MAX_REUSE_FAILURES
+            ? mediaUploadRef.current
+            : null
+
+        let mediaFile: File
+        let posterFile: File | null
         // Set when the in-browser transcode can't handle this GIF (over the
         // 100MB ffmpeg.wasm cap, or it threw). The raw GIF is uploaded as-is
         // below, then handed to the server transcoder. Fail-safe: if the
         // server step also fails, the mint still ships today's raw-GIF
         // bindings rather than blocking.
-        let needsServerTranscode = false
-        const isGifFile = file!.type === 'image/gif' || file!.name.toLowerCase().endsWith('.gif')
-        if (canTranscode(file!)) {
-          setStep('preparing-media')
-          setUploadProgress(0)
-          toast.loading('Optimizing animation for fast playback…', { id: 'mint' })
-          try {
-            const { mp4, poster } = await transcodeGifToMp4(file!, (pct) => {
-              setUploadProgress(pct)
-              toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
-            })
-            mediaFile = mp4
-            posterFile = poster
-          } catch (err) {
-            console.warn('[MintForm] GIF transcode failed; will retry server-side', err)
+        let needsServerTranscode: boolean
+        let mediaUri: string
+        let posterUri: string | null
+        let thumbhash: string | null
+        let durationSec: number | null
+        // Propagation polling starts the moment the media URI is known, so
+        // it runs in parallel with the remaining uploads instead of
+        // staircasing after them. Media bundles up to 420 MB can take
+        // longer than the 45s default to surface across the gateway pool,
+        // so widen the budget here — a false-negative wastes the user's
+        // entire upload.
+        let mediaVerify: Promise<boolean>
+
+        if (cachedUpload) {
+          mediaFile = cachedUpload.mediaFile
+          posterFile = cachedUpload.posterFile
+          mediaUri = cachedUpload.mediaUri
+          posterUri = cachedUpload.posterUri
+          thumbhash = cachedUpload.thumbhash
+          durationSec = cachedUpload.durationSec
+          // Re-attempt the server transcode only if it hasn't succeeded yet.
+          needsServerTranscode = cachedUpload.needsServerTranscode && !cachedUpload.serverTranscode
+          setStep('verifying-upload')
+          toast.loading('Resuming previous upload — verifying propagation…', { id: 'mint' })
+          mediaVerify = verifyArweaveAvailable(mediaUri, 90_000)
+        } else {
+          // GIFs get transcoded to MP4 + JPEG poster (10-50× smaller; plays
+          // through the existing <video> branch). Best-effort: any failure
+          // falls back to uploading the original GIF unchanged.
+          //
+          // Artist-uploaded videos (mp4/webm/mov/etc) skip the transcode but
+          // still need a poster — without one, `meta.image` would either be
+          // undefined (no preview anywhere) or, with the legacy fallback,
+          // the video URL itself (renders broken as an <img> src). Extract
+          // the first frame natively so every video moment has a real
+          // still-frame for cards, modals, og:image, and the detail page.
+          mediaFile = file!
+          posterFile = null
+          needsServerTranscode = false
+          const isGifFile = file!.type === 'image/gif' || file!.name.toLowerCase().endsWith('.gif')
+          if (canTranscode(file!)) {
+            setStep('preparing-media')
+            setUploadProgress(0)
+            toast.loading('Optimizing animation for fast playback…', { id: 'mint' })
+            try {
+              const { mp4, poster } = await transcodeGifToMp4(file!, (pct) => {
+                setUploadProgress(pct)
+                toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
+              })
+              mediaFile = mp4
+              posterFile = poster
+            } catch (err) {
+              console.warn('[MintForm] GIF transcode failed; will retry server-side', err)
+              needsServerTranscode = true
+            }
+          } else if (isGifFile) {
+            // Over the ffmpeg.wasm cap — can't transcode in the browser.
+            // Upload the raw GIF below, then transcode it on the server.
             needsServerTranscode = true
+          } else if (file!.type.startsWith('video/')) {
+            setStep('preparing-media')
+            toast.loading('Optimizing video for fast playback…', { id: 'mint' })
+            // Best-effort lossless remux to faststart MP4. Null falls
+            // through to the source unchanged.
+            try {
+              const remuxed = await remuxToFaststartMp4(file!)
+              if (remuxed) mediaFile = remuxed
+            } catch (err) {
+              console.warn('[MintForm] faststart remux failed; uploading original', err)
+            }
+            toast.loading('Extracting poster from video…', { id: 'mint' })
+            try {
+              posterFile = await extractVideoPoster(file!)
+            } catch (err) {
+              console.warn('[MintForm] video poster extraction failed', err)
+            }
           }
-        } else if (isGifFile) {
-          // Over the ffmpeg.wasm cap — can't transcode in the browser.
-          // Upload the raw GIF below, then transcode it on the server.
-          needsServerTranscode = true
-        } else if (file!.type.startsWith('video/')) {
-          setStep('preparing-media')
-          toast.loading('Optimizing video for fast playback…', { id: 'mint' })
-          // Best-effort lossless remux to faststart MP4. Null falls
-          // through to the source unchanged.
-          try {
-            const remuxed = await remuxToFaststartMp4(file!)
-            if (remuxed) mediaFile = remuxed
-          } catch (err) {
-            console.warn('[MintForm] faststart remux failed; uploading original', err)
-          }
-          toast.loading('Extracting poster from video…', { id: 'mint' })
-          try {
-            posterFile = await extractVideoPoster(file!)
-          } catch (err) {
-            console.warn('[MintForm] video poster extraction failed', err)
+
+          setStep('uploading-media')
+          setUploadProgress(0)
+          toast.loading('Uploading media to Arweave…', { id: 'mint' })
+          // Hash the poster when transcoded so the placeholder matches the
+          // static frame feeds render; otherwise the source media itself.
+          const thumbhashPromise = generateThumbhash(posterFile ?? mediaFile)
+          // Probe video duration in parallel with the upload — server
+          // persists via setMomentMeta so feeds can pick long-form
+          // preload at element-create time. Returns null for non-video or
+          // probe failure; payload omits durationSec in those cases.
+          const durationPromise = probeDurationSeconds(mediaFile).catch(() => null)
+          mediaUri = await uploadToArweave(mediaFile, (pct) => {
+            setUploadProgress(pct)
+            toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
+          })
+          const posterUriPromise: Promise<string | null> = posterFile
+            ? uploadToArweave(posterFile).catch((err) => {
+                console.warn('[MintForm] poster upload failed', err)
+                return null
+              })
+            : Promise.resolve(null)
+          mediaVerify = verifyArweaveAvailable(mediaUri, 90_000)
+
+          setStep('uploading-metadata')
+          setUploadProgress(0)
+          toast.loading('Uploading metadata…', { id: 'mint' })
+          const [thumbhashRes, posterUriRes, durationRes] = await Promise.all([
+            thumbhashPromise,
+            posterUriPromise,
+            durationPromise,
+          ])
+          thumbhash = thumbhashRes
+          posterUri = posterUriRes
+          durationSec = durationRes
+          // Uploads done — bank the session so a verification false-
+          // negative below RESUMES here on the next attempt instead of
+          // re-uploading everything under fresh txids.
+          mediaUploadRef.current = {
+            source: file!,
+            mediaFile,
+            posterFile,
+            needsServerTranscode,
+            serverTranscode: null,
+            mediaUri,
+            posterUri,
+            thumbhash,
+            durationSec,
+            verifyFailures: 0,
           }
         }
+        // The session this attempt runs against, for failure accounting at
+        // the verification gate (the ref itself can be nulled mid-flight if
+        // the user swaps files while we're awaiting).
+        const uploadSession = mediaUploadRef.current
 
-        setStep('uploading-media')
-        setUploadProgress(0)
-        toast.loading('Uploading media to Arweave…', { id: 'mint' })
-        // Hash the poster when transcoded so the placeholder matches the
-        // static frame feeds render; otherwise the source media itself.
-        const thumbhashPromise = generateThumbhash(posterFile ?? mediaFile)
-        // Probe video duration in parallel with the upload — server
-        // persists via setMomentMeta so feeds can pick long-form
-        // preload at element-create time. Returns null for non-video or
-        // probe failure; payload omits durationSec in those cases.
-        const durationPromise = probeDurationSeconds(mediaFile).catch(() => null)
-        const mediaUri = await uploadToArweave(mediaFile, (pct) => {
-          setUploadProgress(pct)
-          toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
-        })
-        const posterUriPromise: Promise<string | null> = posterFile
-          ? uploadToArweave(posterFile).catch((err) => {
-              console.warn('[MintForm] poster upload failed', err)
-              return null
-            })
-          : Promise.resolve(null)
-        // Start propagation polling the moment each upload returns, so
-        // it runs in parallel with subsequent uploads instead of
-        // staircasing after them. By the time we block below, media
-        // has had the metadata- (and collection-metadata-) upload
-        // duration as free propagation buffer.
-        // Media bundles up to 420 MB can take longer than the 45s default
-        // to surface across the gateway pool, so widen the budget here —
-        // a false-negative wastes the user's entire upload.
-        const mediaVerify = verifyArweaveAvailable(mediaUri, 90_000)
-
-        setStep('uploading-metadata')
-        setUploadProgress(0)
-        toast.loading('Uploading metadata…', { id: 'mint' })
-        const [thumbhash, posterUri, durationSec] = await Promise.all([
-          thumbhashPromise,
-          posterUriPromise,
-          durationPromise,
-        ])
         const posterVerify = posterUri ? verifyArweaveAvailable(posterUri) : Promise.resolve(true)
         // Poster (when extracted) wins as `image` so feeds render the
         // static frame; the moving asset goes to animation_url. For video
@@ -844,7 +969,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // it renders as a video (iOS can't decode large animated GIFs).
         // Fail-safe: any error keeps the raw-GIF bindings above so the mint
         // still completes — never worse than today's behavior.
-        if (needsServerTranscode) {
+        if (cachedUpload?.serverTranscode) {
+          // Server transcode already succeeded on a previous attempt —
+          // reuse its outputs (the transcode route verified their
+          // propagation server-side before returning them).
+          animationUri = cachedUpload.serverTranscode.animationUri
+          finalImageUri = cachedUpload.serverTranscode.posterUri
+          finalThumbhash = cachedUpload.serverTranscode.thumbhash ?? finalThumbhash
+        } else if (needsServerTranscode) {
           try {
             toast.loading('Optimizing animation on server…', { id: 'mint' })
             // The server fetches the raw GIF from a gateway, so block on its
@@ -855,6 +987,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             animationUri = r.animationUri
             finalImageUri = r.posterUri
             finalThumbhash = r.thumbhash ?? finalThumbhash
+            if (uploadSession) uploadSession.serverTranscode = r
           } catch (err) {
             console.warn('[MintForm] server GIF transcode failed; shipping original', err)
           }
@@ -867,7 +1000,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           ...(animationUri ? { animation_url: animationUri } : {}),
           ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
         }
-        const metadataUri = await uploadJson(metadata)
+        const metadataKey = JSON.stringify(metadata)
+        const metadataUri = await uploadJsonCached(metadata, metadataKey)
         const metadataVerify = verifyArweaveAvailable(metadataUri)
 
         // Auto-deploy: the moment's media doubles as the collection cover.
@@ -875,6 +1009,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // is what feed cards actually render. Same constraint as `image`
         // above — for video media, never fall back to the MP4 URL.
         let collectionUri: string | null = null
+        let collectionKey: string | null = null
         let collectionVerify: Promise<boolean> = Promise.resolve(true)
         const coverImageUri = imageUri
         if (isAutoDeploy) {
@@ -886,17 +1021,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
             createReferral: CREATE_REFERRAL,
           }
-          collectionUri = await uploadJson(collectionMetadata)
+          collectionKey = JSON.stringify(collectionMetadata)
+          collectionUri = await uploadJsonCached(collectionMetadata, collectionKey)
           collectionVerify = verifyArweaveAvailable(collectionUri)
         }
 
-        // Block on all three settling before kicking off the on-chain
+        // Block on everything settling before kicking off the on-chain
         // mint. Turbo confirms ingestion before the gateway has
         // propagated, so jumping straight to /api/mint can produce a
-        // moment whose metadata fetches 404 at indexing time. 45s
-        // budget per URI covers the typical propagation window; on
-        // timeout we surface a retry message rather than commit a
-        // broken moment.
+        // moment whose metadata fetches 404 at indexing time. 90s of
+        // polling for media (45s for the small JSON/poster items) covers
+        // the typical propagation window; on timeout we surface a retry
+        // message rather than commit a broken moment — and the banked
+        // session above makes that retry resume these same txids.
         setStep('verifying-upload')
         toast.loading('Verifying Arweave propagation…', { id: 'mint' })
         const [mediaOk, metadataOk, collectionOk, posterOk] = await Promise.all([
@@ -911,8 +1048,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           if (!metadataOk) failed.push('metadata')
           if (!collectionOk) failed.push('collection metadata')
           if (!posterOk) failed.push('poster frame')
+          // Failure accounting: keep reusing these uploads on retry until
+          // the strike cap decides one is genuinely lost (then the next
+          // attempt re-uploads fresh).
+          if (uploadSession && (!mediaOk || !posterOk)) uploadSession.verifyFailures += 1
+          if (!metadataOk) bumpJsonFailure(metadataKey)
+          if (!collectionOk && collectionKey) bumpJsonFailure(collectionKey)
+          const resumable = !!uploadSession && uploadSession.verifyFailures < MAX_REUSE_FAILURES
           throw new Error(
-            `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
+            `Arweave still settling (${failed.join(' + ')} not yet propagated) — ${
+              resumable
+                ? 'your upload is saved; mint again in a minute to resume without re-uploading'
+                : 'try again in a minute'
+            }`,
           )
         }
 
@@ -975,6 +1123,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // thumbhash piggybacks for the cover placeholder.
           void trackAutoDeploy(data.contractAddress, coverImageUri ?? undefined, finalThumbhash ?? undefined)
         }
+        // Minted — drop the banked session so it can't pin the derived
+        // Files in memory while the success panel is up.
+        mediaUploadRef.current = null
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
         if (isInMiniApp) {
