@@ -439,18 +439,6 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: momentUrl,
       }
     }
-    case 'autocollect': {
-      // Self-notification: the user's own agent collected on their behalf.
-      // Link to their profile (matches NotificationRow's href). amount is
-      // the count; price is the run's total spend in the budget currency.
-      const count = n.amount && n.amount > 1 ? `${n.amount} moments` : 'a moment'
-      const priceLabel = n.price && n.price !== '0' ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
-      return {
-        title: truncate('Agent collected', TITLE_MAX),
-        body: truncate(`Your agent collected ${count}${priceLabel}`, BODY_MAX),
-        targetUrl: `${SITE_URL}/profile/${n.recipient}`,
-      }
-    }
     default: {
       // Exhaustiveness — TS errors if NotificationType grows without a
       // new case here. Matches NotificationRow's same guard.
