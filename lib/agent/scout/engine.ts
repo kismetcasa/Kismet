@@ -1,5 +1,5 @@
 /**
- * Scout engine — the pure, dependency-free core of budgeted auto-collecting.
+ * Scout engine — the pure, dependency-free core of budgeted Agent Collect.
  *
  * A "Scout" is a named standing agent: a USDC/ETH budget (backed on-chain by a
  * Base Account Spend Permission) plus a Kismet-enforced policy of WHAT to
@@ -8,7 +8,7 @@
  *
  *   1. Budget accounting that MIRRORS Base's SpendPermissionManager period
  *      semantics, so our off-chain plan never proposes a spend the on-chain cap
- *      would reject (which would surface as failed/ reverted auto-collects).
+ *      would reject (which would surface as failed/reverted collects).
  *   2. A deterministic policy decision for every candidate, with an explicit
  *      reason when we skip — auditable and unit-testable.
  *

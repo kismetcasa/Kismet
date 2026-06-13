@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * Auto-collect agent — setup + management (owner profile, smart-wallet only).
+ * Agent Collect — setup + management (owner profile, smart-wallet only).
  *
  * The Phase 2 surface: the user picks artists to watch + a budget; one approval
  * grants a bounded Spend Permission to KISMET's server spender; thereafter the
@@ -26,13 +26,13 @@ const label = (a: WatchedArtist) => a.username || short(a.address)
 function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="border border-line p-4 space-y-2">
-      <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Auto-collect agent</h3>
+      <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Agent Collect</h3>
       {children}
     </div>
   )
 }
 
-export function AutoCollectPanel() {
+export function AgentCollectPanel() {
   const ag = useAgent()
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -101,7 +101,7 @@ export function AutoCollectPanel() {
     return (
       <Shell>
         <p className="text-xs font-mono text-dim leading-relaxed">
-          Watch your favorite artists and auto-collect their drops within a budget — available with a
+          Watch your favorite artists and automatically collect their drops within a budget — available with a
           Base Account (smart wallet). Open Kismet in the Base App to enable it.
         </p>
       </Shell>
@@ -112,7 +112,7 @@ export function AutoCollectPanel() {
     return (
       <Shell>
         <p className="text-xs font-mono text-dim leading-relaxed">
-          Hands-free auto-collect is coming soon. In the meantime you can collect, buy, and list from your
+          Agent Collect is coming soon. In the meantime you can collect, buy, and list from your
           AI assistant — see <a href="/agent" className="text-accent hover:underline">the agent page</a>.
         </p>
       </Shell>
@@ -180,7 +180,7 @@ export function AutoCollectPanel() {
   return (
     <div className="border border-line p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Auto-collect agent</h3>
+        <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Agent Collect</h3>
         {ag.scout && !editing && (
           <button
             onClick={() => void ag.setActive(!active)}
@@ -273,7 +273,7 @@ export function AutoCollectPanel() {
           <p className="text-xs font-mono text-dim leading-relaxed">
             {mode === 'patron'
               ? 'Patronize your favorite artists over time — one approval and the agent collects 1 of each new drop, within your budget. Your Base Account funds and receives; revoke anytime.'
-              : 'Auto-collect up to your set editions of each drop the moment it lands, within your budget — fairly shared if a drop is contended. Your Base Account funds and receives; revoke anytime.'}
+              : 'Automatically collect up to your set editions of each drop the moment it lands, within your budget — fairly shared if a drop is contended. Your Base Account funds and receives; revoke anytime.'}
           </p>
 
           {/* Artists */}

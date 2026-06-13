@@ -45,7 +45,7 @@ export async function grantScoutBudget(p: {
   allowance: bigint
   periodInDays: number
 }): Promise<ScoutPermission> {
-  if (!SCOUT_SPENDER) throw new Error('The auto-collect agent is not available yet')
+  if (!SCOUT_SPENDER) throw new Error('Agent Collect is not available yet')
   const { requestSpendPermission, fetchPermissions, getPermissionStatus } = await spendPerm()
   const { provider, account } = await connected()
   const token = p.currency === 'eth' ? NATIVE_ETH : USDC_BASE

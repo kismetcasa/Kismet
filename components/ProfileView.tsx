@@ -33,12 +33,12 @@ import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
 
-// Auto-collect agent setup — owner-only, smart-wallet-gated. Pulls in the Base
+// Agent Collect setup — owner-only, smart-wallet-gated. Pulls in the Base
 // Account spend-permission utils, so it's code-split via next/dynamic (ssr:false)
 // to keep it off the profile route's initial JS; it loads on the client only when
 // an owner views their own profile and self-gates via useAgent.
-const AutoCollectPanel = dynamic(
-  () => import('./AutoCollectPanel').then((m) => m.AutoCollectPanel),
+const AgentCollectPanel = dynamic(
+  () => import('./AgentCollectPanel').then((m) => m.AgentCollectPanel),
   { ssr: false },
 )
 
@@ -1247,11 +1247,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         </div>
       )}
 
-      {/* Owner-only auto-collect agent setup. Owner chrome — hidden while
+      {/* Owner-only Agent Collect setup. Owner chrome — hidden while
           previewing the public view. Self-gates on smart-wallet eligibility. */}
       {isOwner && !previewPublic && (
         <div className="mb-4">
-          <AutoCollectPanel />
+          <AgentCollectPanel />
         </div>
       )}
 

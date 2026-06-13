@@ -225,7 +225,7 @@ export async function runDropCoordination(
       const { txHash } = await collectViaSpendPermission({ permission: b.record.permission!, spender, recipient: b.owner, item })
       await recordCollect(baseUrl, b.owner, drop, currency, a.editions, txHash)
       // Tell the user their agent collected (mirrors the on-open run's notice).
-      await writeNotification({ type: 'autocollect', recipient: b.owner, amount: a.editions, currency }).catch(() => {})
+      await writeNotification({ type: 'agent_collect', recipient: b.owner, amount: a.editions, currency }).catch(() => {})
       collected += a.editions
       recipients += 1
     } catch {

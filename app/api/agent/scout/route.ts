@@ -11,7 +11,7 @@ import type { StoredSpendPermission } from '@/lib/agent/scout/serverExecutor'
 export const runtime = 'nodejs'
 
 /**
- * Per-user Scout config (the budgeted, artist-watching auto-collect agent).
+ * Per-user Scout config (the budgeted, artist-watching Agent Collect engine).
  * Owner-only: the address is the authenticated session, never the request body,
  * so nobody can read or write another user's scout. The on-chain Spend
  * Permission is the real budget cap; this only stores the Kismet-side policy +
@@ -59,7 +59,7 @@ export async function PUT(req: NextRequest) {
   try {
     const code = await serverBaseClient().getCode({ address: owner as `0x${string}` })
     if (!code || code === '0x') {
-      return errorResponse(403, 'Auto-collect requires a Base Account (smart wallet)')
+      return errorResponse(403, 'Agent Collect requires a Base Account (smart wallet)')
     }
   } catch {
     /* fail-open: don't block on a transient RPC error */
@@ -111,7 +111,7 @@ export async function PUT(req: NextRequest) {
   const scout: Scout = {
     id: owner.toLowerCase(),
     owner: owner.toLowerCase(),
-    name: typeof s.name === 'string' && s.name.trim() ? s.name.trim().slice(0, 60) : 'Auto-collect',
+    name: typeof s.name === 'string' && s.name.trim() ? s.name.trim().slice(0, 60) : 'Agent Collect',
     mode: s.mode === 'propose' ? 'propose' : 'auto',
     status: s.status === 'paused' ? 'paused' : 'active',
     budget: {

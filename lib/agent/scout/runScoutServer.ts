@@ -190,7 +190,7 @@ export async function runScoutServer(params: {
   }
   if (collected > 0) {
     await writeNotification({
-      type: 'autocollect',
+      type: 'agent_collect',
       recipient: owner,
       amount: collected,
       currency: scout.budget.currency,

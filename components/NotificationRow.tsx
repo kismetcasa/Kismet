@@ -24,7 +24,7 @@ function notificationHref(n: Notification): string {
     case 'authorized':
       // Collection-level grant — no specific tokenId.
       return n.tokenAddress ? `/collection/${n.tokenAddress}` : '/'
-    case 'autocollect':
+    case 'agent_collect':
       // Agent collected into the user's own collection — link to their profile.
       return `/profile/${n.recipient}`
     case 'collect':
@@ -153,7 +153,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
-    case 'autocollect':
+    case 'agent_collect':
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
@@ -185,7 +185,7 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   )
 
   if (n.type === 'mint') return badge(<Sparkles size={iconSize} className="text-accent" />)
-  if (n.type === 'autocollect') return badge(<Bot size={iconSize} className="text-accent" />)
+  if (n.type === 'agent_collect') return badge(<Bot size={iconSize} className="text-accent" />)
   if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
   if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-accent" />)
   if (n.type === 'listing_expired' && !n.tokenImage) {

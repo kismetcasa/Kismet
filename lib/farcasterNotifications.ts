@@ -439,7 +439,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: momentUrl,
       }
     }
-    case 'autocollect': {
+    case 'agent_collect': {
       // Self-notification: the user's own agent collected on their behalf.
       // Link to their profile (matches NotificationRow's href). amount is
       // the count; price is the run's total spend in the budget currency.

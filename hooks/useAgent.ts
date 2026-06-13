@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * useAgent — the autonomous auto-collect agent (Phase 2, spend-permission model).
+ * useAgent — powers Agent Collect, the autonomous budgeted agent (Phase 2, spend-permission model).
  *
  * Setup is one approval: grant a bounded Spend Permission to KISMET's server
  * spender (grantBudget). Thereafter the server (/api/agent/scout/run) collects

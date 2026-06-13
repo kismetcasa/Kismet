@@ -1,9 +1,9 @@
 'use client'
 
 /**
- * Gate for the agent UI (auto-collect): is the connected wallet a smart account
+ * Gate for the agent UI (Agent Collect): is the connected wallet a smart account
  * that can grant a Base Spend Permission to KISMET's spender? EOAs cannot, so the
- * auto-collect UI renders only when this returns eligible; everyone else keeps
+ * Agent Collect UI renders only when this returns eligible; everyone else keeps
  * the unchanged per-action flow.
  *
  * Layered, read-only detection (no prompts):
