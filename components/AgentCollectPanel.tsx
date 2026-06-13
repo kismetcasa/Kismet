@@ -97,16 +97,7 @@ export function AgentCollectPanel() {
 
   if (ag.loading) return null
 
-  if (!ag.eligible) {
-    return (
-      <Shell>
-        <p className="text-xs font-mono text-dim leading-relaxed">
-          Watch your favorite artists and automatically collect their drops within a budget — available with a
-          Base Account (smart wallet). Open Kismet in the Base App to enable it.
-        </p>
-      </Shell>
-    )
-  }
+  if (!ag.eligible) return null
 
   if (!ag.configured) {
     return (
