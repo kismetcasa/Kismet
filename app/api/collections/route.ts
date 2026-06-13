@@ -1,5 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { type Address } from 'viem'
+import { runDropCoordination } from '@/lib/agent/scout/dropCoordinator'
+import { SITE_URL } from '@/lib/siteUrl'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
@@ -476,13 +478,22 @@ export async function POST(req: NextRequest) {
   // factory address and disappears from any creator-filtered feed).
   // Mirrors the post-mint hooks in lib/mint-proxy.ts.
   if (source === 'create-form' && body.coverTokenId && /^\d+$/.test(body.coverTokenId)) {
+    const coverTokenId = body.coverTokenId
     await Promise.all([
-      markCreatedMint(body.address, body.coverTokenId),
-      setMomentMeta(body.address, body.coverTokenId, {
+      markCreatedMint(body.address, coverTokenId),
+      setMomentMeta(body.address, coverTokenId, {
         creator: sessionAddress,
         name: body.name ?? body.address,
       }),
     ])
+    // Phase 3 — a new collection's cover IS a drop; fan it out to agents
+    // watching this artist (round-robin, within each budget). Post-response,
+    // best-effort, self-gating (no-op without watchers / a configured spender).
+    after(() =>
+      runDropCoordination({ collection: body.address, tokenId: coverTokenId, creator: sessionAddress }, SITE_URL).catch(
+        () => {},
+      ),
+    )
   }
   return NextResponse.json({ ok: true })
 }

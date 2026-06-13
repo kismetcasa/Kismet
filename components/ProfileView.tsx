@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -31,6 +32,15 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
+
+// Auto-collect agent setup — owner-only, smart-wallet-gated. Pulls in the Base
+// Account spend-permission utils, so it's code-split via next/dynamic (ssr:false)
+// to keep it off the profile route's initial JS; it loads on the client only when
+// an owner views their own profile and self-gates via useAgent.
+const AutoCollectPanel = dynamic(
+  () => import('./AutoCollectPanel').then((m) => m.AutoCollectPanel),
+  { ssr: false },
+)
 
 interface Payment {
   id: string
@@ -1234,6 +1244,14 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Owner-only auto-collect agent setup. Owner chrome — hidden while
+          previewing the public view. Self-gates on smart-wallet eligibility. */}
+      {isOwner && !previewPublic && (
+        <div className="mb-4">
+          <AutoCollectPanel />
         </div>
       )}
 

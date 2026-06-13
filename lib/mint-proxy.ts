@@ -10,6 +10,8 @@ import { fanoutToFollowers, setMomentMeta, writeNotification } from './notificat
 import { setMomentContent } from './momentContent'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
 import { markCreatedMint } from './kv'
+import { runDropCoordination } from './agent/scout/dropCoordinator'
+import { SITE_URL } from './siteUrl'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
 import { hasGateAccess, isPlatformPausedFor } from './gate'
 import { isBlacklisted } from './blacklist'
@@ -331,6 +333,15 @@ export async function proxyMintRequest(
             tokenName: displayName,
           }),
         ]
+        // Phase 3 — the instant a watched artist drops on our platform, fan it
+        // out to every agent watching them: round-robin the supply and collect
+        // for each within their own budget. Best-effort + self-gating (no-op
+        // without watchers or a configured spender). `account` is the creator.
+        tasks.push(
+          runDropCoordination({ collection: contractAddress, tokenId, creator: account }, SITE_URL).catch(
+            bestEffort('mint-proxy.dropCoordination', { contractAddress, tokenId }),
+          ),
+        )
         if (tokenContent) {
           tasks.push(setMomentContent(contractAddress, tokenId, tokenContent).catch(bestEffort('mint-proxy.setMomentContent', { contractAddress, tokenId })))
         }
