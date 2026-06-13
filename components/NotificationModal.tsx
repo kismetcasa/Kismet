@@ -21,7 +21,6 @@ const TYPE_LABELS: Record<string, string> = {
   listing_expired: 'Your listings expired',
   listing_created: 'Listings by people you follow',
   authorized: 'Creator authorizations',
-  autocollect: 'Your agent auto-collects',
 }
 
 // Labels used in the FC push section. We surface every type here (the
@@ -37,7 +36,6 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   airdrop: 'Airdrops you receive',
   payout: 'Splits and payouts',
   authorized: 'Creator authorizations',
-  autocollect: 'Your agent auto-collects',
 }
 
 type ModalTab = 'feed' | 'settings'

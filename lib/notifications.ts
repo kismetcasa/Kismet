@@ -13,7 +13,6 @@ export const ALL_NOTIFICATION_TYPES = [
   'airdrop',
   'payout',
   'authorized',
-  'autocollect',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]

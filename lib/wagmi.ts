@@ -1,15 +1,8 @@
-import { createConfig, http, createConnector, type CreateConnectorFn } from 'wagmi'
-import { injected, baseAccount as baseAccountConnector } from 'wagmi/connectors'
+import { createConfig, http, type CreateConnectorFn } from 'wagmi'
+import { injected } from 'wagmi/connectors'
 import { createClient } from 'viem'
 import { base, mainnet } from 'wagmi/chains'
-import { connectorsForWallets, type Wallet } from '@rainbow-me/rainbowkit'
-import {
-  baseAccount as rkBaseAccount,
-  metaMaskWallet,
-  rainbowWallet,
-  safeWallet,
-  walletConnectWallet,
-} from '@rainbow-me/rainbowkit/wallets'
+import { connectorsForWallets, getDefaultWallets } from '@rainbow-me/rainbowkit'
 import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector'
 import { isCoinbaseWebView, isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
 
@@ -30,72 +23,15 @@ if (!projectId) {
 // Manual config (rather than RainbowKit's `getDefaultConfig`) is required
 // because we register non-RainbowKit connectors — the Farcaster Mini App
 // connector and a plain injected() for Coinbase WebViews — in the connectors
-// array below, and because we configure the Base Account wallet with Sub
-// Accounts (see baseAccountWithSubAccounts). We replicate RainbowKit's default
-// "Popular" wallet list explicitly so the regular-web modal is unchanged except
-// that its Base Account entry now carries the subAccounts config.
-
-// RainbowKit 2.2.10's built-in `baseAccount` wallet forwards only { appName,
-// appIcon } to the wagmi connector and SILENTLY DROPS `subAccounts` — its body
-// destructures the optional config off the function object instead of the
-// options arg (node_modules/@rainbow-me/rainbowkit/dist/wallets/
-// walletConnectors/chunk-5C3SILBQ.js). The underlying wagmi `baseAccount`
-// connector DOES honor subAccounts (its getProvider() spreads every parameter
-// into createBaseAccountSDK). So we reuse RainbowKit's wallet metadata
-// (icon/name/id) but override createConnector to build the wagmi connector
-// ourselves WITH the subAccounts config — enabling the budgeted, tap-free
-// auto-collect flow for Base Account (smart-wallet) users. EOAs ignore the
-// config, so every other wallet is unaffected. Keeping id:"baseAccount" lets it
-// cleanly replace the default entry (connectorsForWallets dedupes by id).
-//
-// `toOwnerAccount` dynamically imports @base-org/account (21 MB) so the SDK
-// stays a lazy chunk — loaded only when a Base Account actually signs, never in
-// the main bundle (mirrors how the wagmi connector itself lazy-loads it).
-const baseAccountWithSubAccounts = (params: { appName: string; appIcon?: string }): Wallet => {
-  const wallet = rkBaseAccount(params)
-  return {
-    ...wallet,
-    createConnector: (walletDetails) => {
-      const connector = baseAccountConnector({
-        appName: params.appName,
-        appLogoUrl: process.env.NEXT_PUBLIC_FARCASTER_ICON_URL ?? params.appIcon ?? undefined,
-        subAccounts: {
-          creation: 'on-connect', // provision the collecting sub-account at connect
-          defaultAccount: 'universal', // keep the user's main Base Account primary
-          funding: 'spend-permissions', // auto-fund from the parent within the cap
-          toOwnerAccount: async () => {
-            const { getCryptoKeyAccount } = await import('@base-org/account')
-            return getCryptoKeyAccount()
-          },
-        },
-        preference: { telemetry: false },
-      })
-      return createConnector((config) => ({ ...connector(config), ...walletDetails }))
-    },
-  }
-}
-
-// RainbowKit's default "Popular" group, with Base Account swapped for the
-// subAccounts-configured wallet above. (Mirrors getDefaultWallets() so the
-// modal's contents/order are unchanged.)
-const rainbowKitConnectors = connectorsForWallets(
-  [
-    {
-      groupName: 'Popular',
-      wallets: [
-        safeWallet,
-        rainbowWallet,
-        baseAccountWithSubAccounts,
-        metaMaskWallet,
-        walletConnectWallet,
-      ],
-    },
-  ],
-  {
-    appName: 'Kismet',
-    projectId: projectId ?? 'placeholder-build-only',
-  },
-)
+// array below. RainbowKit's wallet list is preserved via getDefaultWallets()
+// → connectorsForWallets(), so the regular-web modal is unchanged — and it
+// already includes Base Account (Base's other recommended connector), so only
+// injected(), for the in-app browser, needs adding here.
+const { wallets } = getDefaultWallets()
+const rainbowKitConnectors = connectorsForWallets(wallets, {
+  appName: 'Kismet',
+  projectId: projectId ?? 'placeholder-build-only',
+})
 
 // Max time we'll wait for a Farcaster Mini App host to answer a
 // non-interactive connection-probe RPC before treating it as unavailable.
