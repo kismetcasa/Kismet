@@ -4,6 +4,7 @@ import { getSessionAddress } from '@/lib/session'
 import { redis } from '@/lib/redis'
 import { getScoutSpender, type ScoutSpender } from '@/lib/agent/scout/spender'
 import { runScoutServer } from '@/lib/agent/scout/runScoutServer'
+import { SITE_URL } from '@/lib/siteUrl'
 
 export const runtime = 'nodejs'
 
@@ -38,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const summary = await runScoutServer({ owner, baseUrl: new URL(req.url).origin, spender })
+    const summary = await runScoutServer({ owner, baseUrl: SITE_URL, spender })
     return NextResponse.json({ ran: true, ...summary })
   } catch (e) {
     return errorResponse(500, e instanceof Error ? e.message : 'Run failed')

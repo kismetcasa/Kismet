@@ -176,6 +176,21 @@ export async function PUT(req: NextRequest) {
   // Phase 2: preserve the granted permission + away opt-in across usage-only PUTs;
   // a fresh config save re-sends both.
   const permission = body.permission ?? existing?.permission
+
+  // Validate any incoming permission: account must match the authenticated session
+  // owner and the spender must be Kismet's configured spender — so a user can't
+  // store a permission that would drain a different account or target a foreign spender.
+  if (body.permission) {
+    const pd = body.permission.permission
+    if (!pd?.account || pd.account.toLowerCase() !== owner.toLowerCase()) {
+      return errorResponse(400, 'Permission account does not match your address')
+    }
+    const configuredSpender = process.env.NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS
+    if (configuredSpender && pd.spender?.toLowerCase() !== configuredSpender.toLowerCase()) {
+      return errorResponse(400, 'Permission spender does not match the configured spender')
+    }
+  }
+
   const away = typeof body.away === 'boolean' ? body.away : (existing?.away ?? false)
 
   // If a budget change replaced the permission, stash the OLD one so the next run
