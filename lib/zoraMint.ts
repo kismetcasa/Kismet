@@ -40,9 +40,7 @@ export const USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 // A PR that silently changes this constant rotates ALL future revenue to the
 // new address. Any change must be reviewed by a treasury signer and verified
 // against the on-chain createReferral configuration on existing collections.
-// Exported so the agent calldata verifiers assert against THIS value rather than
-// a hand-copied duplicate (the copy is exactly what could silently drift).
-export const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
+const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
 
 // Zora 1155 mint() (post-v2.0.0 contracts). All inprocess and Kismet deploys
 // from the last ~year are new-style; legacy mintWithRewards() is intentionally
