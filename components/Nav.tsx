@@ -25,6 +25,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 const NAV_PAGES = [
   { id: 'enjoy',  label: 'Discover', mobileLabel: 'Enjoy',  href: '/' },
   { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
+  { id: 'agent',  label: 'Agent',    mobileLabel: 'Agent',  href: '/agent' },
   { id: 'market', label: 'Market',   mobileLabel: 'Curate', href: '/market' },
 ] as const
 
@@ -32,6 +33,7 @@ type NavPageId = (typeof NAV_PAGES)[number]['id']
 
 function navPageForPath(pathname: string): NavPageId {
   if (pathname === '/mint' || pathname.startsWith('/mint/')) return 'mint'
+  if (pathname === '/agent' || pathname.startsWith('/agent/')) return 'agent'
   if (pathname === '/market' || pathname.startsWith('/market/')) return 'market'
   // Default to Enjoy for `/` AND for every non-nav route (profile,
   // moment, collection detail, etc.). The logo always links back to

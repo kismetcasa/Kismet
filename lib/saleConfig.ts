@@ -89,6 +89,13 @@ export interface EligibleToken {
   tokenId: bigint
   pricePerToken: bigint
   maxPerAddress: bigint
+  /** The `account`'s current balance of this token (0 when no account was
+   *  passed). Lets the agent size a multi-edition top-up without a second read. */
+  ownedBalance: bigint
+  /** Editions left to mint (maxSupply − totalMinted); undefined for open editions
+   *  or contracts without getTokenInfo. The drop coordinator bounds round-robin by
+   *  this. */
+  remainingSupply?: bigint
 }
 
 export type SaleCurrency = 'eth' | 'usdc'
@@ -126,6 +133,10 @@ export async function fetchEligibleTokens(
   tokenIds: bigint[],
   currency: SaleCurrency,
   account?: Address,
+  /** Agent edition cap: also skip a token whose `account` balance is already at
+   *  or above this (e.g. 1 = "one of each new drop"). Real-time + authoritative,
+   *  so it covers open editions the per-wallet-cap filter can't. Needs `account`. */
+  excludeOwnedAtOrAbove?: bigint,
 ): Promise<EligibleToken[]> {
   if (tokenIds.length === 0) return []
 
@@ -192,16 +203,24 @@ export async function fetchEligibleTokens(
 
     // Skip sold-out tokens. allowFailure means non-Zora-1155 contracts (or
     // older versions without getTokenInfo) just opt out of this check —
-    // the mint will revert at submit time as a fallback.
+    // the mint will revert at submit time as a fallback. `remainingSupply` is
+    // carried for the drop coordinator's round-robin bound (undefined = open
+    // edition / unknown → unbounded by supply).
+    let remainingSupply: bigint | undefined
     if (infoRes.status === 'success' && infoRes.result) {
       const info = infoRes.result as { maxSupply: bigint; totalMinted: bigint }
-      if (!isOpenEdition(info.maxSupply) && info.totalMinted >= info.maxSupply) continue
+      if (!isOpenEdition(info.maxSupply)) {
+        if (info.totalMinted >= info.maxSupply) continue
+        remainingSupply = info.maxSupply - info.totalMinted
+      }
     }
 
     candidates.push({
       tokenId: tokenIds[i],
+      remainingSupply,
       pricePerToken: sale.pricePerToken,
       maxPerAddress: sale.maxTokensPerAddress,
+      ownedBalance: 0n, // overwritten by the balance pass below when `account` is set
     })
   }
 
@@ -231,12 +250,18 @@ export async function fetchEligibleTokens(
     return []
   }
 
-  return candidates.filter((c, i) => {
+  const out: EligibleToken[] = []
+  candidates.forEach((c, i) => {
     const r = balanceResults[i]
-    if (r.status !== 'success') return false
+    if (r.status !== 'success') return
     const balance = r.result as bigint
-    return !(c.maxPerAddress > 0n && balance >= c.maxPerAddress)
+    // Agent edition cap: already hold enough of this drop → skip (covers open
+    // editions, which have no per-wallet cap to catch them below).
+    if (excludeOwnedAtOrAbove !== undefined && balance >= excludeOwnedAtOrAbove) return
+    if (c.maxPerAddress > 0n && balance >= c.maxPerAddress) return
+    out.push({ ...c, ownedBalance: balance })
   })
+  return out
 }
 
 /**

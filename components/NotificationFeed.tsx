@@ -27,6 +27,7 @@ const DRAGGABLE_FILTERS: NotificationType[] = [
   'listing_expired',
   'payout',
   'authorized',
+  'agent_collect',
 ]
 
 const FILTER_LABEL: Record<TypeFilter, string> = {
@@ -40,6 +41,7 @@ const FILTER_LABEL: Record<TypeFilter, string> = {
   listing_expired: 'expired',
   payout: 'payouts',
   authorized: 'authorized',
+  agent_collect: 'agent',
 }
 
 const ORDER_KEY = 'kismetart:notif-tab-order'

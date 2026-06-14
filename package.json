@@ -13,11 +13,14 @@
     "typecheck": "tsc --noEmit",
     "check:resource-hints": "node scripts/check-resource-hint-cors.mjs",
     "check:bundle": "node scripts/check-bundle-size.mjs",
-    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle",
+    "verify:agent": "node --experimental-strip-types scripts/verify-agent-collect.ts && node --experimental-strip-types scripts/verify-agent-buy.ts && node --experimental-strip-types scripts/verify-agent-list.ts && node --experimental-strip-types scripts/verify-agent-collect-batch.ts && node scripts/verify-agent-skill.mjs && node --experimental-strip-types scripts/verify-agent-scout.ts && node --experimental-strip-types scripts/verify-agent-scout-server.ts",
+    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.41.0",
+    "@base-org/account": "^2.4.0",
+    "@coinbase/cdp-sdk": "^1.51.0",
     "@farcaster/miniapp-node": "^0.2.0",
     "@farcaster/miniapp-sdk": "^0.3.0",
     "@farcaster/miniapp-wagmi-connector": "^2.0.0",
