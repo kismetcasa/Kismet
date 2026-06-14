@@ -9,6 +9,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
+import { normalize } from 'viem/ens'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -270,7 +271,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     setSendToError(null)
     const handle = setTimeout(async () => {
       try {
-        const resolved = await mainnetClient.getEnsAddress({ name: trimmedSendTo.toLowerCase() })
+        const resolved = await mainnetClient.getEnsAddress({ name: normalize(trimmedSendTo) })
         if (cancelled) return
         if (!resolved) {
           setResolvedSendTo(null)

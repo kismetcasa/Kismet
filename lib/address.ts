@@ -1,4 +1,5 @@
 import { isAddress as viemIsAddress, type Address } from 'viem'
+import { normalize } from 'viem/ens'
 
 /**
  * Server-side address validator. EVM addresses are case-insensitive at the
@@ -42,7 +43,9 @@ export async function resolveAddressOrEns(
   if (viemIsAddress(trimmed)) return trimmed.toLowerCase() as `0x${string}`
   if (trimmed.endsWith('.eth') && client) {
     try {
-      const resolved = await client.getEnsAddress({ name: trimmed })
+      // normalize() throws on invalid ENS names (forbidden chars, bad emoji
+      // sequences, etc.) — the catch below treats that as unresolvable.
+      const resolved = await client.getEnsAddress({ name: normalize(trimmed) })
       return resolved ? (resolved.toLowerCase() as `0x${string}`) : null
     } catch {
       return null
