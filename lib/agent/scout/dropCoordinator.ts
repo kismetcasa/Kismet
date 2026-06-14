@@ -281,7 +281,8 @@ async function readBalances(
  *  on-chain period anchor, then saves. Best-effort; the on-chain Spend Permission
  *  allowance is the authoritative cap regardless of this off-chain counter. */
 async function bumpItemUsage(record: ScoutRecord, periodStart: number): Promise<void> {
-  const fresh = (await getScout(record.scout.owner)) ?? record
+  const fresh = await getScout(record.scout.owner)
+  if (!fresh) return // record was deleted mid-coordination (user turned off) — never resurrect it
   const u = fresh.usage
   const usage =
     u.periodStart === periodStart
