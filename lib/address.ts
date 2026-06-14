@@ -17,13 +17,23 @@ export function isAddress(value: unknown): value is Address {
   return typeof value === 'string' && viemIsAddress(value, { strict: false })
 }
 
+/** Largest valid ERC-1155/721 token id (uint256). */
+const MAX_UINT256 = (1n << 256n) - 1n
+
 /**
- * Validates a token ID as a non-empty decimal string. Single source of
- * truth for the `/^\d+$/` checks scattered across moment + listing
- * routes — use this instead of inlining the regex.
+ * Validates a token ID as a non-empty decimal string within uint256 range.
+ * Single source of truth for the `/^\d+$/` checks scattered across moment +
+ * listing routes — use this instead of inlining the regex. The upper bound
+ * rejects an out-of-range id at the trust boundary (clean 400) rather than
+ * letting it reach a contract read that throws a confusing 5xx.
  */
 export function isValidTokenId(value: unknown): value is string {
-  return typeof value === 'string' && /^\d+$/.test(value)
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return false
+  try {
+    return BigInt(value) <= MAX_UINT256
+  } catch {
+    return false
+  }
 }
 
 type EnsClientLike = {

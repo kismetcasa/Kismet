@@ -23,7 +23,7 @@ import { readMintFeeWithBound } from '@/lib/zoraMint'
 import { writeNotification } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import type { BatchCollectItem } from '@/lib/agent/collectBatch'
-import { getWatchers, getScoutsBatch, type ScoutRecord } from './store'
+import { getWatchers, getScoutsBatch, getScout, saveScout, type ScoutRecord } from './store'
 import { evaluateCandidate, type Candidate } from './engine'
 import { allocateRoundRobin, fairOrder, OPEN_EDITION_SUPPLY, type DropWatcher } from './allocate'
 import { collectViaSpendPermission } from './serverExecutor'
@@ -59,6 +59,9 @@ interface Bidder {
   owner: Address
   target: number
   affordable: number
+  /** On-chain currentPeriod.start, captured during bidding — the authoritative
+   *  anchor for both the policy item-cap gate and the post-collect usage bump. */
+  periodStart: number
 }
 
 const empty = (watchers: number, reason: string): DropCoordinationSummary => ({ watchers, collected: 0, recipients: 0, reason })
@@ -161,36 +164,47 @@ export async function runDropCoordination(
   // would waste their budget on duplicates.
   const balances = await readBalances(client, collection, tokenId, matched.map((r) => r.scout.owner as Address))
   if (balances === null) return empty(live.length, 'could not verify balances')
+  const withBalance = matched.map((r, i) => ({ r, balance: balances[i] }))
 
   const bidders: Bidder[] = []
-  await Promise.all(
-    matched.map(async (r, i) => {
-      // Tag the candidate with the artist wallet THIS watcher actually listed —
-      // FID expansion may have surfaced them via a sibling — so the engine's
-      // creator-allowlist gate passes for the right reason.
-      const watched = r.scout.policy.creators.map(lc).find((c) => fidSet.has(c))
-      if (!watched) return // defensive: live-filter already guaranteed this
-      const candidate: Candidate = { collection: drop.collection, tokenId: drop.tokenId, creator: watched, currency, pricePerToken: price.toString() }
-      if (evaluateCandidate(r.scout, candidate, r.usage, now).action !== 'collect') return // policy gate
-      const balance = balances[i]
-      if (balance === null) return // balance read failed for this token → skip (fail-closed)
-      const target = spender.atomic ? Math.max(1, Math.floor(r.scout.policy.maxEditionsPerDrop ?? 1)) : 1
-      let budgetEditions = target
-      try {
-        const status = await getPermissionStatus(r.permission!)
-        if (!status.isActive) return
-        // Keep the division in bigint and clamp to `target` (≤10) BEFORE Number,
-        // so a huge ETH allowance can't lose precision (M-1).
-        const big = perEdition > 0n ? status.remainingSpend / perEdition : BigInt(target)
-        budgetEditions = Number(big > BigInt(target) ? BigInt(target) : big)
-      } catch {
-        return
-      }
-      const perWallet = maxPerAddress > 0n ? Number(maxPerAddress - balance) : Number.MAX_SAFE_INTEGER
-      const affordable = Math.max(0, Math.min(target, Math.floor(budgetEditions), Math.floor(perWallet)))
-      if (affordable >= 1) bidders.push({ record: r, owner: r.scout.owner as Address, target, affordable })
-    }),
-  )
+  // Bound the RPC fan-out: a drop watched by thousands of agents must not fire
+  // thousands of concurrent getPermissionStatus reads at once (rate-limit/timeout
+  // would fail the whole drop). Evaluate in fixed-size chunks — sequential
+  // execution downstream already serializes on the shared spender's nonce mutex.
+  const EVAL_CHUNK = 25
+  for (let s = 0; s < withBalance.length; s += EVAL_CHUNK) {
+    await Promise.all(
+      withBalance.slice(s, s + EVAL_CHUNK).map(async ({ r, balance }) => {
+        // Tag the candidate with the artist wallet THIS watcher actually listed —
+        // FID expansion may have surfaced them via a sibling — so the engine's
+        // creator-allowlist gate passes for the right reason.
+        const watched = r.scout.policy.creators.map(lc).find((c) => fidSet.has(c))
+        if (!watched) return // defensive: live-filter already guaranteed this
+        if (balance === null) return // balance read failed for this token → skip (fail-closed)
+        const target = spender.atomic ? Math.max(1, Math.floor(r.scout.policy.maxEditionsPerDrop ?? 1)) : 1
+        // Read permission status FIRST so we have the on-chain period anchor for
+        // the policy gate (so the item-cap is judged against the chain's period).
+        let periodStart: number
+        let budgetEditions = target
+        try {
+          const status = await getPermissionStatus(r.permission!)
+          if (!status.isActive) return
+          periodStart = status.currentPeriod.start
+          // Keep the division in bigint and clamp to `target` (≤10) BEFORE Number,
+          // so a huge ETH allowance can't lose precision (M-1).
+          const big = perEdition > 0n ? status.remainingSpend / perEdition : BigInt(target)
+          budgetEditions = Number(big > BigInt(target) ? BigInt(target) : big)
+        } catch {
+          return
+        }
+        const candidate: Candidate = { collection: drop.collection, tokenId: drop.tokenId, creator: watched, currency, pricePerToken: price.toString() }
+        if (evaluateCandidate(r.scout, candidate, r.usage, now, undefined, periodStart).action !== 'collect') return // policy gate
+        const perWallet = maxPerAddress > 0n ? Number(maxPerAddress - balance) : Number.MAX_SAFE_INTEGER
+        const affordable = Math.max(0, Math.min(target, Math.floor(budgetEditions), Math.floor(perWallet)))
+        if (affordable >= 1) bidders.push({ record: r, owner: r.scout.owner as Address, target, affordable, periodStart })
+      }),
+    )
+  }
   if (bidders.length === 0) return empty(live.length, 'no eligible watcher within policy')
 
   // 4. Round-robin allocate the supply, in a drop-seeded fair order.
@@ -222,10 +236,15 @@ export async function runDropCoordination(
       comment: '',
     }
     try {
-      const { txHash } = await collectViaSpendPermission({ permission: b.record.permission!, spender, recipient: b.owner, item })
+      const { txHash } = await collectViaSpendPermission({ permission: b.record.permission!, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })
       await recordCollect(baseUrl, b.owner, drop, currency, a.editions, txHash)
       // Tell the user their agent collected (mirrors the on-open run's notice).
       await writeNotification({ type: 'agent_collect', recipient: b.owner, amount: a.editions, currency }).catch(() => {})
+      // Decrement this watcher's per-period DROP budget — one coordinated drop is
+      // one item regardless of editions — so maxItemsPerPeriod stays enforced
+      // across the coordinator + on-open paths (the on-chain allowance is still the
+      // hard dollar cap). Best-effort, anchored to the watcher's on-chain period.
+      await bumpItemUsage(b.record, b.periodStart).catch(() => {})
       collected += a.editions
       recipients += 1
     } catch {
@@ -254,6 +273,21 @@ async function readBalances(
   } catch {
     return null
   }
+}
+
+/** Increment a watcher's per-period DROP count by one after a coordinated collect,
+ *  so maxItemsPerPeriod is enforced across the coordinator + on-open paths. Re-reads
+ *  the record (to reduce clobbering a concurrent on-open update), rolls to the
+ *  on-chain period anchor, then saves. Best-effort; the on-chain Spend Permission
+ *  allowance is the authoritative cap regardless of this off-chain counter. */
+async function bumpItemUsage(record: ScoutRecord, periodStart: number): Promise<void> {
+  const fresh = (await getScout(record.scout.owner)) ?? record
+  const u = fresh.usage
+  const usage =
+    u.periodStart === periodStart
+      ? { ...u, itemsThisPeriod: u.itemsThisPeriod + 1 }
+      : { periodStart, spentThisPeriod: '0', itemsThisPeriod: 1 }
+  await saveScout({ ...fresh, usage })
 }
 
 /** Record one verified collect on the proof-gated /api/collect (it re-checks the

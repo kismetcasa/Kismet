@@ -39,6 +39,15 @@ export function buildBuyPlan(input: { listing: Listing; seaportUsdcAllowance: bi
   const price = BigInt(listing.price)
   const currency: 'eth' | 'usdc' = listing.currency ?? 'eth'
 
+  // Integrity: the buyer pays the SUM of the order's consideration items (all in the
+  // listing currency). Assert the stored display price equals what Seaport will pull,
+  // so the value/caps/summary can never drift from the signed order. Seaport reverts
+  // on a true mismatch, but we refuse up front rather than hand back a misleading cap.
+  const considerationTotal = order.consideration.reduce((sum, c) => sum + BigInt(c.startAmount), 0n)
+  if (considerationTotal !== price) {
+    throw new Error(`Listing price ${price} does not match its order consideration ${considerationTotal}`)
+  }
+
   const fulfillData = withBuilderSuffix(
     encodeFunctionData({
       abi: SEAPORT_ABI,

@@ -46,8 +46,16 @@ export async function POST(req: NextRequest) {
   // the user's universal account receives).
   const account = typeof body.account === 'string' ? body.account : ''
   if (!isAddress(account)) return errorResponse(400, 'Invalid account — pass the Base Account address from get_wallets')
+  // `recipient` is optional and defaults to `account`. But if one is supplied and
+  // is NOT a valid address, reject — silently coercing a typo'd recipient back to
+  // the sender would mint to the wrong wallet without telling the caller.
+  if (body.recipient !== undefined && !(typeof body.recipient === 'string' && isAddress(body.recipient))) {
+    return errorResponse(400, 'Invalid recipient address')
+  }
   const recipient = typeof body.recipient === 'string' && isAddress(body.recipient) ? body.recipient : account
-  const comment = typeof body.comment === 'string' && body.comment.length <= 1000 ? body.comment : ''
+  // Truncate (don't silently drop) an over-long comment, so a long note degrades to
+  // a trimmed comment rather than no comment at all.
+  const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
 
   // Resolve refs first; reject the whole batch on a malformed one.
   const refs: Array<{ collection: Address; tokenId: bigint }> = []

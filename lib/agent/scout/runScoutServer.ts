@@ -156,7 +156,10 @@ export async function runScoutServer(params: {
     if (owned === null) return { collected: 0, skipped: 0, reason: 'could not verify your collected set' }
     planOwned = owned
   }
-  const plan = planRun(scout, candidates, usage, now, planOwned)
+  // Anchor the engine's period accounting to the on-chain currentPeriod.start
+  // (resolved above), so the off-chain item counter mirrors the SpendPermissionManager
+  // exactly and can't drift by a period under clock skew near a boundary.
+  const plan = planRun(scout, candidates, usage, now, planOwned, periodStart)
   if (plan.toCollect.length === 0) {
     return { collected: 0, skipped: plan.decisions.length, reason: 'nothing within your budget/policy' }
   }

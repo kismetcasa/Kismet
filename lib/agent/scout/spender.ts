@@ -163,7 +163,15 @@ export async function cdpSpender(): Promise<ScoutSpender> {
  * (cross-instance safe). If the lock store is unreachable we proceed unserialized
  * (rare; the worst case is a caught, self-healing nonce error).
  */
-const LOCK_TTL_S = 90 // > the slowest sendCalls (EOA: up to ~4 sequential txs); crash-safety net
+// Must comfortably exceed the SLOWEST sendCalls so the mutex never expires
+// mid-submit (which would defeat serialization and reintroduce nonce races). The
+// worst case is the EOA path on a not-yet-registered USDC permission: 4 sequential
+// txs (approveWithSignature → spend → USDC approve → mint), each awaited to a
+// receipt. At ~2s Base blocks that can reach the tens of seconds on congestion, so
+// 240s leaves wide margin. The CDP smart-account path is ONE atomic user-op (far
+// faster) — this TTL is sized for the slow EOA fallback. It's only a crash-safety
+// net; the lock is always released in finally on the happy path.
+const LOCK_TTL_S = 240
 const LOCK_WAIT_MS = 45_000
 const LOCK_POLL_MS = 200
 
