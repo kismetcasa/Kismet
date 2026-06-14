@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage, createPublicClient, http } from 'viem'
+import { normalize } from 'viem/ens'
 import { isAddress } from '@/lib/address'
 import { mainnet } from 'viem/chains'
 import { redis } from '@/lib/redis'
@@ -36,7 +37,16 @@ async function resolveEnsAndCache(address: string): Promise<void> {
   const key = `kismetart:ens:${address.toLowerCase()}`
   try {
     const name = await mainnetClient.getEnsName({ address: address as `0x${string}` })
-    await redis.set(key, name ?? '', { ex: ENS_TTL }).catch(() => {})
+    if (!name) {
+      await redis.set(key, '', { ex: ENS_TTL }).catch(() => {})
+      return
+    }
+    // ENS spec (Primary Names docs) requires forward-verification: anyone can
+    // set a reverse record pointing to any name they don't control. Only
+    // display the name when it also forward-resolves back to this address.
+    const forward = await mainnetClient.getEnsAddress({ name: normalize(name) })
+    const verified = forward?.toLowerCase() === address.toLowerCase()
+    await redis.set(key, verified ? name : '', { ex: ENS_TTL }).catch(() => {})
   } catch {
     await redis.set(key, '', { ex: ENS_FAIL_TTL }).catch(() => {})
   }
