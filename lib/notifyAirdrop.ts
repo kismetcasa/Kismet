@@ -24,7 +24,7 @@ export interface NotifyAirdropPayload {
 
 export async function notifyAirdropWithBackoff(
   payload: NotifyAirdropPayload,
-): Promise<void> {
+): Promise<{ ok: boolean }> {
   const delays = [0, 1000, 2500, 5000]
   let lastDetail: string | null = null
   for (let i = 0; i < delays.length; i++) {
@@ -36,7 +36,7 @@ export async function notifyAirdropWithBackoff(
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(15_000),
       })
-      if (res.ok) return
+      if (res.ok) return { ok: true }
       const text = await res.text().catch(() => '')
       lastDetail = `${res.status} ${text.slice(0, 200)}`
       // 4xx is a definitive rejection (bad recipients, blacklist, too many,
@@ -51,4 +51,5 @@ export async function notifyAirdropWithBackoff(
     txHash: payload.txHash,
     detail: lastDetail,
   })
+  return { ok: false }
 }
