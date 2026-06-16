@@ -10,7 +10,8 @@ import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
 import { errorResponse } from '@/lib/apiResponse'
 import { bestEffort } from '@/lib/bestEffort'
-import { recordPlatformTx } from '@/lib/pass-validity'
+import { recordPlatformTx, creditValidityOnce } from '@/lib/pass-validity'
+import { getGateConfig } from '@/lib/gate'
 
 // All mint paths in this app emit ERC1155 TransferSingle: per-token
 // 1155.mint() (single + collect-all ETH legs) and ERC20Minter.mint()
@@ -209,6 +210,27 @@ export async function POST(req: NextRequest) {
       bestEffort('collect.recordPlatformTx', { txHash, collection: collectionLower, account }),
     ),
   )
+
+  // Credit Pass validity SYNCHRONOUSLY here for a Pass-collection collect, using the
+  // mint verifyMintOnChain already proved. The webhook above only credits when
+  // recordPlatformTx's flag is already set as it processes the Transfer — but Alchemy
+  // can deliver the on-chain event before this request even runs (the client calls
+  // /api/collect only after the mint mines), so the webhook routinely sees no flag,
+  // skips the credit, and claims its idempotency key so it never retries — the credit
+  // is lost permanently and the collector is stuck behind "COLLECT CREATOR PASS".
+  // Crediting directly here removes that race. creditValidityOnce is idempotent (same
+  // keyCredited as the webhook), so whichever fires first wins and the other no-ops.
+  // amount:1 — the gate only needs validBalance >= 1, the client's amount is untrusted,
+  // and the webhook backstops the exact on-chain count. Best-effort: a failure here
+  // leaves the webhook + flag as the fallback and never blocks the collect recording.
+  try {
+    const gate = await getGateConfig()
+    if (gate.passCollection && gate.passCollection.toLowerCase() === collectionLower) {
+      await creditValidityOnce({ collection: collectionLower, address: account, txHash, tokenId, amount: 1 })
+    }
+  } catch (err) {
+    console.error('[collect] pass-validity direct-credit failed', { txHash, collection: collectionLower, err })
+  }
 
   // Bound amount to a sane ceiling — collect-all hardcodes 1, useDirectCollect
   // accepts user input. 1000 is far above any plausible single-mint quantity
