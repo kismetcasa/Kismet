@@ -42,6 +42,13 @@ const AgentCollectPanel = dynamic(
   { ssr: false },
 )
 
+// Sibling entry to the per-action Base MCP skill. Code-split + self-gating like
+// the panel; both render only for a Base Account owner on their own profile.
+const AgentSkillCard = dynamic(
+  () => import('./AgentSkillCard').then((m) => m.AgentSkillCard),
+  { ssr: false },
+)
+
 interface Payment {
   id: string
   amount: string
@@ -1247,11 +1254,14 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         </div>
       )}
 
-      {/* Owner-only Agent Collect setup. Owner chrome — hidden while
-          previewing the public view. Self-gates on smart-wallet eligibility. */}
+      {/* Owner-only agent surfaces, consolidated here (replacing the former global
+          "Agent" nav tab): the autonomous Agent Collect setup + the Base MCP skill
+          entry. Owner chrome — hidden while previewing the public view. Both
+          self-gate on smart-wallet eligibility, so an EOA owner sees neither. */}
       {isOwner && !previewPublic && (
-        <div className="mb-4">
+        <div className="mb-4 flex flex-col gap-3">
           <AgentCollectPanel />
+          <AgentSkillCard />
         </div>
       )}
 
