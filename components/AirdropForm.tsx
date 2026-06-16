@@ -278,7 +278,15 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         tokenId: String(selected.token_id),
         recipients: activeRecipients,
         txHash,
-      }).then(() => refreshQuota())
+      }).then((result) => {
+        if (!result.ok) {
+          toast.error(
+            `Airdrop minted on-chain but failed to record in your profile. Save your tx hash and contact support: ${txHash}`,
+            { duration: 20000 },
+          )
+        }
+        refreshQuota()
+      })
     } catch (err) {
       toastError('Airdrop', err, { id: 'airdrop' })
     } finally {
