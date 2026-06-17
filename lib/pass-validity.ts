@@ -41,6 +41,14 @@ const keyCredited = (collection: string, address: string, txHash: string) =>
 // chain on-platform. Admin can override via setValidBalance.
 const keyTainted = (collection: string) =>
   `kismetart:pass:tainted:${collection.toLowerCase()}`
+// Active Kismet listing marker: set at listing-creation time, cleared at
+// fill/cancel/expiry. processTransfer checks this before tainting so a
+// legitimate Kismet secondary sale is not falsely tainted when the
+// webhook races ahead of the listing PATCH's recordPlatformTx write.
+// Keyed by seller so a concurrent holder selling the same tokenId
+// off-platform is not shielded by another holder's Kismet listing.
+const keyKismetListed = (collection: string, tokenId: string, seller: string) =>
+  `kismetart:pass:kismet-listed:${collection.toLowerCase()}:${tokenId}:${seller.toLowerCase()}`
 
 const ERC1155_ABI = [
   {
@@ -79,6 +87,44 @@ export async function recordPlatformTx(txHash: string): Promise<void> {
 async function isPlatformTx(txHash: string): Promise<boolean> {
   const v = await redis.get(keyPlatformTx(txHash))
   return !!v
+}
+
+/** Mark (collection, tokenId, seller) as actively listed on Kismet.
+ *  Called at listing-creation time so processTransfer can distinguish
+ *  a legitimate Kismet secondary sale from a truly off-platform transfer,
+ *  even when the webhook races ahead of the listing PATCH's after()
+ *  callbacks. TTL should match the listing's remaining lifetime so the
+ *  flag auto-expires if the explicit clear at fill/cancel is missed. */
+export async function markKismetListed(
+  collection: string,
+  tokenId: string,
+  seller: string,
+  ttlSeconds: number,
+): Promise<void> {
+  if (!collection || !tokenId || !seller || ttlSeconds <= 0) return
+  try {
+    await redis.set(keyKismetListed(collection, tokenId, seller), '1', { ex: ttlSeconds })
+  } catch {
+    // Best-effort: a missed flag means processTransfer falls back to the
+    // normal taint path. The listing PATCH's synchronous creditValidityOnce
+    // is the primary credit path; this flag only prevents the false taint.
+  }
+}
+
+/** Clear the Kismet-listed flag when a listing is filled, cancelled, or expired.
+ *  A lingering flag (e.g. after a Redis error here) is bounded by the TTL set
+ *  at creation time, so it self-corrects within the listing's original lifetime. */
+export async function clearKismetListed(
+  collection: string,
+  tokenId: string,
+  seller: string,
+): Promise<void> {
+  if (!collection || !tokenId || !seller) return
+  try {
+    await redis.del(keyKismetListed(collection, tokenId, seller))
+  } catch {
+    // Best-effort: the TTL from markKismetListed bounds the stale window.
+  }
 }
 
 export async function getValidBalance(collection: string, address: string): Promise<number> {
@@ -236,15 +282,27 @@ export async function processTransfer(params: {
   if (!isMint) {
     await adjustValidBalance(collection, from, -amount)
   }
-  // Pass-purity invariant: any non-mint transfer that is NOT
-  // platform-flagged taints the tokenId permanently. This is what
-  // prevents a Pass that went off-platform from regaining validity
-  // when it's later resold through Kismet's marketplace — the buyer's
-  // creditValidityOnce will see the taint flag and skip the credit.
-  // Note this fires INSTEAD of mass-tainting all transfers: a Kismet
-  // secondary sale (platform=true, !isMint) is the sanctioned
-  // provenance step and must NOT taint, so the buyer can be credited.
-  if (!isMint && !platform && tokenId) {
+
+  // Race-condition guard: check whether `from` has an active Kismet listing
+  // for this tokenId. If so, treat it as platform-originated even without
+  // the platform-tx flag — the listing was created before the transfer,
+  // proving a Kismet secondary sale was in flight. Without this, a webhook
+  // that fires before the listing PATCH's after() callbacks set the
+  // platform-tx flag would falsely taint the tokenId, permanently blocking
+  // the buyer's validity even though the sale was fully on-platform.
+  // Keyed on (collection, tokenId, from/seller) to avoid shielding a
+  // concurrent off-platform sale by a different holder of the same tokenId.
+  const listedOnKismet =
+    !isMint && !platform && tokenId
+      ? !!(await redis.get(keyKismetListed(collection, tokenId, from)).catch(() => null))
+      : false
+
+  // Pass-purity invariant: any non-mint transfer that is NOT platform-flagged
+  // AND NOT a Kismet-listed transfer taints the tokenId permanently. The
+  // listedOnKismet guard above prevents a race-induced false taint on
+  // legitimate Kismet secondary sales; it does NOT bypass existing taint —
+  // creditValidityOnce still refuses credits for previously-tainted tokens.
+  if (!isMint && !platform && !listedOnKismet && tokenId) {
     try {
       await redis.sadd(keyTainted(collection), tokenId)
     } catch {
@@ -257,12 +315,12 @@ export async function processTransfer(params: {
       // a transient Redis failure and the next off-platform event.
     }
   }
-  if (platform) {
-    // Convergence point: webhook and any direct-credit path
-    // (currently /api/listings/[id] PATCH filled, on a Pass-collection
-    // sale) both call creditValidityOnce so whichever fires first
-    // credits and the other is a no-op. Pass-blacklist + taint check +
-    // knownTokenIds sadd live inside the primitive.
+  if (platform || listedOnKismet) {
+    // Convergence point: webhook (either via platform flag or listing guard)
+    // and the listing PATCH's synchronous creditValidityOnce both call this
+    // primitive — whichever fires first claims the keyCredited CAS and the
+    // other is a no-op. Pass-blacklist + existing taint check + knownTokenIds
+    // sadd live inside creditValidityOnce.
     await creditValidityOnce({ collection, address: to, txHash, tokenId, amount })
   }
 }

@@ -20,6 +20,8 @@ import { USDC_BASE } from '@/lib/zoraMint'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { getGateConfig } from '@/lib/gate'
+import { markKismetListed } from '@/lib/pass-validity'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const ZERO_BYTES32 = '0x' + '0'.repeat(64)
@@ -466,6 +468,27 @@ export async function POST(req: NextRequest) {
       contentUri: body.contentUri,
       contentMime: body.contentMime,
     })
+
+    // For Pass-collection listings, mark this (tokenId, seller) as actively
+    // listed on Kismet so processTransfer can distinguish a legitimate Kismet
+    // secondary sale from a truly off-platform transfer when the webhook races
+    // ahead of the fill PATCH's after() callbacks. TTL = remaining listing
+    // lifetime so the flag auto-expires if the fill/cancel clear is missed.
+    const gateConfig = await getGateConfig()
+    if (
+      gateConfig.passCollection
+      && listing.collectionAddress.toLowerCase() === gateConfig.passCollection
+    ) {
+      const ttlSeconds = Math.max(0, Math.floor((listing.expiresAt - Date.now()) / 1000))
+      if (ttlSeconds > 0) {
+        await markKismetListed(
+          gateConfig.passCollection,
+          listing.tokenId,
+          listing.seller,
+          ttlSeconds,
+        ).catch(() => {})
+      }
+    }
 
     return NextResponse.json({ listing }, { status: 201 })
   } catch (err) {

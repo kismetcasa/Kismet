@@ -3,6 +3,7 @@ import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
+import { clearKismetListed } from './pass-validity'
 
 export interface Listing {
   id: string
@@ -157,6 +158,7 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
       redis.set(keyById(listing.id), JSON.stringify(updated)),
       redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
       redis.zrem(KEY_ALL, listing.id),
+      clearKismetListed(listing.collectionAddress, listing.tokenId, listing.seller).catch(() => {}),
     ])
 
     await writeNotification({
