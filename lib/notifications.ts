@@ -48,7 +48,12 @@ export interface Notification {
   comment?: string
 }
 
-type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'>
+type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'> & {
+  /** Internal — skip the isFollowing + isKnown Redis check in isPriority.
+   *  Only set by fanoutToFollowers where recipients are proven followers
+   *  of the actor, so isPriority always returns true. */
+  _forcePriority?: true
+}
 
 const MAX_PER_USER = 200
 // Notifications older than this are dropped lazily on each loadAndAnnotate
@@ -76,11 +81,13 @@ const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
 
-// Cache window for the precomputed unread count. Matches the bell-poll
-// interval — within one poll cycle, most users hit the cache; the value
-// is invalidated by every priority write/read so true changes still
-// reflect immediately on the next poll.
-const UNREAD_COUNT_CACHE_TTL_SECS = 60
+// Cache window for the precomputed unread count. Priority writes and
+// mark-read paths call invalidateUnreadCount which DELs this key, so
+// accuracy for actionable items is immediate. The TTL only governs how
+// long a count can go stale for NON-priority writes (which never enter
+// the badge count anyway). 5 minutes reduces cache-miss Redis round-trips
+// by 5× vs the previous 60s without affecting bell-badge accuracy.
+const UNREAD_COUNT_CACHE_TTL_SECS = 300
 
 const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
@@ -161,10 +168,13 @@ export async function writeNotification(input: NotificationInput): Promise<void>
 
     const id = crypto.randomUUID()
     const timestamp = Math.floor(Date.now() / 1000)
-    const priority = await isPriority(input.recipient, input.type, input.actor, input.price)
+    const priority = input._forcePriority || await isPriority(input.recipient, input.type, input.actor, input.price)
     const recipient = input.recipient.toLowerCase()
+    // Strip the internal routing field before persisting — _forcePriority
+    // is a call-site hint, not notification data.
+    const { _forcePriority: _, ...inputData } = input
     const stored = {
-      ...input,
+      ...inputData,
       id,
       timestamp,
       priority,
@@ -216,7 +226,11 @@ export async function fanoutToFollowers(
     const followers = await getFollowers(source)
     await Promise.all(
       followers.map((follower) =>
-        writeNotification({ ...payload, recipient: follower, actor: source }),
+        // _forcePriority: recipients are proven followers of source, so
+        // isPriority always returns true via the isFollowing branch. Skip
+        // the 2 Redis calls (isFollowing SISMEMBER + KEY_PROFILES SISMEMBER)
+        // that would otherwise fire per recipient for collect/listing_created.
+        writeNotification({ ...payload, recipient: follower, actor: source, _forcePriority: true }),
       ),
     )
   } catch {
