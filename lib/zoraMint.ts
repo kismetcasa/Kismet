@@ -23,9 +23,11 @@ import {
 // filter the token out of collect-all. Fail-safe (no funds risk), but a
 // product gap to track if cross-platform features ship.
 //
-// ERC20_MINTER below is the canonical Zora ERC20Minter on Base (shared across
-// inprocess and Zora-native collections — Zora doesn't fork ERC20Minter the
-// way the FPSS deployment splits).
+// ERC20_MINTER below is the inprocess-specific ERC20Minter deployed on Base
+// mainnet (8453). Inprocess uses a different address on every other chain
+// (0x777777E8850d8D6d98De2B5f64fae401F96eFF31), and Zora-native collections
+// on Base also use that canonical address. Since Kismet only surfaces
+// inprocess-deployed collections, this Base-specific deployment is correct.
 export const ZORA_FIXED_PRICE_STRATEGY: Address = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
 export const ZORA_ERC20_MINTER: Address = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014'
 

@@ -67,20 +67,27 @@ export async function POST(req: NextRequest) {
     return errorResponse(429, 'Daily upload size limit reached — try again tomorrow')
   }
 
-  try {
-    const turbo = getTurbo()
-    const paidBy = getPaidBy()
-    const { id } = await turbo.upload({
-      data: serialized,
-      dataItemOpts: {
-        tags: [{ name: 'Content-Type', value: 'application/json' }],
-        ...(paidBy && { paidBy }),
-      },
-    })
-
-    return NextResponse.json({ uri: `ar://${id}` })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Upload failed'
-    return errorResponse(500, message)
+  const turbo = getTurbo()
+  const paidBy = getPaidBy()
+  const MAX_ATTEMPTS = 3
+  let lastErr: unknown
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt - 1)))
+    }
+    try {
+      const { id } = await turbo.upload({
+        data: serialized,
+        dataItemOpts: {
+          tags: [{ name: 'Content-Type', value: 'application/json' }],
+          ...(paidBy && { paidBy }),
+        },
+      })
+      return NextResponse.json({ uri: `ar://${id}` })
+    } catch (err) {
+      lastErr = err
+    }
   }
+  const message = lastErr instanceof Error ? lastErr.message : 'Upload failed'
+  return errorResponse(500, message)
 }

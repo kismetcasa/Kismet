@@ -7,5 +7,6 @@ export async function uploadJson(json: object): Promise<string> {
   })
   const data = await res.json() as { uri?: string; error?: string }
   if (!res.ok) throw new Error(data.error ?? 'Metadata upload failed')
-  return data.uri!
+  if (!data.uri) throw new Error('Upload returned no URI')
+  return data.uri
 }
