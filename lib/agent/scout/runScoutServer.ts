@@ -168,16 +168,32 @@ export async function runScoutServer(params: {
   //    executor re-resolves price on-chain; the permission cap is the hard guard.
   const executor = createSpendPermissionExecutor({ permission, spender, recipient })
   let collected = 0
-  let skipped = plan.decisions.length - plan.toCollect.length
+  let failed = 0
+  // `skipped` (returned) keeps its meaning — candidates NOT collected = engine
+  // policy-skips + execution failures. We track `failed` SEPARATELY so the logs
+  // below can distinguish a quiet run (all policy-skipped — normal) from a broken
+  // one (collects throwing — paymaster dead / RPC down / contract changed).
+  const policySkipped = plan.decisions.length - plan.toCollect.length
   for (const candidate of plan.toCollect) {
     try {
       const { txHash, quantity } = await executor.collect(scout, candidate)
       await recordCollect(baseUrl, owner, candidate, txHash, Number(quantity))
       collected += 1
-    } catch {
-      skipped += 1 // per-item failure (sold out, race, allowance) — keep going
+    } catch (err) {
+      failed += 1
+      // Surface WHY a collect failed. Without this the autonomous path is blind:
+      // every failure collapses into one integer, indistinguishable from a normal
+      // quiet run, while the kill-switch is reactive with no signal to trigger it.
+      console.error('[scout] collect failed', {
+        owner,
+        collection: candidate.collection,
+        tokenId: candidate.tokenId,
+        spender: spender.address,
+        err: err instanceof Error ? err.message : String(err),
+      })
     }
   }
+  const skipped = policySkipped + failed
 
   // 4. Persist usage from on-chain truth; notify the user.
   try {
@@ -197,6 +213,20 @@ export async function runScoutServer(params: {
       recipient: owner,
       amount: collected,
       currency: scout.budget.currency,
+    })
+  }
+
+  // One run-summary line, emitted ONLY when collects actually failed (a healthy or
+  // quiet run stays silent — no log noise). `allFailed` flags the emergency: every
+  // attempt threw, the "something systemic is broken — engage the kill-switch"
+  // signal a log-based alert keys on. Per-item reasons are in the logs above.
+  if (failed > 0) {
+    console.error('[scout] run completed with failures', {
+      owner,
+      attempted: plan.toCollect.length,
+      collected,
+      failed,
+      allFailed: collected === 0,
     })
   }
 

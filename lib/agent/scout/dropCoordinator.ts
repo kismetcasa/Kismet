@@ -223,6 +223,7 @@ export async function runDropCoordination(
   const byOwner = new Map(bidders.map((b) => [lc(b.owner), b]))
   let collected = 0
   let recipients = 0
+  let failed = 0
   for (const a of allocations) {
     const b = byOwner.get(a.owner)
     if (!b) continue
@@ -247,9 +248,33 @@ export async function runDropCoordination(
       await bumpItemUsage(b.record, b.periodStart).catch(() => {})
       collected += a.editions
       recipients += 1
-    } catch {
-      // sold out mid-run / allowance race / concurrent-collect lock — skip; self-heals on-open.
+    } catch (err) {
+      // sold out mid-run / allowance race / concurrent-collect lock — skip; self-heals
+      // on-open. Log WHY so a systemic failure (paymaster/RPC/contract) is visible
+      // rather than swallowed into a silently-empty coordination.
+      failed += 1
+      console.error('[scout] coordinated collect failed', {
+        owner: b.owner,
+        collection: drop.collection,
+        tokenId: drop.tokenId,
+        editions: a.editions,
+        spender: spender.address,
+        err: err instanceof Error ? err.message : String(err),
+      })
     }
+  }
+  // Failure-only summary (mirrors runScoutServer). `allFailed` = every allocated
+  // collect threw — the systemic-breakage signal for this drop.
+  if (failed > 0) {
+    console.error('[scout] drop coordination completed with failures', {
+      collection: drop.collection,
+      tokenId: drop.tokenId,
+      watchers: live.length,
+      recipients,
+      collected,
+      failed,
+      allFailed: recipients === 0,
+    })
   }
   return { watchers: live.length, collected, recipients }
 }
