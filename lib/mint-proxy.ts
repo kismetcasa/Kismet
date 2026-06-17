@@ -13,9 +13,9 @@ import { markCreatedMint } from './kv'
 import { runDropCoordination } from './agent/scout/dropCoordinator'
 import { SITE_URL } from './siteUrl'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
-import { hasGateAccess, isPlatformPausedFor } from './gate'
+import { getGateConfig, hasGateAccess, isPlatformPausedFor } from './gate'
 import { isBlacklisted } from './blacklist'
-import { recordPlatformTx } from './pass-validity'
+import { creditValidityOnce, recordPlatformTx } from './pass-validity'
 import { verifyIntent } from './intentAuth'
 import type { IntentAction, IntentEnvelope, MintBody } from './intent'
 import { consumeUserQuota } from './userQuota'
@@ -140,10 +140,11 @@ export async function proxyMintRequest(
     typeof contractField?.address === 'string'
       ? contractField.address
       : '0x0000000000000000000000000000000000000000'
-  const [blocked, paused, gateOk] = await Promise.all([
+  const [blocked, paused, gateOk, gateConfig] = await Promise.all([
     isBlacklisted(account),
     isPlatformPausedFor(account),
     hasGateAccess(targetForGate, account),
+    getGateConfig(),
   ])
   if (blocked) {
     return errorResponse(403, 'Address is blocked from minting')
@@ -303,6 +304,39 @@ export async function proxyMintRequest(
       // tokenMetadataURI instead.
       const tokenContent =
         typeof tokenObj.tokenContent === 'string' ? tokenObj.tokenContent : undefined
+
+      // Synchronous pass-validity credit for pass-collection mints.
+      //
+      // Alchemy fires the TransferSingle webhook within seconds of the block
+      // indexing. This handler takes up to INPROCESS_TIMEOUT_MS (60 s) before
+      // reaching this point — the webhook reliably arrives first. Without
+      // calling creditValidityOnce here, processTransfer runs with
+      // platform=false (recordPlatformTx is still queued in after()), skips
+      // the credit, and claims the processedKey NX lock. That lock prevents
+      // any retry — even after recordPlatformTx eventually writes the flag —
+      // so the recipient is permanently stuck at validBalance=0 despite
+      // holding the Pass on-chain. hasValidPass clamps DOWN only, so the
+      // live-balance check doesn't self-correct either.
+      //
+      // Calling creditValidityOnce here (before the response) claims the
+      // keyCredited CAS key first. When the webhook runs, its own
+      // creditValidityOnce call hits the already-claimed key and is a no-op.
+      // recordPlatformTx in after() below remains as a convergence backstop:
+      // if this synchronous credit fails (caught), the webhook can still
+      // converge once the platform flag is written.
+      if (txHash && gateConfig.passCollection && contractAddress.toLowerCase() === gateConfig.passCollection) {
+        try {
+          await creditValidityOnce({
+            collection: gateConfig.passCollection,
+            address: account,
+            txHash,
+            tokenId,
+            amount: 1,
+          })
+        } catch (err) {
+          console.error('[mint-proxy] creditValidityOnce failed', { txHash, account, err })
+        }
+      }
 
       after(async () => {
         const tasks: Promise<unknown>[] = [
