@@ -2,6 +2,7 @@
 
 import { useEffect, startTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { reloadOnceForChunkError } from '@/lib/chunkReload'
 
 // Segment-level error boundary. Catches throws from page server components
 // and nested layouts. Does NOT catch generateMetadata throws — that's an
@@ -19,17 +20,9 @@ export default function Error({
   const router = useRouter()
 
   useEffect(() => {
-    // ChunkLoadError = stale deploy. One-shot reload guarded by
-    // sessionStorage so a real bug can't trigger a refresh loop.
-    if (
-      error.name === 'ChunkLoadError' &&
-      typeof window !== 'undefined' &&
-      !sessionStorage.getItem('chunk-reloaded')
-    ) {
-      sessionStorage.setItem('chunk-reloaded', '1')
-      window.location.reload()
-      return
-    }
+    // ChunkLoadError = stale deploy. One-shot, loop-guarded reload shared with
+    // the event-handler path (lib/toast.ts) so they never double-reload.
+    if (error.name === 'ChunkLoadError' && reloadOnceForChunkError()) return
     console.error('[error-boundary]', { name: error.name, digest: error.digest })
   }, [error])
 

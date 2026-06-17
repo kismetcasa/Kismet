@@ -1,4 +1,5 @@
 import { toast } from 'sonner'
+import { reloadOnceForChunkError } from './chunkReload'
 
 // Recognized rejection patterns across MetaMask, WalletConnect, Coinbase
 // Wallet, Brave, Trust, etc. We match either the EIP-1193 numeric code
@@ -187,15 +188,22 @@ export function toastError(
     return
   }
   // Stale-deploy chunk failure: retrying the action re-runs the same broken
-  // import. Only a reload (fresh asset manifest) recovers, so surface that
-  // instead of a dead-end "<action> failed / Loading chunk N failed". Nothing
-  // was charged — the chunk throws before any upload or on-chain call runs.
+  // import — only a reload (fresh asset manifest) recovers. Nothing was
+  // charged (the chunk throws before any upload or on-chain call), so
+  // self-heal with a one-shot guarded auto-reload, painting a brief notice
+  // first so the refresh isn't jarring. If we already reloaded moments ago
+  // and it's STILL failing (genuine missing chunk), fall back to a manual
+  // Reload button rather than looping.
   if (isChunkLoadError(err)) {
-    toastReloadRecovery({
-      id: options.id,
-      title: 'App was updated',
-      description: 'A new version is live. Reload to continue — nothing was charged.',
-    })
+    if (reloadOnceForChunkError(900)) {
+      toast.loading('Updating to the latest version…', { id: options.id })
+    } else {
+      toastReloadRecovery({
+        id: options.id,
+        title: 'App was updated',
+        description: 'A new version is live. Reload to continue — nothing was charged.',
+      })
+    }
     return
   }
   if (options.onReconnect && isAuthError(err)) {
