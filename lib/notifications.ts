@@ -81,13 +81,19 @@ const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
 
-// Cache window for the precomputed unread count. Priority writes and
-// mark-read paths call invalidateUnreadCount which DELs this key, so
-// accuracy for actionable items is immediate. The TTL only governs how
-// long a count can go stale for NON-priority writes (which never enter
-// the badge count anyway). 5 minutes reduces cache-miss Redis round-trips
-// by 5× vs the previous 60s without affecting bell-badge accuracy.
-const UNREAD_COUNT_CACHE_TTL_SECS = 300
+// Cache window for the precomputed unread count. Every path that can change
+// the priority-unread count (priority writeNotification, markAllRead,
+// markOneRead) calls invalidateUnreadCount which DELs this key immediately,
+// so badge accuracy for all meaningful state changes is instant.
+//
+// The TTL is a safety net for one narrow edge: a priority notification that
+// was never read and expires via ZREMRANGEBYSCORE after NOTIF_TTL_SECONDS
+// (60 days). In that case the badge could show a stale +1 for up to TTL
+// seconds before self-correcting. At 3600s that's a 1-hour phantom badge on
+// a 60-day-old unread priority notification — an acceptable tradeoff given
+// that opening the bell (getNotifications → loadAndAnnotate) cleans it up
+// immediately. Non-priority writes never enter the count and are unaffected.
+const UNREAD_COUNT_CACHE_TTL_SECS = 3600
 
 const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
