@@ -138,14 +138,48 @@ export async function cdpSpender(): Promise<ScoutSpender> {
       // ONE atomic user op carries the whole spend()+approve+mint sequence, so
       // pulled funds never rest in the spender. Gas-sponsored when a paymaster
       // URL is set; otherwise the smart account pays from its own ETH.
-      const { userOpHash } = await smartAccount.sendUserOperation({
-        calls: calls.map((c) => ({ to: c.to, value: c.value, data: c.data })),
-        network: 'base',
-        ...(paymasterUrl ? { paymasterUrl } : {}),
-      })
-      const result = await smartAccount.waitForUserOperation({ userOpHash })
+      //
+      // The SDK resolves paymaster sponsorship inside this call (prepareUserOperation),
+      // which is also where the userOpHash is created — so a sponsorship-denied /
+      // exhausted failure throws HERE, before any hash exists (distinct from an
+      // on-chain revert, which surfaces in the wait below WITH a hash). With a
+      // paymaster set the spender holds no ETH, so sponsorship loss hard-fails every
+      // collect; label it so that class is unambiguous in the logs.
+      let userOpHash: Hex
+      try {
+        const sent = await smartAccount.sendUserOperation({
+          calls: calls.map((c) => ({ to: c.to, value: c.value, data: c.data })),
+          network: 'base',
+          ...(paymasterUrl ? { paymasterUrl } : {}),
+        })
+        userOpHash = sent.userOpHash as Hex
+      } catch (err) {
+        console.error('[scout] CDP send failed before broadcast (likely paymaster/sponsorship)', {
+          spender: address,
+          paymaster: !!paymasterUrl,
+          err: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
+      // The SDK's default wait is 30s and throws TimeoutError ("may still succeed")
+      // on expiry — under Base load a slow-but-landed mint would be counted as a skip
+      // (user gets the NFT, /api/collect never records it). Use the SDK's own longer
+      // value (60s, its EIP-7702 default) to make timeouts rare, and on an
+      // indeterminate timeout log the userOpHash so the op is traceable in the CDP
+      // dashboard; the next run's on-chain balance-dedup prevents a double-collect.
+      let result
+      try {
+        result = await smartAccount.waitForUserOperation({ userOpHash, waitOptions: { timeoutSeconds: 60 } })
+      } catch (err) {
+        console.error('[scout] CDP user op did not confirm in time — may still land', {
+          spender: address,
+          userOpHash,
+          err: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
       if (result.status !== 'complete') {
-        throw new Error(`CDP user operation ${userOpHash} did not complete (status: ${result.status})`)
+        throw new Error(`CDP user operation ${userOpHash} reverted on-chain (status: ${result.status})`)
       }
       return { txHash: result.transactionHash as Hex }
     },
