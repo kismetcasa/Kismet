@@ -128,6 +128,30 @@ function extractMessage(err: unknown): string {
   return String(err)
 }
 
+// Webpack lazy-chunk load failure. Almost always a stale deploy: chunk
+// hashes rotate server-side on each release, so a client holding an old
+// page open import()s a chunk URL that now 404s ("Loading chunk N failed").
+// A reload fetches the fresh asset manifest. Also covers the native ESM
+// dynamic-import phrasings some browsers/bundlers emit. app/error.tsx
+// auto-reloads on this when it reaches the render boundary, but errors
+// caught inside async event handlers (mint, deploy) never get there — they
+// route through toastError below, which is why we detect it here too.
+const CHUNK_ERROR_RE =
+  /Loading chunk|Loading CSS chunk|ChunkLoadError|(?:error|failed) (?:loading|to fetch) dynamically imported module/i
+
+/**
+ * True if the error chain is a webpack/ESM dynamic-chunk load failure.
+ * Matched by error name (ChunkLoadError) or the message phrasings webpack
+ * and browsers emit.
+ */
+export function isChunkLoadError(err: unknown): boolean {
+  if (typeof err === 'string') return CHUNK_ERROR_RE.test(err)
+  return walkError(err, (e) =>
+    (typeof e.name === 'string' && e.name === 'ChunkLoadError') ||
+    (typeof e.message === 'string' && CHUNK_ERROR_RE.test(e.message)),
+  )
+}
+
 /**
  * Map an unknown error (wallet rejection, RPC error, fetch error, generic
  * Error) to a single human-readable description string suitable for the
@@ -162,6 +186,18 @@ export function toastError(
     toast.error('Cancelled', { id: options.id })
     return
   }
+  // Stale-deploy chunk failure: retrying the action re-runs the same broken
+  // import. Only a reload (fresh asset manifest) recovers, so surface that
+  // instead of a dead-end "<action> failed / Loading chunk N failed". Nothing
+  // was charged — the chunk throws before any upload or on-chain call runs.
+  if (isChunkLoadError(err)) {
+    toastReloadRecovery({
+      id: options.id,
+      title: 'App was updated',
+      description: 'A new version is live. Reload to continue — nothing was charged.',
+    })
+    return
+  }
   if (options.onReconnect && isAuthError(err)) {
     const onReconnect = options.onReconnect
     toast.error('Wallet needs to reconnect', {
@@ -191,15 +227,19 @@ export function toastError(
 }
 
 /**
- * Terminal recovery toast for when reconnect already ran and the wallet
- * is still returning auth errors. A full page reload re-bootstraps the
- * SDK, wagmi connectors, and EIP-1193 provider — the universal recovery
- * (notably for Farcaster Mini App hosts with a dead bridge).
+ * Terminal recovery toast offering a full page reload. Default copy targets
+ * the wallet-recovery case (reconnect ran, wallet still erroring — a reload
+ * re-bootstraps the SDK, wagmi connectors, and EIP-1193 provider, notably
+ * for Farcaster Mini App hosts with a dead bridge). `title`/`description`
+ * override it for other reload-only failures, e.g. a stale-deploy chunk error.
  */
-export function toastReloadRecovery(options: { id?: string } = {}): void {
-  toast.error('Try reloading the page', {
+export function toastReloadRecovery(
+  options: { id?: string; title?: string; description?: string } = {},
+): void {
+  toast.error(options.title ?? 'Try reloading the page', {
     id: options.id,
     description:
+      options.description ??
       'Your wallet session needs a fresh start. Nothing was charged.',
     action: {
       label: 'Reload',
