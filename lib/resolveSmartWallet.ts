@@ -46,7 +46,7 @@ export async function resolveSmartWallet(
 
   let res: Response
   try {
-    const url = inprocessUrl('/smartwallet', { artist_wallet: artistWallet })
+    const url = inprocessUrl('/smartwallet', { walletAddress: artistWallet })
     const headers: Record<string, string> = { Accept: 'application/json' }
     const apiKey = process.env.INPROCESS_API_KEY
     if (apiKey) headers['x-api-key'] = apiKey
