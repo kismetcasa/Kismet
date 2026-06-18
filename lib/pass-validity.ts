@@ -105,11 +105,16 @@ const ERC1155_ABI = [
   },
 ] as const
 
-// Atomic SADD + EXPIRE so the flagged set always carries its TTL — a SADD
-// without a paired EXPIRE would leak the key forever.
+// Multi-SADD + EXPIRE in ONE eval (one Redis round-trip / billed command) so a
+// many-recipient airdrop flags everyone in a single command instead of N — back
+// to the pre-fix command count and within the Redis free-tier budget — and the
+// set always carries its TTL (a SADD without a paired EXPIRE would leak the
+// key). ARGV[1] = TTL, ARGV[2..] = members.
 const RECORD_PLATFORM_TX_LUA = `
-redis.call('SADD', KEYS[1], ARGV[1])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+for i = 2, #ARGV do
+  redis.call('SADD', KEYS[1], ARGV[i])
+end
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
 return 1
 `
 
@@ -130,12 +135,13 @@ function platformTxMember(recipient: string, tokenId: string): string | null {
   }
 }
 
-/** Flag `(recipient, tokenId)` as a verified platform acquisition in `txHash`
- *  (mint, collect, airdrop, or Kismet secondary fill). The webhook consults
- *  this set per-(recipient, tokenId) to decide whether a transfer's `to` earns
- *  validity for that tokenId and whether the tokenId escapes taint. Callers
- *  MUST flag only pairs they proved on-chain — never the whole tx — so a
- *  transfer bundled into the same tx can't ride the flag to launder validity
+/** Flag each of `recipients` as a verified platform acquirer of `tokenId` in
+ *  `txHash` (mint, collect, airdrop, or Kismet secondary fill) — all in ONE
+ *  eval, so a many-recipient airdrop is a single Redis command. The webhook
+ *  consults this set per-(recipient, tokenId) to decide whether a transfer's
+ *  `to` earns validity for that tokenId and whether the tokenId escapes taint.
+ *  Callers MUST flag only pairs they proved on-chain — never the whole tx — so
+ *  a transfer bundled into the same tx can't ride the flag to launder validity
  *  or skip taint.
  *
  *  Retries with backoff so a transient Redis flap doesn't silently drop the
@@ -143,11 +149,13 @@ function platformTxMember(recipient: string, tokenId: string): string | null {
  *  validity even though they legitimately got the Pass through our flow. */
 export async function recordPlatformTx(
   txHash: string,
-  recipient: string,
+  recipients: string[],
   tokenId: string,
 ): Promise<void> {
-  const member = platformTxMember(recipient, tokenId)
-  if (!txHash || !member) return
+  const members = recipients
+    .map((r) => platformTxMember(r, tokenId))
+    .filter((m): m is string => m !== null)
+  if (!txHash || members.length === 0) return
   const delays = [0, 200, 500, 1000]
   let lastErr: unknown
   for (const delay of delays) {
@@ -156,7 +164,7 @@ export async function recordPlatformTx(
       await redis.eval(
         RECORD_PLATFORM_TX_LUA,
         [keyPlatformTx(txHash)],
-        [member, PLATFORM_TX_TTL],
+        [PLATFORM_TX_TTL, ...members],
       )
       return
     } catch (err) {
