@@ -2,7 +2,7 @@
 //
 // Network egress is blocked in CI/sandbox. We verify the parts that don't need
 // a chain: the one-time setApprovalForAll calldata, price→base-unit conversion,
-// the sellerProceeds + royalty == price invariant the order encodes (which
+// the sellerProceeds + fee + royalty == price invariant the order encodes (which
 // /api/listings also enforces), and that the EIP-712 typed data is well-formed
 // (hashTypedData throws if domain/types/message are inconsistent).
 //
@@ -21,6 +21,7 @@ import {
   parseUnits,
 } from 'viem'
 import {
+  PLATFORM_FEE_RECIPIENT,
   PUBLISHED_SUFFIX,
   SEAPORT,
   USDC,
@@ -28,6 +29,7 @@ import {
   ZERO_BYTES32,
   builderSuffix,
   check,
+  computePlatformFee,
   eq,
   report,
   withSuffix,
@@ -73,7 +75,7 @@ const SELLER = getAddress('0x71Dc000000000000000000000000000000007244')
 const COLLECTION = getAddress('0x00000000000000000000000000000000c011ec70')
 const RECEIVER = getAddress('0x2222222222222222222222222222222222222222')
 
-function buildOrderMessage(currency: 'eth' | 'usdc', sellerProceeds: bigint, royalty: bigint, counter: bigint) {
+function buildOrderMessage(currency: 'eth' | 'usdc', sellerProceeds: bigint, fee: bigint, royalty: bigint, counter: bigint) {
   const isUsdc = currency === 'usdc'
   const itemType = isUsdc ? 1 : 0
   const token = isUsdc ? USDC : ZERO_ADDR
@@ -87,6 +89,10 @@ function buildOrderMessage(currency: 'eth' | 'usdc', sellerProceeds: bigint, roy
   }> = [
     { itemType, token, identifierOrCriteria: 0n, startAmount: sellerProceeds, endAmount: sellerProceeds, recipient: SELLER },
   ]
+  // Platform fee at index 1 — mirrors buildSellOrder in lib/seaport.ts
+  if (fee > 0n) {
+    consideration.push({ itemType, token, identifierOrCriteria: 0n, startAmount: fee, endAmount: fee, recipient: PLATFORM_FEE_RECIPIENT })
+  }
   if (royalty > 0n) {
     consideration.push({ itemType, token, identifierOrCriteria: 0n, startAmount: royalty, endAmount: royalty, recipient: RECEIVER })
   }
@@ -123,25 +129,28 @@ console.log('\nprice conversion + proceeds invariant')
   check('parseEther("0.01") = 1e16 wei', parseEther('0.01') === 10000000000000000n)
   check('parseUnits("5", 6) = 5_000_000 (USDC)', parseUnits('5', 6) === 5000000n)
 
-  // ETH: 0.01 with 5% royalty
+  // ETH: 0.01 with 5% royalty + 1% platform fee
   const ethPrice = parseEther('0.01')
   const ethRoyalty = (ethPrice * 5n) / 100n
-  const ethProceeds = ethPrice - ethRoyalty
-  check('ETH: sellerProceeds + royalty == price', ethProceeds + ethRoyalty === ethPrice)
+  const ethFee = computePlatformFee(ethPrice)
+  const ethProceeds = ethPrice - ethRoyalty - ethFee
+  check('ETH: sellerProceeds + fee + royalty == price', ethProceeds + ethFee + ethRoyalty === ethPrice)
 
-  // USDC: 5 with 10% royalty
+  // USDC: 5 with 10% royalty + 1% platform fee
   const usdcPrice = parseUnits('5', 6)
   const usdcRoyalty = (usdcPrice * 10n) / 100n
-  const usdcProceeds = usdcPrice - usdcRoyalty
-  check('USDC: sellerProceeds + royalty == price', usdcProceeds + usdcRoyalty === usdcPrice)
+  const usdcFee = computePlatformFee(usdcPrice)
+  const usdcProceeds = usdcPrice - usdcRoyalty - usdcFee
+  check('USDC: sellerProceeds + fee + royalty == price', usdcProceeds + usdcFee + usdcRoyalty === usdcPrice)
 }
 
 console.log('\nEIP-712 typed data is well-formed (hashes cleanly)')
 for (const currency of ['eth', 'usdc'] as const) {
   const price = currency === 'usdc' ? parseUnits('5', 6) : parseEther('0.01')
   const royalty = (price * 5n) / 100n
-  const proceeds = price - royalty
-  const message = buildOrderMessage(currency, proceeds, royalty, 0n)
+  const fee = computePlatformFee(price)
+  const proceeds = price - royalty - fee
+  const message = buildOrderMessage(currency, proceeds, fee, royalty, 0n)
   let hash = ''
   let threw = false
   try {
