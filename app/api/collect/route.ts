@@ -206,7 +206,7 @@ export async function POST(req: NextRequest) {
   // /admin/pass grant. verifyMintOnChain already proved this is a real mint
   // of `tokenId` from `collectionLower` to `account`, so flagging is safe.
   after(() =>
-    recordPlatformTx(txHash).catch(
+    recordPlatformTx(txHash, [account], tokenId).catch(
       bestEffort('collect.recordPlatformTx', { txHash, collection: collectionLower, account }),
     ),
   )
@@ -217,7 +217,7 @@ export async function POST(req: NextRequest) {
   // can deliver the on-chain event before this request even runs (the client calls
   // /api/collect only after the mint mines), so the webhook routinely sees no flag,
   // skips the credit, and claims its idempotency key so it never retries — the credit
-  // is lost permanently and the collector is stuck behind "COLLECT CREATOR PASS".
+  // is lost permanently and the collector is stuck behind the "collect from <name>" gate CTA.
   // Crediting directly here removes that race. creditValidityOnce is idempotent (same
   // keyCredited as the webhook), so whichever fires first wins and the other no-ops.
   // amount:1 — the gate only needs validBalance >= 1, the client's amount is untrusted,

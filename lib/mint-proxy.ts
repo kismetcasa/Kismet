@@ -13,7 +13,7 @@ import { markCreatedMint } from './kv'
 import { runDropCoordination } from './agent/scout/dropCoordinator'
 import { SITE_URL } from './siteUrl'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
-import { getGateConfig, hasGateAccess, isPlatformPausedFor } from './gate'
+import { getGateConfig, getPassCollectionName, hasGateAccess, isPlatformPausedFor } from './gate'
 import { isBlacklisted } from './blacklist'
 import { creditValidityOnce, recordPlatformTx } from './pass-validity'
 import { verifyIntent } from './intentAuth'
@@ -72,7 +72,12 @@ export async function proxyMintRequest(
   if (typeof body?.account !== 'string' || !isAddress(body.account)) {
     return errorResponse(400, 'account is required and must be a valid address')
   }
-  const account = body.account
+  // Lowercase up-front so every downstream consumer — gate/blacklist checks,
+  // creditValidityOnce, profile + moment-meta writes — keys off the canonical
+  // form, matching the collect/airdrop/listing paths. Safe for verifyIntent
+  // below: the signed message is rebuilt from `body` (unchanged), and
+  // verifyTypedData compares the expected-signer address case-insensitively.
+  const account = body.account.toLowerCase()
   void trackWallet(account)
 
   const tokenObj = (body?.token as Record<string, unknown> | undefined) ?? {}
@@ -153,7 +158,10 @@ export async function proxyMintRequest(
     return errorResponse(503, 'Platform is temporarily paused')
   }
   if (!gateOk) {
-    return errorResponse(403, 'Kismet Creator pass required to mint')
+    const name = gateConfig.passCollection
+      ? await getPassCollectionName(gateConfig.passCollection)
+      : null
+    return errorResponse(403, `An artwork from ${name ?? 'the required collection'} is required to mint`)
   }
 
   // Validate splits after the platform-policy gates so a paused/blocked/
@@ -404,8 +412,8 @@ export async function proxyMintRequest(
         // deny the recipient validity and force a manual /admin/pass grant.
         if (txHash) {
           tasks.push(
-            recordPlatformTx(txHash).catch(
-              bestEffort('mint-proxy.recordPlatformTx', { txHash }),
+            recordPlatformTx(txHash, [account], tokenId).catch(
+              bestEffort('mint-proxy.recordPlatformTx', { txHash, account }),
             ),
           )
         }
