@@ -7,7 +7,11 @@ import { useEffect, useState } from 'react'
 // Two adjacent surfaces (e.g. CollectionView + CreateCollectionForm) for
 // the same artist coalesce on a single in-flight fetch via `inFlight`.
 const cache = new Map<string, string | null>()
-const inFlight = new Map<string, Promise<string | null>>()
+// Permanent misses (404 — no inprocess account for this EOA). Cached so
+// the reactive hook and the deploy handler don't hammer the API on every
+// render cycle for a wallet that will never resolve.
+const notFoundCache = new Set<string>()
+const inFlight = new Map<string, Promise<SmartWalletLoadResult>>()
 
 // Without a timeout, a stalled inprocess /smartwallet upstream hangs this
 // fetch indefinitely. On the deploy path that means CreateCollectionForm
@@ -15,17 +19,34 @@ const inFlight = new Map<string, Promise<string | null>>()
 // the UI sits on "Deploying…" and no transaction is ever proposed.
 const FETCH_TIMEOUT_MS = 12_000
 
-async function load(artistWallet: string): Promise<string | null> {
+/**
+ * Result of the imperative fetch:
+ * - `{ address }`: resolved.
+ * - `{ notFound: true }`: EOA has no inprocess account — permanent.
+ * - `null`: transient failure — retry may help.
+ */
+export type SmartWalletLoadResult = { address: string } | { notFound: true } | null
+
+async function load(artistWallet: string): Promise<SmartWalletLoadResult> {
   const key = artistWallet.toLowerCase()
-  if (cache.has(key)) return cache.get(key) ?? null
+  if (notFoundCache.has(key)) return { notFound: true }
+  if (cache.has(key)) {
+    const v = cache.get(key)
+    return v ? { address: v } : null
+  }
   const existing = inFlight.get(key)
   if (existing) return existing
-  const promise = (async () => {
+  const promise = (async (): Promise<SmartWalletLoadResult> => {
     try {
       const res = await fetch(
         `/api/inprocess/smart-wallet?artist_wallet=${encodeURIComponent(key)}`,
         { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
       )
+      if (res.status === 404) {
+        // Permanent: no inprocess account for this EOA.
+        notFoundCache.add(key)
+        return { notFound: true }
+      }
       if (!res.ok) return null
       const data = (await res.json()) as { address?: string }
       const addr = typeof data?.address === 'string' ? data.address : null
@@ -33,7 +54,7 @@ async function load(artistWallet: string): Promise<string | null> {
       // subsequent attempt (deploy, authorize banner) until a full reload,
       // turning a transient blip into a permanent failure.
       if (addr) cache.set(key, addr)
-      return addr
+      return addr ? { address: addr } : null
     } catch {
       return null
     } finally {
@@ -45,14 +66,12 @@ async function load(artistWallet: string): Promise<string | null> {
 }
 
 /**
- * Imperative resolver — returns the cached value when available, else
- * triggers (or joins) the single in-flight fetch for that artist. Use
- * from inside an async handler when you need the address exactly once
- * at action time and want to await it (e.g. CreateCollectionForm).
+ * Imperative resolver — returns the full result (address / notFound / null)
+ * for use inside async handlers. Joins an in-flight fetch when one is active.
  */
 export async function fetchInprocessSmartWallet(
   artistWallet: string,
-): Promise<string | null> {
+): Promise<SmartWalletLoadResult> {
   return load(artistWallet)
 }
 
@@ -71,10 +90,17 @@ export function useInprocessSmartWallet(
   const [address, setAddress] = useState<string | null>(
     key && cache.has(key) ? (cache.get(key) ?? null) : null,
   )
-  const [loading, setLoading] = useState<boolean>(!!key && !cache.has(key))
+  const [loading, setLoading] = useState<boolean>(
+    !!key && !cache.has(key) && !notFoundCache.has(key),
+  )
 
   useEffect(() => {
     if (!key) {
+      setAddress(null)
+      setLoading(false)
+      return
+    }
+    if (notFoundCache.has(key)) {
       setAddress(null)
       setLoading(false)
       return
@@ -86,9 +112,9 @@ export function useInprocessSmartWallet(
     }
     let cancelled = false
     setLoading(true)
-    load(key).then((a) => {
+    load(key).then((result) => {
       if (cancelled) return
-      setAddress(a)
+      setAddress(result && 'address' in result ? result.address : null)
       setLoading(false)
     })
     return () => {

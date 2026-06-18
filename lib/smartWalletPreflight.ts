@@ -91,10 +91,14 @@ export async function checkSmartWalletAdmin(
   let smartWallet: string | undefined
   try {
     const resolved = await resolveSmartWallet(callerEoa)
-    if (!resolved) {
+    // Both the transient (null) and no-account (notFound) cases leave us
+    // without a smart wallet to read ADMIN on. Return 'unknown' for both —
+    // the caller falls through and lets inprocess's gas estimation be the
+    // source of truth, exactly as before the result type was discriminated.
+    if (!resolved || 'notFound' in resolved) {
       return { status: 'unknown', reason: 'could not resolve smart wallet' }
     }
-    smartWallet = resolved
+    smartWallet = resolved.address
 
     const client = serverBaseClient()
     const safeRead = async (tid: bigint): Promise<bigint | null> => {

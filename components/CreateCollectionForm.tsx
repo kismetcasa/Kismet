@@ -301,7 +301,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       let smartWallet = resolvedSmartWallet
       if (!smartWallet && address) {
         try {
-          smartWallet = await fetchInprocessSmartWallet(address)
+          const r = await fetchInprocessSmartWallet(address)
+          smartWallet = r && 'address' in r ? r.address : null
         } catch {
           smartWallet = null
         }
@@ -640,10 +641,30 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // recover from a banner since they're already defaultAdmin and
       // there's nothing for them to fix. Better to fail fast at deploy
       // than ship a half-authorized collection.
-      const inprocessSmartWallet = await fetchInprocessSmartWallet(address)
+      //
+      // Retry up to 3 times with backoff only for transient failures (null).
+      // A "not found" (404) means the connected wallet has no inprocess
+      // account — retrying won't help; fail immediately with a clear message.
+      let inprocessSmartWallet: string | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 2000 * attempt))
+        }
+        const result = await fetchInprocessSmartWallet(address)
+        if (result && 'notFound' in result) {
+          throw new Error(
+            'This wallet has no inprocess account. Visit inprocess.world to get started.',
+          )
+        }
+        if (result && 'address' in result) {
+          inprocessSmartWallet = result.address
+          break
+        }
+        // null → transient; fall through and retry
+      }
       if (!inprocessSmartWallet || !isAddress(inprocessSmartWallet)) {
         throw new Error(
-          'Could not resolve your inprocess smart wallet — try again in a moment',
+          'Could not reach the inprocess service — try again in a moment',
         )
       }
       // Lift the resolved address into state so the receipt-watcher

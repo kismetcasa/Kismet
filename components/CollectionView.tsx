@@ -264,15 +264,17 @@ export function CollectionView({
       // deterministic from the EOA), block the grant rather than
       // ship a half-authorization that mints would silently fail on.
       toast.loading('Resolving mint wallet…', { id: 'authorize-creator' })
-      const smartWallet = await fetchInprocessSmartWallet(eoa)
-      if (!smartWallet || !isAddress(smartWallet)) {
+      const swResult = await fetchInprocessSmartWallet(eoa)
+      if (!swResult || 'notFound' in swResult) {
         toast.error(
-          'Could not resolve a mint wallet for that address — try again in a moment',
+          swResult && 'notFound' in swResult
+            ? 'That address has no inprocess account'
+            : 'Could not reach inprocess — try again in a moment',
           { id: 'authorize-creator' },
         )
         return
       }
-      const swLower = smartWallet.toLowerCase() as `0x${string}`
+      const swLower = swResult.address.toLowerCase() as `0x${string}`
       const label = raw.endsWith('.eth') ? raw : undefined
       toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
       // Multicall: grant ADMIN to SW (MintForm relay) + grant ADMIN to
