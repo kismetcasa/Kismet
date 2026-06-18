@@ -15,8 +15,15 @@ const PLATFORM_TX_TTL = 90 * 24 * 60 * 60
 const CREDITED_TTL = 90 * 24 * 60 * 60
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
+// Per-tx set of the `<recipient>:<tokenId>` pairs individually verified as
+// platform acquisitions in this tx (see platformTxMember), consulted by the
+// webhook via SISMEMBER. Per-(recipient, tokenId) — not tx-level — so a
+// transfer bundled into a platform-flagged tx (e.g. a smart-wallet batch)
+// can't inherit "platform-originated" to escape taint or get credited. New
+// `:rcpt:` namespace so it never collides with the pre-migration tx-level
+// string flag (which simply expires unread).
 const keyPlatformTx = (txHash: string) =>
-  `kismetart:pass:platform-tx:${txHash.toLowerCase()}`
+  `kismetart:pass:platform-tx:rcpt:${txHash.toLowerCase()}`
 const keyValidBalance = (collection: string, addr: string) =>
   `kismetart:pass:valid-balance:${collection.toLowerCase()}:${addr.toLowerCase()}`
 const keyAdminGrant = (collection: string, addr: string) =>
@@ -98,22 +105,67 @@ const ERC1155_ABI = [
   },
 ] as const
 
-/** Mark a transaction as platform-originated (mint, collect, or platform sale).
- *  Called server-side from the endpoints that produce Pass-related on-chain txs.
- *  The webhook later consults this set to decide whether a transfer's recipient
- *  earns validity (yes for platform-originated, no for off-platform).
+// Multi-SADD + EXPIRE in ONE eval (one Redis round-trip / billed command) so a
+// many-recipient airdrop flags everyone in a single command instead of N — back
+// to the pre-fix command count and within the Redis free-tier budget — and the
+// set always carries its TTL (a SADD without a paired EXPIRE would leak the
+// key). ARGV[1] = TTL, ARGV[2..] = members.
+const RECORD_PLATFORM_TX_LUA = `
+for i = 2, #ARGV do
+  redis.call('SADD', KEYS[1], ARGV[i])
+end
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+return 1
+`
+
+// A flagged set member is `<recipient>:<canonical tokenId>` — the exact
+// (wallet, tokenId) pair a route proved on-chain. Per-(recipient, tokenId),
+// not per-recipient: otherwise a transfer of a DIFFERENT tokenId bundled into
+// the same tx as a legitimate acquisition by the same wallet would still ride
+// the recipient's flag (escape taint + take a redundant credit). tokenId is
+// canonicalized (BigInt) so it matches the webhook's hexToBigIntString form
+// regardless of leading zeros. Returns null for an unparseable tokenId →
+// unflaggable, treated as not-platform.
+function platformTxMember(recipient: string, tokenId: string): string | null {
+  if (!recipient || !tokenId) return null
+  try {
+    return `${recipient.toLowerCase()}:${BigInt(tokenId).toString()}`
+  } catch {
+    return null
+  }
+}
+
+/** Flag each of `recipients` as a verified platform acquirer of `tokenId` in
+ *  `txHash` (mint, collect, airdrop, or Kismet secondary fill) — all in ONE
+ *  eval, so a many-recipient airdrop is a single Redis command. The webhook
+ *  consults this set per-(recipient, tokenId) to decide whether a transfer's
+ *  `to` earns validity for that tokenId and whether the tokenId escapes taint.
+ *  Callers MUST flag only pairs they proved on-chain — never the whole tx — so
+ *  a transfer bundled into the same tx can't ride the flag to launder validity
+ *  or skip taint.
  *
  *  Retries with backoff so a transient Redis flap doesn't silently drop the
  *  flag — a missing flag at webhook time silently denies the recipient pass
  *  validity even though they legitimately got the Pass through our flow. */
-export async function recordPlatformTx(txHash: string): Promise<void> {
-  if (!txHash) return
+export async function recordPlatformTx(
+  txHash: string,
+  recipients: string[],
+  tokenId: string,
+): Promise<void> {
+  const members = recipients
+    .map((r) => platformTxMember(r, tokenId))
+    .filter((m): m is string => m !== null)
+  if (!txHash || members.length === 0) return
   const delays = [0, 200, 500, 1000]
   let lastErr: unknown
   for (const delay of delays) {
     if (delay) await new Promise((r) => setTimeout(r, delay))
     try {
-      await redis.set(keyPlatformTx(txHash), '1', { ex: PLATFORM_TX_TTL })
+      await redis.eval(
+        RECORD_PLATFORM_TX_LUA,
+        [keyPlatformTx(txHash)],
+        [PLATFORM_TX_TTL, ...members],
+      )
       return
     } catch (err) {
       lastErr = err
@@ -122,8 +174,10 @@ export async function recordPlatformTx(txHash: string): Promise<void> {
   throw lastErr
 }
 
-async function isPlatformTx(txHash: string): Promise<boolean> {
-  const v = await redis.get(keyPlatformTx(txHash))
+async function isPlatformTx(txHash: string, recipient: string, tokenId: string): Promise<boolean> {
+  const member = platformTxMember(recipient, tokenId)
+  if (!member) return false
+  const v = await redis.sismember(keyPlatformTx(txHash), member)
   return !!v
 }
 
@@ -228,7 +282,10 @@ async function getKnownTokenIds(collection: string): Promise<string[]> {
  *  the webhook backstop or admin grant will recover) than to launder
  *  validity through a downed Redis. */
 async function isTokenTainted(collection: string, tokenId: string): Promise<boolean> {
-  if (!tokenId) return false
+  // Fail CLOSED on a missing tokenId: an empty id must never read as
+  // "not tainted" and let a credit through. Defense-in-depth — creditValidityOnce
+  // already rejects an empty tokenId before reaching here.
+  if (!tokenId) return true
   try {
     return !!(await redis.sismember(keyTainted(collection), tokenId))
   } catch {
@@ -264,9 +321,12 @@ async function getTaintedTokenIds(collection: string): Promise<Set<string>> {
  *     validity). Unconditional — applies to OpenSea, Seaport direct,
  *     P2P safeTransferFrom, burns. The platform-flag only affects the
  *     to-credit decision below, never the from-decrement.
- *  2. Platform-flagged tx (Kismet mint / collect / airdrop / secondary
- *     fill) credits `to` via creditValidityOnce. Direct-credit paths
- *     converge through the same idempotency key.
+ *  2. When `(to, tokenId)` is a flagged platform acquisition of this tx (Kismet
+ *     mint / collect / airdrop / secondary fill) credit `to` via
+ *     creditValidityOnce. Per-(recipient, tokenId), so a transfer co-bundled
+ *     into the tx — to an unflagged wallet, OR of a different tokenId to a
+ *     flagged wallet — is NOT credited. Direct-credit paths converge through
+ *     the same idempotency key.
  *  3. OFF-PLATFORM non-mint transfer permanently taints the tokenId.
  *     A tainted tokenId can never confer validity again, even via a
  *     subsequent Kismet sale — creditValidityOnce refuses credit for
@@ -298,7 +358,12 @@ export async function processTransfer(params: {
     void redis.sadd(keyKnownTokens(collection), tokenId).catch(() => {})
   }
 
-  const platform = await isPlatformTx(txHash)
+  // Per-(recipient, tokenId): was THIS exact (to, tokenId) pair flagged as a
+  // verified platform acquisition in this tx? A transfer whose (to, tokenId)
+  // wasn't verified — including a different tokenId bundled into a tx that
+  // flagged `to` for some OTHER tokenId — reads false, so it taints + isn't
+  // credited.
+  const platform = await isPlatformTx(txHash, to, tokenId)
   const isMint = from === ZERO_ADDRESS
 
   // Any-transfer-revokes invariant: `from`'s decrement runs
@@ -391,7 +456,11 @@ export async function creditValidityOnce(params: {
 }): Promise<void> {
   const { collection, address, txHash, tokenId } = params
   const amount = params.amount ?? 1
-  if (amount <= 0 || !address || !txHash) return
+  // Reject a missing tokenId outright: without it the taint check below is
+  // meaningless (a tainted Pass could be credited) and the credited-key/
+  // known-tokens writes are skipped. No caller passes an empty id today (all
+  // canonicalize via BigInt().toString()); this closes the latent footgun.
+  if (amount <= 0 || !address || !txHash || !tokenId) return
 
   if (await isPassBlacklisted(address)) return
 

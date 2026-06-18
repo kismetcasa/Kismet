@@ -12,9 +12,13 @@ export interface GateConfig {
   /** Address of the dedicated Pass collection. Holding any tokenId minted
    *  into this collection (with valid provenance) grants creator access. */
   passCollection: string | null
-  /** Emergency kill switch — when true, every gated mutating action
-   *  (mint, write) is rejected for non-admin callers. Admin still
-   *  bypasses so the unpause toggle can be verified. */
+  /** Emergency kill switch. Enforced server-side only on the relayed creator
+   *  writes (mint, write — lib/mint-proxy), which the server can hard-stop.
+   *  Direct-from-wallet create surfaces via /api/platform-status, where the
+   *  client disables its deploy button (CreateCollectionForm) — the on-chain
+   *  deploy can't be server-gated, so the button is the stop. NOT a
+   *  stop-everything switch: collect / airdrop / listing flows are not gated by
+   *  pause. Admin bypasses so the unpause toggle can be verified. */
   paused: boolean
 }
 
@@ -58,10 +62,21 @@ export async function getGateConfig(): Promise<GateConfig> {
     return config
   } catch {
     // Last-known-good: gate stays in its prior enforced state during a
-    // transient Redis outage. Only falls back to fail-open (enabled:false)
-    // if no cached value exists (cold start with Redis already down).
+    // transient Redis outage. Only falls back here if no cached value
+    // exists (cold start with Redis already down).
     if (_configCache) return _configCache.value
-    return { enabled: false, passCollection: null, paused: false }
+    // Cold start + Redis unreachable: there is no last-known-good to trust.
+    // Fail the emergency kill-switch CLOSED (paused:true) so an Upstash outage
+    // coinciding with a fresh-instance boot can't silently neutralize an active
+    // pause. paused:true makes mint-proxy 503 every non-admin mint/write
+    // server-side, and makes /api/platform-status report paused so the client
+    // disables its create button for the window — admin still bypasses — and it
+    // self-heals the instant a real read repopulates the cache. enabled stays
+    // false here, so hasGateAccess ADMITS; the *pause* is what denies. We don't
+    // fabricate an enabled gate (no trustworthy passCollection), and pause is
+    // the one piece of state with no on-chain backstop, so it's the one we fail
+    // closed.
+    return { enabled: false, passCollection: null, paused: true }
   }
 }
 
