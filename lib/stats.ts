@@ -60,11 +60,14 @@ function accumulate(
   return 1
 }
 
-// ZADD absolute (overwrite) so each run is idempotent + self-healing; chunked.
+// ZADD absolute (overwrite) so each run is idempotent + self-healing. One
+// multi-member ZADD per chunk — Upstash bills per command, so batching the whole
+// earner set keeps a rebuild to ~3 commands, not ~3×artists.
 async function writeZset(key: string, m: Map<string, number>): Promise<void> {
-  const entries = [...m].filter(([, v]) => v > 0)
-  for (let i = 0; i < entries.length; i += 500) {
-    await Promise.all(entries.slice(i, i + 500).map(([member, score]) => redis.zadd(key, { score, member })))
+  const entries = [...m].filter(([, v]) => v > 0).map(([member, score]) => ({ score, member }))
+  for (let i = 0; i < entries.length; i += 1000) {
+    const chunk = entries.slice(i, i + 1000)
+    if (chunk.length) await redis.zadd(key, chunk[0], ...chunk.slice(1))
   }
 }
 
@@ -96,59 +99,52 @@ export async function rebuildStats(): Promise<{ artists: number; transfers: numb
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
-async function scores(key: string, members: string[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
-  if (members.length === 0) return out
-  try {
-    const s = await Promise.all(members.map((m) => redis.zscore(key, m)))
-    members.forEach((m, i) => {
-      const v = Number(s[i])
-      if (Number.isFinite(v)) out.set(m, v)
-    })
-  } catch {}
-  return out
-}
-
 // Top artists by metric. ETH/USDC rank on the stable native totals; USD on the
 // derived value (one cached price). Only artists who pinned earnings public are
 // included (same gate as the card + share); admin-hidden users stripped.
+// Reads each set once (3 ZRANGE) + a profile MGET — no per-row ZSCORE fan-out.
 export async function getEarningsLeaderboard(metric: EarningsMetric, limit = 50): Promise<ArtistEarnings[]> {
   const n = Math.min(100, Math.max(1, Math.floor(limit) || 50))
   let ethRaw: (string | number)[]
   let usdcRaw: (string | number)[]
+  let mintsRaw: (string | number)[]
   try {
-    [ethRaw, usdcRaw] = await Promise.all([
+    [ethRaw, usdcRaw, mintsRaw] = await Promise.all([
       redis.zrange(ETH_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
       redis.zrange(USDC_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+      redis.zrange(MINTS_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
     ])
   } catch {
     return []
   }
 
-  // withScores → flat [member, score, …]; merge the two native sets.
-  const merged = new Map<string, { eth: number; usdc: number }>()
-  for (let i = 0; i < ethRaw.length; i += 2) {
-    merged.set(String(ethRaw[i]).toLowerCase(), { eth: Number(ethRaw[i + 1]) || 0, usdc: 0 })
+  // withScores → flat [member, score, …]; merge the three native sets by artist.
+  const merged = new Map<string, { eth: number; usdc: number; mints: number }>()
+  const fold = (raw: (string | number)[], field: 'eth' | 'usdc' | 'mints') => {
+    for (let i = 0; i < raw.length; i += 2) {
+      const a = String(raw[i]).toLowerCase()
+      const cur = merged.get(a) ?? { eth: 0, usdc: 0, mints: 0 }
+      cur[field] = Number(raw[i + 1]) || 0
+      merged.set(a, cur)
+    }
   }
-  for (let i = 0; i < usdcRaw.length; i += 2) {
-    const a = String(usdcRaw[i]).toLowerCase()
-    merged.set(a, { eth: merged.get(a)?.eth ?? 0, usdc: Number(usdcRaw[i + 1]) || 0 })
-  }
+  fold(ethRaw, 'eth')
+  fold(usdcRaw, 'usdc')
+  fold(mintsRaw, 'mints')
   if (merged.size === 0) return []
 
   const [ethUsd, hidden, isPublic] = await Promise.all([getEthUsd(), getHiddenUsersSet(), getPublicEarners()])
   const price = ethUsd ?? 0
   const rows = [...merged.entries()]
     .filter(([a]) => isPublic.has(a) && !hidden.has(a))
-    .map(([address, v]) => ({ address, eth: v.eth, usdc: v.usdc, usd: v.eth * price + v.usdc, mints: 0 }))
+    .map(([address, v]) => ({ address, eth: v.eth, usdc: v.usdc, usd: v.eth * price + v.usdc, mints: v.mints }))
     .sort((a, b) => (metric === 'eth' ? b.eth - a.eth : metric === 'usdc' ? b.usdc - a.usdc : b.usd - a.usd))
     .slice(0, n)
 
-  const addrs = rows.map((r) => r.address)
-  const [profiles, mints] = await Promise.all([getProfileBatch(addrs), scores(MINTS_KEY, addrs)])
+  const profiles = await getProfileBatch(rows.map((r) => r.address))
   return rows.map((r) => {
     const p = profiles.get(r.address)
-    return { ...r, username: p?.username, avatarUrl: p?.avatarUrl, mints: mints.get(r.address) ?? 0 }
+    return { ...r, username: p?.username, avatarUrl: p?.avatarUrl }
   })
 }
 
