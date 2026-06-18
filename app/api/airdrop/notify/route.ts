@@ -357,7 +357,7 @@ export async function POST(req: NextRequest) {
   after(() =>
     Promise.all(
       finalRecipients.map((recipient) =>
-        recordPlatformTx(txHash, recipient).catch(
+        recordPlatformTx(txHash, recipient, tokenId).catch(
           bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender, recipient }),
         ),
       ),
