@@ -3,6 +3,7 @@ import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
+import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { clearKismetListed } from './pass-validity'
 
 export interface Listing {
@@ -20,6 +21,10 @@ export interface Listing {
   // 'eth' for native; 'usdc' for ERC20 USDC consideration. Older rows minted
   // before USDC support are read with a default of 'eth' (see getListing).
   currency: 'eth' | 'usdc'
+  // Platform fee baked into the Seaport consideration at index 1.
+  // Older rows created before fee support default to '0' (see getListing).
+  platformFee: string
+  platformFeeRecipient: string
   orderComponents: SerializedOrderComponents
   signature: string
   createdAt: number       // ms
@@ -98,6 +103,11 @@ export async function getListing(id: string): Promise<Listing | null> {
   // default to ETH so MarketCard / BuyButton don't accidentally enter the
   // USDC code path.
   if (!listing.currency) listing.currency = 'eth'
+  // Legacy rows created before platform-fee support have no fee fields.
+  if (!listing.platformFee) {
+    listing.platformFee = '0'
+    listing.platformFeeRecipient = PLATFORM_FEE_RECIPIENT
+  }
   return listing
 }
 
@@ -111,6 +121,10 @@ async function getListingsBatch(ids: string[]): Promise<(Listing | null)[]> {
     if (!raw) return null
     const listing: Listing = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (!listing.currency) listing.currency = 'eth'
+    if (!listing.platformFee) {
+      listing.platformFee = '0'
+      listing.platformFeeRecipient = PLATFORM_FEE_RECIPIENT
+    }
     return listing
   })
 }

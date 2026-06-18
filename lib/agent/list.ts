@@ -8,6 +8,7 @@ import {
   serializeOrder,
   type SerializedOrderComponents,
 } from '@/lib/seaport'
+import { computePlatformFee, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { withBuilderSuffix } from './calldata'
 import type { AgentCall } from './types'
 
@@ -65,7 +66,8 @@ export function priceToBaseUnits(price: string, currency: 'eth' | 'usdc'): bigin
 export function buildListPlan(input: ListPlanInput): ListPlan {
   const { collection, tokenId, seller, currency, price, royaltyReceiver, royaltyAmount, counter, isApprovedForAll } = input
   const priceTotal = priceToBaseUnits(price, currency)
-  const sellerProceeds = priceTotal - royaltyAmount
+  const platformFee = computePlatformFee(priceTotal)
+  const sellerProceeds = priceTotal - royaltyAmount - platformFee
 
   const order = buildSellOrder({
     offerer: seller,
@@ -74,6 +76,8 @@ export function buildListPlan(input: ListPlanInput): ListPlan {
     sellerProceeds,
     royaltyReceiver,
     royaltyAmount,
+    platformFee,
+    platformFeeRecipient: PLATFORM_FEE_RECIPIENT,
     counter,
     currency,
   })

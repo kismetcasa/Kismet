@@ -17,6 +17,7 @@ import {
   type SerializedOrderComponents,
 } from '@/lib/seaport'
 import { USDC_BASE } from '@/lib/zoraMint'
+import { PLATFORM_FEE_RECIPIENT, PLATFORM_FEE_BPS, computePlatformFee } from '@/lib/platformFee'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -149,6 +150,37 @@ function validateOrderShape(args: {
     return { error: 'Order lifetime exceeds 1 year', status: 400 }
   }
 
+  return null
+}
+
+/** Verify the listing's consideration includes the required 1% platform fee
+ *  to PLATFORM_FEE_RECIPIENT. Uses a per-recipient tally across consideration
+ *  items 1..N (item 0 is always the seller) and a minimum-not-exact check —
+ *  tolerates rounding the same way seaport-order-validator does, while the
+ *  strict sum enforced by validateOrderShape (totalConsideration === price)
+ *  ensures no value is invented. Prices below 10,000 base units produce a
+ *  zero fee and are skipped (dust amounts — no fractional enforcement). */
+function verifyPlatformFee(args: {
+  price: bigint
+  consideration: SerializedOrderComponents['consideration']
+}): { error: string; status: number } | null {
+  const { price, consideration } = args
+  const expectedFee = computePlatformFee(price)
+  if (expectedFee === 0n) return null
+
+  const perRecipient = new Map<string, bigint>()
+  for (let i = 1; i < consideration.length; i++) {
+    const item = consideration[i]
+    const r = item.recipient.toLowerCase()
+    perRecipient.set(r, (perRecipient.get(r) ?? 0n) + BigInt(item.startAmount))
+  }
+  const toFeeRecipient = perRecipient.get(PLATFORM_FEE_RECIPIENT.toLowerCase()) ?? 0n
+  if (toFeeRecipient < expectedFee) {
+    return {
+      error: `Listing must include a ${PLATFORM_FEE_BPS} bps (1%) platform fee`,
+      status: 400,
+    }
+  }
   return null
 }
 
@@ -362,8 +394,9 @@ export async function POST(req: NextRequest) {
     } catch {
       return errorResponse(400, 'sellerProceeds is not a valid integer')
     }
-    if (sellerProceedsBig < 0n || sellerProceedsBig + royaltyAmountBig !== BigInt(price)) {
-      return errorResponse(400, 'sellerProceeds + royaltyAmount must equal price')
+    const platformFeeBig = computePlatformFee(BigInt(price))
+    if (sellerProceedsBig < 0n || sellerProceedsBig + platformFeeBig + royaltyAmountBig !== BigInt(price)) {
+      return errorResponse(400, 'sellerProceeds + platformFee + royaltyAmount must equal price')
     }
     if (orderComponents.offerer.toLowerCase() !== seller.toLowerCase()) {
       return errorResponse(400, 'Seller must match order offerer')
@@ -437,6 +470,10 @@ export async function POST(req: NextRequest) {
     // (the seller's first on-chain tx); until then it's no worse than before.
     const { signature: onchainSignature } = parseErc6492Signature(signature as `0x${string}`)
 
+    // Verify the listing's consideration includes the required 1% platform fee.
+    const feeErr = verifyPlatformFee({ price: BigInt(price), consideration: orderComponents.consideration })
+    if (feeErr) return errorResponse(feeErr.status, feeErr.error)
+
     // Verify the listing pays the EIP-2981 royalty receiver in full —
     // per-recipient tally across consideration items so a seller can't
     // route most of the royalty to a sock-puppet by giving 1 wei to the
@@ -458,6 +495,8 @@ export async function POST(req: NextRequest) {
       sellerProceeds,
       royaltyReceiver,
       royaltyAmount,
+      platformFee: platformFeeBig.toString(),
+      platformFeeRecipient: PLATFORM_FEE_RECIPIENT,
       currency,
       orderComponents,
       signature: onchainSignature,
