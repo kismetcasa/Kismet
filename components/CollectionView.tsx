@@ -173,7 +173,7 @@ export function CollectionView({
   // (defaultAdminAddress) — that's the wallet whose ADMIN status the
   // banner is gating on, and that's the grantee on the addPermission
   // tx fired from canGrantHere viewers.
-  const { address: inprocessSmartWallet } = useInprocessSmartWallet(
+  const { address: inprocessSmartWallet, loading: swLoading, notFound: swNotFound } = useInprocessSmartWallet(
     defaultAdminAddress,
   )
   const inprocessConfigured =
@@ -190,6 +190,9 @@ export function CollectionView({
   const inprocessIsAdmin =
     inprocessPerms !== undefined && hasAdminBit(inprocessPerms as bigint)
   const showAuthorize = canGrantHere && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
+  // Show when the creator has no inprocess account yet — collection deployed
+  // but minting is gated until they create one.
+  const showNoAccount = canGrantHere && !swLoading && swNotFound
 
   // Centralized addPermission flow — same hook AirdropForm uses. Banner
   // grants the smart wallet ADMIN at tokenId 0 (collection-wide) since
@@ -832,6 +835,33 @@ export function CollectionView({
           </div>
         </div>
       </div>
+
+      {/* No inprocess account — creator deployed before their smart wallet
+          was registered. They need to create an inprocess account so
+          their smart wallet exists to be granted ADMIN. */}
+      {showNoAccount && (
+        <div className="mb-8 p-3 sm:p-4 border border-accent/40 bg-accent/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck size={16} className="text-accent flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-mono text-ink">
+                Minting requires an inprocess account
+              </p>
+              <p className="text-[11px] font-mono text-dim mt-0.5">
+                Create a free account at inprocess.world, then return here to authorize minting.
+              </p>
+            </div>
+          </div>
+          <a
+            href="https://inprocess.world"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-shrink-0 text-xs font-mono tracking-wider uppercase px-4 py-2 btn-accent text-center"
+          >
+            create account
+          </a>
+        </div>
+      )}
 
       {/* Authorize banner — surfaces when a collection predates the
           inprocess-admin grant we now bake into deploy. Renders for

@@ -361,7 +361,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         {
           id: 'create-collection',
           ...(needsAuthorize
-            ? { description: 'Visit collection settings to authorize Kismet for minting.' }
+            ? { description: 'Complete minting setup from your collection page.' }
             : {}),
         },
       )
