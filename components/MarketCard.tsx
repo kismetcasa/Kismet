@@ -90,9 +90,6 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
   const royaltyPct = listing.price !== '0'
     ? ((Number(listing.royaltyAmount) / Number(listing.price)) * 100).toFixed(1)
     : '0'
-  const platformFeePct = listing.price !== '0'
-    ? ((Number(listing.platformFee) / Number(listing.price)) * 100).toFixed(1)
-    : '0'
 
   async function handleCancel() {
     if (!isConnected || !address) { openConnectModal?.(); return }
@@ -256,13 +253,8 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
                 </Link>
               </div>
               <div className="flex items-center justify-between mt-0.5">
-                {(Number(listing.platformFee) > 0 || Number(listing.royaltyAmount) > 0) ? (
-                  <p className="text-xs font-mono text-faint">
-                    {[
-                      Number(listing.platformFee) > 0 ? `${platformFeePct}% fee` : '',
-                      Number(listing.royaltyAmount) > 0 ? `${royaltyPct}% royalty` : '',
-                    ].filter(Boolean).join(' · ')}
-                  </p>
+                {Number(listing.royaltyAmount) > 0 ? (
+                  <p className="text-xs font-mono text-faint">{royaltyPct}% royalty</p>
                 ) : <span />}
                 <p className="text-xs font-mono accent-grad">{priceLabel}</p>
               </div>
