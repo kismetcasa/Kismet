@@ -2,9 +2,11 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { shortAddress } from '@/lib/inprocess'
-import { getLeaderboard, type EarningsMetric } from '@/lib/stats'
+import { getEarningsLeaderboard } from '@/lib/stats'
+import { formatEarningsValue, type EarningsMetric } from '@/lib/earningsFormat'
 
-// Always reflect current Redis state — the board changes on every collect.
+// Always reflect current Redis state — the board changes on every sale, and the
+// USD view tracks the live ETH price.
 export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
@@ -13,16 +15,10 @@ export const metadata: Metadata = {
 }
 
 const TABS: { id: EarningsMetric; label: string }[] = [
-  { id: 'eth', label: 'ETH earned' },
-  { id: 'usdc', label: 'USDC earned' },
-  { id: 'sold', label: 'Artworks sold' },
+  { id: 'usd', label: 'USD' },
+  { id: 'eth', label: 'ETH' },
+  { id: 'usdc', label: 'USDC' },
 ]
-
-const fmtCount = (n: number) => Math.round(n).toLocaleString('en-US')
-const fmtEth = (n: number) =>
-  n ? n.toLocaleString('en-US', { maximumFractionDigits: 4 }) : '0'
-const fmtUsdc = (n: number) =>
-  n ? n.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '0'
 
 export default async function LeaderboardPage({
   searchParams,
@@ -30,16 +26,16 @@ export default async function LeaderboardPage({
   searchParams: Promise<{ metric?: string }>
 }) {
   const { metric: m } = await searchParams
-  const metric: EarningsMetric = m === 'sold' || m === 'usdc' || m === 'eth' ? m : 'eth'
-  const artists = await getLeaderboard(metric, 50)
+  const metric: EarningsMetric = m === 'eth' || m === 'usdc' || m === 'usd' ? m : 'usd'
+  const artists = await getEarningsLeaderboard(metric, 50)
 
-  const activeLabel = TABS.find((t) => t.id === metric)?.label.toLowerCase() ?? 'earnings'
+  const rankedBy = metric === 'usd' ? 'USD value' : metric.toUpperCase()
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-8 font-mono">
       <header className="mb-5">
         <h1 className="text-xl text-ink">Top artists</h1>
-        <p className="mt-1 text-xs text-dim">Ranked by {activeLabel}. Primary sales only.</p>
+        <p className="mt-1 text-xs text-dim">Ranked by {rankedBy} earned. Primary sales only.</p>
       </header>
 
       <nav className="mb-2 flex gap-4 text-xs">
@@ -58,48 +54,28 @@ export default async function LeaderboardPage({
         <p className="py-12 text-center text-sm text-dim">No sales recorded yet.</p>
       ) : (
         <ol>
-          {artists.map((a, i) => {
-            const primary =
-              metric === 'sold'
-                ? { value: fmtCount(a.sold), label: 'sold' }
-                : metric === 'eth'
-                  ? { value: `${fmtEth(a.earnedEth)} ETH`, label: 'earned' }
-                  : { value: `$${fmtUsdc(a.earnedUsdc)}`, label: 'earned' }
-
-            // Context line: the metrics NOT being ranked on (skip zeros).
-            const rest: string[] = []
-            if (metric !== 'sold') rest.push(`${fmtCount(a.sold)} sold`)
-            if (metric !== 'eth' && a.earnedEth) rest.push(`${fmtEth(a.earnedEth)} ETH`)
-            if (metric !== 'usdc' && a.earnedUsdc) rest.push(`$${fmtUsdc(a.earnedUsdc)}`)
-
-            return (
-              <li key={a.address}>
-                <Link
-                  href={`/profile/${a.address}`}
-                  className="flex items-center gap-3 border-b border-line py-3 hover:bg-raised transition-colors"
-                >
-                  <span className="w-5 shrink-0 text-right text-xs text-muted tabular-nums">
-                    {i + 1}
+          {artists.map((a, i) => (
+            <li key={a.address}>
+              <Link
+                href={`/profile/${a.address}`}
+                className="flex items-center gap-3 border-b border-line py-3 hover:bg-raised transition-colors"
+              >
+                <span className="w-5 shrink-0 text-right text-xs text-muted tabular-nums">{i + 1}</span>
+                <ProfileAvatar address={a.address} avatarUrl={a.avatarUrl} size={36} />
+                <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                  {a.username || shortAddress(a.address)}
+                </span>
+                <div className="flex shrink-0 flex-col items-end">
+                  <span className="text-sm text-accent tabular-nums">
+                    {formatEarningsValue(metric, a)}
                   </span>
-                  <ProfileAvatar address={a.address} avatarUrl={a.avatarUrl} size={36} />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-ink">
-                      {a.username || shortAddress(a.address)}
-                    </p>
-                    {rest.length > 0 && (
-                      <p className="truncate text-[11px] text-dim">{rest.join(' · ')}</p>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="text-sm text-accent tabular-nums">{primary.value}</span>
-                    <span className="text-[10px] uppercase tracking-wider text-muted">
-                      {primary.label}
-                    </span>
-                  </div>
-                </Link>
-              </li>
-            )
-          })}
+                  <span className="text-[10px] uppercase tracking-wider text-muted tabular-nums">
+                    {a.mints.toLocaleString('en-US')} {a.mints === 1 ? 'mint' : 'mints'}
+                  </span>
+                </div>
+              </Link>
+            </li>
+          ))}
         </ol>
       )}
     </main>

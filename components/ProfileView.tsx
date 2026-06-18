@@ -8,6 +8,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
+import { ProfileStats } from './ProfileStats'
 import { PaletteRing } from './PaletteRing'
 import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
@@ -1080,6 +1081,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
+            {/* Public earnings strip — totals from primary paid sales, with a
+                tap-to-cycle ETH/USDC/USD denomination. Renders nothing until
+                the artist has a paid sale. */}
+            <ProfileStats address={address} />
             {theme && <ProvenanceChip theme={theme} />}
             {/* Owner-only "public view" toggle — always under the follower
                 count. Flips to the exit control while previewing: the one piece

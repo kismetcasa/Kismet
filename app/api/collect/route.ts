@@ -276,7 +276,8 @@ export async function POST(req: NextRequest) {
     try {
       const meta = await getMomentMeta(collectionLower, tokenId)
       if (!meta) return
-      // Credit the artist's primary-sale stats (artworks sold + amount earned).
+      // Credit the artist's primary-sale stats (paid mints + earnings; free
+      // mints are excluded inside recordPrimarySale).
       // Attributed to the moment creator; skip the creator collecting their own
       // moment — that's not a sale (mirrors writeNotification's self-skip). This
       // runs inside the (tx, collection, token, account) idempotency gate above,
