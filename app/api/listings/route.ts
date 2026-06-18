@@ -180,21 +180,16 @@ function validateOrderShape(args: {
   return null
 }
 
-/** Verify the listing's consideration includes the required 1% platform fee
- *  to PLATFORM_FEE_RECIPIENT. Uses a per-recipient tally across consideration
- *  items 1..N (item 0 is always the seller) and a minimum-not-exact check —
- *  tolerates rounding the same way seaport-order-validator does, while the
- *  strict sum enforced by validateOrderShape (totalConsideration === price)
- *  ensures no value is invented. Prices below 100 base units produce a
- *  zero fee; the POST handler rejects these before reaching this function. */
+// Verify the listing's consideration includes the required 1% platform fee to
+// PLATFORM_FEE_RECIPIENT. Per-recipient tally across items 1..N (item 0 is
+// seller); minimum-not-exact so rounding tolerance matches seaport-order-validator,
+// while validateOrderShape's strict sum ensures no value is invented.
 function verifyPlatformFee(args: {
   price: bigint
   consideration: SerializedOrderComponents['consideration']
 }): { error: string; status: number } | null {
   const { price, consideration } = args
   const expectedFee = computePlatformFee(price)
-  if (expectedFee === 0n) return null
-
   const perRecipient = new Map<string, bigint>()
   for (let i = 1; i < consideration.length; i++) {
     const item = consideration[i]
@@ -414,16 +409,14 @@ export async function POST(req: NextRequest) {
     // Guard against fee-recipient misconfiguration — zero address silently burns
     // all fee revenue; a malformed address means verifyPlatformFee's Map lookup
     // would never match. Catches both before any RPC is spent.
-    if (
-      PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS
-      || !/^0x[0-9a-fA-F]{40}$/.test(PLATFORM_FEE_RECIPIENT)
-    ) {
+    if (!isAddress(PLATFORM_FEE_RECIPIENT) || PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS) {
       return errorResponse(500, 'Platform fee recipient misconfigured')
     }
-    // Minimum price: (price * 100n) / 10_000n === 0n when price < 100 base units.
-    // Rejecting here keeps verifyPlatformFee's early-return unreachable in practice
-    // and closes the dust bypass (zero-fee listing at sub-threshold prices).
-    if (computePlatformFee(BigInt(price)) === 0n) {
+    // Reject prices where the fee floors to zero (< 100 base units), closing the
+    // dust bypass. Hoist the const here so the floor check and sum invariant below
+    // share a single computation.
+    const platformFeeBig = computePlatformFee(BigInt(price))
+    if (platformFeeBig === 0n) {
       return errorResponse(400, 'Price is below minimum — fee would round to zero')
     }
     // The top-level royaltyReceiver/royaltyAmount aren't enforced on-chain
@@ -449,7 +442,6 @@ export async function POST(req: NextRequest) {
     } catch {
       return errorResponse(400, 'sellerProceeds is not a valid integer')
     }
-    const platformFeeBig = computePlatformFee(BigInt(price))
     if (sellerProceedsBig < 0n || sellerProceedsBig + platformFeeBig + royaltyAmountBig !== BigInt(price)) {
       return errorResponse(400, 'sellerProceeds + platformFee + royaltyAmount must equal price')
     }
