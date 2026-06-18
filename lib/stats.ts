@@ -1,6 +1,7 @@
 import { redis } from './redis'
 import { getProfileBatch } from './profile'
 import { getHiddenUsersSet } from './hidden-users'
+import { getPublicEarners } from './earningsVisibility'
 import { getEthUsd } from './ethPrice'
 import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
@@ -207,11 +208,17 @@ export async function getEarningsLeaderboard(
   }
   if (merged.size === 0) return []
 
-  const [ethUsd, hidden] = await Promise.all([getEthUsd(), getHiddenUsersSet()])
+  const [ethUsd, hidden, publicEarners] = await Promise.all([
+    getEthUsd(),
+    getHiddenUsersSet(),
+    getPublicEarners(),
+  ])
   const price = ethUsd ?? 0
 
+  // Public earnings only — an artist must have pinned their earnings public to
+  // appear on the leaderboard (same gate as the profile card + share card).
   let rows = Array.from(merged.entries())
-    .filter(([address]) => !hidden.has(address))
+    .filter(([address]) => publicEarners.has(address) && !hidden.has(address))
     .map(([address, v]) => ({
       address,
       eth: v.eth,

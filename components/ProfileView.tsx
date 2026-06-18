@@ -982,7 +982,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           modal-free region, so isolating it can't trap ProfileView's overlays. */}
       <div ref={headerRef} className="relative isolate flex flex-col gap-4">
         {theme && <ProfileThemeBackdrop theme={theme} inView={headerInView} />}
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center gap-6">
           <div className="relative">
             {/* Bloom glow behind the avatar — the bloom effect extended to the
                 avatar so it breathes with the backdrop. Behind + non-interactive
@@ -1081,10 +1081,6 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
-            {/* Public earnings strip — totals from primary paid sales, with a
-                tap-to-cycle ETH/USDC/USD denomination. Renders nothing until
-                the artist has a paid sale. */}
-            <ProfileStats address={address} />
             {theme && <ProvenanceChip theme={theme} />}
             {/* Owner-only "public view" toggle — always under the follower
                 count. Flips to the exit control while previewing: the one piece
@@ -1114,6 +1110,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 </div>
               ))}
           </div>
+          {/* Earnings card — right of the identity block (wraps below on
+              mobile). Private by default: the owner sees it with a pin toggle,
+              visitors only once pinned public. Renders nothing otherwise. */}
+          <ProfileStats address={address} asVisitor={asVisitor} />
         </div>
 
       </div>

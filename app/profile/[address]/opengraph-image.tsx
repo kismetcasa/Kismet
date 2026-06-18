@@ -5,6 +5,7 @@ import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { getProfileTheme, type ProfileTheme } from '@/lib/profileTheme'
 import { getArtistEarnings, type ArtistEarnings } from '@/lib/stats'
+import { isEarningsPublic } from '@/lib/earningsVisibility'
 import { formatEarningsValue, type EarningsMetric } from '@/lib/earningsFormat'
 
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
@@ -97,7 +98,9 @@ export default async function Image({ params }: Props) {
   let earnings: ArtistEarnings | null = null
   if (isAddress(address)) {
     try {
-      earnings = await getArtistEarnings(address)
+      // Earnings are private by default — only surface them on the share card
+      // once the artist has pinned them public.
+      if (await isEarningsPublic(address)) earnings = await getArtistEarnings(address)
     } catch {
       earnings = null
     }
