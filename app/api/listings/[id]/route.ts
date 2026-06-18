@@ -205,10 +205,7 @@ export async function PATCH(
           collection: passCollection,
           address: buyer,
           txHash,
-          // Canonicalize to minimal decimal form (collapse any "01"→"1") so the
-          // credited-key matches the collect/airdrop convention. Safe:
-          // listing.tokenId passed isValidTokenId (/^\d+$/) at creation.
-          tokenId: BigInt(listing.tokenId).toString(),
+          tokenId: listing.tokenId,
         })
       } catch (err) {
         console.error('[listings] pass-validity direct-credit failed', {

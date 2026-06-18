@@ -67,10 +67,12 @@ export async function getGateConfig(): Promise<GateConfig> {
     // an active pause. paused:true makes isPlatformPausedFor block every
     // non-admin mint (lib/mint-proxy) and create (app/api/collections) for
     // the window — admin still bypasses — and it self-heals the instant a
-    // real read repopulates the cache. We keep enabled:false rather than
-    // fabricate an enabled gate without a known passCollection; the pause is
-    // what enforces here, and it's the one piece of state with no on-chain
-    // backstop (hasGateAccess/hasValidPass already fail closed on Redis error).
+    // real read repopulates the cache. enabled stays false here — so
+    // hasGateAccess actually ADMITS during the window; the *pause* is what
+    // denies (isPlatformPausedFor → 503 for non-admins). We don't fabricate an
+    // enabled gate because there's no trustworthy passCollection to enforce
+    // against, and pause is the one piece of state with no on-chain backstop,
+    // so it's the one we deliberately fail closed.
     return { enabled: false, passCollection: null, paused: true }
   }
 }
