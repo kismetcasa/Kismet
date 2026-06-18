@@ -3,6 +3,10 @@ import { USDC_BASE } from './zoraMint'
 
 export const INPROCESS_API = 'https://api.inprocess.world/api'
 
+// The smartwallet endpoint lives on the main domain, not the api subdomain.
+// Docs: GET https://inprocess.world/api/smartwallet?artist_wallet=0x...
+export const INPROCESS_SMARTWALLET_URL = 'https://inprocess.world/api/smartwallet'
+
 /** Build an inprocess API URL. Pass `path` with leading slash; nullish param values are skipped. */
 export function inprocessUrl(
   path: string,
