@@ -68,9 +68,14 @@ export async function extractVideoPoster(file: File): Promise<File | null> {
     return null
   } finally {
     clearTimeout(timer)
-    // Drop the source so a timed-out decode doesn't keep churning the file in
-    // the background, then release the object URL.
-    video.src = ''
+    // Abort any in-flight decode so a timed-out 187MB load doesn't keep
+    // churning in the background, then release the URL. removeAttribute + load()
+    // is the footgun-free abort: `video.src = ''` resolves the empty string
+    // against the document URL in some browsers and can trigger a spurious
+    // page load; removing the attribute hits the spec's "no source" path, which
+    // aborts cleanly with no error event.
+    video.removeAttribute('src')
+    video.load()
     URL.revokeObjectURL(objectUrl)
   }
 }

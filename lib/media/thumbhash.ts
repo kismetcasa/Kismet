@@ -49,7 +49,10 @@ async function extractFirstFrameBitmap(file: File): Promise<ImageBitmap> {
       return createImageBitmap(c)
     } finally {
       clearTimeout(timer)
-      v.src = ''
+      // Footgun-free abort (see extractPoster): removeAttribute + load() rather
+      // than `v.src = ''`, which can spuriously load the document URL.
+      v.removeAttribute('src')
+      v.load()
       URL.revokeObjectURL(objectUrl)
     }
   }
