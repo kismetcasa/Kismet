@@ -14,6 +14,7 @@ import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError, isUserRejection, isUnsupportedMethodError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
+import { PurchaseModal } from './PurchaseModal'
 
 interface BuyButtonProps {
   listing: Listing
@@ -37,6 +38,7 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
   const config = useConfig()
   const publicClient = usePublicClient()
   const ensureBase = useEnsureBase()
+  const [showModal, setShowModal] = useState(false)
   const [loading, setLoading] = useState(false)
   const [bought, setBought] = useState(false)
 
@@ -196,16 +198,25 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
   }
 
   return (
-    <button
-      onClick={handleBuy}
-      disabled={loading || bought}
-      className={`${compact ? 'text-[10px] px-2 py-1.5' : 'text-xs px-4 py-2.5'} font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${loading ? 'cursor-not-allowed' : ''} ${
-        bought
-          ? 'border-accent text-accent bg-accent/10'
-          : 'border-line text-dim hover:border-accent hover:text-accent'
-      } ${className}`}
-    >
-      {bought ? 'bought' : loading ? 'buying…' : `buy ${priceLabel}`}
-    </button>
+    <>
+      {showModal && (
+        <PurchaseModal
+          listing={listing}
+          onConfirm={() => { setShowModal(false); handleBuy() }}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+      <button
+        onClick={() => { if (!loading && !bought) setShowModal(true) }}
+        disabled={loading || bought}
+        className={`${compact ? 'text-[10px] px-2 py-1.5' : 'text-xs px-4 py-2.5'} font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${loading ? 'cursor-not-allowed' : ''} ${
+          bought
+            ? 'border-accent text-accent bg-accent/10'
+            : 'border-line text-dim hover:border-accent hover:text-accent'
+        } ${className}`}
+      >
+        {bought ? 'bought' : loading ? 'buying…' : `buy ${priceLabel}`}
+      </button>
+    </>
   )
 }
