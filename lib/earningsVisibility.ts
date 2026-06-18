@@ -1,10 +1,8 @@
 import { redis } from './redis'
 
-// Per-artist "earnings public" opt-in. Earnings are PRIVATE by default; an
-// artist pins them public from their profile (see ProfileStats), which is the
-// single gate for every public earnings surface — the visitor profile card, the
-// share card (OG), and inclusion in the leaderboard. Stored as one SET of
-// opted-in (lowercased) addresses, mirroring the hidden-users set.
+// Per-artist "earnings public" opt-in — the single gate for every public
+// earnings surface (profile card, share card, leaderboard). One SET of opted-in
+// addresses; earnings stay private until the artist pins them.
 const KEY_EARNINGS_PUBLIC = 'kismetart:stats-public'
 
 export async function isEarningsPublic(address: string): Promise<boolean> {

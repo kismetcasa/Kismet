@@ -4,13 +4,8 @@ import type { EarningsMetric } from '@/lib/earningsFormat'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 
-// Public top-artists feed (PRIMARY PAID SALES ONLY). Ranks by `metric`:
-//   - eth  → total native ETH earned (stable)
-//   - usdc → total native USDC earned (stable)
-//   - usd  → current market value (eth × ETH/USD + usdc); default
-// Every row carries all three earnings figures + the paid-mint count so a
-// client can switch denomination without refetching. Admin-hidden users are
-// stripped inside getEarningsLeaderboard.
+// Public top-artists feed. Ranks by metric=eth|usdc|usd (default usd); each row
+// carries all three figures + the mint count. Gating lives in getEarningsLeaderboard.
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`leaderboard:${ip}`, 60, 60))) {
