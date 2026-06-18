@@ -402,6 +402,32 @@ export async function POST(req: NextRequest) {
     return errorResponse(403, 'artist must match session address')
   }
 
+  const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
+
+  // Token gate — deliberate Create Collection deploys require a valid Pass,
+  // the same platform policy lib/mint-proxy enforces on minting (and on
+  // auto-deploy+first-mint via its sentinel-target check). Deploy is a direct
+  // factory call so it can't be blocked at deploy time; this is the
+  // authoritative server boundary that keeps a gated-out wallet's collection
+  // OFF the platform — untracked, hidden from discovery + profile feeds.
+  // CreateCollectionForm also swaps in a "collect creator pass" CTA so the
+  // common path never wastes an on-chain deploy.
+  //
+  // Scoped to create-form: auto-deploy wrappers are a side effect of a mint
+  // that mint-proxy already gated, so re-checking here would double-gate (and
+  // could 403 a mint mid-flow on a credit/webhook lag). body.address is the
+  // freshly deployed collection — never the Pass collection — so hasGateAccess
+  // reduces to the caller's Pass validity (admin-exempt; no-op when the gate
+  // is disabled or unconfigured). Runs BEFORE the on-chain ADMIN check below so
+  // a gated-out caller fails fast on a cheap cached Redis read instead of the
+  // 4×-RPC admin loop.
+  if (source === 'create-form') {
+    const gateOk = await hasGateAccess(body.address, sessionAddress)
+    if (!gateOk) {
+      return errorResponse(403, 'A Kismet Creator Pass is required to create a collection')
+    }
+  }
+
   // Caller must hold ADMIN on chain (tokenId 0 = collection-wide row).
   // Outer retry rides out RPC propagation lag for fresh deploys —
   // readPermissions retries on throw, this loop retries on a definitive
@@ -438,30 +464,6 @@ export async function POST(req: NextRequest) {
       err: lastErr instanceof Error ? lastErr.message : String(lastErr),
     })
     return errorResponse(502, 'Could not verify collection admin on-chain')
-  }
-
-  const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
-
-  // Token gate — deliberate Create Collection deploys require a valid Pass,
-  // the same platform policy lib/mint-proxy enforces on minting (and on
-  // auto-deploy+first-mint via its sentinel-target check). Deploy is a direct
-  // factory call so it can't be blocked at deploy time; this is the
-  // authoritative server boundary that keeps a gated-out wallet's collection
-  // OFF the platform — untracked, hidden from discovery + profile feeds.
-  // CreateCollectionForm also swaps in a "collect creator pass" CTA so the
-  // common path never wastes an on-chain deploy.
-  //
-  // Scoped to create-form: auto-deploy wrappers are a side effect of a mint
-  // that mint-proxy already gated, so re-checking here would double-gate (and
-  // could 403 a mint mid-flow on a credit/webhook lag). body.address is the
-  // freshly deployed collection — never the Pass collection — so hasGateAccess
-  // reduces to the caller's Pass validity (admin-exempt; no-op when the gate
-  // is disabled or unconfigured).
-  if (source === 'create-form') {
-    const gateOk = await hasGateAccess(body.address, sessionAddress)
-    if (!gateOk) {
-      return errorResponse(403, 'A Kismet Creator Pass is required to create a collection')
-    }
   }
 
   // Per-address daily cap on DELIBERATE collection creation (Create

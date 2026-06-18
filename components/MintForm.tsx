@@ -32,7 +32,7 @@ import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { useAdmin } from '@/contexts/AdminContext'
+import { usePassGate } from '@/hooks/usePassGate'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { SITE_URL } from '@/lib/siteUrl'
 
@@ -163,8 +163,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
-  // Admin is gate-exempt server-side; skip the pass CTA for them.
-  const { isAdmin } = useAdmin()
   // null = auto-deploy a fresh collection on submit. Initialized from the
   // URL/prop hint when present; cleared back to null via the × button.
   const [selectedCollection, setSelectedCollection] = useState<CollectionOption | null>(() => {
@@ -291,35 +289,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     smartWalletPerms !== undefined &&
     !hasAdminBit(smartWalletPerms as bigint)
 
-  // Token-gate pre-check. When the gate is enabled and the connected
-  // wallet holds no valid Pass, we swap the mint button for a "collect
-  // creator pass" CTA that links to the Pass collection — so a gated-out
-  // user is told up front instead of burning an Arweave upload + intent
-  // signature only to hit the server's 403. This is a UX hint, not the
-  // enforcement boundary; lib/mint-proxy still runs the authoritative
-  // hasGateAccess check on every request.
-  const [passGate, setPassGate] = useState<{
-    enabled: boolean
-    passCollection: string | null
-    validBalance: number
-  } | null>(null)
-  useEffect(() => {
-    if (!address) { setPassGate(null); return }
-    let cancelled = false
-    fetch(`/api/pass-validity?address=${address}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setPassGate(d) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [address])
-  const gatedOut =
-    !!passGate?.enabled &&
-    !!passGate.passCollection &&
-    passGate.validBalance < 1 &&
-    !isAdmin
-  const passCollectionHref = passGate?.passCollection
-    ? `/collection/${passGate.passCollection}`
-    : '/'
+  // Creator-pass gate pre-check (shared with CreateCollectionForm via
+  // usePassGate). When the gate is enabled and the wallet holds no valid Pass,
+  // we swap the mint button for a "collect creator pass" CTA — a UX hint;
+  // lib/mint-proxy runs the authoritative hasGateAccess on every request.
+  const { gatedOut, passCollectionHref } = usePassGate()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
@@ -1685,8 +1659,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       </div>
 
       {/* Submit — swaps to a "collect creator pass" CTA when the gate is
-          enabled and the connected wallet holds no valid Pass. */}
-      {gatedOut ? (
+          enabled and the wallet holds no valid Pass, but not while a mint is
+          in flight (isBusy) so a late-resolving pass probe can't replace the
+          progress button mid-mint. */}
+      {gatedOut && !isBusy ? (
         <div className="flex flex-col gap-1.5">
           <button
             type="button"

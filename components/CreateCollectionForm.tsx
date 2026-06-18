@@ -28,6 +28,7 @@ import { useEnsureBase } from '@/lib/useEnsureBase'
 import { shortAddress } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 import { usePlatformPaused } from '@/hooks/usePlatformPaused'
+import { usePassGate } from '@/hooks/usePassGate'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
@@ -66,36 +67,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const { paused: platformPaused } = usePlatformPaused()
   const pausedBlock = platformPaused && !isAdmin
 
-  // Token-gate pre-check — mirrors MintForm's. When the gate is enabled and
-  // the connected wallet holds no valid Pass, swap the deploy button for a
-  // "collect creator pass" CTA so a gated-out user is told up front instead
-  // of burning an Arweave upload + an on-chain deploy on a collection the
-  // platform won't track. Deploy is a direct factory call (can't be gated at
-  // deploy time, same constraint as pause above), so this client block is the
-  // primary enforcement; POST /api/collections re-runs hasGateAccess as the
-  // authoritative server boundary. Admin is exempt, consistent with the gate.
-  const [passGate, setPassGate] = useState<{
-    enabled: boolean
-    passCollection: string | null
-    validBalance: number
-  } | null>(null)
-  useEffect(() => {
-    if (!address) { setPassGate(null); return }
-    let cancelled = false
-    fetch(`/api/pass-validity?address=${address}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setPassGate(d) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [address])
-  const gatedOut =
-    !!passGate?.enabled &&
-    !!passGate.passCollection &&
-    passGate.validBalance < 1 &&
-    !isAdmin
-  const passCollectionHref = passGate?.passCollection
-    ? `/collection/${passGate.passCollection}`
-    : '/'
+  // Creator-pass gate pre-check (shared with MintForm via usePassGate). When
+  // the gate is on and the wallet holds no valid Pass, the deploy button is
+  // swapped for a "collect creator pass" CTA so the user isn't sent into an
+  // Arweave upload + on-chain deploy for a collection the server will refuse to
+  // track. UX hint only — POST /api/collections runs the authoritative
+  // hasGateAccess check.
+  const { gatedOut, passCollectionHref } = usePassGate()
 
   const {
     file: coverFile,
@@ -1029,11 +1007,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       </div>
 
       {/* Submit — swaps to a "collect creator pass" CTA when the gate is
-          enabled and the connected wallet holds no valid Pass (mirrors
-          MintForm). Otherwise the normal create button, wrapped in a titled
-          span so the hover tooltip still shows while disabled by pause
-          (disabled buttons don't fire hover). */}
-      {gatedOut ? (
+          enabled and the wallet holds no valid Pass (mirrors MintForm), but
+          NOT while a deploy is in flight (isBusy): a resumed/mid-flight deploy
+          must keep showing progress, not flip to the CTA if the pass probe
+          resolves gatedOut late. Otherwise the normal create button, wrapped
+          in a titled span so the hover tooltip still shows while disabled by
+          pause (disabled buttons don't fire hover). */}
+      {gatedOut && !isBusy ? (
         <div className="flex flex-col gap-1.5">
           <button
             type="button"
