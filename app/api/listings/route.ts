@@ -94,6 +94,12 @@ function validateOrderShape(args: {
   if (!Array.isArray(serialized.consideration) || serialized.consideration.length === 0) {
     return { error: 'Order must have at least one consideration item', status: 400 }
   }
+  // Cap consideration length before any iteration — a 1M-item array would
+  // exhaust CPU in every downstream loop (validateOrderShape, verifyPlatformFee,
+  // verifyRoyalty) and is never legitimate. Normal listings have 2–3 items.
+  if (serialized.consideration.length > 5) {
+    return { error: 'Too many consideration items (max 5)', status: 400 }
+  }
   // Consideration[0] must go to the seller (their proceeds). buildSellOrder always
   // constructs it this way. Validating it here prevents a misconfigured or
   // hand-crafted order from routing seller proceeds to an arbitrary address while
@@ -120,6 +126,19 @@ function validateOrderShape(args: {
     }
     if (item.token.toLowerCase() !== expectedToken) {
       return { error: 'Consideration token does not match listing currency', status: 400 }
+    }
+    // identifierOrCriteria is only meaningful for ERC721/ERC1155 offer items.
+    // For NATIVE and ERC20 consideration items it must be zero — a non-zero value
+    // signals a criteria-based order that Seaport handles differently and that
+    // our marketplace does not support.
+    let identifierOrCriteria: bigint
+    try {
+      identifierOrCriteria = BigInt(item.identifierOrCriteria)
+    } catch {
+      return { error: 'Consideration identifierOrCriteria is not a valid integer', status: 400 }
+    }
+    if (identifierOrCriteria !== 0n) {
+      return { error: 'Consideration identifierOrCriteria must be zero', status: 400 }
     }
     let amount: bigint
     try {
@@ -393,8 +412,12 @@ export async function POST(req: NextRequest) {
       return errorResponse(400, 'Price must be greater than 0')
     }
     // Guard against fee-recipient misconfiguration — zero address silently burns
-    // all fee revenue. Catches a misconfigured env var before any RPC is spent.
-    if (PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS) {
+    // all fee revenue; a malformed address means verifyPlatformFee's Map lookup
+    // would never match. Catches both before any RPC is spent.
+    if (
+      PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS
+      || !/^0x[0-9a-fA-F]{40}$/.test(PLATFORM_FEE_RECIPIENT)
+    ) {
       return errorResponse(500, 'Platform fee recipient misconfigured')
     }
     // Minimum price: (price * 100n) / 10_000n === 0n when price < 100 base units.
@@ -461,6 +484,15 @@ export async function POST(req: NextRequest) {
       currency,
     })
     if (shapeErr) return errorResponse(shapeErr.status, shapeErr.error)
+
+    // Cross-validate submitted sellerProceeds against the signed consideration[0].
+    // The sum invariant above confirms sellerProceeds + fee + royalty === price;
+    // this confirms the DB display field matches what the seller actually signed
+    // (consideration[0].startAmount). Without it a client could set sellerProceeds
+    // to an arbitrary value that misleads the UI while the on-chain split differs.
+    if (sellerProceedsBig !== BigInt(orderComponents.consideration[0].startAmount)) {
+      return errorResponse(400, 'sellerProceeds does not match signed order')
+    }
 
     // Verify the platform fee before the expensive signature RPC — pure local
     // check, no reason to burn an RPC call on a fee-less order.
