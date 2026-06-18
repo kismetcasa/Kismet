@@ -640,7 +640,18 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // recover from a banner since they're already defaultAdmin and
       // there's nothing for them to fix. Better to fail fast at deploy
       // than ship a half-authorized collection.
-      const inprocessSmartWallet = await fetchInprocessSmartWallet(address)
+      //
+      // Retry up to 3 times with backoff: the /smartwallet lookup is a
+      // lightweight GET but can return null on a transient upstream blip.
+      // The handler context tolerates a few seconds of delay here.
+      let inprocessSmartWallet: string | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 2000 * attempt))
+        }
+        inprocessSmartWallet = await fetchInprocessSmartWallet(address)
+        if (inprocessSmartWallet && isAddress(inprocessSmartWallet)) break
+      }
       if (!inprocessSmartWallet || !isAddress(inprocessSmartWallet)) {
         throw new Error(
           'Could not resolve your inprocess smart wallet — try again in a moment',
