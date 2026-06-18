@@ -2,6 +2,7 @@ import { TurboFactory } from '@ardrive/turbo-sdk/web'
 import { makeProxySigner } from './client'
 import { getPaidBy } from './paidBy'
 import patchFetch from './patchFetch'
+import { describeUploadError, isNonRetryableUploadStatus, uploadErrorStatus } from './uploadError'
 
 const MAX_ATTEMPTS = 3
 
@@ -47,8 +48,28 @@ export async function uploadFile(
         return `ar://${id}`
       } catch (err) {
         lastError = err
+        // Turbo exhausts its OWN retries before throwing, and a 4xx from the
+        // upload service is a deterministic verdict — re-running the whole
+        // upload can't change a client error, it only delays the toast by the
+        // backoff. Most important is 402 `Insufficient balance`, thrown at
+        // finalize (after the bytes have streamed — hence the failure landing
+        // at a high progress %) when the platform's Turbo credits / the
+        // shareCredits approval behind paidBy are depleted. Bail now with a
+        // classified message instead of the SDK's opaque "after 1 attempts".
+        const status = uploadErrorStatus(err)
+        if (isNonRetryableUploadStatus(status)) {
+          console.error('[uploadFile] non-retryable upload failure', {
+            status,
+            detail: err instanceof Error ? err.message : String(err),
+          })
+          throw Object.assign(new Error(describeUploadError(status)), { status, cause: err })
+        }
       }
     }
+    // Transient (5xx / network) failure that survived every retry.
+    console.error('[uploadFile] upload failed after retries', {
+      detail: lastError instanceof Error ? lastError.message : String(lastError),
+    })
     throw lastError
   } finally {
     unpatch()
