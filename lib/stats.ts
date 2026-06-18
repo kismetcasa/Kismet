@@ -1,33 +1,31 @@
-import { formatEther, formatUnits } from 'viem'
 import { redis } from './redis'
 import { getProfileBatch } from './profile'
 import { getHiddenUsersSet } from './hidden-users'
 import { getEthUsd } from './ethPrice'
+import { USDC_BASE } from './zoraMint'
+import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
 import type { EarningsMetric } from './earningsFormat'
 
-// ─── Artist sales stats (PRIMARY, PAID SALES ONLY) ───────────────────────────
+// ─── Artist sales stats (PRIMARY, PAID SALES) ────────────────────────────────
 //
-// Scope is deliberately narrow: primary mints/collects only — no secondary
-// (Seaport) sales, no split payouts. Two figures per artist (attributed to the
-// moment's creator), and FREE MINTS ARE EXCLUDED FROM BOTH:
+// Source of truth: the In•Process /transfers feed (the canonical, complete,
+// historical on-chain record), aggregated by a periodic rebuild — NOT a live
+// counter. `type=payment` means free airdrops are excluded upstream. Two figures
+// per artist:
 //
-//   - mints    → count of PAID primary editions (a free mint counts for nothing)
-//   - earnings → gross sale price, kept NATIVE per currency: total ETH and total
-//                USDC, stored separately. These are the stable, realized truth —
-//                they never move. USD is DERIVED (see getEthUsd): a current
-//                market-value lens, not a stored "earning", so its drift is
-//                fenced into that one view.
+//   - mints    → count of paid editions, attributed to the moment's creator
+//   - earnings → split-aware share of each sale's `value`, kept NATIVE per
+//                currency (total ETH and total USDC, stored separately). These
+//                are the stable, realized truth — they never move. USD is
+//                DERIVED at read time (getEthUsd): a current market-value lens,
+//                so its drift is fenced into that one view.
 //
-// Storage: native ETH and USDC totals live in two sorted sets (so each is also a
-// stable per-currency leaderboard), paid-mint counts in a third. ZINCRBY keeps
-// updates atomic — same pattern as TRENDING_KEY. Scores are float64: exact for
-// the integer mint count up to 2^53, ~15 sig-figs for the running ETH/USDC
-// totals — plenty for ranking + display. The USD ranking can't live in a zset
-// (it's a function of a moving price), so getEarningsLeaderboard merges the two
-// native sets and computes USD on read with one cached price. That set is small
-// (only artists with paid sales appear), so a full load + in-memory sort is the
-// simplest effective approach; promote to a periodically-rescored usd zset only
-// if the earner count ever gets large.
+// Storage: native ETH/USDC totals + paid-mint counts in three sorted sets, so
+// each doubles as a leaderboard (ZREVRANGE) and a per-artist lookup (ZSCORE).
+// rebuildStats writes ABSOLUTE totals with ZADD, so every run recomputes from
+// scratch — idempotent, self-healing (drift can't accumulate), and it backfills
+// all history in the same pass. Scores are float64: exact for the integer mint
+// count, ~15 sig-figs for the running ETH/USDC totals — plenty for rank/display.
 export const STATS_MINTS_KEY = 'kismetart:stats:mints'
 export const STATS_EARNED_ETH_KEY = 'kismetart:stats:earned:eth'
 export const STATS_EARNED_USDC_KEY = 'kismetart:stats:earned:usdc'
@@ -46,52 +44,107 @@ export interface ArtistEarnings {
   mints: number
 }
 
+// ── Rebuild from the /transfers feed ─────────────────────────────────────────
+
+// Hard cap so a runaway/huge feed can't loop forever. 1000 pages × 100 = 100k
+// transfers per rebuild; raise it (or switch to an incremental sync) if the
+// platform outgrows that.
+const MAX_REBUILD_PAGES = 1000
+
+/** Map a transfer's currency-contract address to our two supported currencies.
+ *  USDC contract → usdc; null/native/anything else → eth (only ETH + USDC are
+ *  used on the platform). */
+export function transferCurrency(addr: string | null | undefined): 'eth' | 'usdc' {
+  return addr && addr.toLowerCase() === USDC_BASE.toLowerCase() ? 'usdc' : 'eth'
+}
+
+const bump = (m: Map<string, number>, key: string, by: number) =>
+  m.set(key, (m.get(key) ?? 0) + by)
+
 /**
- * Record a single verified PAID primary sale against the artist (the moment's
- * creator). Call ONLY from a path that has already verified the mint on-chain
- * and is idempotency-gated (e.g. /api/collect) so a sale is never double
- * counted. `pricePerToken` is per-edition base units (wei for ETH, 6dp for
- * USDC). Free mints (no price / zero total) and unknown-currency mints are
- * excluded from BOTH the mint count and earnings. Best-effort — never throws.
+ * Fold one transfer into the running aggregates. Returns 1 if counted, 0 if
+ * skipped (unpaid). Exported for unit testing.
+ *
+ * `value` is the human-denominated amount paid (matching the /payments `amount`
+ * convention). Mints go to the moment's creator (collection.artist); earnings
+ * are split across `fee_recipients` by `percent_allocation`, falling back to the
+ * creator at 100% when no split is present.
  */
-export async function recordPrimarySale(params: {
-  artist: string
-  amount: number
-  pricePerToken?: string | null
-  currency?: 'eth' | 'usdc'
-}): Promise<void> {
-  const { artist, amount, pricePerToken, currency } = params
-  if (!artist || !/^0x[0-9a-fA-F]{40}$/.test(artist)) return
-  // Need a known price AND currency to classify this as a paid sale and bucket
-  // it; without both we can't tell free from paid, so we don't record.
-  if (!pricePerToken || !currency) return
+export function accumulateTransfer(
+  t: TransferItem,
+  mints: Map<string, number>,
+  eth: Map<string, number>,
+  usdc: Map<string, number>,
+): 0 | 1 {
+  const value = typeof t.value === 'number' ? t.value : 0
+  if (!(value > 0)) return 0 // free / airdrop — excluded (type=payment already filters)
 
-  const editions = Number.isFinite(amount) && amount > 0 ? Math.floor(amount) : 1
-  let total: bigint
-  try {
-    total = BigInt(pricePerToken) * BigInt(editions)
-  } catch {
-    return
+  const quantity = typeof t.quantity === 'number' && t.quantity > 0 ? Math.floor(t.quantity) : 1
+  const earned = transferCurrency(t.currency) === 'usdc' ? usdc : eth
+  // Creator: schema returns collection.artist.{address}; the doc example returns
+  // collection.creator as a bare string. Accept either.
+  const col = t.moment?.collection
+  const creator = (col?.artist?.address ?? col?.creator)?.toLowerCase()
+
+  if (creator) bump(mints, creator, quantity)
+
+  const recipients = t.moment?.fee_recipients
+  if (Array.isArray(recipients) && recipients.length > 0) {
+    for (const r of recipients) {
+      const addr = (r.artist_address ?? r.address)?.toLowerCase()
+      const pct = typeof r.percent_allocation === 'number' ? r.percent_allocation : 0
+      if (addr && pct > 0) bump(earned, addr, (value * pct) / 100)
+    }
+  } else if (creator) {
+    bump(earned, creator, value)
   }
-  if (total <= 0n) return // free mint — excluded from count + earnings
+  return 1
+}
 
-  const whole = currency === 'eth' ? Number(formatEther(total)) : Number(formatUnits(total, 6))
-  if (!Number.isFinite(whole) || whole <= 0) return
-
-  const member = artist.toLowerCase()
-  try {
-    await Promise.all([
-      redis.zincrby(STATS_MINTS_KEY, editions, member),
-      redis.zincrby(
-        currency === 'eth' ? STATS_EARNED_ETH_KEY : STATS_EARNED_USDC_KEY,
-        whole,
-        member,
-      ),
-    ])
-  } catch {
-    // Stats are non-critical — swallow so the collect recording never breaks.
+/** Write absolute per-artist totals. ZADD overwrites each member's score, so the
+ *  rebuild is idempotent + self-healing. Chunked + auto-pipelined; the earner
+ *  set is small (only artists with paid sales). */
+async function writeZsetAbsolute(key: string, m: Map<string, number>): Promise<void> {
+  const entries = Array.from(m.entries()).filter(([, v]) => v > 0)
+  for (let i = 0; i < entries.length; i += 500) {
+    await Promise.all(
+      entries.slice(i, i + 500).map(([member, score]) => redis.zadd(key, { score, member })),
+    )
   }
 }
+
+/**
+ * Rebuild every artist's stats from the /transfers feed. Idempotent and
+ * self-healing: writes absolute totals, so a run fully reconciles the board
+ * (and backfills history) regardless of prior state. Drive it from the cron
+ * route, or call once for the initial backfill.
+ */
+export async function rebuildStats(): Promise<{ artists: number; transfers: number; pages: number }> {
+  const mints = new Map<string, number>()
+  const eth = new Map<string, number>()
+  const usdc = new Map<string, number>()
+
+  let page = 1
+  let totalPages = 1
+  let counted = 0
+  do {
+    const res = await fetchTransfersPage({ type: 'payment', chainId: 8453, page, limit: 100 })
+    for (const t of res.transfers) counted += accumulateTransfer(t, mints, eth, usdc)
+    totalPages = res.pagination.total_pages || 1
+    page++
+  } while (page <= totalPages && page <= MAX_REBUILD_PAGES)
+
+  await Promise.all([
+    writeZsetAbsolute(STATS_MINTS_KEY, mints),
+    writeZsetAbsolute(STATS_EARNED_ETH_KEY, eth),
+    writeZsetAbsolute(STATS_EARNED_USDC_KEY, usdc),
+  ])
+
+  const artists = new Set<string>([...mints.keys(), ...eth.keys(), ...usdc.keys()])
+  return { artists: artists.size, transfers: counted, pages: page - 1 }
+}
+
+// ── Reads ────────────────────────────────────────────────────────────────────
 
 /** ZSCORE a set of members in one (auto-pipelined) round trip. Missing → 0. */
 async function scoresFor(key: string, members: string[]): Promise<Map<string, number>> {

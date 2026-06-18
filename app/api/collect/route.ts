@@ -5,7 +5,6 @@ import { isPlatformCollectComment } from '@/lib/inprocess'
 import { redis, TRENDING_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { recordCollected } from '@/lib/collected'
-import { recordPrimarySale } from '@/lib/stats'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
@@ -276,21 +275,6 @@ export async function POST(req: NextRequest) {
     try {
       const meta = await getMomentMeta(collectionLower, tokenId)
       if (!meta) return
-      // Credit the artist's primary-sale stats (paid mints + earnings; free
-      // mints are excluded inside recordPrimarySale).
-      // Attributed to the moment creator; skip the creator collecting their own
-      // moment — that's not a sale (mirrors writeNotification's self-skip). This
-      // runs inside the (tx, collection, token, account) idempotency gate above,
-      // so a sale is recorded at most once. recordPrimarySale is best-effort and
-      // never throws, so it can't break the notification write below.
-      if (meta.creator && meta.creator.toLowerCase() !== account) {
-        await recordPrimarySale({
-          artist: meta.creator,
-          amount: safeAmount,
-          pricePerToken: finalPrice,
-          currency,
-        })
-      }
       await writeNotification({
         type: 'collect',
         recipient: meta.creator,
