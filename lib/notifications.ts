@@ -76,11 +76,13 @@ const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
 
-// Cache window for the precomputed unread count. Matches the bell-poll
-// interval — within one poll cycle, most users hit the cache; the value
-// is invalidated by every priority write/read so true changes still
-// reflect immediately on the next poll.
-const UNREAD_COUNT_CACHE_TTL_SECS = 60
+// Cache window for the precomputed unread count. Deliberately LONGER than the
+// 60s bell-poll interval so most polls are cheap cache hits (1 GET) instead of
+// the full ~4-op recompute every cycle — this is the app's highest-frequency
+// Redis path. Every priority write + read-mark invalidates the cache, so real
+// changes still reflect on the next poll; the TTL only bounds staleness during
+// quiet periods, when the count isn't changing anyway.
+const UNREAD_COUNT_CACHE_TTL_SECS = 300
 
 const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
