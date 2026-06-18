@@ -7,7 +7,7 @@ import type { Address } from 'viem'
 // redirects ALL future secondary-market fee revenue to the new address.
 export const PLATFORM_FEE_RECIPIENT: Address = (
   process.env.NEXT_PUBLIC_PLATFORM_FEE_RECIPIENT ??
-  '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
+  '0x099B9BBe0937428e145a3003dDf58e7E0CF69801'
 ) as Address
 
 // 1% of every secondary-market sale. Hardcoded — changing the rate requires
