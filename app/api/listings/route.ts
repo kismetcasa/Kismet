@@ -245,6 +245,19 @@ async function verifyRoyalty(args: {
     const r = item.recipient.toLowerCase()
     perRecipient.set(r, (perRecipient.get(r) ?? 0n) + BigInt(item.startAmount))
   }
+  // Deduct the platform fee from the tally so it is not counted as royalty.
+  // Without this, two problems arise:
+  //   (1) Non-EIP-2981 collections: the fee item makes totalRoyalty > 0 and
+  //       triggers the "must declare zero royalty" rejection for every listing.
+  //   (2) EIP-2981 + feeRecipient == royaltyReceiver: the fee item satisfies
+  //       the royalty minimum check even when no royalty item is present,
+  //       letting a seller pocket the royalty by omitting it from consideration.
+  const expectedPlatformFee = computePlatformFee(price)
+  if (expectedPlatformFee > 0n) {
+    const feeKey = PLATFORM_FEE_RECIPIENT.toLowerCase()
+    const current = perRecipient.get(feeKey) ?? 0n
+    perRecipient.set(feeKey, current > expectedPlatformFee ? current - expectedPlatformFee : 0n)
+  }
   const totalRoyalty = Array.from(perRecipient.values()).reduce((a, b) => a + b, 0n)
 
   if (!supportsEip2981) {
@@ -424,6 +437,11 @@ export async function POST(req: NextRequest) {
     })
     if (shapeErr) return errorResponse(shapeErr.status, shapeErr.error)
 
+    // Verify the platform fee before the expensive signature RPC — pure local
+    // check, no reason to burn an RPC call on a fee-less order.
+    const feeErr = verifyPlatformFee({ price: BigInt(price), consideration: orderComponents.consideration })
+    if (feeErr) return errorResponse(feeErr.status, feeErr.error)
+
     // Verify the EIP-712 signature is from the offerer. Without this anyone
     // could spam-list tokens they don't own (Seaport reverts at fill time,
     // but the listing pollutes the marketplace until then).
@@ -469,10 +487,6 @@ export async function POST(req: NextRequest) {
     // EOA/1271 sigs). The order becomes fillable once the account is deployed
     // (the seller's first on-chain tx); until then it's no worse than before.
     const { signature: onchainSignature } = parseErc6492Signature(signature as `0x${string}`)
-
-    // Verify the listing's consideration includes the required 1% platform fee.
-    const feeErr = verifyPlatformFee({ price: BigInt(price), consideration: orderComponents.consideration })
-    if (feeErr) return errorResponse(feeErr.status, feeErr.error)
 
     // Verify the listing pays the EIP-2981 royalty receiver in full —
     // per-recipient tally across consideration items so a seller can't
