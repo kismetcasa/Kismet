@@ -20,7 +20,6 @@ export function reportClientError(
       detail,
       url: typeof location !== 'undefined' ? location.href : undefined,
       ua: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
-      ts: Date.now(),
     })
     void fetch('/api/client-error', {
       method: 'POST',

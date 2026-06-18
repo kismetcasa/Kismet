@@ -64,7 +64,6 @@ export async function extractVideoPoster(file: File): Promise<File | null> {
       reason: err instanceof Error ? err.message : String(err),
       fileType: file.type,
       fileSize: file.size,
-      fileExt: file.name.split('.').pop()?.toLowerCase() ?? null,
     })
     return null
   } finally {

@@ -1129,7 +1129,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         autoDeploy: isAutoDeploy,
         fileType: file?.type ?? null,
         fileSize: file?.size ?? null,
-        fileExt: file?.name.split('.').pop()?.toLowerCase() ?? null,
         error: err instanceof Error ? err.message : String(err),
       })
       setStep('idle')
