@@ -597,6 +597,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               creatorAddress={moment.creator?.address}
               contentUri={meta.content?.uri}
               contentMime={meta.content?.mime}
+              stacked
             />
           ) : (
             <button
