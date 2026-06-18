@@ -5,8 +5,14 @@ import type { Address } from 'viem'
 // (ideally a dedicated Gnosis Safe separate from the mint-referral treasury).
 // Any change must be reviewed by a treasury signer — a silent address swap
 // redirects ALL future secondary-market fee revenue to the new address.
+//
+// `?.trim() ||` (not `??`) so an EMPTY or whitespace env var falls back to the
+// treasury default. `.env.example` ships this key blank; `??` would only catch
+// undefined, leaving an empty `NEXT_PUBLIC_PLATFORM_FEE_RECIPIENT=` to resolve
+// to '' — which fails isAddress() and 500s every listing (total outage). An
+// address is never legitimately empty, so the fallback is always the safe choice.
 export const PLATFORM_FEE_RECIPIENT: Address = (
-  process.env.NEXT_PUBLIC_PLATFORM_FEE_RECIPIENT ??
+  process.env.NEXT_PUBLIC_PLATFORM_FEE_RECIPIENT?.trim() ||
   '0x099B9BBe0937428e145a3003dDf58e7E0CF69801'
 ) as Address
 
