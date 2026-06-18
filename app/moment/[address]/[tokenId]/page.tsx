@@ -4,7 +4,6 @@ import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { resolveUri } from '@/lib/inprocess'
-import { shareImageUrl } from '@/lib/media/shareImage'
 import { isVideoMoment } from '@/lib/media/isVideo'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
@@ -91,31 +90,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const name = meta.name ?? `#${tokenId}`
   const title = `${name} — Kismet`
   const description = meta.description ?? 'View this moment on Kismet'
-  // Guard the share image against the legacy "meta.image is the
-  // animation_url" bug — without this, Twitter/Discord/iMessage crawlers
-  // would fetch a multi-MB video as the thumbnail and render no preview.
-  // fallback (synthesized from KV) has no animation_url; pull from detail.
-  // `optimize` resizes the poster through Next's image optimizer so an
-  // oversized still (15MB+ PNGs happen) stays under Twitter's ~5MB card
-  // limit instead of being dropped to a broken-placeholder card.
-  const imageUrl = shareImageUrl(meta.image, detail?.metadata?.animation_url, {
-    optimize: true,
-  })
-
-  // Farcaster Mini App embed. When this URL is shared in a cast, hosts
-  // render a rich card and the button launches Kismet directly into
-  // this moment's page (action.url) rather than the homepage.
-  //
-  // Always route the embed image through our /opengraph-image endpoint
-  // so every moment ships a consistent 1200x800 (3:2) PNG that's well
-  // inside FC's size/ratio constraints regardless of how the source
-  // media is stored. The OG generator embeds the moment's own poster
-  // when available (image moments, gifs, video posters), and falls
-  // back to a branded card for video/text moments where no usable
-  // still exists. openGraph.images / twitter.images point at the poster
-  // resized through our image optimizer (see shareImageUrl optimize) —
-  // Twitter/Discord/iMessage handle any aspect ratio, but the raw source
-  // can exceed their size limits, so we hand them a bounded re-encode.
+  // Single share image for every surface: the /opengraph-image route.
+  // og:image + twitter:image are auto-wired to it by Next's file
+  // convention (we don't set openGraph.images); the Farcaster embed
+  // points at it explicitly. The route renders the moment's poster
+  // full-bleed via Satori — bounded 1200x800 (3:2) regardless of source
+  // size, with the animation_url guard applied there so a video moment
+  // falls back to a branded card rather than rasterizing an MP4. Pointing
+  // crawlers at the raw poster instead breaks on heavy stills: X drops
+  // images >5MB and the next/image optimizer 413's on sources >4MB.
   const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
   // Active marketplace listing → embed button reads "View Listing"
@@ -148,18 +131,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     openGraph: {
       title: name,
       description,
-      ...(imageUrl ? { images: [{ url: imageUrl }] } : {}),
     },
     twitter: {
-      // Always summary_large_image — when imageUrl isn't set, the
-      // opengraph-image.tsx file convention provides a branded fallback
-      // PNG, and Twitter falls back to og:image for twitter:image. Result:
-      // every moment renders the large image card, never the bare
-      // text-only summary.
+      // summary_large_image + the opengraph-image file convention →
+      // both og:image and twitter:image resolve to the OG route, which
+      // always renders a poster-or-branded card (never a text-only
+      // summary).
       card: 'summary_large_image',
       title: name,
       description,
-      ...(imageUrl ? { images: [imageUrl] } : {}),
     },
     other: fcEmbed,
   }

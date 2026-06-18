@@ -3,7 +3,6 @@ import { cookies } from 'next/headers'
 import { notFound, redirect } from 'next/navigation'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
-import { shareImageUrl } from '@/lib/media/shareImage'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
@@ -120,18 +119,17 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
   const description = meta?.description || 'View collection on Kismet'
-  // Text-mint auto-deploy stores an SVG data URI as the cover (works
-  // in-app, not in share crawlers) — shareImageUrl drops those.
-  // `optimize` routes the resolved cover through Next's image optimizer so
-  // an oversized creator-uploaded PNG (we've seen 15MB+) is resized below
-  // Twitter's ~5MB card limit instead of being silently dropped by X.
-  const imageUrl = shareImageUrl(meta?.image, undefined, { optimize: true })
-  // Farcaster Mini App embed — see moment/[address]/[tokenId]/page.tsx
-  // for the rationale. action.url points at this collection's canonical
-  // page so the button drops the user directly here inside the Mini
-  // App rather than the homepage.
+  // Single share image for every surface: the /opengraph-image route.
+  // og:image + twitter:image are auto-wired to it by Next's file
+  // convention (we deliberately don't set openGraph.images), and the
+  // Farcaster embed points at it explicitly. That route renders the
+  // cover full-bleed via Satori — which rasterizes any-size source into
+  // a bounded 1200x800 PNG — and falls back to a branded card. Pointing
+  // crawlers at the raw cover instead breaks on heavy originals: X drops
+  // images >5MB and the next/image optimizer 413's on sources >4MB (see
+  // MomentImage proxy mode).
   const canonicalUrl = `${SITE_URL}/collection/${address}`
-  const embedImageUrl = imageUrl ?? `${canonicalUrl}/opengraph-image`
+  const embedImageUrl = `${canonicalUrl}/opengraph-image`
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
     buttonTitle: 'View Collection',
@@ -145,17 +143,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     openGraph: {
       title: name,
       description,
-      ...(imageUrl ? { images: [{ url: imageUrl }] } : {}),
     },
     twitter: {
-      // Always summary_large_image — opengraph-image.tsx provides a
-      // branded PNG fallback for collections without a usable cover
-      // image (text-mint auto-deploys etc.), and Twitter falls back to
-      // og:image when twitter:image isn't set.
+      // summary_large_image + the opengraph-image file convention →
+      // both og:image and twitter:image resolve to the OG route.
       card: 'summary_large_image',
       title: name,
       description,
-      ...(imageUrl ? { images: [imageUrl] } : {}),
     },
     other: fcEmbed,
   }
