@@ -400,7 +400,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           && moment.address.toLowerCase() === passBadge.passCollection.toLowerCase() && (
           <span
             className="absolute bottom-2 right-2 z-10 w-7 h-7 rounded-full bg-accent flex items-center justify-center shadow-md"
-            title="Valid Kismet Creator Pass — gates mint access"
+            title="Valid Patron Collection artwork — grants mint access"
           >
             <Check size={14} className="text-white" strokeWidth={2.5} />
           </span>

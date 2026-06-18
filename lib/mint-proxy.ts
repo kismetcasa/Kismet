@@ -158,7 +158,7 @@ export async function proxyMintRequest(
     return errorResponse(503, 'Platform is temporarily paused')
   }
   if (!gateOk) {
-    return errorResponse(403, 'Kismet Creator pass required to mint')
+    return errorResponse(403, 'A Patron Collection artwork is required to mint')
   }
 
   // Validate splits after the platform-policy gates so a paused/blocked/

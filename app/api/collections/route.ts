@@ -410,7 +410,7 @@ export async function POST(req: NextRequest) {
   // factory call so it can't be blocked at deploy time; this is the
   // authoritative server boundary that keeps a gated-out wallet's collection
   // OFF the platform — untracked, hidden from discovery + profile feeds.
-  // CreateCollectionForm also swaps in a "collect creator pass" CTA so the
+  // CreateCollectionForm also swaps in a "collect Patron Collection artwork" CTA so the
   // common path never wastes an on-chain deploy.
   //
   // Scoped to create-form: auto-deploy wrappers are a side effect of a mint
@@ -424,7 +424,7 @@ export async function POST(req: NextRequest) {
   if (source === 'create-form') {
     const gateOk = await hasGateAccess(body.address, sessionAddress)
     if (!gateOk) {
-      return errorResponse(403, 'A Kismet Creator Pass is required to create a collection')
+      return errorResponse(403, 'A Patron Collection artwork is required to create a collection')
     }
   }
 

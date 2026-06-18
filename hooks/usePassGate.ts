@@ -14,7 +14,7 @@ interface PassGate {
  * Creator-pass gate pre-check shared by the mint and create-collection forms.
  * When the token gate is enabled and the connected wallet holds no valid Pass,
  * `gatedOut` is true so the form can swap its primary action for a "collect
- * creator pass" CTA pointing at `passCollectionHref`.
+ * Patron Collection artwork" CTA pointing at `passCollectionHref`.
  *
  * UX hint only — the authoritative checks run server-side (lib/mint-proxy for
  * mints, POST /api/collections for create). Fails OPEN: a failed

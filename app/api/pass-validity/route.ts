@@ -63,8 +63,8 @@ export async function GET(req: NextRequest) {
 
   const validBalance = await getValidBalance(config.passCollection, address)
   return NextResponse.json({
-    // `enabled` lets gate-aware UI (e.g. MintForm's "collect creator pass"
-    // CTA) tell "gate configured but off" from "gate actively enforcing".
+    // `enabled` lets gate-aware UI (e.g. MintForm's "collect Patron Collection
+    // artwork" CTA) tell "gate configured but off" from "gate actively enforcing".
     // When off, the CTA must not fire — everyone can still mint.
     enabled: config.enabled,
     passCollection: config.passCollection,
