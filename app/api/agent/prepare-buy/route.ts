@@ -66,7 +66,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const plan = buildBuyPlan({ listing, seaportUsdcAllowance })
+  let plan
+  try {
+    plan = buildBuyPlan({ listing, seaportUsdcAllowance })
+  } catch (err) {
+    return errorResponse(409, err instanceof Error ? err.message : 'Listing order is inconsistent')
+  }
 
   const priceLabel = formatPrice(listing.price, currency)
   const itemLabel = listing.name ? `“${listing.name}”` : `token #${listing.tokenId}`

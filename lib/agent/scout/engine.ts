@@ -141,9 +141,17 @@ export function freshUsage(b: ScoutBudget, now: number): BudgetUsage {
 }
 
 /** Roll usage forward if `now` is in a later period than it was last recorded:
- *  cumulative spend + item count reset at each period boundary. Idempotent. */
-export function rollUsage(b: ScoutBudget, usage: BudgetUsage, now: number): BudgetUsage {
-  const ps = periodStartFor(b, now)
+ *  cumulative spend + item count reset at each period boundary. Idempotent.
+ *
+ *  `anchorPeriodStart` (optional) is the AUTHORITATIVE period start the caller
+ *  already resolved on-chain (getPermissionStatus().currentPeriod.start). When
+ *  given it OVERRIDES the locally-computed boundary, so the engine mirrors the
+ *  SpendPermissionManager's period exactly instead of recomputing from the stored
+ *  `budget.start` — which could drift by a period under clock skew near a boundary
+ *  and wrongly reset (or fail to reset) the off-chain item counter. Omit it for the
+ *  Propose UI / tests (no on-chain status), preserving the original behavior. */
+export function rollUsage(b: ScoutBudget, usage: BudgetUsage, now: number, anchorPeriodStart?: number): BudgetUsage {
+  const ps = anchorPeriodStart ?? periodStartFor(b, now)
   if (ps > usage.periodStart) {
     return { periodStart: ps, spentThisPeriod: '0', itemsThisPeriod: 0 }
   }
@@ -151,8 +159,8 @@ export function rollUsage(b: ScoutBudget, usage: BudgetUsage, now: number): Budg
 }
 
 /** Remaining spendable allowance in the current period (after any roll). */
-export function remainingAllowance(b: ScoutBudget, usage: BudgetUsage, now: number): bigint {
-  const rolled = rollUsage(b, usage, now)
+export function remainingAllowance(b: ScoutBudget, usage: BudgetUsage, now: number, anchorPeriodStart?: number): bigint {
+  const rolled = rollUsage(b, usage, now, anchorPeriodStart)
   const rem = BigInt(b.allowance) - BigInt(rolled.spentThisPeriod)
   return rem > 0n ? rem : 0n
 }
@@ -173,6 +181,7 @@ export function evaluateCandidate(
   usage: BudgetUsage,
   now: number,
   alreadyCollected?: ReadonlySet<string>,
+  anchorPeriodStart?: number,
 ): Decision {
   const skip = (reason: SkipReason): Decision => ({ action: 'skip', candidate, reason })
 
@@ -203,7 +212,7 @@ export function evaluateCandidate(
   }
   if (price > BigInt(p.maxItemPrice)) return skip('over-item-price')
 
-  const rolled = rollUsage(scout.budget, usage, now)
+  const rolled = rollUsage(scout.budget, usage, now, anchorPeriodStart)
   if (rolled.itemsThisPeriod >= p.maxItemsPerPeriod) return skip('period-item-limit')
   if (price > BigInt(scout.budget.allowance) - BigInt(rolled.spentThisPeriod)) return skip('insufficient-budget')
 
@@ -219,6 +228,10 @@ export function evaluateCandidate(
  *
  * Used identically by Propose (show `toCollect`, user one-taps) and Auto
  * (execute `toCollect`, persist `endUsage`).
+ *
+ * `anchorPeriodStart` (optional): the on-chain `currentPeriod.start` the caller
+ * resolved from the Spend Permission, made authoritative over the locally-computed
+ * boundary so the off-chain item/spend ledger never drifts from the chain's period.
  */
 export function planRun(
   scout: Scout,
@@ -226,8 +239,9 @@ export function planRun(
   usage: BudgetUsage,
   now: number,
   alreadyCollected?: ReadonlySet<string>,
+  anchorPeriodStart?: number,
 ): RunPlan {
-  const base = rollUsage(scout.budget, usage, now)
+  const base = rollUsage(scout.budget, usage, now, anchorPeriodStart)
   const seen = new Set<string>(alreadyCollected ? Array.from(alreadyCollected) : [])
   const decisions: Decision[] = []
   const toCollect: Candidate[] = []
@@ -240,7 +254,7 @@ export function planRun(
       spentThisPeriod: spent.toString(),
       itemsThisPeriod: items,
     }
-    const decision = evaluateCandidate(scout, candidate, working, now, seen)
+    const decision = evaluateCandidate(scout, candidate, working, now, seen, anchorPeriodStart)
     decisions.push(decision)
     if (decision.action === 'collect') {
       toCollect.push(candidate)

@@ -105,6 +105,28 @@ console.log('budget accounting')
   check('freshUsage starts empty', freshUsage(baseBudget(), NOW).spentThisPeriod === '0')
 }
 
+console.log('\nperiod anchor — the on-chain currentPeriod.start overrides the local boundary (drift fix)')
+{
+  // Local boundary computes a NEWER period (130 at now=135) than the on-chain
+  // anchor (120). Without the anchor the off-chain counter wrongly resets; with it,
+  // the engine mirrors the chain's period and the counter is honored.
+  const b = baseBudget({ start: 100, periodSeconds: 10 })
+  const u: BudgetUsage = { periodStart: 120, spentThisPeriod: '3000000', itemsThisPeriod: 3 }
+  check('rollUsage WITHOUT anchor resets to the local boundary (130)', rollUsage(b, u, 135).itemsThisPeriod === 0 && rollUsage(b, u, 135).periodStart === 130)
+  check('rollUsage WITH on-chain anchor (120) does NOT reset', rollUsage(b, u, 135, 120).itemsThisPeriod === 3 && rollUsage(b, u, 135, 120).periodStart === 120)
+
+  // The anchor threads through evaluateCandidate + planRun, so the item cap is
+  // judged against the chain's period — not a drifted local one.
+  const s = mkScout({ budget: { start: 100, periodSeconds: 10 }, policy: { maxItemsPerPeriod: 3 } })
+  const atCap: BudgetUsage = { periodStart: 120, spentThisPeriod: '0', itemsThisPeriod: 3 } // already at the item cap this period
+  const c = cand({ pricePerToken: '1000000' })
+  check('evaluateCandidate WITHOUT anchor under-enforces the cap (the drift bug)', evaluateCandidate(s, c, atCap, 135).action === 'collect')
+  const anchored = evaluateCandidate(s, c, atCap, 135, undefined, 120)
+  check('evaluateCandidate WITH on-chain anchor honors the item cap', anchored.action === 'skip' && anchored.reason === 'period-item-limit')
+  check('planRun WITH anchor collects nothing at the item cap', planRun(s, [c], atCap, 135, undefined, 120).toCollect.length === 0)
+  check('planRun WITHOUT anchor preserves the original (Propose/test) behavior', planRun(s, [c], atCap, 135).toCollect.length === 1)
+}
+
 console.log('\nevaluateCandidate — happy path')
 {
   const d = evaluateCandidate(mkScout(), cand(), usage(), NOW)
