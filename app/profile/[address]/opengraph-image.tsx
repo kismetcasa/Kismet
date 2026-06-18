@@ -4,6 +4,9 @@ import { shortAddress } from '@/lib/inprocess'
 import { resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { getProfileTheme, type ProfileTheme } from '@/lib/profileTheme'
+import { getArtistEarnings, type ArtistEarnings } from '@/lib/stats'
+import { isEarningsPublic } from '@/lib/earningsVisibility'
+import { formatEarningsValue, type EarningsMetric } from '@/lib/earningsFormat'
 
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
 // image and the Farcaster Mini App embed image. Matches the styling of
@@ -89,6 +92,23 @@ export default async function Image({ params }: Props) {
     }
     avatarUrl = profile.avatarUrl || farcaster?.pfpUrl || null
   }
+
+  // Public earnings (primary paid sales) for the card. Best-effort — a failure
+  // just omits the stat line rather than breaking the card.
+  let earnings: ArtistEarnings | null = null
+  if (isAddress(address)) {
+    try {
+      // Earnings are private by default — only surface them on the share card
+      // once the artist has pinned them public.
+      if (await isEarningsPublic(address)) earnings = await getArtistEarnings(address)
+    } catch {
+      earnings = null
+    }
+  }
+  // Prefer the blended USD headline; fall back to native ETH only if the price
+  // lookup is unavailable (rare) so an ETH earner never shows "$0".
+  const cardDenom: EarningsMetric =
+    earnings && earnings.usd <= 0 && earnings.eth > 0 ? 'eth' : 'usd'
 
   // SSRF guard at the render sink: ImageResponse fetches <img src> server-
   // side. Drop any avatar that isn't a public https host (covers values
@@ -216,6 +236,16 @@ export default async function Image({ params }: Props) {
               }}
             >
               {secondary}
+            </div>
+          )}
+          {earnings && earnings.mints > 0 && (
+            <div style={{ display: 'flex', alignItems: 'baseline', marginTop: 28 }}>
+              <div style={{ fontSize: 52, color: theme ? theme.palette.primary : '#efefef' }}>
+                {formatEarningsValue(cardDenom, earnings)}
+              </div>
+              <div style={{ fontSize: 26, color: '#888', marginLeft: 18 }}>
+                {`${earnings.mints} mints`}
+              </div>
             </div>
           )}
           {/* Palette swatch strip — the clearest "themed" signal. marginLeft

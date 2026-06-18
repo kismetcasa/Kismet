@@ -8,6 +8,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
+import { ProfileStats } from './ProfileStats'
 import { PaletteRing } from './PaletteRing'
 import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
@@ -243,6 +244,7 @@ interface Profile {
   // Server-computed: collapses the username → farcaster → ens fallback
   // chain into a single field. See app/api/profile/[address]/route.ts.
   displayName?: string | null
+  earnings?: { eth: number; usdc: number; usd: number; mints: number } | null
   updatedAt: number
 }
 
@@ -981,7 +983,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           modal-free region, so isolating it can't trap ProfileView's overlays. */}
       <div ref={headerRef} className="relative isolate flex flex-col gap-4">
         {theme && <ProfileThemeBackdrop theme={theme} inView={headerInView} />}
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center gap-6">
           <div className="relative">
             {/* Bloom glow behind the avatar — the bloom effect extended to the
                 avatar so it breathes with the backdrop. Behind + non-interactive
@@ -1109,6 +1111,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 </div>
               ))}
           </div>
+          {/* Earnings card — right of the identity block (wraps below on
+              mobile). Private by default: the owner sees it with a pin toggle,
+              visitors only once pinned public. Renders nothing otherwise. */}
+          <ProfileStats address={address} asVisitor={asVisitor} initialEarnings={profile?.earnings ?? null} />
         </div>
 
       </div>
