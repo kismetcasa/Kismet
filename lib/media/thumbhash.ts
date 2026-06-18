@@ -16,6 +16,15 @@ const blurUrlCache = new LRUCache<string, string | undefined>(512)
 // without meaningful placeholder-quality gain.
 const MAX_DIM = 100
 
+// Bound the first-frame video decode for the same reason extractVideoPoster
+// does: an undecodable codec (HEVC/10-bit/ProRes) can leave the <video>
+// element firing NEITHER `loadeddata` NOR `error`, hanging the await forever.
+// Critical here because the mint flow falls through to thumbhashing the raw
+// video precisely when poster extraction returned null — so without this the
+// poster timeout would just relocate the hang to here. 12s matches the poster
+// extractor.
+const FIRST_FRAME_TIMEOUT_MS = 12_000
+
 async function extractFirstFrameBitmap(file: File): Promise<ImageBitmap> {
   // createImageBitmap on a GIF Blob decodes frame 0 natively.
   if (file.type.startsWith('image/')) return createImageBitmap(file)
@@ -23,9 +32,15 @@ async function extractFirstFrameBitmap(file: File): Promise<ImageBitmap> {
     const v = document.createElement('video')
     v.muted = true
     v.preload = 'auto'
-    v.src = URL.createObjectURL(file)
+    const objectUrl = URL.createObjectURL(file)
+    v.src = objectUrl
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       await new Promise<void>((resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('thumbhash decode timed out')),
+          FIRST_FRAME_TIMEOUT_MS,
+        )
         v.addEventListener('loadeddata', () => resolve(), { once: true })
         v.addEventListener('error', () => reject(new Error('video decode failed')), { once: true })
       })
@@ -33,7 +48,9 @@ async function extractFirstFrameBitmap(file: File): Promise<ImageBitmap> {
       c.getContext('2d')!.drawImage(v, 0, 0)
       return createImageBitmap(c)
     } finally {
-      URL.revokeObjectURL(v.src)
+      clearTimeout(timer)
+      v.src = ''
+      URL.revokeObjectURL(objectUrl)
     }
   }
   throw new Error(`unsupported file type for thumbhash: ${file.type}`)
