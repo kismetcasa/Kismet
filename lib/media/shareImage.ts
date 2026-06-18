@@ -2,23 +2,23 @@ import { resolveUri } from '@/lib/inprocess'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 
 /**
- * Build a share-card image URL (og:image / twitter:image) from a moment
- * or collection's `meta.image`. Three guard rails:
+ * Resolve a moment/collection `meta.image` to a gateway URL for the OG
+ * share-card routes (app/**\/opengraph-image.tsx), which feed it to Satori's
+ * <img>. Satori rasterizes whatever it fetches into the bounded 1200x800
+ * card PNG, so this is the right sink for heavy originals — unlike a raw
+ * crawler tag (X drops images >5MB) or the next/image optimizer (413's on
+ * sources >4MB; see MomentImage's proxy mode). Three guard rails:
  *
- *   1. Skip when no image is set — crawlers omit the image entirely and
- *      fall back to text-only cards rather than rendering a 404.
+ *   1. Skip when no image is set — the card falls back to the branded
+ *      text-only layout rather than rendering a broken <img>.
  *   2. Skip when the image equals the moment's animation_url — legacy
- *      MintForm bug wrote the video URL into meta.image, so crawlers
- *      would try to render a multi-MB MP4 as a thumbnail and fail.
- *   3. Skip `data:` URIs — Twitter and Discord don't reliably embed
- *      them. Text-mint auto-deploy generates SVG data URIs for
- *      collection covers; those work in-app but not for share cards.
+ *      MintForm bug wrote the video URL into meta.image, so the card
+ *      would try to rasterize a multi-MB MP4 and fail.
+ *   3. Skip `data:` URIs — Satori can't reliably embed them at this
+ *      scale (text-mint auto-deploy stores SVG data URIs as covers).
  *
- * Resolves ar:// / ipfs:// to the canonical gateway URL so crawlers
- * fetch directly from arweave.net / ipfs.io. Used to route through
- * /api/img for multi-gateway resilience, but the resilience matters
- * less for low-frequency crawler traffic than for in-app rendering,
- * and a direct URL skips one hop and keeps bytes off our server.
+ * Resolves ar:// / ipfs:// to the canonical gateway URL and SSRF-guards
+ * the host (this URL is fetched server-side during the OG render).
  */
 export function shareImageUrl(
   imageUri: string | undefined,
@@ -28,12 +28,10 @@ export function shareImageUrl(
   if (guardAgainst && imageUri === guardAgainst) return undefined
   if (imageUri.startsWith('data:')) return undefined
   const resolved = resolveUri(imageUri)
-  // SSRF guard: this URL is rendered server-side via next/og <img src> in the
-  // moment/collection OG routes (ImageResponse fetches it during render), and
-  // meta.image is attacker-controlled (set at mint). ar:// / ipfs:// resolve
-  // to public gateway hosts and pass; a crafted internal https host (or any
-  // non-https) is dropped, falling back to the text-only branded card. Also
-  // correct for the crawler og:image use — internal URLs wouldn't render there
-  // either.
+  // SSRF guard: rendered server-side via next/og <img src> in the OG routes
+  // (ImageResponse fetches it during render), and meta.image is
+  // attacker-controlled (set at mint). ar:// / ipfs:// resolve to public
+  // gateway hosts and pass; a crafted internal https host (or any non-https)
+  // is dropped, falling back to the branded text card.
   return isSafePublicHttpsUrl(resolved) ? resolved : undefined
 }
