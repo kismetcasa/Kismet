@@ -13,6 +13,7 @@ import {
   SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
   EIP2981_ABI,
+  ERC1155_ABI,
   deserializeOrder,
   type SerializedOrderComponents,
 } from '@/lib/seaport'
@@ -158,8 +159,8 @@ function validateOrderShape(args: {
  *  items 1..N (item 0 is always the seller) and a minimum-not-exact check —
  *  tolerates rounding the same way seaport-order-validator does, while the
  *  strict sum enforced by validateOrderShape (totalConsideration === price)
- *  ensures no value is invented. Prices below 10,000 base units produce a
- *  zero fee and are skipped (dust amounts — no fractional enforcement). */
+ *  ensures no value is invented. Prices below 100 base units produce a
+ *  zero fee; the POST handler rejects these before reaching this function. */
 function verifyPlatformFee(args: {
   price: bigint
   consideration: SerializedOrderComponents['consideration']
@@ -354,7 +355,7 @@ export async function POST(req: NextRequest) {
       currency?: 'eth' | 'usdc'
       orderComponents: SerializedOrderComponents
       signature: string
-      expiresAt: number
+      expiresAt?: number
       name?: string
       image?: string
       creatorAddress?: string
@@ -365,7 +366,7 @@ export async function POST(req: NextRequest) {
     const {
       collectionAddress, tokenId, seller, price,
       sellerProceeds, royaltyReceiver, royaltyAmount,
-      orderComponents, signature, expiresAt,
+      orderComponents, signature,
     } = body
     const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
 
@@ -383,6 +384,17 @@ export async function POST(req: NextRequest) {
     }
     if (BigInt(price) <= 0n) {
       return errorResponse(400, 'Price must be greater than 0')
+    }
+    // Guard against fee-recipient misconfiguration — zero address silently burns
+    // all fee revenue. Catches a misconfigured env var before any RPC is spent.
+    if (PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS) {
+      return errorResponse(500, 'Platform fee recipient misconfigured')
+    }
+    // Minimum price: (price * 100n) / 10_000n === 0n when price < 100 base units.
+    // Rejecting here keeps verifyPlatformFee's early-return unreachable in practice
+    // and closes the dust bypass (zero-fee listing at sub-threshold prices).
+    if (computePlatformFee(BigInt(price)) === 0n) {
+      return errorResponse(400, 'Price is below minimum — fee would round to zero')
     }
     // The top-level royaltyReceiver/royaltyAmount aren't enforced on-chain
     // (Seaport pays whatever the consideration items declare; verifyRoyalty
@@ -423,6 +435,12 @@ export async function POST(req: NextRequest) {
     if (await isBlacklisted(seller)) {
       return errorResponse(403, 'Address is blocked from listing')
     }
+    // Per-seller rate limit: a single wallet can't spam listings even across
+    // multiple IPs. The per-IP gate above limits infrastructure abuse; this
+    // limits wallet-level abuse. 5 listings/60s is generous for legitimate use.
+    if (!(await checkRateLimit(`listings-post-seller:${seller.toLowerCase()}`, 5, 60))) {
+      return errorResponse(429, 'Too many requests')
+    }
 
     // Structural validation BEFORE the expensive signature verification —
     // signature recovery would still succeed against a structurally-bogus
@@ -441,6 +459,27 @@ export async function POST(req: NextRequest) {
     // check, no reason to burn an RPC call on a fee-less order.
     const feeErr = verifyPlatformFee({ price: BigInt(price), consideration: orderComponents.consideration })
     if (feeErr) return errorResponse(feeErr.status, feeErr.error)
+
+    // Verify the seller holds the token before accepting — prevents order-book
+    // pollution with structurally-valid but unfillable orders. Without this gate,
+    // any wallet can sign and post listings for tokens it doesn't hold; Seaport
+    // reverts at fill time, but the listing pollutes the feed for up to 30 days
+    // and wastes buyer gas on doomed transactions. TOCTOU note: a seller can
+    // transfer away after this check — the on-chain revert is the final authority.
+    // Fails closed (502) on RPC error, consistent with verifyRoyalty below.
+    try {
+      const bal = await serverBaseClient().readContract({
+        address: collectionAddress as `0x${string}`,
+        abi: ERC1155_ABI,
+        functionName: 'balanceOf',
+        args: [seller as `0x${string}`, BigInt(tokenId)],
+      }) as bigint
+      if (bal <= 0n) {
+        return errorResponse(403, 'Seller does not hold this token')
+      }
+    } catch {
+      return errorResponse(502, 'Could not verify token ownership — try again')
+    }
 
     // Verify the EIP-712 signature is from the offerer. Without this anyone
     // could spam-list tokens they don't own (Seaport reverts at fill time,
@@ -500,6 +539,13 @@ export async function POST(req: NextRequest) {
       consideration: orderComponents.consideration,
     })
     if (royaltyErr) return errorResponse(royaltyErr.status, royaltyErr.error)
+
+    // Derive expiry from the signed order — don't trust client-submitted value.
+    // A client can't set expiresAt past endTime to keep a stale listing visible
+    // in the feed after the Seaport order is no longer fillable on-chain.
+    // validateOrderShape already validated endTime is in range (not expired,
+    // within 1 year), so Number() is safe — endTime << 2^53.
+    const expiresAt = Number(BigInt(orderComponents.endTime)) * 1000
 
     const listing = await createListing({
       collectionAddress,
