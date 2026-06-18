@@ -21,6 +21,7 @@ import {
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { computePlatformFee, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 
 type ListCurrency = 'eth' | 'usdc'
 
@@ -147,7 +148,8 @@ export function ListButton({
         // Collection doesn't implement EIP-2981 — no royalty
       }
 
-      const sellerProceeds = priceTotal - royaltyAmount
+      const platformFee = computePlatformFee(priceTotal)
+      const sellerProceeds = priceTotal - royaltyAmount - platformFee
 
       // 3. Fetch current Seaport counter for the offerer
       const counter = await publicClient.readContract({
@@ -167,6 +169,8 @@ export function ListButton({
         sellerProceeds,
         royaltyReceiver,
         royaltyAmount,
+        platformFee,
+        platformFeeRecipient: PLATFORM_FEE_RECIPIENT,
         counter,
         currency,
       })

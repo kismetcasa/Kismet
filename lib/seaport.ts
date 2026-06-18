@@ -313,6 +313,8 @@ export function buildSellOrder({
   sellerProceeds,
   royaltyReceiver,
   royaltyAmount,
+  platformFee,
+  platformFeeRecipient,
   counter,
   currency = 'eth',
 }: {
@@ -322,6 +324,8 @@ export function buildSellOrder({
   sellerProceeds: bigint
   royaltyReceiver: Address
   royaltyAmount: bigint
+  platformFee: bigint
+  platformFeeRecipient: Address
   counter: bigint
   currency?: 'eth' | 'usdc'
 }): OrderComponents {
@@ -346,6 +350,21 @@ export function buildSellOrder({
       recipient: offerer,
     },
   ]
+
+  // Platform fee at index 1 — canonical OpenSea ordering: [0] seller →
+  // [1] platform fee → [2] creator royalty. Placed before royalty so the
+  // "last item skippable" bug class (C4 #129, fixed in Seaport 1.1) can
+  // never affect the fee item; we're on 1.5 but the ordering is belt+braces.
+  if (platformFee > 0n) {
+    consideration.push({
+      itemType: considerationItemType,
+      token: considerationToken,
+      identifierOrCriteria: 0n,
+      startAmount: platformFee,
+      endAmount: platformFee,
+      recipient: platformFeeRecipient,
+    })
+  }
 
   if (royaltyAmount > 0n) {
     consideration.push({

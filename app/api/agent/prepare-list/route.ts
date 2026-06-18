@@ -8,6 +8,7 @@ import { SEAPORT_ADDRESS, SEAPORT_ABI, ERC1155_ABI, EIP2981_ABI } from '@/lib/se
 import { formatPrice } from '@/lib/inprocess'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildListPlan, priceToBaseUnits } from '@/lib/agent/list'
+import { computePlatformFee } from '@/lib/platformFee'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -88,8 +89,8 @@ export async function POST(req: NextRequest) {
   } catch {
     // Collection doesn't implement EIP-2981 — list with zero royalty.
   }
-  if (royaltyAmount > priceTotal) {
-    return errorResponse(409, 'On-chain royalty exceeds the listing price')
+  if (royaltyAmount + computePlatformFee(priceTotal) > priceTotal) {
+    return errorResponse(409, 'On-chain royalty and platform fee exceed the listing price')
   }
 
   const plan = buildListPlan({

@@ -19,6 +19,7 @@ import {
 } from 'viem'
 import {
   ERC20_ABI,
+  PLATFORM_FEE_RECIPIENT,
   PUBLISHED_SUFFIX,
   SEAPORT,
   USDC,
@@ -26,6 +27,7 @@ import {
   ZERO_BYTES32,
   builderSuffix,
   check,
+  computePlatformFee,
   eq,
   report,
   selector,
@@ -87,13 +89,18 @@ const COLLECTION = getAddress('0x00000000000000000000000000000000c011ec70')
 const SIG = '0xdeadbeef'
 
 function makeOrder(currency: 'eth' | 'usdc') {
-  const sellerProceeds = currency === 'usdc' ? 4500000n : 9000000000000000n
+  // Prices match verify-agent-list.ts: 0.01 ETH / 5 USDC, 10% royalty, 1% fee.
+  const price = currency === 'usdc' ? 5000000n : 10000000000000000n
   const royalty = currency === 'usdc' ? 500000n : 1000000000000000n
+  const fee = computePlatformFee(price)
+  const sellerProceeds = price - royalty - fee
   const itemType = currency === 'usdc' ? 1 : 0
   const token = currency === 'usdc' ? USDC : ZERO_ADDR
+  const ROYALTY_RECEIVER = getAddress('0x2222222222222222222222222222222222222222')
   const consideration = [
     { itemType, token, identifierOrCriteria: 0n, startAmount: sellerProceeds, endAmount: sellerProceeds, recipient: OFFERER },
-    { itemType, token, identifierOrCriteria: 0n, startAmount: royalty, endAmount: royalty, recipient: getAddress('0x2222222222222222222222222222222222222222') },
+    { itemType, token, identifierOrCriteria: 0n, startAmount: fee, endAmount: fee, recipient: PLATFORM_FEE_RECIPIENT },
+    { itemType, token, identifierOrCriteria: 0n, startAmount: royalty, endAmount: royalty, recipient: ROYALTY_RECEIVER },
   ]
   const parameters = {
     offerer: OFFERER,
@@ -108,7 +115,7 @@ function makeOrder(currency: 'eth' | 'usdc') {
     conduitKey: ZERO_BYTES32,
     totalOriginalConsiderationItems: BigInt(consideration.length),
   }
-  return { parameters, price: sellerProceeds + royalty }
+  return { parameters, price }
 }
 
 const expSelector = selector(encodeFunctionData({ abi: SEAPORT_ABI, functionName: 'fulfillOrder', args: [{ parameters: makeOrder('eth').parameters, signature: '0x' }, ZERO_BYTES32] }))
@@ -130,7 +137,7 @@ console.log('\nETH buy (Seaport fulfillOrder, native value)')
   check('builder suffix appended', data.endsWith(builderSuffix.slice(2)))
   const dec = decodeFunctionData({ abi: SEAPORT_ABI, data: raw })
   check('decoded offerer preserved', eq(dec.args[0].parameters.offerer, OFFERER))
-  check('totalOriginalConsiderationItems = 2', dec.args[0].parameters.totalOriginalConsiderationItems === 2n)
+  check('totalOriginalConsiderationItems = 3', dec.args[0].parameters.totalOriginalConsiderationItems === 3n)
   check('signature round-trips', dec.args[0].signature === SIG)
   check('fulfillerConduitKey is zero', dec.args[1] === ZERO_BYTES32)
 }

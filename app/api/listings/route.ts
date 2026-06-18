@@ -13,10 +13,12 @@ import {
   SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
   EIP2981_ABI,
+  ERC1155_ABI,
   deserializeOrder,
   type SerializedOrderComponents,
 } from '@/lib/seaport'
 import { USDC_BASE } from '@/lib/zoraMint'
+import { PLATFORM_FEE_RECIPIENT, PLATFORM_FEE_BPS, computePlatformFee } from '@/lib/platformFee'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -92,6 +94,19 @@ function validateOrderShape(args: {
   if (!Array.isArray(serialized.consideration) || serialized.consideration.length === 0) {
     return { error: 'Order must have at least one consideration item', status: 400 }
   }
+  // Cap consideration length before any iteration — a 1M-item array would
+  // exhaust CPU in every downstream loop (validateOrderShape, verifyPlatformFee,
+  // verifyRoyalty) and is never legitimate. Normal listings have 2–3 items.
+  if (serialized.consideration.length > 5) {
+    return { error: 'Too many consideration items (max 5)', status: 400 }
+  }
+  // Consideration[0] must go to the seller (their proceeds). buildSellOrder always
+  // constructs it this way. Validating it here prevents a misconfigured or
+  // hand-crafted order from routing seller proceeds to an arbitrary address while
+  // still passing the fee and royalty checks that tally from index 1 onward.
+  if (serialized.consideration[0].recipient.toLowerCase() !== serialized.offerer.toLowerCase()) {
+    return { error: 'First consideration item must go to the seller', status: 400 }
+  }
   const expectedItemType = currency === 'usdc' ? 1 : 0
   const expectedToken = currency === 'usdc' ? USDC_BASE.toLowerCase() : ZERO_ADDRESS
   let totalConsideration = 0n
@@ -111,6 +126,19 @@ function validateOrderShape(args: {
     }
     if (item.token.toLowerCase() !== expectedToken) {
       return { error: 'Consideration token does not match listing currency', status: 400 }
+    }
+    // identifierOrCriteria is only meaningful for ERC721/ERC1155 offer items.
+    // For NATIVE and ERC20 consideration items it must be zero — a non-zero value
+    // signals a criteria-based order that Seaport handles differently and that
+    // our marketplace does not support.
+    let identifierOrCriteria: bigint
+    try {
+      identifierOrCriteria = BigInt(item.identifierOrCriteria)
+    } catch {
+      return { error: 'Consideration identifierOrCriteria is not a valid integer', status: 400 }
+    }
+    if (identifierOrCriteria !== 0n) {
+      return { error: 'Consideration identifierOrCriteria must be zero', status: 400 }
     }
     let amount: bigint
     try {
@@ -149,6 +177,32 @@ function validateOrderShape(args: {
     return { error: 'Order lifetime exceeds 1 year', status: 400 }
   }
 
+  return null
+}
+
+// Verify the listing's consideration includes the required 1% platform fee to
+// PLATFORM_FEE_RECIPIENT. Per-recipient tally across items 1..N (item 0 is
+// seller); minimum-not-exact so rounding tolerance matches seaport-order-validator,
+// while validateOrderShape's strict sum ensures no value is invented.
+function verifyPlatformFee(args: {
+  price: bigint
+  consideration: SerializedOrderComponents['consideration']
+}): { error: string; status: number } | null {
+  const { price, consideration } = args
+  const expectedFee = computePlatformFee(price)
+  const perRecipient = new Map<string, bigint>()
+  for (let i = 1; i < consideration.length; i++) {
+    const item = consideration[i]
+    const r = item.recipient.toLowerCase()
+    perRecipient.set(r, (perRecipient.get(r) ?? 0n) + BigInt(item.startAmount))
+  }
+  const toFeeRecipient = perRecipient.get(PLATFORM_FEE_RECIPIENT.toLowerCase()) ?? 0n
+  if (toFeeRecipient < expectedFee) {
+    return {
+      error: `Listing must include a ${PLATFORM_FEE_BPS} bps (1%) platform fee`,
+      status: 400,
+    }
+  }
   return null
 }
 
@@ -212,6 +266,19 @@ async function verifyRoyalty(args: {
     const item = consideration[i]
     const r = item.recipient.toLowerCase()
     perRecipient.set(r, (perRecipient.get(r) ?? 0n) + BigInt(item.startAmount))
+  }
+  // Deduct the platform fee from the tally so it is not counted as royalty.
+  // Without this, two problems arise:
+  //   (1) Non-EIP-2981 collections: the fee item makes totalRoyalty > 0 and
+  //       triggers the "must declare zero royalty" rejection for every listing.
+  //   (2) EIP-2981 + feeRecipient == royaltyReceiver: the fee item satisfies
+  //       the royalty minimum check even when no royalty item is present,
+  //       letting a seller pocket the royalty by omitting it from consideration.
+  const expectedPlatformFee = computePlatformFee(price)
+  if (expectedPlatformFee > 0n) {
+    const feeKey = PLATFORM_FEE_RECIPIENT.toLowerCase()
+    const current = perRecipient.get(feeKey) ?? 0n
+    perRecipient.set(feeKey, current > expectedPlatformFee ? current - expectedPlatformFee : 0n)
   }
   const totalRoyalty = Array.from(perRecipient.values()).reduce((a, b) => a + b, 0n)
 
@@ -309,7 +376,7 @@ export async function POST(req: NextRequest) {
       currency?: 'eth' | 'usdc'
       orderComponents: SerializedOrderComponents
       signature: string
-      expiresAt: number
+      expiresAt?: number
       name?: string
       image?: string
       creatorAddress?: string
@@ -320,7 +387,7 @@ export async function POST(req: NextRequest) {
     const {
       collectionAddress, tokenId, seller, price,
       sellerProceeds, royaltyReceiver, royaltyAmount,
-      orderComponents, signature, expiresAt,
+      orderComponents, signature,
     } = body
     const currency: 'eth' | 'usdc' = body.currency === 'usdc' ? 'usdc' : 'eth'
 
@@ -338,6 +405,19 @@ export async function POST(req: NextRequest) {
     }
     if (BigInt(price) <= 0n) {
       return errorResponse(400, 'Price must be greater than 0')
+    }
+    // Guard against fee-recipient misconfiguration — zero address silently burns
+    // all fee revenue; a malformed address means verifyPlatformFee's Map lookup
+    // would never match. Catches both before any RPC is spent.
+    if (!isAddress(PLATFORM_FEE_RECIPIENT) || PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS) {
+      return errorResponse(500, 'Platform fee recipient misconfigured')
+    }
+    // Reject prices where the fee floors to zero (< 100 base units), closing the
+    // dust bypass. Hoist the const here so the floor check and sum invariant below
+    // share a single computation.
+    const platformFeeBig = computePlatformFee(BigInt(price))
+    if (platformFeeBig === 0n) {
+      return errorResponse(400, 'Price is below minimum — fee would round to zero')
     }
     // The top-level royaltyReceiver/royaltyAmount aren't enforced on-chain
     // (Seaport pays whatever the consideration items declare; verifyRoyalty
@@ -362,8 +442,8 @@ export async function POST(req: NextRequest) {
     } catch {
       return errorResponse(400, 'sellerProceeds is not a valid integer')
     }
-    if (sellerProceedsBig < 0n || sellerProceedsBig + royaltyAmountBig !== BigInt(price)) {
-      return errorResponse(400, 'sellerProceeds + royaltyAmount must equal price')
+    if (sellerProceedsBig < 0n || sellerProceedsBig + platformFeeBig + royaltyAmountBig !== BigInt(price)) {
+      return errorResponse(400, 'sellerProceeds + platformFee + royaltyAmount must equal price')
     }
     if (orderComponents.offerer.toLowerCase() !== seller.toLowerCase()) {
       return errorResponse(400, 'Seller must match order offerer')
@@ -376,6 +456,12 @@ export async function POST(req: NextRequest) {
     // the marketplace consults this list.
     if (await isBlacklisted(seller)) {
       return errorResponse(403, 'Address is blocked from listing')
+    }
+    // Per-seller rate limit: a single wallet can't spam listings even across
+    // multiple IPs. The per-IP gate above limits infrastructure abuse; this
+    // limits wallet-level abuse. 5 listings/60s is generous for legitimate use.
+    if (!(await checkRateLimit(`listings-post-seller:${seller.toLowerCase()}`, 5, 60))) {
+      return errorResponse(429, 'Too many requests')
     }
 
     // Structural validation BEFORE the expensive signature verification —
@@ -390,6 +476,41 @@ export async function POST(req: NextRequest) {
       currency,
     })
     if (shapeErr) return errorResponse(shapeErr.status, shapeErr.error)
+
+    // Cross-validate submitted sellerProceeds against the signed consideration[0].
+    // The sum invariant above confirms sellerProceeds + fee + royalty === price;
+    // this confirms the DB display field matches what the seller actually signed
+    // (consideration[0].startAmount). Without it a client could set sellerProceeds
+    // to an arbitrary value that misleads the UI while the on-chain split differs.
+    if (sellerProceedsBig !== BigInt(orderComponents.consideration[0].startAmount)) {
+      return errorResponse(400, 'sellerProceeds does not match signed order')
+    }
+
+    // Verify the platform fee before the expensive signature RPC — pure local
+    // check, no reason to burn an RPC call on a fee-less order.
+    const feeErr = verifyPlatformFee({ price: BigInt(price), consideration: orderComponents.consideration })
+    if (feeErr) return errorResponse(feeErr.status, feeErr.error)
+
+    // Verify the seller holds the token before accepting — prevents order-book
+    // pollution with structurally-valid but unfillable orders. Without this gate,
+    // any wallet can sign and post listings for tokens it doesn't hold; Seaport
+    // reverts at fill time, but the listing pollutes the feed for up to 30 days
+    // and wastes buyer gas on doomed transactions. TOCTOU note: a seller can
+    // transfer away after this check — the on-chain revert is the final authority.
+    // Fails closed (502) on RPC error, consistent with verifyRoyalty below.
+    try {
+      const bal = await serverBaseClient().readContract({
+        address: collectionAddress as `0x${string}`,
+        abi: ERC1155_ABI,
+        functionName: 'balanceOf',
+        args: [seller as `0x${string}`, BigInt(tokenId)],
+      }) as bigint
+      if (bal <= 0n) {
+        return errorResponse(403, 'Seller does not hold this token')
+      }
+    } catch {
+      return errorResponse(502, 'Could not verify token ownership — try again')
+    }
 
     // Verify the EIP-712 signature is from the offerer. Without this anyone
     // could spam-list tokens they don't own (Seaport reverts at fill time,
@@ -450,6 +571,13 @@ export async function POST(req: NextRequest) {
     })
     if (royaltyErr) return errorResponse(royaltyErr.status, royaltyErr.error)
 
+    // Derive expiry from the signed order — don't trust client-submitted value.
+    // A client can't set expiresAt past endTime to keep a stale listing visible
+    // in the feed after the Seaport order is no longer fillable on-chain.
+    // validateOrderShape already validated endTime is in range (not expired,
+    // within 1 year), so Number() is safe — endTime << 2^53.
+    const expiresAt = Number(BigInt(orderComponents.endTime)) * 1000
+
     const listing = await createListing({
       collectionAddress,
       tokenId,
@@ -458,6 +586,8 @@ export async function POST(req: NextRequest) {
       sellerProceeds,
       royaltyReceiver,
       royaltyAmount,
+      platformFee: platformFeeBig.toString(),
+      platformFeeRecipient: PLATFORM_FEE_RECIPIENT,
       currency,
       orderComponents,
       signature: onchainSignature,
