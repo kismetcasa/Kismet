@@ -32,8 +32,6 @@ export const STATS_MINTS_KEY = 'kismetart:stats:mints'
 export const STATS_EARNED_ETH_KEY = 'kismetart:stats:earned:eth'
 export const STATS_EARNED_USDC_KEY = 'kismetart:stats:earned:usdc'
 
-export type { EarningsMetric }
-
 export interface ArtistEarnings {
   address: string
   username?: string
