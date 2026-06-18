@@ -94,6 +94,13 @@ function validateOrderShape(args: {
   if (!Array.isArray(serialized.consideration) || serialized.consideration.length === 0) {
     return { error: 'Order must have at least one consideration item', status: 400 }
   }
+  // Consideration[0] must go to the seller (their proceeds). buildSellOrder always
+  // constructs it this way. Validating it here prevents a misconfigured or
+  // hand-crafted order from routing seller proceeds to an arbitrary address while
+  // still passing the fee and royalty checks that tally from index 1 onward.
+  if (serialized.consideration[0].recipient.toLowerCase() !== serialized.offerer.toLowerCase()) {
+    return { error: 'First consideration item must go to the seller', status: 400 }
+  }
   const expectedItemType = currency === 'usdc' ? 1 : 0
   const expectedToken = currency === 'usdc' ? USDC_BASE.toLowerCase() : ZERO_ADDRESS
   let totalConsideration = 0n

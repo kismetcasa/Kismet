@@ -23,6 +23,9 @@ export interface Listing {
   currency: 'eth' | 'usdc'
   // Platform fee baked into the Seaport consideration at index 1.
   // Older rows created before fee support default to '0' (see getListing).
+  // INFORMATIONAL ONLY — all financial logic uses orderComponents.consideration
+  // directly. On-chain, Seaport pays based on what the seller signed, not these
+  // stored values. Do not use these fields for financial calculations.
   platformFee: string
   platformFeeRecipient: string
   orderComponents: SerializedOrderComponents
@@ -54,17 +57,6 @@ const keyExpiredNotif = (id: string) => `kismetart:listing-notified:${id}`
 export async function createListing(
   data: Omit<Listing, 'id' | 'createdAt' | 'status'>
 ): Promise<Listing> {
-  // One active listing per seller per token
-  const ownedId = await redis.get<string>(
-    keyByOwned(data.collectionAddress, data.tokenId, data.seller)
-  )
-  if (ownedId) {
-    const existing = await getListing(ownedId)
-    if (existing && existing.status === 'active') {
-      throw new Error('Active listing already exists for this token')
-    }
-  }
-
   const listing: Listing = {
     ...data,
     id: crypto.randomUUID(),
@@ -72,10 +64,29 @@ export async function createListing(
     status: 'active',
   }
 
+  const ownedKey = keyByOwned(data.collectionAddress, data.tokenId, data.seller)
+
+  // Atomic SET NX — only succeeds if no listing already occupies this slot.
+  // Two concurrent POSTs for the same token race here; exactly one wins.
+  // Non-atomic read-then-write (the prior approach) had a TOCTOU window where
+  // both requests saw no incumbent and both created orphaned listings.
+  const claimed = await redis.set(ownedKey, listing.id, { nx: true })
+  if (!claimed) {
+    // NX failed — someone else holds the slot. Check whether their listing is
+    // still active (it may have been cancelled/expired since we entered here).
+    const incumbentId = await redis.get<string>(ownedKey)
+    const incumbent = incumbentId ? await getListing(incumbentId) : null
+    if (incumbent && incumbent.status === 'active') {
+      throw new Error('Active listing already exists for this token')
+    }
+    // Incumbent gone (inactive/expired/orphaned) — take the slot.
+    await redis.set(ownedKey, listing.id)
+  }
+
   await Promise.all([
     redis.zadd(KEY_ALL, { score: listing.createdAt, member: listing.id }),
     redis.set(keyById(listing.id), JSON.stringify(listing)),
-    redis.set(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller), listing.id),
+    // ownedKey is already written above via SET NX
     redis.sadd(keyBySeller(listing.seller), listing.id),
   ])
 
