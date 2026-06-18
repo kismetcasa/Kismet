@@ -69,11 +69,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
   // Creator-pass gate pre-check (shared with MintForm via usePassGate). When
   // the gate is on and the wallet holds no valid Pass, the deploy button is
-  // swapped for a "collect creator pass" CTA so the user isn't sent into an
+  // swapped for a "collect from <name>" CTA so the user isn't sent into an
   // Arweave upload + on-chain deploy for a collection the server will refuse to
   // track. UX hint only — POST /api/collections runs the authoritative
   // hasGateAccess check.
-  const { gatedOut, passCollectionHref } = usePassGate()
+  const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
   const {
     file: coverFile,
@@ -421,7 +421,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     // when gatedOut, but Enter-submit can still reach here. Bail before any
     // upload/deploy. The server re-checks hasGateAccess at registration.
     if (gatedOut) {
-      toast.error('A Kismet Creator Pass is required to create a collection')
+      toast.error(`An artwork from ${passCollectionName ?? 'the collection'} is required to create a collection`)
       return
     }
     if (!coverFile) {
@@ -1006,7 +1006,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         )}
       </div>
 
-      {/* Submit — swaps to a "collect creator pass" CTA when the gate is
+      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
           enabled and the wallet holds no valid Pass (mirrors MintForm), but
           NOT while a deploy is in flight (isBusy): a resumed/mid-flight deploy
           must keep showing progress, not flip to the CTA if the pass probe
@@ -1020,10 +1020,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             onClick={() => router.push(passCollectionHref)}
             className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
           >
-            collect creator pass
+            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
           </button>
           <p className="text-[10px] font-mono text-muted text-center">
-            creating a collection requires a Kismet Creator Pass
+            creating a collection requires an artwork from {passCollectionName ?? 'the collection'}
           </p>
         </div>
       ) : (
