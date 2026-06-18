@@ -646,31 +646,21 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // A "not found" (404) means the connected wallet has no inprocess
       // account — retrying won't help; fail immediately with a clear message.
       let inprocessSmartWallet: string | null = null
-      {
-        let lastResult = await fetchInprocessSmartWallet(address)
-        if (lastResult && 'notFound' in lastResult) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 2000 * attempt))
+        }
+        const result = await fetchInprocessSmartWallet(address)
+        if (result && 'notFound' in result) {
           throw new Error(
             'This wallet has no inprocess account. Visit inprocess.world to get started.',
           )
         }
-        if (lastResult && 'address' in lastResult) {
-          inprocessSmartWallet = lastResult.address
-        } else {
-          // Transient — retry with backoff.
-          for (let attempt = 1; attempt < 3; attempt++) {
-            await new Promise((r) => setTimeout(r, 2000 * attempt))
-            lastResult = await fetchInprocessSmartWallet(address)
-            if (lastResult && 'notFound' in lastResult) {
-              throw new Error(
-                'This wallet has no inprocess account. Visit inprocess.world to get started.',
-              )
-            }
-            if (lastResult && 'address' in lastResult) {
-              inprocessSmartWallet = lastResult.address
-              break
-            }
-          }
+        if (result && 'address' in result) {
+          inprocessSmartWallet = result.address
+          break
         }
+        // null → transient; fall through and retry
       }
       if (!inprocessSmartWallet || !isAddress(inprocessSmartWallet)) {
         throw new Error(
