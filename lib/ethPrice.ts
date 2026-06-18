@@ -27,11 +27,12 @@ export async function getEthUsd(): Promise<number | null> {
   try {
     const cached = await redis.get<number>(CACHE_KEY)
     if (typeof cached === 'number' && cached > 0) return cached
-    const data = (await serverBaseClient().readContract({
-      address: FEED,
-      abi: ABI,
-      functionName: 'latestRoundData',
-    })) as readonly [bigint, bigint, bigint, bigint, bigint]
+    // Bound the on-chain read so a slow/hanging RPC can't stall callers on the
+    // hot profile path (viem's default timeout + retries can run tens of secs).
+    const data = (await Promise.race([
+      serverBaseClient().readContract({ address: FEED, abi: ABI, functionName: 'latestRoundData' }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ethusd timeout')), 2500)),
+    ])) as readonly [bigint, bigint, bigint, bigint, bigint]
     const price = Number(data[1]) / 1e8
     if (!Number.isFinite(price) || price <= 0) return null
     await redis.set(CACHE_KEY, price, { ex: 60 }).catch(() => {})

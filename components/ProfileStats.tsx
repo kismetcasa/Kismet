@@ -63,11 +63,14 @@ export function ProfileStats({
     const d: EarningsMetric[] = []
     if (stats.eth > 0) d.push('eth')
     if (stats.usdc > 0) d.push('usdc')
-    if (d.length) d.push('usd')
+    // USD only when it's actually computable (price available) — never show $0.
+    if (stats.usd > 0) d.push('usd')
     return d
   }, [stats])
 
-  if (!stats || stats.mints <= 0 || denoms.length === 0) return null
+  // Show whenever there are earnings (denoms non-empty) — including a split-only
+  // collaborator with 0 mints. No earnings → nothing to show.
+  if (!stats || denoms.length === 0) return null
   // Visitors (and the owner's public-view preview) see it only once pinned.
   if (asVisitor && !stats.public) return null
 
@@ -93,7 +96,8 @@ export function ProfileStats({
   // (mobile + some desktop) → native sheet; otherwise → copy link.
   const share = async () => {
     const url = `${window.location.origin}/profile/${address}`
-    const text = `${formatEarningsValue(active, stats)} earned · ${stats.mints} ${stats.mints === 1 ? 'mint' : 'mints'} on Kismet`
+    const mintPart = stats.mints > 0 ? ` · ${stats.mints} ${stats.mints === 1 ? 'mint' : 'mints'}` : ''
+    const text = `${formatEarningsValue(active, stats)} earned${mintPart} on Kismet`
     if (isInMiniApp) {
       try {
         const { sdk } = await import('@farcaster/miniapp-sdk')
@@ -125,9 +129,11 @@ export function ProfileStats({
           >
             {formatEarningsValue(active, stats)}
           </button>
-          <p className="text-muted text-xs mt-0.5">
-            {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'} earned
-          </p>
+          {stats.mints > 0 && (
+            <p className="text-muted text-xs mt-0.5">
+              {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-0.5 shrink-0 -mr-1 -mt-0.5">
           {stats.public && (
