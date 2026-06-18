@@ -18,6 +18,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { reportClientError } from '@/lib/clientError'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
@@ -343,6 +344,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
+  // Latest committed step, readable from the mint catch where the `step`
+  // closure is stale: handleMint closes over the render that created it, so
+  // its `step` is still 'idle' at throw time. This mirror lets failure
+  // reporting name the exact phase the upload died in.
+  const stepRef = useRef(step)
+  useEffect(() => {
+    stepRef.current = step
+  }, [step])
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
   // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits
@@ -1108,6 +1117,21 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
       }
     } catch (err) {
+      // Capture WHERE the mint died before resetting the step. With no
+      // error-tracking service wired up, this is the only durable record of
+      // the failure — without it the error vanishes into the user's browser
+      // as a toast, which is why this class of bug has had to be diagnosed by
+      // reading source. stepRef holds the last committed phase (the `step`
+      // closure here is stale at 'idle').
+      reportClientError('mint_failed', {
+        phase: stepRef.current,
+        mode: mintMode,
+        autoDeploy: isAutoDeploy,
+        fileType: file?.type ?? null,
+        fileSize: file?.size ?? null,
+        fileExt: file?.name.split('.').pop()?.toLowerCase() ?? null,
+        error: err instanceof Error ? err.message : String(err),
+      })
       setStep('idle')
       setUploadProgress(0)
       toastError('Mint', err, { id: 'mint' })
