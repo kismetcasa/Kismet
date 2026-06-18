@@ -186,7 +186,17 @@ export async function proxyMintRequest(
   // Strip `intent` along with the other private/normalized fields so the
   // signature envelope never reaches inprocess — it's a server-only auth
   // artifact and would be flagged as an unknown field upstream.
-  const { name: bodyName, splits: _droppedSplits, intent: _droppedIntent, ...rest } = body
+  // `durationSec` is the same class of private hint: MintForm sends it for
+  // video moments and we read it from `body` below for setMomentMeta, but
+  // it isn't part of inprocess's /moment/create schema, so it must not be
+  // forwarded either (same reasoning as `name` and `intent`).
+  const {
+    name: bodyName,
+    splits: _droppedSplits,
+    intent: _droppedIntent,
+    durationSec: _droppedDurationSec,
+    ...rest
+  } = body
   const sanitizedToken = {
     ...(tokenObj as Record<string, unknown>),
     createReferral: CREATE_REFERRAL,
