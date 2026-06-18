@@ -28,6 +28,7 @@ import { useEnsureBase } from '@/lib/useEnsureBase'
 import { shortAddress } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 import { usePlatformPaused } from '@/hooks/usePlatformPaused'
+import { usePassGate } from '@/hooks/usePassGate'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void
@@ -65,6 +66,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   // (consistent with isPlatformPausedFor) so they can still deploy while paused.
   const { paused: platformPaused } = usePlatformPaused()
   const pausedBlock = platformPaused && !isAdmin
+
+  // Creator-pass gate pre-check (shared with MintForm via usePassGate). When
+  // the gate is on and the wallet holds no valid Pass, the deploy button is
+  // swapped for a "collect creator pass" CTA so the user isn't sent into an
+  // Arweave upload + on-chain deploy for a collection the server will refuse to
+  // track. UX hint only — POST /api/collections runs the authoritative
+  // hasGateAccess check.
+  const { gatedOut, passCollectionHref } = usePassGate()
 
   const {
     file: coverFile,
@@ -406,6 +415,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     // form can still submit via Enter — bail before any upload/deploy.
     if (pausedBlock) {
       toast.error('Platform is temporarily paused')
+      return
+    }
+    // Same defense-in-depth as pausedBlock: the button is swapped for a CTA
+    // when gatedOut, but Enter-submit can still reach here. Bail before any
+    // upload/deploy. The server re-checks hasGateAccess at registration.
+    if (gatedOut) {
+      toast.error('A Kismet Creator Pass is required to create a collection')
       return
     }
     if (!coverFile) {
@@ -990,27 +1006,47 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         )}
       </div>
 
-      {/* Submit. Wrapped in a titled span so the hover tooltip still shows
-          when the button is disabled (disabled buttons don't fire hover). */}
-      <span
-        className="block w-full"
-        title={pausedBlock ? 'Platform temporarily paused' : undefined}
-      >
-        <button
-          type="submit"
-          disabled={isBusy || pausedBlock}
+      {/* Submit — swaps to a "collect creator pass" CTA when the gate is
+          enabled and the wallet holds no valid Pass (mirrors MintForm), but
+          NOT while a deploy is in flight (isBusy): a resumed/mid-flight deploy
+          must keep showing progress, not flip to the CTA if the pass probe
+          resolves gatedOut late. Otherwise the normal create button, wrapped
+          in a titled span so the hover tooltip still shows while disabled by
+          pause (disabled buttons don't fire hover). */}
+      {gatedOut && !isBusy ? (
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => router.push(passCollectionHref)}
+            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+          >
+            collect creator pass
+          </button>
+          <p className="text-[10px] font-mono text-muted text-center">
+            creating a collection requires a Kismet Creator Pass
+          </p>
+        </div>
+      ) : (
+        <span
+          className="block w-full"
           title={pausedBlock ? 'Platform temporarily paused' : undefined}
-          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {!isConnected
-            ? 'connect wallet to deploy'
-            : pausedBlock
-            ? 'platform temporarily paused'
-            : isBusy
-            ? stepLabel(step, uploadProgress)
-            : 'create'}
-        </button>
-      </span>
+          <button
+            type="submit"
+            disabled={isBusy || pausedBlock}
+            title={pausedBlock ? 'Platform temporarily paused' : undefined}
+            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {!isConnected
+              ? 'connect wallet to deploy'
+              : pausedBlock
+              ? 'platform temporarily paused'
+              : isBusy
+              ? stepLabel(step, uploadProgress)
+              : 'create'}
+          </button>
+        </span>
+      )}
     </form>
   )
 }
