@@ -35,6 +35,10 @@ interface ListButtonProps {
   contentUri?: string
   contentMime?: string
   buttonClassName?: string
+  // Two-row layout for the narrow grid/profile cards: price input on its own
+  // full-width row, confirm + cancel below. Off (single row) everywhere else
+  // so the wider full card / detail view keep their inline layout.
+  stacked?: boolean
 }
 
 export function ListButton({
@@ -46,6 +50,7 @@ export function ListButton({
   contentUri,
   contentMime,
   buttonClassName,
+  stacked = false,
 }: ListButtonProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -56,6 +61,7 @@ export function ListButton({
 
   const [showForm, setShowForm] = useState(false)
   const [priceInput, setPriceInput] = useState('')
+  const [inputFocused, setInputFocused] = useState(false)
   const [currency, setCurrency] = useState<ListCurrency>('eth')
   const [step, setStep] = useState<'idle' | 'approving' | 'signing' | 'submitting'>('idle')
 
@@ -242,38 +248,49 @@ export function ListButton({
     )
   }
 
-  // Two-row layout. The expanded form is most often rendered in a ~150px
-  // compact profile card, where cramming [currency][input][list][✕] onto one
-  // line starved the input to a sliver and clipped the longer busy labels
-  // ("approving…"). Giving the input its own full-width row and the
-  // confirm/cancel their own row keeps every piece legibly sized at any width.
+  // Same control in both layouts, different slot: left of the input inline,
+  // right of it (with a divider) when stacked.
+  const currencyToggle = (
+    <button
+      type="button"
+      onClick={() => setCurrency((c) => (c === 'eth' ? 'usdc' : 'eth'))}
+      disabled={isBusy}
+      title="tap to switch currency"
+      className={`flex items-center text-[10px] font-mono text-dim hover:text-ink transition-colors disabled:opacity-40 flex-shrink-0 ${stacked ? 'px-2.5 border-l border-line' : 'pl-2 pr-1'}`}
+    >
+      {currency === 'eth' ? 'ETH' : 'USDC'}
+    </button>
+  )
+
+  // `stacked` (narrow grid/profile cards) puts the price input on its own
+  // full-width row with the actions below — those cards stack vertically, so
+  // the taller form just grows down and no sibling gets stretched. Unset
+  // (wider full card / detail) keeps the original single row. The toggle hides
+  // inline once a price is typed; stacked has room to keep it visible.
+  const showToggle = !stacked && priceInput === '' && !inputFocused
+
   return (
-    <div className="flex flex-col gap-1.5 w-full">
-      <div className="flex items-stretch bg-surface border border-line focus-within:border-muted">
-        <button
-          type="button"
-          onClick={() => setCurrency((c) => (c === 'eth' ? 'usdc' : 'eth'))}
-          disabled={isBusy}
-          title="tap to switch currency"
-          className="flex items-center px-2.5 text-[10px] font-mono text-dim hover:text-ink transition-colors disabled:opacity-40 flex-shrink-0 border-r border-line"
-        >
-          {currency === 'eth' ? 'ETH' : 'USDC'}
-        </button>
+    <div className={stacked ? 'flex flex-col gap-1.5 w-full' : 'flex gap-1.5 items-center w-full'}>
+      <div className={`flex bg-surface border border-line focus-within:border-muted ${stacked ? '' : 'flex-1 min-w-0'}`}>
+        {showToggle && currencyToggle}
         <input
           type="text"
           inputMode="decimal"
           value={priceInput}
           onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPriceInput(v) }}
-          placeholder="0.00"
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
+          placeholder={stacked ? '0.00' : (showToggle ? '' : (currency === 'usdc' ? 'USDC' : 'ETH'))}
           disabled={isBusy}
           className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-ink font-mono placeholder-faint focus:outline-none disabled:opacity-50"
         />
+        {stacked && currencyToggle}
       </div>
-      <div className="flex gap-1.5">
+      <div className={stacked ? 'flex gap-1.5' : 'flex gap-1 flex-shrink-0 ml-auto'}>
         <button
           onClick={handleList}
           disabled={isBusy}
-          className="flex-1 text-xs font-mono tracking-wider uppercase px-3 py-2.5 btn-accent"
+          className={`${stacked ? 'flex-1 ' : ''}text-xs font-mono tracking-wider uppercase px-3 py-2.5 btn-accent`}
         >
           {step === 'approving' ? 'approving…'
             : step === 'signing' ? 'signing…'
@@ -285,7 +302,7 @@ export function ListButton({
           onClick={() => { setShowForm(false); setPriceInput('') }}
           disabled={isBusy}
           aria-label="cancel"
-          className="flex items-center justify-center px-3 text-xs font-mono text-muted hover:text-ink border border-line hover:border-muted transition-colors disabled:opacity-40 flex-shrink-0"
+          className="px-2 text-xs font-mono text-muted hover:text-dim disabled:opacity-40"
         >
           ✕
         </button>
