@@ -244,6 +244,7 @@ interface Profile {
   // Server-computed: collapses the username → farcaster → ens fallback
   // chain into a single field. See app/api/profile/[address]/route.ts.
   displayName?: string | null
+  earnings?: { eth: number; usdc: number; usd: number; mints: number } | null
   updatedAt: number
 }
 
@@ -1113,7 +1114,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           {/* Earnings card — right of the identity block (wraps below on
               mobile). Private by default: the owner sees it with a pin toggle,
               visitors only once pinned public. Renders nothing otherwise. */}
-          <ProfileStats address={address} asVisitor={asVisitor} />
+          <ProfileStats address={address} asVisitor={asVisitor} initialEarnings={profile?.earnings ?? null} />
         </div>
 
       </div>

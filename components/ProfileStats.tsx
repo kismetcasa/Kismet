@@ -16,14 +16,33 @@ interface Stats {
 // Earnings card to the right of the profile identity block. Private by default:
 // the owner sees it with a pin to make it public; visitors only once pinned
 // (mirroring the artwork pin). The figure taps to cycle ETH → USDC → USD.
-export function ProfileStats({ address, asVisitor }: { address: string; asVisitor: boolean }) {
+export function ProfileStats({
+  address,
+  asVisitor,
+  initialEarnings,
+}: {
+  address: string
+  asVisitor: boolean
+  initialEarnings: { eth: number; usdc: number; usd: number; mints: number } | null
+}) {
   const { isInMiniApp } = useFarcaster()
   const [stats, setStats] = useState<Stats | null>(null)
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
 
+  // Public earnings arrive with the profile read (no extra request). When none
+  // are in that payload, only the owner fetches /api/stats — to see their own
+  // (possibly private) figures + pin. Visitors fetch nothing.
   useEffect(() => {
+    if (initialEarnings) {
+      setStats({ ...initialEarnings, public: true })
+      return
+    }
+    if (asVisitor) {
+      setStats(null)
+      return
+    }
     let cancelled = false
     fetch(`/api/stats?artist=${address}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -36,7 +55,7 @@ export function ProfileStats({ address, asVisitor }: { address: string; asVisito
     return () => {
       cancelled = true
     }
-  }, [address])
+  }, [address, asVisitor, initialEarnings])
 
   // Offer only denominations the artist earned in, plus the blended USD.
   const denoms = useMemo<EarningsMetric[]>(() => {

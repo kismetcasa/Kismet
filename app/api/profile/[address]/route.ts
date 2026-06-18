@@ -9,6 +9,8 @@ import { resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { errorResponse } from '@/lib/apiResponse'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { getArtistEarnings } from '@/lib/stats'
+import { isEarningsPublic } from '@/lib/earningsVisibility'
 
 // Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
 // the public default. MAINNET_RPC_URL is the server-only override; falls
@@ -74,6 +76,13 @@ export async function GET(
     getCachedEns(address),
   ])
   const { profile, canonicalAddress } = canonical
+  // Public earnings ride along on the profile read so the earnings card needs no
+  // separate request (earnings are private until pinned; the owner-private
+  // figures come from /api/stats only when an owner views their own unpinned
+  // profile). One SISMEMBER here, +reads only when public.
+  const earnings = (await isEarningsPublic(canonicalAddress))
+    ? await getArtistEarnings(canonicalAddress)
+    : null
   if (!profile.username && cachedEns === undefined) {
     after(() => resolveEnsAndCache(address))
   }
@@ -100,6 +109,7 @@ export async function GET(
       displayName,
       canonicalAddress,
       farcaster: farcaster ?? undefined,
+      earnings,
     },
   })
 }
