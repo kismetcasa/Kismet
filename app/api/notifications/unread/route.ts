@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUnreadCountCached } from '@/lib/notifications'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import { getSessionContext, slideSession } from '@/lib/session'
+import { getSessionContext } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
 
 export async function GET(req: NextRequest) {
@@ -17,9 +17,10 @@ export async function GET(req: NextRequest) {
   // invalidated on every priority write + every mark-read so true changes
   // still surface on the next poll.
   const count = await getUnreadCountCached(ctx.address)
-  const res = NextResponse.json({ count }, {
+  // No slideSession: passive polling is not a meaningful user action.
+  // Sessions are extended by real actions (mint, collect, etc.). Polling
+  // only the bell would otherwise spend 1 EXPIRE per ~60s indefinitely.
+  return NextResponse.json({ count }, {
     headers: { 'Cache-Control': 'private, no-store' },
   })
-  await slideSession(res, ctx.token)
-  return res
 }

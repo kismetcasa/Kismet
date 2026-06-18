@@ -26,7 +26,19 @@ function isFlagSet(raw: string | number | null): boolean {
   return String(raw) === '1'
 }
 
+// In-process cache for gate config. Avoids 3 Redis reads on every gated
+// request (getGateConfig is called once each by hasGateAccess,
+// isPlatformPausedFor, and the caller directly — 9 Redis reads per request
+// without caching). More importantly, provides last-known-good semantics on
+// Redis error: gate stays enforced at its prior state rather than failing
+// open (enabled:false) which would admit all callers during an outage.
+const CONFIG_CACHE_TTL_MS = 15_000
+let _configCache: { value: GateConfig; expiresAt: number } | null = null
+
 export async function getGateConfig(): Promise<GateConfig> {
+  if (_configCache && Date.now() < _configCache.expiresAt) {
+    return _configCache.value
+  }
   try {
     const [enabled, collectionRaw, paused] = await Promise.all([
       redis.get<string | number>(KEY_ENABLED),
@@ -37,12 +49,18 @@ export async function getGateConfig(): Promise<GateConfig> {
       typeof collectionRaw === 'string' && isAddress(collectionRaw)
         ? collectionRaw.toLowerCase()
         : null
-    return {
+    const config: GateConfig = {
       enabled: isFlagSet(enabled),
       passCollection,
       paused: isFlagSet(paused),
     }
+    _configCache = { value: config, expiresAt: Date.now() + CONFIG_CACHE_TTL_MS }
+    return config
   } catch {
+    // Last-known-good: gate stays in its prior enforced state during a
+    // transient Redis outage. Only falls back to fail-open (enabled:false)
+    // if no cached value exists (cold start with Redis already down).
+    if (_configCache) return _configCache.value
     return { enabled: false, passCollection: null, paused: false }
   }
 }
@@ -55,6 +73,9 @@ export async function setGateConfig(config: GateConfig): Promise<void> {
       : redis.del(KEY_PASS_COLLECTION),
     config.paused ? redis.set(KEY_PAUSED, '1') : redis.del(KEY_PAUSED),
   ])
+  // Invalidate so the next read picks up the admin's change within one
+  // request rather than waiting up to CONFIG_CACHE_TTL_MS.
+  _configCache = null
 }
 
 /**

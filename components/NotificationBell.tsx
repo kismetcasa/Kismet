@@ -10,11 +10,14 @@ interface NotificationBellProps {
   address: string
 }
 
-// 60s matches GitHub's canonical X-Poll-Interval for the notifications API
-// and is the threshold below which industry-standard apps consider polling
-// abusive. Combined with the cached-count path on /api/notifications/unread,
-// this drops per-user Redis traffic from ~6 ops every 30s to ~3 ops every 60s.
-const POLL_INTERVAL_MS = 60_000
+// 120s: GitHub's X-Poll-Interval establishes 60s as the floor below which
+// polling is considered abusive; 120s is well above that. The visibilitychange
+// handler fires an immediate re-fetch when the user returns to the tab —
+// the only moment badge freshness is actually noticed. In-tab lag (60s→120s)
+// is imperceptible for an NFT notification feed. Combined with the cached-count
+// path and 3600s TTL on /api/notifications/unread, per-user Redis cost is
+// ~3 ops per poll (~90 ops/hr vs ~180 ops/hr at the prior 60s interval).
+const POLL_INTERVAL_MS = 120_000
 
 export function NotificationBell({ address }: NotificationBellProps) {
   const pathname = usePathname()

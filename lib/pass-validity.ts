@@ -29,8 +29,11 @@ const keyProcessed = (txHash: string, logIndex: number, subIndex: number) =>
 // processed-key above. The direct-credit path (listing fill) and the
 // webhook backstop both write through creditValidityOnce, which CAS-
 // claims this key; second writer is a no-op.
-const keyCredited = (collection: string, address: string, txHash: string) =>
-  `kismetart:pass:credited:${collection.toLowerCase()}:${address.toLowerCase()}:${txHash.toLowerCase()}`
+// tokenId is included so a multicall that sends two different tokenIds to
+// the same address in one tx gets two independent credits (one per tokenId)
+// rather than having the second claim blocked by the first's NX lock.
+const keyCredited = (collection: string, address: string, txHash: string, tokenId: string) =>
+  `kismetart:pass:credited:${collection.toLowerCase()}:${address.toLowerCase()}:${txHash.toLowerCase()}:${tokenId}`
 // Tainted tokenIds: any tokenId that has ever left the sanctioned
 // provenance chain via an off-platform transfer (OpenSea sale, P2P send,
 // burn, direct Seaport fill). Once in this set, the tokenId is
@@ -41,6 +44,49 @@ const keyCredited = (collection: string, address: string, txHash: string) =>
 // chain on-platform. Admin can override via setValidBalance.
 const keyTainted = (collection: string) =>
   `kismetart:pass:tainted:${collection.toLowerCase()}`
+// Active Kismet listing marker: set at listing-creation time, cleared at
+// fill/cancel/expiry. processTransfer checks this before tainting so a
+// legitimate Kismet secondary sale is not falsely tainted when the
+// webhook races ahead of the listing PATCH's recordPlatformTx write.
+// Keyed by seller so a concurrent holder selling the same tokenId
+// off-platform is not shielded by another holder's Kismet listing.
+const keyKismetListed = (collection: string, tokenId: string, seller: string) =>
+  `kismetart:pass:kismet-listed:${collection.toLowerCase()}:${tokenId}:${seller.toLowerCase()}`
+
+// Atomically INCRBY the balance and, when the result drops to ≤ 0, delete
+// the admin-grant flag in the same Redis round-trip. Without atomicity, a
+// concurrent setValidBalance (two writes: SET balance + SET adminGrant) could
+// have its adminGrant overwritten by a webhook INCRBY's separate DEL arriving
+// between the two SET calls, silently removing a deliberate admin override.
+const ADJUST_BALANCE_LUA = `
+local new = tonumber(redis.call('INCRBY', KEYS[1], tonumber(ARGV[1])))
+if new <= 0 then redis.call('DEL', KEYS[2]) end
+return new
+`
+
+// Atomically write both validBalance and adminGrant so no concurrent INCRBY
+// (from a webhook decrement) can interleave and leave them inconsistent.
+const SET_VALIDITY_LUA = `
+local safe = tonumber(ARGV[1])
+redis.call('SET', KEYS[1], tostring(safe))
+if safe > 0 then redis.call('SET', KEYS[2], '1') else redis.call('DEL', KEYS[2]) end
+return 1
+`
+
+// Compare-and-swap for drift correction in hasValidPass. Only overwrites the
+// ledger if its current value still equals what we read when we called
+// balanceOfBatch. Guards against a concurrent creditValidityOnce INCRBY
+// landing between the read and the SET — without the CAS that INCRBY would
+// be silently overwritten by the stale drift-correction SET, permanently
+// losing the legitimate credit.
+const CAS_BALANCE_LUA = `
+local cur = tonumber(redis.call('GET', KEYS[1]) or '0')
+if cur == tonumber(ARGV[1]) then
+  redis.call('SET', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`
 
 const ERC1155_ABI = [
   {
@@ -81,6 +127,44 @@ async function isPlatformTx(txHash: string): Promise<boolean> {
   return !!v
 }
 
+/** Mark (collection, tokenId, seller) as actively listed on Kismet.
+ *  Called at listing-creation time so processTransfer can distinguish
+ *  a legitimate Kismet secondary sale from a truly off-platform transfer,
+ *  even when the webhook races ahead of the listing PATCH's after()
+ *  callbacks. TTL should match the listing's remaining lifetime so the
+ *  flag auto-expires if the explicit clear at fill/cancel is missed. */
+export async function markKismetListed(
+  collection: string,
+  tokenId: string,
+  seller: string,
+  ttlSeconds: number,
+): Promise<void> {
+  if (!collection || !tokenId || !seller || ttlSeconds <= 0) return
+  try {
+    await redis.set(keyKismetListed(collection, tokenId, seller), '1', { ex: ttlSeconds })
+  } catch {
+    // Best-effort: a missed flag means processTransfer falls back to the
+    // normal taint path. The listing PATCH's synchronous creditValidityOnce
+    // is the primary credit path; this flag only prevents the false taint.
+  }
+}
+
+/** Clear the Kismet-listed flag when a listing is filled, cancelled, or expired.
+ *  A lingering flag (e.g. after a Redis error here) is bounded by the TTL set
+ *  at creation time, so it self-corrects within the listing's original lifetime. */
+export async function clearKismetListed(
+  collection: string,
+  tokenId: string,
+  seller: string,
+): Promise<void> {
+  if (!collection || !tokenId || !seller) return
+  try {
+    await redis.del(keyKismetListed(collection, tokenId, seller))
+  } catch {
+    // Best-effort: the TTL from markKismetListed bounds the stale window.
+  }
+}
+
 export async function getValidBalance(collection: string, address: string): Promise<number> {
   const v = await redis.get<string | number>(keyValidBalance(collection, address))
   if (v == null) return 0
@@ -91,20 +175,15 @@ export async function getValidBalance(collection: string, address: string): Prom
 }
 
 async function adjustValidBalance(collection: string, address: string, delta: number): Promise<void> {
-  // INCRBY is atomic and returns the post-write value. We do NOT clamp
-  // negative values back to 0 here — that would be a non-atomic check-
-  // then-write race. Reads clamp via Math.max(0).
-  const newBalance = (await redis.incrby(keyValidBalance(collection, address), delta)) as number
-  // Clear the admin-grant flag once validBalance hits zero. Without this
-  // an admin-granted address that later sells / transfers their Pass
-  // would keep the flag persisting past the depletion, and any subsequent
-  // legitimate acquisition (airdrop, mint, collect) would still skip live
-  // reconciliation under the stale flag — meaning a webhook-drift bug
-  // wouldn't be caught for that address. Best-effort: the clamp on read
-  // still applies if the DEL fails.
-  if (newBalance <= 0) {
-    await redis.del(keyAdminGrant(collection, address)).catch(() => {})
-  }
+  // Lua script runs atomically: INCRBY then DEL adminGrant if result ≤ 0.
+  // A separate DEL after INCRBY would race with concurrent setValidBalance
+  // (which writes both keys in a single script), potentially deleting an
+  // admin-grant flag that was set after our INCRBY resolved.
+  await redis.eval(
+    ADJUST_BALANCE_LUA,
+    [keyValidBalance(collection, address), keyAdminGrant(collection, address)],
+    [delta],
+  )
 }
 
 /** Admin override: set the validBalance for an address to an explicit value.
@@ -123,17 +202,15 @@ export async function setValidBalance(
   value: number,
 ): Promise<void> {
   const safe = Math.max(0, Math.floor(Number.isFinite(value) ? value : 0))
-  if (safe > 0) {
-    await Promise.all([
-      redis.set(keyValidBalance(collection, address), String(safe)),
-      redis.set(keyAdminGrant(collection, address), '1'),
-    ])
-  } else {
-    await Promise.all([
-      redis.set(keyValidBalance(collection, address), '0'),
-      redis.del(keyAdminGrant(collection, address)),
-    ])
-  }
+  // Atomic Lua script: SET balance and SET/DEL adminGrant in one round-trip.
+  // Without atomicity, a webhook INCRBY that lands between the two writes
+  // could see: balance=safe (new) but adminGrant=deleted (stale DEL from a
+  // concurrent adjustValidBalance), stranding a legitimate admin override.
+  await redis.eval(
+    SET_VALIDITY_LUA,
+    [keyValidBalance(collection, address), keyAdminGrant(collection, address)],
+    [safe],
+  )
 }
 
 async function getKnownTokenIds(collection: string): Promise<string[]> {
@@ -236,15 +313,27 @@ export async function processTransfer(params: {
   if (!isMint) {
     await adjustValidBalance(collection, from, -amount)
   }
-  // Pass-purity invariant: any non-mint transfer that is NOT
-  // platform-flagged taints the tokenId permanently. This is what
-  // prevents a Pass that went off-platform from regaining validity
-  // when it's later resold through Kismet's marketplace — the buyer's
-  // creditValidityOnce will see the taint flag and skip the credit.
-  // Note this fires INSTEAD of mass-tainting all transfers: a Kismet
-  // secondary sale (platform=true, !isMint) is the sanctioned
-  // provenance step and must NOT taint, so the buyer can be credited.
-  if (!isMint && !platform && tokenId) {
+
+  // Race-condition guard: check whether `from` has an active Kismet listing
+  // for this tokenId. If so, treat it as platform-originated even without
+  // the platform-tx flag — the listing was created before the transfer,
+  // proving a Kismet secondary sale was in flight. Without this, a webhook
+  // that fires before the listing PATCH's after() callbacks set the
+  // platform-tx flag would falsely taint the tokenId, permanently blocking
+  // the buyer's validity even though the sale was fully on-platform.
+  // Keyed on (collection, tokenId, from/seller) to avoid shielding a
+  // concurrent off-platform sale by a different holder of the same tokenId.
+  const listedOnKismet =
+    !isMint && !platform && tokenId
+      ? !!(await redis.get(keyKismetListed(collection, tokenId, from)).catch(() => null))
+      : false
+
+  // Pass-purity invariant: any non-mint transfer that is NOT platform-flagged
+  // AND NOT a Kismet-listed transfer taints the tokenId permanently. The
+  // listedOnKismet guard above prevents a race-induced false taint on
+  // legitimate Kismet secondary sales; it does NOT bypass existing taint —
+  // creditValidityOnce still refuses credits for previously-tainted tokens.
+  if (!isMint && !platform && !listedOnKismet && tokenId) {
     try {
       await redis.sadd(keyTainted(collection), tokenId)
     } catch {
@@ -257,12 +346,16 @@ export async function processTransfer(params: {
       // a transient Redis failure and the next off-platform event.
     }
   }
+  // Credit only on platform-flagged txs. listedOnKismet is intentionally
+  // excluded from the credit condition: the listing PATCH handler calls
+  // creditValidityOnce synchronously before the response (primary credit),
+  // and recordPlatformTx in after() ensures the webhook converges via the
+  // platform flag. Allowing listedOnKismet to also trigger credit opened an
+  // exploit: an attacker could list a Pass on Kismet (sets the flag) then
+  // transfer it off-platform to an accomplice; the webhook would see
+  // listedOnKismet=true, skip taint, and credit the accomplice for free.
+  // The flag's sole remaining job is taint prevention during the race window.
   if (platform) {
-    // Convergence point: webhook and any direct-credit path
-    // (currently /api/listings/[id] PATCH filled, on a Pass-collection
-    // sale) both call creditValidityOnce so whichever fires first
-    // credits and the other is a no-op. Pass-blacklist + taint check +
-    // knownTokenIds sadd live inside the primitive.
     await creditValidityOnce({ collection, address: to, txHash, tokenId, amount })
   }
 }
@@ -311,7 +404,7 @@ export async function creditValidityOnce(params: {
   if (await isTokenTainted(collection, tokenId)) return
 
   const claimed = await redis.set(
-    keyCredited(collection, address, txHash),
+    keyCredited(collection, address, txHash, tokenId),
     '1',
     { nx: true, ex: CREDITED_TTL },
   )
@@ -393,13 +486,45 @@ export async function hasValidPass(collection: string, address: string): Promise
   }
 
   if (liveTotal < BigInt(validBalance)) {
-    validBalance = Number(liveTotal)
+    const corrected = Number(liveTotal)
     try {
-      await redis.set(keyValidBalance(collection, address), String(validBalance))
+      // CAS: only overwrite if the ledger value hasn't changed since we read
+      // it above. A concurrent creditValidityOnce INCRBY landing between the
+      // balanceOfBatch call and this SET would otherwise be silently
+      // overwritten, permanently losing a legitimate credit.
+      await redis.eval(
+        CAS_BALANCE_LUA,
+        [keyValidBalance(collection, address)],
+        [validBalance, String(corrected)],
+      )
     } catch {
-      // Best-effort drift correction; in-memory clamp still applies for this request.
+      // Best-effort; in-memory clamp still applies for this request.
     }
+    validBalance = corrected
   }
 
   return validBalance >= 1
+}
+
+/** List all tainted tokenIds for a collection. Used by the admin taint
+ *  management endpoint to inspect and remediate incorrect taints. */
+export async function listTaintedTokenIds(collection: string): Promise<string[]> {
+  try {
+    const members = (await redis.smembers(keyTainted(collection))) as string[]
+    return Array.isArray(members) ? members.sort() : []
+  } catch {
+    return []
+  }
+}
+
+/** Remove a tokenId from the taint set. Admin escape-hatch for false taints:
+ *  e.g. a legitimate Kismet secondary sale that was incorrectly tainted because
+ *  the keyKismetListed flag was missing (Redis down at listing creation time).
+ *
+ *  Does NOT restore past credits — addresses that previously failed
+ *  creditValidityOnce due to the taint must be granted via setValidBalance.
+ *  Future acquisitions of the un-tainted tokenId will credit normally. */
+export async function removeTaint(collection: string, tokenId: string): Promise<void> {
+  if (!collection || !tokenId) return
+  await redis.srem(keyTainted(collection), tokenId)
 }

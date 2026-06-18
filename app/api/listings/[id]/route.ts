@@ -4,7 +4,7 @@ import { isAddress } from '@/lib/address'
 import { bestEffort } from '@/lib/bestEffort'
 import { getGateConfig } from '@/lib/gate'
 import { getListing, updateListingStatus } from '@/lib/listings'
-import { creditValidityOnce, recordPlatformTx } from '@/lib/pass-validity'
+import { clearKismetListed, creditValidityOnce, recordPlatformTx } from '@/lib/pass-validity'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { writeNotification } from '@/lib/notifications'
@@ -139,6 +139,18 @@ export async function PATCH(
 
   await updateListingStatus(id, body.status as 'filled' | 'cancelled')
 
+  if (body.status === 'cancelled') {
+    // Clear the Kismet-listed flag so processTransfer no longer shields this
+    // token from taint. The seller may sell elsewhere (off-platform) after
+    // cancelling; without this, the stale flag would prevent the taint that
+    // protects the provenance chain until the TTL expires.
+    after(() =>
+      clearKismetListed(listing.collectionAddress, listing.tokenId, listing.seller).catch(
+        bestEffort('listings.cancelled.clearKismetListed', { id }),
+      ),
+    )
+  }
+
   if (body.status === 'filled') {
     after(() =>
       writeNotification({
@@ -160,26 +172,27 @@ export async function PATCH(
 
     // Kismet secondary-sale validity transfer for the Pass collection.
     // The fill is on-chain-verified above (findFulfillmentInLogs matched
-    // this listing's orderHash, recipient===signer, receipt success), so
-    // the buyer is provably the on-chain recipient — safe to credit
-    // synchronously instead of waiting on the webhook.
+    // this listing's orderHash, recipient is the on-chain buyer, receipt
+    // success), so the buyer is provably the on-chain recipient.
     //
-    // Two parallel after() writes, both idempotent against later retries
-    // or webhook delivery:
-    //   1. recordPlatformTx flags the fill so when the webhook eventually
-    //      delivers the Transfer event, processTransfer's to-credit path
-    //      converges through the same creditValidityOnce key (no-op).
-    //      Without the flag, the webhook would treat the sale as
-    //      off-platform and skip crediting — leaving the buyer with no
-    //      validity until live reconciliation rejects them too.
-    //   2. creditValidityOnce credits the buyer now, so the new owner's
-    //      gate check passes on their very next mint attempt (no
-    //      30-second webhook wait, no Alchemy dependency).
+    // Credit the buyer SYNCHRONOUSLY (before the response) — mirrors the
+    // fix in /api/collect/route.ts. The webhook fires immediately after
+    // the tx mines; the buyer's PATCH call + our receipt poll take several
+    // more seconds. Without synchronous credit here, the webhook would
+    // race and claim the creditValidityOnce key with no-credit (if the
+    // platform flag wasn't set yet). The Kismet-listed flag set at
+    // listing-creation time prevents the webhook from false-tainting the
+    // token, but we still credit synchronously so the buyer has access on
+    // their very next mint attempt without waiting for the webhook.
     //
-    // Seller decrement is handled automatically by the webhook's
-    // unconditional `!isMint` from-decrement (see processTransfer); live
-    // reconciliation in hasValidPass is a second-layer safety if the
-    // webhook is delayed or missed.
+    // recordPlatformTx in after() remains as convergence backstop: when
+    // the webhook eventually delivers the Transfer event, isPlatformTx=true
+    // causes it to call creditValidityOnce, which hits the keyCredited NX
+    // key we claimed here and is a no-op.
+    //
+    // Seller decrement is handled automatically by the webhook's unconditional
+    // !isMint from-decrement (see processTransfer); live reconciliation in
+    // hasValidPass is a second-layer safety if the webhook is delayed or missed.
     const txHash = body.txHash as string
     const gateConfig = await getGateConfig()
     if (
@@ -187,17 +200,31 @@ export async function PATCH(
       && listing.collectionAddress.toLowerCase() === gateConfig.passCollection
     ) {
       const passCollection = gateConfig.passCollection
-      after(() => recordPlatformTx(txHash).catch(
-        bestEffort('listings.filled.recordPlatformTx', { txHash, buyer }),
-      ))
-      after(() => creditValidityOnce({
-        collection: passCollection,
-        address: buyer,
-        txHash,
-        tokenId: listing.tokenId,
-      }).catch(
-        bestEffort('listings.filled.creditValidityOnce', { txHash, buyer, passCollection }),
-      ))
+      try {
+        await creditValidityOnce({
+          collection: passCollection,
+          address: buyer,
+          txHash,
+          tokenId: listing.tokenId,
+        })
+      } catch (err) {
+        console.error('[listings] pass-validity direct-credit failed', {
+          txHash,
+          buyer,
+          passCollection,
+          err,
+        })
+      }
+      after(() =>
+        clearKismetListed(passCollection, listing.tokenId, listing.seller).catch(
+          bestEffort('listings.filled.clearKismetListed', { txHash, passCollection }),
+        ),
+      )
+      after(() =>
+        recordPlatformTx(txHash).catch(
+          bestEffort('listings.filled.recordPlatformTx', { txHash, buyer }),
+        ),
+      )
     }
   }
 

@@ -1,7 +1,22 @@
 import { redis } from './redis'
+import { memoize } from './memoCache'
 import { ADMIN_ADDRESS } from './config'
 
 const KEY = 'kismetart:blacklist'
+
+// Full-set cache — same pattern as lib/hidden-users.ts. Converts one
+// SISMEMBER per action into one SMEMBERS per 5-minute window per process.
+// Fails open (empty Set) so a Redis outage doesn't block every user.
+// Own-pod consistency: invalidated on every add/remove.
+async function _getBlacklistSet(): Promise<Set<string>> {
+  try {
+    const addrs = (await redis.smembers(KEY)) as string[]
+    return new Set(addrs.map((a) => a.toLowerCase()))
+  } catch {
+    return new Set()
+  }
+}
+const getBlacklistSet = memoize(_getBlacklistSet, 5 * 60_000)
 
 /**
  * ACTION blacklist — addresses listed here are blocked from creator
@@ -45,12 +60,8 @@ export async function isBlacklisted(address: string | null | undefined): Promise
   if (!address) return false
   const lower = address.toLowerCase()
   if (ADMIN_ADDRESS && lower === ADMIN_ADDRESS) return false
-  try {
-    const v = await redis.sismember(KEY, lower)
-    return !!v
-  } catch {
-    return false
-  }
+  const set = await getBlacklistSet()
+  return set.has(lower)
 }
 
 export async function addToBlacklist(address: string): Promise<void> {
@@ -59,10 +70,12 @@ export async function addToBlacklist(address: string): Promise<void> {
     throw new Error('Cannot blacklist the admin address')
   }
   await redis.sadd(KEY, lower)
+  getBlacklistSet.invalidate()
 }
 
 export async function removeFromBlacklist(address: string): Promise<void> {
   await redis.srem(KEY, address.toLowerCase())
+  getBlacklistSet.invalidate()
 }
 
 export async function listBlacklist(): Promise<string[]> {

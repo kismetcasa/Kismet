@@ -1,4 +1,5 @@
 import { redis } from './redis'
+import { memoize } from './memoCache'
 import { ADMIN_ADDRESS } from './config'
 
 /**
@@ -31,18 +32,28 @@ import { ADMIN_ADDRESS } from './config'
 
 const KEY = 'kismetart:pass-blacklist'
 
+// Full-set cache — same pattern as lib/blacklist.ts / lib/hidden-users.ts.
+// Converts one SISMEMBER per hasValidPass call into one SMEMBERS per
+// 5-minute window per process. Fails open so a Redis outage doesn't deny
+// every Pass holder; admin is always exempt regardless.
+async function _getPassBlacklistSet(): Promise<Set<string>> {
+  try {
+    const addrs = (await redis.smembers(KEY)) as string[]
+    return new Set(addrs.map((a) => a.toLowerCase()))
+  } catch {
+    return new Set()
+  }
+}
+const getPassBlacklistSet = memoize(_getPassBlacklistSet, 5 * 60_000)
+
 export async function isPassBlacklisted(
   address: string | null | undefined,
 ): Promise<boolean> {
   if (!address) return false
   const lower = address.toLowerCase()
   if (ADMIN_ADDRESS && lower === ADMIN_ADDRESS) return false
-  try {
-    const v = await redis.sismember(KEY, lower)
-    return !!v
-  } catch {
-    return false
-  }
+  const set = await getPassBlacklistSet()
+  return set.has(lower)
 }
 
 export async function addToPassBlacklist(address: string): Promise<void> {
@@ -51,10 +62,12 @@ export async function addToPassBlacklist(address: string): Promise<void> {
     throw new Error('Cannot pass-blacklist the admin address')
   }
   await redis.sadd(KEY, lower)
+  getPassBlacklistSet.invalidate()
 }
 
 export async function removeFromPassBlacklist(address: string): Promise<void> {
   await redis.srem(KEY, address.toLowerCase())
+  getPassBlacklistSet.invalidate()
 }
 
 export async function listPassBlacklist(): Promise<string[]> {
