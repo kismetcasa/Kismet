@@ -121,10 +121,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const name = meta?.name || `Collection ${shortAddress(address)}`
   const description = meta?.description || 'View collection on Kismet'
   // Text-mint auto-deploy stores an SVG data URI as the cover (works
-  // in-app, not in share crawlers) — shareImageUrl drops those. ar:// /
-  // ipfs:// routes through /api/img for the multi-gateway-raced edge
-  // cache; https:// passes through.
-  const imageUrl = shareImageUrl(meta?.image)
+  // in-app, not in share crawlers) — shareImageUrl drops those.
+  // `optimize` routes the resolved cover through Next's image optimizer so
+  // an oversized creator-uploaded PNG (we've seen 15MB+) is resized below
+  // Twitter's ~5MB card limit instead of being silently dropped by X.
+  const imageUrl = shareImageUrl(meta?.image, undefined, { optimize: true })
   // Farcaster Mini App embed — see moment/[address]/[tokenId]/page.tsx
   // for the rationale. action.url points at this collection's canonical
   // page so the button drops the user directly here inside the Mini

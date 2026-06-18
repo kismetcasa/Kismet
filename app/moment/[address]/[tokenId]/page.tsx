@@ -95,7 +95,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // animation_url" bug — without this, Twitter/Discord/iMessage crawlers
   // would fetch a multi-MB video as the thumbnail and render no preview.
   // fallback (synthesized from KV) has no animation_url; pull from detail.
-  const imageUrl = shareImageUrl(meta.image, detail?.metadata?.animation_url)
+  // `optimize` resizes the poster through Next's image optimizer so an
+  // oversized still (15MB+ PNGs happen) stays under Twitter's ~5MB card
+  // limit instead of being dropped to a broken-placeholder card.
+  const imageUrl = shareImageUrl(meta.image, detail?.metadata?.animation_url, {
+    optimize: true,
+  })
 
   // Farcaster Mini App embed. When this URL is shared in a cast, hosts
   // render a rich card and the button launches Kismet directly into
@@ -107,9 +112,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // media is stored. The OG generator embeds the moment's own poster
   // when available (image moments, gifs, video posters), and falls
   // back to a branded card for video/text moments where no usable
-  // still exists. openGraph.images / twitter.images keep pointing at
-  // the raw poster — Twitter/Discord/iMessage handle any aspect ratio
-  // and the original URL is the higher-quality source for those.
+  // still exists. openGraph.images / twitter.images point at the poster
+  // resized through our image optimizer (see shareImageUrl optimize) —
+  // Twitter/Discord/iMessage handle any aspect ratio, but the raw source
+  // can exceed their size limits, so we hand them a bounded re-encode.
   const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
   // Active marketplace listing → embed button reads "View Listing"
