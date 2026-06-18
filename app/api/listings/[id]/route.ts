@@ -221,7 +221,7 @@ export async function PATCH(
         ),
       )
       after(() =>
-        recordPlatformTx(txHash).catch(
+        recordPlatformTx(txHash, buyer).catch(
           bestEffort('listings.filled.recordPlatformTx', { txHash, buyer }),
         ),
       )

@@ -206,7 +206,7 @@ export async function POST(req: NextRequest) {
   // /admin/pass grant. verifyMintOnChain already proved this is a real mint
   // of `tokenId` from `collectionLower` to `account`, so flagging is safe.
   after(() =>
-    recordPlatformTx(txHash).catch(
+    recordPlatformTx(txHash, account).catch(
       bestEffort('collect.recordPlatformTx', { txHash, collection: collectionLower, account }),
     ),
   )

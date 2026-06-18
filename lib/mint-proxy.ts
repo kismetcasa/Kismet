@@ -409,8 +409,8 @@ export async function proxyMintRequest(
         // deny the recipient validity and force a manual /admin/pass grant.
         if (txHash) {
           tasks.push(
-            recordPlatformTx(txHash).catch(
-              bestEffort('mint-proxy.recordPlatformTx', { txHash }),
+            recordPlatformTx(txHash, account).catch(
+              bestEffort('mint-proxy.recordPlatformTx', { txHash, account }),
             ),
           )
         }

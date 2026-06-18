@@ -351,9 +351,16 @@ export async function POST(req: NextRequest) {
   // airdrops would put Pass NFTs in recipients' wallets but leave their
   // validBalance at 0, blocking them from minting moments despite
   // legitimately holding a Pass.
+  // Flag EACH verified recipient — finalRecipients is the on-chain-verified
+  // set rebuilt from the receipt — so the webhook backstop credits exactly
+  // them, not any wallet that happened to share the tx.
   after(() =>
-    recordPlatformTx(txHash).catch(
-      bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender, collectionAddress }),
+    Promise.all(
+      finalRecipients.map((recipient) =>
+        recordPlatformTx(txHash, recipient).catch(
+          bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender, recipient }),
+        ),
+      ),
     ),
   )
 
