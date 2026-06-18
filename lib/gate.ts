@@ -12,12 +12,13 @@ export interface GateConfig {
   /** Address of the dedicated Pass collection. Holding any tokenId minted
    *  into this collection (with valid provenance) grants creator access. */
   passCollection: string | null
-  /** Emergency kill switch — when true, non-admin callers are blocked from the
-   *  relayed creator writes (mint, write — lib/mint-proxy) and create-collection
-   *  registration (app/api/collections). It is NOT a stop-everything switch:
-   *  the direct-from-wallet collect / airdrop / listing flows are recorded, not
-   *  gated, here (the server only sees them after the on-chain action). Admin
-   *  bypasses so the unpause toggle can be verified. */
+  /** Emergency kill switch. Enforced server-side only on the relayed creator
+   *  writes (mint, write — lib/mint-proxy), which the server can hard-stop.
+   *  Direct-from-wallet create surfaces via /api/platform-status, where the
+   *  client disables its deploy button (CreateCollectionForm) — the on-chain
+   *  deploy can't be server-gated, so the button is the stop. NOT a
+   *  stop-everything switch: collect / airdrop / listing flows are not gated by
+   *  pause. Admin bypasses so the unpause toggle can be verified. */
   paused: boolean
 }
 
@@ -65,17 +66,16 @@ export async function getGateConfig(): Promise<GateConfig> {
     // exists (cold start with Redis already down).
     if (_configCache) return _configCache.value
     // Cold start + Redis unreachable: there is no last-known-good to trust.
-    // Fail the emergency kill-switch CLOSED (paused:true) so an Upstash
-    // outage coinciding with a fresh-instance boot can't silently neutralize
-    // an active pause. paused:true makes isPlatformPausedFor block every
-    // non-admin mint (lib/mint-proxy) and create (app/api/collections) for
-    // the window — admin still bypasses — and it self-heals the instant a
-    // real read repopulates the cache. enabled stays false here — so
-    // hasGateAccess actually ADMITS during the window; the *pause* is what
-    // denies (isPlatformPausedFor → 503 for non-admins). We don't fabricate an
-    // enabled gate because there's no trustworthy passCollection to enforce
-    // against, and pause is the one piece of state with no on-chain backstop,
-    // so it's the one we deliberately fail closed.
+    // Fail the emergency kill-switch CLOSED (paused:true) so an Upstash outage
+    // coinciding with a fresh-instance boot can't silently neutralize an active
+    // pause. paused:true makes mint-proxy 503 every non-admin mint/write
+    // server-side, and makes /api/platform-status report paused so the client
+    // disables its create button for the window — admin still bypasses — and it
+    // self-heals the instant a real read repopulates the cache. enabled stays
+    // false here, so hasGateAccess ADMITS; the *pause* is what denies. We don't
+    // fabricate an enabled gate (no trustworthy passCollection), and pause is
+    // the one piece of state with no on-chain backstop, so it's the one we fail
+    // closed.
     return { enabled: false, passCollection: null, paused: true }
   }
 }
