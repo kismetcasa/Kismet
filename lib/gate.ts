@@ -12,8 +12,11 @@ export interface GateConfig {
   /** Address of the dedicated Pass collection. Holding any tokenId minted
    *  into this collection (with valid provenance) grants creator access. */
   passCollection: string | null
-  /** Emergency kill switch — when true, every gated mutating action
-   *  (mint, write) is rejected for non-admin callers. Admin still
+  /** Emergency kill switch — when true, non-admin callers are blocked from the
+   *  relayed creator writes (mint, write — lib/mint-proxy) and create-collection
+   *  registration (app/api/collections). It is NOT a stop-everything switch:
+   *  the direct-from-wallet collect / airdrop / listing flows are recorded, not
+   *  gated, here (the server only sees them after the on-chain action). Admin
    *  bypasses so the unpause toggle can be verified. */
   paused: boolean
 }
