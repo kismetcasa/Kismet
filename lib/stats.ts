@@ -2,7 +2,7 @@ import { redis } from './redis'
 import { getProfileBatch } from './profile'
 import { getHiddenUsersSet } from './hidden-users'
 import { getEthUsd } from './ethPrice'
-import { USDC_BASE } from './zoraMint'
+import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
 import type { EarningsMetric } from './earningsFormat'
 
@@ -26,9 +26,9 @@ import type { EarningsMetric } from './earningsFormat'
 // scratch — idempotent, self-healing (drift can't accumulate), and it backfills
 // all history in the same pass. Scores are float64: exact for the integer mint
 // count, ~15 sig-figs for the running ETH/USDC totals — plenty for rank/display.
-export const STATS_MINTS_KEY = 'kismetart:stats:mints'
-export const STATS_EARNED_ETH_KEY = 'kismetart:stats:earned:eth'
-export const STATS_EARNED_USDC_KEY = 'kismetart:stats:earned:usdc'
+const STATS_MINTS_KEY = 'kismetart:stats:mints'
+const STATS_EARNED_ETH_KEY = 'kismetart:stats:earned:eth'
+const STATS_EARNED_USDC_KEY = 'kismetart:stats:earned:usdc'
 
 export interface ArtistEarnings {
   address: string
@@ -51,36 +51,41 @@ export interface ArtistEarnings {
 // platform outgrows that.
 const MAX_REBUILD_PAGES = 1000
 
-/** Map a transfer's currency-contract address to our two supported currencies.
- *  USDC contract → usdc; null/native/anything else → eth (only ETH + USDC are
- *  used on the platform). */
-export function transferCurrency(addr: string | null | undefined): 'eth' | 'usdc' {
-  return addr && addr.toLowerCase() === USDC_BASE.toLowerCase() ? 'usdc' : 'eth'
-}
-
 const bump = (m: Map<string, number>, key: string, by: number) =>
   m.set(key, (m.get(key) ?? 0) + by)
 
+/** Coerce a JSON number — or a numeric string, which some APIs use for decimal
+ *  amounts — to a finite number; anything else → 0. */
+const toNum = (v: unknown): number => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0
+  if (typeof v === 'string') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
+  return 0
+}
+
 /**
  * Fold one transfer into the running aggregates. Returns 1 if counted, 0 if
- * skipped (unpaid). Exported for unit testing.
+ * skipped (unpaid / free).
  *
  * `value` is the human-denominated amount paid (matching the /payments `amount`
- * convention). Mints go to the moment's creator (collection.artist); earnings
- * are split across `fee_recipients` by `percent_allocation`, falling back to the
- * creator at 100% when no split is present.
+ * convention). Mints go to the moment's creator; earnings are split across
+ * `fee_recipients` by `percent_allocation`, falling back to the creator at 100%
+ * when no split is present.
  */
-export function accumulateTransfer(
+function accumulateTransfer(
   t: TransferItem,
   mints: Map<string, number>,
   eth: Map<string, number>,
   usdc: Map<string, number>,
 ): 0 | 1 {
-  const value = typeof t.value === 'number' ? t.value : 0
+  const value = toNum(t.value)
   if (!(value > 0)) return 0 // free / airdrop — excluded (type=payment already filters)
 
-  const quantity = typeof t.quantity === 'number' && t.quantity > 0 ? Math.floor(t.quantity) : 1
-  const earned = transferCurrency(t.currency) === 'usdc' ? usdc : eth
+  const q = toNum(t.quantity)
+  const quantity = q > 0 ? Math.floor(q) : 1
+  const earned = inferCollectCurrency({ currency: t.currency ?? undefined }) === 'usdc' ? usdc : eth
   // Creator: schema returns collection.artist.{address}; the doc example returns
   // collection.creator as a bare string. Accept either.
   const col = t.moment?.collection
@@ -92,7 +97,7 @@ export function accumulateTransfer(
   if (Array.isArray(recipients) && recipients.length > 0) {
     for (const r of recipients) {
       const addr = (r.artist_address ?? r.address)?.toLowerCase()
-      const pct = typeof r.percent_allocation === 'number' ? r.percent_allocation : 0
+      const pct = toNum(r.percent_allocation)
       if (addr && pct > 0) bump(earned, addr, (value * pct) / 100)
     }
   } else if (creator) {
@@ -129,6 +134,9 @@ export async function rebuildStats(): Promise<{ artists: number; transfers: numb
   let counted = 0
   do {
     const res = await fetchTransfersPage({ type: 'payment', chainId: 8453, page, limit: 100 })
+    // Abort on a failed fetch rather than write a truncated set over good
+    // totals — a transient blip then preserves the last complete rebuild.
+    if (!res) throw new Error(`transfers fetch failed at page ${page}`)
     for (const t of res.transfers) counted += accumulateTransfer(t, mints, eth, usdc)
     totalPages = res.pagination.total_pages || 1
     page++

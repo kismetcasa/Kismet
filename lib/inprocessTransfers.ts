@@ -56,17 +56,13 @@ export interface FetchTransfersParams {
   limit?: number
 }
 
-const EMPTY: TransfersPage = {
-  transfers: [],
-  pagination: { total_count: 0, page: 1, limit: 0, total_pages: 0 },
-}
-
 /**
- * Fetch one page of transfers. Returns an empty page on any failure (non-2xx,
- * network, malformed JSON) so the rebuild loop degrades gracefully — a single
- * bad page ends the scan rather than throwing.
+ * Fetch one page of transfers. Returns `null` on any failure (non-2xx, network,
+ * malformed JSON) so the caller can distinguish a fetch failure (abort, keep the
+ * last good data) from a genuinely empty page (a successful response with
+ * `transfers: []`).
  */
-export async function fetchTransfersPage(params: FetchTransfersParams): Promise<TransfersPage> {
+export async function fetchTransfersPage(params: FetchTransfersParams): Promise<TransfersPage | null> {
   const url = inprocessUrl('/transfers', {
     type: params.type,
     chainId: params.chainId ?? 8453,
@@ -75,7 +71,7 @@ export async function fetchTransfersPage(params: FetchTransfersParams): Promise<
   })
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' })
-    if (!res.ok) return EMPTY
+    if (!res.ok) return null
     const data = (await res.json()) as Partial<TransfersPage>
     return {
       transfers: Array.isArray(data.transfers) ? data.transfers : [],
@@ -87,6 +83,6 @@ export async function fetchTransfersPage(params: FetchTransfersParams): Promise<
       },
     }
   } catch {
-    return EMPTY
+    return null
   }
 }

@@ -20,6 +20,11 @@ export async function GET(req: NextRequest) {
   if (provided !== secret) return errorResponse(401, 'Unauthorized')
 
   const started = Date.now()
-  const result = await rebuildStats()
-  return NextResponse.json({ ok: true, ...result, ms: Date.now() - started })
+  try {
+    const result = await rebuildStats()
+    return NextResponse.json({ ok: true, ...result, ms: Date.now() - started })
+  } catch (err) {
+    console.error('[sync-stats] rebuild failed', err)
+    return errorResponse(502, 'Stats rebuild failed')
+  }
 }
