@@ -1,25 +1,19 @@
 import { redis } from './redis'
-import { getProfileBatch } from './profile'
-import { getHiddenUsersSet } from './hidden-users'
 import { getEthUsd } from './ethPrice'
-import { getPublicEarners } from './earningsVisibility'
 import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
-import type { EarningsMetric } from './earningsFormat'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
-// and USDC totals are the stable truth: two sorted sets, each doubling as a
-// leaderboard + per-artist lookup. USD is derived at read time. Paid mints live
-// in a third set; free mints are excluded upstream (type=payment) and here.
+// and USDC totals are the stable truth (one sorted set each, keyed by artist);
+// USD is derived at read time. Paid mints live in a third set; free mints are
+// excluded upstream (type=payment) and here.
 const MINTS_KEY = 'kismetart:stats:mints'
 const ETH_KEY = 'kismetart:stats:earned:eth'
 const USDC_KEY = 'kismetart:stats:earned:usdc'
 
 export interface ArtistEarnings {
   address: string
-  username?: string
-  avatarUrl?: string
   eth: number
   usdc: number
   usd: number
@@ -98,55 +92,6 @@ export async function rebuildStats(): Promise<{ artists: number; transfers: numb
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
-
-// Top artists by metric. ETH/USDC rank on the stable native totals; USD on the
-// derived value (one cached price). Only artists who pinned earnings public are
-// included (same gate as the card + share); admin-hidden users stripped.
-// Reads each set once (3 ZRANGE) + a profile MGET — no per-row ZSCORE fan-out.
-export async function getEarningsLeaderboard(metric: EarningsMetric, limit = 50): Promise<ArtistEarnings[]> {
-  const n = Math.min(100, Math.max(1, Math.floor(limit) || 50))
-  let ethRaw: (string | number)[]
-  let usdcRaw: (string | number)[]
-  let mintsRaw: (string | number)[]
-  try {
-    [ethRaw, usdcRaw, mintsRaw] = await Promise.all([
-      redis.zrange(ETH_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
-      redis.zrange(USDC_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
-      redis.zrange(MINTS_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
-    ])
-  } catch {
-    return []
-  }
-
-  // withScores → flat [member, score, …]; merge the three native sets by artist.
-  const merged = new Map<string, { eth: number; usdc: number; mints: number }>()
-  const fold = (raw: (string | number)[], field: 'eth' | 'usdc' | 'mints') => {
-    for (let i = 0; i < raw.length; i += 2) {
-      const a = String(raw[i]).toLowerCase()
-      const cur = merged.get(a) ?? { eth: 0, usdc: 0, mints: 0 }
-      cur[field] = Number(raw[i + 1]) || 0
-      merged.set(a, cur)
-    }
-  }
-  fold(ethRaw, 'eth')
-  fold(usdcRaw, 'usdc')
-  fold(mintsRaw, 'mints')
-  if (merged.size === 0) return []
-
-  const [ethUsd, hidden, isPublic] = await Promise.all([getEthUsd(), getHiddenUsersSet(), getPublicEarners()])
-  const price = ethUsd ?? 0
-  const rows = [...merged.entries()]
-    .filter(([a]) => isPublic.has(a) && !hidden.has(a))
-    .map(([address, v]) => ({ address, eth: v.eth, usdc: v.usdc, usd: v.eth * price + v.usdc, mints: v.mints }))
-    .sort((a, b) => (metric === 'eth' ? b.eth - a.eth : metric === 'usdc' ? b.usdc - a.usdc : b.usd - a.usd))
-    .slice(0, n)
-
-  const profiles = await getProfileBatch(rows.map((r) => r.address))
-  return rows.map((r) => {
-    const p = profiles.get(r.address)
-    return { ...r, username: p?.username, avatarUrl: p?.avatarUrl }
-  })
-}
 
 // Single-artist earnings for the profile card. Visibility gating is applied by
 // the /api/stats route, not here — this is the raw read.

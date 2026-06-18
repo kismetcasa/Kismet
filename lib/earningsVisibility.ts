@@ -1,8 +1,8 @@
 import { redis } from './redis'
 import { memoize } from './memoCache'
 
-// Per-artist "earnings public" opt-in — the single gate for every public
-// earnings surface (profile card, share card, leaderboard). One SET of opted-in
+// Per-artist "earnings public" opt-in — the gate for the public earnings
+// surfaces (profile card, share card). One SET of opted-in
 // addresses; earnings stay private until the artist pins them. The set is
 // memoized (mirrors hidden-users) so the per-request check costs ~0 Redis: one
 // SMEMBERS per TTL per pod, not per profile view. A toggle invalidates the
@@ -17,7 +17,7 @@ async function _getPublicEarners(): Promise<Set<string>> {
     return new Set()
   }
 }
-export const getPublicEarners = memoize(_getPublicEarners, 60_000)
+const getPublicEarners = memoize(_getPublicEarners, 60_000)
 
 export async function isEarningsPublic(address: string): Promise<boolean> {
   return (await getPublicEarners()).has(address.toLowerCase())
