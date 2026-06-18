@@ -82,10 +82,13 @@ export async function fetchInprocessSmartWallet(
  * null on failure) once it does. Pass `undefined` when the artist
  * isn't known yet (e.g. CollectionView before defaultAdminAddress
  * loads); the hook returns idle state and skips the fetch.
+ *
+ * `notFound: true` means the EOA has no inprocess account (permanent 404).
+ * Distinct from `loading: false, address: null` which is a transient failure.
  */
 export function useInprocessSmartWallet(
   artistWallet: string | undefined,
-): { address: string | null; loading: boolean } {
+): { address: string | null; loading: boolean; notFound: boolean } {
   const key = artistWallet ? artistWallet.toLowerCase() : null
   const [address, setAddress] = useState<string | null>(
     key && cache.has(key) ? (cache.get(key) ?? null) : null,
@@ -93,20 +96,26 @@ export function useInprocessSmartWallet(
   const [loading, setLoading] = useState<boolean>(
     !!key && !cache.has(key) && !notFoundCache.has(key),
   )
+  const [notFound, setNotFound] = useState<boolean>(
+    !!key && notFoundCache.has(key),
+  )
 
   useEffect(() => {
     if (!key) {
       setAddress(null)
       setLoading(false)
+      setNotFound(false)
       return
     }
     if (notFoundCache.has(key)) {
       setAddress(null)
+      setNotFound(true)
       setLoading(false)
       return
     }
     if (cache.has(key)) {
       setAddress(cache.get(key) ?? null)
+      setNotFound(false)
       setLoading(false)
       return
     }
@@ -114,7 +123,9 @@ export function useInprocessSmartWallet(
     setLoading(true)
     load(key).then((result) => {
       if (cancelled) return
+      const isNotFound = result !== null && 'notFound' in result
       setAddress(result && 'address' in result ? result.address : null)
+      setNotFound(isNotFound)
       setLoading(false)
     })
     return () => {
@@ -122,5 +133,5 @@ export function useInprocessSmartWallet(
     }
   }, [key])
 
-  return { address, loading }
+  return { address, loading, notFound }
 }

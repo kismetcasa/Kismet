@@ -289,17 +289,26 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       return
     }
 
-    // Verify both ADMIN grants on-chain before declaring success. If
-    // the inprocessAdminAction setupAction silently no-ops (wrong
-    // factory bytecode, ABI drift, etc.) the collection deploys
-    // without smart-wallet ADMIN and every subsequent mint reverts
-    // upstream — fail-closed here so the user sees a clear error
-    // instead of a silent regression.
     void (async () => {
-      // Re-resolve smart wallet on resume from localStorage where the
-      // field wasn't persisted in older entries.
+      // Guard wallet disconnect between tx submission and receipt.
+      if (!publicClient || !address) {
+        clearPending()
+        setStep('idle')
+        setTxHash(undefined)
+        toast.error('Deploy incomplete', {
+          id: 'create-collection',
+          description: 'Wallet disconnected before the transaction was verified.',
+        })
+        return
+      }
+
+      // Best-effort permission check. Only runs when a smart wallet was
+      // resolved at deploy time — if the lookup failed (no inprocess account
+      // yet, service down) we skip and let CollectionView's authorize banner
+      // handle it. A failed read never blocks the success path.
+      let needsAuthorize = !resolvedSmartWallet
       let smartWallet = resolvedSmartWallet
-      if (!smartWallet && address) {
+      if (!smartWallet) {
         try {
           const r = await fetchInprocessSmartWallet(address)
           smartWallet = r && 'address' in r ? r.address : null
@@ -307,83 +316,39 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           smartWallet = null
         }
       }
-
-      if (!smartWallet || !isAddress(smartWallet) || !publicClient || !address) {
-        // Including !address here defends against the user disconnecting
-        // their wallet between tx submission and receipt. Without it
-        // we'd cast `undefined as Address` to verifyDeployPermissions.
-        clearPending()
-        setStep('idle')
-        setTxHash(undefined)
-        toast.error('Deploy verification skipped', {
-          id: 'create-collection',
-          description:
-            'Could not resolve your smart wallet or RPC client. Collection deployed but its permissions are unverified — re-deploy or grant ADMIN manually before minting.',
-        })
-        return
-      }
-
-      try {
-        const verify = await verifyDeployPermissions(
-          publicClient,
-          deployedAddress as Address,
-          address as Address,
-          smartWallet as Address,
-        )
-        if (!verify.ok) {
-          clearPending()
-          setStep('idle')
-          setTxHash(undefined)
-          console.error('[CreateCollectionForm] post-deploy verify failed', {
-            collection: deployedAddress,
-            deployer: address,
-            smartWallet,
-            detail: verify.detail,
-            deployerPerms: verify.deployerPerms.toString(),
-            smartWalletPerms: verify.smartWalletPerms.toString(),
-          })
-          toast.error('Deploy verification failed', {
-            id: 'create-collection',
-            description: verify.detail,
-          })
-          return
+      if (smartWallet && isAddress(smartWallet)) {
+        try {
+          const verify = await verifyDeployPermissions(
+            publicClient,
+            deployedAddress as Address,
+            address as Address,
+            smartWallet as Address,
+          )
+          if (!verify.ok) {
+            needsAuthorize = true
+            console.error('[CreateCollectionForm] post-deploy verify failed', {
+              collection: deployedAddress,
+              deployer: address,
+              smartWallet,
+              detail: verify.detail,
+              deployerPerms: verify.deployerPerms.toString(),
+              smartWalletPerms: verify.smartWalletPerms.toString(),
+            })
+          }
+        } catch (err) {
+          // Read failed — don't block success; authorize banner covers it.
+          needsAuthorize = true
+          console.error('[CreateCollectionForm] post-deploy verify threw', err)
         }
-      } catch (err) {
-        // Read failed across all retries — distinct from "we read and
-        // saw missing bits". Don't proceed silently; the deploy may
-        // be fine but we can't prove it.
-        clearPending()
-        setStep('idle')
-        setTxHash(undefined)
-        console.error('[CreateCollectionForm] post-deploy verify threw', err)
-        toast.error('Deploy verification failed', {
-          id: 'create-collection',
-          description:
-            err instanceof Error
-              ? `On-chain read failed: ${err.message}`
-              : 'On-chain read failed',
-        })
-        return
       }
 
       setCollectionAddress(deployedAddress)
-
-      // Cookie auth: the session was already established before the deploy
-      // (ensureSession ran on Arweave upload), so this call rides on the same
-      // session and the server can verify the caller matches `artist` and is
-      // the on-chain admin of `address`. Fire-and-forget but with logging +
-      // retry — silently swallowing this means the collection never lands in
-      // KV and the user sees a misleading "deployed!" while the collection
-      // never appears in feeds.
       void registerCollectionWithBackoff({
         address: deployedAddress,
         name: name.trim(),
         description: description.trim() || undefined,
         image: deployedImageUri,
         artist: address,
-        // Cover token is the only setupAction that creates a token, so it
-        // lands at tokenId 1 deterministically. Marking it keeps the cover
-        // out of every Mints feed (it lives on the collection card instead).
         coverTokenId: mintCover ? '1' : undefined,
         kismet_thumbhash: coverThumbhash,
       })
@@ -393,7 +358,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       setStep('done')
       toast.success(
         mintCover ? 'Collection deployed + cover minted!' : 'Collection deployed!',
-        { id: 'create-collection' },
+        {
+          id: 'create-collection',
+          ...(needsAuthorize
+            ? { description: 'Complete minting setup from your collection page.' }
+            : {}),
+        },
       )
     })()
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -642,9 +612,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // there's nothing for them to fix. Better to fail fast at deploy
       // than ship a half-authorized collection.
       //
-      // Retry up to 3 times with backoff only for transient failures (null).
-      // A "not found" (404) means the connected wallet has no inprocess
-      // account — retrying won't help; fail immediately with a clear message.
+      // Best-effort: resolve the artist's inprocess smart wallet so we can
+      // grant it ADMIN as a setupAction at deploy time. If the wallet has
+      // no inprocess account yet (404) or the service is unreachable,
+      // proceed without the grant — CollectionView's authorize banner
+      // handles the retroactive case. Never block deploy on this lookup.
       let inprocessSmartWallet: string | null = null
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) {
@@ -652,47 +624,26 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         }
         const result = await fetchInprocessSmartWallet(address)
         if (result && 'notFound' in result) {
-          throw new Error(
-            'This wallet has no inprocess account. Visit inprocess.world to get started.',
-          )
+          // 404 — no inprocess account yet. No point retrying.
+          break
         }
         if (result && 'address' in result) {
           inprocessSmartWallet = result.address
           break
         }
-        // null → transient; fall through and retry
+        // null → transient; retry
       }
-      if (!inprocessSmartWallet || !isAddress(inprocessSmartWallet)) {
-        throw new Error(
-          'Could not reach the inprocess service — try again in a moment',
+      // Lift resolved address into state (may be null) so the receipt-watcher
+      // can call verifyDeployPermissions without re-fetching.
+      setResolvedSmartWallet(inprocessSmartWallet)
+      // Grant ADMIN at deploy time when we have the smart wallet address.
+      // If unresolved, CollectionView's authorize banner covers the gap.
+      const inprocessAdminAction: `0x${string}`[] = []
+      if (inprocessSmartWallet && isAddress(inprocessSmartWallet)) {
+        inprocessAdminAction.push(
+          encodeAdminPermission(inprocessSmartWallet as `0x${string}`),
         )
       }
-      // Lift the resolved address into state so the receipt-watcher
-      // useEffect can call verifyDeployPermissions against it once the
-      // factory tx confirms. Without this, the verify step would have
-      // to re-fetch from /smartwallet — extra round-trip, and worse,
-      // would silently skip verification if /smartwallet is briefly
-      // unreachable.
-      setResolvedSmartWallet(inprocessSmartWallet)
-      // Grant ADMIN to TWO inprocess wallets at deploy time:
-      //   1. The artist's own smart wallet — what /api/moment/create
-      //      routes through when the user mints into this collection
-      //      (the `account` override on mint-proxy makes inprocess
-      //      derive this wallet from the caller's EOA).
-      //   2. The platform operator smart wallet — what inprocess
-      //      routes through for relayed admin-mint flows like airdrop
-      //      under our shared INPROCESS_API_KEY. Without this grant,
-      //      airdrops on user collections revert at gas estimation
-      //      with "admin permission" because the operator wallet
-      //      carries the API key's identity but holds no on-chain
-      //      authority on the collection.
-      // Skip the operator grant when NEXT_PUBLIC_OPERATOR_SMART_WALLET
-      // is unset (dev / fork) so the deploy still goes through; the
-      // user just won't be able to airdrop until they backfill via
-      // CollectionView's authorize-for-airdrops banner.
-      const inprocessAdminAction: `0x${string}`[] = [
-        encodeAdminPermission(inprocessSmartWallet as `0x${string}`),
-      ]
       if (OPERATOR_SMART_WALLET && isAddress(OPERATOR_SMART_WALLET)) {
         inprocessAdminAction.push(
           encodeAdminPermission(OPERATOR_SMART_WALLET as `0x${string}`),
