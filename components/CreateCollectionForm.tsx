@@ -301,7 +301,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       let smartWallet = resolvedSmartWallet
       if (!smartWallet && address) {
         try {
-          smartWallet = await fetchInprocessSmartWallet(address)
+          const r = await fetchInprocessSmartWallet(address)
+          smartWallet = r && 'address' in r ? r.address : null
         } catch {
           smartWallet = null
         }
@@ -641,20 +642,39 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // there's nothing for them to fix. Better to fail fast at deploy
       // than ship a half-authorized collection.
       //
-      // Retry up to 3 times with backoff: the /smartwallet lookup is a
-      // lightweight GET but can return null on a transient upstream blip.
-      // The handler context tolerates a few seconds of delay here.
+      // Retry up to 3 times with backoff only for transient failures (null).
+      // A "not found" (404) means the connected wallet has no inprocess
+      // account — retrying won't help; fail immediately with a clear message.
       let inprocessSmartWallet: string | null = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) {
-          await new Promise((r) => setTimeout(r, 2000 * attempt))
+      {
+        let lastResult = await fetchInprocessSmartWallet(address)
+        if (lastResult && 'notFound' in lastResult) {
+          throw new Error(
+            'This wallet has no inprocess account. Visit inprocess.world to get started.',
+          )
         }
-        inprocessSmartWallet = await fetchInprocessSmartWallet(address)
-        if (inprocessSmartWallet && isAddress(inprocessSmartWallet)) break
+        if (lastResult && 'address' in lastResult) {
+          inprocessSmartWallet = lastResult.address
+        } else {
+          // Transient — retry with backoff.
+          for (let attempt = 1; attempt < 3; attempt++) {
+            await new Promise((r) => setTimeout(r, 2000 * attempt))
+            lastResult = await fetchInprocessSmartWallet(address)
+            if (lastResult && 'notFound' in lastResult) {
+              throw new Error(
+                'This wallet has no inprocess account. Visit inprocess.world to get started.',
+              )
+            }
+            if (lastResult && 'address' in lastResult) {
+              inprocessSmartWallet = lastResult.address
+              break
+            }
+          }
+        }
       }
       if (!inprocessSmartWallet || !isAddress(inprocessSmartWallet)) {
         throw new Error(
-          'Could not resolve your inprocess smart wallet — try again in a moment',
+          'Could not reach the inprocess service — try again in a moment',
         )
       }
       // Lift the resolved address into state so the receipt-watcher

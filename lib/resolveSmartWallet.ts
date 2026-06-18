@@ -14,6 +14,15 @@ const TTL_MS = 24 * 60 * 60 * 1000
 const UPSTREAM_TIMEOUT_MS = 10_000
 
 /**
+ * Result of a smart wallet lookup.
+ * - `{ address }`: resolved successfully.
+ * - `{ notFound: true }`: the EOA has no inprocess account (404 or the
+ *   response contained no parseable address). Permanent — retrying won't help.
+ * - `null`: transient failure (network error, timeout, 5xx). Retrying may help.
+ */
+export type SmartWalletResult = { address: string } | { notFound: true } | null
+
+/**
  * Resolves an artist's inprocess smart wallet address from their EOA via
  * `GET /api/smartwallet`. Centralizes the defensive shape parsing —
  * inprocess's documented response is `{ address }` but real responses
@@ -21,18 +30,17 @@ const UPSTREAM_TIMEOUT_MS = 10_000
  * or a raw address string. Accepting all known shapes here ensures every
  * call site sees the same lenient parsing.
  *
- * Returns the lowercased address on success, or null on any failure
- * (invalid input, network, non-200, unparseable response). Callers
- * surface their own errors (HTTP 502, "skipped" log, etc.).
+ * Returns `{ address }` on success, `{ notFound: true }` when the EOA has
+ * no inprocess account, or null on transient failure (network/5xx/timeout).
  */
 export async function resolveSmartWallet(
   artistWallet: string,
   options: { revalidate?: number } = {},
-): Promise<string | null> {
-  if (!isAddress(artistWallet)) return null
+): Promise<SmartWalletResult> {
+  if (!isAddress(artistWallet)) return { notFound: true }
   const key = artistWallet.toLowerCase()
   const hit = cache.get(key)
-  if (hit && hit.expiresAt > Date.now()) return hit.value
+  if (hit && hit.expiresAt > Date.now()) return { address: hit.value }
 
   const revalidate = options.revalidate ?? 3600
 
@@ -45,9 +53,12 @@ export async function resolveSmartWallet(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
   } catch {
+    // Network error or timeout — transient.
     return null
   }
 
+  // 404 means inprocess has no account for this EOA — permanent, not transient.
+  if (res.status === 404) return { notFound: true }
   if (!res.ok) return null
 
   const text = await res.text()
@@ -69,9 +80,10 @@ export async function resolveSmartWallet(
             ?? (parsed as Record<string, unknown>).smartAccount)
         : undefined
 
-  if (typeof candidate !== 'string' || !isAddress(candidate)) return null
+  // Parseable response but no valid address — treat as not found rather than transient.
+  if (typeof candidate !== 'string' || !isAddress(candidate)) return { notFound: true }
 
   const resolved = candidate.toLowerCase()
   cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
-  return resolved
+  return { address: resolved }
 }

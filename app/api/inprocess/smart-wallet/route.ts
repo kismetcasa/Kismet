@@ -35,16 +35,17 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'artist_wallet required')
   }
 
-  const address = await resolveSmartWallet(artistWallet)
-  if (!address) {
-    // resolveSmartWallet returns null for any failure mode (network,
-    // non-200, unparseable). We surface a single 502 here — callers
-    // already treat 502 as "could not resolve" and the granular
-    // diagnostic lives in the helper's logs.
+  const result = await resolveSmartWallet(artistWallet)
+  if (!result) {
+    // Transient failure (network, timeout, 5xx from inprocess).
     console.error(
-      `[inprocess/smart-wallet] could not resolve smart wallet for artist=${artistWallet}`,
+      `[inprocess/smart-wallet] transient failure resolving smart wallet for artist=${artistWallet}`,
     )
     return errorResponse(502, 'could not resolve smart wallet')
   }
-  return NextResponse.json({ address })
+  if ('notFound' in result) {
+    // The EOA has no inprocess account — permanent, not transient.
+    return errorResponse(404, 'no inprocess account for this wallet')
+  }
+  return NextResponse.json({ address: result.address })
 }
