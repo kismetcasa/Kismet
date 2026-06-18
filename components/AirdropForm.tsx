@@ -136,7 +136,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       toast.error('Delegate failed', {
         id: 'delegate-airdrop',
         description:
-          'The transaction reverted on-chain — only the moment admin can delegate.',
+          'The transaction reverted on-chain — only the artwork admin can delegate.',
       })
       return
     }
@@ -146,7 +146,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
 
   async function handleDelegateAirdrop() {
     if (!selected) {
-      toast.error('Pick a moment to delegate first', { id: 'delegate-airdrop' })
+      toast.error('Pick an artwork to delegate first', { id: 'delegate-airdrop' })
       return
     }
     const target = delegateInput.trim()
@@ -172,7 +172,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       }
       // Already had ADMIN at this tokenId — no tx needed.
       setDelegateInput('')
-      toast.success('Already authorized to airdrop this moment', {
+      toast.success('Already authorized to airdrop this artwork', {
         id: 'delegate-airdrop',
       })
     } catch (err) {
@@ -198,7 +198,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   async function handleAirdrop(e: React.FormEvent) {
     e.preventDefault()
     if (!isConnected || !address) { openConnectModal?.(); return }
-    if (!selected) { toast.error('Select a moment to airdrop'); return }
+    if (!selected) { toast.error('Select an artwork to airdrop'); return }
 
     // Auto-commit a pending recipient sitting in the input — clicking
     // AIRDROP with a valid address typed but not yet added is a common
@@ -302,7 +302,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       {/* Moment picker */}
       <div>
         <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
-          Moment <span className="text-ink">*</span>
+          Artwork <span className="text-ink">*</span>
         </label>
 
         {/* Selected moment preview / trigger */}
@@ -336,7 +336,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             </>
           ) : (
             <span className="text-sm text-faint font-mono flex-1">
-              {loadingMoments ? 'loading your moments…' : 'select a moment'}
+              {loadingMoments ? 'loading your artworks…' : 'select an artwork'}
             </span>
           )}
           <span className="text-muted text-xs font-mono flex-shrink-0">
@@ -349,7 +349,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           <div className="border border-t-0 border-line bg-[#0d0d0d] max-h-64 overflow-y-auto">
             {moments.length === 0 ? (
               <p className="text-xs font-mono text-muted px-3 py-4">
-                {loadingMoments ? 'loading…' : 'no minted moments found'}
+                {loadingMoments ? 'loading…' : 'no minted artworks found'}
               </p>
             ) : (
               <div className="grid grid-cols-3 gap-px bg-line">
@@ -547,7 +547,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             delegate airdrop
           </p>
           <p className="text-[10px] font-mono text-[#444]">
-            let another wallet airdrop this specific moment
+            let another wallet airdrop this specific artwork
           </p>
           <div className="flex gap-2">
             <input

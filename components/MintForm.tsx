@@ -18,6 +18,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { reportClientError } from '@/lib/clientError'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
@@ -32,7 +33,7 @@ import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { useAdmin } from '@/contexts/AdminContext'
+import { usePassGate } from '@/hooks/usePassGate'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { SITE_URL } from '@/lib/siteUrl'
 
@@ -163,8 +164,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
-  // Admin is gate-exempt server-side; skip the pass CTA for them.
-  const { isAdmin } = useAdmin()
   // null = auto-deploy a fresh collection on submit. Initialized from the
   // URL/prop hint when present; cleared back to null via the × button.
   const [selectedCollection, setSelectedCollection] = useState<CollectionOption | null>(() => {
@@ -291,35 +290,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     smartWalletPerms !== undefined &&
     !hasAdminBit(smartWalletPerms as bigint)
 
-  // Token-gate pre-check. When the gate is enabled and the connected
-  // wallet holds no valid Pass, we swap the mint button for a "collect
-  // creator pass" CTA that links to the Pass collection — so a gated-out
-  // user is told up front instead of burning an Arweave upload + intent
-  // signature only to hit the server's 403. This is a UX hint, not the
-  // enforcement boundary; lib/mint-proxy still runs the authoritative
-  // hasGateAccess check on every request.
-  const [passGate, setPassGate] = useState<{
-    enabled: boolean
-    passCollection: string | null
-    validBalance: number
-  } | null>(null)
-  useEffect(() => {
-    if (!address) { setPassGate(null); return }
-    let cancelled = false
-    fetch(`/api/pass-validity?address=${address}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setPassGate(d) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [address])
-  const gatedOut =
-    !!passGate?.enabled &&
-    !!passGate.passCollection &&
-    passGate.validBalance < 1 &&
-    !isAdmin
-  const passCollectionHref = passGate?.passCollection
-    ? `/collection/${passGate.passCollection}`
-    : '/'
+  // Creator-pass gate pre-check (shared with CreateCollectionForm via
+  // usePassGate). When the gate is enabled and the wallet holds no valid Pass,
+  // we swap the mint button for a "collect from <name>" CTA — a hint;
+  // lib/mint-proxy runs the authoritative hasGateAccess on every request.
+  const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
@@ -369,6 +344,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
+  // Latest committed step, readable from the mint catch where the `step`
+  // closure is stale: handleMint closes over the render that created it, so
+  // its `step` is still 'idle' at throw time. This mirror lets failure
+  // reporting name the exact phase the upload died in.
+  const stepRef = useRef(step)
+  useEffect(() => {
+    stepRef.current = step
+  }, [step])
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
   // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits
@@ -1134,6 +1117,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
       }
     } catch (err) {
+      // Capture WHERE the mint died before resetting the step. With no
+      // error-tracking service wired up, this is the only durable record of
+      // the failure — without it the error vanishes into the user's browser
+      // as a toast, which is why this class of bug has had to be diagnosed by
+      // reading source. stepRef holds the last committed phase (the `step`
+      // closure here is stale at 'idle').
+      reportClientError('mint_failed', {
+        phase: stepRef.current,
+        mode: mintMode,
+        autoDeploy: isAutoDeploy,
+        fileType: file?.type ?? null,
+        fileSize: file?.size ?? null,
+        error: err instanceof Error ? err.message : String(err),
+      })
       setStep('idle')
       setUploadProgress(0)
       toastError('Mint', err, { id: 'mint' })
@@ -1684,19 +1681,21 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         )}
       </div>
 
-      {/* Submit — swaps to a "collect creator pass" CTA when the gate is
-          enabled and the connected wallet holds no valid Pass. */}
-      {gatedOut ? (
+      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
+          enabled and the wallet holds no valid Pass, but not while a mint is
+          in flight (isBusy) so a late-resolving pass probe can't replace the
+          progress button mid-mint. */}
+      {gatedOut && !isBusy ? (
         <div className="flex flex-col gap-1.5">
           <button
             type="button"
             onClick={() => router.push(passCollectionHref)}
             className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
           >
-            collect creator pass
+            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
           </button>
           <p className="text-[10px] font-mono text-muted text-center">
-            minting requires a Kismet Creator Pass
+            minting requires an artwork from {passCollectionName ?? 'the collection'}
           </p>
         </div>
       ) : (

@@ -86,9 +86,12 @@ export function ownKeySpender(privateKey: Hex): ScoutSpender {
  *
  * Config (server env; the SDK also reads the three CDP_* secrets from env on its
  * own): CDP_API_KEY_ID + CDP_API_KEY_SECRET + CDP_WALLET_SECRET to authenticate;
- * CDP_PAYMASTER_URL to sponsor gas (omit → the smart account pays its own gas
- * from its ETH balance); CDP_SCOUT_OWNER_NAME / CDP_SCOUT_ACCOUNT_NAME name the
- * deterministic owner + smart account (stable address across restarts).
+ * CDP_PAYMASTER_URL to sponsor gas — set it EXPLICITLY so sponsorship is
+ * deterministic + observable. (If unset on `base`, the SDK auto-derives a Base
+ * Node paymaster from your CDP key and only self-funds if that derivation fails,
+ * so an unset URL does NOT reliably mean the smart account pays its own ETH.)
+ * CDP_SCOUT_OWNER_NAME / CDP_SCOUT_ACCOUNT_NAME name the deterministic owner +
+ * smart account (stable address across restarts).
  *
  * The @coinbase/cdp-sdk import is dynamic so the heavy SDK stays out of the
  * bundle graph until a CDP spender is actually resolved (mirrors grantBudget's
@@ -136,16 +139,51 @@ export async function cdpSpender(): Promise<ScoutSpender> {
     async sendCalls(calls) {
       if (calls.length === 0) throw new Error('No calls to submit')
       // ONE atomic user op carries the whole spend()+approve+mint sequence, so
-      // pulled funds never rest in the spender. Gas-sponsored when a paymaster
-      // URL is set; otherwise the smart account pays from its own ETH.
-      const { userOpHash } = await smartAccount.sendUserOperation({
-        calls: calls.map((c) => ({ to: c.to, value: c.value, data: c.data })),
-        network: 'base',
-        ...(paymasterUrl ? { paymasterUrl } : {}),
-      })
-      const result = await smartAccount.waitForUserOperation({ userOpHash })
+      // pulled funds never rest in the spender. Gas is paid by the CDP paymaster —
+      // explicitly via paymasterUrl, or (on `base`) via the SDK's auto-derived Base
+      // Node paymaster when paymasterUrl is unset.
+      //
+      // The SDK resolves paymaster sponsorship inside this call (prepareUserOperation),
+      // which is also where the userOpHash is created — so a sponsorship-denied /
+      // exhausted failure throws HERE, before any hash exists (distinct from an
+      // on-chain revert, which surfaces in the wait below WITH a hash). The spender
+      // holds no ETH, so sponsorship loss hard-fails every collect; label it so that
+      // class is unambiguous in the logs.
+      let userOpHash: Hex
+      try {
+        const sent = await smartAccount.sendUserOperation({
+          calls: calls.map((c) => ({ to: c.to, value: c.value, data: c.data })),
+          network: 'base',
+          ...(paymasterUrl ? { paymasterUrl } : {}),
+        })
+        userOpHash = sent.userOpHash as Hex
+      } catch (err) {
+        console.error('[scout] CDP send failed before broadcast (likely paymaster/sponsorship)', {
+          spender: address,
+          paymaster: !!paymasterUrl,
+          err: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
+      // The SDK's sole default wait is 30s and throws TimeoutError ("may still
+      // succeed") on expiry — under Base load a slow-but-landed mint would be counted
+      // as a skip (user gets the NFT, /api/collect never records it). Override that
+      // 30s default to 60s to make timeouts rare, and on an indeterminate timeout log
+      // the userOpHash so the op is traceable in the CDP dashboard; the next run's
+      // on-chain balance-dedup prevents a double-collect.
+      let result
+      try {
+        result = await smartAccount.waitForUserOperation({ userOpHash, waitOptions: { timeoutSeconds: 60 } })
+      } catch (err) {
+        console.error('[scout] CDP user op did not confirm in time — may still land', {
+          spender: address,
+          userOpHash,
+          err: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
       if (result.status !== 'complete') {
-        throw new Error(`CDP user operation ${userOpHash} did not complete (status: ${result.status})`)
+        throw new Error(`CDP user operation ${userOpHash} reverted on-chain (status: ${result.status})`)
       }
       return { txHash: result.transactionHash as Hex }
     },
@@ -163,7 +201,15 @@ export async function cdpSpender(): Promise<ScoutSpender> {
  * (cross-instance safe). If the lock store is unreachable we proceed unserialized
  * (rare; the worst case is a caught, self-healing nonce error).
  */
-const LOCK_TTL_S = 90 // > the slowest sendCalls (EOA: up to ~4 sequential txs); crash-safety net
+// Must comfortably exceed the SLOWEST sendCalls so the mutex never expires
+// mid-submit (which would defeat serialization and reintroduce nonce races). The
+// worst case is the EOA path on a not-yet-registered USDC permission: 4 sequential
+// txs (approveWithSignature → spend → USDC approve → mint), each awaited to a
+// receipt. At ~2s Base blocks that can reach the tens of seconds on congestion, so
+// 240s leaves wide margin. The CDP smart-account path is ONE atomic user-op (far
+// faster) — this TTL is sized for the slow EOA fallback. It's only a crash-safety
+// net; the lock is always released in finally on the happy path.
+const LOCK_TTL_S = 240
 const LOCK_WAIT_MS = 45_000
 const LOCK_POLL_MS = 200
 

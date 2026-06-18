@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { TurboFactory } from '@ardrive/turbo-sdk'
 import { getPaidBy } from '@/lib/arweave/paidBy'
+import { describeUploadError, isNonRetryableUploadStatus, uploadErrorStatus } from '@/lib/arweave/uploadError'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
@@ -86,8 +87,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ uri: `ar://${id}` })
     } catch (err) {
       lastErr = err
+      // Same deterministic-4xx short-circuit as the client media path
+      // (lib/arweave/uploadFile.ts): a 402 here means this deployment's Turbo
+      // credits are exhausted — retrying three times just burns serverless
+      // time on a verdict that won't change. Surface the real status + a
+      // classified message instead of a blanket 500.
+      const status = uploadErrorStatus(err)
+      if (isNonRetryableUploadStatus(status)) {
+        console.error('[api/upload] non-retryable upload failure', {
+          status,
+          detail: err instanceof Error ? err.message : String(err),
+        })
+        return errorResponse(status, describeUploadError(status))
+      }
     }
   }
-  const message = lastErr instanceof Error ? lastErr.message : 'Upload failed'
-  return errorResponse(500, message)
+  console.error('[api/upload] upload failed after retries', {
+    detail: lastErr instanceof Error ? lastErr.message : String(lastErr),
+  })
+  return errorResponse(502, describeUploadError(undefined))
 }

@@ -9,7 +9,7 @@ import { recordCollected } from '@/lib/collected'
 import { MAX_AIRDROP_RECIPIENTS } from '@/lib/config'
 import { getGateConfig } from '@/lib/gate'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
-import { recordPlatformTx } from '@/lib/pass-validity'
+import { creditValidityOnce, recordPlatformTx } from '@/lib/pass-validity'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
@@ -258,6 +258,30 @@ export async function POST(req: NextRequest) {
         { status: 429 },
       )
     }
+
+    // Credit each recipient SYNCHRONOUSLY — mirrors the fix in /api/collect/route.ts.
+    // Airdrops are mints (from = 0x0), so processTransfer cannot taint the tokenId,
+    // but the webhook still skips the credit when !platform. The race: Alchemy
+    // delivers the TransferSingle events immediately after the tx mines; the sender's
+    // client calls /api/airdrop/notify only after seeing the receipt, so the webhook
+    // routinely fires first, claims each processedKey with no credit, and never
+    // retries — recipients hold the Pass on-chain but have zero validBalance and are
+    // blocked from minting. Crediting here (after on-chain verification proved the
+    // recipients) removes that race. creditValidityOnce is idempotent via keyCredited,
+    // so whichever path fires first wins and the other is a no-op.
+    await Promise.all(
+      finalRecipients.map((recipient) =>
+        creditValidityOnce({
+          collection: collectionAddress,
+          address: recipient,
+          txHash: txHash as string,
+          tokenId,
+          amount: 1,
+        }).catch((err) =>
+          console.error('[airdrop-notify] creditValidityOnce failed', { recipient, txHash, err }),
+        ),
+      ),
+    )
   }
 
   // tokenName lookup is best-effort — kept off the critical path so a meta
@@ -327,9 +351,13 @@ export async function POST(req: NextRequest) {
   // airdrops would put Pass NFTs in recipients' wallets but leave their
   // validBalance at 0, blocking them from minting moments despite
   // legitimately holding a Pass.
+  // Flag all verified recipients in ONE eval — finalRecipients is the
+  // on-chain-verified set rebuilt from the receipt — so the webhook backstop
+  // credits exactly them, not any wallet that shared the tx, and a
+  // many-recipient airdrop stays a single Redis command (not N).
   after(() =>
-    recordPlatformTx(txHash).catch(
-      bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender, collectionAddress }),
+    recordPlatformTx(txHash, finalRecipients, tokenId).catch(
+      bestEffort('airdrop-notify.recordPlatformTx', { txHash, sender }),
     ),
   )
 

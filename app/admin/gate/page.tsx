@@ -162,7 +162,7 @@ export default function GateAdminPage() {
             <div className="flex flex-col">
               <span className="text-xs font-mono text-dim uppercase tracking-wider">platform paused</span>
               <span className="text-[10px] font-mono text-muted mt-0.5">
-                emergency kill switch — blocks every gated mutation. admin still bypasses.
+                emergency kill switch — blocks new mints &amp; collection creation. admin still bypasses.
               </span>
             </div>
             <button type="button" onClick={() => setPaused((v) => !v)} aria-pressed={paused} className="flex-shrink-0">

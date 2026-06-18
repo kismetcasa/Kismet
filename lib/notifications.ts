@@ -48,7 +48,12 @@ export interface Notification {
   comment?: string
 }
 
-type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'>
+type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'> & {
+  /** Internal — skip the isFollowing + isKnown Redis check in isPriority.
+   *  Only set by fanoutToFollowers where recipients are proven followers
+   *  of the actor, so isPriority always returns true. */
+  _forcePriority?: true
+}
 
 const MAX_PER_USER = 200
 // Notifications older than this are dropped lazily on each loadAndAnnotate
@@ -76,13 +81,19 @@ const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
 
-// Cache window for the precomputed unread count. Deliberately LONGER than the
-// 60s bell-poll interval so most polls are cheap cache hits (1 GET) instead of
-// the full ~4-op recompute every cycle — this is the app's highest-frequency
-// Redis path. Every priority write + read-mark invalidates the cache, so real
-// changes still reflect on the next poll; the TTL only bounds staleness during
-// quiet periods, when the count isn't changing anyway.
-const UNREAD_COUNT_CACHE_TTL_SECS = 300
+// Cache window for the precomputed unread count. Every path that can change
+// the priority-unread count (priority writeNotification, markAllRead,
+// markOneRead) calls invalidateUnreadCount which DELs this key immediately,
+// so badge accuracy for all meaningful state changes is instant.
+//
+// The TTL is a safety net for one narrow edge: a priority notification that
+// was never read and expires via ZREMRANGEBYSCORE after NOTIF_TTL_SECONDS
+// (60 days). In that case the badge could show a stale +1 for up to TTL
+// seconds before self-correcting. At 3600s that's a 1-hour phantom badge on
+// a 60-day-old unread priority notification — an acceptable tradeoff given
+// that opening the bell (getNotifications → loadAndAnnotate) cleans it up
+// immediately. Non-priority writes never enter the count and are unaffected.
+const UNREAD_COUNT_CACHE_TTL_SECS = 3600
 
 const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
@@ -163,10 +174,13 @@ export async function writeNotification(input: NotificationInput): Promise<void>
 
     const id = crypto.randomUUID()
     const timestamp = Math.floor(Date.now() / 1000)
-    const priority = await isPriority(input.recipient, input.type, input.actor, input.price)
+    const priority = input._forcePriority || await isPriority(input.recipient, input.type, input.actor, input.price)
     const recipient = input.recipient.toLowerCase()
+    // Strip the internal routing field before persisting — _forcePriority
+    // is a call-site hint, not notification data.
+    const { _forcePriority: _, ...inputData } = input
     const stored = {
-      ...input,
+      ...inputData,
       id,
       timestamp,
       priority,
@@ -218,7 +232,11 @@ export async function fanoutToFollowers(
     const followers = await getFollowers(source)
     await Promise.all(
       followers.map((follower) =>
-        writeNotification({ ...payload, recipient: follower, actor: source }),
+        // _forcePriority: recipients are proven followers of source, so
+        // isPriority always returns true via the isFollowing branch. Skip
+        // the 2 Redis calls (isFollowing SISMEMBER + KEY_PROFILES SISMEMBER)
+        // that would otherwise fire per recipient for collect/listing_created.
+        writeNotification({ ...payload, recipient: follower, actor: source, _forcePriority: true }),
       ),
     )
   } catch {

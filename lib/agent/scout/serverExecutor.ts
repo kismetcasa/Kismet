@@ -42,6 +42,35 @@ const toSpenderCall = (c: SdkSpendCall): SpenderCall => ({
   value: BigInt(c.value),
 })
 
+const ERC1155_BALANCE_ABI = [
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'account', type: 'address' },
+      { name: 'id', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const
+
+/** Recipient's current balance of a drop token. Returns null on read failure so
+ *  the caller can decide (here: proceed on the caller's quantity, still bounded by
+ *  the on-chain per-wallet cap + allowance). */
+async function readOwnedBalance(account: Address, collection: Address, tokenId: bigint): Promise<bigint | null> {
+  try {
+    return (await serverBaseClient().readContract({
+      address: collection,
+      abi: ERC1155_BALANCE_ABI,
+      functionName: 'balanceOf',
+      args: [account, tokenId],
+    })) as bigint
+  } catch {
+    return null
+  }
+}
+
 /**
  * Execute ONE collect through the bounded permission. The mint is built first so
  * the spend amount EXACTLY matches what the mint consumes (ETH msg.value or the
@@ -54,8 +83,15 @@ export async function collectViaSpendPermission(params: {
   /** mintTo — the user's Base Account. */
   recipient: Address
   item: BatchCollectItem
+  /** The recipient's target editions of THIS drop (maxEditionsPerDrop). When set,
+   *  the mint quantity is re-clamped against a balance read taken INSIDE the lock,
+   *  closing the TOCTOU where the caller sized quantity off a pre-lock balance and a
+   *  concurrent path minted in between (coordinator vs on-open overshooting the
+   *  target). Omit to skip the re-check. */
+  editionTarget?: bigint
 }): Promise<{ txHash: Hex }> {
-  const { permission, spender, recipient, item } = params
+  const { permission, spender, recipient, editionTarget } = params
+  let item = params.item
 
   // Per (recipient, drop) lock: the drop coordinator and the on-open run loop can
   // both target the SAME user + token at once; without this each reads balance 0
@@ -73,6 +109,20 @@ export async function collectViaSpendPermission(params: {
   if (storeUp && acquired !== 'OK') throw new Error('A collect for this drop is already in progress')
 
   try {
+    // TOCTOU clamp: re-read the recipient's balance INSIDE the lock and trim the
+    // mint to the remaining edition headroom. The caller sized `quantity` from a
+    // balance read taken BEFORE this lock; a concurrent run could have minted since.
+    // A failed read (null) proceeds on the caller's quantity — the on-chain per-wallet
+    // cap + allowance still bound it.
+    if (editionTarget !== undefined) {
+      const owned = await readOwnedBalance(recipient, item.collection, item.tokenId)
+      if (owned !== null) {
+        const headroom = editionTarget - owned
+        if (headroom <= 0n) throw new Error('Recipient already at the edition target for this drop')
+        if (item.quantity > headroom) item = { ...item, quantity: headroom }
+      }
+    }
+
     const plan = buildCollectBatchPlan({ account: spender.address, recipient, items: [item], usdcAllowance: 0n })
     const cost = item.currency === 'eth' ? plan.totalNativeValue : plan.totalUsdcCost
     if (cost < 0n) throw new Error('Invalid negative cost')
@@ -163,7 +213,10 @@ export function createSpendPermissionExecutor(cfg: {
         mintFee,
         comment: '',
       }
-      const { txHash } = await collectViaSpendPermission({ ...cfg, item })
+      // Pass the edition target so collectViaSpendPermission re-clamps against an
+      // in-lock balance read (the `editions`/quantity above were sized from a
+      // pre-lock fetchEligibleTokens read — see the TOCTOU note there).
+      const { txHash } = await collectViaSpendPermission({ ...cfg, item, editionTarget: editions })
       return { txHash, quantity }
     },
   }

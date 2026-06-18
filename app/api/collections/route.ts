@@ -7,6 +7,7 @@ import { inprocessUrl } from '@/lib/inprocess'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { PLATFORM_COLLECTION } from '@/lib/config'
+import { getGateConfig, getPassCollectionName, hasGateAccess } from '@/lib/gate'
 import {
   getTrackedCollections,
   getUserCollections,
@@ -401,6 +402,36 @@ export async function POST(req: NextRequest) {
     return errorResponse(403, 'artist must match session address')
   }
 
+  const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
+
+  // Token gate — deliberate Create Collection deploys require a valid Pass,
+  // the same platform policy lib/mint-proxy enforces on minting (and on
+  // auto-deploy+first-mint via its sentinel-target check). Deploy is a direct
+  // factory call so it can't be blocked at deploy time; this is the
+  // authoritative server boundary that keeps a gated-out wallet's collection
+  // OFF the platform — untracked, hidden from discovery + profile feeds.
+  // CreateCollectionForm also swaps in a "collect from <name>" CTA so the
+  // common path never wastes an on-chain deploy.
+  //
+  // Scoped to create-form: auto-deploy wrappers are a side effect of a mint
+  // that mint-proxy already gated, so re-checking here would double-gate (and
+  // could 403 a mint mid-flow on a credit/webhook lag). body.address is the
+  // freshly deployed collection — never the Pass collection — so hasGateAccess
+  // reduces to the caller's Pass validity (admin-exempt; no-op when the gate
+  // is disabled or unconfigured). Runs BEFORE the on-chain ADMIN check below so
+  // a gated-out caller fails fast on a cheap cached Redis read instead of the
+  // 4×-RPC admin loop.
+  if (source === 'create-form') {
+    const gateOk = await hasGateAccess(body.address, sessionAddress)
+    if (!gateOk) {
+      const config = await getGateConfig()
+      const name = config.passCollection
+        ? await getPassCollectionName(config.passCollection)
+        : null
+      return errorResponse(403, `An artwork from ${name ?? 'the required collection'} is required to create a collection`)
+    }
+  }
+
   // Caller must hold ADMIN on chain (tokenId 0 = collection-wide row).
   // Outer retry rides out RPC propagation lag for fresh deploys —
   // readPermissions retries on throw, this loop retries on a definitive
@@ -438,8 +469,6 @@ export async function POST(req: NextRequest) {
     })
     return errorResponse(502, 'Could not verify collection admin on-chain')
   }
-
-  const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
 
   // Per-address daily cap on DELIBERATE collection creation (Create
   // Collection form). Debited after the on-chain admin check so only a

@@ -400,7 +400,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           && moment.address.toLowerCase() === passBadge.passCollection.toLowerCase() && (
           <span
             className="absolute bottom-2 right-2 z-10 w-7 h-7 rounded-full bg-accent flex items-center justify-center shadow-md"
-            title="Valid Kismet Creator Pass — gates mint access"
+            title="Grants mint access"
           >
             <Check size={14} className="text-white" strokeWidth={2.5} />
           </span>
@@ -536,15 +536,21 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Collection chip — skipped when it merely echoes the title (a
-            single-mint collection named after its moment) so the same name
-            isn't shown twice; that slot just stays empty. */}
-        {!compact && collectionName && collectionName !== meta.name && (
+        {/* Collection chip. When the collection name merely echoes the
+            title — a cover (#1) token whose metadata name matches its
+            collection, or a single-mint collection named after its one
+            moment — drop the duplicate name text but keep the icon as a
+            clickable affordance into /collection. Suppress entirely only
+            when there's nothing left to show (name echoes the title AND no
+            icon to render in its place), so the slot never becomes an
+            empty clickable sliver. */}
+        {!compact && collectionName && (collectionName !== meta.name || (collectionImage && !collectionImageFailed)) && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
             className="flex items-center gap-1.5 group/collection w-fit"
             title={collectionName}
+            aria-label={collectionName}
           >
             {collectionImage && !collectionImageFailed && (
               <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
@@ -558,9 +564,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 />
               </div>
             )}
-            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
-              {collectionName}
-            </span>
+            {collectionName !== meta.name && (
+              <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
+                {collectionName}
+              </span>
+            )}
           </Link>
         )}
       </div>
@@ -597,6 +605,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               creatorAddress={moment.creator?.address}
               contentUri={meta.content?.uri}
               contentMime={meta.content?.mime}
+              stacked
             />
           ) : (
             <button

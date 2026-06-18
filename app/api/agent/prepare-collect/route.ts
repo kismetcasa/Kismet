@@ -54,7 +54,8 @@ export async function POST(req: NextRequest) {
   const amountNum = Number(body.amount ?? 1)
   const quantity =
     Number.isFinite(amountNum) && amountNum > 0 ? BigInt(Math.min(Math.floor(amountNum), MAX_AGENT_COLLECT_QUANTITY)) : 1n
-  const comment = typeof body.comment === 'string' && body.comment.length <= 1000 ? body.comment : ''
+  // Truncate (don't silently drop) an over-long comment.
+  const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
 
   const client = serverBaseClient()
 

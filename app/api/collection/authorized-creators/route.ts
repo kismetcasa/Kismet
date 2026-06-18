@@ -93,7 +93,11 @@ export async function POST(req: NextRequest) {
   // 2. Re-resolve the smart wallet for the supplied EOA — refuse if the
   //    client supplied a different smartWallet than inprocess returns.
   const expected = await resolveSmartWallet(eoa)
-  if (!expected || expected.toLowerCase() !== smartWallet.toLowerCase()) {
+  if (
+    !expected ||
+    'notFound' in expected ||
+    expected.address.toLowerCase() !== smartWallet.toLowerCase()
+  ) {
     return errorResponse(400, 'eoa / smartWallet mismatch — re-resolve and retry')
   }
 
