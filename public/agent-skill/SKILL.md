@@ -1,6 +1,7 @@
 ---
 name: kismet-base-mcp
 description: Collect, buy, and list art "moments" on Kismet (a Base marketplace) using Base MCP. Use when the user wants to collect/mint a moment, buy a listing, or list a moment they own for sale on Kismet.
+version: 0.1.0
 ---
 
 # Kismet × Base MCP
@@ -33,6 +34,8 @@ separate Kismet-native flow, not part of this skill.
 
 1. Connect Base MCP (`https://mcp.base.org`) so the wallet tools `get_wallets`,
    `get_balance`, `send_calls`, `sign`, and `get_request_status` are available.
+   These are the expected names; if the MCP exposes different tool names, defer to
+   its own live tool descriptions — they are the source of truth and may change.
 2. Pick the Kismet host you're using and call its manifest to confirm the API
    and contract addresses:
 
