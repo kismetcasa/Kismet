@@ -7,7 +7,7 @@ import { inprocessUrl } from '@/lib/inprocess'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { PLATFORM_COLLECTION } from '@/lib/config'
-import { hasGateAccess } from '@/lib/gate'
+import { hasGateAccess, isPlatformPausedFor } from '@/lib/gate'
 import {
   getTrackedCollections,
   getUserCollections,
@@ -422,6 +422,18 @@ export async function POST(req: NextRequest) {
   // a gated-out caller fails fast on a cheap cached Redis read instead of the
   // 4×-RPC admin loop.
   if (source === 'create-form') {
+    // Emergency kill-switch: the pause flag is meant to block every gated
+    // mutation. The client (CreateCollectionForm) already blocks deploy while
+    // paused, but a client-bypassing caller could still register a raw-factory
+    // deploy — and on a cold-start Redis outage getGateConfig fails the pause
+    // CLOSED, so honoring it here is what denies create during that window.
+    // Admin bypasses inside isPlatformPausedFor. Scoped to create-form:
+    // auto-deploy registrations follow a mint that mint-proxy already
+    // pause-checked, so re-checking here would only risk stranding an
+    // already-minted wrapper.
+    if (await isPlatformPausedFor(sessionAddress)) {
+      return errorResponse(503, 'Platform is temporarily paused')
+    }
     const gateOk = await hasGateAccess(body.address, sessionAddress)
     if (!gateOk) {
       return errorResponse(403, 'A Kismet Creator Pass is required to create a collection')

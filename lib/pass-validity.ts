@@ -228,7 +228,10 @@ async function getKnownTokenIds(collection: string): Promise<string[]> {
  *  the webhook backstop or admin grant will recover) than to launder
  *  validity through a downed Redis. */
 async function isTokenTainted(collection: string, tokenId: string): Promise<boolean> {
-  if (!tokenId) return false
+  // Fail CLOSED on a missing tokenId: an empty id must never read as
+  // "not tainted" and let a credit through. Defense-in-depth — creditValidityOnce
+  // already rejects an empty tokenId before reaching here.
+  if (!tokenId) return true
   try {
     return !!(await redis.sismember(keyTainted(collection), tokenId))
   } catch {
@@ -391,7 +394,11 @@ export async function creditValidityOnce(params: {
 }): Promise<void> {
   const { collection, address, txHash, tokenId } = params
   const amount = params.amount ?? 1
-  if (amount <= 0 || !address || !txHash) return
+  // Reject a missing tokenId outright: without it the taint check below is
+  // meaningless (a tainted Pass could be credited) and the credited-key/
+  // known-tokens writes are skipped. No caller passes an empty id today (all
+  // canonicalize via BigInt().toString()); this closes the latent footgun.
+  if (amount <= 0 || !address || !txHash || !tokenId) return
 
   if (await isPassBlacklisted(address)) return
 

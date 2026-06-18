@@ -72,7 +72,12 @@ export async function proxyMintRequest(
   if (typeof body?.account !== 'string' || !isAddress(body.account)) {
     return errorResponse(400, 'account is required and must be a valid address')
   }
-  const account = body.account
+  // Lowercase up-front so every downstream consumer — gate/blacklist checks,
+  // creditValidityOnce, profile + moment-meta writes — keys off the canonical
+  // form, matching the collect/airdrop/listing paths. Safe for verifyIntent
+  // below: the signed message is rebuilt from `body` (unchanged), and
+  // verifyTypedData compares the expected-signer address case-insensitively.
+  const account = body.account.toLowerCase()
   void trackWallet(account)
 
   const tokenObj = (body?.token as Record<string, unknown> | undefined) ?? {}

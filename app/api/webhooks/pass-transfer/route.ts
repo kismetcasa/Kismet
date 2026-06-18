@@ -49,9 +49,15 @@ interface AlchemyWebhookPayload {
 function verifySignature(rawBody: string, signature: string): boolean {
   if (!SIGNING_KEY || !signature) return false
   const expected = crypto.createHmac('sha256', SIGNING_KEY).update(rawBody).digest('hex')
-  if (expected.length !== signature.length) return false
+  // Normalize the provided signature (strip an optional 0x, lowercase) so a
+  // future Alchemy format change can't silently 401 every event and stop
+  // revoking/tainting off-platform transfers. Operates only on the caller-
+  // supplied header, never the secret, so it adds no timing oracle; the
+  // compare stays constant-time over equal-length lowercase hex.
+  const provided = signature.replace(/^0x/i, '').toLowerCase()
+  if (expected.length !== provided.length) return false
   try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided))
   } catch {
     return false
   }

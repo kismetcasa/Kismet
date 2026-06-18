@@ -58,10 +58,20 @@ export async function getGateConfig(): Promise<GateConfig> {
     return config
   } catch {
     // Last-known-good: gate stays in its prior enforced state during a
-    // transient Redis outage. Only falls back to fail-open (enabled:false)
-    // if no cached value exists (cold start with Redis already down).
+    // transient Redis outage. Only falls back here if no cached value
+    // exists (cold start with Redis already down).
     if (_configCache) return _configCache.value
-    return { enabled: false, passCollection: null, paused: false }
+    // Cold start + Redis unreachable: there is no last-known-good to trust.
+    // Fail the emergency kill-switch CLOSED (paused:true) so an Upstash
+    // outage coinciding with a fresh-instance boot can't silently neutralize
+    // an active pause. paused:true makes isPlatformPausedFor block every
+    // non-admin mint (lib/mint-proxy) and create (app/api/collections) for
+    // the window — admin still bypasses — and it self-heals the instant a
+    // real read repopulates the cache. We keep enabled:false rather than
+    // fabricate an enabled gate without a known passCollection; the pause is
+    // what enforces here, and it's the one piece of state with no on-chain
+    // backstop (hasGateAccess/hasValidPass already fail closed on Redis error).
+    return { enabled: false, passCollection: null, paused: true }
   }
 }
 
