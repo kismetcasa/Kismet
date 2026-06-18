@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
-import { getGateConfig } from '@/lib/gate'
+import { getGateConfig, getPassCollectionName } from '@/lib/gate'
 import { getValidBalance } from '@/lib/pass-validity'
 import { isPassBlacklisted } from '@/lib/pass-blacklist'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -42,9 +42,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       enabled: false,
       passCollection: null,
+      passCollectionName: null,
       validBalance: 0,
     })
   }
+
+  // Live collection name (cached) so the gate UI can render "collect from
+  // <name>" instead of a hardcoded label.
+  const passCollectionName = await getPassCollectionName(config.passCollection)
 
   // Pass-blacklist short-circuit: mirror what hasValidPass does at the
   // gate-check layer so the badge UX matches the actual mint policy. A
@@ -57,17 +62,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       enabled: config.enabled,
       passCollection: config.passCollection,
+      passCollectionName,
       validBalance: 0,
     })
   }
 
   const validBalance = await getValidBalance(config.passCollection, address)
   return NextResponse.json({
-    // `enabled` lets gate-aware UI (e.g. MintForm's "collect Patron Collection
-    // artwork" CTA) tell "gate configured but off" from "gate actively enforcing".
-    // When off, the CTA must not fire — everyone can still mint.
+    // `enabled` lets gate-aware UI (e.g. MintForm's "collect from <name>" CTA)
+    // tell "gate configured but off" from "gate actively enforcing". When off,
+    // the CTA must not fire — everyone can still mint.
     enabled: config.enabled,
     passCollection: config.passCollection,
+    passCollectionName,
     validBalance,
   })
 }

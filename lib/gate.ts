@@ -1,6 +1,7 @@
 import { isAddress } from '@/lib/address'
 import { redis } from './redis'
 import { hasValidPass } from './pass-validity'
+import { getCollectionMeta } from './kv'
 import { ADMIN_ADDRESS } from './config'
 
 const KEY_ENABLED = 'kismetart:gate:enabled'
@@ -135,4 +136,33 @@ export async function isPlatformPausedFor(address: string): Promise<boolean> {
 export async function isPlatformPaused(): Promise<boolean> {
   const config = await getGateConfig()
   return config.paused
+}
+
+// Resolved display name of the configured pass collection, cached in-process.
+// The pass collection and its name are stable, so this avoids a KV read on
+// every /api/pass-validity poll; keyed by collection so an admin switch is
+// picked up, and TTL'd so a rename converges. Backs the gate UI's
+// "collect from <name>" copy and the gated-out 403 messages. Returns null when
+// the name is unknown or is just the address placeholder, so callers fall back
+// to a generic label.
+let _nameCache: { collection: string; name: string | null; expiresAt: number } | null = null
+const PASS_NAME_TTL_MS = 10 * 60 * 1000
+
+export async function getPassCollectionName(passCollection: string): Promise<string | null> {
+  const lower = passCollection.toLowerCase()
+  if (_nameCache && _nameCache.collection === lower && Date.now() < _nameCache.expiresAt) {
+    return _nameCache.name
+  }
+  let name: string | null = null
+  try {
+    const meta = await getCollectionMeta(lower)
+    const n = meta?.name?.trim()
+    // Ignore the address-as-name placeholder (a collection registered without
+    // a name stores its address there) — better a generic label than a hex.
+    name = n && n.length > 0 && n.toLowerCase() !== lower ? n : null
+  } catch {
+    // leave null; the UI falls back to a generic label
+  }
+  _nameCache = { collection: lower, name, expiresAt: Date.now() + PASS_NAME_TTL_MS }
+  return name
 }

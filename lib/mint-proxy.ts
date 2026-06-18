@@ -13,7 +13,7 @@ import { markCreatedMint } from './kv'
 import { runDropCoordination } from './agent/scout/dropCoordinator'
 import { SITE_URL } from './siteUrl'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
-import { getGateConfig, hasGateAccess, isPlatformPausedFor } from './gate'
+import { getGateConfig, getPassCollectionName, hasGateAccess, isPlatformPausedFor } from './gate'
 import { isBlacklisted } from './blacklist'
 import { creditValidityOnce, recordPlatformTx } from './pass-validity'
 import { verifyIntent } from './intentAuth'
@@ -158,7 +158,10 @@ export async function proxyMintRequest(
     return errorResponse(503, 'Platform is temporarily paused')
   }
   if (!gateOk) {
-    return errorResponse(403, 'A Patron Collection artwork is required to mint')
+    const name = gateConfig.passCollection
+      ? await getPassCollectionName(gateConfig.passCollection)
+      : null
+    return errorResponse(403, `An artwork from ${name ?? 'the required collection'} is required to mint`)
   }
 
   // Validate splits after the platform-policy gates so a paused/blocked/

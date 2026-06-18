@@ -7,7 +7,7 @@ import { inprocessUrl } from '@/lib/inprocess'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { PLATFORM_COLLECTION } from '@/lib/config'
-import { hasGateAccess } from '@/lib/gate'
+import { getGateConfig, getPassCollectionName, hasGateAccess } from '@/lib/gate'
 import {
   getTrackedCollections,
   getUserCollections,
@@ -410,7 +410,7 @@ export async function POST(req: NextRequest) {
   // factory call so it can't be blocked at deploy time; this is the
   // authoritative server boundary that keeps a gated-out wallet's collection
   // OFF the platform — untracked, hidden from discovery + profile feeds.
-  // CreateCollectionForm also swaps in a "collect Patron Collection artwork" CTA so the
+  // CreateCollectionForm also swaps in a "collect from <name>" CTA so the
   // common path never wastes an on-chain deploy.
   //
   // Scoped to create-form: auto-deploy wrappers are a side effect of a mint
@@ -424,7 +424,11 @@ export async function POST(req: NextRequest) {
   if (source === 'create-form') {
     const gateOk = await hasGateAccess(body.address, sessionAddress)
     if (!gateOk) {
-      return errorResponse(403, 'A Patron Collection artwork is required to create a collection')
+      const config = await getGateConfig()
+      const name = config.passCollection
+        ? await getPassCollectionName(config.passCollection)
+        : null
+      return errorResponse(403, `An artwork from ${name ?? 'the required collection'} is required to create a collection`)
     }
   }
 

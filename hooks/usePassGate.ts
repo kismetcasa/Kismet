@@ -7,6 +7,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 interface PassGate {
   enabled: boolean
   passCollection: string | null
+  passCollectionName: string | null
   validBalance: number
 }
 
@@ -14,7 +15,7 @@ interface PassGate {
  * Creator-pass gate pre-check shared by the mint and create-collection forms.
  * When the token gate is enabled and the connected wallet holds no valid Pass,
  * `gatedOut` is true so the form can swap its primary action for a "collect
- * Patron Collection artwork" CTA pointing at `passCollectionHref`.
+ * from <name>" CTA pointing at `passCollectionHref`.
  *
  * UX hint only — the authoritative checks run server-side (lib/mint-proxy for
  * mints, POST /api/collections for create). Fails OPEN: a failed
@@ -24,7 +25,11 @@ interface PassGate {
  * `gatedOut` is false, so a same-tick submit can slip past the client hint —
  * by design, the server is the real boundary.
  */
-export function usePassGate(): { gatedOut: boolean; passCollectionHref: string } {
+export function usePassGate(): {
+  gatedOut: boolean
+  passCollectionHref: string
+  passCollectionName: string | null
+} {
   const { address } = useAccount()
   const { isAdmin } = useAdmin()
   const [passGate, setPassGate] = useState<PassGate | null>(null)
@@ -45,5 +50,5 @@ export function usePassGate(): { gatedOut: boolean; passCollectionHref: string }
   const passCollectionHref = passGate?.passCollection
     ? `/collection/${passGate.passCollection}`
     : '/'
-  return { gatedOut, passCollectionHref }
+  return { gatedOut, passCollectionHref, passCollectionName: passGate?.passCollectionName ?? null }
 }

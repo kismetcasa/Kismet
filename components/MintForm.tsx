@@ -291,9 +291,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   // Creator-pass gate pre-check (shared with CreateCollectionForm via
   // usePassGate). When the gate is enabled and the wallet holds no valid Pass,
-  // we swap the mint button for a "collect Patron Collection artwork" CTA — a hint;
+  // we swap the mint button for a "collect from <name>" CTA — a hint;
   // lib/mint-proxy runs the authoritative hasGateAccess on every request.
-  const { gatedOut, passCollectionHref } = usePassGate()
+  const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
@@ -1658,7 +1658,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         )}
       </div>
 
-      {/* Submit — swaps to a "collect Patron Collection artwork" CTA when the gate is
+      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
           enabled and the wallet holds no valid Pass, but not while a mint is
           in flight (isBusy) so a late-resolving pass probe can't replace the
           progress button mid-mint. */}
@@ -1669,10 +1669,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             onClick={() => router.push(passCollectionHref)}
             className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
           >
-            collect Patron Collection artwork
+            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
           </button>
           <p className="text-[10px] font-mono text-muted text-center">
-            minting requires a Patron Collection artwork
+            minting requires an artwork from {passCollectionName ?? 'the collection'}
           </p>
         </div>
       ) : (
