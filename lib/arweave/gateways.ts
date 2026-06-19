@@ -6,11 +6,14 @@
 //
 // Pruned 2026-05: g8way.io stopped resolving (NXDOMAIN) and ar-io.dev's
 // cert expired, producing console noise + wasted RTT on every fallback walk.
+// Pruned 2026-06: permagate.io began throwing ERR_SSL_PROTOCOL_ERROR (TLS
+// outage) — it hard-failed every probe and, alongside arweave.net's
+// propagation lag on fresh Turbo uploads, was sinking pre-mint verification.
 // Verify newly-added entries with `curl -I https://<host>/<known-txid>` —
 // dead gateways stall the fallback chain rather than failing fast.
 const ARWEAVE_GATEWAYS = [
   'https://arweave.net',
-  'https://permagate.io',
+  'https://arweave.dev',
 ] as const
 
 const IPFS_GATEWAYS = [
