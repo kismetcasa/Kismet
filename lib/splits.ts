@@ -20,6 +20,12 @@ export const MAX_SPLITS = 50
 const splitsKey = (collection: string, tokenId: string) =>
   `kismetart:splits:${collection.toLowerCase()}:${tokenId}`
 
+// Reverse index: recipient address → the split moments they're a payee on.
+// Member encodes the recipient's allocation ("<collection>:<tokenId>:<pct>") so
+// the pending roll-up needs a single SMEMBERS, never a per-moment getStoredSplits.
+const recipientIndexKey = (address: string) =>
+  `kismetart:splits:by-recipient:${address.toLowerCase()}`
+
 // JSON values stay truthy so the distribute flow's `hasSplits` gate
 // (a `redis.get` truthy check) keeps working alongside the legacy
 // `'1'` flag from older mints.
@@ -35,6 +41,62 @@ export async function setStoredSplits(
     })),
   }
   await redis.set(splitsKey(collection, tokenId), JSON.stringify(payload))
+  await indexRecipientSplits(collection, tokenId, recipients)
+}
+
+// Index each recipient → this split moment so an artist's undistributed balance
+// can be rolled up from one SMEMBERS (see lib/pending.ts). Idempotent (SADD) and
+// best-effort: called at mint (above) AND self-healed from the moment-splits read
+// path, so moments minted before this index existed get covered as they're
+// viewed. A bulk backfill is deliberately avoided — there's no safe enumerator
+// (the global created-mints set hard-fails SMEMBERS past ~10 MB, the transfers
+// feed carries no tokenId, and the codebase uses no SCAN).
+export async function indexRecipientSplits(
+  collection: string,
+  tokenId: string,
+  recipients: SplitRecipient[],
+): Promise<void> {
+  const c = collection.toLowerCase()
+  await Promise.all(
+    recipients
+      .filter((r) => r.percentAllocation > 0)
+      .map((r) =>
+        redis
+          .sadd(recipientIndexKey(r.address), `${c}:${tokenId}:${r.percentAllocation}`)
+          .catch(() => {}),
+      ),
+  )
+}
+
+export interface RecipientSplit {
+  collection: string
+  tokenId: string
+  /** This recipient's allocation on the moment, a whole-number percent 1–100. */
+  pct: number
+}
+
+// The split moments an address is a payee on, decoded from the reverse index.
+// Deduped per moment (splits are immutable post-mint; this guards against a
+// stray second member with a different pct rather than double-counting).
+export async function getRecipientSplits(address: string): Promise<RecipientSplit[]> {
+  let members: string[]
+  try {
+    members = (await redis.smembers(recipientIndexKey(address))) as string[]
+  } catch {
+    return []
+  }
+  const byMoment = new Map<string, RecipientSplit>()
+  for (const m of members) {
+    const first = m.indexOf(':')
+    const last = m.lastIndexOf(':')
+    if (first <= 0 || last <= first) continue
+    const collection = m.slice(0, first)
+    const tokenId = m.slice(first + 1, last)
+    const pct = Number(m.slice(last + 1))
+    if (!isAddress(collection) || !tokenId || !Number.isFinite(pct) || pct <= 0) continue
+    byMoment.set(`${collection}:${tokenId}`, { collection, tokenId, pct })
+  }
+  return [...byMoment.values()]
 }
 
 export async function getStoredSplits(

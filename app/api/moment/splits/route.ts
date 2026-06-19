@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { getStoredSplits } from '@/lib/splits'
+import { getStoredSplits, indexRecipientSplits } from '@/lib/splits'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Returns { hasSplits, recipients } for a single moment. `hasSplits` gates the
@@ -26,5 +26,11 @@ export async function GET(req: NextRequest) {
     hasSplits: false,
     recipients: [],
   }))
+  // Self-heal the recipient→moments reverse index for moments minted before it
+  // existed (or whose mint-time write failed): any viewed split moment gets its
+  // payees indexed, off the response path. Idempotent SADD.
+  if (stored.recipients.length) {
+    after(() => indexRecipientSplits(collectionAddress, tokenId, stored.recipients))
+  }
   return NextResponse.json(stored)
 }
