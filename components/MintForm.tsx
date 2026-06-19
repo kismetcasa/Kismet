@@ -1433,6 +1433,45 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         </div>
       )}
 
+      {/* Sale window — both optional, and placed right after Description so the
+          "when" sits with the other submission-shape fields. An empty "opens"
+          starts the mint now; an empty "closes" leaves it open-ended so the
+          supply cap (or open edition = forever) ends it instead of a clock.
+          Disabled for 1/1s, which have no public sale window. Shown in both
+          modes since the writing endpoint uses the same salesConfig. */}
+      <div className="flex gap-3">
+        <div className="flex-1 min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+            Sale opens
+          </label>
+          <input
+            type="datetime-local"
+            value={saleStartInput}
+            min={nowLocal}
+            disabled={is11}
+            onChange={(e) => setSaleStartInput(e.target.value)}
+            aria-label="Sale opens"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
+          />
+          <p className="text-xs text-muted font-mono mt-1">{saleStartHelper}</p>
+        </div>
+        <div className="flex-1 min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+            Sale closes
+          </label>
+          <input
+            type="datetime-local"
+            value={saleEndInput}
+            min={saleStartInput || nowLocal}
+            disabled={is11}
+            onChange={(e) => setSaleEndInput(e.target.value)}
+            aria-label="Sale closes"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
+          />
+          <p className="text-xs text-muted font-mono mt-1">{saleEndHelper}</p>
+        </div>
+      </div>
+
       {/* Price + Supply — placed before the Collection picker so the
           submission-shape fields cluster together; the picker (which can
           be left at "auto-deploy") sits below as a step-down decision. */}
@@ -1485,44 +1524,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ) : null}
           </div>
         )}
-      </div>
-
-      {/* Sale window — both optional. An empty "opens" starts the mint now; an
-          empty "closes" leaves it open-ended so the supply cap (or open edition
-          = forever) ends it instead of a clock. Disabled for 1/1s, which have
-          no public sale window. Shown in both modes since the writing endpoint
-          uses the same salesConfig. */}
-      <div className="flex gap-3">
-        <div className="flex-1 min-w-0">
-          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
-            Sale opens
-          </label>
-          <input
-            type="datetime-local"
-            value={saleStartInput}
-            min={nowLocal}
-            disabled={is11}
-            onChange={(e) => setSaleStartInput(e.target.value)}
-            aria-label="Sale opens"
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
-          />
-          <p className="text-xs text-muted font-mono mt-1">{saleStartHelper}</p>
-        </div>
-        <div className="flex-1 min-w-0">
-          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
-            Sale closes
-          </label>
-          <input
-            type="datetime-local"
-            value={saleEndInput}
-            min={saleStartInput || nowLocal}
-            disabled={is11}
-            onChange={(e) => setSaleEndInput(e.target.value)}
-            aria-label="Sale closes"
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
-          />
-          <p className="text-xs text-muted font-mono mt-1">{saleEndHelper}</p>
-        </div>
       </div>
 
       {/* Collections picker — optional; if the user doesn't pick one, the
