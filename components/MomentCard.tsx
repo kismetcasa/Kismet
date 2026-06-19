@@ -279,11 +279,26 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
+  // Sale-window gating. saleStart/saleEnd are unix-second strings on the
+  // active sale config; absent, "0", or the max-uint64 sentinel mean "no
+  // bound". A scheduled mint isn't collectible until it opens; a closed one
+  // isn't after it ends. Number() fails open (NaN → no bound) so malformed
+  // data never wrongly blocks collect. Mirrors the mintedOut disable pattern.
+  const saleNowSec = Math.floor(Date.now() / 1000)
+  const activeSale = moment.saleConfig ?? saleData ?? null
+  const saleStartNum = activeSale?.saleStart ? Number(activeSale.saleStart) : 0
+  const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
+  const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
+  const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
   const collectLabel = collecting
     ? 'collecting…'
-    : mintedOut
-      ? hasCollected ? 'collected' : 'minted out'
-      : hasCollected ? 'collect+' : 'collect'
+    : saleNotStarted
+      ? 'not started'
+      : saleEnded
+        ? 'mint ended'
+        : mintedOut
+          ? hasCollected ? 'collected' : 'minted out'
+          : hasCollected ? 'collect+' : 'collect'
 
   // Artists/roster tab: steer the primary action to the creator's profile.
   // Gated on a resolvable creator address so a malformed moment falls back
@@ -610,7 +625,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : (
             <button
               onClick={handleCollect}
-              disabled={collecting || mintedOut || !collectReady}
+              disabled={collecting || mintedOut || !collectReady || saleNotStarted || saleEnded}
               className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
@@ -657,7 +672,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : null}
           <button
             onClick={handleCollect}
-            disabled={collecting || mintedOut || !collectReady}
+            disabled={collecting || mintedOut || !collectReady || saleNotStarted || saleEnded}
             className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
               hasCollected
                 ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'

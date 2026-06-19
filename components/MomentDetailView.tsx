@@ -539,11 +539,25 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
+  // Sale-window gating — see MomentCard for the rationale. saleStart/saleEnd
+  // are unix-second strings on detail.saleConfig; absent, "0", or the max-
+  // uint64 sentinel mean "no bound". Number() fails open so malformed data
+  // can't wrongly block collect. A scheduled mint isn't collectible until it
+  // opens; a closed one isn't after it ends.
+  const saleNowSec = Math.floor(Date.now() / 1000)
+  const saleStartNum = detail?.saleConfig?.saleStart ? Number(detail.saleConfig.saleStart) : 0
+  const saleEndNum = detail?.saleConfig?.saleEnd ? Number(detail.saleConfig.saleEnd) : 0
+  const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
+  const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
   const collectLabel = collecting
     ? 'collecting…'
-    : mintedOut
-      ? hasCollected ? 'collected' : 'minted out'
-      : hasCollected ? 'collect+' : 'collect'
+    : saleNotStarted
+      ? 'not started'
+      : saleEnded
+        ? 'mint ended'
+        : mintedOut
+          ? hasCollected ? 'collected' : 'minted out'
+          : hasCollected ? 'collect+' : 'collect'
 
   async function handleDistribute() {
     if (!detail) { toast.error('Moment details still loading'); return }
@@ -1450,7 +1464,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
             <button
               onClick={handleCollect}
-              disabled={collecting || mintedOut || !detail}
+              disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'

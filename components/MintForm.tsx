@@ -332,6 +332,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [price, setPrice] = useState('0')
   const [priceCurrency, setPriceCurrency] = useState<PriceCurrency>('eth')
   const [maxSupply, setMaxSupply] = useState('')
+  // Optional sale window (datetime-local strings). Empty start = opens now;
+  // empty end = open-ended, leaving the supply cap (or open edition = forever)
+  // to bound the mint instead of a clock — i.e. the prior always-open default.
+  const [saleStartInput, setSaleStartInput] = useState('')
+  const [saleEndInput, setSaleEndInput] = useState('')
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
@@ -371,6 +376,23 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // Media-only — text mode hides Supply, so a stale `1` from a prior
   // media session can't sneak through.
   const is11 = mintMode === 'media' && maxSupply.trim() === '1'
+
+  // Sale-window display. Empty inputs fall back to "opens now" / open-ended;
+  // the closes-helper mirrors the Supply field's open-edition vs finite copy
+  // so the empty-end semantics read clearly: a finite supply self-closes at
+  // sell-out, an open edition runs forever. nowLocal feeds the inputs' `min`.
+  const nowLocal = toLocalInput(new Date())
+  const finiteSupply = mintMode === 'media' && !is11 && maxSupply.trim() !== ''
+  const saleStartHelper = saleStartInput ? 'scheduled start' : 'opens immediately'
+  const saleEndHelper = is11
+    ? '1/1 — no public sale'
+    : saleEndInput
+      ? finiteSupply
+        ? 'closes at this date or sell-out'
+        : 'closes at this date'
+      : finiteSupply
+        ? `closes when all ${maxSupply.trim()} are minted`
+        : 'never expires'
 
   function switchMode(mode: MintMode) {
     setMintMode(mode)
@@ -631,19 +653,40 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       ? parseUnits(normalizedPrice, 6).toString()
       : parseEther(normalizedPrice).toString()
     const now = Math.floor(Date.now() / 1000)
+    // Optional sale window. A 1/1 has no public sale (the creator auto-mint
+    // exhausts supply), so it always uses the defaults regardless of any
+    // stale input. Empty start → opens now. Empty end → max uint64, leaving
+    // the supply cap (or open edition = forever) to bound the mint instead of
+    // a clock — exactly the prior always-open behavior. datetime-local has no
+    // timezone, so new Date() reads it as the creator's local wall-clock.
+    const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
+    let saleStartTs = now
+    let saleEndStr = OPEN_ENDED_SALE
+    if (!is11 && saleStartInput) {
+      const ts = Math.floor(new Date(saleStartInput).getTime() / 1000)
+      if (Number.isNaN(ts)) { toast.error('Invalid sale start'); return }
+      saleStartTs = ts
+    }
+    if (!is11 && saleEndInput) {
+      const ts = Math.floor(new Date(saleEndInput).getTime() / 1000)
+      if (Number.isNaN(ts)) { toast.error('Invalid sale end'); return }
+      if (ts <= now) { toast.error('Sale must close in the future'); return }
+      if (ts <= saleStartTs) { toast.error('Sale must close after it opens'); return }
+      saleEndStr = String(ts)
+    }
     const salesConfig = priceCurrency === 'usdc'
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
-          saleEnd: '18446744073709551615',
+          saleStart: String(saleStartTs),
+          saleEnd: saleEndStr,
           currency: USDC_BASE,
         }
       : {
           type: 'fixedPrice' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
-          saleEnd: '18446744073709551615',
+          saleStart: String(saleStartTs),
+          saleEnd: saleEndStr,
         }
     const supplyTrimmed = maxSupply.trim()
     if (supplyTrimmed) {
@@ -1216,6 +1259,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setDescription('')
             setPrice('0')
             setMaxSupply('')
+            setSaleStartInput('')
+            setSaleEndInput('')
             setSplits([])
             setSplitInput({ address: '', pct: '' })
           }}
@@ -1387,6 +1432,45 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           />
         </div>
       )}
+
+      {/* Sale window — both optional, and placed right after Description so the
+          "when" sits with the other submission-shape fields. An empty "opens"
+          starts the mint now; an empty "closes" leaves it open-ended so the
+          supply cap (or open edition = forever) ends it instead of a clock.
+          Disabled for 1/1s, which have no public sale window. Shown in both
+          modes since the writing endpoint uses the same salesConfig. */}
+      <div className="flex gap-3">
+        <div className="flex-1 min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+            Sale opens
+          </label>
+          <input
+            type="datetime-local"
+            value={saleStartInput}
+            min={nowLocal}
+            disabled={is11}
+            onChange={(e) => setSaleStartInput(e.target.value)}
+            aria-label="Sale opens"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
+          />
+          <p className="text-xs text-muted font-mono mt-1">{saleStartHelper}</p>
+        </div>
+        <div className="flex-1 min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+            Sale closes
+          </label>
+          <input
+            type="datetime-local"
+            value={saleEndInput}
+            min={saleStartInput || nowLocal}
+            disabled={is11}
+            onChange={(e) => setSaleEndInput(e.target.value)}
+            aria-label="Sale closes"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
+          />
+          <p className="text-xs text-muted font-mono mt-1">{saleEndHelper}</p>
+        </div>
+      </div>
 
       {/* Price + Supply — placed before the Collection picker so the
           submission-shape fields cluster together; the picker (which can
@@ -1802,6 +1886,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       )}
     </form>
   )
+}
+
+// Format a Date as a `datetime-local` value (YYYY-MM-DDTHH:mm) in the
+// browser's local time — used for the sale-window inputs' `min` affordance.
+// Local (not UTC) so it lines up with how new Date() parses the same input
+// string back into a timestamp at submit.
+function toLocalInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function stepLabel(step: string, progress: number): string {
