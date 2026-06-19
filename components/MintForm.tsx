@@ -337,6 +337,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // to bound the mint instead of a clock — i.e. the prior always-open default.
   const [saleStartInput, setSaleStartInput] = useState('')
   const [saleEndInput, setSaleEndInput] = useState('')
+  // Native datetime-local renders a "mm/dd/yyyy, --:-- --" placeholder when
+  // empty (the `placeholder` attr is ignored for this type), which reads as
+  // clutter. Track focus so we can hide the edit text via CSS until the user
+  // actually engages the field — see the conditional className below.
+  const [saleStartFocused, setSaleStartFocused] = useState(false)
+  const [saleEndFocused, setSaleEndFocused] = useState(false)
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
@@ -1450,8 +1456,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             min={nowLocal}
             disabled={is11}
             onChange={(e) => setSaleStartInput(e.target.value)}
+            onFocus={() => setSaleStartFocused(true)}
+            onBlur={() => setSaleStartFocused(false)}
             aria-label="Sale opens"
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
+            className={`w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]${
+              !saleStartInput && !saleStartFocused ? ' [&::-webkit-datetime-edit]:text-transparent' : ''
+            }`}
           />
           <p className="text-xs text-muted font-mono mt-1">{saleStartHelper}</p>
         </div>
@@ -1465,8 +1475,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             min={saleStartInput || nowLocal}
             disabled={is11}
             onChange={(e) => setSaleEndInput(e.target.value)}
+            onFocus={() => setSaleEndFocused(true)}
+            onBlur={() => setSaleEndFocused(false)}
             aria-label="Sale closes"
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]"
+            className={`w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]${
+              !saleEndInput && !saleEndFocused ? ' [&::-webkit-datetime-edit]:text-transparent' : ''
+            }`}
           />
           <p className="text-xs text-muted font-mono mt-1">{saleEndHelper}</p>
         </div>
