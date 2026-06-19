@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi'
+import { useAccount, useConfig, usePublicClient, useWriteContract } from 'wagmi'
+import { getAccount } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
@@ -71,6 +72,7 @@ const TOAST_ID = 'direct-collect'
  */
 export function useDirectCollect(): UseDirectCollectReturn {
   const { address } = useAccount()
+  const config = useConfig()
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
@@ -100,7 +102,12 @@ export function useDirectCollect(): UseDirectCollectReturn {
         comment = '',
       } = args
 
-      if (!address) {
+      // Resolve the signer. Prefer the React `useAccount` value; fall back to
+      // the wagmi store so a collect dispatched in the same tap that just
+      // connected the wallet (the embedded-host path in useEnsureConnected)
+      // still sees the fresh account before React re-renders this hook.
+      const account = address ?? getAccount(config).address
+      if (!account) {
         toast.error('Connect a wallet to collect')
         return null
       }
@@ -152,7 +159,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             address: collectionAddress,
             ...buildEthMintCall({
               tokenId: tokenIdBn,
-              mintTo: address,
+              mintTo: account,
               quantity,
               mintFee,
               pricePerToken,
@@ -166,7 +173,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             address: USDC_BASE,
             abi: ERC20_ABI,
             functionName: 'allowance',
-            args: [address, ZORA_ERC20_MINTER],
+            args: [account, ZORA_ERC20_MINTER],
           })
 
           if (currentAllowance < totalPrice) {
@@ -198,7 +205,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             ...buildUsdcMintCall({
               collection: collectionAddress,
               tokenId: tokenIdBn,
-              mintTo: address,
+              mintTo: account,
               quantity,
               pricePerToken,
               comment,
@@ -227,7 +234,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               moment: { collectionAddress, tokenId, chainId: base.id },
-              account: address,
+              account,
               amount: Number(quantity),
               comment,
               pricePerToken: pricePerToken.toString(),
@@ -259,7 +266,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         inFlightRef.current = false
       }
     },
-    [address, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [address, config, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectRef.current = collect
