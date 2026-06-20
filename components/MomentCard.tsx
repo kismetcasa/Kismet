@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
-import { useConnectModal } from '@rainbow-me/rainbowkit'
+import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import {
   resolveUri,
   formatPrice,
@@ -134,8 +134,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
-  const { address: connectedAddress, isConnected } = useAccount()
-  const { openConnectModal } = useConnectModal()
+  const { address: connectedAddress } = useAccount()
+  const ensureConnected = useEnsureConnected()
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
 
@@ -254,8 +254,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }
 
   async function handleCollect() {
-    if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
     if (pricePerToken === null || currency === null) return // sale config not yet loaded
+    // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
+    // picker on web); null = not yet connected. See useEnsureConnected.
+    const account = await ensureConnected()
+    if (!account) return
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
       tokenId: moment.token_id,

@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
-import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
@@ -18,6 +17,7 @@ import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments 
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -86,7 +86,7 @@ interface Props {
 
 export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
   const router = useRouter()
-  const { address: connectedAddress, isConnected } = useAccount()
+  const { address: connectedAddress } = useAccount()
 
   // When rendered inside the IR overlay, clicks on the outer wrapper's
   // padding regions (the breathing room around the detail card) dismiss
@@ -101,7 +101,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         if (e.target === e.currentTarget) router.back()
       }
     : undefined
-  const { openConnectModal } = useConnectModal()
+  const ensureConnected = useEnsureConnected()
   const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { isInMiniApp } = useFarcaster()
@@ -517,8 +517,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
 
   async function handleCollect() {
-    if (!isConnected || !connectedAddress) { openConnectModal?.(); return }
     if (!detail || !saleConfig) return
+    // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
+    // picker on web); null = not yet connected. See useEnsureConnected.
+    const account = await ensureConnected()
+    if (!account) return
     const result = await collect({
       collectionAddress: address as `0x${string}`,
       tokenId,
