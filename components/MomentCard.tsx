@@ -255,11 +255,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
 
   async function handleCollect() {
     if (pricePerToken === null || currency === null) return // sale config not yet loaded
-    // Connect on demand. Inside a Mini App / Coinbase WebView this connects
-    // the host wallet directly (the RainbowKit modal can't, and is a no-op
-    // mid-auto-connect — see useEnsureConnected); on web it opens the picker
-    // and returns null so the user taps again.
-    const account = connectedAddress ?? (await ensureConnected())
+    // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
+    // picker on web); null = not yet connected. See useEnsureConnected.
+    const account = await ensureConnected()
     if (!account) return
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
