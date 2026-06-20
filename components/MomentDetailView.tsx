@@ -369,7 +369,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!connectedAddress &&
     Array.isArray(detail?.momentAdmins) &&
     detail.momentAdmins.some((a) => a.toLowerCase() === connectedAddress.toLowerCase())
-  const splitsCurrency = detail ? inferCollectCurrency(detail.saleConfig) : 'eth'
+  // saleConfig can be absent on the upstream /moment payload (a moment with no
+  // active sale, or an indexer gap). Derive every sale-dependent value from
+  // this one guarded read so a missing saleConfig degrades to "no price / not
+  // collectible" instead of throwing mid-render — an unguarded
+  // detail.saleConfig.* deref trips the error boundary, which (the @modal slot
+  // having no error.tsx) paints at the very bottom of the still-mounted feed.
+  const saleConfig = detail?.saleConfig ?? null
+  const currency = saleConfig ? inferCollectCurrency(saleConfig) : 'eth'
   const {
     hasSplits,
     recipients: splitRecipients,
@@ -388,7 +395,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     isCreator,
     isAdmin: isMomentAdmin,
     isPlatformAdmin: isAdmin,
-    currency: splitsCurrency,
+    currency,
   })
   // The platform admin sees distribute on any moment as a support override.
   // Flag the case where that's the *only* reason the controls show, so the
@@ -510,7 +517,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
 
   async function handleCollect() {
-    if (!detail) return
+    if (!detail || !saleConfig) return
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
@@ -518,8 +525,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     const result = await collect({
       collectionAddress: address as `0x${string}`,
       tokenId,
-      pricePerToken: BigInt(detail.saleConfig.pricePerToken),
-      currency: inferCollectCurrency(detail.saleConfig),
+      pricePerToken: BigInt(saleConfig.pricePerToken),
+      currency,
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
     })
@@ -564,7 +571,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   async function handleDistribute() {
     if (!detail) { toast.error('Moment details still loading'); return }
-    await distribute(inferCollectCurrency(detail.saleConfig))
+    await distribute(currency)
   }
 
   // In a Mini App, share = open the Farcaster cast composer with the
@@ -910,8 +917,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Still images and gifs open the zoom lightbox; videos use native
   // fullscreen via their controls.
   const isZoomable = media.kind === 'image' || media.kind === 'gif'
-  const price = detail
-    ? formatPrice(detail.saleConfig.pricePerToken, inferCollectCurrency(detail.saleConfig))
+  const price = saleConfig
+    ? formatPrice(saleConfig.pricePerToken, currency)
     : null
 
   // Hidden moments are visible only to their creator (so they can unhide).
@@ -1426,7 +1433,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <div className="px-5 pb-1 flex items-center gap-3">
               <p className="text-[10px] font-mono text-[#444] uppercase tracking-widest">
                 {Number(totalMinted).toLocaleString()}{' '}
-                {detail && BigInt(detail.saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
+                {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
               </p>
               {ownedCount > 0 && (
                 <p className="text-[10px] font-mono text-muted uppercase tracking-widest">
@@ -1467,7 +1474,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
             <button
               onClick={handleCollect}
-              disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
+              disabled={collecting || mintedOut || !detail || !saleConfig || saleNotStarted || saleEnded}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'

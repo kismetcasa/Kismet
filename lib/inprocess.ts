@@ -173,7 +173,12 @@ export function resolveUri(uri: string): string {
 export interface MomentDetail {
   uri: string
   owner: string
-  saleConfig: {
+  // Optional: the upstream /moment payload can omit saleConfig for a moment
+  // with no active sale (or during an indexer gap). /api/moments already
+  // coalesces it to null and MomentDetailView guards every read; typed
+  // honestly here so a new consumer is forced to handle the absent case
+  // rather than crashing on an unchecked `detail.saleConfig.*`.
+  saleConfig?: {
     type?: 'fixedPrice' | 'erc20Mint'
     pricePerToken: string
     saleStart: string
