@@ -23,6 +23,7 @@ import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError } from '@/lib/toast'
+import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { shortAddress } from '@/lib/inprocess'
@@ -463,6 +464,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     setDeployedImageUri(undefined)
 
     try {
+      // Guard the chunk-reload self-heal for the deploy's duration — same
+      // rationale as MintForm: a transient chunk timeout behind a saturated
+      // upload uplink must not reload the page mid-deploy. Balanced in finally.
+      beginCriticalOp()
       // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
       await ensureSession()
 
@@ -731,6 +736,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       setStep('idle')
       setUploadProgress(0)
       toastError('Deploy', err, { id: 'create-collection' })
+    } finally {
+      endCriticalOp()
     }
   }
 

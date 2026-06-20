@@ -32,6 +32,7 @@ import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
+import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
@@ -725,6 +726,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
 
     try {
+      // Guard the stale-deploy chunk-reload self-heal for the mint's duration:
+      // a transient chunk-load timeout (a background prefetch stalling behind
+      // the saturated upload uplink) surfaces as a ChunkLoadError and would
+      // otherwise reload the page mid-flight, aborting an upload whose Turbo
+      // credits are already spent. Balanced by endCriticalOp() in finally.
+      beginCriticalOp()
       if (mintMode === 'text') {
         // Text moments have no media file to reuse as a cover, so
         // auto-deploy uploads a small collection-metadata JSON whose
@@ -1181,6 +1188,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       setStep('idle')
       setUploadProgress(0)
       toastError('Mint', err, { id: 'mint' })
+    } finally {
+      endCriticalOp()
     }
   }
 
