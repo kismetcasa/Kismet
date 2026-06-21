@@ -515,20 +515,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
     if (!account) return
-    // Parse the display price defensively: a malformed/empty pricePerToken
-    // would otherwise throw here. On failure pass undefined so the hook reads
-    // the sale on-chain rather than the click dead-ending.
-    let parsedPrice: bigint | undefined
-    try {
-      parsedPrice = BigInt(detail.saleConfig.pricePerToken)
-    } catch {
-      parsedPrice = undefined
-    }
+    // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: address as `0x${string}`,
       tokenId,
-      pricePerToken: parsedPrice,
-      currency: parsedPrice !== undefined ? inferCollectCurrency(detail.saleConfig) : undefined,
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
     })

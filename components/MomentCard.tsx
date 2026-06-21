@@ -21,7 +21,7 @@ import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
-import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
+import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
@@ -213,23 +213,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     moment.token_id,
     inView && !moment.saleConfig,
   )
-  const { price, pricePerToken, currency } = useMemo<{
-    price: string | null
-    pricePerToken: bigint | null
-    currency: CollectCurrency | null
-  }>(() => {
+  // Display price only — the collect action reads the authoritative price
+  // on-chain at click time (see useDirectCollect), so the button never
+  // depends on this best-effort fetch resolving.
+  const price = useMemo<string | null>(() => {
     const sc = moment.saleConfig ?? saleData ?? null
-    if (!sc) return { price: null, pricePerToken: null, currency: null }
+    if (!sc) return null
     try {
-      const cur = inferCollectCurrency(sc)
-      return {
-        price: formatPrice(sc.pricePerToken, cur),
-        pricePerToken: BigInt(sc.pricePerToken),
-        currency: cur,
-      }
+      return formatPrice(sc.pricePerToken, inferCollectCurrency(sc))
     } catch {
-      // Malformed pricePerToken — render with un-set price rather than throw.
-      return { price: null, pricePerToken: null, currency: null }
+      // Malformed pricePerToken — show no price rather than throw.
+      return null
     }
   }, [moment.saleConfig, saleData])
 
@@ -258,14 +252,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
     if (!account) return
-    // Pass the display price when it has loaded (fast path); otherwise omit it
-    // and let the hook read the sale on-chain, so a card whose dwell-gated
-    // price fetch hasn't resolved still collects instead of dead-ending.
+    // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
       tokenId: moment.token_id,
-      pricePerToken: pricePerToken ?? undefined,
-      currency: currency ?? undefined,
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
     })
