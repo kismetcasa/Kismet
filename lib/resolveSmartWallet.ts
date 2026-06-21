@@ -46,7 +46,20 @@ export async function resolveSmartWallet(
 
   let res: Response
   try {
-    const url = inprocessUrl('/smartwallet', { walletAddress: artistWallet })
+    // Param-name resilience. inprocess's published docs (smartwallet/get)
+    // document `artist_wallet`, but commit b9097dc moved us to `walletAddress`
+    // "per inprocess API change" — and the two sources still disagree on
+    // `main`. Guessing wrong is catastrophic and SILENT: the upstream returns
+    // notFound for every artist, which drops the deploy-time ADMIN grant for
+    // the relay smart wallet and makes every subsequent relayed mint revert at
+    // gas estimation (the exact regression this resolver underpins). We can't
+    // reach the upstream from CI to settle it, so we stop guessing: send BOTH
+    // names with the same value. Unknown query params are ignored, so the
+    // lookup resolves whichever name the live deployment reads.
+    const url = inprocessUrl('/smartwallet', {
+      artist_wallet: artistWallet,
+      walletAddress: artistWallet,
+    })
     const headers: Record<string, string> = { Accept: 'application/json' }
     const apiKey = process.env.INPROCESS_API_KEY
     if (apiKey) headers['x-api-key'] = apiKey
