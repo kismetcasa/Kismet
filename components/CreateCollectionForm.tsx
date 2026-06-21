@@ -625,22 +625,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // wallet (the deployer) so the user can mint into their own
       // collection.
       //
-      // Best-effort, NOT fail-fast. A missing grant is fully recoverable in
-      // one click: mint-time AUTHORIZE_REQUIRED and CollectionView's authorize
-      // banner both grant ADMIN retroactively. Blocking the deploy instead
-      // would strand the case we most need to support — a brand-new creator
-      // whose inprocess smart wallet has no account yet (404/notFound) — who
-      // would then be unable to create their first collection at all. The
-      // creator EOA is always defaultAdmin regardless, so the collection is
-      // never unusable; only the gasless relay needs this grant. So we try
-      // hard to resolve (retries below) but proceed without the grant if we
-      // can't, and lean on the retroactive banner.
-      //
-      // Best-effort: resolve the artist's inprocess smart wallet so we can
-      // grant it ADMIN as a setupAction at deploy time. If the wallet has
-      // no inprocess account yet (404) or the service is unreachable,
-      // proceed without the grant — CollectionView's authorize banner
-      // handles the retroactive case. Never block deploy on this lookup.
+      // Best-effort, not fail-fast: if the lookup 404s (brand-new creator with
+      // no inprocess account yet) or inprocess is down, deploy anyway without
+      // the grant. The creator EOA is always defaultAdmin, so the collection is
+      // never unusable — only the gasless relay needs this grant, and it's
+      // recoverable in one click (mint-time AUTHORIZE_REQUIRED / the authorize
+      // banner). Blocking here would strand first-time creators. Retries below.
       let inprocessSmartWallet: string | null = null
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) {

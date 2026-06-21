@@ -661,16 +661,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       ? parseUnits(normalizedPrice, 6).toString()
       : parseEther(normalizedPrice).toString()
     const now = Math.floor(Date.now() / 1000)
-    // Sale window. saleStart is pinned to 0 (epoch), NOT `now`: inprocess mints
-    // the creator's copy at setup THROUGH the sale strategy, which reverts with
-    // SaleHasNotStarted whenever block.timestamp < saleStart. `now` is the
-    // client wall-clock, so a device whose clock runs ahead of chain time by
-    // more than the confirm+submit latency would push saleStart past the block
-    // timestamp at gas estimation and revert the whole mint. saleStart=0 means
-    // "open since epoch" — behaviourally identical to "opens now" for an
-    // immediately-live sale, but it can never sit on the wrong side of that
-    // boundary. (A scheduled start still can't be supported through this path,
-    // since the setup copy would revert; that needs mintToCreatorCount:0.)
+    // Sale window. saleStart is pinned to 0 (epoch), NOT `now`: the creator's
+    // setup copy mints THROUGH the sale strategy, which reverts SaleHasNotStarted
+    // when block.timestamp < saleStart. `now` is the client wall-clock, so a
+    // fast device clock would push saleStart past chain time and revert the mint.
+    // 0 = "open since epoch" — identical UX, never on the wrong side of the line.
     // Sale end is optional; empty → max uint64, leaving the supply cap (or open
     // edition = forever) to bound the mint instead of a clock (the prior
     // always-open behavior). A 1/1 has no public sale, so it stays open-ended

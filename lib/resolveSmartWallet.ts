@@ -55,19 +55,12 @@ export async function resolveSmartWallet(
 
   let res: Response
   try {
-    // Param-name resilience — CONFIRMED against the LIVE API (2026): inprocess's
-    // `/smartwallet` requires `walletAddress` (or `accountId`). Sending only
-    // `artist_wallet` returns 400 {"message":"Invalid input","errors":[{
-    // "message":"Either accountId or walletAddress must be provided"}]}. Their
-    // PUBLISHED DOCS still say `artist_wallet` (stale) — do NOT trust the docs
-    // over the live endpoint. Getting this wrong is catastrophic and SILENT:
-    // the lookup fails for every creator, the deploy-time ADMIN grant for the
-    // per-creator relay wallet is skipped, and every later mint reverts at gas
-    // estimation (the exact 2026 regression). So we send BOTH names with the
-    // same value: `walletAddress` satisfies the live API, the extra
-    // `artist_wallet` is ignored, and we stay resilient if inprocess flips
-    // again. The boot healthcheck (assertSmartWalletResolves) probes this so a
-    // future param/URL drift surfaces in seconds, not in a creator's failed mint.
+    // Param resilience — CONFIRMED against the LIVE API (2026): `/smartwallet`
+    // requires `walletAddress` (or `accountId`); `artist_wallet` — what the docs
+    // STILL show — now 400s ("Either accountId or walletAddress must be
+    // provided"). Don't trust the docs over the live endpoint. We send BOTH:
+    // walletAddress satisfies the API, the stale artist_wallet is ignored, and
+    // we stay resilient if inprocess renames it again (it already has once).
     const url = inprocessUrl('/smartwallet', {
       artist_wallet: artistWallet,
       walletAddress: artistWallet,
