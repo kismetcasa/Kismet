@@ -21,7 +21,7 @@ import {
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
-import { computePlatformFee, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
+import { computePlatformFee, isBelowListingFloor, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 
 type ListCurrency = 'eth' | 'usdc'
 
@@ -105,6 +105,15 @@ export function ListButton({
     // USDC base units (6dp) for USDC. The Listing.price field carries this
     // directly, and Seaport's consideration items expect the same base units.
     const priceTotal = currency === 'usdc' ? parseUnits(priceInput, 6) : parseEther(priceInput)
+
+    // Shared listing-price floor (lib/platformFee, same rule /api/listings POST
+    // enforces): below it the 1% fee floors to zero and POST rejects the order.
+    // Check BEFORE the marketplace approval + signature so a dust price fails
+    // here instead of after the user has paid gas and signed.
+    if (isBelowListingFloor(priceTotal)) {
+      toast.error('Price is too low to list')
+      return
+    }
 
     try {
       await ensureBase()

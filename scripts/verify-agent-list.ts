@@ -31,6 +31,8 @@ import {
   check,
   computePlatformFee,
   eq,
+  isBelowListingFloor,
+  MIN_LISTING_PRICE_BASE_UNITS,
   report,
   withSuffix,
 } from './_agent-verify-helpers.ts'
@@ -142,6 +144,22 @@ console.log('\nprice conversion + proceeds invariant')
   const usdcFee = computePlatformFee(usdcPrice)
   const usdcProceeds = usdcPrice - usdcRoyalty - usdcFee
   check('USDC: sellerProceeds + fee + royalty == price', usdcProceeds + usdcFee + usdcRoyalty === usdcPrice)
+}
+
+console.log('\nlisting-price floor (shared by ListButton, prepare-list, /api/listings POST)')
+{
+  // At/above the floor the fee is >= 1 base unit; below it the fee floors to 0 and
+  // every listing path must reject. This is the single rule that previously lived
+  // only in the POST route — assert the boundary so the clients can't drift again.
+  const min = MIN_LISTING_PRICE_BASE_UNITS
+  check('MIN_LISTING_PRICE_BASE_UNITS fee is exactly 1 base unit', computePlatformFee(min) === 1n)
+  check('just below the floor → fee rounds to zero', computePlatformFee(min - 1n) === 0n)
+  check('isBelowListingFloor(min - 1) is true', isBelowListingFloor(min - 1n) === true)
+  check('isBelowListingFloor(min) is false', isBelowListingFloor(min) === false)
+  check('isBelowListingFloor(0) is true', isBelowListingFloor(0n) === true)
+  // A real listing (0.01 ETH / 5 USDC) is comfortably above the floor.
+  check('0.01 ETH is listable', isBelowListingFloor(parseEther('0.01')) === false)
+  check('5 USDC is listable', isBelowListingFloor(parseUnits('5', 6)) === false)
 }
 
 console.log('\nEIP-712 typed data is well-formed (hashes cleanly)')
