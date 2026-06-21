@@ -326,6 +326,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Pinned showcase refs per category. Drives the visitor's curated view and
   // the owner's per-card pin toggle state.
   const [pins, setPins] = useState<PinSets>(EMPTY_PINS)
+  // True once the initial pins GET resolves. Gates the un-pinned mints
+  // fallback so it engages only once we KNOW the artist hasn't pinned. Pins
+  // start empty, so without this gate every profile — even a curated one —
+  // would render the "Recent Mints" fallback during the pins fetch, then flip
+  // to the pinned set. Reset per address below.
+  const [pinsLoaded, setPinsLoaded] = useState(false)
   // Set once the owner toggles a pin, so the initial GET (which runs on mount
   // and may still be in flight) can't overwrite an optimistic toggle.
   const pinsTouched = useRef(false)
@@ -423,6 +429,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   useEffect(() => {
     pinsTouched.current = false
     setPins(EMPTY_PINS)
+    setPinsLoaded(false)
     fetch(`/api/profile/${address}/pins`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       // Normalize per-category so a partial/garbled payload can't leave a
@@ -434,6 +441,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         listings: Array.isArray(d?.pins?.listings) ? d.pins.listings : [],
       }) })
       .catch(() => { if (!pinsTouched.current) setPins(EMPTY_PINS) })
+      // Mark loaded on both paths — on error we fall back to no-pins, which
+      // (for an artist with mints) is exactly when the recent-mints default
+      // should engage rather than leaving the profile blank.
+      .finally(() => setPinsLoaded(true))
   }, [address])
 
   // Tier 2 — visible just below the header.
@@ -689,7 +700,22 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const pinnedView = asVisitor
   const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
-  const displayMoments = pinnedView ? orderByPins(moments, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.mints) : moments
+  // Un-pinned mints fallback. An artist who hasn't pinned any mints still gets
+  // a populated showcase — their up-to-4 most-recent mints — so a new artist's
+  // public profile isn't blank. Scoped to mints only (the artist's own work);
+  // collected/listings stay curated-only, preserving the blank-until-pinned
+  // philosophy for pure collectors. `moments` is already loaded for every
+  // visitor (Tier 1) and sorted newest-first, so this is a plain slice — no
+  // extra fetch. The moment the artist pins one mint, pins.mints.length > 0
+  // flips this off and the pinned set replaces the default. (4 matches the
+  // per-category pin cap / showcase-row width.)
+  const mintsFallback = pinnedView && pinsLoaded && pins.mints.length === 0
+
+  const displayMoments = pinnedView
+    ? (mintsFallback
+        ? moments.slice(0, 4)
+        : orderByPins(moments, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.mints))
+    : moments
   const displayCollected = pinnedView ? orderByPins(collected, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.collected) : collected
   const displayListings = pinnedView ? orderByPins(listings, (l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`, pins.listings) : listings
   const pinSectionLoading: Record<PinCategory, boolean> = {
@@ -1273,11 +1299,13 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
       {/* Owner-only curation hint, shown only when nothing is pinned: an owner
           only ever sees this (full) dashboard, so without it they'd have no
-          prompt to feature artworks on their otherwise detail-only profile. */}
+          prompt to feature artworks on their otherwise detail-only profile.
+          Also tells them what visitors currently see by default (their recent
+          mints) so the un-pinned state isn't a mystery. */}
       {ownerHasNoPins && !previewPublic && (
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
-            Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it on your profile.
+            Until you pin, visitors see your 4 most recent mints. Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it instead.
             {' '}<span className="text-dim">Pin</span> up to 4 of your mints, collects and listings.
           </p>
         </div>
@@ -1292,16 +1320,24 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           // renamed and always-expanded (a curated reel — no collapse), empty
           // categories hidden, fixed order, non-draggable.
           (['mints', 'collected', 'listings'] as const)
-            // Only categories the owner pinned into; show a skeleton while that
+            // Categories the owner pinned into — plus the un-pinned mints
+            // fallback (artist's recent work). Show a skeleton while that
             // category's source loads, then hide it if nothing renders.
-            .filter((section) => pins[section].length > 0 && (pinSectionLoading[section] || (sectionCount[section] ?? 0) > 0))
+            .filter((section) => {
+              const active = pins[section].length > 0 || (section === 'mints' && mintsFallback)
+              return active && (pinSectionLoading[section] || (sectionCount[section] ?? 0) > 0)
+            })
             .map((section) => {
               const count = sectionCount[section]
+              // Un-pinned mints aren't artist-curated, so label them honestly
+              // as recent work rather than "Featured Mints".
+              const label =
+                section === 'mints' && mintsFallback ? 'Recent Mints' : showcaseSectionLabel[section]
               return (
                 <div key={section} className="border-t border-line">
                   {/* Featured sections don't collapse — always expanded, no chevron. */}
                   <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
-                    {showcaseSectionLabel[section]}{count !== null ? ` (${count})` : ''}
+                    {label}{count !== null ? ` (${count})` : ''}
                   </h2>
                   <div className="pb-8">{sectionContent[section]}</div>
                 </div>
