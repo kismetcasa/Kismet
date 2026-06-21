@@ -1,12 +1,13 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useAccount, useConfig, usePublicClient, useWriteContract } from 'wagmi'
+import { useConfig, usePublicClient, useWriteContract } from 'wagmi'
 import { getAccount } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
+import { resolveOnchainSale } from '@/lib/saleConfig'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
@@ -34,8 +35,6 @@ export type CollectCurrency = 'eth' | 'usdc'
 export interface CollectArgs {
   collectionAddress: Address
   tokenId: string
-  pricePerToken: bigint
-  currency: CollectCurrency
   amount?: number
   comment?: string
 }
@@ -71,7 +70,6 @@ const TOAST_ID = 'direct-collect'
  * See useCollectAll for the EIP-5792-based batching pattern instead.
  */
 export function useDirectCollect(): UseDirectCollectReturn {
-  const { address } = useAccount()
   const config = useConfig()
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
@@ -94,19 +92,12 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const collect = useCallback(
     async (args: CollectArgs): Promise<{ hash: Hash } | null> => {
       const isRetryAfterRecovery = consumeRetryFlag()
-      const {
-        tokenId,
-        pricePerToken,
-        currency,
-        amount = 1,
-        comment = '',
-      } = args
+      const { tokenId, amount = 1, comment = '' } = args
 
-      // Resolve the signer. Prefer the React `useAccount` value; fall back to
-      // the wagmi store so a collect dispatched in the same tap that just
-      // connected the wallet (the embedded-host path in useEnsureConnected)
-      // still sees the fresh account before React re-renders this hook.
-      const account = address ?? getAccount(config).address
+      // Read the signer from the wagmi store — authoritative, and reflects a
+      // wallet connected in this same tap (via useEnsureConnected) before
+      // React re-renders this hook.
+      const account = getAccount(config).address
       if (!account) {
         toast.error('Connect a wallet to collect')
         return null
@@ -140,6 +131,21 @@ export function useDirectCollect(): UseDirectCollectReturn {
         await ensureBase()
 
         const tokenIdBn = BigInt(tokenId)
+
+        // Read the live sale (price + currency) straight from chain — the
+        // authoritative source, exactly like the mint fee below. Collect never
+        // depends on the feed's best-effort display price (useMomentSale), so
+        // the button is never a silent dead-end when that hasn't resolved.
+        // publicClient is pinned to Base, so the read targets the right chain.
+        toast.loading('Loading sale…', { id: TOAST_ID })
+        const sale = await resolveOnchainSale(publicClient, collectionAddress, tokenIdBn)
+        if (!sale) {
+          setStatus('error')
+          toast.error('No active sale for this moment', { id: TOAST_ID })
+          return null
+        }
+        const { pricePerToken, currency } = sale
+
         const quantity = BigInt(Math.max(1, Math.floor(amount)))
         const totalPrice = pricePerToken * quantity
 
@@ -266,7 +272,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [config, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectRef.current = collect

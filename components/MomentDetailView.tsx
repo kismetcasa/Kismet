@@ -517,16 +517,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
 
   async function handleCollect() {
-    if (!detail || !saleConfig) return
+    // No saleConfig gate — collect resolves price on-chain (see
+    // useDirectCollect); gating on the display saleConfig would dead-end the
+    // button. (Render-path saleConfig derefs stay guarded above.)
+    if (!detail) return
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
     if (!account) return
+    // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: address as `0x${string}`,
       tokenId,
-      pricePerToken: BigInt(saleConfig.pricePerToken),
-      currency,
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
     })
@@ -1474,7 +1476,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
             <button
               onClick={handleCollect}
-              disabled={collecting || mintedOut || !detail || !saleConfig || saleNotStarted || saleEnded}
+              disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'

@@ -21,7 +21,7 @@ import { getCachedComments, setCachedComments } from '@/lib/momentCache'
 import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
-import { useDirectCollect, type CollectCurrency } from '@/hooks/useDirectCollect'
+import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
@@ -213,23 +213,17 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     moment.token_id,
     inView && !moment.saleConfig,
   )
-  const { price, pricePerToken, currency } = useMemo<{
-    price: string | null
-    pricePerToken: bigint | null
-    currency: CollectCurrency | null
-  }>(() => {
+  // Display price only — the collect action reads the authoritative price
+  // on-chain at click time (see useDirectCollect), so the button never
+  // depends on this best-effort fetch resolving.
+  const price = useMemo<string | null>(() => {
     const sc = moment.saleConfig ?? saleData ?? null
-    if (!sc) return { price: null, pricePerToken: null, currency: null }
+    if (!sc) return null
     try {
-      const cur = inferCollectCurrency(sc)
-      return {
-        price: formatPrice(sc.pricePerToken, cur),
-        pricePerToken: BigInt(sc.pricePerToken),
-        currency: cur,
-      }
+      return formatPrice(sc.pricePerToken, inferCollectCurrency(sc))
     } catch {
-      // Malformed pricePerToken — render with un-set price rather than throw.
-      return { price: null, pricePerToken: null, currency: null }
+      // Malformed pricePerToken — show no price rather than throw.
+      return null
     }
   }, [moment.saleConfig, saleData])
 
@@ -254,16 +248,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }
 
   async function handleCollect() {
-    if (pricePerToken === null || currency === null) return // sale config not yet loaded
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
     if (!account) return
+    // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
       tokenId: moment.token_id,
-      pricePerToken,
-      currency,
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
     })
@@ -273,7 +265,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       refetchTokenInfo().catch(() => {})
     }
   }
-  const collectReady = pricePerToken !== null && currency !== null
   const hasCollected = collected || owned > 0
   // Wait for both reads before flagging — otherwise we'd flash "minted out"
   // before tokenInfo lands.
@@ -628,7 +619,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : (
             <button
               onClick={handleCollect}
-              disabled={collecting || mintedOut || !collectReady || saleNotStarted || saleEnded}
+              disabled={collecting || mintedOut || saleNotStarted || saleEnded}
               className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
@@ -675,7 +666,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : null}
           <button
             onClick={handleCollect}
-            disabled={collecting || mintedOut || !collectReady || saleNotStarted || saleEnded}
+            disabled={collecting || mintedOut || saleNotStarted || saleEnded}
             className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
               hasCollected
                 ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
