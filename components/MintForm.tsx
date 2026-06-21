@@ -32,6 +32,7 @@ import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
+import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
@@ -660,34 +661,42 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       ? parseUnits(normalizedPrice, 6).toString()
       : parseEther(normalizedPrice).toString()
     const now = Math.floor(Date.now() / 1000)
-    // Sale window. The mint always opens NOW: inprocess mints the creator's
-    // copy at setup through the sale strategy, which reverts if saleStart is in
-    // the future — so a scheduled start can't be supported through this path.
+    // Sale window. saleStart is pinned to 0 (epoch), NOT `now`: the creator's
+    // setup copy mints THROUGH the sale strategy, which reverts SaleHasNotStarted
+    // when block.timestamp < saleStart. `now` is the client wall-clock, so a
+    // fast device clock would push saleStart past chain time and revert the mint.
+    // 0 = "open since epoch" — identical UX, never on the wrong side of the line.
     // Sale end is optional; empty → max uint64, leaving the supply cap (or open
     // edition = forever) to bound the mint instead of a clock (the prior
     // always-open behavior). A 1/1 has no public sale, so it stays open-ended
     // regardless of any stale input. datetime-local has no timezone, so
     // new Date() reads it as the creator's local wall-clock.
     const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
+    // saleEnd is enforced on the creator's setup copy too (same sale-strategy
+    // path as saleStart above), so a close time that lands before the mint
+    // executes reverts SaleEnded. Require a margin past the upload+confirm+relay
+    // window: 10 min dwarfs any realistic mint, and no real sale closes within
+    // minutes — so this can't misfire on a legitimate window.
+    const MIN_SALE_WINDOW_SEC = 10 * 60
     let saleEndStr = OPEN_ENDED_SALE
     if (!is11 && saleEndInput) {
       const ts = Math.floor(new Date(saleEndInput).getTime() / 1000)
       if (Number.isNaN(ts)) { toast.error('Invalid sale end'); return }
-      if (ts <= now) { toast.error('Sale must close in the future'); return }
+      if (ts <= now + MIN_SALE_WINDOW_SEC) { toast.error('Sale must close at least 10 minutes from now'); return }
       saleEndStr = String(ts)
     }
     const salesConfig = priceCurrency === 'usdc'
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
+          saleStart: '0',
           saleEnd: saleEndStr,
           currency: USDC_BASE,
         }
       : {
           type: 'fixedPrice' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
+          saleStart: '0',
           saleEnd: saleEndStr,
         }
     const supplyTrimmed = maxSupply.trim()
@@ -725,6 +734,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
 
     try {
+      // Guard the stale-deploy chunk-reload self-heal for the mint's duration:
+      // a transient chunk-load timeout (a background prefetch stalling behind
+      // the saturated upload uplink) surfaces as a ChunkLoadError and would
+      // otherwise reload the page mid-flight, aborting an upload whose Turbo
+      // credits are already spent. Balanced by endCriticalOp() in finally.
+      beginCriticalOp()
       if (mintMode === 'text') {
         // Text moments have no media file to reuse as a cover, so
         // auto-deploy uploads a small collection-metadata JSON whose
@@ -1181,6 +1196,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       setStep('idle')
       setUploadProgress(0)
       toastError('Mint', err, { id: 'mint' })
+    } finally {
+      endCriticalOp()
     }
   }
 

@@ -23,6 +23,7 @@ import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError } from '@/lib/toast'
+import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { shortAddress } from '@/lib/inprocess'
@@ -463,6 +464,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     setDeployedImageUri(undefined)
 
     try {
+      // Guard the chunk-reload self-heal for the deploy's duration — same
+      // rationale as MintForm: a transient chunk timeout behind a saturated
+      // upload uplink must not reload the page mid-deploy. Balanced in finally.
+      beginCriticalOp()
       // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
       await ensureSession()
 
@@ -620,19 +625,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // wallet (the deployer) so the user can mint into their own
       // collection.
       //
-      // Strict failure: if the lookup fails or returns garbage, fail the
-      // deploy here rather than silently skipping the grant. A missing
-      // grant turns into a non-actionable "Authorization required" toast
-      // on every subsequent mint/airdrop, with no way for the user to
-      // recover from a banner since they're already defaultAdmin and
-      // there's nothing for them to fix. Better to fail fast at deploy
-      // than ship a half-authorized collection.
-      //
-      // Best-effort: resolve the artist's inprocess smart wallet so we can
-      // grant it ADMIN as a setupAction at deploy time. If the wallet has
-      // no inprocess account yet (404) or the service is unreachable,
-      // proceed without the grant — CollectionView's authorize banner
-      // handles the retroactive case. Never block deploy on this lookup.
+      // Best-effort, not fail-fast: if the lookup 404s (brand-new creator with
+      // no inprocess account yet) or inprocess is down, deploy anyway without
+      // the grant. The creator EOA is always defaultAdmin, so the collection is
+      // never unusable — only the gasless relay needs this grant, and it's
+      // recoverable in one click (mint-time AUTHORIZE_REQUIRED / the authorize
+      // banner). Blocking here would strand first-time creators. Retries below.
       let inprocessSmartWallet: string | null = null
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) {
@@ -731,6 +729,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       setStep('idle')
       setUploadProgress(0)
       toastError('Deploy', err, { id: 'create-collection' })
+    } finally {
+      endCriticalOp()
     }
   }
 

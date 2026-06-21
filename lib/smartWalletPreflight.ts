@@ -50,6 +50,13 @@ interface PreflightDiagnostic {
 }
 
 /**
+ * MODEL (confirmed on-chain 2026 — full record in lib/resolveSmartWallet.ts):
+ * `/moment/create` executes as the caller's PER-CREATOR inprocess smart wallet,
+ * so THAT is the wallet whose ADMIN this preflight reads. The platform OPERATOR
+ * wallet is the airdrop / admin-write path, NOT the mint executor — verified on
+ * a live collection (permissions(0, operator)=0, permissions(0, perCreatorSW)=2).
+ * Do not "fix" this preflight to read the operator instead.
+ *
  * Resolve the artist's inprocess smart wallet for `callerEoa`, then
  * read on-chain `permissions(tokenId, smartWallet)` for each tokenId
  * in `tokenIds`. The grants ARE OR'd together — same as Zora's

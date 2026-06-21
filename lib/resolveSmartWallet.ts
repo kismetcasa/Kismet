@@ -23,15 +23,24 @@ const UPSTREAM_TIMEOUT_MS = 10_000
 export type SmartWalletResult = { address: string } | { notFound: true } | null
 
 /**
- * Resolves an artist's inprocess smart wallet address from their EOA via
- * `GET /api/smartwallet`. Centralizes the defensive shape parsing —
- * inprocess's documented response is `{ address }` but real responses
- * have historically used `smartWallet` / `smart_wallet` / `smartAccount`
- * or a raw address string. Accepting all known shapes here ensures every
- * call site sees the same lenient parsing.
+ * Resolves a creator's inprocess SMART WALLET from their EOA via
+ * `GET /api/smartwallet`.
  *
- * Returns `{ address }` on success, `{ notFound: true }` when the EOA has
- * no inprocess account, or null on transient failure (network/5xx/timeout).
+ * WHY THIS IS LOAD-BEARING (confirmed on-chain, 2026): this per-creator smart
+ * wallet is the account inprocess EXECUTES `/moment/create` as. It holds ADMIN
+ * at tokenId 0 on Kismet-minted collections; the platform OPERATOR wallet does
+ * NOT (verified on a live collection: permissions(0, operator)=0,
+ * permissions(0, perCreatorSmartWallet)=2). So this lookup is the linchpin of
+ * BOTH deploy-time relay authorization and the mint preflight — if it returns
+ * the wrong address (or nothing), the deploy skips the relay's ADMIN grant and
+ * mints later revert at gas estimation. The OPERATOR wallet is a *separate*
+ * concern (the airdrop / admin-write path); do not conflate the two.
+ *
+ * Centralizes the defensive shape parsing — the documented response is
+ * `{ address }`, but real responses have used `smartWallet` / `smart_wallet`
+ * / `smartAccount` / a raw string. Returns `{ address }` on success,
+ * `{ notFound: true }` when the EOA has no inprocess account, or null on
+ * transient failure (network/5xx/timeout).
  */
 export async function resolveSmartWallet(
   artistWallet: string,
@@ -46,7 +55,16 @@ export async function resolveSmartWallet(
 
   let res: Response
   try {
-    const url = inprocessUrl('/smartwallet', { walletAddress: artistWallet })
+    // Param resilience — CONFIRMED against the LIVE API (2026): `/smartwallet`
+    // requires `walletAddress` (or `accountId`); `artist_wallet` — what the docs
+    // STILL show — now 400s ("Either accountId or walletAddress must be
+    // provided"). Don't trust the docs over the live endpoint. We send BOTH:
+    // walletAddress satisfies the API, the stale artist_wallet is ignored, and
+    // we stay resilient if inprocess renames it again (it already has once).
+    const url = inprocessUrl('/smartwallet', {
+      artist_wallet: artistWallet,
+      walletAddress: artistWallet,
+    })
     const headers: Record<string, string> = { Accept: 'application/json' }
     const apiKey = process.env.INPROCESS_API_KEY
     if (apiKey) headers['x-api-key'] = apiKey
@@ -62,7 +80,14 @@ export async function resolveSmartWallet(
 
   // 404 means inprocess has no account for this EOA — permanent, not transient.
   if (res.status === 404) return { notFound: true }
-  if (!res.ok) return null
+  if (!res.ok) {
+    // Log the upstream error body so an API-contract drift (e.g. a renamed
+    // query param returning 400 "Invalid input") is visible in logs at once,
+    // instead of silently degrading to a null/skipped-grant. Bounded slice.
+    const detail = await res.text().catch(() => '')
+    console.error(`[resolveSmartWallet] upstream ${res.status} for ${key}: ${detail.slice(0, 300)}`)
+    return null
+  }
 
   const text = await res.text()
   let parsed: unknown

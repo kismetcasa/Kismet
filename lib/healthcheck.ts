@@ -1,7 +1,8 @@
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { PLATFORM_COLLECTION } from '@/lib/config'
+import { ADMIN_ADDRESS, PLATFORM_COLLECTION } from '@/lib/config'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
+import { resolveSmartWallet, type SmartWalletResult } from '@/lib/resolveSmartWallet'
 import { serverBaseClient } from '@/lib/rpc'
 
 /**
@@ -71,4 +72,41 @@ export async function assertPlatformCollectionAuthorized(): Promise<void> {
   console.log(
     `[healthcheck] OK: OPERATOR_SMART_WALLET has ADMIN on PLATFORM_COLLECTION (perms=${perms})`,
   )
+}
+
+// Shared remediation hint for the /smartwallet drift logs below. That lookup
+// resolves the per-creator wallet that executes /moment/create (see
+// resolveSmartWallet), so a silent break skips deploy-time relay authorization
+// and reverts mints — the 2026 regression.
+const SMARTWALLET_DRIFT_HINT =
+  'Deploy-time relay authorization will silently skip and mints will revert. ' +
+  'Check lib/resolveSmartWallet.ts against the LIVE api.inprocess.world/api/smartwallet ' +
+  '(docs are stale: the live param is walletAddress, not artist_wallet).'
+
+/**
+ * Boot-time drift detector for the inprocess `/smartwallet` lookup: resolve a
+ * known EOA (`ADMIN_ADDRESS`) and log LOUDLY if it fails, so an upstream
+ * param/URL change surfaces in seconds rather than in a creator's failed mint.
+ * Non-fatal; no-op when `ADMIN_ADDRESS` isn't a valid address (dev/fork);
+ * never throws.
+ */
+export async function assertSmartWalletResolves(): Promise<void> {
+  if (!ADMIN_ADDRESS || !isAddress(ADMIN_ADDRESS)) return
+  let result: SmartWalletResult
+  try {
+    result = await resolveSmartWallet(ADMIN_ADDRESS)
+  } catch (err) {
+    console.error(
+      `[healthcheck] /smartwallet resolve THREW for ${ADMIN_ADDRESS}. ${SMARTWALLET_DRIFT_HINT}`,
+      err instanceof Error ? err.message : String(err),
+    )
+    return
+  }
+  if (!result || 'notFound' in result) {
+    console.error(
+      `[healthcheck] /smartwallet resolve FAILED for ${ADMIN_ADDRESS} (result=${JSON.stringify(result)}). ${SMARTWALLET_DRIFT_HINT}`,
+    )
+    return
+  }
+  console.log(`[healthcheck] OK: /smartwallet resolves (${ADMIN_ADDRESS} → ${result.address})`)
 }
