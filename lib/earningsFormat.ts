@@ -4,6 +4,14 @@
 
 export type EarningsMetric = 'eth' | 'usdc' | 'usd'
 
+// Display precision per denomination — the SINGLE source for both the rendered
+// string and the "is this non-zero at display precision?" test, so the two can't
+// drift (a figure that renders as "$0.01" must also pass rendersNonZero).
+const FRACTION_DIGITS: Record<EarningsMetric, number> = { eth: 4, usdc: 2, usd: 2 }
+
+const valueFor = (denom: EarningsMetric, e: { eth: number; usdc: number; usd: number }) =>
+  denom === 'eth' ? e.eth : denom === 'usdc' ? e.usdc : e.usd
+
 const trimNum = (n: number, max: number) =>
   (Number.isFinite(n) ? n : 0).toLocaleString('en-US', { maximumFractionDigits: max })
 
@@ -17,7 +25,22 @@ export function formatEarningsValue(
   denom: EarningsMetric,
   e: { eth: number; usdc: number; usd: number },
 ): string {
-  if (denom === 'eth') return `${trimNum(e.eth, 4)} ETH`
-  if (denom === 'usdc') return `${trimNum(e.usdc, 2)} USDC`
-  return `$${trimNum(e.usd, 2)}`
+  const v = trimNum(valueFor(denom, e), FRACTION_DIGITS[denom])
+  if (denom === 'eth') return `${v} ETH`
+  if (denom === 'usdc') return `${v} USDC`
+  return `$${v}`
+}
+
+/**
+ * True when the figure rounds to a non-zero string at the denomination's display
+ * precision — i.e. formatEarningsValue won't render it as "$0" / "0 ETH". Lets a
+ * caller hide sub-display dust (e.g. a 1-base-unit pending share) instead of
+ * surfacing a misleading zero. Derived from FRACTION_DIGITS so it stays in
+ * lockstep with what formatEarningsValue actually renders.
+ */
+export function rendersNonZero(
+  denom: EarningsMetric,
+  e: { eth: number; usdc: number; usd: number },
+): boolean {
+  return valueFor(denom, e) >= 0.5 * 10 ** -FRACTION_DIGITS[denom]
 }

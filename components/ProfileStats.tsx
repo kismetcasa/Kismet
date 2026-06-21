@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pin, Share2, Check } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { formatEarningsValue, type EarningsMetric } from '@/lib/earningsFormat'
+import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/earningsFormat'
 
 interface Pending {
   eth: number
@@ -94,17 +94,18 @@ export function ProfileStats({
   const multi = denoms.length > 1
 
   // Owner-only: undistributed earnings sitting on their splits, labelled in the
-  // first denomination that renders as non-zero at the card's precision
-  // (formatEarningsValue: usd/usdc 2dp → 0.005, eth 4dp → 0.00005). Sub-display
-  // dust yields a null denom and the line hides — so it never reads "$0".
+  // first denomination that renders as non-zero at the card's display precision.
+  // rendersNonZero is derived from formatEarningsValue's own precision, so the
+  // show-gate can't drift from what's rendered — sub-display dust yields a null
+  // denom and the line hides, so it never reads "$0".
   const pending = !asVisitor && stats.pending && stats.pending.count > 0 ? stats.pending : null
   const pendingDenom: EarningsMetric | null = !pending
     ? null
-    : pending.usd >= 0.005
+    : rendersNonZero('usd', pending)
       ? 'usd'
-      : pending.eth >= 0.00005
+      : rendersNonZero('eth', pending)
         ? 'eth'
-        : pending.usdc >= 0.005
+        : rendersNonZero('usdc', pending)
           ? 'usdc'
           : null
 
