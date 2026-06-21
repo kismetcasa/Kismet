@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { getStoredSplits, indexRecipientSplits } from '@/lib/splits'
+import { getStoredSplits, selfHealRecipientIndex } from '@/lib/splits'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Returns { hasSplits, recipients } for a single moment. `hasSplits` gates the
@@ -27,10 +27,10 @@ export async function GET(req: NextRequest) {
     recipients: [],
   }))
   // Self-heal the recipient→moments reverse index for moments minted before it
-  // existed (or whose mint-time write failed): any viewed split moment gets its
-  // payees indexed, off the response path. Idempotent SADD.
+  // existed (or whose mint-time write failed). A permanent NX marker makes this
+  // heal-once per moment, off the response path — not a write on every view.
   if (stored.recipients.length) {
-    after(() => indexRecipientSplits(collectionAddress, tokenId, stored.recipients))
+    after(() => selfHealRecipientIndex(collectionAddress, tokenId, stored.recipients))
   }
   return NextResponse.json(stored)
 }

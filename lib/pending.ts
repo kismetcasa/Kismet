@@ -35,8 +35,9 @@ const MULTICALL3_BALANCE_ABI = parseAbi([
 const splitAddrKey = (collection: string, tokenId: string) =>
   `kismetart:splitaddr:${collection.toLowerCase()}:${tokenId}`
 
-// Bound the per-profile fan-out. An artist past this many split moments is
-// vanishingly rare; the tail is dropped rather than ballooning the multicall.
+// Bound the per-profile fan-out. SMEMBERS order is undefined, so past this many
+// split moments the *arbitrary* tail is dropped (not the lowest-balance one) —
+// acceptable only because an artist with 100+ split moments is vanishingly rare.
 const MAX_MOMENTS = 100
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 
@@ -44,10 +45,36 @@ const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 // (this runs in Promise.all with the earnings read). Mirrors getEthUsd's race.
 const COMPUTE_TIMEOUT_MS = 4000
 
-// Process-local 60s cache (owner-only surface, viewed infrequently) so reloads
-// don't re-hit the RPC. memoize() is arg-less, so this is keyed per address.
-const cache = new Map<string, { value: ArtistPending; expiresAt: number }>()
-const TTL_MS = 60_000
+// Cache the rolled-up result 60s in Redis (cross-pod) — the owner views their own
+// profile infrequently, so this mainly spares the multicalls on reloads.
+// Auto-expiring, so there's no unbounded map to manage. Stored as a JSON string
+// and read as `string | object` (mirroring lib/profile.ts), so it's robust
+// whether or not the client auto-deserializes.
+const pendingCacheKey = (address: string) => `kismetart:pending:${address.toLowerCase()}`
+const CACHE_TTL_S = 60
+
+function parseCachedPending(raw: string | ArtistPending | null): ArtistPending | null {
+  if (!raw) return null
+  let obj: unknown = raw
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  if (!obj || typeof obj !== 'object') return null
+  const p = obj as Record<string, unknown>
+  if (
+    typeof p.eth === 'number' &&
+    typeof p.usdc === 'number' &&
+    typeof p.usd === 'number' &&
+    typeof p.count === 'number'
+  ) {
+    return { eth: p.eth, usdc: p.usdc, usd: p.usd, count: p.count }
+  }
+  return null
+}
 
 // Resolve each moment's split (creator-reward-recipient) address, reading the
 // Redis cache first and batching cache-misses into one multicall.
@@ -120,7 +147,7 @@ async function compute(address: string): Promise<ArtistPending> {
   resolved.forEach((r, idx) => {
     const ethRes = balances[idx * 2]
     const usdcRes = balances[idx * 2 + 1]
-    const pct = BigInt(Math.max(0, Math.min(100, Math.round(r.pct))))
+    const pct = BigInt(r.pct) // getRecipientSplits guarantees a whole 1–100
     let had = false
     if (ethRes?.status === 'success') {
       const share = ((ethRes.result as bigint) * pct) / 100n
@@ -161,8 +188,11 @@ async function compute(address: string): Promise<ArtistPending> {
  */
 export async function getArtistPending(address: string): Promise<ArtistPending> {
   const key = address.toLowerCase()
-  const hit = cache.get(key)
-  if (hit && hit.expiresAt > Date.now()) return hit.value
+  const cacheKey = pendingCacheKey(key)
+  const cached = parseCachedPending(
+    await redis.get<string | ArtistPending>(cacheKey).catch(() => null),
+  )
+  if (cached) return cached
   try {
     const value = await Promise.race([
       compute(key),
@@ -170,10 +200,10 @@ export async function getArtistPending(address: string): Promise<ArtistPending> 
         setTimeout(() => reject(new Error('pending timeout')), COMPUTE_TIMEOUT_MS),
       ),
     ])
-    // Bound the map so a long-lived pod can't accumulate one entry per artist
-    // ever viewed; entries are short-lived anyway, so a hard reset is fine.
-    if (cache.size > 5000) cache.clear()
-    cache.set(key, { value, expiresAt: Date.now() + TTL_MS })
+    // Cache the fresh roll-up (including a zero result) for the TTL. A timeout or
+    // throw falls through to the catch and is NOT cached, so the next call
+    // retries rather than pinning zeros — same policy as getEthUsd.
+    await redis.set(cacheKey, JSON.stringify(value), { ex: CACHE_TTL_S }).catch(() => {})
     return value
   } catch {
     return EMPTY

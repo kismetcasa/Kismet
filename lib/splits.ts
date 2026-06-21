@@ -51,21 +51,49 @@ export async function setStoredSplits(
 // viewed. A bulk backfill is deliberately avoided — there's no safe enumerator
 // (the global created-mints set hard-fails SMEMBERS past ~10 MB, the transfers
 // feed carries no tokenId, and the codebase uses no SCAN).
-export async function indexRecipientSplits(
+// Returns true only if every recipient's SADD succeeded, so callers can decide
+// whether the moment is fully indexed (the self-heal marker below relies on this).
+async function indexRecipientSplits(
   collection: string,
   tokenId: string,
   recipients: SplitRecipient[],
-): Promise<void> {
+): Promise<boolean> {
   const c = collection.toLowerCase()
-  await Promise.all(
+  const results = await Promise.all(
     recipients
       .filter((r) => r.percentAllocation > 0)
       .map((r) =>
         redis
           .sadd(recipientIndexKey(r.address), `${c}:${tokenId}:${r.percentAllocation}`)
-          .catch(() => {}),
+          .then(() => true)
+          .catch(() => false),
       ),
   )
+  return results.every(Boolean)
+}
+
+// Heal-once marker for a moment's reverse-index entry. Permanent (index members
+// never expire, so a one-time heal is correct) — mirrors the codebase's
+// backfill-marker pattern (lib/coverMomentMetaBackfill.ts).
+const healedKey = (collection: string, tokenId: string) =>
+  `kismetart:splits:healed:${collection.toLowerCase()}:${tokenId}`
+
+// Self-heal the reverse index for a moment minted before the index existed (or
+// whose mint-time write failed). A marker makes this heal-once per moment, so
+// repeat views cost a single GET — not N SADDs every time. The marker is set
+// ONLY after every SADD succeeds, so a partial failure leaves it unset and a
+// later view retries (mirrors lib/coverMomentMetaBackfill.ts). Best-effort;
+// intended to run in `after()` off the response path.
+export async function selfHealRecipientIndex(
+  collection: string,
+  tokenId: string,
+  recipients: SplitRecipient[],
+): Promise<void> {
+  if (!recipients.length) return
+  const key = healedKey(collection, tokenId)
+  if (await redis.get(key).catch(() => null)) return
+  const ok = await indexRecipientSplits(collection, tokenId, recipients)
+  if (ok) await redis.set(key, '1').catch(() => {})
 }
 
 export interface RecipientSplit {
@@ -93,7 +121,12 @@ export async function getRecipientSplits(address: string): Promise<RecipientSpli
     const collection = m.slice(0, first)
     const tokenId = m.slice(first + 1, last)
     const pct = Number(m.slice(last + 1))
-    if (!isAddress(collection) || !tokenId || !Number.isFinite(pct) || pct <= 0) continue
+    // Enforce the full pct invariant here, at the read boundary, so consumers
+    // (lib/pending.ts) can trust RecipientSplit.pct is a whole 1–100 without
+    // re-guarding. A corrupt out-of-range entry drops the moment (under-report)
+    // rather than fabricating a clamped share.
+    if (!isAddress(collection) || !tokenId) continue
+    if (!Number.isInteger(pct) || pct < 1 || pct > 100) continue
     byMoment.set(`${collection}:${tokenId}`, { collection, tokenId, pct })
   }
   return [...byMoment.values()]
