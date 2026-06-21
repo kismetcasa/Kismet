@@ -672,11 +672,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // regardless of any stale input. datetime-local has no timezone, so
     // new Date() reads it as the creator's local wall-clock.
     const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
+    // saleEnd is enforced on the creator's setup copy too (same sale-strategy
+    // path as saleStart above), so a close time that lands before the mint
+    // executes reverts SaleEnded. Require a margin past the upload+confirm+relay
+    // window: 10 min dwarfs any realistic mint, and no real sale closes within
+    // minutes — so this can't misfire on a legitimate window.
+    const MIN_SALE_WINDOW_SEC = 10 * 60
     let saleEndStr = OPEN_ENDED_SALE
     if (!is11 && saleEndInput) {
       const ts = Math.floor(new Date(saleEndInput).getTime() / 1000)
       if (Number.isNaN(ts)) { toast.error('Invalid sale end'); return }
-      if (ts <= now) { toast.error('Sale must close in the future'); return }
+      if (ts <= now + MIN_SALE_WINDOW_SEC) { toast.error('Sale must close at least 10 minutes from now'); return }
       saleEndStr = String(ts)
     }
     const salesConfig = priceCurrency === 'usdc'
