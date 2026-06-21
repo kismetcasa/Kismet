@@ -254,16 +254,18 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }
 
   async function handleCollect() {
-    if (pricePerToken === null || currency === null) return // sale config not yet loaded
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
     if (!account) return
+    // Pass the display price when it has loaded (fast path); otherwise omit it
+    // and let the hook read the sale on-chain, so a card whose dwell-gated
+    // price fetch hasn't resolved still collects instead of dead-ending.
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
       tokenId: moment.token_id,
-      pricePerToken,
-      currency,
+      pricePerToken: pricePerToken ?? undefined,
+      currency: currency ?? undefined,
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
     })
@@ -273,7 +275,6 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       refetchTokenInfo().catch(() => {})
     }
   }
-  const collectReady = pricePerToken !== null && currency !== null
   const hasCollected = collected || owned > 0
   // Wait for both reads before flagging — otherwise we'd flash "minted out"
   // before tokenInfo lands.
@@ -628,7 +629,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : (
             <button
               onClick={handleCollect}
-              disabled={collecting || mintedOut || !collectReady || saleNotStarted || saleEnded}
+              disabled={collecting || mintedOut || saleNotStarted || saleEnded}
               className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
                 hasCollected
                   ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
@@ -675,7 +676,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : null}
           <button
             onClick={handleCollect}
-            disabled={collecting || mintedOut || !collectReady || saleNotStarted || saleEnded}
+            disabled={collecting || mintedOut || saleNotStarted || saleEnded}
             className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
               hasCollected
                 ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'

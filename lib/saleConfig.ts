@@ -296,3 +296,52 @@ export async function readSalePricePerToken(
     return null
   }
 }
+
+/**
+ * Resolve the active mint sale for a single (collection, tokenId) straight
+ * from chain, returning the price + currency the direct-collect hook needs.
+ *
+ * Probes the ETH strategy (FixedPriceSaleStrategy) first, then the USDC one
+ * (ERC20Minter). A strategy whose sale row is unset returns saleEnd === 0,
+ * which we treat as "no sale here" and skip (mirrors fetchEligibleTokens).
+ * Returns null when neither strategy has a live row (or both reads fail) so
+ * the caller can surface a clean "no active sale" message rather than guess.
+ *
+ * This is the authoritative fallback for the feed's best-effort display-price
+ * fetch (hooks/useMomentSale): when that hasn't resolved, collect reads the
+ * real price here instead of leaving its button a silent, disabled dead-end.
+ */
+export async function resolveOnchainSale(
+  client: AnyClient,
+  collection: Address,
+  tokenId: bigint,
+): Promise<{ pricePerToken: bigint; currency: SaleCurrency } | null> {
+  // ETH — FixedPriceSaleStrategy.
+  try {
+    const sale = (await readContract(client, {
+      address: ZORA_FIXED_PRICE_STRATEGY,
+      abi: FPSS_SALE_ABI,
+      functionName: 'sale',
+      args: [collection, tokenId],
+    })) as { saleEnd: bigint; pricePerToken: bigint }
+    if (sale.saleEnd !== 0n) return { pricePerToken: sale.pricePerToken, currency: 'eth' }
+  } catch {
+    // Fall through to the USDC strategy.
+  }
+  // USDC — ERC20Minter. Only USDC currency is supported (matches the direct
+  // collect + collect-all paths); any other ERC20 falls through to null.
+  try {
+    const sale = (await readContract(client, {
+      address: ZORA_ERC20_MINTER,
+      abi: ERC20_MINTER_SALE_ABI,
+      functionName: 'sale',
+      args: [collection, tokenId],
+    })) as { saleEnd: bigint; pricePerToken: bigint; currency?: Address }
+    if (sale.saleEnd !== 0n && sale.currency?.toLowerCase() === USDC_BASE.toLowerCase()) {
+      return { pricePerToken: sale.pricePerToken, currency: 'usdc' }
+    }
+  } catch {
+    // Fall through to null.
+  }
+  return null
+}

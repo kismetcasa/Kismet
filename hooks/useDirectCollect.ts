@@ -7,6 +7,7 @@ import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
+import { resolveOnchainSale } from '@/lib/saleConfig'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
@@ -34,8 +35,11 @@ export type CollectCurrency = 'eth' | 'usdc'
 export interface CollectArgs {
   collectionAddress: Address
   tokenId: string
-  pricePerToken: bigint
-  currency: CollectCurrency
+  /** Price per token in base units. Optional — when omitted (the feed's
+   *  display-price fetch hasn't resolved yet) collect reads it on-chain. */
+  pricePerToken?: bigint
+  /** ETH vs USDC. Optional — resolved on-chain alongside price when omitted. */
+  currency?: CollectCurrency
   amount?: number
   comment?: string
 }
@@ -94,13 +98,11 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const collect = useCallback(
     async (args: CollectArgs): Promise<{ hash: Hash } | null> => {
       const isRetryAfterRecovery = consumeRetryFlag()
-      const {
-        tokenId,
-        pricePerToken,
-        currency,
-        amount = 1,
-        comment = '',
-      } = args
+      const { tokenId, amount = 1, comment = '' } = args
+      // Mutable so the on-chain fallback below can fill them when the caller
+      // omits them (the feed's display-price fetch hadn't resolved).
+      let pricePerToken = args.pricePerToken
+      let currency = args.currency
 
       // Resolve the signer. Prefer the React `useAccount` value; fall back to
       // the wagmi store so a collect dispatched in the same tap that just
@@ -140,6 +142,24 @@ export function useDirectCollect(): UseDirectCollectReturn {
         await ensureBase()
 
         const tokenIdBn = BigInt(tokenId)
+
+        // Resolve price + currency authoritatively from chain when the caller
+        // didn't supply them — the feed's best-effort display-price fetch
+        // (useMomentSale) may not have resolved, and gating the button on it
+        // left Collect a silent, disabled dead-end. publicClient is pinned to
+        // Base, so the read targets the right chain regardless of wallet state.
+        if (pricePerToken === undefined || currency === undefined) {
+          toast.loading('Loading sale…', { id: TOAST_ID })
+          const sale = await resolveOnchainSale(publicClient, collectionAddress, tokenIdBn)
+          if (!sale) {
+            setStatus('error')
+            toast.error('No active sale for this moment', { id: TOAST_ID })
+            return null
+          }
+          pricePerToken = sale.pricePerToken
+          currency = sale.currency
+        }
+
         const quantity = BigInt(Math.max(1, Math.floor(amount)))
         const totalPrice = pricePerToken * quantity
 
