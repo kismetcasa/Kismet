@@ -1,8 +1,11 @@
 import { cache } from 'react'
+import type { Address } from 'viem'
 import { inprocessUrl, type MomentDetail } from './inprocess'
 import { isMomentHidden } from './hiddenMoments'
 import { getMomentMeta } from './notifications'
 import { resolveCanonicalProfile } from './addressUnion'
+import { onchainSaleConfigFallback } from './saleConfig'
+import { serverBaseClient } from './rpc'
 
 /**
  * Look up a token's creator via the inprocess timeline endpoint, which
@@ -73,6 +76,18 @@ export const fetchMomentDetail = cache(async (
     ])
     if (!res.ok) return null
     const data = (await res.json()) as MomentDetail
+    // Fill the price from chain when the feed omits saleConfig (writing moments /
+    // fresh mints during an indexer gap) so the SSR'd detail badge isn't blank on
+    // first paint — same authoritative source the collect action + /api/moment(s)
+    // read.
+    if (!data.saleConfig) {
+      const sale = await onchainSaleConfigFallback(
+        serverBaseClient(),
+        address as Address,
+        BigInt(tokenId),
+      )
+      if (sale) data.saleConfig = sale
+    }
     // Prefer the KV minter EOA (the real artist) over inprocess's timeline
     // attribution (the collection operator for delegated mints) — same priority
     // as /api/moment and the detail page. Unlike /api/moment (which leaves the

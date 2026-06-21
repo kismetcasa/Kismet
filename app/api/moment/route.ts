@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { fetchCreatorFromTimeline, getKvCreatorAddress } from '@/lib/momentDetail'
+import { onchainSaleConfigFallback } from '@/lib/saleConfig'
+import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 
 export async function GET(req: NextRequest) {
@@ -40,6 +43,18 @@ export async function GET(req: NextRequest) {
     data = JSON.parse(text) as Record<string, unknown>
   } catch {
     return NextResponse.json({ error: 'upstream error', status: upstream.status }, { status: 502 })
+  }
+  // Fill the price from chain when the feed omits saleConfig (writing moments /
+  // fresh mints during an indexer gap) — the same authoritative source the
+  // collect action reads (and /api/moments), so the detail badge isn't blank
+  // while the sale is live.
+  if (!data.saleConfig) {
+    const sale = await onchainSaleConfigFallback(
+      serverBaseClient(),
+      collectionAddress as Address,
+      BigInt(tokenId),
+    )
+    if (sale) data.saleConfig = sale
   }
   // Inject the hidden flag so the client can render a creator-only
   // hidden-state UI without an extra round-trip. Inject `creator` from
