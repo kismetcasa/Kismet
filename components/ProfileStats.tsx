@@ -3,7 +3,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pin, Share2, Check } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { formatEarningsValue, type EarningsMetric } from '@/lib/earningsFormat'
+import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/earningsFormat'
+
+interface Pending {
+  eth: number
+  usdc: number
+  usd: number
+  count: number
+}
 
 interface Stats {
   eth: number
@@ -11,6 +18,9 @@ interface Stats {
   usd: number
   mints: number
   public: boolean
+  // Undistributed earnings sitting on the artist's splits. Owner-only; absent
+  // for visitors and for the public profile payload.
+  pending?: Pending | null
 }
 
 // Earnings card to the right of the profile identity block. Private by default:
@@ -31,16 +41,15 @@ export function ProfileStats({
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  // Public earnings arrive with the profile read (no extra request). When none
-  // are in that payload, only the owner fetches /api/stats — to see their own
-  // (possibly private) figures + pin. Visitors fetch nothing.
+  // Public earnings arrive with the profile read (no extra request) — paint them
+  // immediately. Visitors stop there. The owner always then fetches /api/stats:
+  // for their own (possibly private) figures + pin, AND for their pending
+  // (undistributed) roll-up, which is owner-only and never on the public payload
+  // — so the owner fetches even when earnings are already public.
   useEffect(() => {
-    if (initialEarnings) {
-      setStats({ ...initialEarnings, public: true })
-      return
-    }
+    if (initialEarnings) setStats({ ...initialEarnings, public: true })
     if (asVisitor) {
-      setStats(null)
+      if (!initialEarnings) setStats(null)
       return
     }
     let cancelled = false
@@ -48,7 +57,14 @@ export function ProfileStats({
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d) {
-          setStats({ eth: d.eth ?? 0, usdc: d.usdc ?? 0, usd: d.usd ?? 0, mints: d.mints ?? 0, public: !!d.public })
+          setStats({
+            eth: d.eth ?? 0,
+            usdc: d.usdc ?? 0,
+            usd: d.usd ?? 0,
+            mints: d.mints ?? 0,
+            public: !!d.public,
+            pending: d.pending ?? null,
+          })
         }
       })
       .catch(() => {})
@@ -76,6 +92,22 @@ export function ProfileStats({
 
   const active = denoms.includes(denom) ? denom : denoms[0]
   const multi = denoms.length > 1
+
+  // Owner-only: undistributed earnings sitting on their splits, labelled in the
+  // first denomination that renders as non-zero at the card's display precision.
+  // rendersNonZero is derived from formatEarningsValue's own precision, so the
+  // show-gate can't drift from what's rendered — sub-display dust yields a null
+  // denom and the line hides, so it never reads "$0".
+  const pending = !asVisitor && stats.pending && stats.pending.count > 0 ? stats.pending : null
+  const pendingDenom: EarningsMetric | null = !pending
+    ? null
+    : rendersNonZero('usd', pending)
+      ? 'usd'
+      : rendersNonZero('eth', pending)
+        ? 'eth'
+        : rendersNonZero('usdc', pending)
+          ? 'usdc'
+          : null
 
   const togglePublic = async () => {
     if (pinning) return
@@ -132,6 +164,14 @@ export function ProfileStats({
           {stats.mints > 0 && (
             <p className="text-muted text-xs mt-0.5">
               {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+            </p>
+          )}
+          {pending && pendingDenom && (
+            <p
+              className="text-accent text-xs mt-0.5"
+              title="Undistributed across your splits — open a moment to distribute"
+            >
+              {formatEarningsValue(pendingDenom, pending)} to distribute
             </p>
           )}
         </div>

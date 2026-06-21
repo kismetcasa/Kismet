@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { getArtistEarnings } from '@/lib/stats'
+import { getArtistPending } from '@/lib/pending'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 import { authorizeProfileOwner } from '@/lib/profileOwner'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -21,17 +22,20 @@ export async function GET(req: NextRequest) {
   }
 
   const isPublic = await isEarningsPublic(artist)
-  let isOwner = false
-  if (!isPublic) {
-    // Only resolve ownership when needed (private profile) — keeps the public
-    // path to a single SISMEMBER.
-    const auth = await authorizeProfileOwner(req, artist)
-    isOwner = !('error' in auth)
-  }
+  // Resolve ownership unconditionally: the owner sees their pending (undistributed)
+  // roll-up even when earnings are already public, and pending is owner-only so it
+  // never rides the public payload. Only the owner's own ProfileStats calls this
+  // route — visitors read public earnings from the profile payload — so the extra
+  // session check isn't on a visitor-hot path.
+  const auth = await authorizeProfileOwner(req, artist)
+  const isOwner = !('error' in auth)
   if (!isPublic && !isOwner) {
     return NextResponse.json({ public: false })
   }
 
-  const stats = await getArtistEarnings(artist)
-  return NextResponse.json({ ...stats, public: isPublic })
+  const [stats, pending] = await Promise.all([
+    getArtistEarnings(artist),
+    isOwner ? getArtistPending(artist) : Promise.resolve(null),
+  ])
+  return NextResponse.json({ ...stats, public: isPublic, ...(pending ? { pending } : {}) })
 }
