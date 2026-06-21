@@ -93,17 +93,20 @@ export function ProfileStats({
   const active = denoms.includes(denom) ? denom : denoms[0]
   const multi = denoms.length > 1
 
-  // Owner-only: undistributed earnings sitting on their splits. Labelled in the
-  // denomination that actually has a balance (USD when priceable, else the raw
-  // token) so it never reads "0".
+  // Owner-only: undistributed earnings sitting on their splits, labelled in the
+  // first denomination that renders as non-zero at the card's precision
+  // (formatEarningsValue: usd/usdc 2dp → 0.005, eth 4dp → 0.00005). Sub-display
+  // dust yields a null denom and the line hides — so it never reads "$0".
   const pending = !asVisitor && stats.pending && stats.pending.count > 0 ? stats.pending : null
-  const pendingDenom: EarningsMetric | null = pending
-    ? pending.usd > 0
+  const pendingDenom: EarningsMetric | null = !pending
+    ? null
+    : pending.usd >= 0.005
       ? 'usd'
-      : pending.eth > 0
+      : pending.eth >= 0.00005
         ? 'eth'
-        : 'usdc'
-    : null
+        : pending.usdc >= 0.005
+          ? 'usdc'
+          : null
 
   const togglePublic = async () => {
     if (pinning) return
