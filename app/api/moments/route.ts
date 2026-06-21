@@ -2,9 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl, type MomentSaleConfig } from '@/lib/inprocess'
-import { resolveOnchainSale } from '@/lib/saleConfig'
+import { onchainSaleConfigFallback } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
-import { USDC_BASE } from '@/lib/zoraMint'
 
 // Lean batch sibling of /api/moment for the feed's price badges. A feed card
 // needs ONLY saleConfig (price + currency) — not the hidden/creator stitch
@@ -27,22 +26,6 @@ const CHAIN_ID = '8453'
 // Feed gaps are the exception, so a small cap covers the real case; the rest
 // degrade to a loading state (collect still reads its own authoritative price).
 const MAX_ONCHAIN_FALLBACK = 12
-
-// Map resolveOnchainSale's {pricePerToken, currency} to the MomentSaleConfig the
-// feed would have returned, so display consumers (useMomentSale → MomentCard)
-// stay agnostic to whether the price came from inprocess or chain. saleStart/End
-// are intentionally omitted — resolveOnchainSale only returns a LIVE sale, and
-// MomentCard treats an absent window as "active" (saleEnd 0 → not ended).
-function synthesizeSaleConfig(sale: {
-  pricePerToken: bigint
-  currency: 'eth' | 'usdc'
-}): MomentSaleConfig {
-  return {
-    type: sale.currency === 'usdc' ? 'erc20Mint' : 'fixedPrice',
-    pricePerToken: sale.pricePerToken.toString(),
-    ...(sale.currency === 'usdc' ? { currency: USDC_BASE } : {}),
-  }
-}
 
 export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get('ids')
@@ -112,12 +95,8 @@ export async function GET(req: NextRequest) {
     const client = serverBaseClient()
     await Promise.all(
       gaps.map(async (e) => {
-        const sale = await resolveOnchainSale(
-          client,
-          e.address as Address,
-          BigInt(e.tokenId),
-        ).catch(() => null)
-        if (sale) e.config = synthesizeSaleConfig(sale)
+        const config = await onchainSaleConfigFallback(client, e.address as Address, BigInt(e.tokenId))
+        if (config) e.config = config
       }),
     )
   }

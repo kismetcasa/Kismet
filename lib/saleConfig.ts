@@ -345,3 +345,40 @@ export async function resolveOnchainSale(
   }
   return null
 }
+
+// A saleConfig synthesized from chain, in the shape both display paths consume.
+// saleStart/saleEnd are required (MomentDetail.saleConfig demands them); '0'
+// reads as "active" in MomentCard + MomentDetailView, which is correct because
+// resolveOnchainSale only returns a LIVE sale. Assignable to MomentSaleConfig
+// (its saleStart/End are optional) too, so one helper serves /api/moments,
+// /api/moment, and fetchMomentDetail without copying the synth logic.
+export interface OnchainSaleConfig {
+  type: 'fixedPrice' | 'erc20Mint'
+  pricePerToken: string
+  saleStart: string
+  saleEnd: string
+  currency?: string
+}
+
+/**
+ * Display-price fallback: read the live on-chain sale and shape it as a
+ * saleConfig, for moments the inprocess feed omits (writing moments / fresh
+ * mints during an indexer gap). The single authoritative source the collect
+ * action already reads — applied to the display so the badge isn't blank while
+ * the sale is live. Returns null when there's no readable on-chain sale.
+ */
+export async function onchainSaleConfigFallback(
+  client: AnyClient,
+  collection: Address,
+  tokenId: bigint,
+): Promise<OnchainSaleConfig | null> {
+  const sale = await resolveOnchainSale(client, collection, tokenId).catch(() => null)
+  if (!sale) return null
+  return {
+    type: sale.currency === 'usdc' ? 'erc20Mint' : 'fixedPrice',
+    pricePerToken: sale.pricePerToken.toString(),
+    saleStart: '0',
+    saleEnd: '0',
+    ...(sale.currency === 'usdc' ? { currency: USDC_BASE } : {}),
+  }
+}
