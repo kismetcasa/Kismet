@@ -22,6 +22,18 @@ export async function register() {
     )
   }
 
+  // Drift detector for the inprocess /smartwallet lookup — the per-creator
+  // smart wallet it resolves is what executes /moment/create and must hold
+  // ADMIN on each collection. A param/URL change upstream (the 2026 regression)
+  // breaks this silently; probing a known EOA at boot surfaces it in logs at
+  // once. Own try/catch so a failure here can't skip the warmups below.
+  try {
+    const { assertSmartWalletResolves } = await import('@/lib/healthcheck')
+    await assertSmartWalletResolves()
+  } catch (err) {
+    console.error('[instrumentation] smart-wallet resolve healthcheck failed (non-fatal):', err)
+  }
+
   // Warm the L1 caches every read-side route hits so the first request
   // after boot finds them hot. Non-fatal — per-getter try/catch returns
   // safe defaults if Redis is transiently down.
