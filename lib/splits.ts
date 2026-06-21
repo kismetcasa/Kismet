@@ -45,55 +45,48 @@ export async function setStoredSplits(
 }
 
 // Index each recipient → this split moment so an artist's undistributed balance
-// can be rolled up from one SMEMBERS (see lib/pending.ts). Idempotent (SADD) and
+// can be rolled up from one SMEMBERS (see lib/pending.ts). Idempotent (SADD),
 // best-effort: called at mint (above) AND self-healed from the moment-splits read
 // path, so moments minted before this index existed get covered as they're
 // viewed. A bulk backfill is deliberately avoided — there's no safe enumerator
 // (the global created-mints set hard-fails SMEMBERS past ~10 MB, the transfers
 // feed carries no tokenId, and the codebase uses no SCAN).
-// Returns true only if every recipient's SADD succeeded, so callers can decide
-// whether the moment is fully indexed (the self-heal marker below relies on this).
 async function indexRecipientSplits(
   collection: string,
   tokenId: string,
   recipients: SplitRecipient[],
-): Promise<boolean> {
+): Promise<void> {
   const c = collection.toLowerCase()
-  const results = await Promise.all(
+  await Promise.all(
     recipients
       .filter((r) => r.percentAllocation > 0)
       .map((r) =>
         redis
           .sadd(recipientIndexKey(r.address), `${c}:${tokenId}:${r.percentAllocation}`)
-          .then(() => true)
-          .catch(() => false),
+          .catch(() => {}),
       ),
   )
-  return results.every(Boolean)
 }
 
-// Heal-once marker for a moment's reverse-index entry. Permanent (index members
-// never expire, so a one-time heal is correct) — mirrors the codebase's
-// backfill-marker pattern (lib/coverMomentMetaBackfill.ts).
+// Self-heal the reverse index for a moment minted before the index existed (or
+// whose mint-time write failed). The NX marker makes this heal-once — repeat
+// views skip the SADDs. The 7-day TTL means a heal that failed (or a future
+// member-format change) self-corrects on a later view instead of sticking
+// forever. Best-effort; intended to run in `after()` off the response path.
 const healedKey = (collection: string, tokenId: string) =>
   `kismetart:splits:healed:${collection.toLowerCase()}:${tokenId}`
+const HEAL_TTL_S = 7 * 24 * 60 * 60
 
-// Self-heal the reverse index for a moment minted before the index existed (or
-// whose mint-time write failed). A marker makes this heal-once per moment, so
-// repeat views cost a single GET — not N SADDs every time. The marker is set
-// ONLY after every SADD succeeds, so a partial failure leaves it unset and a
-// later view retries (mirrors lib/coverMomentMetaBackfill.ts). Best-effort;
-// intended to run in `after()` off the response path.
 export async function selfHealRecipientIndex(
   collection: string,
   tokenId: string,
   recipients: SplitRecipient[],
 ): Promise<void> {
   if (!recipients.length) return
-  const key = healedKey(collection, tokenId)
-  if (await redis.get(key).catch(() => null)) return
-  const ok = await indexRecipientSplits(collection, tokenId, recipients)
-  if (ok) await redis.set(key, '1').catch(() => {})
+  const claimed = await redis
+    .set(healedKey(collection, tokenId), '1', { nx: true, ex: HEAL_TTL_S })
+    .catch(() => null)
+  if (claimed === 'OK') await indexRecipientSplits(collection, tokenId, recipients)
 }
 
 export interface RecipientSplit {

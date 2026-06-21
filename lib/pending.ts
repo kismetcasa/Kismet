@@ -45,36 +45,12 @@ const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 // (this runs in Promise.all with the earnings read). Mirrors getEthUsd's race.
 const COMPUTE_TIMEOUT_MS = 4000
 
-// Cache the rolled-up result 60s in Redis (cross-pod) — the owner views their own
-// profile infrequently, so this mainly spares the multicalls on reloads.
-// Auto-expiring, so there's no unbounded map to manage. Stored as a JSON string
-// and read as `string | object` (mirroring lib/profile.ts), so it's robust
-// whether or not the client auto-deserializes.
+// Cache the rolled-up result 60s in Redis (cross-pod), mirroring getEthUsd — the
+// owner views their own profile infrequently, so this mainly spares the
+// multicalls on reloads. The client auto-(de)serializes objects (lib/redis.ts)
+// and the key auto-expires, so there's no unbounded map to manage.
 const pendingCacheKey = (address: string) => `kismetart:pending:${address.toLowerCase()}`
 const CACHE_TTL_S = 60
-
-function parseCachedPending(raw: string | ArtistPending | null): ArtistPending | null {
-  if (!raw) return null
-  let obj: unknown = raw
-  if (typeof raw === 'string') {
-    try {
-      obj = JSON.parse(raw)
-    } catch {
-      return null
-    }
-  }
-  if (!obj || typeof obj !== 'object') return null
-  const p = obj as Record<string, unknown>
-  if (
-    typeof p.eth === 'number' &&
-    typeof p.usdc === 'number' &&
-    typeof p.usd === 'number' &&
-    typeof p.count === 'number'
-  ) {
-    return { eth: p.eth, usdc: p.usdc, usd: p.usd, count: p.count }
-  }
-  return null
-}
 
 // Resolve each moment's split (creator-reward-recipient) address, reading the
 // Redis cache first and batching cache-misses into one multicall.
@@ -189,10 +165,10 @@ async function compute(address: string): Promise<ArtistPending> {
 export async function getArtistPending(address: string): Promise<ArtistPending> {
   const key = address.toLowerCase()
   const cacheKey = pendingCacheKey(key)
-  const cached = parseCachedPending(
-    await redis.get<string | ArtistPending>(cacheKey).catch(() => null),
-  )
-  if (cached) return cached
+  const cached = await redis.get<ArtistPending>(cacheKey).catch(() => null)
+  if (cached && typeof cached.usd === 'number' && typeof cached.count === 'number') {
+    return cached
+  }
   try {
     const value = await Promise.race([
       compute(key),
@@ -203,7 +179,7 @@ export async function getArtistPending(address: string): Promise<ArtistPending> 
     // Cache the fresh roll-up (including a zero result) for the TTL. A timeout or
     // throw falls through to the catch and is NOT cached, so the next call
     // retries rather than pinning zeros — same policy as getEthUsd.
-    await redis.set(cacheKey, JSON.stringify(value), { ex: CACHE_TTL_S }).catch(() => {})
+    await redis.set(cacheKey, value, { ex: CACHE_TTL_S }).catch(() => {})
     return value
   } catch {
     return EMPTY
