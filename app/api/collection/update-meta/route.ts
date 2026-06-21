@@ -4,7 +4,7 @@ import { isAddress } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
-import { addTrackedCollection, getCollectionMeta } from '@/lib/kv'
+import { getCollectionMeta, updateCollectionMeta } from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -74,21 +74,30 @@ export async function POST(req: NextRequest) {
   }
 
   // Merge over the existing record so deploy-time fields (artist, coverTokenId)
-  // survive an edit that only touches name/description/image.
+  // survive an edit that only touches name/description/image. Meta-only write
+  // (no set membership) so an auto-deploy collection can't get promoted into
+  // the curated discovery feed by an edit.
   const existing = await getCollectionMeta(address)
   const thumbhash = body.kismet_thumbhash ?? existing?.kismet_thumbhash
-  await addTrackedCollection(
-    address,
-    {
+  try {
+    await updateCollectionMeta(address, {
       name,
       image: body.image ?? existing?.image,
       description,
       artist: existing?.artist ?? viewer.toLowerCase(),
       ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
       ...(existing?.coverTokenId ? { coverTokenId: existing.coverTokenId } : {}),
-    },
-    'create-form',
-  )
+    })
+  } catch (err) {
+    // The detail page is KV-first, so a failed write leaves a stale preview
+    // on reload even though the edit landed on-chain. Surface it (502) so the
+    // client can warn rather than silently diverge.
+    console.error('[update-meta] KV write failed', {
+      address,
+      err: err instanceof Error ? err.message : String(err),
+    })
+    return errorResponse(502, 'Saved on-chain, but refreshing the Kismet preview failed')
+  }
 
   return NextResponse.json({ ok: true })
 }

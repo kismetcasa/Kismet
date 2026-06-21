@@ -13,6 +13,8 @@ import { CREATE_REFERRAL } from '@/lib/config'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useUpdateCollectionMetadata } from '@/hooks/useUpdateCollectionMetadata'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { toastError } from '@/lib/toast'
 
 // Mirrors the server caps in /api/collection/update-meta. Description matches
@@ -71,6 +73,9 @@ export function EditCollectionForm({
   const { update } = useUpdateCollectionMetadata()
   const publicClient = usePublicClient({ chainId: base.id })
 
+  useBodyScrollLock()
+  useEscapeKey(onClose, !busy)
+
   async function handleSave() {
     const trimmedName = name.trim()
     const trimmedDesc = description.trim()
@@ -110,6 +115,13 @@ export function EditCollectionForm({
         }
       }
       if (!imageUri) throw new Error('Collection image is missing')
+      // Re-pointing at the existing cover is only safe for content URIs we can
+      // faithfully re-bake into the permanent on-chain metadata. ar:// (the
+      // norm) and self-contained data: pass through; a resolved gateway/proxy
+      // URL must not be baked in, so require a fresh upload in that rare case.
+      if (!cover.file && !imageUri.startsWith('ar://') && !imageUri.startsWith('data:')) {
+        throw new Error('Please upload a new cover image to edit this collection')
+      }
 
       // Rebuild the full contractURI JSON (same builder as create). The
       // createReferral constant is re-set, not read back, so it's preserved.
@@ -141,9 +153,11 @@ export function EditCollectionForm({
         throw new Error('The update transaction reverted on-chain')
       }
 
-      // Best-effort KV refresh — the chain + ContractURIUpdated are
-      // authoritative; this just closes the KV-fallback staleness gap.
-      await fetch('/api/collection/update-meta', {
+      // KV refresh — the collection detail page is KV-first, so this is what
+      // makes the edit show on reload (inprocess reindexes the on-chain event
+      // on its own cadence). The edit already landed on-chain, so a refresh
+      // failure is a warning, not an error.
+      const metaRes = await fetch('/api/collection/update-meta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,10 +167,16 @@ export function EditCollectionForm({
           image: imageUri,
           ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         }),
-      }).catch(() => {})
+      }).catch(() => null)
 
-      toast.success('Collection updated')
       onSaved({ name: trimmedName, description: trimmedDesc, image: imageUri, thumbhash })
+      if (metaRes && metaRes.ok) {
+        toast.success('Collection updated')
+      } else {
+        toast.success('Collection updated on-chain', {
+          description: 'The Kismet preview may take a moment to refresh.',
+        })
+      }
     } catch (err) {
       toastError('Edit collection', err)
     } finally {
