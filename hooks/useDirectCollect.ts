@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useAccount, useConfig, usePublicClient, useWriteContract } from 'wagmi'
+import { useConfig, usePublicClient, useWriteContract } from 'wagmi'
 import { getAccount } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
@@ -70,7 +70,6 @@ const TOAST_ID = 'direct-collect'
  * See useCollectAll for the EIP-5792-based batching pattern instead.
  */
 export function useDirectCollect(): UseDirectCollectReturn {
-  const { address } = useAccount()
   const config = useConfig()
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
@@ -95,11 +94,10 @@ export function useDirectCollect(): UseDirectCollectReturn {
       const isRetryAfterRecovery = consumeRetryFlag()
       const { tokenId, amount = 1, comment = '' } = args
 
-      // Resolve the signer. Prefer the React `useAccount` value; fall back to
-      // the wagmi store so a collect dispatched in the same tap that just
-      // connected the wallet (the embedded-host path in useEnsureConnected)
-      // still sees the fresh account before React re-renders this hook.
-      const account = address ?? getAccount(config).address
+      // Read the signer from the wagmi store — authoritative, and reflects a
+      // wallet connected in this same tap (via useEnsureConnected) before
+      // React re-renders this hook.
+      const account = getAccount(config).address
       if (!account) {
         toast.error('Connect a wallet to collect')
         return null
@@ -274,7 +272,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [config, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectRef.current = collect
