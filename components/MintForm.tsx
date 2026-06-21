@@ -748,12 +748,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           const collectionUri = await uploadJsonCached(collectionMetadata, collectionKey)
           setStep('verifying-upload')
           toast.loading('Verifying Arweave propagation…', { id: 'mint' })
+          // NON-BLOCKING best-effort wait (see the media branch for the full
+          // rationale). Turbo guarantees the cover JSON is stored once it
+          // returned an id; the gateway pool just lags. We no longer fail the
+          // mint on this — we wait briefly, then mint regardless. The cover URI
+          // is permanent on Arweave and the UI re-fetches it at display time,
+          // so it self-heals once propagation catches up.
           const ok = await verifyArweaveAvailable(collectionUri)
           if (!ok) {
-            bumpJsonFailure(collectionKey)
-            throw new Error(
-              'Arweave still settling (collection metadata not yet propagated) — mint again in a minute to resume this upload',
-            )
+            console.warn('[MintForm] collection metadata not yet propagated; minting anyway', collectionUri)
           }
           contractField = { name: resolvedCollectionName, uri: collectionUri }
         } else {
@@ -1076,20 +1079,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           if (!metadataOk) failed.push('metadata')
           if (!collectionOk) failed.push('collection metadata')
           if (!posterOk) failed.push('poster frame')
-          // Failure accounting: keep reusing these uploads on retry until
-          // the strike cap decides one is genuinely lost (then the next
-          // attempt re-uploads fresh).
+          // NON-BLOCKING: do NOT fail the mint on a propagation/gateway miss.
+          // Turbo guarantees these ids are durably stored; the public gateway
+          // pool just lags on fresh uploads (or, like permagate's TLS outage,
+          // fails outright), and inprocess's own flow mints without this check.
+          // We waited best-effort above; now we mint regardless — the URIs are
+          // permanent on Arweave and every Kismet surface re-fetches them at
+          // display time, so the moment self-heals once propagation catches up.
+          // Still nudge the strike counters so a genuinely-lost upload is
+          // re-uploaded fresh on a later (e.g. on-chain) retry.
           if (uploadSession && (!mediaOk || !posterOk)) uploadSession.verifyFailures += 1
           if (!metadataOk) bumpJsonFailure(metadataKey)
           if (!collectionOk && collectionKey) bumpJsonFailure(collectionKey)
-          const resumable = !!uploadSession && uploadSession.verifyFailures < MAX_REUSE_FAILURES
-          throw new Error(
-            `Arweave still settling (${failed.join(' + ')} not yet propagated) — ${
-              resumable
-                ? 'your upload is saved; mint again in a minute to resume without re-uploading'
-                : 'try again in a minute'
-            }`,
-          )
+          console.warn(`[MintForm] Arweave not yet propagated (${failed.join(' + ')}); minting anyway`)
         }
 
         setStep('minting')
