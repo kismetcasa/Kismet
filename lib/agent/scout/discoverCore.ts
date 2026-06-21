@@ -67,9 +67,11 @@ export async function discoverCore(creators: readonly string[], baseUrl = ''): P
     order.push(e)
   }
   if (order.length === 0) return []
-  // Cap the batch so a large roster can't overflow the /api/moments URL length;
-  // the agent only collects a few per run (<= maxItemsPerPeriod) anyway.
-  const batch = order.slice(0, 60)
+  // Cap the batch at /api/moments' MAX_IDS (50): that route processes only the
+  // first 50 ids and ignores the rest, so requesting more just builds a longer
+  // URL whose tail is silently dropped. Candidates are newest-first and the agent
+  // collects only a few per run (<= maxItemsPerPeriod), so the newest 50 cover it.
+  const batch = order.slice(0, 50)
 
   // 2. Resolve price + currency in one batch (a hint; re-resolved on-chain at execution).
   const ids = batch.map((e) => `${e.m.address}:${e.m.token_id}`).join(',')

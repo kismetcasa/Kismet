@@ -52,6 +52,14 @@ export async function POST(req: NextRequest) {
   const image = typeof body.image === 'string' ? body.image : undefined
 
   const priceTotal = priceToBaseUnits(price, currency)
+  // Mirror /api/listings POST's dust-floor guard: reject a price whose 1%
+  // platform fee floors to zero (< 100 base units). The final POST enforces this
+  // anyway, so without the same check here the agent would walk the user through
+  // the one-time marketplace approval + an EIP-712 signature for an order the
+  // POST then 400-rejects. Fail fast, before any RPC.
+  if (computePlatformFee(priceTotal) === 0n) {
+    return errorResponse(400, 'Price is below minimum — platform fee would round to zero')
+  }
   const client = serverBaseClient()
 
   // Ownership + approval + counter in parallel. Royalty is read separately

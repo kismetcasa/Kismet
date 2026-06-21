@@ -121,6 +121,11 @@ async function isPriority(
   if (type === 'payout') return true
   if (type === 'authorized') return true
   if (type === 'follow') return true
+  // The user's own agent autonomously spent their funds — a money-bearing event
+  // they should see immediately (like sale/payout), and on the server-side drop
+  // coordinator path this notification is the ONLY signal. Kept muteable (not in
+  // NON_MUTEABLE_TYPES) like `collect`, so the bell badges it but it can be muted.
+  if (type === 'agent_collect') return true
   if (type === 'collect' && price && price !== '0') return true
   // listing_created stays non-priority — active sellers shouldn't dominate
   // the priority bell. The "all" tab still surfaces it for engaged followers.
