@@ -517,10 +517,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
 
   async function handleCollect() {
-    // No saleConfig gate: collect reads the live sale on-chain (see
-    // useDirectCollect), so a missing/absent display saleConfig must not block
-    // the action — it would re-introduce the dead-button bug. main's render
-    // guards (the saleConfig/currency vars below) still prevent the crash.
+    // No saleConfig gate — collect resolves price on-chain (see
+    // useDirectCollect); gating on the display saleConfig would dead-end the
+    // button. (Render-path saleConfig derefs stay guarded above.)
     if (!detail) return
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
