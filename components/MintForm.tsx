@@ -661,9 +661,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       ? parseUnits(normalizedPrice, 6).toString()
       : parseEther(normalizedPrice).toString()
     const now = Math.floor(Date.now() / 1000)
-    // Sale window. The mint always opens NOW: inprocess mints the creator's
-    // copy at setup through the sale strategy, which reverts if saleStart is in
-    // the future — so a scheduled start can't be supported through this path.
+    // Sale window. saleStart is pinned to 0 (epoch), NOT `now`: inprocess mints
+    // the creator's copy at setup THROUGH the sale strategy, which reverts with
+    // SaleHasNotStarted whenever block.timestamp < saleStart. `now` is the
+    // client wall-clock, so a device whose clock runs ahead of chain time by
+    // more than the confirm+submit latency would push saleStart past the block
+    // timestamp at gas estimation and revert the whole mint. saleStart=0 means
+    // "open since epoch" — behaviourally identical to "opens now" for an
+    // immediately-live sale, but it can never sit on the wrong side of that
+    // boundary. (A scheduled start still can't be supported through this path,
+    // since the setup copy would revert; that needs mintToCreatorCount:0.)
     // Sale end is optional; empty → max uint64, leaving the supply cap (or open
     // edition = forever) to bound the mint instead of a clock (the prior
     // always-open behavior). A 1/1 has no public sale, so it stays open-ended
@@ -681,14 +688,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
+          saleStart: '0',
           saleEnd: saleEndStr,
           currency: USDC_BASE,
         }
       : {
           type: 'fixedPrice' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
+          saleStart: '0',
           saleEnd: saleEndStr,
         }
     const supplyTrimmed = maxSupply.trim()
