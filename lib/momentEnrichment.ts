@@ -45,6 +45,10 @@ export async function enrichMomentsWithKismetMeta<T extends Moment>(
         kismetCollection: {
           name: collMeta.name ?? null,
           image: collMeta.image ?? null,
+          // Lets MomentCard suppress the redundant chip name only for the
+          // collection's auto-named cover, not for a distinct same-named
+          // mint. Already in hand from the batch read — no extra I/O.
+          coverTokenId: collMeta.coverTokenId ?? null,
         },
       }),
     }
