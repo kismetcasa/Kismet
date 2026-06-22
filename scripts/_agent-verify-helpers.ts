@@ -19,7 +19,14 @@ import {
   ZORA_FIXED_PRICE_STRATEGY,
 } from '../lib/zoraMint.ts'
 import { BUILDER_DATA_SUFFIX } from '../lib/builderCode.ts'
-import { PLATFORM_FEE_RECIPIENT as _PLATFORM_FEE_RECIPIENT, computePlatformFee as _computePlatformFee } from '../lib/platformFee.ts'
+import {
+  PLATFORM_FEE_RECIPIENT as _PLATFORM_FEE_RECIPIENT,
+  computePlatformFee as _computePlatformFee,
+  isBelowListingFloor as _isBelowListingFloor,
+  MIN_LISTING_PRICE_BASE_UNITS as _MIN_LISTING_PRICE_BASE_UNITS,
+} from '../lib/platformFee.ts'
+// Dependency-free (no `@/` imports) so it resolves under `node --experimental-strip-types`.
+import { dedupeMomentRefs as _dedupeMomentRefs } from '../lib/agent/dedupeRefs.ts'
 
 // Canonical, production-sourced (aliased to the short names the verifiers use).
 export const FPSS = ZORA_FIXED_PRICE_STRATEGY
@@ -28,6 +35,9 @@ export const USDC = USDC_BASE
 export const REFERRAL = KISMET_REFERRAL
 export const PLATFORM_FEE_RECIPIENT = _PLATFORM_FEE_RECIPIENT
 export const computePlatformFee = _computePlatformFee
+export const isBelowListingFloor = _isBelowListingFloor
+export const MIN_LISTING_PRICE_BASE_UNITS = _MIN_LISTING_PRICE_BASE_UNITS
+export const dedupeMomentRefs = _dedupeMomentRefs
 // BUILDER_DATA_SUFFIX is `Hex | undefined` (env-gated in production); the
 // verifiers require it, so fail loud if it's somehow unset.
 const suffix = BUILDER_DATA_SUFFIX
