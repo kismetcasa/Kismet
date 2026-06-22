@@ -114,10 +114,15 @@ export interface Moment {
   saleConfig?: MomentSaleConfig
   // Server-stitched chip metadata. Undefined = route didn't enrich
   // (client falls back). Defined-with-null-name = known contract, no
-  // chip (suppress without re-fetching).
+  // chip (suppress without re-fetching). coverTokenId is the collection's
+  // auto-named cover token (a Kismet KV concept) — it lets the card tell a
+  // real cover, whose metadata name echoes the collection name by design,
+  // apart from a distinct mint that merely shares the name. Absent/null ⇒
+  // unknown, so the card falls back to plain name-equality suppression.
   kismetCollection?: {
     name: string | null
     image: string | null
+    coverTokenId?: string | null
   }
   // Video duration in whole seconds, server-stitched from MomentMeta
   // by /api/timeline. Populated only for Kismet-minted moments that
