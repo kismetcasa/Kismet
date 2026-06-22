@@ -197,18 +197,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
 
   const meta = moment.metadata ?? {}
 
-  // Collection chip "redundant echo" test. The chip name is dropped only when
-  // it merely repeats the moment title AND this token is the collection's
-  // auto-named cover (its metadata name is set to the collection name at
-  // deploy). A distinct mint that coincidentally shares the collection name is
-  // a *known non-cover* token, so it keeps its chip name. coverTokenId is
-  // server-stitched onto kismetCollection (timeline + featured enrichment);
-  // null ⇒ unknown (legacy deploy, or a non-enriched render path) ⇒ fall back
-  // to the historical name-equality suppression, so nothing regresses.
-  const coverTokenId = moment.kismetCollection?.coverTokenId ?? null
-  const isKnownNonCover =
-    coverTokenId != null && String(moment.token_id) !== coverTokenId
-  const nameEchoesTitle = collectionName === meta.name && !isKnownNonCover
+  // Show the collection name only when this moment belongs to a real
+  // collection — one created via the Create Collection flow, or an existing
+  // collection minted into. An individual mint auto-deploys a wrapper named
+  // after its single piece; that isn't a real collection, so its chip shows
+  // the icon only. Server-enriched surfaces carry the explicit flag; on the
+  // client-fetch path /api/collections?address already returns a name only
+  // for blessed collections, so a name present there is curated by definition.
+  const isCuratedCollection = moment.kismetCollection?.isCuratedCollection ?? true
 
   // Price + currency. hidePriceSupply only controls badge rendering — compact
   // contexts still need these values to drive collect.
@@ -558,15 +554,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Collection chip. The name text is dropped only when it merely
-            echoes the title AND this token is the collection's auto-named
-            cover (nameEchoesTitle) — the icon stays as a clickable affordance
-            into /collection. A distinct mint that just happens to share the
-            collection name (a known non-cover token) keeps its full name.
-            Suppress the chip entirely only when there's nothing left to show
-            (name echoes the title AND no icon to render in its place), so the
-            slot never becomes an empty clickable sliver. */}
-        {!compact && collectionName && (!nameEchoesTitle || (collectionImage && !collectionImageFailed)) && (
+        {/* Collection chip. The name shows only for a real collection
+            (isCuratedCollection) — created, or minted into. An individual
+            mint's auto-deploy wrapper shows the icon only, keeping it as a
+            clickable affordance into /collection. The chip is suppressed
+            entirely only when there's nothing left to show (no name to show
+            AND no icon to render), so the slot never becomes an empty
+            clickable sliver. */}
+        {!compact && collectionName && (isCuratedCollection || (collectionImage && !collectionImageFailed)) && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
@@ -586,7 +581,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 />
               </div>
             )}
-            {!nameEchoesTitle && (
+            {isCuratedCollection && (
               <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
                 {collectionName}
               </span>
