@@ -152,6 +152,21 @@ export async function addTrackedCollection(
   }
 }
 
+/**
+ * Overwrite ONLY the CollectionMeta record for an already-tracked collection
+ * — used after an on-chain updateContractMetadata edit. Unlike
+ * addTrackedCollection this never touches set membership, so editing an
+ * auto-deploy collection's metadata can't promote it into the curated
+ * CREATED_COLLECTIONS_KEY (and thus the discovery feed).
+ */
+export async function updateCollectionMeta(
+  address: string,
+  meta: Omit<CollectionMeta, 'address'>,
+): Promise<void> {
+  const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
+  await redis.set(keyCollectionMeta(address), JSON.stringify(data))
+}
+
 // Inprocess-indexer-lag fallback for the collection page.
 export async function getCollectionMeta(
   address: string
