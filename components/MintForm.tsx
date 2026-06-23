@@ -18,6 +18,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { loadPersistedUpload, savePersistedUpload } from '@/lib/arweave/uploadPersistence'
 import { reportClientError } from '@/lib/clientError'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
@@ -934,6 +935,39 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // media mode — ensure session once (cookie cached, no re-prompt)
         await ensureSession()
 
+        // Cross-reload resume: the in-memory bank below is wiped on a page
+        // reload / remount, so a creator who reloads after a failed mint would
+        // re-upload this (often very large) file under a fresh txid for
+        // nothing. If we uploaded THIS exact file in a prior session, restore
+        // that bank from localStorage — but only after confirming the stored
+        // media URI still resolves on Arweave, so a stale entry can never mint
+        // a phantom URI. The verify is one gateway poll; re-uploading is the
+        // waste we're avoiding. Skipped when a valid in-memory session exists.
+        if (file && (!mediaUploadRef.current || mediaUploadRef.current.source !== file)) {
+          const persisted = loadPersistedUpload(file)
+          if (persisted) {
+            setStep('verifying-upload')
+            toast.loading('Resuming previous upload — verifying propagation…', { id: 'mint' })
+            if (await verifyArweaveAvailable(persisted.mediaUri, MINT_MEDIA_VERIFY_BUDGET_MS)) {
+              mediaUploadRef.current = {
+                source: file,
+                // Placeholder File: after a resume the media File is read only
+                // for its `.type` (the video animation_url binding), so the
+                // bytes are irrelevant — we persisted the effective type.
+                mediaFile: new File([], file.name, { type: persisted.mediaType }),
+                posterFile: null,
+                needsServerTranscode: persisted.needsServerTranscode,
+                serverTranscode: persisted.serverTranscode,
+                mediaUri: persisted.mediaUri,
+                posterUri: persisted.posterUri,
+                thumbhash: persisted.thumbhash,
+                durationSec: persisted.durationSec,
+                verifyFailures: 0,
+              }
+            }
+          }
+        }
+
         // Resume path: reuse the verified-upload session from a previous
         // attempt on this same file (see UploadedMediaSession). Skips the
         // prepare + upload work entirely and goes straight to verifying
@@ -1080,6 +1114,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             durationSec,
             verifyFailures: 0,
           }
+          // Mirror the bank to localStorage so a reload resumes these txids
+          // instead of re-uploading (uploadPersistence). serverTranscode is
+          // null here — it completes below and, on a cross-reload resume,
+          // simply re-runs (cheap: it reuses mediaUri, no media re-upload).
+          savePersistedUpload(file!, {
+            mediaUri,
+            posterUri,
+            thumbhash,
+            durationSec,
+            needsServerTranscode,
+            serverTranscode: null,
+            mediaType: mediaFile.type,
+          })
         }
         // The session this attempt runs against, for failure accounting at
         // the verification gate (the ref itself can be nulled mid-flight if
