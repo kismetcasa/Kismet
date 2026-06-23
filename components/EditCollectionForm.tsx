@@ -1,12 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { Upload, X } from 'lucide-react'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
+import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { CREATE_REFERRAL } from '@/lib/config'
@@ -22,6 +23,20 @@ import { toastError } from '@/lib/toast'
 const MAX_NAME = 64
 const MAX_DESCRIPTION = 1000
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024
+// Retire a banked cover upload after this many failed propagation checks so a
+// genuinely lost upload self-heals with a fresh one instead of being reused
+// forever (mirrors CreateCollectionForm's MAX_REUSE_FAILURES).
+const MAX_REUSE_FAILURES = 3
+
+// A verified cover upload, banked across save attempts so a transient failure
+// at signing (e.g. a stale wallet socket) can retry without re-uploading the
+// image under a fresh txid and re-spending Turbo credits.
+interface CoverUploadSession {
+  source: File
+  imageUri: string
+  thumbhash?: string
+  verifyFailures: number
+}
 
 export interface EditedMeta {
   name: string
@@ -73,6 +88,17 @@ export function EditCollectionForm({
   const { update } = useUpdateCollectionMetadata()
   const publicClient = usePublicClient({ chainId: base.id })
 
+  // Banked cover upload (see CoverUploadSession). A ref, not state — it never
+  // drives rendering and must survive re-renders across save attempts.
+  const coverUploadRef = useRef<CoverUploadSession | null>(null)
+  // Drop the banked upload when the user picks a different cover so a stale
+  // session can't be saved by accident.
+  useEffect(() => {
+    if (coverUploadRef.current && coverUploadRef.current.source !== cover.file) {
+      coverUploadRef.current = null
+    }
+  }, [cover.file])
+
   useBodyScrollLock()
   useEscapeKey(onClose, !busy)
 
@@ -105,21 +131,41 @@ export function EditCollectionForm({
       let imageUri = currentImage
       let thumbhash = currentThumbhash
       if (cover.file) {
-        setStatusText('Uploading image…')
-        const thumbhashPromise = generateThumbhash(cover.file)
-        imageUri = await uploadToArweave(cover.file, () => {})
-        thumbhash = (await thumbhashPromise) ?? undefined
-        // Fire-and-forget propagation check — we proceed regardless (Turbo
-        // guarantees the image is stored once it returns an id; the gateway
-        // pool just lags). Crucially we do NOT await it: awaiting the up-to-90s
-        // poll pushed the wallet signature far past the browser's ~5s user-
-        // activation window, so the tx popup stopped auto-opening. The ar://
-        // URI is permanent and self-heals at display time.
-        void verifyArweaveAvailable(imageUri, 90_000)
-          .then((ok) => {
-            if (!ok) console.warn('[EditCollection] image not yet propagated', imageUri)
-          })
-          .catch(() => {})
+        const file = cover.file
+        // Resume: reuse a verified upload of this exact file from a prior
+        // attempt (e.g. a transient wallet error at signing) instead of
+        // re-uploading under a fresh txid and re-spending Turbo credits.
+        const cached =
+          coverUploadRef.current &&
+          coverUploadRef.current.source === file &&
+          coverUploadRef.current.verifyFailures < MAX_REUSE_FAILURES
+            ? coverUploadRef.current
+            : null
+        if (cached) {
+          imageUri = cached.imageUri
+          thumbhash = cached.thumbhash
+          setStatusText('Resuming image upload…')
+        } else {
+          // Collection covers render statically on-chain, so bake an animated
+          // GIF's first frame to a JPEG rather than uploading the whole
+          // animation (matches CreateCollectionForm). Best-effort — fall back
+          // to the original file on any ffmpeg failure.
+          let imageFile: File = file
+          if (canTranscode(file)) {
+            setStatusText('Optimizing cover…')
+            try {
+              imageFile = await extractGifPoster(file)
+            } catch (err) {
+              console.warn('[EditCollection] GIF poster extraction failed; uploading original', err)
+            }
+          }
+          setStatusText('Uploading image…')
+          const thumbhashPromise = generateThumbhash(imageFile)
+          imageUri = await uploadToArweave(imageFile, () => {})
+          thumbhash = (await thumbhashPromise) ?? undefined
+          // Bank the verified upload so a failure below RESUMES from here.
+          coverUploadRef.current = { source: file, imageUri, thumbhash, verifyFailures: 0 }
+        }
       }
       if (!imageUri) throw new Error('Collection image is missing')
       // Re-pointing at the existing cover is only safe for content URIs we can
@@ -141,14 +187,32 @@ export function EditCollectionForm({
         createReferral: CREATE_REFERRAL,
       }
       const newUri = await uploadJson(metadata)
-      // Fire-and-forget — same reasoning as the image check above. Do NOT await
-      // the propagation poll: go straight to the signature so it fires inside
-      // the browser's user-activation window and the wallet popup auto-opens.
-      void verifyArweaveAvailable(newUri)
-        .then((ok) => {
-          if (!ok) console.warn('[EditCollection] metadata not yet propagated', newUri)
+
+      // Block on Arweave propagation before signing. The ar:// URI is baked
+      // permanently into the on-chain contractURI, so writing it before the
+      // gateway pool serves it risks an indexer caching a 404 — broken
+      // collection metadata a re-upload can't fix. Mirrors the create-form
+      // deploy gate: abort with a retry hint on lag rather than bake a bad
+      // URI. A re-pointed existing cover is already live, so only verify a
+      // freshly uploaded image (90s budget — covers can be large).
+      setStatusText('Verifying Arweave propagation…')
+      const [imageOk, metadataOk] = await Promise.all([
+        cover.file ? verifyArweaveAvailable(imageUri, 90_000) : Promise.resolve(true),
+        verifyArweaveAvailable(newUri),
+      ])
+      if (!imageOk || !metadataOk) {
+        // Keep the banked cover upload (up to the strike cap) so the retry
+        // reuses it; a failed metadata JSON re-uploads in seconds anyway.
+        if (!imageOk && coverUploadRef.current) coverUploadRef.current.verifyFailures += 1
+        const failedParts = [
+          ...(!imageOk ? ['cover image'] : []),
+          ...(!metadataOk ? ['metadata'] : []),
+        ].join(' + ')
+        toast.error('Arweave is settling slowly', {
+          description: `Not propagated yet: ${failedParts}. Your upload is saved — hit save again in a minute.`,
         })
-        .catch(() => {})
+        return
+      }
 
       // Same string into the on-chain name() and the JSON name so they match.
       setStatusText('Confirm in your wallet…')
@@ -181,6 +245,9 @@ export function EditCollectionForm({
       }).catch(() => null)
 
       onSaved({ name: trimmedName, description: trimmedDesc, image: imageUri, thumbhash })
+      // Edit committed — drop the banked upload so a later edit in the same
+      // modal re-uploads fresh rather than reusing a now-spent session.
+      coverUploadRef.current = null
       if (metaRes && metaRes.ok) {
         toast.success('Collection updated')
       } else {
