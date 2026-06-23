@@ -3,7 +3,6 @@ import { getEthUsd } from './ethPrice'
 import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
 import { expandToFidSiblings } from './addressUnion'
-import { getStoredSplits } from './splits'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
@@ -168,40 +167,32 @@ export async function getArtistEarnings(artist: string, wallets?: string[]): Pro
   }
 }
 
-// Credit a secondary-sale creator royalty to the artist(s) who earned it. Called
+// Credit a secondary-sale creator royalty to the artist who earned it. Called
 // once per fill from the on-chain-verified listings PATCH handler with the royalty
-// amount actually paid on-chain (human units). Split-aware to MATCH the primary
-// path: when the moment has stored splits the royalty is apportioned across its
-// recipients by percent (so it lands on artists' wallets even when the EIP-2981
-// receiver is a split contract); otherwise the whole amount goes to the receiver.
-// Idempotent per listing via an NX claim so a retried/concurrent fill can't
-// double-count. Best-effort — a failure leaves the figure slightly low rather
-// than breaking the fill.
+// amount actually paid on-chain (human units). Royalties are configured
+// COLLECTION-WIDE — one EIP-2981 receiver + BPS per contract, set at deploy — and
+// are NOT the moment's per-token primary split; so the whole amount is credited
+// to that single receiver, the address the royalty is actually paid to on-chain.
+// The receiver defaults to the collection creator, so it surfaces on their card
+// via the sibling union; a creator who pointed royalties at a collaborator or a
+// split contract has it accrue there instead. Idempotent per listing via an NX
+// claim so a retried/concurrent fill can't double-count. Best-effort — never
+// fails the sale.
 export async function creditListingRoyalty(args: {
   listingId: string
-  collection: string
-  tokenId: string
   currency: 'eth' | 'usdc'
   amount: number
   receiver: string
 }): Promise<void> {
-  const { listingId, collection, tokenId, currency, amount, receiver } = args
+  const { listingId, currency, amount, receiver } = args
   if (!Number.isFinite(amount) || amount <= 0) return
+  const member = receiver.toLowerCase()
+  if (!member) return
   try {
-    // Resolve the apportionment BEFORE claiming, so a split-read failure doesn't
-    // burn the once-only claim and block a retry.
-    const stored = await getStoredSplits(collection, tokenId)
-    const shares = stored.recipients.length
-      ? stored.recipients.map((r) => ({ addr: r.address.toLowerCase(), amt: (amount * r.percentAllocation) / 100 }))
-      : [{ addr: receiver.toLowerCase(), amt: amount }]
-
     const claimed = await redis.set(royaltyCreditedKey(listingId), '1', { nx: true })
     if (claimed !== 'OK') return // already credited (retry / concurrent fill)
-
     const key = currency === 'usdc' ? ROYALTY_USDC_KEY : ROYALTY_ETH_KEY
-    await Promise.all(
-      shares.filter((s) => s.amt > 0).map((s) => redis.zincrby(key, s.amt, s.addr)),
-    )
+    await redis.zincrby(key, amount, member)
   } catch {
     // Swallow — royalty stats are best-effort and must never fail the sale.
   }

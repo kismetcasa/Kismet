@@ -192,8 +192,6 @@ export async function PATCH(
     if (royalty) {
       await creditListingRoyalty({
         listingId: listing.id,
-        collection: listing.collectionAddress,
-        tokenId: listing.tokenId,
         currency: royalty.currency,
         amount: royalty.amount,
         receiver: listing.royaltyReceiver,
