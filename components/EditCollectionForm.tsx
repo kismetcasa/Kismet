@@ -109,14 +109,17 @@ export function EditCollectionForm({
         const thumbhashPromise = generateThumbhash(cover.file)
         imageUri = await uploadToArweave(cover.file, () => {})
         thumbhash = (await thumbhashPromise) ?? undefined
-        // Non-blocking best-effort wait, mirroring MintForm: Turbo guarantees
-        // the image is stored once it returned an id — the gateway pool just
-        // lags on fresh uploads. Proceed regardless; the ar:// URI is permanent
-        // and the UI re-fetches at display time, so it self-heals.
-        setStatusText('Verifying image propagation…')
-        if (!(await verifyArweaveAvailable(imageUri, 90_000))) {
-          console.warn('[EditCollection] image not yet propagated; continuing', imageUri)
-        }
+        // Fire-and-forget propagation check — we proceed regardless (Turbo
+        // guarantees the image is stored once it returns an id; the gateway
+        // pool just lags). Crucially we do NOT await it: awaiting the up-to-90s
+        // poll pushed the wallet signature far past the browser's ~5s user-
+        // activation window, so the tx popup stopped auto-opening. The ar://
+        // URI is permanent and self-heals at display time.
+        void verifyArweaveAvailable(imageUri, 90_000)
+          .then((ok) => {
+            if (!ok) console.warn('[EditCollection] image not yet propagated', imageUri)
+          })
+          .catch(() => {})
       }
       if (!imageUri) throw new Error('Collection image is missing')
       // Re-pointing at the existing cover is only safe for content URIs we can
@@ -138,16 +141,14 @@ export function EditCollectionForm({
         createReferral: CREATE_REFERRAL,
       }
       const newUri = await uploadJson(metadata)
-      // Non-blocking best-effort wait, mirroring MintForm's collection-metadata
-      // gate: Turbo guarantees the JSON is stored once it returned an id — the
-      // gateway pool just lags on fresh uploads. Proceed regardless so
-      // propagation lag can't block the edit (this was throwing "still
-      // settling" before the signature ever appeared); the contractURI is
-      // permanent and self-heals at display time.
-      setStatusText('Verifying metadata propagation…')
-      if (!(await verifyArweaveAvailable(newUri))) {
-        console.warn('[EditCollection] metadata not yet propagated; continuing', newUri)
-      }
+      // Fire-and-forget — same reasoning as the image check above. Do NOT await
+      // the propagation poll: go straight to the signature so it fires inside
+      // the browser's user-activation window and the wallet popup auto-opens.
+      void verifyArweaveAvailable(newUri)
+        .then((ok) => {
+          if (!ok) console.warn('[EditCollection] metadata not yet propagated', newUri)
+        })
+        .catch(() => {})
 
       // Same string into the on-chain name() and the JSON name so they match.
       setStatusText('Confirm in your wallet…')
