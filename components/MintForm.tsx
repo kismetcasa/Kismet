@@ -147,10 +147,30 @@ interface UploadedMediaSession {
 }
 
 // After this many failed verification windows against the same cached
-// upload (~90s each for media), assume that upload is genuinely lost — or a
-// gateway edge has its 404 pinned — and fall back to a fresh upload (new
-// txid, new CDN cache keys) on the next attempt.
+// upload, assume that upload is genuinely lost — or a gateway edge has its
+// 404 pinned — and fall back to a fresh upload (new txid, new CDN cache
+// keys) on the next attempt.
 const MAX_REUSE_FAILURES = 3
+
+// Best-effort propagation wait before the on-chain mint. The mint is NEVER
+// blocked on the result — verifyArweaveAvailable returns false once the budget
+// is spent and we mint anyway (see the Promise.all gate below): the URIs are
+// permanent on Arweave the moment Turbo returns an id, and every Kismet surface
+// re-fetches them at display time, so a momentary gateway lag self-heals. The
+// budget exists ONLY to avoid a briefly-broken display right after mint, so it
+// must stay short — a slow-propagating upload otherwise strands the artist on a
+// static "Verifying propagation…" spinner. (The old 90s media budget did
+// exactly that: a fresh upload that hadn't surfaced yet froze the mint for a
+// full 90s. That budget predated the non-blocking rewrite, when a miss aborted
+// the mint and "wasted the upload" — it no longer does, so the long wait buys
+// nothing but a frozen UI.) Small JSON/poster items propagate in a round or two.
+const MINT_VERIFY_BUDGET_MS = 12_000
+// Media (up to ~420 MB) ingests slower than the small JSON items and also feeds
+// the server-side GIF transcode, which fetches the raw bytes back from a
+// gateway — so give it a modestly wider window. Still far under the old 90s so
+// the common mint can't stall; an oversized-GIF transcode that loses this race
+// is fail-safe (ships the original GIF unchanged).
+const MINT_MEDIA_VERIFY_BUDGET_MS = 25_000
 
 // PLATFORM_COLLECTION is filtered out of the picker (defense in depth in
 // case it leaks into the user-collection list from the indexer) but is
@@ -805,7 +825,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // mint on this — we wait briefly, then mint regardless. The cover URI
           // is permanent on Arweave and the UI re-fetches it at display time,
           // so it self-heals once propagation catches up.
-          const ok = await verifyArweaveAvailable(collectionUri)
+          const ok = await verifyArweaveAvailable(collectionUri, MINT_VERIFY_BUDGET_MS)
           if (!ok) {
             console.warn('[MintForm] collection metadata not yet propagated; minting anyway', collectionUri)
           }
@@ -908,10 +928,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         let durationSec: number | null
         // Propagation polling starts the moment the media URI is known, so
         // it runs in parallel with the remaining uploads instead of
-        // staircasing after them. Media bundles up to 420 MB can take
-        // longer than the 45s default to surface across the gateway pool,
-        // so widen the budget here — a false-negative wastes the user's
-        // entire upload.
+        // staircasing after them. Bounded by MINT_MEDIA_VERIFY_BUDGET_MS —
+        // a miss no longer wastes the upload (the mint proceeds regardless
+        // and the session is banked for resume), so the budget stays short
+        // to keep the artist from waiting on a static spinner.
         let mediaVerify: Promise<boolean>
 
         if (cachedUpload) {
@@ -925,7 +945,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           needsServerTranscode = cachedUpload.needsServerTranscode && !cachedUpload.serverTranscode
           setStep('verifying-upload')
           toast.loading('Resuming previous upload — verifying propagation…', { id: 'mint' })
-          mediaVerify = verifyArweaveAvailable(mediaUri, 90_000)
+          mediaVerify = verifyArweaveAvailable(mediaUri, MINT_MEDIA_VERIFY_BUDGET_MS)
         } else {
           // GIFs get transcoded to MP4 + JPEG poster (10-50× smaller; plays
           // through the existing <video> branch). Best-effort: any failure
@@ -1000,7 +1020,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 return null
               })
             : Promise.resolve(null)
-          mediaVerify = verifyArweaveAvailable(mediaUri, 90_000)
+          mediaVerify = verifyArweaveAvailable(mediaUri, MINT_MEDIA_VERIFY_BUDGET_MS)
 
           setStep('uploading-metadata')
           setUploadProgress(0)
@@ -1034,7 +1054,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // the user swaps files while we're awaiting).
         const uploadSession = mediaUploadRef.current
 
-        const posterVerify = posterUri ? verifyArweaveAvailable(posterUri) : Promise.resolve(true)
+        const posterVerify = posterUri ? verifyArweaveAvailable(posterUri, MINT_VERIFY_BUDGET_MS) : Promise.resolve(true)
         // Poster (when extracted) wins as `image` so feeds render the
         // static frame; the moving asset goes to animation_url. For video
         // media, never fall back to the MP4 URL as the image — the
@@ -1085,7 +1105,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         const metadataKey = JSON.stringify(metadata)
         const metadataUri = await uploadJsonCached(metadata, metadataKey)
-        const metadataVerify = verifyArweaveAvailable(metadataUri)
+        const metadataVerify = verifyArweaveAvailable(metadataUri, MINT_VERIFY_BUDGET_MS)
 
         // Auto-deploy: the moment's media doubles as the collection cover.
         // Covers don't surface animation_url, so the poster (when present)
@@ -1106,17 +1126,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           }
           collectionKey = JSON.stringify(collectionMetadata)
           collectionUri = await uploadJsonCached(collectionMetadata, collectionKey)
-          collectionVerify = verifyArweaveAvailable(collectionUri)
+          collectionVerify = verifyArweaveAvailable(collectionUri, MINT_VERIFY_BUDGET_MS)
         }
 
-        // Block on everything settling before kicking off the on-chain
-        // mint. Turbo confirms ingestion before the gateway has
-        // propagated, so jumping straight to /api/mint can produce a
-        // moment whose metadata fetches 404 at indexing time. 90s of
-        // polling for media (45s for the small JSON/poster items) covers
-        // the typical propagation window; on timeout we surface a retry
-        // message rather than commit a broken moment — and the banked
-        // session above makes that retry resume these same txids.
+        // Wait (best-effort) for everything to settle before kicking off the
+        // on-chain mint. Turbo confirms ingestion before the gateway has
+        // propagated, so jumping straight to /api/mint can produce a moment
+        // whose metadata fetches 404 at indexing time. We poll the gateway
+        // pool up to MINT_MEDIA_VERIFY_BUDGET_MS for media and
+        // MINT_VERIFY_BUDGET_MS for the small JSON/poster items — short
+        // budgets, because the mint is NOT blocked on the outcome: on a miss
+        // we mint anyway (the URIs are permanent and self-heal at display
+        // time) and bank the session so an on-chain retry resumes these txids.
+        // Promise.all settles when the slowest verify resolves, so these
+        // budgets cap how long the artist waits on the spinner.
         setStep('verifying-upload')
         toast.loading('Verifying Arweave propagation…', { id: 'mint' })
         const [mediaOk, metadataOk, collectionOk, posterOk] = await Promise.all([
