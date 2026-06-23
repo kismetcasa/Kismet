@@ -2,6 +2,7 @@ import { redis } from './redis'
 import { getEthUsd } from './ethPrice'
 import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
+import { expandToFidSiblings } from './addressUnion'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
@@ -93,21 +94,34 @@ export async function rebuildStats(): Promise<{ artists: number; transfers: numb
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
-// Single-artist earnings for the profile card. Visibility gating is applied by
-// the /api/stats route, not here — this is the raw read.
-export async function getArtistEarnings(artist: string): Promise<ArtistEarnings> {
-  const m = artist.toLowerCase()
+// Single-artist earnings for the profile card. Unioned across the artist's
+// Farcaster sibling wallets (expandToFidSiblings) — the SAME identity model the
+// timeline uses for their mints/collects — so earnings reflect every wallet they
+// sold from, not just the one the profile canonicalizes to. Without the union an
+// FC artist who minted from one wallet but whose profile resolves to another
+// reads 0 and the card vanishes despite real sales. A non-FC artist resolves to
+// [self], so this is a no-op (one zscore per key) for them. Pass `wallets` to
+// reuse a sibling set the caller already resolved (e.g. /api/stats shares one
+// resolution across this and the pending roll-up). Visibility gating is applied
+// by the callers, not here — this is the raw read.
+export async function getArtistEarnings(artist: string, wallets?: string[]): Promise<ArtistEarnings> {
+  const lower = artist.toLowerCase()
   try {
+    const ws = wallets ?? (await expandToFidSiblings(lower))
+    // 3 keys × N wallets of zscore plus the price, all issued in one tick so
+    // Upstash auto-pipelining collapses them into a single round trip (N = the
+    // sibling count, usually 1). Sum each currency across the artist's wallets.
     const [eth, usdc, mints, ethUsd] = await Promise.all([
-      redis.zscore(ETH_KEY, m),
-      redis.zscore(USDC_KEY, m),
-      redis.zscore(MINTS_KEY, m),
+      Promise.all(ws.map((w) => redis.zscore(ETH_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(USDC_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(MINTS_KEY, w))),
       getEthUsd(),
     ])
-    const e = Number(eth ?? 0)
-    const u = Number(usdc ?? 0)
-    return { address: m, eth: e, usdc: u, usd: e * (ethUsd ?? 0) + u, mints: Number(mints ?? 0) }
+    const sum = (xs: unknown[]) => xs.reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
+    const e = sum(eth)
+    const u = sum(usdc)
+    return { address: lower, eth: e, usdc: u, usd: e * (ethUsd ?? 0) + u, mints: sum(mints) }
   } catch {
-    return { address: m, eth: 0, usdc: 0, usd: 0, mints: 0 }
+    return { address: lower, eth: 0, usdc: 0, usd: 0, mints: 0 }
   }
 }
