@@ -244,7 +244,14 @@ interface Profile {
   // Server-computed: collapses the username → farcaster → ens fallback
   // chain into a single field. See app/api/profile/[address]/route.ts.
   displayName?: string | null
-  earnings?: { eth: number; usdc: number; usd: number; mints: number } | null
+  earnings?: {
+    eth: number
+    usdc: number
+    usd: number
+    mints: number
+    primary?: { eth: number; usdc: number; usd: number }
+    secondary?: { eth: number; usdc: number; usd: number }
+  } | null
   updatedAt: number
 }
 

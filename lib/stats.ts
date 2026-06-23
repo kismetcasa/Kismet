@@ -3,6 +3,7 @@ import { getEthUsd } from './ethPrice'
 import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
 import { expandToFidSiblings } from './addressUnion'
+import { getStoredSplits } from './splits'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
@@ -13,12 +14,35 @@ const MINTS_KEY = 'kismetart:stats:mints'
 const ETH_KEY = 'kismetart:stats:earned:eth'
 const USDC_KEY = 'kismetart:stats:earned:usdc'
 
+// Per-artist SECONDARY-sale royalty earnings (creator royalty on Seaport resales),
+// in human units keyed by artist. SEPARATE from the earned:* sets above on
+// purpose: those are rebuilt with absolute ZADDs from /transfers (rebuildStats),
+// which would wipe any royalties merged in. Royalties are event-driven instead —
+// incremented once per fill from the on-chain-verified PATCH handler
+// (creditListingRoyalty) — so they accrue forward and are never rebuilt.
+const ROYALTY_ETH_KEY = 'kismetart:stats:royalty:eth'
+const ROYALTY_USDC_KEY = 'kismetart:stats:royalty:usdc'
+// One-time idempotency claim per filled listing so a retried/concurrent fill
+// credits exactly once (ZINCRBY is not idempotent).
+const royaltyCreditedKey = (listingId: string) => `kismetart:royalty-credited:${listingId}`
+
+// A breakdown of earnings in each denomination. USD is blended at read time.
+export interface EarningsBreakdown {
+  eth: number
+  usdc: number
+  usd: number
+}
+
 export interface ArtistEarnings {
   address: string
+  // Totals = primary (mints) + secondary (listing royalties).
   eth: number
   usdc: number
   usd: number
   mints: number
+  // Source split of the totals, so the card can show "mints vs resales".
+  primary: EarningsBreakdown
+  secondary: EarningsBreakdown
 }
 
 // ── Rebuild ──────────────────────────────────────────────────────────────────
@@ -102,26 +126,83 @@ export async function rebuildStats(): Promise<{ artists: number; transfers: numb
 // reads 0 and the card vanishes despite real sales. A non-FC artist resolves to
 // [self], so this is a no-op (one zscore per key) for them. Pass `wallets` to
 // reuse a sibling set the caller already resolved (e.g. /api/stats shares one
-// resolution across this and the pending roll-up). Visibility gating is applied
-// by the callers, not here — this is the raw read.
+// resolution across this and the pending roll-up). Returns primary (mint) and
+// secondary (listing-royalty) earnings both separately and summed into the total.
+// Visibility gating is applied by the callers, not here — this is the raw read.
 export async function getArtistEarnings(artist: string, wallets?: string[]): Promise<ArtistEarnings> {
   const lower = artist.toLowerCase()
   try {
     const ws = wallets ?? (await expandToFidSiblings(lower))
-    // 3 keys × N wallets of zscore plus the price, all issued in one tick so
+    // 5 keys × N wallets of zscore plus the price, all issued in one tick so
     // Upstash auto-pipelining collapses them into a single round trip (N = the
-    // sibling count, usually 1). Sum each currency across the artist's wallets.
-    const [eth, usdc, mints, ethUsd] = await Promise.all([
+    // sibling count, usually 1). Primary (mints) and secondary (royalties) are
+    // summed separately so the card can break them out, then added for the total.
+    const [pEth, pUsdc, mints, rEth, rUsdc, ethUsd] = await Promise.all([
       Promise.all(ws.map((w) => redis.zscore(ETH_KEY, w))),
       Promise.all(ws.map((w) => redis.zscore(USDC_KEY, w))),
       Promise.all(ws.map((w) => redis.zscore(MINTS_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(ROYALTY_ETH_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(ROYALTY_USDC_KEY, w))),
       getEthUsd(),
     ])
     const sum = (xs: unknown[]) => xs.reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
-    const e = sum(eth)
-    const u = sum(usdc)
-    return { address: lower, eth: e, usdc: u, usd: e * (ethUsd ?? 0) + u, mints: sum(mints) }
+    const price = ethUsd ?? 0
+    const primEth = sum(pEth)
+    const primUsdc = sum(pUsdc)
+    const royEth = sum(rEth)
+    const royUsdc = sum(rUsdc)
+    const eth = primEth + royEth
+    const usdc = primUsdc + royUsdc
+    return {
+      address: lower,
+      eth,
+      usdc,
+      usd: eth * price + usdc,
+      mints: sum(mints),
+      primary: { eth: primEth, usdc: primUsdc, usd: primEth * price + primUsdc },
+      secondary: { eth: royEth, usdc: royUsdc, usd: royEth * price + royUsdc },
+    }
   } catch {
-    return { address: lower, eth: 0, usdc: 0, usd: 0, mints: 0 }
+    const zero = (): EarningsBreakdown => ({ eth: 0, usdc: 0, usd: 0 })
+    return { address: lower, eth: 0, usdc: 0, usd: 0, mints: 0, primary: zero(), secondary: zero() }
+  }
+}
+
+// Credit a secondary-sale creator royalty to the artist(s) who earned it. Called
+// once per fill from the on-chain-verified listings PATCH handler with the royalty
+// amount actually paid on-chain (human units). Split-aware to MATCH the primary
+// path: when the moment has stored splits the royalty is apportioned across its
+// recipients by percent (so it lands on artists' wallets even when the EIP-2981
+// receiver is a split contract); otherwise the whole amount goes to the receiver.
+// Idempotent per listing via an NX claim so a retried/concurrent fill can't
+// double-count. Best-effort — a failure leaves the figure slightly low rather
+// than breaking the fill.
+export async function creditListingRoyalty(args: {
+  listingId: string
+  collection: string
+  tokenId: string
+  currency: 'eth' | 'usdc'
+  amount: number
+  receiver: string
+}): Promise<void> {
+  const { listingId, collection, tokenId, currency, amount, receiver } = args
+  if (!Number.isFinite(amount) || amount <= 0) return
+  try {
+    // Resolve the apportionment BEFORE claiming, so a split-read failure doesn't
+    // burn the once-only claim and block a retry.
+    const stored = await getStoredSplits(collection, tokenId)
+    const shares = stored.recipients.length
+      ? stored.recipients.map((r) => ({ addr: r.address.toLowerCase(), amt: (amount * r.percentAllocation) / 100 }))
+      : [{ addr: receiver.toLowerCase(), amt: amount }]
+
+    const claimed = await redis.set(royaltyCreditedKey(listingId), '1', { nx: true })
+    if (claimed !== 'OK') return // already credited (retry / concurrent fill)
+
+    const key = currency === 'usdc' ? ROYALTY_USDC_KEY : ROYALTY_ETH_KEY
+    await Promise.all(
+      shares.filter((s) => s.amt > 0).map((s) => redis.zincrby(key, s.amt, s.addr)),
+    )
+  } catch {
+    // Swallow — royalty stats are best-effort and must never fail the sale.
   }
 }

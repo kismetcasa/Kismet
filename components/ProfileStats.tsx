@@ -12,12 +12,23 @@ interface Pending {
   count: number
 }
 
+// Earnings in each denomination, for one source (mints or resales).
+interface Breakdown {
+  eth: number
+  usdc: number
+  usd: number
+}
+
 interface Stats {
+  // Totals = primary (mints) + secondary (listing royalties).
   eth: number
   usdc: number
   usd: number
   mints: number
   public: boolean
+  // Source split of the totals, so the card can show "mints vs resales".
+  primary?: Breakdown
+  secondary?: Breakdown
   // Undistributed earnings sitting on the artist's splits. Owner-only; absent
   // for visitors and for the public profile payload.
   pending?: Pending | null
@@ -33,7 +44,14 @@ export function ProfileStats({
 }: {
   address: string
   asVisitor: boolean
-  initialEarnings: { eth: number; usdc: number; usd: number; mints: number } | null
+  initialEarnings: {
+    eth: number
+    usdc: number
+    usd: number
+    mints: number
+    primary?: Breakdown
+    secondary?: Breakdown
+  } | null
 }) {
   const { isInMiniApp } = useFarcaster()
   const [stats, setStats] = useState<Stats | null>(null)
@@ -63,6 +81,8 @@ export function ProfileStats({
             usd: d.usd ?? 0,
             mints: d.mints ?? 0,
             public: !!d.public,
+            primary: d.primary,
+            secondary: d.secondary,
             pending: d.pending ?? null,
           })
         }
@@ -86,6 +106,8 @@ export function ProfileStats({
 
   if (!stats) return null
   const hasEarnings = denoms.length > 0
+  // Resale royalties present → break the total into mints vs resales below.
+  const hasSecondary = !!stats.secondary && (stats.secondary.eth > 0 || stats.secondary.usdc > 0)
   // The owner sees the card on ANY primary-sale activity — earnings OR mints — so
   // an artist whose attributed earnings resolve to 0 (e.g. value split entirely
   // to collaborators) still gets their mint count and the pin, instead of a card
@@ -186,6 +208,11 @@ export function ProfileStats({
           {active && stats.mints > 0 && (
             <p className="text-muted text-xs mt-0.5">
               {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+            </p>
+          )}
+          {active && hasSecondary && stats.primary && stats.secondary && (
+            <p className="text-muted text-xs mt-0.5" title="Mint sales vs secondary-market resale royalties">
+              {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
           {pending && pendingDenom && (
