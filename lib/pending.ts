@@ -4,6 +4,7 @@ import { serverBaseClient } from './rpc'
 import { getEthUsd } from './ethPrice'
 import { isAddress } from './address'
 import { getRecipientSplits, type RecipientSplit } from './splits'
+import { expandToFidSiblings } from './addressUnion'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -87,8 +88,37 @@ async function resolveSplitAddresses(
   return out
 }
 
-async function compute(address: string): Promise<ArtistPending> {
-  const moments = (await getRecipientSplits(address)).slice(0, MAX_MOMENTS)
+// Merge the split memberships of an artist's wallets into one per-moment list.
+// A single moment can name more than one of the artist's own wallets as payees
+// (they split their take across wallets), so their share of that moment is the
+// SUM of those wallets' percents — deduping by moment, as a single-wallet read
+// does, would silently drop the others. Clamped to a whole 1–100 to preserve the
+// invariant the downstream BigInt share math relies on (a moment's allocations
+// sum to 100 across ALL recipients, so an artist's own portion can't legitimately
+// exceed it; the clamp just guards corrupt data).
+function mergeSplitsByMoment(perWallet: RecipientSplit[][]): RecipientSplit[] {
+  const byMoment = new Map<string, RecipientSplit>()
+  for (const splits of perWallet) {
+    for (const s of splits) {
+      const k = `${s.collection}:${s.tokenId}`
+      const existing = byMoment.get(k)
+      if (existing) existing.pct = Math.min(100, existing.pct + s.pct)
+      else byMoment.set(k, { ...s })
+    }
+  }
+  return [...byMoment.values()]
+}
+
+async function compute(address: string, wallets?: string[]): Promise<ArtistPending> {
+  // Union across the artist's FC sibling wallets (same identity model as
+  // getArtistEarnings) so undistributed balances cover every wallet they're a
+  // payee on, not just the canonical one. The caller (/api/stats) resolves the
+  // set once and shares it with the earnings roll-up; fall back to resolving here
+  // for any direct caller. The MAX_MOMENTS cap is applied to the MERGED set, so
+  // the on-chain fan-out stays bounded regardless of how many wallets union in.
+  const ws = wallets ?? (await expandToFidSiblings(address))
+  const perWallet = await Promise.all(ws.map((w) => getRecipientSplits(w)))
+  const moments = mergeSplitsByMoment(perWallet).slice(0, MAX_MOMENTS)
   if (!moments.length) return EMPTY
 
   const addrs = await resolveSplitAddresses(moments)
@@ -160,9 +190,11 @@ async function compute(address: string): Promise<ArtistPending> {
  * never persisted — distribution is permissionless (it can happen outside our
  * /api/distribute), so any stored ledger would silently drift. Owner-only by
  * construction at the call site. Best-effort: any failure yields zeros rather
- * than breaking the stats response.
+ * than breaking the stats response. Unioned across the artist's FC sibling
+ * wallets to match getArtistEarnings; pass `wallets` to reuse a set the caller
+ * already resolved (the cache key stays the canonical address either way).
  */
-export async function getArtistPending(address: string): Promise<ArtistPending> {
+export async function getArtistPending(address: string, wallets?: string[]): Promise<ArtistPending> {
   const key = address.toLowerCase()
   const cacheKey = pendingCacheKey(key)
   const cached = await redis.get<ArtistPending>(cacheKey).catch(() => null)
@@ -171,7 +203,7 @@ export async function getArtistPending(address: string): Promise<ArtistPending> 
   }
   try {
     const value = await Promise.race([
-      compute(key),
+      compute(key, wallets),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('pending timeout')), COMPUTE_TIMEOUT_MS),
       ),

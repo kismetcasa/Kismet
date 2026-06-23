@@ -100,19 +100,21 @@ export async function rebuildStats(): Promise<{ artists: number; transfers: numb
 // sold from, not just the one the profile canonicalizes to. Without the union an
 // FC artist who minted from one wallet but whose profile resolves to another
 // reads 0 and the card vanishes despite real sales. A non-FC artist resolves to
-// [self], so this is a no-op (one zscore per key) for them. Visibility gating is
-// applied by the callers, not here — this is the raw read.
-export async function getArtistEarnings(artist: string): Promise<ArtistEarnings> {
+// [self], so this is a no-op (one zscore per key) for them. Pass `wallets` to
+// reuse a sibling set the caller already resolved (e.g. /api/stats shares one
+// resolution across this and the pending roll-up). Visibility gating is applied
+// by the callers, not here — this is the raw read.
+export async function getArtistEarnings(artist: string, wallets?: string[]): Promise<ArtistEarnings> {
   const lower = artist.toLowerCase()
   try {
-    const wallets = await expandToFidSiblings(lower)
+    const ws = wallets ?? (await expandToFidSiblings(lower))
     // 3 keys × N wallets of zscore plus the price, all issued in one tick so
     // Upstash auto-pipelining collapses them into a single round trip (N = the
     // sibling count, usually 1). Sum each currency across the artist's wallets.
     const [eth, usdc, mints, ethUsd] = await Promise.all([
-      Promise.all(wallets.map((w) => redis.zscore(ETH_KEY, w))),
-      Promise.all(wallets.map((w) => redis.zscore(USDC_KEY, w))),
-      Promise.all(wallets.map((w) => redis.zscore(MINTS_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(ETH_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(USDC_KEY, w))),
+      Promise.all(ws.map((w) => redis.zscore(MINTS_KEY, w))),
       getEthUsd(),
     ])
     const sum = (xs: unknown[]) => xs.reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
