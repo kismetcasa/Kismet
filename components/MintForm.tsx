@@ -332,18 +332,30 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [price, setPrice] = useState('0')
   const [priceCurrency, setPriceCurrency] = useState<PriceCurrency>('eth')
   const [maxSupply, setMaxSupply] = useState('')
+  // Artist self-mint toggle. ON (default) = inprocess mints the creator's copy
+  // at setup (mintToCreatorCount: 1), exactly as before. Because that copy mints
+  // through the sale strategy — which enforces block.timestamp >= saleStart — the
+  // sale must open NOW, so the "Sale opens" input is hidden and saleStart is
+  // pinned to now. OFF = no creator copy (mintToCreatorCount: 0); with no
+  // setup-time strategy mint, a scheduled future start becomes safe through the
+  // relay, so the "Sale opens" input is revealed. This coupling is the whole
+  // reason scheduling is gated on the toggle: future-start WITH a creator copy is
+  // exactly what reverted the relay setup tx before (and is now unrepresentable).
+  const [artistMintEnabled, setArtistMintEnabled] = useState(true)
+  // Optional sale START (datetime-local string) — only meaningful when the artist
+  // self-mint is OFF (see above). Empty = opens now. With the toggle ON the input
+  // is hidden and saleStart is pinned to now.
+  const [saleStartInput, setSaleStartInput] = useState('')
   // Optional sale END (datetime-local string). Empty = open-ended, leaving the
   // supply cap (or open edition = forever) to bound the mint instead of a clock
-  // — the prior always-open default. There is deliberately NO sale-start input:
-  // the mint always opens now, because inprocess mints the creator's copy at
-  // setup through the sale strategy, which reverts if saleStart is in the
-  // future (a scheduled start can't be supported through the /moment/create
-  // relay).
+  // — the prior always-open default.
   const [saleEndInput, setSaleEndInput] = useState('')
   // Native datetime-local renders a "mm/dd/yyyy, --:-- --" placeholder when
   // empty (the `placeholder` attr is ignored for this type), which reads as
   // clutter. Track focus so we can hide the edit text via CSS until the user
-  // actually engages the field — see the conditional className below.
+  // actually engages the field — see the conditional className below. One flag
+  // per input (start only renders when the self-mint toggle is off).
+  const [saleStartFocused, setSaleStartFocused] = useState(false)
   const [saleEndFocused, setSaleEndFocused] = useState(false)
   const [splits, setSplits] = useState<Split[]>([])
   const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
@@ -382,8 +394,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
   // the price input is hidden and the salesConfig price is forced to 0.
   // Media-only — text mode hides Supply, so a stale `1` from a prior
-  // media session can't sneak through.
-  const is11 = mintMode === 'media' && maxSupply.trim() === '1'
+  // media session can't sneak through. Gated on artistMintEnabled: the
+  // "1/1 exhausts supply" semantics only hold when the creator copy mints —
+  // with self-mint OFF, a supply of 1 is just a public edition of one, so
+  // price + sale window apply normally.
+  const is11 = mintMode === 'media' && maxSupply.trim() === '1' && artistMintEnabled
 
   // Sale-close display. Empty falls back to open-ended; the helper mirrors the
   // Supply field's open-edition vs finite copy so the empty-end semantics read
@@ -391,6 +406,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // forever. nowLocal feeds the input's `min`.
   const nowLocal = toLocalInput(new Date())
   const finiteSupply = mintMode === 'media' && !is11 && maxSupply.trim() !== ''
+  // Only shown when the self-mint toggle is off (the input is hidden otherwise).
+  const saleStartHelper = saleStartInput ? 'scheduled start' : 'opens immediately'
   const saleEndHelper = is11
     ? '1/1 — no public sale'
     : saleEndInput
@@ -660,34 +677,43 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       ? parseUnits(normalizedPrice, 6).toString()
       : parseEther(normalizedPrice).toString()
     const now = Math.floor(Date.now() / 1000)
-    // Sale window. The mint always opens NOW: inprocess mints the creator's
-    // copy at setup through the sale strategy, which reverts if saleStart is in
-    // the future — so a scheduled start can't be supported through this path.
-    // Sale end is optional; empty → max uint64, leaving the supply cap (or open
-    // edition = forever) to bound the mint instead of a clock (the prior
-    // always-open behavior). A 1/1 has no public sale, so it stays open-ended
-    // regardless of any stale input. datetime-local has no timezone, so
-    // new Date() reads it as the creator's local wall-clock.
+    // Sale window. INVARIANT: a future saleStart is emitted ONLY when the artist
+    // self-mint is OFF. With it ON, inprocess mints the creator's copy at setup
+    // through the sale strategy (which enforces block.timestamp >= saleStart), so
+    // the start MUST be now or the relay setup tx reverts — hence we pin it and
+    // hide the input. With it OFF there is no setup-time mint, so a scheduled
+    // future start is safe. Sale end is optional; empty → max uint64, leaving the
+    // supply cap (or open edition = forever) to bound the mint instead of a clock
+    // (the prior always-open behavior). A 1/1 (self-mint on) has no public sale,
+    // so it stays open-ended regardless of any stale input. datetime-local has no
+    // timezone, so new Date() reads it as the creator's local wall-clock.
     const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
+    let saleStartTs = now
+    if (!artistMintEnabled && !is11 && saleStartInput) {
+      const ts = Math.floor(new Date(saleStartInput).getTime() / 1000)
+      if (Number.isNaN(ts)) { toast.error('Invalid sale start'); return }
+      saleStartTs = ts
+    }
     let saleEndStr = OPEN_ENDED_SALE
     if (!is11 && saleEndInput) {
       const ts = Math.floor(new Date(saleEndInput).getTime() / 1000)
       if (Number.isNaN(ts)) { toast.error('Invalid sale end'); return }
       if (ts <= now) { toast.error('Sale must close in the future'); return }
+      if (ts <= saleStartTs) { toast.error('Sale must close after it opens'); return }
       saleEndStr = String(ts)
     }
     const salesConfig = priceCurrency === 'usdc'
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
+          saleStart: String(saleStartTs),
           saleEnd: saleEndStr,
           currency: USDC_BASE,
         }
       : {
           type: 'fixedPrice' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(now),
+          saleStart: String(saleStartTs),
           saleEnd: saleEndStr,
         }
     const supplyTrimmed = maxSupply.trim()
@@ -779,7 +805,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             tokenContent: textContent.trim(),
             createReferral: CREATE_REFERRAL,
             salesConfig,
-            mintToCreatorCount: 1,
+            // Artist self-mint choice: 1 = mint edition #1 to the creator at
+            // setup (default); 0 = no creator copy, which is what makes the
+            // optional scheduled saleStart legal through the relay.
+            mintToCreatorCount: artistMintEnabled ? 1 : 0,
             ...(finalSplits ? {} : { payoutRecipient: address }),
           },
           name: name.trim(),
@@ -1105,7 +1134,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             tokenMetadataURI: metadataUri,
             createReferral: CREATE_REFERRAL,
             salesConfig,
-            mintToCreatorCount: 1,
+            // Artist self-mint choice: 1 = mint edition #1 to the creator at
+            // setup (default); 0 = no creator copy, which is what makes the
+            // optional scheduled saleStart legal through the relay.
+            mintToCreatorCount: artistMintEnabled ? 1 : 0,
             ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
             ...(finalSplits ? {} : { payoutRecipient: address }),
           },
@@ -1263,6 +1295,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setDescription('')
             setPrice('0')
             setMaxSupply('')
+            setArtistMintEnabled(true)
+            setSaleStartInput('')
             setSaleEndInput('')
             setSplits([])
             setSplitInput({ address: '', pct: '' })
@@ -1436,31 +1470,81 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         </div>
       )}
 
-      {/* Sale closes — optional end of the public mint. Empty leaves it
-          open-ended, so the supply cap (or open edition = forever) closes the
-          mint instead of a clock. Disabled for 1/1s (no public sale). Shown in
-          both modes since the writing endpoint uses the same salesConfig.
-          There is deliberately no "Sale opens": the mint always starts now,
-          because inprocess mints the creator's copy at setup through the sale
-          strategy, which reverts if the window hasn't opened yet. */}
-      <div>
-        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
-          Sale closes
-        </label>
-        <input
-          type="datetime-local"
-          value={saleEndInput}
-          min={nowLocal}
-          disabled={is11}
-          onChange={(e) => setSaleEndInput(e.target.value)}
-          onFocus={() => setSaleEndFocused(true)}
-          onBlur={() => setSaleEndFocused(false)}
-          aria-label="Sale closes"
-          className={`w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]${
-            !saleEndInput && !saleEndFocused ? ' [&::-webkit-datetime-edit]:text-transparent' : ''
-          }`}
-        />
-        <p className="text-xs text-muted font-mono mt-1">{saleEndHelper}</p>
+      {/* Artist self-mint toggle. ON (default) mints edition #1 to the creator
+          at setup, exactly as before — the sale must open now (that copy mints
+          through the sale strategy). OFF skips the copy and reveals "Sale opens"
+          so the creator can schedule the drop: the only configuration in which a
+          future start is safe through the relay. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider">
+            Mint a copy to myself
+          </label>
+          <p className="text-xs text-muted font-mono mt-1">
+            {artistMintEnabled
+              ? 'edition #1 goes to your wallet — sale opens now'
+              : 'no copy minted — you can schedule when the sale opens'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setArtistMintEnabled((v) => !v)}
+          aria-pressed={artistMintEnabled}
+          aria-label="Mint a copy to myself"
+          className="flex-shrink-0 mt-0.5"
+        >
+          <div className={`relative w-8 h-4 rounded-full transition-colors ${artistMintEnabled ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${artistMintEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+          </div>
+        </button>
+      </div>
+
+      {/* Sale window. "Sale closes" is always available (an open sale that ends
+          later is safe). "Sale opens" only appears with self-mint OFF, because a
+          future start is only legal through the relay when no creator copy mints
+          at setup. Disabled for 1/1s (no public sale). Shown in both modes since
+          the writing endpoint uses the same salesConfig. */}
+      <div className="flex gap-3">
+        {!artistMintEnabled && (
+          <div className="flex-1 min-w-0">
+            <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+              Sale opens
+            </label>
+            <input
+              type="datetime-local"
+              value={saleStartInput}
+              min={nowLocal}
+              disabled={is11}
+              onChange={(e) => setSaleStartInput(e.target.value)}
+              onFocus={() => setSaleStartFocused(true)}
+              onBlur={() => setSaleStartFocused(false)}
+              aria-label="Sale opens"
+              className={`w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]${
+                !saleStartInput && !saleStartFocused ? ' [&::-webkit-datetime-edit]:text-transparent' : ''
+              }`}
+            />
+            <p className="text-xs text-muted font-mono mt-1">{saleStartHelper}</p>
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+            Sale closes
+          </label>
+          <input
+            type="datetime-local"
+            value={saleEndInput}
+            min={(!artistMintEnabled && saleStartInput) || nowLocal}
+            disabled={is11}
+            onChange={(e) => setSaleEndInput(e.target.value)}
+            onFocus={() => setSaleEndFocused(true)}
+            onBlur={() => setSaleEndFocused(false)}
+            aria-label="Sale closes"
+            className={`w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono focus:outline-none focus:border-muted disabled:opacity-50 disabled:cursor-not-allowed [color-scheme:dark]${
+              !saleEndInput && !saleEndFocused ? ' [&::-webkit-datetime-edit]:text-transparent' : ''
+            }`}
+          />
+          <p className="text-xs text-muted font-mono mt-1">{saleEndHelper}</p>
+        </div>
       </div>
 
       {/* Price + Supply — placed before the Collection picker so the

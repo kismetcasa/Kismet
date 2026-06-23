@@ -342,7 +342,22 @@ export async function proxyMintRequest(
       // recordPlatformTx in after() below remains as a convergence backstop:
       // if this synchronous credit fails (caught), the webhook can still
       // converge once the platform flag is written.
-      if (txHash && gateConfig.passCollection && contractAddress.toLowerCase() === gateConfig.passCollection) {
+      // This synchronous credit assumes the create minted a copy to the creator
+      // (the historical mintToCreatorCount: 1). With the artist self-mint OFF
+      // (count 0) no Pass token reaches `account`, so crediting validity here
+      // would grant gate access for a token they don't hold. Gate on a copy
+      // actually being minted; default to 1 so legacy/normal mints are unchanged.
+      // The webhook (recordPlatformTx -> processTransfer) still reconciles off the
+      // real TransferSingle, so an actual transfer is never missed by skipping here.
+      const mintedToCreator = Number(
+        (tokenObj as { mintToCreatorCount?: unknown }).mintToCreatorCount ?? 1,
+      )
+      if (
+        txHash &&
+        mintedToCreator > 0 &&
+        gateConfig.passCollection &&
+        contractAddress.toLowerCase() === gateConfig.passCollection
+      ) {
         try {
           await creditValidityOnce({
             collection: gateConfig.passCollection,
