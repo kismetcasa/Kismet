@@ -44,11 +44,17 @@ COPY . .
 RUN node scripts/copy-ffmpeg-core.mjs
 
 ENV NEXT_TELEMETRY_DISABLED=1
-# Headroom for the type-checker and compilation passes — sharp's
-# extensive type definitions plus next build's bundler push memory
-# usage well above the default ~2 GB Node heap on a typical
-# resource-constrained Coolify host.
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+# Bound the V8 heap so `next build` stays under the Coolify host's
+# available RAM and isn't reaped by the kernel OOM-killer mid-compile.
+# That failure mode is an abrupt SIGKILL with NO V8 "heap out of memory"
+# message — `next build` dies right at "Creating an optimized production
+# build" and the deploy reports a bare non-zero exit (see the 2026 deploy
+# post-mortem). Type-check/lint are already disabled in next.config, so
+# this heap covers webpack/SWC compilation only. Measured cold-build peak
+# node RSS: ~4.1 GB at 4096, ~3.5 GB at 3072 — both build cleanly, so 3072
+# buys ~640 MB of headroom for the out-of-heap SWC Rust workers + the OS
+# on a constrained host. If it still OOMs, the host needs more RAM/swap.
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN npm run build
 
 # ─── runtime stage ───────────────────────────────────────────────────

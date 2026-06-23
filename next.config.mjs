@@ -48,7 +48,7 @@ const nextConfig = {
   // webpack's intermediate caches during compilation for another
   // 15-30% reduction. Together they trade build wall-time for headroom
   // against SIGKILL. If the build still OOMs, the host needs more
-  // RAM/swap — the V8 heap alone is capped at 4 GB (Dockerfile).
+  // RAM/swap — the V8 heap alone is capped at 3 GB (Dockerfile).
   experimental: {
     cpus: 1,
     webpackMemoryOptimizations: true,
