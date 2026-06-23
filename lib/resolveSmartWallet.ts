@@ -55,14 +55,15 @@ export async function resolveSmartWallet(
 
   let res: Response
   try {
-    // Param resilience — CONFIRMED against the LIVE API (2026): `/smartwallet`
-    // requires `walletAddress` (or `accountId`); `artist_wallet` — what the docs
-    // STILL show — now 400s ("Either accountId or walletAddress must be
-    // provided"). Don't trust the docs over the live endpoint. We send BOTH:
-    // walletAddress satisfies the API, the stale artist_wallet is ignored, and
-    // we stay resilient if inprocess renames it again (it already has once).
+    // Per the authoritative inprocess OpenAPI spec (and a direct instruction
+    // from their team, 2026): GET /api/smartwallet takes EXACTLY one of
+    // `accountId` (UUID) or `walletAddress` (the creator EOA). There is no
+    // `artist_wallet` param — that was a stale name carried over from older
+    // docs. We only have the EOA here, so we send `walletAddress`. Sending the
+    // unrecognized `artist_wallet` alongside it caused the upstream to 400
+    // ("neither accountId nor walletAddress provided"), which collapsed to a
+    // null resolution (502) and silently skipped the deploy-time ADMIN grant.
     const url = inprocessUrl('/smartwallet', {
-      artist_wallet: artistWallet,
       walletAddress: artistWallet,
     })
     const headers: Record<string, string> = { Accept: 'application/json' }
