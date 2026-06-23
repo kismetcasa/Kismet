@@ -109,9 +109,13 @@ export function EditCollectionForm({
         const thumbhashPromise = generateThumbhash(cover.file)
         imageUri = await uploadToArweave(cover.file, () => {})
         thumbhash = (await thumbhashPromise) ?? undefined
+        // Non-blocking best-effort wait, mirroring MintForm: Turbo guarantees
+        // the image is stored once it returned an id — the gateway pool just
+        // lags on fresh uploads. Proceed regardless; the ar:// URI is permanent
+        // and the UI re-fetches at display time, so it self-heals.
         setStatusText('Verifying image propagation…')
         if (!(await verifyArweaveAvailable(imageUri, 90_000))) {
-          throw new Error('Image is still settling on Arweave — try again in a minute')
+          console.warn('[EditCollection] image not yet propagated; continuing', imageUri)
         }
       }
       if (!imageUri) throw new Error('Collection image is missing')
@@ -134,9 +138,15 @@ export function EditCollectionForm({
         createReferral: CREATE_REFERRAL,
       }
       const newUri = await uploadJson(metadata)
+      // Non-blocking best-effort wait, mirroring MintForm's collection-metadata
+      // gate: Turbo guarantees the JSON is stored once it returned an id — the
+      // gateway pool just lags on fresh uploads. Proceed regardless so
+      // propagation lag can't block the edit (this was throwing "still
+      // settling" before the signature ever appeared); the contractURI is
+      // permanent and self-heals at display time.
       setStatusText('Verifying metadata propagation…')
       if (!(await verifyArweaveAvailable(newUri))) {
-        throw new Error('Metadata is still settling on Arweave — try again in a minute')
+        console.warn('[EditCollection] metadata not yet propagated; continuing', newUri)
       }
 
       // Same string into the on-chain name() and the JSON name so they match.
