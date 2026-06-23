@@ -146,16 +146,24 @@ export function useDirectCollect(): UseDirectCollectReturn {
         }
         const { pricePerToken, currency } = sale
 
-        // Scheduled drop not yet open. resolveOnchainSale returns a configured
-        // sale whenever its row exists (it doesn't check saleStart), and the
-        // collect button's saleNotStarted gate only bites once the card's
-        // saleConfig has loaded — so a click in that pre-load window (or any
-        // non-button caller) would otherwise reach the strategy and revert with
-        // SaleHasNotStarted. Surface the not-started state cleanly; the on-chain
-        // check stays the backstop. Wall-clock matches the display gate's clock.
-        if (sale.saleStart > BigInt(Math.floor(Date.now() / 1000))) {
+        // Window check. resolveOnchainSale returns a configured sale whenever its
+        // row exists (it checks neither bound), and the button's saleNotStarted /
+        // saleEnded gates only bite once the card's saleConfig has loaded — so a
+        // click in that pre-load window (or any non-button caller) would reach the
+        // strategy and revert with SaleHasNotStarted / SaleEnded. Refuse outside
+        // [saleStart, saleEnd] with a clean message; the on-chain check stays the
+        // backstop. Operators match the strategy exactly (active for
+        // saleStart <= now <= saleEnd) so we never block a mint the chain would
+        // accept; saleEnd 0 = no end. Wall-clock matches the display gate's clock.
+        const nowSec = BigInt(Math.floor(Date.now() / 1000))
+        if (sale.saleStart > nowSec) {
           setStatus('error')
           toast.error('This mint has not started yet', { id: TOAST_ID })
+          return null
+        }
+        if (sale.saleEnd !== 0n && nowSec > sale.saleEnd) {
+          setStatus('error')
+          toast.error('This mint has ended', { id: TOAST_ID })
           return null
         }
 
