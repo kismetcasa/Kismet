@@ -144,11 +144,17 @@ export function CollectionView({
   // chip routes to the Airdrop tab.
   const viewerHasMinter =
     viewerPerms !== undefined && hasMinterBit(viewerPerms as bigint)
+  // On-chain ADMIN on the CONNECTED wallet's own EOA — i.e. the capability to
+  // call addPermission. This is who can authorize, independent of any
+  // creator-attribution (KV row, inprocess `creator`, etc.).
+  const viewerEoaHasAdmin =
+    viewerPerms !== undefined && hasAdminBit(viewerPerms as bigint)
 
   // Creator-tier chip reads the smart wallet's perms, since MintForm
   // relays through inprocess and the on-chain actor is the SW.
-  const { address: viewerSmartWallet } = useInprocessSmartWallet(connectedAddress)
-  const { data: viewerSmartWalletPerms } = useReadContract({
+  const { address: viewerSmartWallet, loading: viewerSwLoading, notFound: viewerSwNotFound } =
+    useInprocessSmartWallet(connectedAddress)
+  const { data: viewerSmartWalletPerms, refetch: refetchViewerSmartWalletPerms } = useReadContract({
     address: address as `0x${string}`,
     abi: COLLECTION_ABI,
     functionName: 'permissions',
@@ -169,33 +175,30 @@ export function CollectionView({
   const showCreatorChip = !canGrantHere && viewerSmartWalletHasAdmin
   const showMinterChip = !canGrantHere && !showCreatorChip && viewerHasMinter
 
-  // Retroactive authorize flow — for collections deployed before we
-  // started granting the artist's inprocess smart wallet ADMIN as a
-  // setupAction. The smart wallet on inprocess is per-EOA, so we look
-  // up the wallet bound to *this collection's creator*
-  // (defaultAdminAddress) — that's the wallet whose ADMIN status the
-  // banner is gating on, and that's the grantee on the addPermission
-  // tx fired from canGrantHere viewers.
-  const { address: inprocessSmartWallet, loading: swLoading, notFound: swNotFound } = useInprocessSmartWallet(
-    defaultAdminAddress,
-  )
-  const inprocessConfigured =
-    !!inprocessSmartWallet && isAddress(inprocessSmartWallet)
-  const { data: inprocessPerms, refetch: refetchInprocessPerms } = useReadContract({
-    address: address as `0x${string}`,
-    abi: COLLECTION_ABI,
-    functionName: 'permissions',
-    args: inprocessConfigured
-      ? [0n, inprocessSmartWallet as `0x${string}`]
-      : undefined,
-    query: { enabled: inprocessConfigured && canGrantHere },
-  })
-  const inprocessIsAdmin =
-    inprocessPerms !== undefined && hasAdminBit(inprocessPerms as bigint)
-  const showAuthorize = canGrantHere && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
-  // Show when the creator has no inprocess account yet — collection deployed
-  // but minting is gated until they create one.
-  const showNoAccount = canGrantHere && !swLoading && swNotFound
+  // Retroactive authorize flow — for collections whose deploy-time grant to
+  // the artist's inprocess smart wallet was skipped (it's best-effort at
+  // deploy), so relayed mints revert until ADMIN is granted. Gate the banner
+  // on the CONNECTED wallet's OWN on-chain state rather than creator-
+  // attribution: show it when the viewer holds on-chain ADMIN (so they CAN
+  // grant) AND their own relay smart wallet lacks ADMIN (so they NEED it). The
+  // grantee is the viewer's own smart wallet (viewerSmartWallet). This is the
+  // correct, robust gate:
+  //   - it works immediately after deploy, before the KV row that names the
+  //     creator EOA has been written/propagated (the page is server-rendered,
+  //     so an attribution-based gate goes blank exactly when the grant was just
+  //     skipped), and
+  //   - it never shows a banner the viewer can't act on (you only see it if
+  //     your EOA actually holds ADMIN to sign the addPermission).
+  const showAuthorize =
+    viewerEoaHasAdmin &&
+    !!viewerSmartWallet &&
+    isAddress(viewerSmartWallet) &&
+    viewerSmartWalletPerms !== undefined &&
+    !viewerSmartWalletHasAdmin
+  // Viewer holds ADMIN but has no inprocess account yet — the smart wallet that
+  // would execute the relayed mint doesn't exist, so minting is gated until
+  // they create one.
+  const showNoAccount = viewerEoaHasAdmin && !viewerSwLoading && viewerSwNotFound
 
   // Centralized addPermission flow — same hook AirdropForm uses. Banner
   // grants the smart wallet ADMIN at tokenId 0 (collection-wide) since
@@ -487,17 +490,17 @@ export function CollectionView({
       toast.error('Authorize failed', { id: 'authorize', description: 'The transaction reverted on-chain.' })
       return
     }
-    void refetchInprocessPerms()
+    void refetchViewerSmartWalletPerms()
     toast.success('Kismet authorized — minting now works for this collection', { id: 'authorize' })
-  }, [authorizeReceipt, refetchInprocessPerms, resetGrant])
+  }, [authorizeReceipt, refetchViewerSmartWalletPerms, resetGrant])
 
   async function handleAuthorize() {
-    if (!connectedAddress || !inprocessConfigured || !inprocessSmartWallet) return
+    if (!connectedAddress || !viewerSmartWallet || !isAddress(viewerSmartWallet)) return
     try {
       toast.loading('Confirm in wallet…', { id: 'authorize' })
       const outcome = await grant({
         collection: address as `0x${string}`,
-        grantee: inprocessSmartWallet as `0x${string}`,
+        grantee: viewerSmartWallet as `0x${string}`,
         tokenId: 0n,
         bit: 'admin',
       })
@@ -507,7 +510,7 @@ export function CollectionView({
       }
       // Already had ADMIN on chain — refetch so the banner hides
       // immediately instead of waiting for the (nonexistent) tx.
-      void refetchInprocessPerms()
+      void refetchViewerSmartWalletPerms()
       toast.success('Kismet already authorized for this collection', { id: 'authorize' })
     } catch (err) {
       toastError('Authorize', err, { id: 'authorize' })
