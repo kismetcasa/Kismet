@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
-import { useAccount, useReadContract } from 'wagmi'
+import { useAccount, useReadContract, usePublicClient } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
@@ -21,7 +21,7 @@ import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { reportClientError } from '@/lib/clientError'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
-import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
+import { useInprocessSmartWallet, fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
@@ -285,6 +285,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // We check the ADMIN bit specifically because inprocess's relay
   // requires it for setupNewToken — MINTER alone won't work through
   // the relay even though Zora's contract would accept it.
+  // Public client for ad-hoc on-chain reads on the failure path (see the mint
+  // catch's authorization fallback). usePublicClient targets the configured Base chain.
+  const publicClient = usePublicClient()
   const { address: smartWalletForCaller } = useInprocessSmartWallet(address)
   const { data: smartWalletPerms } = useReadContract({
     address: targetCollection ? (targetCollection as `0x${string}`) : undefined,
@@ -479,6 +482,35 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     setStep('idle')
     setUploadProgress(0)
     return true
+  }
+
+  // Failure-path fallback for the case maybeHandleAuthError can't catch: a mint
+  // into an EXISTING collection that reverts because the relay's smart wallet
+  // lacks ADMIN, but where the client pre-check (preflightUnauthorized) failed
+  // open AND inprocess's revert phrasing didn't match the regex above — so it
+  // lands as a generic failure with no way forward (exactly how this stranded a
+  // creator before). Re-reads the actual on-chain ADMIN bit (robust to whatever
+  // string the upstream returns). Fails CLOSED to "not missing" on any
+  // lookup/read error, so a flaky probe can never mislabel an unrelated failure
+  // as an auth issue.
+  async function smartWalletMissingAdmin(): Promise<boolean> {
+    try {
+      if (!publicClient || !address || !targetCollection || !isAddress(targetCollection)) {
+        return false
+      }
+      const sw = await fetchInprocessSmartWallet(address)
+      const swAddr = sw && 'address' in sw ? sw.address : null
+      if (!swAddr || !isAddress(swAddr)) return false
+      const perms = await publicClient.readContract({
+        address: targetCollection as `0x${string}`,
+        abi: COLLECTION_ABI,
+        functionName: 'permissions',
+        args: [0n, swAddr as `0x${string}`],
+      })
+      return !hasAdminBit(perms as bigint)
+    } catch {
+      return false
+    }
   }
 
   // Platform-pause kill switch — the mint proxy returns 503 with a
@@ -1257,6 +1289,26 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       setStep('idle')
       setUploadProgress(0)
       toastError('Mint', err, { id: 'mint' })
+      // Last-resort authorization hint (non-blocking). The generic toast is
+      // already up; if this was a mint into an existing collection and the
+      // relay's smart wallet actually lacks ADMIN, upgrade the same toast to a
+      // one-click Authorize CTA so the creator isn't left at a dead end. Runs
+      // in the background so it never delays the failure feedback.
+      if (!isAutoDeploy && targetCollection) {
+        const collectionForCta = targetCollection
+        void smartWalletMissingAdmin().then((missing) => {
+          if (!missing) return
+          toast.error('Authorize this collection to mint', {
+            id: 'mint',
+            description:
+              'Kismet needs a one-time onchain grant before it can mint into this collection.',
+            action: {
+              label: 'Authorize',
+              onClick: () => router.push(`/collection/${collectionForCta}`),
+            },
+          })
+        })
+      }
     } finally {
       endCriticalOp()
     }
