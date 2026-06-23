@@ -146,6 +146,19 @@ export function useDirectCollect(): UseDirectCollectReturn {
         }
         const { pricePerToken, currency } = sale
 
+        // Scheduled drop not yet open. resolveOnchainSale returns a configured
+        // sale whenever its row exists (it doesn't check saleStart), and the
+        // collect button's saleNotStarted gate only bites once the card's
+        // saleConfig has loaded — so a click in that pre-load window (or any
+        // non-button caller) would otherwise reach the strategy and revert with
+        // SaleHasNotStarted. Surface the not-started state cleanly; the on-chain
+        // check stays the backstop. Wall-clock matches the display gate's clock.
+        if (sale.saleStart > BigInt(Math.floor(Date.now() / 1000))) {
+          setStatus('error')
+          toast.error('This mint has not started yet', { id: TOAST_ID })
+          return null
+        }
+
         const quantity = BigInt(Math.max(1, Math.floor(amount)))
         const totalPrice = pricePerToken * quantity
 
