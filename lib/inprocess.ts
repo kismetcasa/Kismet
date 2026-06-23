@@ -114,10 +114,17 @@ export interface Moment {
   saleConfig?: MomentSaleConfig
   // Server-stitched chip metadata. Undefined = route didn't enrich
   // (client falls back). Defined-with-null-name = known contract, no
-  // chip (suppress without re-fetching).
+  // chip (suppress without re-fetching). isCuratedCollection marks whether
+  // `address` is a curator-blessed collection (created via the Create
+  // Collection flow, or an existing collection minted into) versus an
+  // individual mint's auto-deployed wrapper — it drives whether the card
+  // shows the collection name. Absent on non-enriched paths, where the
+  // client's /api/collections?address fetch already gates the name on the
+  // same blessed set.
   kismetCollection?: {
     name: string | null
     image: string | null
+    isCuratedCollection?: boolean
   }
   // Video duration in whole seconds, server-stitched from MomentMeta
   // by /api/timeline. Populated only for Kismet-minted moments that

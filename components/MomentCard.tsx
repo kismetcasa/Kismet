@@ -197,6 +197,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
 
   const meta = moment.metadata ?? {}
 
+  // Show the collection name only when this moment belongs to a real
+  // collection — one created via the Create Collection flow, or an existing
+  // collection minted into. An individual mint auto-deploys a wrapper named
+  // after its single piece; that isn't a real collection, so its chip shows
+  // the icon only. Server-enriched surfaces carry the explicit flag; on the
+  // client-fetch path /api/collections?address already returns a name only
+  // for blessed collections, so a name present there is curated by definition.
+  const isCuratedCollection = moment.kismetCollection?.isCuratedCollection ?? true
+
   // Price + currency. hidePriceSupply only controls badge rendering — compact
   // contexts still need these values to drive collect.
   //
@@ -545,15 +554,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Collection chip. When the collection name merely echoes the
-            title — a cover (#1) token whose metadata name matches its
-            collection, or a single-mint collection named after its one
-            moment — drop the duplicate name text but keep the icon as a
-            clickable affordance into /collection. Suppress entirely only
-            when there's nothing left to show (name echoes the title AND no
-            icon to render in its place), so the slot never becomes an
-            empty clickable sliver. */}
-        {!compact && collectionName && (collectionName !== meta.name || (collectionImage && !collectionImageFailed)) && (
+        {/* Collection chip. The name shows only for a real collection
+            (isCuratedCollection) — created, or minted into. An individual
+            mint's auto-deploy wrapper shows the icon only, keeping it as a
+            clickable affordance into /collection. The chip is suppressed
+            entirely only when there's nothing left to show (no name to show
+            AND no icon to render), so the slot never becomes an empty
+            clickable sliver. */}
+        {!compact && collectionName && (isCuratedCollection || (collectionImage && !collectionImageFailed)) && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
@@ -573,7 +581,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 />
               </div>
             )}
-            {collectionName !== meta.name && (
+            {isCuratedCollection && (
               <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
                 {collectionName}
               </span>

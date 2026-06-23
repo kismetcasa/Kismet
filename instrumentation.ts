@@ -22,6 +22,18 @@ export async function register() {
     )
   }
 
+  // Drift detector for the inprocess /smartwallet lookup (the per-creator wallet
+  // that executes /moment/create). Fire-and-forget so a slow upstream can't
+  // delay cold-start serving — it only logs. See assertSmartWalletResolves.
+  void (async () => {
+    try {
+      const { assertSmartWalletResolves } = await import('@/lib/healthcheck')
+      await assertSmartWalletResolves()
+    } catch (err) {
+      console.error('[instrumentation] smart-wallet resolve healthcheck failed (non-fatal):', err)
+    }
+  })()
+
   // Warm the L1 caches every read-side route hits so the first request
   // after boot finds them hot. Non-fatal — per-getter try/catch returns
   // safe defaults if Redis is transiently down.

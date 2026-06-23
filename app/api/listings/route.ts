@@ -18,7 +18,7 @@ import {
   type SerializedOrderComponents,
 } from '@/lib/seaport'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { PLATFORM_FEE_RECIPIENT, PLATFORM_FEE_BPS, computePlatformFee } from '@/lib/platformFee'
+import { PLATFORM_FEE_RECIPIENT, PLATFORM_FEE_BPS, computePlatformFee, isBelowListingFloor } from '@/lib/platformFee'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -412,13 +412,14 @@ export async function POST(req: NextRequest) {
     if (!isAddress(PLATFORM_FEE_RECIPIENT) || PLATFORM_FEE_RECIPIENT.toLowerCase() === ZERO_ADDRESS) {
       return errorResponse(500, 'Platform fee recipient misconfigured')
     }
-    // Reject prices where the fee floors to zero (< 100 base units), closing the
-    // dust bypass. Hoist the const here so the floor check and sum invariant below
-    // share a single computation.
-    const platformFeeBig = computePlatformFee(BigInt(price))
-    if (platformFeeBig === 0n) {
-      return errorResponse(400, 'Price is below minimum — fee would round to zero')
+    // Reject prices whose 1% fee floors to zero (the dust bypass). isBelowListingFloor
+    // is the shared rule (lib/platformFee) the web ListButton + agent prepare-list
+    // also enforce, so a client can't build/sign an order this route then rejects.
+    if (isBelowListingFloor(BigInt(price))) {
+      return errorResponse(400, 'Price is below the minimum listing price')
     }
+    // Needed for the sum invariant + stored record below.
+    const platformFeeBig = computePlatformFee(BigInt(price))
     // The top-level royaltyReceiver/royaltyAmount aren't enforced on-chain
     // (Seaport pays whatever the consideration items declare; verifyRoyalty
     // below enforces the EIP-2981 receiver), but they're persisted on the

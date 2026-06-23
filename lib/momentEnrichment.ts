@@ -1,6 +1,6 @@
 import type { Moment } from './inprocess'
 import { getProfileBatch } from './profile'
-import { getCollectionMetaBatch } from './kv'
+import { getCollectionMetaBatch, getUserCollections } from './kv'
 
 // Stitch Kismet KV creator + collection chip metadata so MomentCard
 // can skip the per-card /api/profile + /api/collections fetches. Two
@@ -18,10 +18,16 @@ export async function enrichMomentsWithKismetMeta<T extends Moment>(
     if (m.address) collectionAddrs.push(m.address)
   }
 
-  const [profiles, collectionMetas] = await Promise.all([
+  const [profiles, collectionMetas, curatedAddrs] = await Promise.all([
     getProfileBatch(creatorAddrs),
     getCollectionMetaBatch(collectionAddrs),
+    getUserCollections(),
   ])
+  // Curator-blessed set (create-form deploys + the collections minted into).
+  // Distinguishes a real collection from an individual mint's auto-deploy
+  // wrapper — the chip shows the name only for the former. Memoized SMEMBERS,
+  // so this adds no per-card I/O.
+  const curatedSet = new Set(curatedAddrs.map((a) => a.toLowerCase()))
 
   return moments.map((m) => {
     const profile = profiles.get(m.creator?.address?.toLowerCase() ?? '')
@@ -45,6 +51,10 @@ export async function enrichMomentsWithKismetMeta<T extends Moment>(
         kismetCollection: {
           name: collMeta.name ?? null,
           image: collMeta.image ?? null,
+          // Real collection vs an individual mint's auto-deploy wrapper —
+          // the card shows the name only for the former. Reuses the same
+          // blessed set the /api/collections?address chip endpoint trusts.
+          isCuratedCollection: curatedSet.has(m.address?.toLowerCase() ?? ''),
         },
       }),
     }

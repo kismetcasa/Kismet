@@ -111,6 +111,22 @@ const COLLECTION_ABI = [
     ],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  // Contract-level metadata edit. Gated on-chain by
+  // onlyAdminOrRole(CONTRACT_BASE_ID=0, PERMISSION_BIT_METADATA) — i.e. ADMIN
+  // (2) or METADATA (16) at tokenId 0 — and sets BOTH the stored contractURI
+  // (uri(0)) and the on-chain name(), so callers pass the same name string
+  // into newName and the uploaded JSON. Emits the ERC-7572 ContractURIUpdated
+  // event, so marketplaces/indexers refresh on their own.
+  {
+    name: 'updateContractMetadata',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'newURI', type: 'string' },
+      { name: 'newName', type: 'string' },
+    ],
+    outputs: [],
+  },
 ] as const
 
 const FIXED_PRICE_SALE_STRATEGY_ABI = [

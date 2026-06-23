@@ -28,6 +28,7 @@ import {
   USDC,
   builderSuffix,
   check,
+  dedupeMomentRefs,
   eq,
   report,
   selector,
@@ -98,6 +99,47 @@ console.log('\nall-ETH basket → no approve, native value sums')
   ]
   check('no approve in an all-ETH batch', calls.every((c) => selector(c.data) !== approveSelector))
   check('summed native value', hexToBigInt(calls[0].value) + hexToBigInt(calls[1].value) === v1 + v2)
+}
+
+console.log('\nref dedupe — a basket is a SET of distinct moments (prepare-collect-batch)')
+{
+  const r = (collection: string, tokenId: string) => ({ collection, tokenId })
+  const keyOf = (x: { collection: string; tokenId: string }) => `${x.collection.toLowerCase()}:${x.tokenId}`
+
+  // P1 soundness: exact duplicate collapses to one mint.
+  check('exact duplicate collapses', dedupeMomentRefs([r(COL_A, '1'), r(COL_A, '1')]).length === 1)
+  // Canonical identity: a collection address differing only in case is the SAME
+  // moment on-chain, so it collapses too (the dedupe key lowercases the address).
+  check('address case-insensitive collapse', dedupeMomentRefs([r(COL_A, '1'), r(COL_A.toLowerCase(), '1')]).length === 1)
+  // P2 faithfulness: genuinely distinct moments are never dropped.
+  check('distinct tokenId preserved', dedupeMomentRefs([r(COL_A, '1'), r(COL_A, '2')]).length === 2)
+  check('distinct collection preserved', dedupeMomentRefs([r(COL_A, '1'), r(COL_B, '1')]).length === 2)
+  // P3 order: first occurrence wins; order preserved.
+  const ordered = dedupeMomentRefs([r(COL_B, '9'), r(COL_A, '1'), r(COL_B, '9')])
+  check('first-seen order preserved', ordered.length === 2 && eq(ordered[0].collection, COL_B) && ordered[0].tokenId === '9' && eq(ordered[1].collection, COL_A))
+  // Boundary cases.
+  check('empty stays empty', dedupeMomentRefs([]).length === 0)
+  check('singleton unchanged', dedupeMomentRefs([r(COL_A, '7')]).length === 1)
+  // Idempotence: dedupe(dedupe(x)) === dedupe(x).
+  const once = dedupeMomentRefs([r(COL_A, '1'), r(COL_A, '1'), r(COL_B, '2')])
+  check('idempotent', JSON.stringify(dedupeMomentRefs(once)) === JSON.stringify(once))
+
+  // Property sweep: for random baskets the output must (a) have unique keys,
+  // (b) length === number of distinct keys (complete), and (c) be a first-seen
+  // subsequence of the input by reference (no reordering, no fabricated entries).
+  let propOk = true
+  for (let t = 0; t < 500 && propOk; t++) {
+    const n = Math.floor(Math.random() * 9)
+    const input = Array.from({ length: n }, (_, i) => r(i % 2 ? COL_A : COL_B, String(Math.floor(Math.random() * 3))))
+    const out = dedupeMomentRefs(input)
+    const keys = out.map(keyOf)
+    if (new Set(keys).size !== keys.length) propOk = false            // (a) unique
+    if (out.length !== new Set(input.map(keyOf)).size) propOk = false // (b) complete
+    let j = 0
+    for (const x of input) if (j < out.length && out[j] === x) j++    // (c) subsequence by reference
+    if (j !== out.length) propOk = false
+  }
+  check('property: unique keys, length == #distinct, first-seen subsequence (500 random)', propOk)
 }
 
 report('OK — collect-batch calldata assertions passed')

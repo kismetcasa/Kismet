@@ -8,7 +8,7 @@ import { useAccount, usePublicClient, useReadContract, useReadContracts } from '
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check } from 'lucide-react'
+import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check, Pencil } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -26,6 +26,7 @@ import { MomentCard } from './MomentCard'
 import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CollectAllAction } from './CollectAllAction'
+import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -113,6 +114,8 @@ export function CollectionView({
   // /api/timeline route (creator sees their own hidden moments; others don't).
   const [moments, setMoments] = useState<Moment[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [metaOverride, setMetaOverride] = useState<EditedMeta | null>(null)
   const { ensureSession } = useUploadSession()
 
   const isFeatured = featuredCollectionAddrs.has(address.toLowerCase())
@@ -604,13 +607,18 @@ export function CollectionView({
   }, [defaultAdminAddress, defaultAdminUsername])
 
   const loadedMoments = moments ?? []
-  const displayName = collectionName || shortAddress(address)
+  // Optimistic overrides win after a successful in-session edit, before the
+  // indexer / KV fallback catch up to the new contractURI.
+  const effName = metaOverride?.name ?? collectionName
+  const effImage = metaOverride?.image ?? collectionImage
+  const effThumbhash = metaOverride?.thumbhash ?? collectionThumbhash
+  const displayName = effName || shortAddress(address)
   const firstMoment = loadedMoments[0]
-  const rawImgUrl = collectionImage || firstMoment?.metadata?.image
+  const rawImgUrl = effImage || firstMoment?.metadata?.image
   // Same fall-through logic as the URL: prefer collection-level thumbhash;
   // when the cover falls back to firstMoment, use its thumbhash too.
-  const coverThumbhash = collectionImage ? collectionThumbhash : firstMoment?.metadata?.kismet_thumbhash
-  const description = collectionDescription
+  const coverThumbhash = effImage ? effThumbhash : firstMoment?.metadata?.kismet_thumbhash
+  const description = metaOverride?.description ?? collectionDescription
 
   // Total collects: sum on-chain totalMinted per token — no aggregated count
   // exists upstream. Batched into one multicall by wagmi.
@@ -679,6 +687,21 @@ export function CollectionView({
         <ArrowLeft size={12} />
         back
       </button>
+
+      {editing && isCreator && (
+        <EditCollectionForm
+          address={address}
+          currentName={effName ?? ''}
+          currentDescription={description ?? ''}
+          currentImage={effImage}
+          currentThumbhash={effThumbhash}
+          onClose={() => setEditing(false)}
+          onSaved={(next) => {
+            setMetaOverride(next)
+            setEditing(false)
+          }}
+        />
+      )}
 
       {/* Creator-only banner so the creator knows their collection is hidden */}
       {hidden && isCreator && (
@@ -820,6 +843,16 @@ export function CollectionView({
               >
                 {hidden ? <Eye size={12} /> : <EyeOff size={12} />}
                 {hidden ? 'hidden' : 'hide'}
+              </button>
+            )}
+            {isCreator && (
+              <button
+                onClick={() => setEditing(true)}
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors"
+                title="Edit collection name, description, and image"
+              >
+                <Pencil size={12} strokeWidth={1.5} />
+                edit
               </button>
             )}
             <button

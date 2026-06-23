@@ -8,7 +8,7 @@ import { SEAPORT_ADDRESS, SEAPORT_ABI, ERC1155_ABI, EIP2981_ABI } from '@/lib/se
 import { formatPrice } from '@/lib/inprocess'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildListPlan, priceToBaseUnits } from '@/lib/agent/list'
-import { computePlatformFee } from '@/lib/platformFee'
+import { computePlatformFee, isBelowListingFloor } from '@/lib/platformFee'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -52,6 +52,13 @@ export async function POST(req: NextRequest) {
   const image = typeof body.image === 'string' ? body.image : undefined
 
   const priceTotal = priceToBaseUnits(price, currency)
+  // Shared listing-price floor (lib/platformFee, same rule /api/listings POST
+  // enforces): a price whose 1% fee floors to zero would build a fee-less order
+  // the POST rejects — so without this the agent walks the user through the
+  // one-time marketplace approval + an EIP-712 signature for nothing. Fail fast.
+  if (isBelowListingFloor(priceTotal)) {
+    return errorResponse(400, 'Price is below the minimum listing price')
+  }
   const client = serverBaseClient()
 
   // Ownership + approval + counter in parallel. Royalty is read separately

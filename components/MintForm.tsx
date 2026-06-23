@@ -32,6 +32,7 @@ import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
+import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
@@ -336,15 +337,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // at setup (mintToCreatorCount: 1), exactly as before. Because that copy mints
   // through the sale strategy — which enforces block.timestamp >= saleStart — the
   // sale must open NOW, so the "Sale opens" input is hidden and saleStart is
-  // pinned to now. OFF = no creator copy (mintToCreatorCount: 0); with no
-  // setup-time strategy mint, a scheduled future start becomes safe through the
-  // relay, so the "Sale opens" input is revealed. This coupling is the whole
-  // reason scheduling is gated on the toggle: future-start WITH a creator copy is
-  // exactly what reverted the relay setup tx before (and is now unrepresentable).
+  // pinned to 0 (epoch = opens-now, but clock-skew-safe vs `now`). OFF = no
+  // creator copy (mintToCreatorCount: 0); with no setup-time strategy mint, a
+  // scheduled future start becomes safe through the relay, so the "Sale opens"
+  // input is revealed. This coupling is the whole reason scheduling is gated on
+  // the toggle: future-start WITH a creator copy is exactly what reverted the
+  // relay setup tx before (and is now unrepresentable).
   const [artistMintEnabled, setArtistMintEnabled] = useState(true)
   // Optional sale START (datetime-local string) — only meaningful when the artist
   // self-mint is OFF (see above). Empty = opens now. With the toggle ON the input
-  // is hidden and saleStart is pinned to now.
+  // is hidden and saleStart is pinned to 0 (epoch).
   const [saleStartInput, setSaleStartInput] = useState('')
   // Optional sale END (datetime-local string). Empty = open-ended, leaving the
   // supply cap (or open edition = forever) to bound the mint instead of a clock
@@ -679,43 +681,58 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     const now = Math.floor(Date.now() / 1000)
     // Sale window. INVARIANT: a future saleStart is emitted ONLY when the artist
     // self-mint is OFF. With it ON, inprocess mints the creator's copy at setup
-    // through the sale strategy (which enforces block.timestamp >= saleStart), so
-    // the start MUST be now or the relay setup tx reverts — hence we pin it and
-    // hide the input. With it OFF there is no setup-time mint, so a scheduled
-    // future start is safe. Sale end is optional; empty → max uint64, leaving the
-    // supply cap (or open edition = forever) to bound the mint instead of a clock
-    // (the prior always-open behavior). A 1/1 (self-mint on) has no public sale,
-    // so it stays open-ended regardless of any stale input. datetime-local has no
-    // timezone, so new Date() reads it as the creator's local wall-clock.
+    // THROUGH the sale strategy, which reverts SaleHasNotStarted when
+    // block.timestamp < saleStart and SaleEnded when block.timestamp > saleEnd.
+    // So with self-mint ON the start can't be in the future, and we pin it to 0
+    // (epoch), NOT `now`: `now` is the client wall-clock, so a fast device clock
+    // would push saleStart past chain time and revert the setup mint. 0 = "open
+    // since epoch" — identical UX for an opens-now sale, never on the wrong side
+    // of the boundary. With self-mint OFF there is no setup-time mint, so a
+    // scheduled future start is safe; an empty start still means opens-now → 0.
+    // Sale end is optional; empty → max uint64, leaving the supply cap (or open
+    // edition = forever) to bound the mint instead of a clock. A 1/1 (self-mint
+    // on) has no public sale, so it stays open-ended regardless of any stale
+    // input. datetime-local has no timezone, so new Date() reads it as the
+    // creator's local wall-clock.
     const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
-    let saleStartTs = now
-    // No `!is11` term here (unlike the saleEnd guard below): is11 is defined with
-    // `&& artistMintEnabled`, so it's necessarily false under `!artistMintEnabled`.
+    // saleStart in seconds; 0 = opens-now (clock-skew-safe, see above). A future
+    // value is only set when self-mint is OFF (no setup copy to revert). No
+    // `!is11` term: is11 is defined with `&& artistMintEnabled`, so it is
+    // necessarily false here under `!artistMintEnabled`.
+    let saleStartSec = 0
     if (!artistMintEnabled && saleStartInput) {
       const ts = Math.floor(new Date(saleStartInput).getTime() / 1000)
       if (Number.isNaN(ts)) { toast.error('Invalid sale start'); return }
-      saleStartTs = ts
+      saleStartSec = ts
     }
+    // saleEnd is enforced on the creator's setup copy too (same sale-strategy
+    // path), so a close landing before the mint executes reverts SaleEnded.
+    // Require a 10-min margin past the upload+confirm+relay window: it dwarfs any
+    // realistic mint, no legitimate sale closes within minutes, and it keeps a
+    // self-mint-OFF sale from being born already-closed by relay latency. (A
+    // scheduled drop's far-future close clears this trivially; the close-after-
+    // open check below is what binds there.)
+    const MIN_SALE_WINDOW_SEC = 10 * 60
     let saleEndStr = OPEN_ENDED_SALE
     if (!is11 && saleEndInput) {
       const ts = Math.floor(new Date(saleEndInput).getTime() / 1000)
       if (Number.isNaN(ts)) { toast.error('Invalid sale end'); return }
-      if (ts <= now) { toast.error('Sale must close in the future'); return }
-      if (ts <= saleStartTs) { toast.error('Sale must close after it opens'); return }
+      if (ts <= now + MIN_SALE_WINDOW_SEC) { toast.error('Sale must close at least 10 minutes from now'); return }
+      if (ts <= saleStartSec) { toast.error('Sale must close after it opens'); return }
       saleEndStr = String(ts)
     }
     const salesConfig = priceCurrency === 'usdc'
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(saleStartTs),
+          saleStart: String(saleStartSec),
           saleEnd: saleEndStr,
           currency: USDC_BASE,
         }
       : {
           type: 'fixedPrice' as const,
           pricePerToken: priceInBaseUnits,
-          saleStart: String(saleStartTs),
+          saleStart: String(saleStartSec),
           saleEnd: saleEndStr,
         }
     const supplyTrimmed = maxSupply.trim()
@@ -753,6 +770,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
 
     try {
+      // Guard the stale-deploy chunk-reload self-heal for the mint's duration:
+      // a transient chunk-load timeout (a background prefetch stalling behind
+      // the saturated upload uplink) surfaces as a ChunkLoadError and would
+      // otherwise reload the page mid-flight, aborting an upload whose Turbo
+      // credits are already spent. Balanced by endCriticalOp() in finally.
+      beginCriticalOp()
       if (mintMode === 'text') {
         // Text moments have no media file to reuse as a cover, so
         // auto-deploy uploads a small collection-metadata JSON whose
@@ -1211,6 +1234,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       setStep('idle')
       setUploadProgress(0)
       toastError('Mint', err, { id: 'mint' })
+    } finally {
+      endCriticalOp()
     }
   }
 

@@ -8,6 +8,7 @@ import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { formatPrice } from '@/lib/inprocess'
 import { parseMomentRef } from '@/lib/agent/refs'
+import { dedupeMomentRefs } from '@/lib/agent/dedupeRefs'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
 import type { AgentActionEnvelope, AgentRecordHint } from '@/lib/agent/types'
 
@@ -57,13 +58,19 @@ export async function POST(req: NextRequest) {
   // a trimmed comment rather than no comment at all.
   const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
 
-  // Resolve refs first; reject the whole batch on a malformed one.
-  const refs: Array<{ collection: Address; tokenId: bigint }> = []
+  // Resolve refs first; reject the whole batch on a malformed one. Then dedupe by
+  // on-chain identity (see dedupeMomentRefs): a moment repeated in the basket would
+  // otherwise build a duplicate mint that double-charges an open edition or — on the
+  // atomic Base Account — reverts the WHOLE batch on the per-wallet cap. Deduping the
+  // canonical (lowercased collection, base-10 tokenId) parsed refs BEFORE the per-ref
+  // eligibility reads also avoids a wasted RPC for the duplicate. First-seen order.
+  const parsed: Array<{ collection: Address; tokenId: string }> = []
   for (const raw of body.items) {
     const ref = parseMomentRef(raw)
     if ('error' in ref) return errorResponse(400, `Invalid item: ${ref.error}`)
-    refs.push({ collection: ref.collection, tokenId: BigInt(ref.tokenId) })
+    parsed.push({ collection: ref.collection, tokenId: ref.tokenId })
   }
+  const refs = dedupeMomentRefs(parsed).map((r) => ({ collection: r.collection, tokenId: BigInt(r.tokenId) }))
 
   const client = serverBaseClient()
 
