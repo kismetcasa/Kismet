@@ -84,13 +84,24 @@ export function ProfileStats({
     return d
   }, [stats])
 
-  // Show whenever there are earnings (denoms non-empty) — including a split-only
-  // collaborator with 0 mints. No earnings → nothing to show.
-  if (!stats || denoms.length === 0) return null
-  // Visitors (and the owner's public-view preview) see it only once pinned.
-  if (asVisitor && !stats.public) return null
+  if (!stats) return null
+  const hasEarnings = denoms.length > 0
+  // The owner sees the card on ANY primary-sale activity — earnings OR mints — so
+  // an artist whose attributed earnings resolve to 0 (e.g. value split entirely
+  // to collaborators) still gets their mint count and the pin, instead of a card
+  // that silently disappears. Visitors are unchanged: they only ever see a
+  // pinned-public earnings figure.
+  if (asVisitor) {
+    if (!stats.public || !hasEarnings) return null
+  } else if (!hasEarnings && stats.mints <= 0) {
+    return null
+  }
 
-  const active = denoms.includes(denom) ? denom : denoms[0]
+  const active: EarningsMetric | null = hasEarnings
+    ? denoms.includes(denom)
+      ? denom
+      : denoms[0]
+    : null
   const multi = denoms.length > 1
 
   // Owner-only: undistributed earnings sitting on their splits, labelled in the
@@ -127,6 +138,7 @@ export function ProfileStats({
   // Differentiated share: Mini App → cast composer; share-capable browsers
   // (mobile + some desktop) → native sheet; otherwise → copy link.
   const share = async () => {
+    if (!active) return
     const url = `${window.location.origin}/profile/${address}`
     const mintPart = stats.mints > 0 ? ` · ${stats.mints} ${stats.mints === 1 ? 'mint' : 'mints'}` : ''
     const text = `${formatEarningsValue(active, stats)} earned${mintPart} on Kismet`
@@ -154,14 +166,24 @@ export function ProfileStats({
     <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <button
-            onClick={multi ? () => setDenom(denoms[(denoms.indexOf(active) + 1) % denoms.length]) : undefined}
-            className={`text-ink text-xl leading-tight tabular-nums ${multi ? 'cursor-pointer hover:text-accent transition-colors' : 'cursor-default'}`}
-            title={multi ? 'Tap to switch currency' : undefined}
-          >
-            {formatEarningsValue(active, stats)}
-          </button>
-          {stats.mints > 0 && (
+          {active ? (
+            <button
+              onClick={multi ? () => setDenom(denoms[(denoms.indexOf(active) + 1) % denoms.length]) : undefined}
+              className={`text-ink text-xl leading-tight tabular-nums ${multi ? 'cursor-pointer hover:text-accent transition-colors' : 'cursor-default'}`}
+              title={multi ? 'Tap to switch currency' : undefined}
+            >
+              {formatEarningsValue(active, stats)}
+            </button>
+          ) : (
+            // No attributed earnings — surface the mint count as the headline so
+            // the owner still sees their sales and the card doesn't disappear.
+            stats.mints > 0 && (
+              <p className="text-ink text-xl leading-tight tabular-nums">
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+              </p>
+            )
+          )}
+          {active && stats.mints > 0 && (
             <p className="text-muted text-xs mt-0.5">
               {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
             </p>
@@ -176,12 +198,12 @@ export function ProfileStats({
           )}
         </div>
         <div className="flex items-center gap-0.5 shrink-0 -mr-1 -mt-0.5">
-          {stats.public && (
+          {stats.public && hasEarnings && (
             <button onClick={share} title="Share" aria-label="Share earnings" className="p-1 text-muted hover:text-ink transition-colors">
               {copied ? <Check size={15} className="text-accent" /> : <Share2 size={15} strokeWidth={1.5} />}
             </button>
           )}
-          {!asVisitor && (
+          {!asVisitor && hasEarnings && (
             <button
               onClick={togglePublic}
               disabled={pinning}
@@ -195,7 +217,7 @@ export function ProfileStats({
           )}
         </div>
       </div>
-      {!asVisitor && !stats.public && <p className="text-faint text-[10px] mt-1.5">private · tap the pin to show</p>}
+      {!asVisitor && !stats.public && hasEarnings && <p className="text-faint text-[10px] mt-1.5">private · tap the pin to show</p>}
     </div>
   )
 }
