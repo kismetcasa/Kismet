@@ -437,5 +437,32 @@ export async function proxyMintRequest(
     }
   }
 
+  // Non-OK upstream: do NOT forward inprocess's body verbatim. The relay
+  // frequently returns a bare { error: 'Error' } / { message: 'Error' } with
+  // no real reason — forwarding it produced the infamous useless "Mint failed
+  // / Error" toast, which is why this failure class kept getting diagnosed by
+  // reading source instead of the screen. Surface the upstream HTTP status (a
+  // 5xx is an inprocess / on-chain failure — most often the executor smart
+  // wallet lacking ADMIN on the collection; a 4xx is our payload) and inline
+  // inprocess's own message. Preserve that original text inside the message so
+  // the client's revert/auth detection (maybeHandleAuthError matching
+  // "execution reverted") still fires, and keep any structured fields (code,
+  // errors, smartWallet, perms) inprocess may have sent.
+  if (!upstream.ok) {
+    const rec = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+    const upstreamMsg = [rec.detail, rec.error, rec.message].find(
+      (v): v is string => typeof v === 'string' && v.trim().length > 0,
+    )
+    const informative =
+      upstreamMsg && upstreamMsg.trim().toLowerCase() !== 'error'
+        ? upstreamMsg.trim()
+        : `inprocess gave no reason (raw: ${JSON.stringify(data).slice(0, 200)})`
+    const detail = `inprocess minting failed (HTTP ${upstream.status}): ${informative}`
+    return NextResponse.json(
+      { ...rec, error: detail, detail, upstreamStatus: upstream.status },
+      { status: upstream.status },
+    )
+  }
+
   return NextResponse.json(data, { status: upstream.status })
 }
