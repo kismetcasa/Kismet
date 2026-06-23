@@ -138,6 +138,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const ensureConnected = useEnsureConnected()
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
+  // The "hidden" badge is a creator-self affordance — only the creator viewing
+  // their OWN work should see that one of their moments is hidden (so they can
+  // open it and unhide). `moment.hidden` can otherwise arrive true straight from
+  // the upstream feed (Kismet only legitimately sets it in the creator's own
+  // timeline view, and drops hidden moments from public feeds entirely), so
+  // trusting the flag alone leaks the badge into public/featured feeds. Gate on
+  // own-moment so the badge means what it was designed to, regardless of source.
+  const isOwnMoment =
+    !!connectedAddress &&
+    moment.creator.address.toLowerCase() === connectedAddress.toLowerCase()
 
   useEffect(() => {
     // Skip when the server stitched both fields. FC-only creators
@@ -383,7 +393,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           tokenId={moment.token_id}
           className="absolute top-1.5 left-1.5"
         />
-        {moment.hidden && (
+        {isOwnMoment && moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
             <EyeOff size={10} className="text-muted" />
           </span>
