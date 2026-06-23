@@ -17,6 +17,7 @@ import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { loadPersistedCover, savePersistedCover } from '@/lib/arweave/uploadPersistence'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
@@ -471,6 +472,29 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // Ensure session once — httpOnly cookie set, no re-prompt for 7 days
       await ensureSession()
 
+      // Cross-reload resume: the in-memory cover bank below is wiped on a page
+      // reload / remount, so a creator who reloads after the "Arweave settling
+      // slowly" deploy block would re-upload the cover under a fresh txid for
+      // nothing. Restore the bank from localStorage if we uploaded THIS exact
+      // cover before, so the resume path picks it up. No pre-verify here
+      // (unlike the mint path): the deploy is BLOCKED downstream until the
+      // cover URI actually resolves, so a not-yet-propagated (the user's exact
+      // retry scenario) or stale URI can never bake broken metadata on-chain —
+      // and skipping the verify means a slow-settling cover is reused, not
+      // needlessly re-uploaded. The persisted strike count carries over so the
+      // retire-after-N re-upload still triggers across reloads.
+      if (!coverUploadRef.current || coverUploadRef.current.source !== coverFile) {
+        const persistedCover = loadPersistedCover(coverFile)
+        if (persistedCover) {
+          coverUploadRef.current = {
+            source: coverFile,
+            imageUri: persistedCover.imageUri,
+            thumbhash: persistedCover.thumbhash,
+            verifyFailures: persistedCover.verifyFailures,
+          }
+        }
+      }
+
       // Resume path: reuse the verified cover upload from a previous
       // attempt on this same file (settling false-negative or a rejected
       // deploy signature). Skips re-deriving and re-uploading the cover;
@@ -536,6 +560,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           thumbhash,
           verifyFailures: 0,
         }
+        // Mirror the bank to localStorage so a reload resumes this cover txid
+        // instead of re-uploading (uploadPersistence).
+        savePersistedCover(coverFile, { imageUri, thumbhash, verifyFailures: 0 })
       }
 
       // The cover image URI gets baked into the metadata JSON which gets
@@ -573,7 +600,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       if (!imageOk || !contractOk) {
         // Failure accounting: keep reusing these uploads on retry until
         // the strike cap decides one is genuinely lost.
-        if (!imageOk && coverUploadRef.current) coverUploadRef.current.verifyFailures += 1
+        if (!imageOk && coverUploadRef.current) {
+          coverUploadRef.current.verifyFailures += 1
+          // Persist the strike so the retire-after-N decision is the same
+          // whether or not the user reloads between attempts.
+          savePersistedCover(coverFile, {
+            imageUri: coverUploadRef.current.imageUri,
+            thumbhash: coverUploadRef.current.thumbhash,
+            verifyFailures: coverUploadRef.current.verifyFailures,
+          })
+        }
         if (!contractOk) bumpJsonFailure(contractKey)
         // The cover is the expensive artifact — "resumable" tracks it. A
         // failed contract-metadata JSON re-uploads in seconds either way.
