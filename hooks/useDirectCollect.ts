@@ -146,6 +146,27 @@ export function useDirectCollect(): UseDirectCollectReturn {
         }
         const { pricePerToken, currency } = sale
 
+        // Window check. resolveOnchainSale returns a configured sale whenever its
+        // row exists (it checks neither bound), and the button's saleNotStarted /
+        // saleEnded gates only bite once the card's saleConfig has loaded — so a
+        // click in that pre-load window (or any non-button caller) would reach the
+        // strategy and revert with SaleHasNotStarted / SaleEnded. Refuse outside
+        // [saleStart, saleEnd] with a clean message; the on-chain check stays the
+        // backstop. Operators match the strategy exactly (active for
+        // saleStart <= now <= saleEnd) so we never block a mint the chain would
+        // accept; saleEnd 0 = no end. Wall-clock matches the display gate's clock.
+        const nowSec = BigInt(Math.floor(Date.now() / 1000))
+        if (sale.saleStart > nowSec) {
+          setStatus('error')
+          toast.error('This mint has not started yet', { id: TOAST_ID })
+          return null
+        }
+        if (sale.saleEnd !== 0n && nowSec > sale.saleEnd) {
+          setStatus('error')
+          toast.error('This mint has ended', { id: TOAST_ID })
+          return null
+        }
+
         const quantity = BigInt(Math.max(1, Math.floor(amount)))
         const totalPrice = pricePerToken * quantity
 

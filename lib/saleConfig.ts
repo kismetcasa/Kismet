@@ -299,7 +299,8 @@ export async function readSalePricePerToken(
 
 /**
  * Resolve the active mint sale for a single (collection, tokenId) straight
- * from chain, returning the price + currency the direct-collect hook needs.
+ * from chain, returning the price + currency + sale window (saleStart/saleEnd)
+ * the direct-collect hook and the display fallback need.
  *
  * Probes the ETH strategy (FixedPriceSaleStrategy) first, then the USDC one
  * (ERC20Minter). A strategy whose sale row is unset returns saleEnd === 0,
@@ -315,7 +316,12 @@ export async function resolveOnchainSale(
   client: AnyClient,
   collection: Address,
   tokenId: bigint,
-): Promise<{ pricePerToken: bigint; currency: SaleCurrency } | null> {
+): Promise<{
+  pricePerToken: bigint
+  currency: SaleCurrency
+  saleStart: bigint
+  saleEnd: bigint
+} | null> {
   // ETH — FixedPriceSaleStrategy.
   try {
     const sale = (await readContract(client, {
@@ -323,8 +329,15 @@ export async function resolveOnchainSale(
       abi: FPSS_SALE_ABI,
       functionName: 'sale',
       args: [collection, tokenId],
-    })) as { saleEnd: bigint; pricePerToken: bigint }
-    if (sale.saleEnd !== 0n) return { pricePerToken: sale.pricePerToken, currency: 'eth' }
+    })) as { saleStart: bigint; saleEnd: bigint; pricePerToken: bigint }
+    if (sale.saleEnd !== 0n) {
+      return {
+        pricePerToken: sale.pricePerToken,
+        currency: 'eth',
+        saleStart: sale.saleStart,
+        saleEnd: sale.saleEnd,
+      }
+    }
   } catch {
     // Fall through to the USDC strategy.
   }
@@ -336,9 +349,14 @@ export async function resolveOnchainSale(
       abi: ERC20_MINTER_SALE_ABI,
       functionName: 'sale',
       args: [collection, tokenId],
-    })) as { saleEnd: bigint; pricePerToken: bigint; currency?: Address }
+    })) as { saleStart: bigint; saleEnd: bigint; pricePerToken: bigint; currency?: Address }
     if (sale.saleEnd !== 0n && sale.currency?.toLowerCase() === USDC_BASE.toLowerCase()) {
-      return { pricePerToken: sale.pricePerToken, currency: 'usdc' }
+      return {
+        pricePerToken: sale.pricePerToken,
+        currency: 'usdc',
+        saleStart: sale.saleStart,
+        saleEnd: sale.saleEnd,
+      }
     }
   } catch {
     // Fall through to null.
@@ -347,11 +365,14 @@ export async function resolveOnchainSale(
 }
 
 // A saleConfig synthesized from chain, in the shape both display paths consume.
-// saleStart/saleEnd are required (MomentDetail.saleConfig demands them); '0'
-// reads as "active" in MomentCard + MomentDetailView, which is correct because
-// resolveOnchainSale only returns a LIVE sale. Assignable to MomentSaleConfig
-// (its saleStart/End are optional) too, so one helper serves /api/moments,
-// /api/moment, and fetchMomentDetail without copying the synth logic.
+// saleStart/saleEnd are required (MomentDetail.saleConfig demands them) and now
+// carry the REAL on-chain window: resolveOnchainSale returns a sale whenever its
+// row is set (saleEnd !== 0), which includes scheduled drops that haven't opened
+// yet — so the not-started / ended gates in MomentCard + MomentDetailView must
+// see the true saleStart, not a hardcoded "0" that would read as already-active
+// and wrongly enable collect before the drop opens. Assignable to
+// MomentSaleConfig (its saleStart/End are optional) too, so one helper serves
+// /api/moments, /api/moment, and fetchMomentDetail without copying the synth logic.
 export interface OnchainSaleConfig {
   type: 'fixedPrice' | 'erc20Mint'
   pricePerToken: string
@@ -377,8 +398,8 @@ export async function onchainSaleConfigFallback(
   return {
     type: sale.currency === 'usdc' ? 'erc20Mint' : 'fixedPrice',
     pricePerToken: sale.pricePerToken.toString(),
-    saleStart: '0',
-    saleEnd: '0',
+    saleStart: sale.saleStart.toString(),
+    saleEnd: sale.saleEnd.toString(),
     ...(sale.currency === 'usdc' ? { currency: USDC_BASE } : {}),
   }
 }
