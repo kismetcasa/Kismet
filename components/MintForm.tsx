@@ -689,7 +689,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // timezone, so new Date() reads it as the creator's local wall-clock.
     const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
     let saleStartTs = now
-    if (!artistMintEnabled && !is11 && saleStartInput) {
+    // No `!is11` term here (unlike the saleEnd guard below): is11 is defined with
+    // `&& artistMintEnabled`, so it's necessarily false under `!artistMintEnabled`.
+    if (!artistMintEnabled && saleStartInput) {
       const ts = Math.floor(new Date(saleStartInput).getTime() / 1000)
       if (Number.isNaN(ts)) { toast.error('Invalid sale start'); return }
       saleStartTs = ts
@@ -805,9 +807,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             tokenContent: textContent.trim(),
             createReferral: CREATE_REFERRAL,
             salesConfig,
-            // Artist self-mint choice: 1 = mint edition #1 to the creator at
-            // setup (default); 0 = no creator copy, which is what makes the
-            // optional scheduled saleStart legal through the relay.
+            // 0 = no creator copy (see artistMintEnabled); enables a scheduled start.
             mintToCreatorCount: artistMintEnabled ? 1 : 0,
             ...(finalSplits ? {} : { payoutRecipient: address }),
           },
@@ -1134,9 +1134,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             tokenMetadataURI: metadataUri,
             createReferral: CREATE_REFERRAL,
             salesConfig,
-            // Artist self-mint choice: 1 = mint edition #1 to the creator at
-            // setup (default); 0 = no creator copy, which is what makes the
-            // optional scheduled saleStart legal through the relay.
+            // 0 = no creator copy (see artistMintEnabled); enables a scheduled start.
             mintToCreatorCount: artistMintEnabled ? 1 : 0,
             ...(maxSupplyVal !== undefined ? { maxSupply: maxSupplyVal } : {}),
             ...(finalSplits ? {} : { payoutRecipient: address }),
