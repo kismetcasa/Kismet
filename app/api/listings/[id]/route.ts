@@ -12,6 +12,7 @@ import { errorResponse } from '@/lib/apiResponse'
 import { serverBaseClient } from '@/lib/rpc'
 import { findFulfillmentInLogs } from '@/lib/seaport'
 import { creditListingRoyalty } from '@/lib/stats'
+import { auditRoyaltyReceiver } from '@/lib/royaltyAudit'
 
 export async function PATCH(
   req: NextRequest,
@@ -196,6 +197,21 @@ export async function PATCH(
         amount: royalty.amount,
         receiver: listing.royaltyReceiver,
       })
+      // Instrumentation: record whether this royalty paid a wallet (itemizes on
+      // the card today) or a split contract (can't yet), and if a contract,
+      // whether it matches a Kismet payout split — so a future resolver is
+      // decided on real data. Off the response path; best-effort. A Seaport order
+      // fills once, so this runs at most once per listing.
+      after(() =>
+        auditRoyaltyReceiver({
+          listingId: listing.id,
+          collection: listing.collectionAddress,
+          tokenId: listing.tokenId,
+          receiver: listing.royaltyReceiver,
+          currency: royalty.currency,
+          amount: royalty.amount,
+        }),
+      )
     }
 
     after(() =>
