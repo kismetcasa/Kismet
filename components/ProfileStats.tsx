@@ -98,6 +98,13 @@ export function ProfileStats({
     }
   }, [address, asVisitor, initialEarnings])
 
+  // Collapse the breakdown when switching profiles, so it never carries an
+  // expanded (or stuck mouse-hover) state over from another artist's card.
+  useEffect(() => {
+    setSplitPinned(false)
+    setSplitHover(false)
+  }, [address])
+
   // Offer only denominations the artist earned in, plus the blended USD.
   const denoms = useMemo<EarningsMetric[]>(() => {
     if (!stats) return []
@@ -117,6 +124,12 @@ export function ProfileStats({
   const hasPrimaryValue = !!stats.primary && (stats.primary.eth > 0 || stats.primary.usdc > 0)
   const hasBothSources = hasSecondary && hasPrimaryValue
   const splitOpen = splitPinned || splitHover
+  // The mint-count line anchors a tap-to-expand toggle. A split collaborator can
+  // have primary earnings but 0 personal mints (no count line) — there's nothing
+  // to anchor a toggle to, so show their breakdown statically rather than hiding
+  // it. Toggle only when there IS a count line to declutter.
+  const showSplitToggle = hasBothSources && stats.mints > 0
+  const breakdownVisible = hasBothSources && (stats.mints > 0 ? splitOpen : true)
   // The owner sees the card on ANY primary-sale activity — earnings OR mints — so
   // an artist whose attributed earnings resolve to 0 (e.g. value split entirely
   // to collaborators) still gets their mint count and the pin, instead of a card
@@ -215,10 +228,11 @@ export function ProfileStats({
             )
           )}
           {active && stats.mints > 0 &&
-            (hasBothSources ? (
-              // Both sources → the mint count is a tap-to-expand toggle. Click
-              // pins it (touch-safe); mouse hover previews it (desktop only, so a
-              // tap on mobile can't get stuck open via a synthetic hover).
+            (showSplitToggle ? (
+              // Mint count doubles as a tap-to-expand toggle. Click pins it
+              // (touch-safe); mouse hover previews it (desktop only, gated to a
+              // mouse pointer so a tap on mobile can't get stuck open via a
+              // synthetic hover).
               <button
                 type="button"
                 onClick={() => setSplitPinned((v) => !v)}
@@ -229,6 +243,7 @@ export function ProfileStats({
                   if (e.pointerType === 'mouse') setSplitHover(false)
                 }}
                 aria-expanded={splitOpen}
+                aria-controls="earnings-source-split"
                 title="Mint sales vs resale royalties"
                 className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
               >
@@ -246,8 +261,8 @@ export function ProfileStats({
                 {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
               </p>
             ))}
-          {hasBothSources && splitOpen && active && stats.primary && stats.secondary && (
-            <p className="text-faint text-xs mt-0.5 tabular-nums">
+          {active && breakdownVisible && stats.primary && stats.secondary && (
+            <p id="earnings-source-split" className="text-faint text-xs mt-0.5 tabular-nums">
               {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
