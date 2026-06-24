@@ -1,10 +1,17 @@
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { getCachedSmartWallet, setCachedSmartWallet } from '@/lib/smartWalletCache'
 
-// Per-EOA cache. Smart-wallet ↔ EOA is deterministic per inprocess's
-// derivation, so once resolved it doesn't change. 24h TTL bounds the
-// drift if the algorithm ever migrates. Only successful resolutions are
-// cached — nulls (network/parse failures) retry on the next call.
+// Two-layer per-EOA cache. Smart-wallet ↔ EOA is deterministic per inprocess's
+// derivation, so once resolved it doesn't change.
+//   1. In-memory (this Map): 24h TTL, per server instance, zero-latency hot path.
+//   2. Durable (Redis, lib/smartWalletCache): survives restarts/deploys and is
+//      shared across instances. Written on every successful live resolution and
+//      read as a FALLBACK when the live /smartwallet lookup transiently fails —
+//      so the deploy grant, mint preflight, and authorize banner all keep
+//      working through an inprocess outage for any EOA resolved at least once
+//      before. Only successful resolutions are cached; a definitive 404 (no
+//      account) is never masked by the durable layer.
 const cache = new Map<string, { value: string; expiresAt: number }>()
 const TTL_MS = 24 * 60 * 60 * 1000
 
@@ -51,6 +58,21 @@ export async function resolveSmartWallet(
   const hit = cache.get(key)
   if (hit && hit.expiresAt > Date.now()) return { address: hit.value }
 
+  // Durable fallback for TRANSIENT live-lookup failures only (network/timeout/
+  // 5xx/4xx-drift — NOT a definitive 404). Serving the last-known smart wallet
+  // from Redis is what keeps the deploy grant / preflight / banner working
+  // through an inprocess /smartwallet outage instead of silently skipping the
+  // ADMIN grant. Promotes the hit back into the in-memory cache.
+  const fromDurableCache = async (): Promise<SmartWalletResult> => {
+    const cached = await getCachedSmartWallet(key)
+    if (cached && isAddress(cached)) {
+      const resolved = cached.toLowerCase()
+      cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
+      return { address: resolved }
+    }
+    return null
+  }
+
   const revalidate = options.revalidate ?? 3600
 
   let res: Response
@@ -75,11 +97,13 @@ export async function resolveSmartWallet(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
   } catch {
-    // Network error or timeout — transient.
-    return null
+    // Network error or timeout — transient. Serve the last-known wallet.
+    return fromDurableCache()
   }
 
   // 404 means inprocess has no account for this EOA — permanent, not transient.
+  // Trust it definitively (do NOT fall back to the durable cache): the account
+  // genuinely doesn't exist, and the UI guides the creator to create one.
   if (res.status === 404) return { notFound: true }
   if (!res.ok) {
     // Log the upstream error body so an API-contract drift (e.g. a renamed
@@ -87,7 +111,8 @@ export async function resolveSmartWallet(
     // instead of silently degrading to a null/skipped-grant. Bounded slice.
     const detail = await res.text().catch(() => '')
     console.error(`[resolveSmartWallet] upstream ${res.status} for ${key}: ${detail.slice(0, 300)}`)
-    return null
+    // Transient 5xx / 4xx-drift — fall back to the durable cache rather than null.
+    return fromDurableCache()
   }
 
   const text = await res.text()
@@ -114,5 +139,10 @@ export async function resolveSmartWallet(
 
   const resolved = candidate.toLowerCase()
   cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
+  // Persist for cross-instance / cross-deploy resilience so a later lookup can
+  // fall back to this when inprocess is unreachable. Awaited (a fast Redis
+  // write; setCachedSmartWallet never throws) so the write isn't dropped when a
+  // serverless function freezes after returning.
+  await setCachedSmartWallet(key, resolved)
   return { address: resolved }
 }
