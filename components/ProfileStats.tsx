@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Pin, Share2, Check } from 'lucide-react'
+import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/earningsFormat'
 
@@ -58,6 +58,11 @@ export function ProfileStats({
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Mint-vs-resale breakdown disclosure. `splitPinned` is the click toggle (the
+  // canonical action, works on touch); `splitHover` is a desktop mouse-only
+  // preview. Either opens it.
+  const [splitPinned, setSplitPinned] = useState(false)
+  const [splitHover, setSplitHover] = useState(false)
 
   // Public earnings arrive with the profile read (no extra request) — paint them
   // immediately. Visitors stop there. The owner always then fetches /api/stats:
@@ -106,8 +111,12 @@ export function ProfileStats({
 
   if (!stats) return null
   const hasEarnings = denoms.length > 0
-  // Resale royalties present → break the total into mints vs resales below.
+  // The mint-vs-resale breakdown is only meaningful when the artist earned from
+  // BOTH sources — then the mint-count line becomes a tap-to-expand toggle.
   const hasSecondary = !!stats.secondary && (stats.secondary.eth > 0 || stats.secondary.usdc > 0)
+  const hasPrimaryValue = !!stats.primary && (stats.primary.eth > 0 || stats.primary.usdc > 0)
+  const hasBothSources = hasSecondary && hasPrimaryValue
+  const splitOpen = splitPinned || splitHover
   // The owner sees the card on ANY primary-sale activity — earnings OR mints — so
   // an artist whose attributed earnings resolve to 0 (e.g. value split entirely
   // to collaborators) still gets their mint count and the pin, instead of a card
@@ -205,13 +214,40 @@ export function ProfileStats({
               </p>
             )
           )}
-          {active && stats.mints > 0 && (
-            <p className="text-muted text-xs mt-0.5">
-              {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
-            </p>
-          )}
-          {active && hasSecondary && stats.primary && stats.secondary && (
-            <p className="text-muted text-xs mt-0.5" title="Mint sales vs secondary-market resale royalties">
+          {active && stats.mints > 0 &&
+            (hasBothSources ? (
+              // Both sources → the mint count is a tap-to-expand toggle. Click
+              // pins it (touch-safe); mouse hover previews it (desktop only, so a
+              // tap on mobile can't get stuck open via a synthetic hover).
+              <button
+                type="button"
+                onClick={() => setSplitPinned((v) => !v)}
+                onPointerEnter={(e) => {
+                  if (e.pointerType === 'mouse') setSplitHover(true)
+                }}
+                onPointerLeave={(e) => {
+                  if (e.pointerType === 'mouse') setSplitHover(false)
+                }}
+                aria-expanded={splitOpen}
+                title="Mint sales vs resale royalties"
+                className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
+              >
+                <span>
+                  {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                </span>
+                <ChevronDown
+                  size={11}
+                  strokeWidth={2}
+                  className={`transition-transform ${splitOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+            ) : (
+              <p className="text-muted text-xs mt-0.5">
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+              </p>
+            ))}
+          {hasBothSources && splitOpen && active && stats.primary && stats.secondary && (
+            <p className="text-faint text-xs mt-0.5 tabular-nums">
               {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
