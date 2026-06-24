@@ -3,6 +3,7 @@ import { getEthUsd } from './ethPrice'
 import { inferCollectCurrency } from './inprocess'
 import { fetchTransfersPage, type TransferItem } from './inprocessTransfers'
 import { expandToFidSiblings } from './addressUnion'
+import type { EarningsAmounts } from './earningsFormat'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
@@ -25,13 +26,6 @@ const ROYALTY_USDC_KEY = 'kismetart:stats:royalty:usdc'
 // credits exactly once (ZINCRBY is not idempotent).
 const royaltyCreditedKey = (listingId: string) => `kismetart:royalty-credited:${listingId}`
 
-// A breakdown of earnings in each denomination. USD is blended at read time.
-export interface EarningsBreakdown {
-  eth: number
-  usdc: number
-  usd: number
-}
-
 export interface ArtistEarnings {
   address: string
   // Totals = primary (mints) + secondary (listing royalties).
@@ -40,8 +34,8 @@ export interface ArtistEarnings {
   usd: number
   mints: number
   // Source split of the totals, so the card can show "mints vs resales".
-  primary: EarningsBreakdown
-  secondary: EarningsBreakdown
+  primary: EarningsAmounts
+  secondary: EarningsAmounts
 }
 
 // ── Rebuild ──────────────────────────────────────────────────────────────────
@@ -162,7 +156,7 @@ export async function getArtistEarnings(artist: string, wallets?: string[]): Pro
       secondary: { eth: royEth, usdc: royUsdc, usd: royEth * price + royUsdc },
     }
   } catch {
-    const zero = (): EarningsBreakdown => ({ eth: 0, usdc: 0, usd: 0 })
+    const zero = (): EarningsAmounts => ({ eth: 0, usdc: 0, usd: 0 })
     return { address: lower, eth: 0, usdc: 0, usd: 0, mints: 0, primary: zero(), secondary: zero() }
   }
 }

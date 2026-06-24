@@ -14,6 +14,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import type { ProfileTheme } from '@/lib/profileTheme'
+import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import { CuratePanel } from './CuratePanel'
@@ -249,8 +250,8 @@ interface Profile {
     usdc: number
     usd: number
     mints: number
-    primary?: { eth: number; usdc: number; usd: number }
-    secondary?: { eth: number; usdc: number; usd: number }
+    primary?: EarningsAmounts
+    secondary?: EarningsAmounts
   } | null
   updatedAt: number
 }

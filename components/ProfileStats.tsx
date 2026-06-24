@@ -3,20 +3,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/earningsFormat'
+import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
 
 interface Pending {
   eth: number
   usdc: number
   usd: number
   count: number
-}
-
-// Earnings in each denomination, for one source (mints or resales).
-interface Breakdown {
-  eth: number
-  usdc: number
-  usd: number
 }
 
 interface Stats {
@@ -27,8 +20,8 @@ interface Stats {
   mints: number
   public: boolean
   // Source split of the totals, so the card can show "mints vs resales".
-  primary?: Breakdown
-  secondary?: Breakdown
+  primary?: EarningsAmounts
+  secondary?: EarningsAmounts
   // Undistributed earnings sitting on the artist's splits. Owner-only; absent
   // for visitors and for the public profile payload.
   pending?: Pending | null
@@ -49,8 +42,8 @@ export function ProfileStats({
     usdc: number
     usd: number
     mints: number
-    primary?: Breakdown
-    secondary?: Breakdown
+    primary?: EarningsAmounts
+    secondary?: EarningsAmounts
   } | null
 }) {
   const { isInMiniApp } = useFarcaster()
