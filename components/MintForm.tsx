@@ -692,6 +692,27 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       })
       return
     }
+    // No inprocess smart wallet for this creator → the relay has nothing to
+    // execute the mint as, so it WILL revert at gas estimation ("simulation
+    // failed"). Bail BEFORE any Arweave upload so a structurally-doomed mint
+    // can't burn turbo credits. Only a DEFINITIVE notFound blocks — a transient
+    // null falls through (inprocess stays the source of truth, as on the deploy
+    // path). Auto-deploy is EXEMPT: that path (contract:{name,uri}) is exactly
+    // how inprocess provisions a first-time creator's smart wallet, so blocking
+    // it would prevent the very bootstrap it performs. We only pay the lookup
+    // when the reactive smartWalletForCaller hasn't already resolved an address
+    // (cached → instant; null → disambiguate notFound vs a still-pending read).
+    if (!isAutoDeploy && !smartWalletForCaller) {
+      const swResult = await fetchInprocessSmartWallet(address)
+      if (swResult && 'notFound' in swResult) {
+        toast.error('Set up your account to mint', {
+          id: 'mint',
+          description:
+            'This wallet has no inprocess account yet. Mint your first moment WITHOUT picking a collection (we create one for you) — that provisions your account — then you can mint into existing collections.',
+        })
+        return
+      }
+    }
     if (!name.trim()) { toast.error('Please enter a title'); return }
     // Auto-deploy uses the moment title as the collection name. Users
     // who want more control over the collection (separate name, royalty,

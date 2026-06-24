@@ -24,14 +24,23 @@ export const RESIDENCIES_ADDRESS =
 // leave less room — see MintForm buildFinalSplits).
 export const DEFAULT_RESIDENCIES_PERCENT = 5
 
-// Inprocess operator smart wallet — the CDP smart account that submits
-// userOps on behalf of the platform identity for every relayed call
-// (mint, airdrop, write, distribute) made under our INPROCESS_API_KEY.
-// Each user-deployed collection grants this wallet ADMIN at deploy time
-// so admin-mint flows (notably airdrop) route through it cleanly without
-// requiring per-artist API keys. The boot healthcheck (lib/healthcheck.ts)
-// asserts the same wallet has ADMIN on PLATFORM_COLLECTION; this constant
-// extends the same identity to user collections.
+// Inprocess operator smart wallet — the CDP smart account used for the
+// platform's ADMIN-level relayed calls (airdrop / distribute / admin writes)
+// made under our INPROCESS_API_KEY.
+//
+// IMPORTANT — this is NOT the executor of a creator's own mints. A creator's
+// /moment/create runs as THAT creator's per-creator inprocess smart wallet
+// (provisioned by inprocess on the creator's first mint), not this operator.
+// Verified on-chain: a live, actively-minting user collection has
+// permissions(0, operator)=0 yet its mints succeed — because the per-creator
+// smart wallet holds ADMIN, not this wallet. Do not "fix" the mint preflight
+// (lib/smartWalletPreflight.ts) to read this operator instead.
+//
+// Each user-deployed collection still grants this wallet ADMIN at deploy so the
+// admin-mint flows (notably airdrop) route through it cleanly without requiring
+// per-artist API keys. The boot healthcheck (lib/healthcheck.ts) asserts this
+// wallet has ADMIN on PLATFORM_COLLECTION (the platform's own admin-mint
+// collection); this constant extends that identity to user collections.
 //
 // Server-only OPERATOR_SMART_WALLET stays in place for the healthcheck.
 // Public mirror is required because CreateCollectionForm runs in the
