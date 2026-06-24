@@ -462,6 +462,28 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       resolvedRoyalty = resolved
     }
 
+    // Resolve the creator's inprocess smart wallet up-front — same rationale as
+    // the royalty check above. inprocess executes a creator's mints as THEIR
+    // per-creator smart wallet, which is provisioned on the creator's FIRST
+    // mint (the auto-deploy path), NOT by explicit collection creation: this
+    // form deploys via the user's own wallet (writeContractAsync → factory) and
+    // never relays through inprocess. So a creator with no smart wallet who
+    // deploys here gets a collection they can never mint into — exactly how the
+    // Patron collection was stranded after commit 4d98741 dropped this guard.
+    // Restore it: a DEFINITIVE notFound blocks and routes them to mint first; a
+    // transient null falls through (don't strand on an inprocess blip); a
+    // resolved address is reused below to skip the redundant lookup.
+    let preResolvedSmartWallet: string | null = null
+    const swPre = await fetchInprocessSmartWallet(address)
+    if (swPre && 'notFound' in swPre) {
+      toast.error('Mint your first moment first', {
+        description:
+          'This wallet has no inprocess account yet, so you couldn’t mint into this collection. Mint a moment without picking a collection (we create one for you) to set up your account, then create collections of your own.',
+      })
+      return
+    }
+    if (swPre && 'address' in swPre) preResolvedSmartWallet = swPre.address
+
     setDeployedImageUri(undefined)
 
     try {
@@ -667,21 +689,27 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // never unusable — only the gasless relay needs this grant, and it's
       // recoverable in one click (mint-time AUTHORIZE_REQUIRED / the authorize
       // banner). Blocking here would strand first-time creators. Retries below.
-      let inprocessSmartWallet: string | null = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) {
-          await new Promise((r) => setTimeout(r, 2000 * attempt))
+      // Already resolved up-front (a notFound was blocked before any upload, so
+      // we never reach here with one). Reuse it and skip the redundant lookup;
+      // only retry on the transient (null) case, where a later attempt may now
+      // succeed and let us still land the deploy-time ADMIN grant.
+      let inprocessSmartWallet: string | null = preResolvedSmartWallet
+      if (!inprocessSmartWallet) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 2000 * attempt))
+          }
+          const result = await fetchInprocessSmartWallet(address)
+          if (result && 'notFound' in result) {
+            // 404 — no inprocess account yet. No point retrying.
+            break
+          }
+          if (result && 'address' in result) {
+            inprocessSmartWallet = result.address
+            break
+          }
+          // null → transient; retry
         }
-        const result = await fetchInprocessSmartWallet(address)
-        if (result && 'notFound' in result) {
-          // 404 — no inprocess account yet. No point retrying.
-          break
-        }
-        if (result && 'address' in result) {
-          inprocessSmartWallet = result.address
-          break
-        }
-        // null → transient; retry
       }
       // Lift resolved address into state (may be null) so the receipt-watcher
       // can call verifyDeployPermissions without re-fetching.
