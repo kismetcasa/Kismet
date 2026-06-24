@@ -88,11 +88,21 @@ export async function resolveSmartWallet(
     const url = inprocessUrl('/smartwallet', {
       walletAddress: artistWallet,
     })
-    const headers: Record<string, string> = { Accept: 'application/json' }
-    const apiKey = process.env.INPROCESS_API_KEY
-    if (apiKey) headers['x-api-key'] = apiKey
+    // KEYLESS by design. /smartwallet is a PUBLIC read endpoint, and the last
+    // known-working version of this file (before the 2026-06-18 churn) sent NO
+    // auth header here — only `Accept`. Commit 4d98741 ADDED `x-api-key` on a
+    // guess ("so authenticated lookup works correctly"), and that is the prime
+    // suspect for the systemic HTTP 500 (empty body) we now see for every EOA,
+    // including registered creators like kismetart.eth. The same key is
+    // accepted on the WRITE endpoints (/moment/create, /distribute,
+    // /update-uri — which all keep it), so the key value isn't the issue; the
+    // problem is sending an auth header to a public read route that the working
+    // version never authenticated. We send the request bare to match that
+    // historically-working shape. (Confirm with a keyless browser GET of the
+    // URL above: a 200 here while the keyed call 500s proves the header is the
+    // regression.)
     res = await fetch(url, {
-      headers,
+      headers: { Accept: 'application/json' },
       next: { revalidate },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
