@@ -937,33 +937,36 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
         // Cross-reload resume: the in-memory bank below is wiped on a page
         // reload / remount, so a creator who reloads after a failed mint would
-        // re-upload this (often very large) file under a fresh txid for
-        // nothing. If we uploaded THIS exact file in a prior session, restore
-        // that bank from localStorage — but only after confirming the stored
-        // media URI still resolves on Arweave, so a stale entry can never mint
-        // a phantom URI. The verify is one gateway poll; re-uploading is the
-        // waste we're avoiding. Skipped when a valid in-memory session exists.
+        // re-upload this (often very large) file under a fresh txid for nothing.
+        // If we uploaded THIS exact file in a prior session, restore that bank
+        // from localStorage. We rehydrate UNCONDITIONALLY — identical to the
+        // in-memory resume path — and do NOT gate on a propagation verify:
+        //   - the bytes are PERMANENT on Arweave (Turbo confirmed the upload
+        //     when it first returned this txid), so re-uploading only mints a
+        //     duplicate under a fresh txid and burns Turbo credits;
+        //   - the file-identity key (name|size|lastModified) guarantees this is
+        //     THIS file's media, so there is no wrong-content risk;
+        //   - the mint is non-blocking, so a not-yet-propagated URI self-heals
+        //     at display time rather than wasting a fresh upload.
+        // The cachedUpload branch below still runs the non-blocking propagation
+        // verify for the spinner, exactly as it does for an in-memory session.
         if (file && (!mediaUploadRef.current || mediaUploadRef.current.source !== file)) {
           const persisted = loadPersistedUpload(file)
           if (persisted) {
-            setStep('verifying-upload')
-            toast.loading('Resuming previous upload — verifying propagation…', { id: 'mint' })
-            if (await verifyArweaveAvailable(persisted.mediaUri, MINT_MEDIA_VERIFY_BUDGET_MS)) {
-              mediaUploadRef.current = {
-                source: file,
-                // Placeholder File: after a resume the media File is read only
-                // for its `.type` (the video animation_url binding), so the
-                // bytes are irrelevant — we persisted the effective type.
-                mediaFile: new File([], file.name, { type: persisted.mediaType }),
-                posterFile: null,
-                needsServerTranscode: persisted.needsServerTranscode,
-                serverTranscode: persisted.serverTranscode,
-                mediaUri: persisted.mediaUri,
-                posterUri: persisted.posterUri,
-                thumbhash: persisted.thumbhash,
-                durationSec: persisted.durationSec,
-                verifyFailures: 0,
-              }
+            mediaUploadRef.current = {
+              source: file,
+              // Placeholder File: after a resume the media File is read only
+              // for its `.type` (the video animation_url binding), so the
+              // bytes are irrelevant — we persisted the effective type.
+              mediaFile: new File([], file.name, { type: persisted.mediaType }),
+              posterFile: null,
+              needsServerTranscode: persisted.needsServerTranscode,
+              serverTranscode: persisted.serverTranscode,
+              mediaUri: persisted.mediaUri,
+              posterUri: persisted.posterUri,
+              thumbhash: persisted.thumbhash,
+              durationSec: persisted.durationSec,
+              verifyFailures: 0,
             }
           }
         }
