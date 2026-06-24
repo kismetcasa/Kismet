@@ -126,10 +126,9 @@ export function ProfileStats({
   const splitOpen = splitPinned || splitHover
   // The mint-count line anchors a tap-to-expand toggle. A split collaborator can
   // have primary earnings but 0 personal mints (no count line) — there's nothing
-  // to anchor a toggle to, so show their breakdown statically rather than hiding
-  // it. Toggle only when there IS a count line to declutter.
+  // to anchor a toggle to, so their breakdown shows statically (no toggle). Toggle
+  // only when there IS a count line to declutter.
   const showSplitToggle = hasBothSources && stats.mints > 0
-  const breakdownVisible = hasBothSources && (stats.mints > 0 ? splitOpen : true)
   // The owner sees the card on ANY primary-sale activity — earnings OR mints — so
   // an artist whose attributed earnings resolve to 0 (e.g. value split entirely
   // to collaborators) still gets their mint count and the pin, instead of a card
@@ -261,8 +260,15 @@ export function ProfileStats({
                 {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
               </p>
             ))}
-          {active && breakdownVisible && stats.primary && stats.secondary && (
-            <p id="earnings-source-split" className="text-faint text-xs mt-0.5 tabular-nums">
+          {/* Always mounted when both sources exist so the toggle's aria-controls
+              resolves; `hidden` (display:none) collapses it for the toggle case and
+              the 0-mint collaborator (no toggle) just shows it. */}
+          {active && hasBothSources && stats.primary && stats.secondary && (
+            <p
+              id="earnings-source-split"
+              hidden={showSplitToggle && !splitOpen}
+              className="text-faint text-xs mt-0.5 tabular-nums"
+            >
               {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
