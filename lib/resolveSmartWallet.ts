@@ -55,14 +55,14 @@ export async function resolveSmartWallet(
 
   let res: Response
   try {
-    // Per the authoritative inprocess OpenAPI spec (and a direct instruction
-    // from their team, 2026): GET /api/smartwallet takes EXACTLY one of
-    // `accountId` (UUID) or `walletAddress` (the creator EOA). There is no
-    // `artist_wallet` param — that was a stale name carried over from older
-    // docs. We only have the EOA here, so we send `walletAddress`. Sending the
-    // unrecognized `artist_wallet` alongside it caused the upstream to 400
-    // ("neither accountId nor walletAddress provided"), which collapsed to a
-    // null resolution (502) and silently skipped the deploy-time ADMIN grant.
+    // Per the authoritative inprocess OpenAPI spec (confirmed directly by their
+    // team, 2026): GET /api/smartwallet takes EXACTLY one of `accountId` (UUID)
+    // or `walletAddress` (the creator EOA). `artist_wallet` — a stale name from
+    // older docs — is not a recognized param. We only have the EOA, so we send
+    // `walletAddress` alone: an unrecognized param is at best ignored, at worst
+    // rejected by a strict validator, so it earns no place here. This lookup is
+    // load-bearing — a null result surfaces as 502 and silently skips the
+    // deploy-time ADMIN grant — so the request must match the spec exactly.
     const url = inprocessUrl('/smartwallet', {
       walletAddress: artistWallet,
     })
