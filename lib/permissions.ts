@@ -116,10 +116,18 @@ export interface VerifyDeployResult {
 /**
  * Post-deploy verification: confirms BOTH the deployer EOA and the
  * inprocess smart wallet hold ADMIN at tokenId 0 on a freshly-deployed
- * Zora 1155 collection. If either grant didn't take, every subsequent
- * mint via the inprocess relay would revert at gas estimation — so
- * deploy flows should treat `ok: false` as fail-closed and surface the
- * diagnostic instead of marking the deploy successful.
+ * Zora 1155 collection. If either grant didn't take, a mint via the
+ * inprocess relay would revert at gas estimation.
+ *
+ * Callers treat `ok: false` as FAIL-SOFT, not fail-closed: the deploy
+ * transaction itself succeeded (the collection exists with the deployer
+ * EOA as defaultAdmin), so we register it and report success, then route
+ * the creator to the one-click authorize banner (CollectionView) to land
+ * the missing smart-wallet grant. Blocking here would be misleading (the
+ * deploy did NOT fail) and would strand creators whose grant was skipped
+ * because inprocess's /smartwallet lookup was transiently unreachable —
+ * the exact case the durable smart-wallet cache (lib/smartWalletCache) now
+ * makes rare by serving the last-known wallet through an outage.
  */
 export async function verifyDeployPermissions(
   client: PublicClientLike,
