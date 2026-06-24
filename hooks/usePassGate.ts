@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useAccount } from 'wagmi'
 import { useAdmin } from '@/contexts/AdminContext'
+import { PATRON_COLLECTION_ADDRESS_LOWER } from '@/lib/patron'
 
 interface PassGate {
   enabled: boolean
@@ -47,8 +48,14 @@ export function usePassGate(): {
     !!passGate.passCollection &&
     passGate.validBalance < 1 &&
     !isAdmin
+  // When the configured pass collection IS the Patron Collection, send gated-out
+  // users to the curated /patron page (big displays + Mint Access Rules) rather
+  // than the generic collection grid. Any other pass collection an admin sets
+  // still routes to its /collection/<addr> page.
   const passCollectionHref = passGate?.passCollection
-    ? `/collection/${passGate.passCollection}`
+    ? passGate.passCollection.toLowerCase() === PATRON_COLLECTION_ADDRESS_LOWER
+      ? '/patron'
+      : `/collection/${passGate.passCollection}`
     : '/'
   return { gatedOut, passCollectionHref, passCollectionName: passGate?.passCollectionName ?? null }
 }

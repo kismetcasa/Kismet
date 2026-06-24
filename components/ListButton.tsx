@@ -25,7 +25,7 @@ import { computePlatformFee, isBelowListingFloor, PLATFORM_FEE_RECIPIENT } from 
 
 type ListCurrency = 'eth' | 'usdc'
 
-interface ListButtonProps {
+export interface ListButtonProps {
   collectionAddress: string
   tokenId: string
   name?: string

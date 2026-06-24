@@ -22,7 +22,7 @@ import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
-import { ListButton } from './ListButton'
+import { CollectedActions } from './CollectedActions'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -614,7 +614,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {showProfileCta ? (
             renderViewProfile('compact')
           ) : owned > 0 ? (
-            <ListButton
+            <CollectedActions
               collectionAddress={moment.address}
               tokenId={moment.token_id}
               name={meta.name}
@@ -660,7 +660,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             renderViewProfile('full')
           ) : owned > 0 ? (
             <div className="flex-1 min-w-0">
-              <ListButton
+              <CollectedActions
                 collectionAddress={moment.address}
                 tokenId={moment.token_id}
                 name={meta.name}

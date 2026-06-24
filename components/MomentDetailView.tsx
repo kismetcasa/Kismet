@@ -31,7 +31,7 @@ import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
-import { ListButton } from './ListButton'
+import { CollectedActions } from './CollectedActions'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -1463,7 +1463,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
             {alreadyOwned && (
               <div className="flex-1 min-w-0">
-                <ListButton
+                <CollectedActions
                   collectionAddress={address}
                   tokenId={tokenId}
                   name={meta.name}
