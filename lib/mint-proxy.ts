@@ -238,6 +238,24 @@ export async function proxyMintRequest(
     typeof contractField?.address === 'string' ? (contractField.address as string) : undefined
   if (collectionAddress) {
     const preflight = await checkSmartWalletAdmin(account, collectionAddress, [0n])
+    if (preflight.status === 'no_account') {
+      // The caller has no inprocess account (definitive notFound), so no smart
+      // wallet exists to execute this mint — forwarding would just revert at
+      // gas estimation ("execution reverted"). Return a clean, actionable error.
+      // The client guards this before any Arweave upload (MintForm); this is
+      // defense-in-depth for a transient-then-notFound race or a non-UI caller.
+      // Auto-deploy never reaches here: it has no collectionAddress, so the
+      // preflight is skipped and inprocess provisions the wallet on first mint.
+      return NextResponse.json(
+        {
+          code: 'NO_ACCOUNT',
+          error:
+            'This wallet has no inprocess account yet, so it can’t mint into an existing collection. Mint your first moment (we’ll create a collection for you) to set up your account, then mint here.',
+          collectionAddress,
+        },
+        { status: 403 },
+      )
+    }
     if (preflight.status === 'unauthorized') {
       return NextResponse.json(
         {
