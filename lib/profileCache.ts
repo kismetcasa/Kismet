@@ -84,6 +84,10 @@ export async function fetchCreatorProfilesBatch(
     const chunk = misses.slice(i, i + BATCH_MAX).sort()
     try {
       const res = await fetch(`/api/profiles?addresses=${encodeURIComponent(chunk.join(','))}`)
+      // Only a real 200 populates the cache — a non-2xx falls through to the
+      // catch (shortAddress, uncached) so a transient error retries next call
+      // instead of pinning everyone to shortAddress for the fallback TTL.
+      if (!res.ok) throw new Error(`profiles ${res.status}`)
       const { profiles = {} }: { profiles?: Record<string, { name?: string; avatarUrl?: string }> } =
         await res.json()
       for (const key of chunk) {

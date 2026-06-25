@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
+import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Batch "lite" profile resolver: maps many raw addresses to { name, avatarUrl }
@@ -32,10 +33,7 @@ export async function GET(req: NextRequest) {
           // Warm ENS in the background on a miss, like the single route, so the
           // next view resolves the .eth name from cache.
           if (!profile.username && ens === undefined) after(() => resolveEnsAndCache(addr))
-          return [addr, {
-            name: profile.username || farcaster?.username || ens || '',
-            avatarUrl: profile.avatarUrl || farcaster?.pfpUrl || undefined,
-          }]
+          return [addr, pickProfileIdentity(profile, farcaster, ens)]
         } catch {
           // Isolate per-address failures (e.g. a transient Redis/FC blip) so one
           // sender can't blank the whole batch — as independent per-sender calls

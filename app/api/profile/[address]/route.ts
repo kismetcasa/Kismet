@@ -5,6 +5,7 @@ import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonc
 import { resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
+import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { getArtistEarnings } from '@/lib/stats'
@@ -54,9 +55,11 @@ export async function GET(
   //     or (b) the FidProfile.currentAddress doesn't match. Clients
   //     can use it to canonicalize their URL.
   const ensName = cachedEns || undefined
-  const avatarUrl = profile.avatarUrl || farcaster?.pfpUrl || undefined
-  const displayName =
-    profile.username || farcaster?.username || ensName || null
+  // Shared projection (same one /api/profiles uses) so the single + batch
+  // routes can't diverge on identity resolution. displayName keeps its
+  // nullable contract: '' (nothing resolved) collapses to null as before.
+  const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, cachedEns)
+  const displayName = name || null
   return NextResponse.json({
     profile: {
       ...profile,
