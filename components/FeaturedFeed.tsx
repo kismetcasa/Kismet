@@ -84,12 +84,13 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   }
 
   // The curated Mint Pass Display — one at a time, always leading the tab.
-  // FeaturedMoment renders it in two CSS-toggled presentations (a rich hero at
-  // lg+, an ordinary card below lg), so the VIEWPORT alone — not a device/UA/
-  // miniapp guess — decides which one shows. That's why there's no isMobile/
-  // inMiniApp gate here: the same node is correct on web, mobile, and every
-  // embed. FeaturedMoment self-fetches, so it shows even for a mint that only
-  // appears inside a featured collection (never as a standalone timeline mint).
+  // FeaturedMoment mounts one of two presentations (a rich hero at lg+, an
+  // ordinary card below lg) chosen by the VIEWPORT (a matchMedia check, not a
+  // device/UA/miniapp guess), so it's correct on web, mobile, and every embed.
+  // We hand it `initialMoment` below so the artwork paints from the timeline
+  // payload immediately; it still self-fetches to enrich (and to show even for
+  // a mint that only lives inside a featured collection, never as a timeline
+  // entry).
   const displayKey = mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
   const keyOf = (m: Moment) => `${m.address?.toLowerCase()}:${m.token_id}`
   const colon = displayKey ? displayKey.indexOf(':') : -1
