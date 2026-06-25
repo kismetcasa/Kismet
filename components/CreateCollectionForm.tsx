@@ -8,7 +8,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther, type Address } from 'viem'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
-import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions } from '@/lib/collections'
+import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions, findLandedDeploy } from '@/lib/collections'
 import { CREATE_REFERRAL, OPERATOR_SMART_WALLET } from '@/lib/config'
 import { resolveAddressOrEns } from '@/lib/address'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -23,7 +23,7 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
-import { toastError } from '@/lib/toast'
+import { toastError, isUserRejection, isChunkLoadError } from '@/lib/toast'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
@@ -500,6 +500,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
     setDeployedImageUri(undefined)
 
+    // Hoisted so the deploy catch can probe the factory for an already-landed
+    // deploy of this exact metadata (recover-landed-deploy guard) before it
+    // strands the user or a retry duplicates the collection.
+    let deployedContractURI: string | null = null
+
     try {
       // Guard the chunk-reload self-heal for the deploy's duration — same
       // rationale as MintForm: a transient chunk timeout behind a saturated
@@ -620,6 +625,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       }
       const contractKey = JSON.stringify(metadata)
       const contractURI = await uploadJsonCached(metadata, contractKey)
+      deployedContractURI = contractURI
 
       // contractURI is baked on-chain by the factory — and when mint-cover
       // is on it doubles as the cover token's tokenURI — so we wait on its
@@ -772,6 +778,22 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // subsequent token created via /api/mint.
       const setupActions = [...minterActions, ...inprocessAdminAction, ...coverActions]
 
+      // Recover-landed-deploy guard: a PRIOR attempt may have broadcast this
+      // exact deploy before its wallet request surfaced "Request expired" (Base
+      // Account request TTLs can expire AFTER broadcast). Signing again would
+      // duplicate the collection and re-spend gas. If a SetupNewContract for
+      // this deployer + this contractURI already landed, adopt it — set its tx
+      // hash and let the existing receipt handler drive to success — instead of
+      // deploying a second time.
+      if (publicClient) {
+        const prior = await findLandedDeploy(publicClient, address as Address, contractURI)
+        if (prior) {
+          toast.loading('Found your deploy — confirming…', { id: 'create-collection' })
+          setTxHash(prior.txHash)
+          return
+        }
+      }
+
       const hash = await writeContractAsync({
         chainId: base.id,
         address: FACTORY_ADDRESS,
@@ -798,9 +820,42 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       if (PENDING_KEY) {
         try { localStorage.removeItem(PENDING_KEY) } catch {}
       }
-      setStep('idle')
       setUploadProgress(0)
-      toastError('Deploy', err, { id: 'create-collection' })
+      // A user rejection (declined in wallet) or a stale-chunk error never
+      // broadcast — defer to toastError for the clean "Cancelled" / auto-reload
+      // handling and skip the on-chain probe.
+      if (isUserRejection(err) || isChunkLoadError(err)) {
+        setStep('idle')
+        toastError('Deploy', err, { id: 'create-collection' })
+        return
+      }
+      // Non-rejection wallet/RPC failure (e.g. "Request expired"): the deploy
+      // MAY have broadcast before erroring. Probe the factory for a landed
+      // SetupNewContract matching this exact contractURI before stranding —
+      // adopt it if found (no duplicate, drives straight to success), otherwise
+      // offer an in-place retry (the old path dead-ended with no way forward,
+      // which is exactly the "there's no retry button" report).
+      const landed = publicClient && deployedContractURI
+        ? await findLandedDeploy(publicClient, address as Address, deployedContractURI)
+        : null
+      if (landed) {
+        toast.loading('Found your deploy — confirming…', { id: 'create-collection' })
+        setTxHash(landed.txHash)
+      } else {
+        setStep('idle')
+        toast.error('Deploy didn’t go through', {
+          id: 'create-collection',
+          description:
+            'Your wallet request expired before the deploy confirmed. Nothing was charged — try again.',
+          action: {
+            label: 'Try again',
+            onClick: (ev) => {
+              ev.preventDefault()
+              void handleCreate(e)
+            },
+          },
+        })
+      }
     } finally {
       endCriticalOp()
     }
