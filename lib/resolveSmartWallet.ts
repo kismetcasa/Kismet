@@ -1,6 +1,7 @@
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { getCachedSmartWallet, setCachedSmartWallet } from '@/lib/smartWalletCache'
+import { parseSmartWalletAddress } from '@/lib/smartWalletShape'
 
 // Two-layer per-EOA cache. Smart-wallet ↔ EOA is deterministic per inprocess's
 // derivation, so once resolved it doesn't change.
@@ -141,20 +142,11 @@ export async function resolveSmartWallet(
     parsed = text.trim()
   }
 
-  const candidate =
-    typeof parsed === 'string'
-      ? parsed
-      : parsed && typeof parsed === 'object'
-        ? ((parsed as Record<string, unknown>).address
-            ?? (parsed as Record<string, unknown>).smartWallet
-            ?? (parsed as Record<string, unknown>).smart_wallet
-            ?? (parsed as Record<string, unknown>).smartAccount)
-        : undefined
-
-  // Parseable response but no valid address — treat as not found rather than transient.
-  if (typeof candidate !== 'string' || !isAddress(candidate)) return { notFound: true }
-
-  const resolved = candidate.toLowerCase()
+  // Defensive shape parsing pinned by scripts/verify-smartwallet.ts — accepts
+  // { address } / { smartWallet } / { smart_wallet } / { smartAccount } / a raw
+  // string. Parseable response but no valid address → not found, not transient.
+  const resolved = parseSmartWalletAddress(parsed)
+  if (!resolved) return { notFound: true }
   cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
   // Persist for cross-instance / cross-deploy resilience so a later lookup can
   // fall back to this when inprocess is unreachable. Awaited (a fast Redis

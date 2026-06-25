@@ -1,4 +1,5 @@
 import { isAddress } from '@/lib/address'
+import { isFlagSet } from './gateFlags'
 import { redis } from './redis'
 import { hasValidPass } from './pass-validity'
 import { getCollectionMeta } from './kv'
@@ -23,13 +24,9 @@ export interface GateConfig {
   paused: boolean
 }
 
-// Upstash's REST client sends string args to SET unchanged but JSON-parses
-// GET results, so the flag stored as '1' comes back as the number 1 — a
-// strict `=== '1'` would always be false and the toggle would never persist.
-// Normalize both representations.
-function isFlagSet(raw: string | number | null): boolean {
-  return String(raw) === '1'
-}
+// isFlagSet (Upstash '1'-string vs numeric-1 normalization) lives in
+// lib/gateFlags so the verify harness can unit-test it — gate.ts itself pulls
+// in redis/kv and can't be loaded under --experimental-strip-types.
 
 // In-process cache for gate config. Avoids 3 Redis reads on every gated
 // request (getGateConfig is called once each by hasGateAccess,
