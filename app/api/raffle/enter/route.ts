@@ -7,10 +7,16 @@ import {
   buildRaffleEntryMessage,
   RAFFLE_ENTRY_MAX_AGE_SECONDS,
 } from '@/lib/raffleMessage'
-import { addEntry, getRaffleState, holdsEdition, isEntered } from '@/lib/raffle'
+import {
+  addEntry,
+  getRaffleState,
+  holdsEdition,
+  isEntered,
+  isRaffleEnabled,
+} from '@/lib/raffle'
 
 /**
- * Enter the Patron raffle. The collector signs a gas-less message (verified
+ * Enter a moment's raffle. The collector signs a gas-less message (verified
  * here, ERC-1271-aware so smart wallets work) proving they control the wallet,
  * and the server re-verifies on-chain that they hold ≥1 edition before
  * recording the entry. Idempotent — a second entry is a no-op.
@@ -76,6 +82,12 @@ export async function POST(req: NextRequest) {
   }
   if (!valid) return errorResponse(401, 'Signature does not match wallet')
 
+  // The raffle must be enabled for this specific moment AND still open. Gating
+  // here (not just in the UI) stops a crafted request entering a moment that
+  // has no raffle.
+  if (!(await isRaffleEnabled(collection, tokenId))) {
+    return errorResponse(409, 'There is no raffle for this edition')
+  }
   if ((await getRaffleState(collection, tokenId)) !== 'open') {
     return errorResponse(409, 'The raffle is closed')
   }

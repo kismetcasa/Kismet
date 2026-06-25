@@ -21,9 +21,19 @@ interface EntrantsResponse {
 
 /**
  * Admin-only raffle control for one (collection, tokenId). Renders nothing for
- * non-admins. Lists entrants (with their current on-chain holding) and lets the
- * admin MANUALLY pick the winner — no on-chain randomness. Picking closes
- * entries; a winner can be cleared to re-pick (reopens entries).
+ * non-admins, so it can be dropped onto any moment (MomentDetailView, the
+ * /patron showcase) and only admins see it.
+ *
+ * Two responsibilities:
+ *  1. Enable / disable the raffle FOR THIS MOMENT (raffleEnabledKeys /
+ *     toggleRaffleEnabled). This is what makes the "enter raffle" button appear
+ *     for holders — enabling per moment is how a raffle is turned on now, until
+ *     a mint-time toggle exists.
+ *  2. Once enabled, list entrants (with their current on-chain holding) and let
+ *     the admin MANUALLY pick the winner — no on-chain randomness. Picking
+ *     closes entries; a winner can be cleared to re-pick (reopens entries).
+ *
+ * Disabling doesn't discard entrants — re-enabling restores them.
  *
  * The admin session (HttpOnly cookie via SIWE) is ensured by withSession, which
  * auto-attaches to the fetch — so these privileged routes authenticate the same
@@ -36,9 +46,11 @@ export function RaffleAdminPanel({
   collection: string
   tokenId: string
 }) {
-  const { isAdmin, withSession } = useAdmin()
+  const { isAdmin, withSession, raffleEnabledKeys, toggleRaffleEnabled } = useAdmin()
+  const enabled = raffleEnabledKeys.has(`${collection.toLowerCase()}:${tokenId}`)
   const [data, setData] = useState<EntrantsResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  const [toggling, setToggling] = useState(false)
   const [expanded, setExpanded] = useState(false)
 
   const load = useCallback(async () => {
@@ -61,11 +73,29 @@ export function RaffleAdminPanel({
     }
   }, [collection, tokenId, withSession])
 
+  // Only load the entrant list once the raffle is actually enabled — a disabled
+  // moment has no meaningful entrants to show.
   useEffect(() => {
-    if (isAdmin && expanded && !data) void load()
-  }, [isAdmin, expanded, data, load])
+    if (isAdmin && expanded && enabled && !data) void load()
+  }, [isAdmin, expanded, enabled, data, load])
 
   if (!isAdmin) return null
+
+  async function toggleEnabled() {
+    if (
+      enabled &&
+      !window.confirm(
+        'Disable the raffle for this moment? Holders stop seeing "enter raffle". Entrants are kept, so you can re-enable later.',
+      )
+    )
+      return
+    setToggling(true)
+    try {
+      await toggleRaffleEnabled(collection, tokenId)
+    } finally {
+      setToggling(false)
+    }
+  }
 
   async function pickWinner(address: string) {
     if (
@@ -131,6 +161,32 @@ export function RaffleAdminPanel({
 
       {expanded && (
         <div className="px-4 pb-4 flex flex-col gap-3 border-t border-line pt-3">
+          {/* Enable / disable the raffle for this moment — the switch that makes
+              the "enter raffle" button appear for holders of this edition. */}
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-muted">
+              {enabled ? 'raffle enabled' : 'raffle disabled'}
+            </span>
+            <button
+              onClick={() => void toggleEnabled()}
+              disabled={toggling}
+              className={`text-[10px] font-mono uppercase tracking-widest transition-colors disabled:opacity-50 ${
+                enabled ? 'text-muted hover:text-red-400' : 'text-accent hover:text-ink'
+              }`}
+            >
+              {toggling ? '…' : enabled ? 'disable' : 'enable raffle'}
+            </button>
+          </div>
+
+          {!enabled && (
+            <p className="text-xs font-mono text-muted">
+              Enable the raffle to start accepting entries from holders of this
+              edition.
+            </p>
+          )}
+
+          {enabled && (
+          <>
           <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-muted">
             <span>
               {data ? `${data.count} entrant${data.count === 1 ? '' : 's'}` : '…'}
@@ -202,6 +258,8 @@ export function RaffleAdminPanel({
                 )
               })}
             </ul>
+          )}
+          </>
           )}
         </div>
       )}

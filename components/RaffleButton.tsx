@@ -19,6 +19,7 @@ interface RaffleButtonProps {
 }
 
 interface RaffleStatus {
+  enabled: boolean
   open: boolean
   entrantCount: number
   entered: boolean
@@ -33,8 +34,8 @@ const BASE_BTN =
   'w-full text-xs font-mono tracking-wider uppercase px-3 py-2.5 transition-colors'
 
 /**
- * Replaces ListButton on owned Patron Collection editions: surfaces the
- * off-chain raffle as a single button whose label + action follow the
+ * Replaces ListButton on owned editions of a raffle-enabled moment: surfaces
+ * the off-chain raffle as a single button whose label + action follow the
  * collector through the flow —
  *
  *   enter raffle  → sign a gas-less message; the server records the entry
@@ -88,6 +89,11 @@ export function RaffleButton({
 
   const entered = status?.entered ?? false
   const className = `${BASE_BTN} ${buttonClassName ?? ''}`
+
+  // Once status loads, hide entirely if no raffle is enabled for this moment.
+  // CollectedActions already gates the swap on raffleEnabledKeys; this also
+  // covers call sites that render RaffleButton directly (e.g. PatronArtwork).
+  if (status && !status.enabled) return null
 
   // Show to current holders and to anyone already entered (so an entrant who
   // moved their edition still sees "you won" / "not selected").

@@ -1,10 +1,11 @@
 import 'server-only'
-import { redis } from './redis'
+import { redis, RAFFLE_ENABLED_KEY } from './redis'
 import { serverBaseClient } from './rpc'
 
 /**
- * Off-chain Patron raffle store. A raffle is identified by (collection,
- * tokenId) — the Patron edition collectors hold. Entering is recorded here in
+ * Off-chain raffle store. A raffle is identified by (collection, tokenId) — the
+ * edition collectors hold. An admin enables a raffle PER MOMENT (see
+ * RAFFLE_ENABLED_KEY + /api/raffle/enabled); entering is then recorded here in
  * Redis (verified server-side: the entrant signed, and holds the edition
  * on-chain); the winner is chosen MANUALLY by an admin (no on-chain
  * randomness). "Announce only" — nothing is burned, the winner just keeps
@@ -15,6 +16,9 @@ import { serverBaseClient } from './rpc'
  *   <base>:entered-at  HASH  addr -> unix seconds (audit / ordering)
  *   <base>:winner      STR   the admin-chosen winner (lowercased)
  *   <base>:state       STR   'open' | 'closed'
+ * plus the cross-moment RAFFLE_ENABLED_KEY zset of `<addr>:<tokenId>` (which
+ * mints have a raffle at all). Enablement is independent of entrant/winner
+ * data, so disabling then re-enabling a moment preserves its entrants.
  */
 
 const PREFIX = 'kismetart:raffle'
@@ -26,7 +30,69 @@ const enteredAtKey = (c: string, t: string) => `${base(c, t)}:entered-at`
 const winnerKey = (c: string, t: string) => `${base(c, t)}:winner`
 const stateKey = (c: string, t: string) => `${base(c, t)}:state`
 
+/** Member form for the cross-moment RAFFLE_ENABLED_KEY zset. */
+const enabledMember = (c: string, t: string) => `${norm(c)}:${t}`
+
 export type RaffleState = 'open' | 'closed'
+
+export interface EnabledRaffle {
+  collectionAddress: string
+  tokenId: string
+  enabledAt: number
+}
+
+/** Is a raffle enabled for this (collection, tokenId)? Source of truth for
+ *  whether the "enter raffle" affordance shows at all. */
+export async function isRaffleEnabled(
+  collection: string,
+  tokenId: string,
+): Promise<boolean> {
+  const score = await redis.zscore(RAFFLE_ENABLED_KEY, enabledMember(collection, tokenId))
+  return score != null
+}
+
+/** Admin action: enable the raffle for one moment. Idempotent (re-stamps the
+ *  enabled-at score). Does NOT touch entrants/winner/state — re-enabling a
+ *  previously-disabled raffle restores its entrants as they were. */
+export async function setRaffleEnabled(
+  collection: string,
+  tokenId: string,
+): Promise<void> {
+  await redis.zadd(RAFFLE_ENABLED_KEY, {
+    score: Date.now(),
+    member: enabledMember(collection, tokenId),
+  })
+}
+
+/** Admin action: disable the raffle for one moment. Leaves entrant/winner data
+ *  intact so it can be re-enabled without loss. */
+export async function clearRaffleEnabled(
+  collection: string,
+  tokenId: string,
+): Promise<void> {
+  await redis.zrem(RAFFLE_ENABLED_KEY, enabledMember(collection, tokenId))
+}
+
+/** All raffle-enabled moments, newest first. Powers the public GET that the
+ *  client loads once on mount (AdminContext.raffleEnabledKeys). */
+export async function getEnabledRaffles(): Promise<EnabledRaffle[]> {
+  const raw = (await redis.zrange(RAFFLE_ENABLED_KEY, 0, -1, {
+    rev: true,
+    withScores: true,
+  })) as (string | number)[]
+  const out: EnabledRaffle[] = []
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const member = String(raw[i])
+    const colon = member.indexOf(':')
+    if (colon <= 0) continue
+    out.push({
+      collectionAddress: member.slice(0, colon),
+      tokenId: member.slice(colon + 1),
+      enabledAt: Number(raw[i + 1]),
+    })
+  }
+  return out
+}
 
 export interface RaffleEntrant {
   address: string

@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import { getEntrantCount, getRaffleState, getWinner, isEntered } from '@/lib/raffle'
+import {
+  getEntrantCount,
+  getRaffleState,
+  getWinner,
+  isEntered,
+  isRaffleEnabled,
+} from '@/lib/raffle'
 
 /**
  * Public raffle status for a (collection, tokenId). Drives RaffleButton and the
@@ -28,7 +34,8 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid address')
   }
 
-  const [state, entrantCount, winner] = await Promise.all([
+  const [enabled, state, entrantCount, winner] = await Promise.all([
+    isRaffleEnabled(collection, tokenId),
     getRaffleState(collection, tokenId),
     getEntrantCount(collection, tokenId),
     getWinner(collection, tokenId),
@@ -37,6 +44,7 @@ export async function GET(req: NextRequest) {
   const isWinner = !!address && !!winner && winner.toLowerCase() === address
 
   return NextResponse.json({
+    enabled,
     open: state === 'open',
     entrantCount,
     entered,

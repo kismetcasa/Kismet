@@ -32,6 +32,7 @@ import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
 import { CollectedActions } from './CollectedActions'
+import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -1557,7 +1558,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
           </div>
 
-          {/* Site admin — feature/unfeature */}
+          {/* Site admin — feature/unfeature + per-moment raffle controls.
+              RaffleAdminPanel is where an admin turns this moment's raffle on
+              (which surfaces "enter raffle" to holders) and later picks the
+              winner. */}
           {isAdmin && (
             <div className="px-5 pb-4">
               <button
@@ -1569,6 +1573,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
                 {isFeatured ? 'unfeature' : 'feature'}
               </button>
+              <RaffleAdminPanel collection={address} tokenId={tokenId} />
             </div>
           )}
 
