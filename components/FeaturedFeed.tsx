@@ -13,6 +13,27 @@ import { MaybeLazy } from './LazyMount'
 // appears at a visual row boundary rather than mid-row.
 const STRIDE = 4
 
+// The standard moments grid: grows 1 → 2 → 3 → 4 columns up to lg+.
+const FULL_GRID = 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4'
+
+// When the whole feed is a single short row of standalone mints (a small,
+// curated featured tab — e.g. 3 mints), stretch the cards to fill the width
+// instead of leaving a trailing empty column at lg+. We drop the higher-
+// breakpoint column caps so the row tops out at exactly `count` columns and
+// each card grows to fill. Static class strings so Tailwind's JIT emits them;
+// only applied to a lone moments block, so multi-row feeds keep uniform card
+// sizes via FULL_GRID. 4+ items already fill the row, so they fall through.
+function fillGridClass(count: number): string {
+  switch (count) {
+    case 2:
+      return 'grid grid-cols-1 sm:grid-cols-2 gap-4'
+    case 3:
+      return 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4'
+    default:
+      return FULL_GRID
+  }
+}
+
 interface FeaturedFeedProps {
   emptyMessage: string
   /** Server-decided lazy-mount toggle (mobile UA → true). When true, moment
@@ -118,6 +139,12 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
     }
   }
 
+  // Only stretch standalone mints to fill the width when they form a single
+  // short row in the whole feed — otherwise a short trailing row would render
+  // wider cards than the full rows above it. Larger feeds keep FULL_GRID.
+  const soleMomentBlock =
+    blocks.filter((b) => b.kind === 'moments').length === 1
+
   // Wait for collections too before showing empty — otherwise the tab
   // flashes "empty" between moments resolving empty and collections done.
   // Gate on what the hero actually PAINTS, not just that one is configured:
@@ -142,7 +169,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
         b.kind === 'moments' ? (
           <div
             key={`m-${i}`}
-            className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"
+            className={soleMomentBlock ? fillGridClass(b.items.length) : FULL_GRID}
           >
             {/* Prioritize the first row of moments only when it leads the
                 feed (i === 0). Subsequent moment blocks render below other

@@ -29,8 +29,6 @@ export function isPatronCollection(address?: string | null): boolean {
  * Body copy for the Patron Pass Description panel. Rendered with
  * `whitespace-pre-line`, so the line breaks below are preserved verbatim.
  */
-export const PATRON_PASS_DESCRIPTION = `Turro’s artwork Facing Desolation marks the debut of the Kismet Patron Collection.
-Each edition is 80 USD, calculated in ETH at the time of launch.
+export const PATRON_PASS_DESCRIPTION = `Turro’s artwork Facing Desolation marks the debut of the Kismet Patron Collection. Kismet commissioned a physical artwork that represents the collection which will be gifted to one collector of the digital work.
 
-There will only ever be 100 editions available: 80 editions for public sale and up to 20 editions reserved for Turro to invite artists to the platform through airdrops.
-At the end of the sale, any unsold editions will be burned and the associated physical artwork created by Turro will be gifted to one collector of the digital edition.`
+There will only ever be 100 editions available: 80 editions for public sale and up to 20 editions reserved for Turro to invite artists to the platform. At the end of the sale, any unsold editions will be unavailable to mint.`
