@@ -24,17 +24,24 @@ export async function GET(req: NextRequest) {
   const profiles: Record<string, { name: string; avatarUrl?: string }> = Object.fromEntries(
     await Promise.all(
       addresses.map(async (addr): Promise<[string, { name: string; avatarUrl?: string }]> => {
-        const [{ profile, farcaster }, ens] = await Promise.all([
-          resolveCanonicalProfile(addr),
-          getCachedEns(addr),
-        ])
-        // Warm ENS in the background on a miss, like the single route, so the
-        // next view resolves the .eth name from cache.
-        if (!profile.username && ens === undefined) after(() => resolveEnsAndCache(addr))
-        return [addr, {
-          name: profile.username || farcaster?.username || ens || '',
-          avatarUrl: profile.avatarUrl || farcaster?.pfpUrl || undefined,
-        }]
+        try {
+          const [{ profile, farcaster }, ens] = await Promise.all([
+            resolveCanonicalProfile(addr),
+            getCachedEns(addr),
+          ])
+          // Warm ENS in the background on a miss, like the single route, so the
+          // next view resolves the .eth name from cache.
+          if (!profile.username && ens === undefined) after(() => resolveEnsAndCache(addr))
+          return [addr, {
+            name: profile.username || farcaster?.username || ens || '',
+            avatarUrl: profile.avatarUrl || farcaster?.pfpUrl || undefined,
+          }]
+        } catch {
+          // Isolate per-address failures (e.g. a transient Redis/FC blip) so one
+          // sender can't blank the whole batch — as independent per-sender calls
+          // did before batching. The client maps the empty name to shortAddress.
+          return [addr, { name: '', avatarUrl: undefined }]
+        }
       }),
     ),
   )
