@@ -51,12 +51,19 @@ export type SmartWalletResult = { address: string } | { notFound: true } | null
  */
 export async function resolveSmartWallet(
   artistWallet: string,
-  options: { revalidate?: number } = {},
+  options: { revalidate?: number; skipCache?: boolean } = {},
 ): Promise<SmartWalletResult> {
   if (!isAddress(artistWallet)) return { notFound: true }
   const key = artistWallet.toLowerCase()
-  const hit = cache.get(key)
-  if (hit && hit.expiresAt > Date.now()) return { address: hit.value }
+  // skipCache is for the boot drift-detector (lib/healthcheck): it must hit the
+  // LIVE endpoint and treat a 5xx as a real failure — not be short-circuited by a
+  // warm in-memory hit, nor rescued by the durable fallback below. Otherwise a
+  // systemic /smartwallet outage is masked by the last-known wallet and the probe
+  // reports a false all-clear (the exact x-api-key-500 regression it exists to catch).
+  if (!options.skipCache) {
+    const hit = cache.get(key)
+    if (hit && hit.expiresAt > Date.now()) return { address: hit.value }
+  }
 
   // Durable fallback for TRANSIENT live-lookup failures only (network/timeout/
   // 5xx/4xx-drift — NOT a definitive 404). Serving the last-known smart wallet
@@ -64,6 +71,9 @@ export async function resolveSmartWallet(
   // through an inprocess /smartwallet outage instead of silently skipping the
   // ADMIN grant. Promotes the hit back into the in-memory cache.
   const fromDurableCache = async (): Promise<SmartWalletResult> => {
+    // The drift-detector (skipCache) wants live truth, never the cached fallback,
+    // so a live 5xx surfaces as the real failure it exists to alarm on.
+    if (options.skipCache) return null
     const cached = await getCachedSmartWallet(key)
     if (cached && isAddress(cached)) {
       const resolved = cached.toLowerCase()
