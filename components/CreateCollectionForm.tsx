@@ -8,7 +8,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther, type Address } from 'viem'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, Check } from 'lucide-react'
-import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions } from '@/lib/collections'
+import { FACTORY_ADDRESS, FACTORY_ABI, encodeMinterPermission, encodeAdminPermission, buildCoverTokenSetupActions, findLandedDeploy } from '@/lib/collections'
 import { CREATE_REFERRAL, OPERATOR_SMART_WALLET } from '@/lib/config'
 import { resolveAddressOrEns } from '@/lib/address'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -17,13 +17,15 @@ import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
-import { loadPersistedCover, savePersistedCover } from '@/lib/arweave/uploadPersistence'
+import { loadPersistedCover, savePersistedCover, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
-import { toastError } from '@/lib/toast'
+import { toastError, isUserRejection, isChunkLoadError, toastChainStalled } from '@/lib/toast'
+import { isChainStalled } from '@/lib/chainHealth'
+import { reportClientError } from '@/lib/clientError'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
@@ -125,6 +127,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   // tx) can include the thumbhash on the collection's first KV entry — gives
   // the collection page a blurDataURL placeholder on first paint.
   const [coverThumbhash, setCoverThumbhash] = useState<string | undefined>(undefined)
+  // Mirror of `step` for the deploy-failure telemetry below: the `step` closure
+  // is stale ('idle') inside the catch, so we read the last committed phase off
+  // this ref to name exactly where a deploy died (parity with MintForm).
+  const stepRef = useRef(step)
+  useEffect(() => {
+    stepRef.current = step
+  }, [step])
 
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
@@ -245,20 +254,37 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   }, [txHash, step])
 
   // 3. Stuck-tx warning: if we're still waiting for the receipt after 90s,
-  //    surface a clearer message with a link to basescan so the user has
-  //    options instead of staring at "Deploying…" indefinitely.
+  //    distinguish a stalled Base network (the tx is already submitted — wait,
+  //    don't resubmit) from ordinary tail latency (refresh to resume / check
+  //    basescan), so the user isn't told to "refresh and retry" into a halt.
   useEffect(() => {
     if (step !== 'deploying' || !txHash) return
-    const timer = setTimeout(() => {
-      toast.loading(
-        'Tx still pending — refresh later to resume, or check status on basescan',
-        {
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      const stalled = publicClient ? await isChainStalled(publicClient) : false
+      // The receipt may have arrived (or the user navigated) during the ~4s
+      // liveness sample — don't clobber a resolved toast.
+      if (cancelled) return
+      if (stalled) {
+        toastChainStalled({
           id: 'create-collection',
-          description: `https://basescan.org/tx/${txHash}`,
-        },
-      )
+          description:
+            'Base’s network looks stalled. Your deploy is already submitted and will confirm when the network recovers — don’t resubmit.',
+        })
+      } else {
+        toast.loading(
+          'Tx still pending — refresh later to resume, or check status on basescan',
+          {
+            id: 'create-collection',
+            description: `https://basescan.org/tx/${txHash}`,
+          },
+        )
+      }
     }, TX_TIMEOUT_MS)
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, txHash])
 
@@ -394,8 +420,19 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   async function uploadJsonCached(json: Record<string, unknown>, key: string): Promise<string> {
     const hit = jsonUploadRef.current.get(key)
     if (hit) return hit.uri
+    // Cross-reload resume: identical metadata uploaded on a prior attempt is
+    // reused from localStorage, so a page reload (which the "Tx still pending —
+    // refresh later to resume" path tells the user to do) doesn't re-bill the
+    // same ~300 B JSON under a fresh Turbo txid. Mirrors the cover's resume;
+    // retired once its strikes hit the cap so a genuinely lost upload self-heals.
+    const persisted = loadPersistedJson(key)
+    if (persisted && persisted.failures < MAX_REUSE_FAILURES) {
+      jsonUploadRef.current.set(key, persisted)
+      return persisted.uri
+    }
     const uri = await uploadJson(json)
     jsonUploadRef.current.set(key, { uri, failures: 0 })
+    savePersistedJson(key, { uri, failures: 0 })
     return uri
   }
 
@@ -403,6 +440,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     const entry = jsonUploadRef.current.get(key)
     if (!entry) return
     entry.failures += 1
+    // Persist the strike so retire-after-N survives a reload (otherwise each
+    // reload resets it and a genuinely lost upload would loop forever).
+    savePersistedJson(key, { uri: entry.uri, failures: entry.failures })
     if (entry.failures >= MAX_REUSE_FAILURES) jsonUploadRef.current.delete(key)
   }
 
@@ -486,6 +526,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
     setDeployedImageUri(undefined)
 
+    // Hoisted so the deploy catch can probe the factory for an already-landed
+    // deploy of this exact metadata (recover-landed-deploy guard) before it
+    // strands the user or a retry duplicates the collection.
+    let deployedContractURI: string | null = null
+
     try {
       // Guard the chunk-reload self-heal for the deploy's duration — same
       // rationale as MintForm: a transient chunk timeout behind a saturated
@@ -495,16 +540,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       await ensureSession()
 
       // Cross-reload resume: the in-memory cover bank below is wiped on a page
-      // reload / remount, so a creator who reloads after the "Arweave settling
-      // slowly" deploy block would re-upload the cover under a fresh txid for
-      // nothing. Restore the bank from localStorage if we uploaded THIS exact
-      // cover before, so the resume path picks it up. No pre-verify here
-      // (unlike the mint path): the deploy is BLOCKED downstream until the
-      // cover URI actually resolves, so a not-yet-propagated (the user's exact
-      // retry scenario) or stale URI can never bake broken metadata on-chain —
-      // and skipping the verify means a slow-settling cover is reused, not
-      // needlessly re-uploaded. The persisted strike count carries over so the
-      // retire-after-N re-upload still triggers across reloads.
+      // reload / remount, so a creator who reloads mid-deploy would re-upload
+      // the cover under a fresh txid for nothing. Restore the bank from
+      // localStorage if we uploaded THIS exact cover before, so the resume path
+      // picks it up. No pre-verify here (unlike the mint path): the deploy now
+      // proceeds even if the cover hasn't propagated yet (Turbo-durable; it
+      // self-heals on display), and skipping the verify means a slow-settling
+      // cover is reused, not needlessly re-uploaded. The persisted strike count
+      // carries over so the retire-after-N re-upload still triggers across reloads.
       if (!coverUploadRef.current || coverUploadRef.current.source !== coverFile) {
         const persistedCover = loadPersistedCover(coverFile)
         if (persistedCover) {
@@ -588,13 +631,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       }
 
       // The cover image URI gets baked into the metadata JSON which gets
-      // baked into the on-chain contractURI. If Turbo's data hasn't
-      // propagated to Arweave gateways by the time the moment renders,
-      // the image is permanently broken — re-uploading doesn't help
-      // because the URI is fixed on-chain. Block on settlement before the
-      // deploy. 90s budget — covers can be large and the URI is permanent;
-      // a false-negative wastes the whole upload. Runs in parallel with
-      // the metadata upload below.
+      // baked into the on-chain contractURI. Turbo durably stores it once it
+      // returned an id, and every Kismet surface re-fetches at display time, so
+      // a not-yet-propagated cover self-heals rather than breaking permanently.
+      // We still wait up to 90s (best-effort) to avoid a momentarily-broken
+      // first paint, then deploy regardless (see the soft-gate below). Runs in
+      // parallel with the metadata upload below.
       const imageVerify = verifyArweaveAvailable(imageUri, 90_000)
 
       setStep('uploading-metadata')
@@ -609,11 +651,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       }
       const contractKey = JSON.stringify(metadata)
       const contractURI = await uploadJsonCached(metadata, contractKey)
+      deployedContractURI = contractURI
 
       // contractURI is baked on-chain by the factory — and when mint-cover
-      // is on it doubles as the cover token's tokenURI — so gate on its
-      // propagation too. Previously unverified: a 404 at index time left
-      // the collection (and its cover moment) with broken metadata.
+      // is on it doubles as the cover token's tokenURI — so we wait on its
+      // propagation too (best-effort; the soft-gate below deploys regardless).
+      // Previously unverified: a 404 at index time left the collection (and its
+      // cover moment) with broken metadata.
       toast.loading('Verifying Arweave propagation…', { id: 'create-collection' })
       const [imageOk, contractOk] = await Promise.all([
         imageVerify,
@@ -760,6 +804,22 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       // subsequent token created via /api/mint.
       const setupActions = [...minterActions, ...inprocessAdminAction, ...coverActions]
 
+      // Recover-landed-deploy guard: a PRIOR attempt may have broadcast this
+      // exact deploy before its wallet request surfaced "Request expired" (Base
+      // Account request TTLs can expire AFTER broadcast). Signing again would
+      // duplicate the collection and re-spend gas. If a SetupNewContract for
+      // this deployer + this contractURI already landed, adopt it — set its tx
+      // hash and let the existing receipt handler drive to success — instead of
+      // deploying a second time.
+      if (publicClient) {
+        const prior = await findLandedDeploy(publicClient, address as Address, contractURI)
+        if (prior) {
+          toast.loading('Found your deploy — confirming…', { id: 'create-collection' })
+          setTxHash(prior.txHash)
+          return
+        }
+      }
+
       const hash = await writeContractAsync({
         chainId: base.id,
         address: FACTORY_ADDRESS,
@@ -781,14 +841,71 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       setTxHash(hash)
     } catch (err) {
+      // Durable trace of WHERE the deploy died — parity with MintForm. Deploy
+      // failures have been as hard to diagnose as mints (no error-tracking
+      // service), so record the phase + context where we can actually see it.
+      reportClientError('deploy_failed', {
+        phase: stepRef.current,
+        mintCover,
+        hasCover: !!coverFile,
+        error: err instanceof Error ? err.message : String(err),
+      })
       // Clear any half-written pending state so a refresh doesn't try to
       // resume a deploy that never broadcast.
       if (PENDING_KEY) {
         try { localStorage.removeItem(PENDING_KEY) } catch {}
       }
-      setStep('idle')
       setUploadProgress(0)
-      toastError('Deploy', err, { id: 'create-collection' })
+      // A user rejection (declined in wallet) or a stale-chunk error never
+      // broadcast — defer to toastError for the clean "Cancelled" / auto-reload
+      // handling and skip the on-chain probe.
+      if (isUserRejection(err) || isChunkLoadError(err)) {
+        setStep('idle')
+        toastError('Deploy', err, { id: 'create-collection' })
+        return
+      }
+      // Non-rejection wallet/RPC failure (e.g. "Request expired"): the deploy
+      // MAY have broadcast before erroring. Probe the factory for a landed
+      // SetupNewContract matching this exact contractURI before stranding —
+      // adopt it if found (no duplicate, drives straight to success), otherwise
+      // offer an in-place retry (the old path dead-ended with no way forward,
+      // which is exactly the "there's no retry button" report).
+      const landed = publicClient && deployedContractURI
+        ? await findLandedDeploy(publicClient, address as Address, deployedContractURI)
+        : null
+      if (landed) {
+        toast.loading('Found your deploy — confirming…', { id: 'create-collection' })
+        setTxHash(landed.txHash)
+      } else {
+        setStep('idle')
+        // Distinguish a sustained Base outage from an ordinary wallet/RPC blip.
+        // During a chain stall (Jun 2026-class halt) retrying is exactly wrong —
+        // each re-sign can queue another mempool tx that all mine on recovery,
+        // duplicating the collection — so when the head isn't advancing we point
+        // the user at Base's status page and tell them to wait, not retry.
+        toast.loading('Checking network…', { id: 'create-collection' })
+        const stalled = publicClient ? await isChainStalled(publicClient) : false
+        if (stalled) {
+          toastChainStalled({
+            id: 'create-collection',
+            description:
+              'Base’s network looks stalled, so your deploy can’t confirm right now. Don’t resubmit — check the status page and try again once it recovers. Nothing was charged.',
+          })
+        } else {
+          toast.error('Deploy didn’t go through', {
+            id: 'create-collection',
+            description:
+              'Your wallet request expired before the deploy confirmed. Nothing was charged — try again.',
+            action: {
+              label: 'Try again',
+              onClick: (ev) => {
+                ev.preventDefault()
+                void handleCreate(e)
+              },
+            },
+          })
+        }
+      }
     } finally {
       endCriticalOp()
     }

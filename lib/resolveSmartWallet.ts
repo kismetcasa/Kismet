@@ -1,6 +1,7 @@
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { getCachedSmartWallet, setCachedSmartWallet } from '@/lib/smartWalletCache'
+import { parseSmartWalletAddress } from '@/lib/smartWalletShape'
 
 // Two-layer per-EOA cache. Smart-wallet ↔ EOA is deterministic per inprocess's
 // derivation, so once resolved it doesn't change.
@@ -59,7 +60,7 @@ export async function resolveSmartWallet(
   // LIVE endpoint and treat a 5xx as a real failure — not be short-circuited by a
   // warm in-memory hit, nor rescued by the durable fallback below. Otherwise a
   // systemic /smartwallet outage is masked by the last-known wallet and the probe
-  // reports a false all-clear (the exact x-api-key-500 regression it exists to catch).
+  // reports a false all-clear (the exact kind of systemic /smartwallet outage it exists to catch).
   if (!options.skipCache) {
     const hit = cache.get(key)
     if (hit && hit.expiresAt > Date.now()) return { address: hit.value }
@@ -99,18 +100,11 @@ export async function resolveSmartWallet(
       walletAddress: artistWallet,
     })
     // KEYLESS by design. /smartwallet is a PUBLIC read endpoint, and the last
-    // known-working version of this file (before the 2026-06-18 churn) sent NO
-    // auth header here — only `Accept`. Commit 4d98741 ADDED `x-api-key` on a
-    // guess ("so authenticated lookup works correctly"), and that is the prime
-    // suspect for the systemic HTTP 500 (empty body) we now see for every EOA,
-    // including registered creators like kismetart.eth. The same key is
-    // accepted on the WRITE endpoints (/moment/create, /distribute,
-    // /update-uri — which all keep it), so the key value isn't the issue; the
-    // problem is sending an auth header to a public read route that the working
-    // version never authenticated. We send the request bare to match that
-    // historically-working shape. (Confirm with a keyless browser GET of the
-    // URL above: a 200 here while the keyed call 500s proves the header is the
-    // regression.)
+    // known-working shape of this call sent NO auth header here — only `Accept`.
+    // The API key is accepted on the WRITE endpoints (/moment/create,
+    // /distribute, /update-uri — which all keep it), but a public read route
+    // doesn't need it, so we send the request bare to match the historically-
+    // working shape rather than couple reads to the key.
     res = await fetch(url, {
       headers: { Accept: 'application/json' },
       // The drift-detector (skipCache) must hit the LIVE endpoint, so bypass
@@ -148,20 +142,11 @@ export async function resolveSmartWallet(
     parsed = text.trim()
   }
 
-  const candidate =
-    typeof parsed === 'string'
-      ? parsed
-      : parsed && typeof parsed === 'object'
-        ? ((parsed as Record<string, unknown>).address
-            ?? (parsed as Record<string, unknown>).smartWallet
-            ?? (parsed as Record<string, unknown>).smart_wallet
-            ?? (parsed as Record<string, unknown>).smartAccount)
-        : undefined
-
-  // Parseable response but no valid address — treat as not found rather than transient.
-  if (typeof candidate !== 'string' || !isAddress(candidate)) return { notFound: true }
-
-  const resolved = candidate.toLowerCase()
+  // Defensive shape parsing pinned by scripts/verify-smartwallet.ts — accepts
+  // { address } / { smartWallet } / { smart_wallet } / { smartAccount } / a raw
+  // string. Parseable response but no valid address → not found, not transient.
+  const resolved = parseSmartWalletAddress(parsed)
+  if (!resolved) return { notFound: true }
   cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
   // Persist for cross-instance / cross-deploy resilience so a later lookup can
   // fall back to this when inprocess is unreachable. Awaited (a fast Redis

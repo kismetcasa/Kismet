@@ -23,7 +23,7 @@ export const runtime = 'nodejs'
  * "filled" afterward stays on the existing /api/listings/[id] PATCH, which
  * re-decodes the Seaport OrderFulfilled event from the txHash (matched to the
  * listing's orderHash) and derives the buyer from it — so no buyer signature is
- * needed. See AGENT_COMMERCE_DESIGN.md.
+ * needed.
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-buy:${getClientIp(req)}`, 60, 60))) {

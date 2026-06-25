@@ -10,6 +10,7 @@ import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { loadPersistedCover, savePersistedCover, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { CREATE_REFERRAL } from '@/lib/config'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -132,6 +133,23 @@ export function EditCollectionForm({
       let thumbhash = currentThumbhash
       if (cover.file) {
         const file = cover.file
+        // Cross-reload resume: the in-memory cover bank is wiped on a page
+        // reload, so a user who reloads after the "settling slowly" retry hint
+        // would re-upload the cover under a fresh txid for nothing. Restore the
+        // bank from localStorage if we uploaded THIS exact cover before; the
+        // strike count carries over so retire-after-N still triggers across
+        // reloads (mirrors CreateCollectionForm).
+        if (!coverUploadRef.current || coverUploadRef.current.source !== file) {
+          const persistedCover = loadPersistedCover(file)
+          if (persistedCover) {
+            coverUploadRef.current = {
+              source: file,
+              imageUri: persistedCover.imageUri,
+              thumbhash: persistedCover.thumbhash ?? undefined,
+              verifyFailures: persistedCover.verifyFailures,
+            }
+          }
+        }
         // Resume: reuse a verified upload of this exact file from a prior
         // attempt (e.g. a transient wallet error at signing) instead of
         // re-uploading under a fresh txid and re-spending Turbo credits.
@@ -163,8 +181,10 @@ export function EditCollectionForm({
           const thumbhashPromise = generateThumbhash(imageFile)
           imageUri = await uploadToArweave(imageFile, () => {})
           thumbhash = (await thumbhashPromise) ?? undefined
-          // Bank the verified upload so a failure below RESUMES from here.
+          // Bank the verified upload so a failure below RESUMES from here, and
+          // persist it so the resume survives a page reload (uploadPersistence).
           coverUploadRef.current = { source: file, imageUri, thumbhash, verifyFailures: 0 }
+          savePersistedCover(file, { imageUri, thumbhash: thumbhash ?? null, verifyFailures: 0 })
         }
       }
       if (!imageUri) throw new Error('Collection image is missing')
@@ -186,24 +206,49 @@ export function EditCollectionForm({
         ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
         createReferral: CREATE_REFERRAL,
       }
-      const newUri = await uploadJson(metadata)
+      // Cross-reload resume for the small metadata JSON (same as create/mint):
+      // a reload after the "settling slowly" hint would otherwise re-upload the
+      // byte-identical JSON under a fresh txid. Reused only under the strike cap
+      // so a genuinely lost upload self-heals with a fresh one.
+      const metadataKey = JSON.stringify(metadata)
+      const persistedJson = loadPersistedJson(metadataKey)
+      let newUri: string
+      if (persistedJson && persistedJson.failures < MAX_REUSE_FAILURES) {
+        newUri = persistedJson.uri
+      } else {
+        newUri = await uploadJson(metadata)
+        savePersistedJson(metadataKey, { uri: newUri, failures: 0 })
+      }
 
       // Block on Arweave propagation before signing. The ar:// URI is baked
       // permanently into the on-chain contractURI, so writing it before the
       // gateway pool serves it risks an indexer caching a 404 — broken
-      // collection metadata a re-upload can't fix. Mirrors the create-form
-      // deploy gate: abort with a retry hint on lag rather than bake a bad
-      // URI. A re-pointed existing cover is already live, so only verify a
-      // freshly uploaded image (90s budget — covers can be large).
+      // collection metadata a re-upload can't fix. Unlike the create form (which
+      // now soft-gates and deploys anyway), an edit isn't burning a first-deploy
+      // and can safely retry, so here we abort with a retry hint on lag rather
+      // than bake a bad URI. A re-pointed existing cover is already live, so only
+      // verify a freshly uploaded image (90s budget — covers can be large).
       setStatusText('Verifying Arweave propagation…')
       const [imageOk, metadataOk] = await Promise.all([
         cover.file ? verifyArweaveAvailable(imageUri, 90_000) : Promise.resolve(true),
         verifyArweaveAvailable(newUri),
       ])
       if (!imageOk || !metadataOk) {
-        // Keep the banked cover upload (up to the strike cap) so the retry
-        // reuses it; a failed metadata JSON re-uploads in seconds anyway.
-        if (!imageOk && coverUploadRef.current) coverUploadRef.current.verifyFailures += 1
+        // Keep the banked uploads (up to the strike cap) so the retry reuses
+        // them, and persist the strikes so retire-after-N is the same whether or
+        // not the user reloads between attempts (mirrors create/mint).
+        if (!imageOk && coverUploadRef.current && cover.file) {
+          coverUploadRef.current.verifyFailures += 1
+          savePersistedCover(cover.file, {
+            imageUri: coverUploadRef.current.imageUri,
+            thumbhash: coverUploadRef.current.thumbhash ?? null,
+            verifyFailures: coverUploadRef.current.verifyFailures,
+          })
+        }
+        if (!metadataOk) {
+          const pj = loadPersistedJson(metadataKey)
+          if (pj) savePersistedJson(metadataKey, { uri: pj.uri, failures: pj.failures + 1 })
+        }
         const failedParts = [
           ...(!imageOk ? ['cover image'] : []),
           ...(!metadataOk ? ['metadata'] : []),

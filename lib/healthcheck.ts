@@ -77,7 +77,7 @@ export async function assertPlatformCollectionAuthorized(): Promise<void> {
 // Shared remediation hint for the /smartwallet drift logs below. That lookup
 // resolves the per-creator wallet that executes /moment/create (see
 // resolveSmartWallet), so a silent break skips deploy-time relay authorization
-// and reverts mints — the 2026 regression.
+// and reverts mints — a silent upstream-drift failure mode.
 const SMARTWALLET_DRIFT_HINT =
   'Deploy-time relay authorization will silently skip and mints will revert. ' +
   'Check lib/resolveSmartWallet.ts against the LIVE api.inprocess.world/api/smartwallet ' +

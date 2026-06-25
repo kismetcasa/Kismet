@@ -19,7 +19,7 @@ export const runtime = 'nodejs'
  *   kind=collect            → moments in a collection to mint → nextAction: collect
  *
  * Read-only. The richer "curated" tier (taste-matching, cross-source ranking)
- * is the planned x402-gated upgrade — see AGENT_COMMERCE_DESIGN.md §7.
+ * is the planned x402-gated upgrade.
  */
 interface DiscoverRow {
   kind: 'listing' | 'collectable'

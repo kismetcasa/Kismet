@@ -10,24 +10,31 @@
 // (often very large) file for nothing.
 //
 // This persists the SERIALIZABLE part of each banked session in localStorage,
-// keyed by file identity (name|size|lastModified), LRU-capped and TTL'd. Two
-// independent stores:
+// keyed by file identity (name|size|lastModified) or, for JSON, by the
+// serialized content itself; LRU-capped and TTL'd. Three independent stores:
 //   - media (mint): the moment's media bindings. The File objects are never
 //     stored — after a resume MintForm reads the media File only for its
 //     `.type`, persisted here as a string. Callers MUST re-verify the stored
 //     mediaUri resolves before minting (the mint path is non-blocking, so a
 //     phantom URI would otherwise mint broken media).
-//   - cover (collection create): the cover image URI + thumbhash + strike
-//     count. The create path BLOCKS the deploy until the cover URI resolves,
-//     so it does NOT pre-verify on reuse — a stale/unpropagated URI can never
-//     bake broken metadata on-chain, and skipping the verify means a
-//     slow-settling cover is reused, not needlessly re-uploaded.
+//   - cover (collection create + edit): the cover image URI + thumbhash +
+//     strike count. Create soft-gates propagation (deploys even if the cover
+//     hasn't settled; it self-heals on display) so it does NOT pre-verify on
+//     reuse; edit blocks on verify, so a reused-but-unsettled cover just
+//     re-verifies on the next save — either way a slow-settling cover is
+//     reused, not needlessly re-uploaded.
+//   - json (mint + collection create/edit): the small moment/contract metadata JSON,
+//     content-keyed (there is no File). Both flows soft-gate propagation and
+//     mint/deploy anyway, so a reload reuses the durable txid instead of
+//     re-billing a byte-identical upload; carries a strike count like the cover
+//     so a genuinely lost upload self-heals.
 //
 // Every access is wrapped so a disabled or full localStorage can never throw
 // into the upload/mint/deploy flow.
 
 const STORAGE_KEY_MEDIA = 'kismet:upload-resume:v1'
 const STORAGE_KEY_COVER = 'kismet:cover-resume:v1'
+const STORAGE_KEY_JSON = 'kismet:json-resume:v1'
 const MAX_ENTRIES = 3
 const TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
@@ -164,4 +171,41 @@ export function savePersistedCover(file: File, data: PersistedCover): void {
     (e) => e.key !== key,
   )
   writeEntries(STORAGE_KEY_COVER, [{ key, savedAt: Date.now(), ...data }, ...others])
+}
+
+// ─── json (moment + collection metadata) ─────────────────────────────────────
+// Used by MintForm (moment metadata, auto-deploy collection metadata),
+// CreateCollectionForm (contract metadata), and EditCollectionForm (updated
+// contract metadata). Unlike media/cover there is no File
+// — the identity IS the serialized content, so the caller passes
+// JSON.stringify(metadata) as the key. Without this, a page reload (e.g. to
+// escape a stuck wallet request or failed mint) re-uploads the byte-identical
+// metadata JSON under a fresh Turbo txid, re-billing the credit every time.
+// Carries a strike count like the cover so retire-after-N survives reloads.
+
+export interface PersistedJson {
+  uri: string
+  failures: number
+}
+
+interface StoredJson extends StoredEntry, PersistedJson {}
+
+const hasJsonPayload = (r: Record<string, unknown>): boolean =>
+  typeof r.uri === 'string' && typeof r.failures === 'number'
+
+/** The persisted JSON upload for this exact serialized content, or null. */
+export function loadPersistedJson(contentKey: string): PersistedJson | null {
+  const entry = readEntries<StoredJson>(STORAGE_KEY_JSON, hasJsonPayload).find(
+    (e) => e.key === contentKey,
+  )
+  if (!entry) return null
+  return { uri: entry.uri, failures: entry.failures }
+}
+
+/** Persist (or refresh) the banked JSON upload for this content, newest-first. */
+export function savePersistedJson(contentKey: string, data: PersistedJson): void {
+  const others = readEntries<StoredJson>(STORAGE_KEY_JSON, hasJsonPayload).filter(
+    (e) => e.key !== contentKey,
+  )
+  writeEntries(STORAGE_KEY_JSON, [{ key: contentKey, savedAt: Date.now(), ...data }, ...others])
 }

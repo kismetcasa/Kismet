@@ -7,8 +7,8 @@ import type { Candidate, Scout } from './engine'
  * whichever executor we use.
  *
  * Chosen path: the SpendPermissionExecutor (serverExecutor.ts →
- * `createSpendPermissionExecutor`), per the Base "Use Spend Permissions" doc and
- * AGENT_SCOUT_MODE_B_DESIGN.md. The user grants a bounded Spend Permission to
+ * `createSpendPermissionExecutor`), per the Base "Use Spend Permissions" doc.
+ * The user grants a bounded Spend Permission to
  * KISMET's server-controlled spender; per collect the spender pulls EXACTLY the
  * cost via SpendPermissionManager.spend() and mints to the user — within the
  * on-chain allowance, no per-collect approval. Two spender impls sit behind it
