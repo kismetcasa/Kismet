@@ -27,6 +27,12 @@ import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CollectAllAction } from './CollectAllAction'
 import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
+import { PatronArtworkShowcase } from './PatronArtworkShowcase'
+import {
+  isPatronCollection,
+  PATRON_ARTIST_ADDRESS,
+  PATRON_ARTIST_LABEL,
+} from '@/lib/patronCollection'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -37,9 +43,14 @@ interface AvatarProfile {
 function AvatarRow({
   addr,
   profiles,
+  label,
 }: {
   addr: string
   profiles: Record<string, AvatarProfile>
+  /** Overrides the resolved profile name — credits a fixed display name
+   *  (e.g. the Patron Collection's "turro") regardless of what the minter
+   *  wallet resolves to. */
+  label?: string
 }) {
   const p = profiles[addr.toLowerCase()]
   return (
@@ -51,7 +62,7 @@ function AvatarRow({
         <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
       </span>
       <span className="text-xs font-mono text-dim truncate min-w-0">
-        {p?.name || shortAddress(addr)}
+        {label ?? (p?.name || shortAddress(addr))}
       </span>
     </Link>
   )
@@ -681,6 +692,11 @@ export function CollectionView({
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
 
+  // Patron Collection gets a bespoke presentation: the artist is credited to
+  // Turro (the on-chain minter wallet has no Kismet/ENS name) and the single
+  // artwork is shown via PatronArtworkShowcase instead of the generic grid.
+  const isPatron = isPatronCollection(address)
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
       <button
@@ -1047,18 +1063,34 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists */}
-      {uniqueCreators.length > 0 && (
+      {/* Artists — the Patron Collection is credited to Turro regardless of
+          the on-chain minter wallet (which has no resolvable Kismet/ENS name). */}
+      {isPatron ? (
         <section className="mb-10">
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-            {uniqueCreators.length === 1 ? 'artist' : 'artists'}
+            artist
           </h2>
           <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            {uniqueCreators.map((addr) => (
-              <AvatarRow key={addr} addr={addr} profiles={profiles} />
-            ))}
+            <AvatarRow
+              addr={PATRON_ARTIST_ADDRESS}
+              profiles={profiles}
+              label={PATRON_ARTIST_LABEL}
+            />
           </div>
         </section>
+      ) : (
+        uniqueCreators.length > 0 && (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {uniqueCreators.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {uniqueCreators.map((addr) => (
+                <AvatarRow key={addr} addr={addr} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        )
       )}
 
       {/* NFT grid */}
@@ -1090,6 +1122,8 @@ export function CollectionView({
           ) : (
             <p className="text-xs font-mono text-muted">no moments in this collection yet</p>
           )
+        ) : isPatron ? (
+          <PatronArtworkShowcase moment={firstMoment} />
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {loadedMoments.map((m, i) => {
