@@ -1063,19 +1063,25 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists — the Patron Collection is credited to Turro regardless of
-          the on-chain minter wallet (which has no resolvable Kismet/ENS name). */}
+      {/* Artists — the Patron Collection is credited to Turro. The on-chain
+          creator/payout behind the artwork is the Kismet platform treasury
+          (it resolves to kismetart.eth), so "turro" is a curated display
+          credit with no artist profile to link to — render it as a
+          non-clickable chip rather than send visitors to the treasury. */}
       {isPatron ? (
         <section className="mb-10">
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
             artist
           </h2>
           <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            <AvatarRow
-              addr={PATRON_ARTIST_ADDRESS}
-              profiles={profiles}
-              label={PATRON_ARTIST_LABEL}
-            />
+            <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto">
+              <span className="shrink-0">
+                <ProfileAvatar address={PATRON_ARTIST_ADDRESS} size={24} />
+              </span>
+              <span className="text-xs font-mono text-dim truncate min-w-0">
+                {PATRON_ARTIST_LABEL}
+              </span>
+            </div>
           </div>
         </section>
       ) : (
