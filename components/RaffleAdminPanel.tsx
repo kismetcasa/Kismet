@@ -186,80 +186,80 @@ export function RaffleAdminPanel({
           )}
 
           {enabled && (
-          <>
-          <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-muted">
-            <span>
-              {data ? `${data.count} entrant${data.count === 1 ? '' : 's'}` : '…'}
-              {data ? ` · ${data.state}` : ''}
-            </span>
-            <button
-              onClick={() => void load()}
-              disabled={loading}
-              className="hover:text-ink transition-colors disabled:opacity-50"
-            >
-              {loading ? 'loading…' : 'refresh'}
-            </button>
-          </div>
+            <>
+              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-muted">
+                <span>
+                  {data ? `${data.count} entrant${data.count === 1 ? '' : 's'}` : '…'}
+                  {data ? ` · ${data.state}` : ''}
+                </span>
+                <button
+                  onClick={() => void load()}
+                  disabled={loading}
+                  className="hover:text-ink transition-colors disabled:opacity-50"
+                >
+                  {loading ? 'loading…' : 'refresh'}
+                </button>
+              </div>
 
-          {data?.winner && (
-            <div className="flex items-center justify-between gap-2 border border-accent/50 bg-accent/10 px-3 py-2">
-              <span className="text-xs font-mono text-accent truncate">
-                winner: {shortAddress(data.winner)}
-              </span>
-              <button
-                onClick={resetWinner}
-                className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink transition-colors"
-              >
-                clear
-              </button>
-            </div>
-          )}
-
-          {data && data.entrants.length === 0 && (
-            <p className="text-xs font-mono text-muted">no entrants yet</p>
-          )}
-
-          {data && data.entrants.length > 0 && (
-            <ul className="flex flex-col divide-y divide-line border border-line">
-              {data.entrants.map((e) => {
-                const isWinner =
-                  !!data.winner && data.winner.toLowerCase() === e.address.toLowerCase()
-                return (
-                  <li
-                    key={e.address}
-                    className="flex items-center justify-between gap-3 px-3 py-2"
+              {data?.winner && (
+                <div className="flex items-center justify-between gap-2 border border-accent/50 bg-accent/10 px-3 py-2">
+                  <span className="text-xs font-mono text-accent truncate">
+                    winner: {shortAddress(data.winner)}
+                  </span>
+                  <button
+                    onClick={resetWinner}
+                    className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink transition-colors"
                   >
-                    <span className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs font-mono text-dim truncate">
-                        {shortAddress(e.address)}
-                      </span>
-                      {!e.holdsNow && (
-                        <span
-                          className="text-[9px] font-mono uppercase tracking-widest text-red-400/80"
-                          title="No longer holds an edition"
-                        >
-                          sold
-                        </span>
-                      )}
-                    </span>
-                    {isWinner ? (
-                      <span className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-accent">
-                        winner
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => pickWinner(e.address)}
-                        className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-accent transition-colors"
+                    clear
+                  </button>
+                </div>
+              )}
+
+              {data && data.entrants.length === 0 && (
+                <p className="text-xs font-mono text-muted">no entrants yet</p>
+              )}
+
+              {data && data.entrants.length > 0 && (
+                <ul className="flex flex-col divide-y divide-line border border-line">
+                  {data.entrants.map((e) => {
+                    const isWinner =
+                      !!data.winner && data.winner.toLowerCase() === e.address.toLowerCase()
+                    return (
+                      <li
+                        key={e.address}
+                        className="flex items-center justify-between gap-3 px-3 py-2"
                       >
-                        select
-                      </button>
-                    )}
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-          </>
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs font-mono text-dim truncate">
+                            {shortAddress(e.address)}
+                          </span>
+                          {!e.holdsNow && (
+                            <span
+                              className="text-[9px] font-mono uppercase tracking-widest text-red-400/80"
+                              title="No longer holds an edition"
+                            >
+                              sold
+                            </span>
+                          )}
+                        </span>
+                        {isWinner ? (
+                          <span className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-accent">
+                            winner
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => pickWinner(e.address)}
+                            className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-accent transition-colors"
+                          >
+                            select
+                          </button>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </>
           )}
         </div>
       )}
