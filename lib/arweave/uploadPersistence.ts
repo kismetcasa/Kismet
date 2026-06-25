@@ -17,11 +17,17 @@
 //     `.type`, persisted here as a string. Callers MUST re-verify the stored
 //     mediaUri resolves before minting (the mint path is non-blocking, so a
 //     phantom URI would otherwise mint broken media).
-//   - cover (collection create): the cover image URI + thumbhash + strike
-//     count. The create path soft-gates propagation (deploys even if the cover
-//     hasn't settled; it self-heals on display), so it does NOT pre-verify on
-//     reuse — skipping the verify means a slow-settling cover is reused, not
-//     needlessly re-uploaded.
+//   - cover (collection create + edit): the cover image URI + thumbhash +
+//     strike count. Create soft-gates propagation (deploys even if the cover
+//     hasn't settled; it self-heals on display) so it does NOT pre-verify on
+//     reuse; edit blocks on verify, so a reused-but-unsettled cover just
+//     re-verifies on the next save — either way a slow-settling cover is
+//     reused, not needlessly re-uploaded.
+//   - json (mint + collection create/edit): the small moment/contract metadata JSON,
+//     content-keyed (there is no File). Both flows soft-gate propagation and
+//     mint/deploy anyway, so a reload reuses the durable txid instead of
+//     re-billing a byte-identical upload; carries a strike count like the cover
+//     so a genuinely lost upload self-heals.
 //
 // Every access is wrapped so a disabled or full localStorage can never throw
 // into the upload/mint/deploy flow.
@@ -167,12 +173,15 @@ export function savePersistedCover(file: File, data: PersistedCover): void {
   writeEntries(STORAGE_KEY_COVER, [{ key, savedAt: Date.now(), ...data }, ...others])
 }
 
-// ─── json (collection contract metadata) ─────────────────────────────────────
-// Unlike media/cover there is no File — the identity IS the serialized content,
-// so the caller passes JSON.stringify(metadata) as the key. Without this, a page
-// reload (e.g. to escape a stuck wallet request) re-uploads the byte-identical
-// contract-metadata JSON under a fresh Turbo txid, re-billing the credit every
-// time. Carries a strike count like the cover so retire-after-N survives reloads.
+// ─── json (moment + collection metadata) ─────────────────────────────────────
+// Used by MintForm (moment metadata, auto-deploy collection metadata),
+// CreateCollectionForm (contract metadata), and EditCollectionForm (updated
+// contract metadata). Unlike media/cover there is no File
+// — the identity IS the serialized content, so the caller passes
+// JSON.stringify(metadata) as the key. Without this, a page reload (e.g. to
+// escape a stuck wallet request or failed mint) re-uploads the byte-identical
+// metadata JSON under a fresh Turbo txid, re-billing the credit every time.
+// Carries a strike count like the cover so retire-after-N survives reloads.
 
 export interface PersistedJson {
   uri: string

@@ -18,7 +18,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
-import { loadPersistedUpload, savePersistedUpload } from '@/lib/arweave/uploadPersistence'
+import { loadPersistedUpload, savePersistedUpload, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { reportClientError } from '@/lib/clientError'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
@@ -520,8 +520,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   async function uploadJsonCached(json: Record<string, unknown>, key: string): Promise<string> {
     const hit = jsonUploadRef.current.get(key)
     if (hit) return hit.uri
+    // Cross-reload resume: identical metadata uploaded on a prior attempt is
+    // reused from localStorage, so a page reload (to escape a failed/stuck
+    // mint) doesn't re-bill the same small JSON under a fresh Turbo txid.
+    // Mirrors the media resume; the mint soft-gates propagation (mints anyway),
+    // so reusing a durable-but-not-yet-propagated URI is safe and self-heals at
+    // display time. Retired once its strikes hit the cap (genuinely lost → fresh).
+    const persisted = loadPersistedJson(key)
+    if (persisted && persisted.failures < MAX_REUSE_FAILURES) {
+      jsonUploadRef.current.set(key, persisted)
+      return persisted.uri
+    }
     const uri = await uploadJson(json)
     jsonUploadRef.current.set(key, { uri, failures: 0 })
+    savePersistedJson(key, { uri, failures: 0 })
     return uri
   }
 
@@ -529,6 +541,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     const entry = jsonUploadRef.current.get(key)
     if (!entry) return
     entry.failures += 1
+    // Persist the strike so retire-after-N survives a reload (otherwise each
+    // reload resets it and a genuinely lost upload would loop forever).
+    savePersistedJson(key, { uri: entry.uri, failures: entry.failures })
     if (entry.failures >= MAX_REUSE_FAILURES) jsonUploadRef.current.delete(key)
   }
 
@@ -1042,8 +1057,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           }
           // Mirror the bank to localStorage so a reload resumes these txids
           // instead of re-uploading (uploadPersistence). serverTranscode is
-          // null here — it completes below and, on a cross-reload resume,
-          // simply re-runs (cheap: it reuses mediaUri, no media re-upload).
+          // null here — it hasn't run yet; when it completes below we re-persist
+          // with its outputs so a reload resumes the transcoded MP4+poster too
+          // instead of re-running the transcode (which re-uploads them).
           savePersistedUpload(file!, {
             mediaUri,
             posterUri,
@@ -1096,6 +1112,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             finalImageUri = r.posterUri
             finalThumbhash = r.thumbhash ?? finalThumbhash
             if (uploadSession) uploadSession.serverTranscode = r
+            // Re-persist with the transcode outputs so a reload resumes them
+            // instead of re-running serverTranscodeGif (which re-uploads the
+            // derived MP4 + poster under fresh txids — the media itself is
+            // already banked, but the transcode result was not until now).
+            if (file) savePersistedUpload(file, {
+              mediaUri,
+              posterUri,
+              thumbhash,
+              durationSec,
+              needsServerTranscode,
+              serverTranscode: r,
+              mediaType: mediaFile.type,
+            })
           } catch (err) {
             console.warn('[MintForm] server GIF transcode failed; shipping original', err)
           }
