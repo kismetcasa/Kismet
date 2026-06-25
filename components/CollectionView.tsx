@@ -608,26 +608,6 @@ export function CollectionView({
     }
   }, [authorizedCreators, profiles])
 
-  // Hydrate Turro's profile so the Patron Collection artist chip shows their
-  // real avatar. The credit links to /profile/<turro>, which is distinct from
-  // the on-chain creator the moments resolve to (the platform treasury), so
-  // it's never picked up by the moment-creator hydration above.
-  useEffect(() => {
-    if (!isPatronCollection(address)) return
-    let cancelled = false
-    fetchCreatorProfile(PATRON_ARTIST_ADDRESS).then(({ name, avatarUrl }) => {
-      if (!cancelled)
-        setProfiles((prev) =>
-          prev[PATRON_ARTIST_ADDRESS]
-            ? prev
-            : { ...prev, [PATRON_ARTIST_ADDRESS]: { name, avatarUrl } },
-        )
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [address])
-
   // Patron Collection only: derive the artist(s) from each moment's on-chain
   // split recipients (the creator's payout array). The moment "creator"
   // resolves to the platform treasury, so the split — not the creator — is the
