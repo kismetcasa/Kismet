@@ -25,7 +25,7 @@ import { useMomentSplits } from '@/hooks/useMomentSplits'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
-import { generateThumbhash } from '@/lib/media/thumbhash'
+import { generateThumbhash, thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
@@ -919,6 +919,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Still images and gifs open the zoom lightbox; videos use native
   // fullscreen via their controls.
   const isZoomable = media.kind === 'image' || media.kind === 'gif'
+  // Low-fi blur for the no-preview fallback. When every gateway is exhausted
+  // or the codec is undecodable there's no poster left to show (MomentVideo
+  // only surfaces onAllError once its own poster has failed too) — but the
+  // ~25-byte thumbhash still decodes, so paint it behind the label instead of
+  // a flat empty tile. undefined for older mints / audio (no thumbhash).
+  const noPreviewBlur = thumbhashToBlurDataURL(meta.kismet_thumbhash)
   const price = saleConfig
     ? formatPrice(saleConfig.pricePerToken, currency)
     : null
@@ -1024,7 +1030,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-line font-mono text-xs">no preview</span>
+                  {noPreviewBlur && (
+                    <span
+                      aria-hidden
+                      className="absolute inset-0 bg-cover bg-center pointer-events-none"
+                      style={{ backgroundImage: `url(${noPreviewBlur})` }}
+                    />
+                  )}
+                  <span className="relative text-line font-mono text-xs">no preview</span>
                 </div>
               )}
             </div>
