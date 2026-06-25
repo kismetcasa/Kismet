@@ -10,8 +10,8 @@
 // (often very large) file for nothing.
 //
 // This persists the SERIALIZABLE part of each banked session in localStorage,
-// keyed by file identity (name|size|lastModified), LRU-capped and TTL'd. Two
-// independent stores:
+// keyed by file identity (name|size|lastModified) or, for JSON, by the
+// serialized content itself; LRU-capped and TTL'd. Three independent stores:
 //   - media (mint): the moment's media bindings. The File objects are never
 //     stored — after a resume MintForm reads the media File only for its
 //     `.type`, persisted here as a string. Callers MUST re-verify the stored
@@ -28,6 +28,7 @@
 
 const STORAGE_KEY_MEDIA = 'kismet:upload-resume:v1'
 const STORAGE_KEY_COVER = 'kismet:cover-resume:v1'
+const STORAGE_KEY_JSON = 'kismet:json-resume:v1'
 const MAX_ENTRIES = 3
 const TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
@@ -164,4 +165,38 @@ export function savePersistedCover(file: File, data: PersistedCover): void {
     (e) => e.key !== key,
   )
   writeEntries(STORAGE_KEY_COVER, [{ key, savedAt: Date.now(), ...data }, ...others])
+}
+
+// ─── json (collection contract metadata) ─────────────────────────────────────
+// Unlike media/cover there is no File — the identity IS the serialized content,
+// so the caller passes JSON.stringify(metadata) as the key. Without this, a page
+// reload (e.g. to escape a stuck wallet request) re-uploads the byte-identical
+// contract-metadata JSON under a fresh Turbo txid, re-billing the credit every
+// time. Carries a strike count like the cover so retire-after-N survives reloads.
+
+export interface PersistedJson {
+  uri: string
+  failures: number
+}
+
+interface StoredJson extends StoredEntry, PersistedJson {}
+
+const hasJsonPayload = (r: Record<string, unknown>): boolean =>
+  typeof r.uri === 'string' && typeof r.failures === 'number'
+
+/** The persisted JSON upload for this exact serialized content, or null. */
+export function loadPersistedJson(contentKey: string): PersistedJson | null {
+  const entry = readEntries<StoredJson>(STORAGE_KEY_JSON, hasJsonPayload).find(
+    (e) => e.key === contentKey,
+  )
+  if (!entry) return null
+  return { uri: entry.uri, failures: entry.failures }
+}
+
+/** Persist (or refresh) the banked JSON upload for this content, newest-first. */
+export function savePersistedJson(contentKey: string, data: PersistedJson): void {
+  const others = readEntries<StoredJson>(STORAGE_KEY_JSON, hasJsonPayload).filter(
+    (e) => e.key !== contentKey,
+  )
+  writeEntries(STORAGE_KEY_JSON, [{ key: contentKey, savedAt: Date.now(), ...data }, ...others])
 }

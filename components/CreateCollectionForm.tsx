@@ -17,7 +17,7 @@ import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
-import { loadPersistedCover, savePersistedCover } from '@/lib/arweave/uploadPersistence'
+import { loadPersistedCover, savePersistedCover, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
@@ -394,8 +394,19 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   async function uploadJsonCached(json: Record<string, unknown>, key: string): Promise<string> {
     const hit = jsonUploadRef.current.get(key)
     if (hit) return hit.uri
+    // Cross-reload resume: identical metadata uploaded on a prior attempt is
+    // reused from localStorage, so a page reload (which the "Tx still pending —
+    // refresh later to resume" path tells the user to do) doesn't re-bill the
+    // same ~300 B JSON under a fresh Turbo txid. Mirrors the cover's resume;
+    // retired once its strikes hit the cap so a genuinely lost upload self-heals.
+    const persisted = loadPersistedJson(key)
+    if (persisted && persisted.failures < MAX_REUSE_FAILURES) {
+      jsonUploadRef.current.set(key, persisted)
+      return persisted.uri
+    }
     const uri = await uploadJson(json)
     jsonUploadRef.current.set(key, { uri, failures: 0 })
+    savePersistedJson(key, { uri, failures: 0 })
     return uri
   }
 
@@ -403,6 +414,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     const entry = jsonUploadRef.current.get(key)
     if (!entry) return
     entry.failures += 1
+    // Persist the strike so retire-after-N survives a reload (otherwise each
+    // reload resets it and a genuinely lost upload would loop forever).
+    savePersistedJson(key, { uri: entry.uri, failures: entry.failures })
     if (entry.failures >= MAX_REUSE_FAILURES) jsonUploadRef.current.delete(key)
   }
 
