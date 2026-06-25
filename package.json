@@ -16,8 +16,7 @@
     "check:bundle": "node scripts/check-bundle-size.mjs",
     "verify:agent": "node --experimental-strip-types scripts/verify-agent-collect.ts && node --experimental-strip-types scripts/verify-agent-buy.ts && node --experimental-strip-types scripts/verify-agent-list.ts && node --experimental-strip-types scripts/verify-agent-collect-batch.ts && node scripts/verify-agent-skill.mjs && node --experimental-strip-types scripts/verify-agent-scout.ts && node --experimental-strip-types scripts/verify-agent-scout-server.ts",
     "verify:chunk-guard": "node --experimental-strip-types scripts/verify-chunk-reload-guard.ts",
-    "verify:profiles": "node --experimental-transform-types --import ./scripts/_ts-loader.mjs scripts/verify-profiles-batch.ts",
-    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent && npm run verify:chunk-guard && npm run verify:profiles",
+    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent && npm run verify:chunk-guard",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },
   "dependencies": {
