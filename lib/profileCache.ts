@@ -56,68 +56,49 @@ export async function fetchCreatorProfile(
   }
 }
 
-// Max addresses per /api/profiles request — mirrors the route's own cap so
-// the client never trips the 400 and instead chunks larger sets.
+// Max addresses per /api/profiles request — mirrors the route cap so the
+// client chunks larger sets instead of tripping it.
 const BATCH_MAX = 50
 
-// Batch variant of fetchCreatorProfile for resolving many addresses at once
-// (e.g. every unique sender in a moment's activity thread). Shares the same
-// LRU + TTL semantics — already-cached addresses are returned without a
-// network hit, and only the misses are fetched, in a single /api/profiles
-// call (chunked at BATCH_MAX). Replaces the prior N parallel
-// fetchCreatorProfile round-trips (one per sender) with one request.
+// Batch sibling of fetchCreatorProfile: resolves many addresses (e.g. every
+// unique sender in a moment's activity thread) in one /api/profiles call
+// instead of one /api/profile per address. Shares the same LRU + TTL — cached
+// addresses return with no network hit; only misses are fetched.
 export async function fetchCreatorProfilesBatch(
   addresses: string[],
 ): Promise<Record<string, { name: string; avatarUrl: string | undefined }>> {
   const out: Record<string, { name: string; avatarUrl: string | undefined }> = {}
   const misses: string[] = []
-  for (const address of addresses) {
-    const key = address.toLowerCase()
-    if (out[key] || misses.includes(key)) continue // dedupe within the call
+  for (const key of new Set(addresses.map((a) => a.toLowerCase()))) {
     const cached = cache.get(key)
-    if (cached) {
-      const ttl = cached.resolved ? TTL_RESOLVED : TTL_FALLBACK
-      if (Date.now() - cached.ts < ttl) {
-        out[key] = { name: cached.name, avatarUrl: cached.avatarUrl }
-        continue
-      }
+    if (cached && Date.now() - cached.ts < (cached.resolved ? TTL_RESOLVED : TTL_FALLBACK)) {
+      out[key] = { name: cached.name, avatarUrl: cached.avatarUrl }
+    } else {
+      misses.push(key)
     }
-    misses.push(key)
   }
-  if (misses.length === 0) return out
 
-  // Chunk to the route cap and fetch chunks in parallel. Sort each chunk so
-  // an identical sender set yields an identical URL → CDN cache hit.
-  const chunks: string[][] = []
+  // Fetch misses in chunks of BATCH_MAX, each sorted so an identical sender set
+  // yields an identical URL → CDN cache hit.
   for (let i = 0; i < misses.length; i += BATCH_MAX) {
-    chunks.push(misses.slice(i, i + BATCH_MAX))
-  }
-  await Promise.all(
-    chunks.map(async (chunk) => {
-      const param = chunk.slice().sort().join(',')
-      try {
-        const res = await fetch(`/api/profiles?addresses=${encodeURIComponent(param)}`)
-        const data: { profiles?: Record<string, { name?: string; avatarUrl?: string }> } =
-          await res.json()
-        const resolved = data.profiles ?? {}
-        for (const key of chunk) {
-          const p = resolved[key]
-          const name = p?.name || ''
-          const avatarUrl = p?.avatarUrl
-          // Mirror fetchCreatorProfile: store shortAddress as the displayed
-          // fallback, flag `resolved` off so it re-checks on the short TTL.
-          const entry = { name: name || shortAddress(key), avatarUrl, ts: Date.now(), resolved: !!name }
-          cache.set(key, entry)
-          out[key] = { name: entry.name, avatarUrl }
-        }
-      } catch {
-        // Non-critical: fall back to shortAddress for this chunk and don't
-        // cache, so a later call retries. Matches fetchCreatorProfile's catch.
-        for (const key of chunk) {
-          if (!out[key]) out[key] = { name: shortAddress(key), avatarUrl: undefined }
-        }
+    const chunk = misses.slice(i, i + BATCH_MAX).sort()
+    try {
+      const res = await fetch(`/api/profiles?addresses=${encodeURIComponent(chunk.join(','))}`)
+      const { profiles = {} }: { profiles?: Record<string, { name?: string; avatarUrl?: string }> } =
+        await res.json()
+      for (const key of chunk) {
+        const name = profiles[key]?.name || ''
+        // Mirror fetchCreatorProfile: shortAddress is the displayed fallback,
+        // resolved=false so an unresolved entry re-checks on the short TTL.
+        const entry = { name: name || shortAddress(key), avatarUrl: profiles[key]?.avatarUrl, ts: Date.now(), resolved: !!name }
+        cache.set(key, entry)
+        out[key] = { name: entry.name, avatarUrl: entry.avatarUrl }
       }
-    }),
-  )
+    } catch {
+      // Non-critical: fall back to shortAddress and don't cache, so a later
+      // call retries. Matches fetchCreatorProfile's catch.
+      for (const key of chunk) out[key] ??= { name: shortAddress(key), avatarUrl: undefined }
+    }
+  }
   return out
 }
