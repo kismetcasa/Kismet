@@ -10,17 +10,26 @@ import { RaffleButton } from './RaffleButton'
  * / RaffleAdminPanel), the secondary action is "enter raffle" (RaffleButton),
  * not "list". Everywhere else it stays a marketplace listing (ListButton).
  *
+ * `keepList` overrides the swap and forces the listing action even when the
+ * raffle is enabled — passed on the owner's own profile card, so a holder can
+ * still list their edition from their profile while the raffle runs (entering
+ * is non-custodial, so the two aren't mutually exclusive). Every other surface
+ * (feed, discover, collection, moment detail) shows "enter raffle".
+ *
  * Single decision point so the owned-edition call sites (MomentCard ×2,
  * MomentDetailView) don't each repeat the branch. The decision is synchronous:
  * the whole raffle-enabled set is loaded once on mount, so there's no per-card
  * request — at worst a brief List→Raffle swap on the rare enabled moment before
  * the set finishes loading.
  */
-export function CollectedActions(props: ListButtonProps) {
+export function CollectedActions({
+  keepList = false,
+  ...props
+}: ListButtonProps & { keepList?: boolean }) {
   const { raffleEnabledKeys } = useAdmin()
   const key = `${props.collectionAddress.toLowerCase()}:${props.tokenId}`
 
-  if (raffleEnabledKeys.has(key)) {
+  if (!keepList && raffleEnabledKeys.has(key)) {
     return (
       <RaffleButton
         collectionAddress={props.collectionAddress}

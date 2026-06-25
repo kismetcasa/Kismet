@@ -307,6 +307,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // Gated on a resolvable creator address so a malformed moment falls back
   // to the normal collect/list buttons rather than linking to /profile/undefined.
   const showProfileCta = !!profileCta && !!moment.creator?.address
+  // The owner's own profile is the only surface that passes onTogglePin (the
+  // pin affordance ProfileView hands to owner cards). There we keep the "list"
+  // action even when the moment hosts a raffle, so a holder can still list
+  // their edition from their profile; every other surface shows "enter raffle".
+  const keepListAction = !!onTogglePin
   const renderViewProfile = (variant: 'compact' | 'full') => (
     <Link
       href={`/profile/${moment.creator?.address}`}
@@ -622,6 +627,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               creatorAddress={moment.creator?.address}
               contentUri={meta.content?.uri}
               contentMime={meta.content?.mime}
+              keepList={keepListAction}
               stacked
             />
           ) : (
@@ -669,6 +675,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 contentUri={meta.content?.uri}
                 contentMime={meta.content?.mime}
                 buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
+                keepList={keepListAction}
               />
             </div>
           ) : null}
