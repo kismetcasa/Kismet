@@ -1,35 +1,47 @@
 /**
  * Kismet Patron Collection — the first official platform release. Its
- * collection page gets a bespoke presentation instead of the generic
- * grid (see PatronArtworkShowcase + the CollectionView special-casing):
- * a single full-bleed artwork followed by a "Patron Pass Description"
- * panel, with the artwork credited to Turro regardless of the on-chain
- * minter wallet — that wallet has no Kismet username / primary ENS set,
- * the same stopgap FeaturedMoment's CREDIT_OVERRIDES covers for the
- * featured Mint Pass Display.
+ * collection page gets a bespoke presentation instead of the generic grid
+ * (see PatronArtworkShowcase + the CollectionView special-casing): a single
+ * full-bleed artwork, a "Patron Pass Description" panel, and an artist credit
+ * derived from each moment's on-chain split recipients — the moment creator
+ * resolves to the platform treasury, so the split is the real attribution.
+ * The credit shows each artist's own resolved profile (no hardcoded label);
+ * the only curated "turro" override lives in FeaturedMoment for the featured
+ * Mint Pass Display.
  *
- * Address comparisons are lowercase; both constants are stored lowercased
- * so callers can compare against `address.toLowerCase()` directly.
+ * Address stored lowercased so callers can compare against
+ * `address.toLowerCase()` directly.
  */
 export const PATRON_COLLECTION_ADDRESS =
   '0x80ce7bd430f34792490a22ee0fd479e7333715c9'
 
-/**
- * On-chain creator/payout address behind the Patron artwork — in practice the
- * Kismet platform treasury (PLATFORM_FEE_RECIPIENT), which resolves to the
- * kismetart.eth profile. "turro" is a curated display credit over it (the same
- * stopgap FeaturedMoment's CREDIT_OVERRIDES applies), so the artist chip is
- * rendered NON-clickable rather than linking here and sending visitors to the
- * treasury's profile. Used only to seed the chip's avatar gradient.
- */
-export const PATRON_ARTIST_ADDRESS =
-  '0x099b9bbe0937428e145a3003ddf58e7e0cf69801'
-
-/** Display credit for the artist, shown verbatim. */
-export const PATRON_ARTIST_LABEL = 'turro'
-
 export function isPatronCollection(address?: string | null): boolean {
   return !!address && address.toLowerCase() === PATRON_COLLECTION_ADDRESS
+}
+
+/**
+ * Reduce per-moment split-recipient lists to a deduped, first-seen-ordered
+ * list of artist addresses, dropping every address in `exclude` (the platform
+ * treasury, residencies, referral, and the collection owner/payout). All
+ * addresses are lowercased. Attribution only — `percentAllocation` is ignored.
+ *
+ * This is what makes the Patron page's artist credit data-driven: the moment
+ * "creator" resolves to the platform treasury, but the split names the real
+ * artist(s), so future collaborators surface automatically. Collection-
+ * agnostic by design; the Patron-specific wiring lives in CollectionView.
+ */
+export function deriveArtistsFromRecipients(
+  recipientLists: { address: string }[][],
+  exclude: Set<string>,
+): string[] {
+  const out: string[] = []
+  for (const list of recipientLists) {
+    for (const r of list) {
+      const a = r.address.toLowerCase()
+      if (!exclude.has(a) && !out.includes(a)) out.push(a)
+    }
+  }
+  return out
 }
 
 /**

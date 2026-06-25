@@ -30,9 +30,10 @@ import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
 import { PatronArtworkShowcase } from './PatronArtworkShowcase'
 import {
   isPatronCollection,
-  PATRON_ARTIST_ADDRESS,
-  PATRON_ARTIST_LABEL,
+  deriveArtistsFromRecipients,
 } from '@/lib/patronCollection'
+import { CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -43,14 +44,9 @@ interface AvatarProfile {
 function AvatarRow({
   addr,
   profiles,
-  label,
 }: {
   addr: string
   profiles: Record<string, AvatarProfile>
-  /** Overrides the resolved profile name — credits a fixed display name
-   *  (e.g. the Patron Collection's "turro") regardless of what the minter
-   *  wallet resolves to. */
-  label?: string
 }) {
   const p = profiles[addr.toLowerCase()]
   return (
@@ -62,7 +58,7 @@ function AvatarRow({
         <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
       </span>
       <span className="text-xs font-mono text-dim truncate min-w-0">
-        {label ?? (p?.name || shortAddress(addr))}
+        {p?.name || shortAddress(addr)}
       </span>
     </Link>
   )
@@ -124,6 +120,10 @@ export function CollectionView({
   // data, and hidden-moment filtering is applied via the session-aware
   // /api/timeline route (creator sees their own hidden moments; others don't).
   const [moments, setMoments] = useState<Moment[] | null>(null)
+  // Patron Collection only: artist addresses derived from the moments' on-chain
+  // split recipients (null = loading, [] = resolved with no artist payee → the
+  // artist section is omitted). See the splits effect below.
+  const [patronArtists, setPatronArtists] = useState<string[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
   const [editing, setEditing] = useState(false)
   const [metaOverride, setMetaOverride] = useState<EditedMeta | null>(null)
@@ -601,6 +601,59 @@ export function CollectionView({
     }
   }, [authorizedCreators, profiles])
 
+  // Patron Collection only: derive the artist(s) from each moment's on-chain
+  // split recipients (the creator's payout array). The moment "creator"
+  // resolves to the platform treasury, so the split — not the creator — is the
+  // real source of artist attribution here, and it generalizes to future
+  // multi-artist drops. We drop the non-artist payees (treasury / residencies /
+  // referral / collection owner+payout) and hydrate the survivors' profiles so
+  // their chips render names + avatars. Empty result → no artist section.
+  useEffect(() => {
+    if (!isPatronCollection(address)) return
+    let cancelled = false
+    setPatronArtists(null)
+    if (moments === null) return // wait for the moments fetch
+    const ms = moments
+    const exclude = new Set(
+      [
+        PLATFORM_FEE_RECIPIENT,
+        CREATE_REFERRAL,
+        RESIDENCIES_ADDRESS,
+        defaultAdminAddress,
+        payoutRecipient,
+      ]
+        .filter((a): a is string => !!a)
+        .map((a) => a.toLowerCase()),
+    )
+    Promise.all(
+      ms.map((m) =>
+        fetch(`/api/moment/splits?collectionAddress=${m.address}&tokenId=${m.token_id}`)
+          .then((r) => (r.ok ? r.json() : { hasSplits: false, recipients: [] }))
+          .then((d) =>
+            d?.hasSplits && Array.isArray(d.recipients)
+              ? (d.recipients as { address: string }[])
+              : [],
+          )
+          .catch(() => [] as { address: string }[]),
+      ),
+    ).then((lists) => {
+      if (cancelled) return
+      const artists = deriveArtistsFromRecipients(lists, exclude)
+      setPatronArtists(artists)
+      artists.forEach((addr) => {
+        fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
+          if (!cancelled)
+            setProfiles((prev) =>
+              prev[addr] ? prev : { ...prev, [addr]: { name, avatarUrl } },
+            )
+        })
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [address, moments, defaultAdminAddress, payoutRecipient])
+
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
   // our Redis cache may have a name the user registered with us. Always
@@ -692,9 +745,9 @@ export function CollectionView({
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
 
-  // Patron Collection gets a bespoke presentation: the artist is credited to
-  // Turro (the on-chain minter wallet has no Kismet/ENS name) and the single
-  // artwork is shown via PatronArtworkShowcase instead of the generic grid.
+  // Patron Collection gets a bespoke presentation: the single artwork is shown
+  // via PatronArtworkShowcase instead of the generic grid, and the artist
+  // credit is derived from the moments' on-chain splits (see the effect above).
   const isPatron = isPatronCollection(address)
 
   return (
@@ -1063,27 +1116,36 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists — the Patron Collection is credited to Turro. The on-chain
-          creator/payout behind the artwork is the Kismet platform treasury
-          (it resolves to kismetart.eth), so "turro" is a curated display
-          credit with no artist profile to link to — render it as a
-          non-clickable chip rather than send visitors to the treasury. */}
+      {/* Artists — for the Patron Collection the credit is derived from each
+          moment's on-chain split recipients (the moment creator resolves to the
+          platform treasury, so the split is the real attribution); every artist
+          shows their own resolved profile, no hardcoded label. Other
+          collections list the moment creators. */}
       {isPatron ? (
-        <section className="mb-10">
-          <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-            artist
-          </h2>
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto">
-              <span className="shrink-0">
-                <ProfileAvatar address={PATRON_ARTIST_ADDRESS} size={24} />
-              </span>
-              <span className="text-xs font-mono text-dim truncate min-w-0">
-                {PATRON_ARTIST_LABEL}
-              </span>
+        patronArtists === null ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              artist
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto animate-pulse">
+                <span className="w-6 h-6 bg-raised shrink-0" />
+                <span className="h-3 w-16 bg-raised" />
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : patronArtists.length > 0 ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {patronArtists.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {patronArtists.map((a) => (
+                <AvatarRow key={a} addr={a} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        ) : null
       ) : (
         uniqueCreators.length > 0 && (
           <section className="mb-10">
