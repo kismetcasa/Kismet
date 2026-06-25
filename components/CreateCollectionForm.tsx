@@ -23,7 +23,8 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
-import { toastError, isUserRejection, isChunkLoadError } from '@/lib/toast'
+import { toastError, isUserRejection, isChunkLoadError, toastChainStalled } from '@/lib/toast'
+import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
@@ -245,20 +246,37 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   }, [txHash, step])
 
   // 3. Stuck-tx warning: if we're still waiting for the receipt after 90s,
-  //    surface a clearer message with a link to basescan so the user has
-  //    options instead of staring at "Deploying…" indefinitely.
+  //    distinguish a stalled Base network (the tx is already submitted — wait,
+  //    don't resubmit) from ordinary tail latency (refresh to resume / check
+  //    basescan), so the user isn't told to "refresh and retry" into a halt.
   useEffect(() => {
     if (step !== 'deploying' || !txHash) return
-    const timer = setTimeout(() => {
-      toast.loading(
-        'Tx still pending — refresh later to resume, or check status on basescan',
-        {
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      const stalled = publicClient ? await isChainStalled(publicClient) : false
+      // The receipt may have arrived (or the user navigated) during the ~4s
+      // liveness sample — don't clobber a resolved toast.
+      if (cancelled) return
+      if (stalled) {
+        toastChainStalled({
           id: 'create-collection',
-          description: `https://basescan.org/tx/${txHash}`,
-        },
-      )
+          description:
+            'Base’s network looks stalled. Your deploy is already submitted and will confirm when the network recovers — don’t resubmit.',
+        })
+      } else {
+        toast.loading(
+          'Tx still pending — refresh later to resume, or check status on basescan',
+          {
+            id: 'create-collection',
+            description: `https://basescan.org/tx/${txHash}`,
+          },
+        )
+      }
     }, TX_TIMEOUT_MS)
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, txHash])
 
@@ -843,18 +861,33 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         setTxHash(landed.txHash)
       } else {
         setStep('idle')
-        toast.error('Deploy didn’t go through', {
-          id: 'create-collection',
-          description:
-            'Your wallet request expired before the deploy confirmed. Nothing was charged — try again.',
-          action: {
-            label: 'Try again',
-            onClick: (ev) => {
-              ev.preventDefault()
-              void handleCreate(e)
+        // Distinguish a sustained Base outage from an ordinary wallet/RPC blip.
+        // During a chain stall (Jun 2026-class halt) retrying is exactly wrong —
+        // each re-sign can queue another mempool tx that all mine on recovery,
+        // duplicating the collection — so when the head isn't advancing we point
+        // the user at Base's status page and tell them to wait, not retry.
+        toast.loading('Checking network…', { id: 'create-collection' })
+        const stalled = publicClient ? await isChainStalled(publicClient) : false
+        if (stalled) {
+          toastChainStalled({
+            id: 'create-collection',
+            description:
+              'Base’s network looks stalled, so your deploy can’t confirm right now. Don’t resubmit — check the status page and try again once it recovers. Nothing was charged.',
+          })
+        } else {
+          toast.error('Deploy didn’t go through', {
+            id: 'create-collection',
+            description:
+              'Your wallet request expired before the deploy confirmed. Nothing was charged — try again.',
+            action: {
+              label: 'Try again',
+              onClick: (ev) => {
+                ev.preventDefault()
+                void handleCreate(e)
+              },
             },
-          },
-        })
+          })
+        }
       }
     } finally {
       endCriticalOp()
