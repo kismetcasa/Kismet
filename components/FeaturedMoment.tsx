@@ -19,6 +19,15 @@ interface FeaturedMomentProps {
   tokenId: string
   /** Above-the-fold hint — the hero leads the featured tab and is the LCP. */
   priority?: boolean
+  /** The mint's moment as it already appears in the featured timeline, when
+   *  available. Lets the artwork (image + thumbhash + ratio) paint immediately
+   *  instead of waiting on the /api/moment round-trip — the reason the featured
+   *  artwork lagged every other feed card, which all get their src from the
+   *  timeline payload. The self-fetch still runs to enrich (KV-corrected
+   *  creator, saleConfig). Undefined when the mint only lives inside a featured
+   *  collection (not a standalone timeline entry); then the self-fetch alone
+   *  drives it, as before. */
+  initialMoment?: Moment
   /** Reports whether this slot paints anything. A configured display still
    *  renders null when its mint is hidden or the fetch fails; the feed uses
    *  this so its empty state shows a message instead of a blank tab then. */
@@ -76,7 +85,7 @@ const CREDIT_OVERRIDES: Record<string, string> = {
  * whether or not the mint is a standalone featured-timeline entry. Renders
  * nothing if the moment fails to load or is hidden.
  */
-export function FeaturedMoment({ address, tokenId, priority, onResolved }: FeaturedMomentProps) {
+export function FeaturedMoment({ address, tokenId, priority, initialMoment, onResolved }: FeaturedMomentProps) {
   const router = useRouter()
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [failed, setFailed] = useState(false)
@@ -138,7 +147,7 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
       .catch(() => setCollection(shortAddress(address)))
   }, [address])
 
-  const meta = detail?.metadata ?? {}
+  const meta = detail?.metadata ?? initialMoment?.metadata ?? {}
   const media = resolveMomentMedia(meta)
   const isVideo = media.kind === 'video'
   const isTextMoment = media.kind === 'text'
@@ -159,7 +168,11 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
   // KV-corrected artist EOA (username left to resolve from the profile cache,
   // exactly as the hero's @artist does).
   const cardMoment = useMemo<Moment | null>(() => {
-    if (!detail) return null
+    // Before the self-fetch resolves, render the timeline moment as-is so the
+    // artwork paints immediately; once `detail` lands we swap to the enriched
+    // version (KV-corrected creator + saleConfig). Same image src, so the swap
+    // doesn't refetch the artwork.
+    if (!detail) return initialMoment ?? null
     return {
       address,
       token_id: tokenId,
@@ -170,23 +183,28 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
       metadata: detail.metadata,
       saleConfig: detail.saleConfig,
     }
-  }, [detail, address, tokenId, creatorAddress, creatorUsername, creditOverride])
+  }, [detail, initialMoment, address, tokenId, creatorAddress, creatorUsername, creditOverride])
 
   // Whether the hero will paint. It returns null just below for a hidden or
   // failed mint; report that up so the feed shows its empty message instead of
   // a blank tab when this display is the only featured content.
-  const blank = failed || !!detail?.hidden
+  // A failed self-fetch only blanks the slot when we have no timeline moment to
+  // fall back on; with `initialMoment` the mint is a real, visible featured
+  // entry, so render it regardless. `detail.hidden` still blanks once known.
+  const blank = (failed && !initialMoment) || !!detail?.hidden
   useEffect(() => { onResolved?.(!blank) }, [blank, onResolved])
 
   if (blank) return null
 
-  // Below lg — the same mint as an ordinary feed card. priority={false}: it's
-  // the top item so it paints promptly off its thumbhash blur. showCreator
-  // follows the resolved artist so the chip drops exactly when the hero would
-  // drop its @artist line — never a dead /profile/ link.
+  // Below lg — the same mint as an ordinary feed card, and the mobile LCP, so
+  // forward `priority` (preload + high fetch priority) like the hero. The old
+  // priority={false} here was a leftover from when this card was the hidden-on-
+  // desktop fallback; it de-prioritized the top artwork below its neighbors.
+  // showCreator follows the resolved artist so the chip drops exactly when the
+  // hero would drop its @artist line — never a dead /profile/ link.
   if (!isDesktop) {
     return cardMoment ? (
-      <MomentCard moment={cardMoment} showCreator={!!creatorAddress} priority={false} />
+      <MomentCard moment={cardMoment} showCreator={!!creatorAddress} priority={priority} />
     ) : null
   }
 

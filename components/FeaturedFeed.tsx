@@ -93,6 +93,12 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   const displayKey = mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
   const keyOf = (m: Moment) => `${m.address?.toLowerCase()}:${m.token_id}`
   const colon = displayKey ? displayKey.indexOf(':') : -1
+  // The mint is usually already in the featured timeline (we filter it out of
+  // the grid below). Hand its moment to FeaturedMoment so the artwork paints
+  // from the timeline metadata immediately instead of waiting on its own
+  // /api/moment fetch — the reason it lagged every other feed card. Undefined
+  // when the mint only lives inside a featured collection; then it self-fetches.
+  const displayMoment = displayKey ? moments.find((m) => keyOf(m) === displayKey) : undefined
   const hero = displayKey && colon > 0
     ? (
       <FeaturedMoment
@@ -101,6 +107,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
         key={displayKey}
         address={displayKey.slice(0, colon)}
         tokenId={displayKey.slice(colon + 1)}
+        initialMoment={displayMoment}
         priority
         onResolved={setHeroHasContent}
       />
