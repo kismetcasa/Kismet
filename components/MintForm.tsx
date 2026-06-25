@@ -28,6 +28,7 @@ import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { MAX_SPLITS } from '@/lib/splits'
+import { computeFinalSplits } from '@/lib/splitsMath'
 import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
@@ -44,66 +45,6 @@ const KISMET_CHANNEL_KEY = 'kismet'
 type PriceCurrency = 'eth' | 'usdc'
 
 type MintMode = 'media' | 'text'
-
-// 0xSplits' SplitMain requires `accounts` sorted ascending by address.
-// Lowercase-compare on the hex string gives the same ordering as numeric
-// ascending for properly-formed addresses.
-function sortSplits(s: Split[]): Split[] {
-  return [...s].sort((a, b) => {
-    const al = a.address.toLowerCase()
-    const bl = b.address.toLowerCase()
-    return al < bl ? -1 : al > bl ? 1 : 0
-  })
-}
-
-// Inprocess docs (moment/create/splits): every example uses integer
-// `percentAllocation` and "must sum to exactly 100%" — no decimal tolerance.
-// Decimal values (like the 47.5 we used to emit when scaling 50/50 to make
-// room for residencies) get mis-parsed downstream and revert the on-chain
-// splits-contract setup.
-//
-// Convert fractional `values` (which by construction sum to ~`target`) into
-// integers that sum to EXACTLY `target`, with every entry ≥ 1. Largest-
-// remainder method: floor (min 1), then hand out / claw back the leftover by
-// fractional remainder. Exact and order-stable — unlike a bounded ±1 drift
-// loop, it can't leave the sum off-target for skewed allocations (e.g. many
-// tiny recipients plus one large one). Precondition: target ≥ values.length,
-// which callers guarantee via the recipient cap + residenciesOverCap, so a
-// min-1 solution always exists; the guards below just prevent a spin if it
-// is ever violated (handleMint's sum check is the final backstop).
-function roundToIntegerAllocations(values: number[], target: number): number[] {
-  const n = values.length
-  if (n === 0) return []
-  const ints = values.map((v) => Math.max(1, Math.floor(v)))
-  let sum = ints.reduce((a, b) => a + b, 0)
-  if (sum === target) return ints
-  // Indices ordered by fractional remainder: add to the largest first,
-  // remove from the smallest first, so the integer split best tracks intent.
-  const byRemainder = values
-    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-    .sort((a, b) => a.frac - b.frac)
-  if (sum < target) {
-    let k = n - 1
-    while (sum < target) {
-      ints[byRemainder[((k % n) + n) % n].i] += 1
-      sum += 1
-      k -= 1
-    }
-  } else {
-    let k = 0
-    let guard = 0
-    const maxGuard = sum * n + n
-    while (sum > target && guard++ < maxGuard) {
-      const { i } = byRemainder[k % n]
-      if (ints[i] > 1) {
-        ints[i] -= 1
-        sum -= 1
-      }
-      k += 1
-    }
-  }
-  return ints
-}
 
 interface MintFormProps {
   collectionAddress?: string
@@ -627,51 +568,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     setResidenciesInput(String(clamped))
   }
 
-  // Builds the final splits array to send to the API. Inprocess docs require
-  // integer `percentAllocation` summing to exactly 100% — every code path
-  // here emits integers via roundToIntegerAllocations + appends the
-  // residencies cut when the toggle is on.
-  //
-  // `p` = residenciesPercent (creator-chosen whole percent, 1..residenciesMax).
-  //
-  //   residencies OFF + 0/1 splits  → undefined (caller uses payoutRecipient)
-  //   residencies OFF + 2+ splits   → sorted user splits (rounded to integers)
-  //   residencies ON  + 0/1 splits  → [creator 100−p, residencies p] (sorted)
-  //   residencies ON  + 2+ splits   → user splits scaled ×(100−p)/100 to
-  //                                   integers summing to 100−p, plus residencies p
-  //
-  // residenciesMax guarantees 100−p ≥ recipientCount, so roundToIntegerAllocations
-  // (which floors each recipient at 1%) can always hit its target and the final
-  // array sums to exactly 100 — re-checked by validateSplitsArray server-side.
-  //
-  // 0xSplits' SplitMain requires `accounts` sorted ascending — sort
-  // defensively in case inprocess forwards our array as-is.
+  // Build the final splits array to send to inprocess: integer `percentAllocation`
+  // summing to exactly 100% (or undefined when there's no split to make), with the
+  // residencies cut appended when the toggle is on. The pure math lives in
+  // lib/splitsMath (unit-verified by scripts/verify-mint.ts).
   function buildFinalSplits(): Split[] | undefined {
-    if (!residenciesEnabled) {
-      if (splits.length < 2) return undefined
-      const rounded = roundToIntegerAllocations(
-        splits.map((s) => s.percentAllocation),
-        100,
-      )
-      return sortSplits(
-        splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
-      )
-    }
-    const p = residenciesPercent
-    if (splits.length < 2) {
-      return sortSplits([
-        { address: address!, percentAllocation: 100 - p },
-        { address: RESIDENCIES_ADDRESS, percentAllocation: p },
-      ])
-    }
-    const rounded = roundToIntegerAllocations(
-      splits.map((s) => (s.percentAllocation * (100 - p)) / 100),
-      100 - p,
-    )
-    return sortSplits([
-      ...splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
-      { address: RESIDENCIES_ADDRESS, percentAllocation: p },
-    ])
+    return computeFinalSplits(splits, residenciesEnabled, residenciesPercent, address!, RESIDENCIES_ADDRESS)
   }
 
   async function handleMint(e: React.FormEvent) {
