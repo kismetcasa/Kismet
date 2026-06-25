@@ -38,8 +38,16 @@ const DEFAULT_RATIO = 1.5
 const MIN_RATIO = 0.2
 const MAX_RATIO = 5
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
-// Box background — a soft gold. Dark text clears ~9.4:1 on it. One knob.
-const DISPLAY_BG = '#d4b062'
+// Box background — a desaturated dusty pink. Dark text clears ~9:1 on it. One knob.
+const DISPLAY_BG = '#d2a9b3'
+
+// Manual credit overrides for the featured mint pass display, keyed by creator
+// address (lowercase). Stopgap for artists whose minting wallet has no Kismet
+// username or primary ENS set yet — shown verbatim in place of the short
+// address. Graduate to an admin-set credit when the need generalizes.
+const CREDIT_OVERRIDES: Record<string, string> = {
+  '0x099b9bbe0937428e145a3003ddf58e7e0cf69801': 'turro',
+}
 
 /**
  * Mint Pass Display — the single curated mint atop the featured tab, rendered
@@ -89,8 +97,13 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
   // profile cache.
   const creatorAddress = detail?.creator?.address
   const creatorUsername = detail?.creator?.username
+  // Manual credit override wins over username/ENS/short-address (stopgap).
+  const creditOverride = creatorAddress
+    ? CREDIT_OVERRIDES[creatorAddress.toLowerCase()]
+    : undefined
   useEffect(() => {
     if (!creatorAddress) return
+    if (creditOverride) { setArtist(creditOverride); return }
     setArtist(creatorUsername ? `@${creatorUsername}` : shortAddress(creatorAddress))
     fetchCreatorProfile(creatorAddress)
       .then(({ name }) => {
@@ -98,7 +111,7 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
         setArtist(isUsername ? `@${name}` : shortAddress(creatorAddress))
       })
       .catch(() => {})
-  }, [creatorAddress, creatorUsername])
+  }, [creatorAddress, creatorUsername, creditOverride])
 
   // Collection label — falls back to the short contract address.
   useEffect(() => {
@@ -133,13 +146,13 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
       address,
       token_id: tokenId,
       uri: detail.uri ?? '',
-      creator: { address: creatorAddress ?? '', username: creatorUsername ?? undefined, hidden: false },
+      creator: { address: creatorAddress ?? '', username: creditOverride ?? creatorUsername ?? undefined, hidden: false },
       admins: [],
       created_at: '',
       metadata: detail.metadata,
       saleConfig: detail.saleConfig,
     }
-  }, [detail, address, tokenId, creatorAddress, creatorUsername])
+  }, [detail, address, tokenId, creatorAddress, creatorUsername, creditOverride])
 
   // Whether the hero will paint. It returns null just below for a hidden or
   // failed mint; report that up so the feed shows its empty message instead of
