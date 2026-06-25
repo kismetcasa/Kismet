@@ -31,8 +31,6 @@ import { PatronArtworkShowcase } from './PatronArtworkShowcase'
 import {
   isPatronCollection,
   deriveArtistsFromRecipients,
-  PATRON_ARTIST_ADDRESS,
-  PATRON_ARTIST_LABEL,
 } from '@/lib/patronCollection'
 import { CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
 import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
@@ -46,14 +44,9 @@ interface AvatarProfile {
 function AvatarRow({
   addr,
   profiles,
-  label,
 }: {
   addr: string
   profiles: Record<string, AvatarProfile>
-  /** Overrides the resolved profile name — credits a fixed display name
-   *  (e.g. the Patron Collection's "turro") regardless of what the minter
-   *  wallet resolves to. */
-  label?: string
 }) {
   const p = profiles[addr.toLowerCase()]
   return (
@@ -65,7 +58,7 @@ function AvatarRow({
         <ProfileAvatar address={addr} avatarUrl={p?.avatarUrl} size={24} />
       </span>
       <span className="text-xs font-mono text-dim truncate min-w-0">
-        {label ?? (p?.name || shortAddress(addr))}
+        {p?.name || shortAddress(addr)}
       </span>
     </Link>
   )
@@ -128,8 +121,8 @@ export function CollectionView({
   // /api/timeline route (creator sees their own hidden moments; others don't).
   const [moments, setMoments] = useState<Moment[] | null>(null)
   // Patron Collection only: artist addresses derived from the moments' on-chain
-  // split recipients (null = loading, [] = resolved with no artist payee →
-  // curated fallback). See the splits effect below.
+  // split recipients (null = loading, [] = resolved with no artist payee → the
+  // artist section is omitted). See the splits effect below.
   const [patronArtists, setPatronArtists] = useState<string[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -614,7 +607,7 @@ export function CollectionView({
   // real source of artist attribution here, and it generalizes to future
   // multi-artist drops. We drop the non-artist payees (treasury / residencies /
   // referral / collection owner+payout) and hydrate the survivors' profiles so
-  // their chips render names + avatars. Empty result → curated Turro fallback.
+  // their chips render names + avatars. Empty result → no artist section.
   useEffect(() => {
     if (!isPatronCollection(address)) return
     let cancelled = false
@@ -752,9 +745,9 @@ export function CollectionView({
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
 
-  // Patron Collection gets a bespoke presentation: the artist is credited to
-  // Turro (the on-chain minter wallet has no Kismet/ENS name) and the single
-  // artwork is shown via PatronArtworkShowcase instead of the generic grid.
+  // Patron Collection gets a bespoke presentation: the single artwork is shown
+  // via PatronArtworkShowcase instead of the generic grid, and the artist
+  // credit is derived from the moments' on-chain splits (see the effect above).
   const isPatron = isPatronCollection(address)
 
   return (
@@ -1123,44 +1116,36 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists — the Patron Collection credits the artist(s) derived from the
-          moments' on-chain splits (the moment creator resolves to the platform
-          treasury, so the split is the real source of attribution). Turro's own
-          profile (and future collaborators') surfaces from the split; the
-          curated Turro credit is the fallback for moments with no artist
-          payee. */}
+      {/* Artists — for the Patron Collection the credit is derived from each
+          moment's on-chain split recipients (the moment creator resolves to the
+          platform treasury, so the split is the real attribution); every artist
+          shows their own resolved profile, no hardcoded label. Other
+          collections list the moment creators. */}
       {isPatron ? (
-        <section className="mb-10">
-          <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-            {patronArtists && patronArtists.length > 1 ? 'artists' : 'artist'}
-          </h2>
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            {patronArtists === null ? (
+        patronArtists === null ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              artist
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
               <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto animate-pulse">
                 <span className="w-6 h-6 bg-raised shrink-0" />
                 <span className="h-3 w-16 bg-raised" />
               </div>
-            ) : patronArtists.length > 0 ? (
-              patronArtists.map((a) => (
-                <AvatarRow
-                  key={a}
-                  addr={a}
-                  profiles={profiles}
-                  // Guarantee the known Turro credit reads "turro" even if that
-                  // profile has no username set; other split artists show their
-                  // own resolved profile name.
-                  label={a === PATRON_ARTIST_ADDRESS ? PATRON_ARTIST_LABEL : undefined}
-                />
-              ))
-            ) : (
-              <AvatarRow
-                addr={PATRON_ARTIST_ADDRESS}
-                profiles={profiles}
-                label={PATRON_ARTIST_LABEL}
-              />
-            )}
-          </div>
-        </section>
+            </div>
+          </section>
+        ) : patronArtists.length > 0 ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {patronArtists.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {patronArtists.map((a) => (
+                <AvatarRow key={a} addr={a} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        ) : null
       ) : (
         uniqueCreators.length > 0 && (
           <section className="mb-10">

@@ -1,31 +1,19 @@
 /**
  * Kismet Patron Collection — the first official platform release. Its
- * collection page gets a bespoke presentation instead of the generic
- * grid (see PatronArtworkShowcase + the CollectionView special-casing):
- * a single full-bleed artwork followed by a "Patron Pass Description"
- * panel, with the artwork credited to Turro regardless of the on-chain
- * minter wallet — that wallet has no Kismet username / primary ENS set,
- * the same stopgap FeaturedMoment's CREDIT_OVERRIDES covers for the
- * featured Mint Pass Display.
+ * collection page gets a bespoke presentation instead of the generic grid
+ * (see PatronArtworkShowcase + the CollectionView special-casing): a single
+ * full-bleed artwork, a "Patron Pass Description" panel, and an artist credit
+ * derived from each moment's on-chain split recipients — the moment creator
+ * resolves to the platform treasury, so the split is the real attribution.
+ * The credit shows each artist's own resolved profile (no hardcoded label);
+ * the only curated "turro" override lives in FeaturedMoment for the featured
+ * Mint Pass Display.
  *
- * Address comparisons are lowercase; both constants are stored lowercased
- * so callers can compare against `address.toLowerCase()` directly.
+ * Address stored lowercased so callers can compare against
+ * `address.toLowerCase()` directly.
  */
 export const PATRON_COLLECTION_ADDRESS =
   '0x80ce7bd430f34792490a22ee0fd479e7333715c9'
-
-/**
- * Turro's Kismet profile address — the artist chip links here and seeds its
- * avatar. Distinct from the artwork's on-chain creator/payout, which is the
- * Kismet platform treasury (it resolves to the kismetart.eth profile); "turro"
- * is a curated display credit, so we link the real profile rather than the
- * treasury the moments resolve to.
- */
-export const PATRON_ARTIST_ADDRESS =
-  '0x6c1cbe8cfc32a74188a9d3bf364945ea53b01b04'
-
-/** Display credit for the artist, shown verbatim. */
-export const PATRON_ARTIST_LABEL = 'turro'
 
 export function isPatronCollection(address?: string | null): boolean {
   return !!address && address.toLowerCase() === PATRON_COLLECTION_ADDRESS
