@@ -18,10 +18,10 @@
 //     mediaUri resolves before minting (the mint path is non-blocking, so a
 //     phantom URI would otherwise mint broken media).
 //   - cover (collection create): the cover image URI + thumbhash + strike
-//     count. The create path BLOCKS the deploy until the cover URI resolves,
-//     so it does NOT pre-verify on reuse — a stale/unpropagated URI can never
-//     bake broken metadata on-chain, and skipping the verify means a
-//     slow-settling cover is reused, not needlessly re-uploaded.
+//     count. The create path soft-gates propagation (deploys even if the cover
+//     hasn't settled; it self-heals on display), so it does NOT pre-verify on
+//     reuse — skipping the verify means a slow-settling cover is reused, not
+//     needlessly re-uploaded.
 //
 // Every access is wrapped so a disabled or full localStorage can never throw
 // into the upload/mint/deploy flow.

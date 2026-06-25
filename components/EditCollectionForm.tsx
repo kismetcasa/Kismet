@@ -191,10 +191,11 @@ export function EditCollectionForm({
       // Block on Arweave propagation before signing. The ar:// URI is baked
       // permanently into the on-chain contractURI, so writing it before the
       // gateway pool serves it risks an indexer caching a 404 — broken
-      // collection metadata a re-upload can't fix. Mirrors the create-form
-      // deploy gate: abort with a retry hint on lag rather than bake a bad
-      // URI. A re-pointed existing cover is already live, so only verify a
-      // freshly uploaded image (90s budget — covers can be large).
+      // collection metadata a re-upload can't fix. Unlike the create form (which
+      // now soft-gates and deploys anyway), an edit isn't burning a first-deploy
+      // and can safely retry, so here we abort with a retry hint on lag rather
+      // than bake a bad URI. A re-pointed existing cover is already live, so only
+      // verify a freshly uploaded image (90s budget — covers can be large).
       setStatusText('Verifying Arweave propagation…')
       const [imageOk, metadataOk] = await Promise.all([
         cover.file ? verifyArweaveAvailable(imageUri, 90_000) : Promise.resolve(true),

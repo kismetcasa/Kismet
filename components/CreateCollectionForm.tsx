@@ -495,16 +495,14 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       await ensureSession()
 
       // Cross-reload resume: the in-memory cover bank below is wiped on a page
-      // reload / remount, so a creator who reloads after the "Arweave settling
-      // slowly" deploy block would re-upload the cover under a fresh txid for
-      // nothing. Restore the bank from localStorage if we uploaded THIS exact
-      // cover before, so the resume path picks it up. No pre-verify here
-      // (unlike the mint path): the deploy is BLOCKED downstream until the
-      // cover URI actually resolves, so a not-yet-propagated (the user's exact
-      // retry scenario) or stale URI can never bake broken metadata on-chain —
-      // and skipping the verify means a slow-settling cover is reused, not
-      // needlessly re-uploaded. The persisted strike count carries over so the
-      // retire-after-N re-upload still triggers across reloads.
+      // reload / remount, so a creator who reloads mid-deploy would re-upload
+      // the cover under a fresh txid for nothing. Restore the bank from
+      // localStorage if we uploaded THIS exact cover before, so the resume path
+      // picks it up. No pre-verify here (unlike the mint path): the deploy now
+      // proceeds even if the cover hasn't propagated yet (Turbo-durable; it
+      // self-heals on display), and skipping the verify means a slow-settling
+      // cover is reused, not needlessly re-uploaded. The persisted strike count
+      // carries over so the retire-after-N re-upload still triggers across reloads.
       if (!coverUploadRef.current || coverUploadRef.current.source !== coverFile) {
         const persistedCover = loadPersistedCover(coverFile)
         if (persistedCover) {
@@ -588,13 +586,12 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       }
 
       // The cover image URI gets baked into the metadata JSON which gets
-      // baked into the on-chain contractURI. If Turbo's data hasn't
-      // propagated to Arweave gateways by the time the moment renders,
-      // the image is permanently broken — re-uploading doesn't help
-      // because the URI is fixed on-chain. Block on settlement before the
-      // deploy. 90s budget — covers can be large and the URI is permanent;
-      // a false-negative wastes the whole upload. Runs in parallel with
-      // the metadata upload below.
+      // baked into the on-chain contractURI. Turbo durably stores it once it
+      // returned an id, and every Kismet surface re-fetches at display time, so
+      // a not-yet-propagated cover self-heals rather than breaking permanently.
+      // We still wait up to 90s (best-effort) to avoid a momentarily-broken
+      // first paint, then deploy regardless (see the soft-gate below). Runs in
+      // parallel with the metadata upload below.
       const imageVerify = verifyArweaveAvailable(imageUri, 90_000)
 
       setStep('uploading-metadata')
@@ -611,9 +608,10 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
       const contractURI = await uploadJsonCached(metadata, contractKey)
 
       // contractURI is baked on-chain by the factory — and when mint-cover
-      // is on it doubles as the cover token's tokenURI — so gate on its
-      // propagation too. Previously unverified: a 404 at index time left
-      // the collection (and its cover moment) with broken metadata.
+      // is on it doubles as the cover token's tokenURI — so we wait on its
+      // propagation too (best-effort; the soft-gate below deploys regardless).
+      // Previously unverified: a 404 at index time left the collection (and its
+      // cover moment) with broken metadata.
       toast.loading('Verifying Arweave propagation…', { id: 'create-collection' })
       const [imageOk, contractOk] = await Promise.all([
         imageVerify,
