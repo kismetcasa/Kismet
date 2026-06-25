@@ -15,15 +15,14 @@ export const PATRON_COLLECTION_ADDRESS =
   '0x80ce7bd430f34792490a22ee0fd479e7333715c9'
 
 /**
- * On-chain creator/payout address behind the Patron artwork — in practice the
- * Kismet platform treasury (PLATFORM_FEE_RECIPIENT), which resolves to the
- * kismetart.eth profile. "turro" is a curated display credit over it (the same
- * stopgap FeaturedMoment's CREDIT_OVERRIDES applies), so the artist chip is
- * rendered NON-clickable rather than linking here and sending visitors to the
- * treasury's profile. Used only to seed the chip's avatar gradient.
+ * Turro's Kismet profile address — the artist chip links here and seeds its
+ * avatar. Distinct from the artwork's on-chain creator/payout, which is the
+ * Kismet platform treasury (it resolves to the kismetart.eth profile); "turro"
+ * is a curated display credit, so we link the real profile rather than the
+ * treasury the moments resolve to.
  */
 export const PATRON_ARTIST_ADDRESS =
-  '0x099b9bbe0937428e145a3003ddf58e7e0cf69801'
+  '0x6c1cbe8cfc32a74188a9d3bf364945ea53b01b04'
 
 /** Display credit for the artist, shown verbatim. */
 export const PATRON_ARTIST_LABEL = 'turro'

@@ -601,6 +601,26 @@ export function CollectionView({
     }
   }, [authorizedCreators, profiles])
 
+  // Hydrate Turro's profile so the Patron Collection artist chip shows their
+  // real avatar. The credit links to /profile/<turro>, which is distinct from
+  // the on-chain creator the moments resolve to (the platform treasury), so
+  // it's never picked up by the moment-creator hydration above.
+  useEffect(() => {
+    if (!isPatronCollection(address)) return
+    let cancelled = false
+    fetchCreatorProfile(PATRON_ARTIST_ADDRESS).then(({ name, avatarUrl }) => {
+      if (!cancelled)
+        setProfiles((prev) =>
+          prev[PATRON_ARTIST_ADDRESS]
+            ? prev
+            : { ...prev, [PATRON_ARTIST_ADDRESS]: { name, avatarUrl } },
+        )
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [address])
+
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
   // our Redis cache may have a name the user registered with us. Always
@@ -1063,25 +1083,22 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists — the Patron Collection is credited to Turro. The on-chain
-          creator/payout behind the artwork is the Kismet platform treasury
-          (it resolves to kismetart.eth), so "turro" is a curated display
-          credit with no artist profile to link to — render it as a
-          non-clickable chip rather than send visitors to the treasury. */}
+      {/* Artists — the Patron Collection is credited to Turro and links to
+          Turro's own profile. The artwork's on-chain creator/payout is the
+          Kismet platform treasury (it resolves to kismetart.eth), so the
+          credit (label + link + avatar) is pinned to Turro's real profile
+          rather than the treasury the moments resolve to. */}
       {isPatron ? (
         <section className="mb-10">
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
             artist
           </h2>
           <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto">
-              <span className="shrink-0">
-                <ProfileAvatar address={PATRON_ARTIST_ADDRESS} size={24} />
-              </span>
-              <span className="text-xs font-mono text-dim truncate min-w-0">
-                {PATRON_ARTIST_LABEL}
-              </span>
-            </div>
+            <AvatarRow
+              addr={PATRON_ARTIST_ADDRESS}
+              profiles={profiles}
+              label={PATRON_ARTIST_LABEL}
+            />
           </div>
         </section>
       ) : (
