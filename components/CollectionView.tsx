@@ -884,7 +884,7 @@ export function CollectionView({
                 Minting requires an inprocess account
               </p>
               <p className="text-[11px] font-mono text-dim mt-0.5">
-                Create a free account at inprocess.world, then return here to authorize minting.
+                Set up your inprocess account to issue your smart wallet — mint your first moment (we’ll create a collection for you), or sign in at inprocess.world. Then return here to authorize.
               </p>
             </div>
           </div>
