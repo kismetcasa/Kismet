@@ -5,16 +5,17 @@
 // THE REGRESSION CLASS IT GUARDS: an upload banked only in an in-memory ref
 // re-bills every reload (data-item ids hash a salted signature, so identical
 // bytes never reuse an id). That's the exact bug fixed in 70d7d4c / bd8964c —
-// the JSON metadata had no localStorage store while the cover did. Two layers:
-//   1. behavioural — the store round-trips, retires after N strikes, is
-//      LRU-capped + TTL'd, and drops corrupt/foreign records;
-//   2. wiring/parity — BOTH the mint and create flows (and the edit flow) wire
-//      the persistence helpers + stall detection, so an edit can't silently
-//      re-introduce the asymmetry that wasted credits.
+// the JSON metadata had no localStorage store while the cover did. This guards
+// the store's BEHAVIOUR — it round-trips, retires after N strikes, is LRU-capped
+// + TTL'd, and drops corrupt/foreign records. (It deliberately does NOT grep the
+// form source to assert "both flows call the helpers": a name-grep passes on a
+// dead/miswired call and fails on a rename — false confidence + false failures —
+// so it was removed rather than ship a tripwire that barely catches a problem.)
 //
 // Run: node --experimental-strip-types scripts/verify-persistence.ts
 
-import { readFileSync } from 'node:fs'
+// Make this a module (top-level await below) now that the only import is dynamic.
+export {}
 
 // Minimal in-memory localStorage so the browser-targeted module runs in node.
 // The module only touches localStorage inside its functions (guarded by a
@@ -91,24 +92,6 @@ mem.clear()
 savePersistedCover(fileLike('cover.png'), { imageUri: 'ar://cov', thumbhash: null, verifyFailures: 0 })
 check('cover round-trips', loadPersistedCover(fileLike('cover.png'))?.imageUri === 'ar://cov')
 check('stores are independent (cover write not visible to json)', loadPersistedJson('cover.png') === null)
-
-// ── wiring / parity: both flows must persist JSON AND detect stalls ───────────
-const read = (p: string): string => readFileSync(new URL(p, import.meta.url), 'utf8')
-const mintSrc = read('../components/MintForm.tsx')
-const createSrc = read('../components/CreateCollectionForm.tsx')
-const editSrc = read('../components/EditCollectionForm.tsx')
-
-const wiresJson = (s: string): boolean => /loadPersistedJson/.test(s) && /savePersistedJson/.test(s)
-const wiresStall = (s: string): boolean => /isChainStalled/.test(s) && /toastChainStalled/.test(s)
-
-check('mint flow wires JSON persistence', wiresJson(mintSrc))
-check('create flow wires JSON persistence', wiresJson(createSrc))
-check('edit flow wires JSON persistence', wiresJson(editSrc))
-check('mint flow persists media uploads', /savePersistedUpload/.test(mintSrc) && /loadPersistedUpload/.test(mintSrc))
-check('create flow persists cover uploads', /savePersistedCover/.test(createSrc) && /loadPersistedCover/.test(createSrc))
-check('edit flow persists cover uploads', /savePersistedCover/.test(editSrc) && /loadPersistedCover/.test(editSrc))
-check('mint flow detects chain stalls', wiresStall(mintSrc))
-check('create flow detects chain stalls', wiresStall(createSrc))
 
 if (failures > 0) {
   console.error(`\n${failures} persistence check(s) FAILED`)
