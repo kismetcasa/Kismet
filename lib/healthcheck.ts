@@ -94,7 +94,11 @@ export async function assertSmartWalletResolves(): Promise<void> {
   if (!ADMIN_ADDRESS || !isAddress(ADMIN_ADDRESS)) return
   let result: SmartWalletResult
   try {
-    result = await resolveSmartWallet(ADMIN_ADDRESS)
+    // skipCache: probe the LIVE endpoint. Without it, ADMIN_ADDRESS (a long-
+    // registered account) is served from the durable cache during a systemic
+    // /smartwallet outage, so the probe logs OK while the endpoint is 500-ing
+    // for every uncached creator — masking the very drift it's meant to detect.
+    result = await resolveSmartWallet(ADMIN_ADDRESS, { skipCache: true })
   } catch (err) {
     console.error(
       `[healthcheck] /smartwallet resolve THREW for ${ADMIN_ADDRESS}. ${SMARTWALLET_DRIFT_HINT}`,

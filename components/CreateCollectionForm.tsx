@@ -478,7 +478,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     if (swPre && 'notFound' in swPre) {
       toast.error('Mint your first moment first', {
         description:
-          'This wallet has no inprocess account yet, so you couldn’t mint into this collection. Mint a moment without picking a collection (we create one for you) to set up your account, then create collections of your own.',
+          'This wallet has no inprocess account yet, so you couldn’t mint into a collection you create here. Mint a moment without picking a collection (we create one for you) to set up your account, then create collections of your own.',
       })
       return
     }
