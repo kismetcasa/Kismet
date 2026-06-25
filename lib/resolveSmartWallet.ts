@@ -113,7 +113,11 @@ export async function resolveSmartWallet(
     // regression.)
     res = await fetch(url, {
       headers: { Accept: 'application/json' },
-      next: { revalidate },
+      // The drift-detector (skipCache) must hit the LIVE endpoint, so bypass
+      // Next's fetch Data Cache too — otherwise a stale cached 200 (up to the
+      // revalidate window) could mask a live outage and report a false all-clear,
+      // partially defeating skipCache's purpose. Normal callers keep the 1h cache.
+      ...(options.skipCache ? { cache: 'no-store' as const } : { next: { revalidate } }),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
   } catch {
