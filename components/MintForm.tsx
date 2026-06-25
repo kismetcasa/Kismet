@@ -35,6 +35,7 @@ import { toastError } from '@/lib/toast'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
+import { useAdmin } from '@/contexts/AdminContext'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { SITE_URL } from '@/lib/siteUrl'
 
@@ -320,6 +321,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // lib/mint-proxy runs the authoritative hasGateAccess on every request.
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
+  // Admins can flag a mint to host the off-chain raffle. Gating the checkbox on
+  // isAdmin keeps it invisible to everyone else; enabling reuses the admin
+  // helper (which ensures the admin session) so the write authenticates.
+  const { isAdmin, toggleRaffleEnabled } = useAdmin()
+
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
     file,
@@ -391,6 +397,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [residenciesPercent, setResidenciesPercent] = useState(DEFAULT_RESIDENCIES_PERCENT)
   const [editingResidencies, setEditingResidencies] = useState(false)
   const [residenciesInput, setResidenciesInput] = useState(String(DEFAULT_RESIDENCIES_PERCENT))
+  // Admin-only: enable the raffle for this moment at mint time (written after
+  // the mint succeeds, once its contractAddress + tokenId are known).
+  const [enableRaffle, setEnableRaffle] = useState(false)
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
@@ -917,6 +926,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
+        if (enableRaffle && data.contractAddress && data.tokenId) {
+          // Admin opted this mint into the raffle: enable it now its address +
+          // tokenId are known. Fire-and-forget via the admin helper so the
+          // session is ensured and the client raffle set updates immediately.
+          void toggleRaffleEnabled(data.contractAddress, data.tokenId)
+        }
         if (isAutoDeploy && data.contractAddress) {
           // Text moments don't have a media file, so the new
           // collection's cover stays unset (image: undefined). User
@@ -1253,6 +1268,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
+        if (enableRaffle && data.contractAddress && data.tokenId) {
+          // Admin opted this mint into the raffle: enable it now its address +
+          // tokenId are known. Fire-and-forget via the admin helper so the
+          // session is ensured and the client raffle set updates immediately.
+          void toggleRaffleEnabled(data.contractAddress, data.tokenId)
+        }
         if (isAutoDeploy && data.contractAddress) {
           // The moment's media doubles as the collection cover for
           // first-mint UX; pass the cover URI (poster when transcoded,
@@ -1398,6 +1419,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setSaleEndInput('')
             setSplits([])
             setSplitInput({ address: '', pct: '' })
+            setEnableRaffle(false)
           }}
           className="text-xs font-mono text-dim hover:text-ink underline"
         >
@@ -2056,6 +2078,36 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         <p className="text-[10px] font-mono text-red-500 w-fit mx-auto -mt-1 text-center">
           {residenciesMax}% max with {splits.length} recipients — lower the % or remove one
         </p>
+      )}
+
+      {/* Admin-only: flag this mint to host the off-chain raffle. Hidden for
+          everyone else; the enable write authenticates via toggleRaffleEnabled
+          after the mint lands (see handleMint). */}
+      {isAdmin && (
+        <div className="flex items-start justify-between gap-3 border border-line px-3 py-2.5">
+          <div className="min-w-0">
+            <label className="block text-xs font-mono text-dim uppercase tracking-wider">
+              Enable raffle
+              <span className="ml-1.5 text-[9px] text-muted normal-case tracking-normal">admin</span>
+            </label>
+            <p className="text-xs text-muted font-mono mt-1">
+              {enableRaffle
+                ? 'holders of this edition can enter to win the physical'
+                : 'no raffle — holders get the standard list action'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEnableRaffle((v) => !v)}
+            aria-pressed={enableRaffle}
+            aria-label="Enable raffle for this moment"
+            className="flex-shrink-0 mt-0.5"
+          >
+            <div className={`relative w-8 h-4 rounded-full transition-colors ${enableRaffle ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
+              <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${enableRaffle ? 'translate-x-4' : 'translate-x-0'}`} />
+            </div>
+          </button>
+        </div>
       )}
     </form>
   )
