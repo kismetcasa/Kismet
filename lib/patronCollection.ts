@@ -32,6 +32,31 @@ export function isPatronCollection(address?: string | null): boolean {
 }
 
 /**
+ * Reduce per-moment split-recipient lists to a deduped, first-seen-ordered
+ * list of artist addresses, dropping every address in `exclude` (the platform
+ * treasury, residencies, referral, and the collection owner/payout). All
+ * addresses are lowercased. Attribution only — `percentAllocation` is ignored.
+ *
+ * This is what makes the Patron page's artist credit data-driven: the moment
+ * "creator" resolves to the platform treasury, but the split names the real
+ * artist(s), so future collaborators surface automatically. Collection-
+ * agnostic by design; the Patron-specific wiring lives in CollectionView.
+ */
+export function deriveArtistsFromRecipients(
+  recipientLists: { address: string }[][],
+  exclude: Set<string>,
+): string[] {
+  const out: string[] = []
+  for (const list of recipientLists) {
+    for (const r of list) {
+      const a = r.address.toLowerCase()
+      if (!exclude.has(a) && !out.includes(a)) out.push(a)
+    }
+  }
+  return out
+}
+
+/**
  * Body copy for the Patron Pass Description panel. Rendered with
  * `whitespace-pre-line`, so the line breaks below are preserved verbatim.
  */

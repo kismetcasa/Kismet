@@ -30,9 +30,12 @@ import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
 import { PatronArtworkShowcase } from './PatronArtworkShowcase'
 import {
   isPatronCollection,
+  deriveArtistsFromRecipients,
   PATRON_ARTIST_ADDRESS,
   PATRON_ARTIST_LABEL,
 } from '@/lib/patronCollection'
+import { CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -124,6 +127,10 @@ export function CollectionView({
   // data, and hidden-moment filtering is applied via the session-aware
   // /api/timeline route (creator sees their own hidden moments; others don't).
   const [moments, setMoments] = useState<Moment[] | null>(null)
+  // Patron Collection only: artist addresses derived from the moments' on-chain
+  // split recipients (null = loading, [] = resolved with no artist payee →
+  // curated fallback). See the splits effect below.
+  const [patronArtists, setPatronArtists] = useState<string[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
   const [editing, setEditing] = useState(false)
   const [metaOverride, setMetaOverride] = useState<EditedMeta | null>(null)
@@ -621,6 +628,59 @@ export function CollectionView({
     }
   }, [address])
 
+  // Patron Collection only: derive the artist(s) from each moment's on-chain
+  // split recipients (the creator's payout array). The moment "creator"
+  // resolves to the platform treasury, so the split — not the creator — is the
+  // real source of artist attribution here, and it generalizes to future
+  // multi-artist drops. We drop the non-artist payees (treasury / residencies /
+  // referral / collection owner+payout) and hydrate the survivors' profiles so
+  // their chips render names + avatars. Empty result → curated Turro fallback.
+  useEffect(() => {
+    if (!isPatronCollection(address)) return
+    let cancelled = false
+    setPatronArtists(null)
+    if (moments === null) return // wait for the moments fetch
+    const ms = moments
+    const exclude = new Set(
+      [
+        PLATFORM_FEE_RECIPIENT,
+        CREATE_REFERRAL,
+        RESIDENCIES_ADDRESS,
+        defaultAdminAddress,
+        payoutRecipient,
+      ]
+        .filter((a): a is string => !!a)
+        .map((a) => a.toLowerCase()),
+    )
+    Promise.all(
+      ms.map((m) =>
+        fetch(`/api/moment/splits?collectionAddress=${m.address}&tokenId=${m.token_id}`)
+          .then((r) => (r.ok ? r.json() : { hasSplits: false, recipients: [] }))
+          .then((d) =>
+            d?.hasSplits && Array.isArray(d.recipients)
+              ? (d.recipients as { address: string }[])
+              : [],
+          )
+          .catch(() => [] as { address: string }[]),
+      ),
+    ).then((lists) => {
+      if (cancelled) return
+      const artists = deriveArtistsFromRecipients(lists, exclude)
+      setPatronArtists(artists)
+      artists.forEach((addr) => {
+        fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
+          if (!cancelled)
+            setProfiles((prev) =>
+              prev[addr] ? prev : { ...prev, [addr]: { name, avatarUrl } },
+            )
+        })
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [address, moments, defaultAdminAddress, payoutRecipient])
+
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
   // our Redis cache may have a name the user registered with us. Always
@@ -1083,22 +1143,42 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists — the Patron Collection is credited to Turro and links to
-          Turro's own profile. The artwork's on-chain creator/payout is the
-          Kismet platform treasury (it resolves to kismetart.eth), so the
-          credit (label + link + avatar) is pinned to Turro's real profile
-          rather than the treasury the moments resolve to. */}
+      {/* Artists — the Patron Collection credits the artist(s) derived from the
+          moments' on-chain splits (the moment creator resolves to the platform
+          treasury, so the split is the real source of attribution). Turro's own
+          profile (and future collaborators') surfaces from the split; the
+          curated Turro credit is the fallback for moments with no artist
+          payee. */}
       {isPatron ? (
         <section className="mb-10">
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-            artist
+            {patronArtists && patronArtists.length > 1 ? 'artists' : 'artist'}
           </h2>
           <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            <AvatarRow
-              addr={PATRON_ARTIST_ADDRESS}
-              profiles={profiles}
-              label={PATRON_ARTIST_LABEL}
-            />
+            {patronArtists === null ? (
+              <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto animate-pulse">
+                <span className="w-6 h-6 bg-raised shrink-0" />
+                <span className="h-3 w-16 bg-raised" />
+              </div>
+            ) : patronArtists.length > 0 ? (
+              patronArtists.map((a) => (
+                <AvatarRow
+                  key={a}
+                  addr={a}
+                  profiles={profiles}
+                  // Guarantee the known Turro credit reads "turro" even if that
+                  // profile has no username set; other split artists show their
+                  // own resolved profile name.
+                  label={a === PATRON_ARTIST_ADDRESS ? PATRON_ARTIST_LABEL : undefined}
+                />
+              ))
+            ) : (
+              <AvatarRow
+                addr={PATRON_ARTIST_ADDRESS}
+                profiles={profiles}
+                label={PATRON_ARTIST_LABEL}
+              />
+            )}
           </div>
         </section>
       ) : (
