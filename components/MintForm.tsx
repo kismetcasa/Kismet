@@ -33,7 +33,8 @@ import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { toastError } from '@/lib/toast'
+import { toastError, toastChainStalled } from '@/lib/toast'
+import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
@@ -1290,6 +1291,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       })
       setStep('idle')
       setUploadProgress(0)
+      // Parity with the create flow: if Base block production has halted, the
+      // relay couldn't sequence the mint — surface "Base isn't responding"
+      // (status link, wait) instead of a generic failure + Authorize CTA, since
+      // the cause is the chain, not auth. Brief liveness sample (~4s).
+      toast.loading('Checking network…', { id: 'mint' })
+      const stalled = publicClient ? await isChainStalled(publicClient) : false
+      if (stalled) {
+        toastChainStalled({
+          id: 'mint',
+          description:
+            'Base’s network looks stalled, so your mint couldn’t be submitted. Check the status page and try again once it recovers.',
+        })
+        return
+      }
       toastError('Mint', err, { id: 'mint' })
       // Last-resort authorization hint (non-blocking). The generic toast is
       // already up; if this was a mint into an existing collection and the

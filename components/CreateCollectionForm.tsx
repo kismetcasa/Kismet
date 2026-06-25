@@ -25,6 +25,7 @@ import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { toastError, isUserRejection, isChunkLoadError, toastChainStalled } from '@/lib/toast'
 import { isChainStalled } from '@/lib/chainHealth'
+import { reportClientError } from '@/lib/clientError'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import { useEnsureBase } from '@/lib/useEnsureBase'
@@ -126,6 +127,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   // tx) can include the thumbhash on the collection's first KV entry — gives
   // the collection page a blurDataURL placeholder on first paint.
   const [coverThumbhash, setCoverThumbhash] = useState<string | undefined>(undefined)
+  // Mirror of `step` for the deploy-failure telemetry below: the `step` closure
+  // is stale ('idle') inside the catch, so we read the last committed phase off
+  // this ref to name exactly where a deploy died (parity with MintForm).
+  const stepRef = useRef(step)
+  useEffect(() => {
+    stepRef.current = step
+  }, [step])
 
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
@@ -833,6 +841,15 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
 
       setTxHash(hash)
     } catch (err) {
+      // Durable trace of WHERE the deploy died — parity with MintForm. Deploy
+      // failures have been as hard to diagnose as mints (no error-tracking
+      // service), so record the phase + context where we can actually see it.
+      reportClientError('deploy_failed', {
+        phase: stepRef.current,
+        mintCover,
+        hasCover: !!coverFile,
+        error: err instanceof Error ? err.message : String(err),
+      })
       // Clear any half-written pending state so a refresh doesn't try to
       // resume a deploy that never broadcast.
       if (PENDING_KEY) {
