@@ -620,8 +620,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         verifyArweaveAvailable(contractURI),
       ])
       if (!imageOk || !contractOk) {
-        // Failure accounting: keep reusing these uploads on retry until
-        // the strike cap decides one is genuinely lost.
+        // Soft-gate (not fail-fast): do NOT abort the deploy on a propagation
+        // miss. Turbo durably stored both data items the moment /api/upload
+        // returned an id, and a freshly-uploaded item simply isn't on any
+        // public AR.IO gateway yet during its propagation window, so blocking
+        // trapped the creator in a retry loop for a self-healing condition.
+        // The contractURI + cover are permanent on Arweave and every Kismet
+        // surface re-fetches them at display time, so the collection self-heals
+        // once propagation catches up. Mirrors MintForm's mint-anyway decision
+        // for the same on-chain-bake case. Still bump the strike counters so a
+        // genuinely-lost upload is re-uploaded fresh on a later attempt.
         if (!imageOk && coverUploadRef.current) {
           coverUploadRef.current.verifyFailures += 1
           // Persist the strike so the retire-after-N decision is the same
@@ -633,25 +641,13 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           })
         }
         if (!contractOk) bumpJsonFailure(contractKey)
-        // The cover is the expensive artifact — "resumable" tracks it. A
-        // failed contract-metadata JSON re-uploads in seconds either way.
-        const resumable =
-          imageOk ||
-          (coverUploadRef.current !== null &&
-            coverUploadRef.current.verifyFailures < MAX_REUSE_FAILURES)
         const failedParts = [
           ...(!imageOk ? ['cover image'] : []),
           ...(!contractOk ? ['collection metadata'] : []),
         ].join(' + ')
-        toast.error('Arweave is settling slowly', {
-          id: 'create-collection',
-          description: resumable
-            ? `Not propagated yet: ${failedParts}. Your upload is saved — hit create again in a minute to resume without re-uploading.`
-            : `Not propagated yet: ${failedParts}. Give it a couple of minutes and try again. We blocked the deploy to avoid permanently broken collection metadata.`,
-        })
-        setStep('idle')
-        setUploadProgress(0)
-        return
+        console.warn(
+          `[CreateCollectionForm] Arweave not yet propagated (${failedParts}); deploying anyway (Turbo-durable, self-heals on display)`,
+        )
       }
 
       setStep('deploying')
