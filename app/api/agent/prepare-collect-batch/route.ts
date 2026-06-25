@@ -24,7 +24,7 @@ const MAX_BATCH = 20
  * Propose mode. Read-only and inert. Resolves each item's live sale (currency +
  * price + eligibility) on-chain so it never builds a mint that would revert,
  * then returns a single EIP-5792 batch plus one /api/collect record per item
- * (all keyed to the shared txHash). See AGENT_COMMERCE_DESIGN.md.
+ * (all keyed to the shared txHash).
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-collect-batch:${getClientIp(req)}`, 30, 60))) {
