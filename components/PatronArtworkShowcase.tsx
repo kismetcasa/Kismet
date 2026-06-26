@@ -54,50 +54,49 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
   const momentHref = `/moment/${moment.address}/${moment.token_id}`
 
   return (
-    // Center the piece so a height-capped portrait sits in the middle of the
-    // column; a full-width landscape is unaffected by the centering.
-    <div className="flex justify-center">
-      <Link
-        href={momentHref}
-        className="relative block w-full overflow-hidden"
-        style={{ aspectRatio, maxWidth: `calc(${MAX_ART_HEIGHT} * ${aspectRatio})` }}
-      >
-        {isVideo && media.src && !mediaError ? (
-          <MomentVideo
-            src={media.src}
-            poster={media.poster}
-            thumbhash={meta.kismet_thumbhash}
-            showPosterLayer
-            className="w-full h-full object-contain"
-            priority={priority}
-            onAllError={() => setMediaError(true)}
-          />
-        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
-          <MomentImage
-            src={media.src}
-            alt={title}
-            fill
-            className="object-contain"
-            sizes="(max-width: 896px) 100vw, 896px"
-            mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
-            thumbhash={meta.kismet_thumbhash}
-            priority={priority}
-            onNaturalSize={handleNaturalSize}
-            onAllError={() => setMediaError(true)}
-          />
-        ) : blurPreview ? (
-          <span
-            aria-hidden
-            className="absolute inset-0 bg-cover bg-center"
-            style={{ backgroundImage: `url(${blurPreview})` }}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center bg-surface">
-            <span className="text-line font-mono text-xs">no preview</span>
-          </div>
-        )}
-      </Link>
-    </div>
+    // `mx-auto` centers a height-capped portrait in the column (its used width
+    // < 100% via max-width); a full-width landscape is unaffected. Plain block
+    // centering avoids the flex `align-items: stretch` vs aspect-ratio gotcha.
+    <Link
+      href={momentHref}
+      className="relative block w-full mx-auto overflow-hidden"
+      style={{ aspectRatio, maxWidth: `calc(${MAX_ART_HEIGHT} * ${aspectRatio})` }}
+    >
+      {isVideo && media.src && !mediaError ? (
+        <MomentVideo
+          src={media.src}
+          poster={media.poster}
+          thumbhash={meta.kismet_thumbhash}
+          showPosterLayer
+          className="w-full h-full object-contain"
+          priority={priority}
+          onAllError={() => setMediaError(true)}
+        />
+      ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
+        <MomentImage
+          src={media.src}
+          alt={title}
+          fill
+          className="object-contain"
+          sizes="(max-width: 896px) 100vw, 896px"
+          mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
+          thumbhash={meta.kismet_thumbhash}
+          priority={priority}
+          onNaturalSize={handleNaturalSize}
+          onAllError={() => setMediaError(true)}
+        />
+      ) : blurPreview ? (
+        <span
+          aria-hidden
+          className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: `url(${blurPreview})` }}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center bg-surface">
+          <span className="text-line font-mono text-xs">no preview</span>
+        </div>
+      )}
+    </Link>
   )
 }
 
