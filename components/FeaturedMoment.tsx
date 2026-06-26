@@ -180,6 +180,23 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
     if (w > 0 && h > 0) setNaturalRatio(w / h)
   }, [])
 
+  // The box width is `min(560px * ratio, 60vw)` (see the Link style below), so
+  // for anything but a very wide landscape the artwork renders FAR narrower than
+  // 60vw — a square tops out at 560px, a 2:3 portrait at ~373px. Feeding
+  // next/image a flat `sizes="60vw"` made the browser pick a srcSet variant for
+  // the full 60vw of the viewport (≈1536–1920px on a desktop monitor) and
+  // download that many bytes for a box that never paints wider than
+  // `560 * ratio`. Mirror the real CSS width-cap into `sizes` so the browser
+  // selects the variant that actually fits the hero — the single biggest LCP win
+  // for this image, since it's the same content-addressed source whether we
+  // downscale it or not. The trailing `60vw` is the wide-landscape ceiling AND
+  // the token next/image reads to size the srcSet (it parses only `vw` values);
+  // the leading px cap is what the browser honours when picking the variant.
+  // 2× the cap to stay crisp on retina without reaching for the full-viewport
+  // bytes; clamped at 60vw so an ultra-wide piece still can't over-fetch.
+  const heroPxCap = Math.round(DESKTOP_H * aspectRatio * 2)
+  const heroSizes = `(min-width: 1024px) min(${heroPxCap}px, 60vw), 60vw`
+
   // Below-lg presentation: the same mint as an ordinary MomentCard. Before the
   // self-fetch resolves, render the timeline moment as-is so the artwork paints
   // with the rest of the feed instead of lagging a round-trip behind it; once
@@ -317,7 +334,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               // (AVIF/WebP + downscale via `sizes`); MomentImage still falls back
               // to the proxy if the optimizer 413s heavy art.
               className="object-contain"
-              sizes="60vw"
+              sizes={heroSizes}
               mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
               thumbhash={meta.kismet_thumbhash}
               priority={priority}
