@@ -58,8 +58,11 @@ const ART_MAX_W = `${ART_MAX_FRACTION * 100}%`
 // clamped to this so a wide-landscape hero on a big monitor doesn't over-fetch.
 // The featured tab's container is max-w-[88rem] with px-4 (DiscoverPage.tsx), so
 // the row tops out at 1408 − 32 = 1376px, and the box at ART_MAX_FRACTION of it.
-// Kept in sync with that container by hand (a rare change); if it drifts the
-// only cost is a slightly off `sizes` hint, never a layout or correctness bug.
+// Kept in sync with that container by hand (no shared token links this JS to the
+// Tailwind class, so a change there silently desyncs this). Drift never causes a
+// layout bug — this only feeds `sizes` — but it's not free: if the container
+// shrinks this over-states the box (over-fetch); if it grows this under-states
+// it (a soft LCP, the very failure this fix targets). At worst a mis-sized LCP.
 const FEED_ROW_MAX_W = 1408 - 32
 const HERO_MAX_W = Math.round(ART_MAX_FRACTION * FEED_ROW_MAX_W)
 // Pre-load guess until the thumbhash (then the image) reports the real shape.
@@ -201,8 +204,12 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
   // width with NO manual retina factor (#502's `* 2` double-counted DPR — a
   // 560px square became a 1120px cap, ×2 = 2240 → the 3840w variant; dropping it
   // and capping at HERO_MAX_W lands a square on 1200w, a 2:3 portrait on 750w,
-  // and a panorama on 1920w at DPR 2 — all exactly the box, no over- or
-  // under-fetch). The trailing `60vw` is only the <1024px fallback AND the `vw`
+  // and a panorama on 1920w at DPR 2 — the box exactly on a full-width row.
+  // On a narrow lg viewport (1024–1376px) the row is smaller than its 1376px max,
+  // so a wide-landscape hero clamps to HERO_MAX_W and can over-fetch one srcSet
+  // step there — bounded, never under-fetched, and unavoidable for an SSR `sizes`
+  // string that can't know the live row width). The trailing `60vw` is only the
+  // <1024px fallback AND the `vw`
   // token next/image's generator scans to floor the srcSet candidate list (it
   // reads every vw token and takes the smallest); the lg-clause px value is what
   // the browser honours when picking the variant.
