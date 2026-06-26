@@ -19,6 +19,15 @@ interface FeaturedMomentProps {
   tokenId: string
   /** Above-the-fold hint — the hero leads the featured tab and is the LCP. */
   priority?: boolean
+  /** The mint's moment from the featured-timeline payload, when available.
+   *  Seeds ONLY the lg+ hero's artwork (image / thumbhash / ratio) so it paints
+   *  immediately instead of waiting on the /api/moment round-trip. The mobile
+   *  <MomentCard> deliberately does NOT use it — it stays on the self-fetched
+   *  `detail` path, byte-identical to a normal feed card, because that's the
+   *  surface (miniapp iframe) where changing the load path is risky. Undefined
+   *  when the mint isn't a standalone featured-timeline entry; then the hero
+   *  waits on the self-fetch, exactly as before. */
+  initialMoment?: Moment
   /** Reports whether this slot paints anything. A configured display still
    *  renders null when its mint is hidden or the fetch fails; the feed uses
    *  this so its empty state shows a message instead of a blank tab then. */
@@ -70,7 +79,7 @@ const CREDIT_OVERRIDES: Record<string, string> = {
  * both presentations from that single fetch. Renders nothing if the moment
  * fails to load or is hidden.
  */
-export function FeaturedMoment({ address, tokenId, priority, onResolved }: FeaturedMomentProps) {
+export function FeaturedMoment({ address, tokenId, priority, initialMoment, onResolved }: FeaturedMomentProps) {
   const router = useRouter()
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [failed, setFailed] = useState(false)
@@ -120,7 +129,12 @@ export function FeaturedMoment({ address, tokenId, priority, onResolved }: Featu
       .catch(() => setCollection(shortAddress(address)))
   }, [address])
 
-  const meta = detail?.metadata ?? {}
+  // Hero artwork source. Seed from the featured-timeline moment when present so
+  // the lg+ hero paints before /api/moment resolves; `detail` wins once it
+  // lands (same token → same image src, so no refetch). NOTE: only the hero
+  // reads `meta` — `cardMoment` below builds from `detail` alone, so the mobile
+  // card's load path is unchanged.
+  const meta = detail?.metadata ?? initialMoment?.metadata ?? {}
   const media = resolveMomentMedia(meta)
   const isVideo = media.kind === 'video'
   const isTextMoment = media.kind === 'text'
