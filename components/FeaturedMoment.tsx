@@ -198,6 +198,14 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       created_at: '',
       metadata: detail.metadata,
       saleConfig: detail.saleConfig,
+      // Carry the timeline-stitched chip across the swap. /api/moment doesn't
+      // return it, so without this the field would go defined→undefined when we
+      // swap off `initialMoment`, re-tripping MomentCard's collection guard
+      // (`kismetCollection !== undefined`) into a per-card /api/collections
+      // refetch — and, for a curated collection with a null stitched name, a
+      // visible chip pop-in mid-view. Undefined when there's no initialMoment
+      // (mint only inside a featured collection), so the card fetches once then.
+      kismetCollection: initialMoment?.kismetCollection,
     }
   }, [detail, initialMoment, address, tokenId, creatorAddress, creatorUsername, creditOverride])
 
@@ -214,9 +222,13 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
 
   // The below-lg card. On mobile it's the ONLY presentation we mount (the lg+
   // hero is skipped — see the isMobile prop doc); on desktop it's wrapped
-  // `lg:hidden` below the hero. priority={false} keeps it at normal fetch
-  // priority (it still loads eagerly on WebKit/iframe via MomentImage's
-  // skipDirectWalk) and, on desktop, leaves the lg:hidden copy lazy so it never
+  // `lg:hidden` below the hero. priority={false} isn't the whole story for fetch
+  // priority: MomentImage does `priority || skipDirectWalk`, so on WebKit/iframe
+  // (the miniapp — the surface this fix targets) the image is force-eager
+  // regardless of this prop, which is what we want for the mobile LCP there. On
+  // standalone mobile Chrome (not WebKit, not framed) skipDirectWalk is false,
+  // so the card image stays lazy — pre-existing for this card, accepted here.
+  // On desktop, priority={false} leaves the lg:hidden copy lazy so it never
   // fetches while the hero is the visible presentation. showCreator follows the
   // resolved artist so the chip drops exactly when the hero drops its @artist
   // line — never a dead /profile/ link.
