@@ -84,22 +84,15 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   }
 
   // The curated Mint Pass Display — one at a time, always leading the tab.
-  // FeaturedMoment mounts one of two presentations (a rich hero at lg+, an
-  // ordinary card below lg) chosen by the VIEWPORT (a matchMedia check, not a
-  // device/UA/miniapp guess), so it's correct on web, mobile, and every embed.
-  // We hand it `initialMoment` below so the artwork paints from the timeline
-  // payload immediately; it still self-fetches to enrich (and to show even for
-  // a mint that only lives inside a featured collection, never as a timeline
-  // entry).
+  // FeaturedMoment renders it in two CSS-toggled presentations (a rich hero at
+  // lg+, an ordinary card below lg), so the VIEWPORT alone — not a device/UA/
+  // miniapp guess — decides which one shows. That's why there's no isMobile/
+  // inMiniApp gate here: the same node is correct on web, mobile, and every
+  // embed. FeaturedMoment self-fetches, so it shows even for a mint that only
+  // appears inside a featured collection (never as a standalone timeline mint).
   const displayKey = mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
   const keyOf = (m: Moment) => `${m.address?.toLowerCase()}:${m.token_id}`
   const colon = displayKey ? displayKey.indexOf(':') : -1
-  // The mint is usually already in the featured timeline (we filter it out of
-  // the grid below). Hand its moment to FeaturedMoment so the artwork paints
-  // from the timeline metadata immediately instead of waiting on its own
-  // /api/moment fetch — the reason it lagged every other feed card. Undefined
-  // when the mint only lives inside a featured collection; then it self-fetches.
-  const displayMoment = displayKey ? moments.find((m) => keyOf(m) === displayKey) : undefined
   const hero = displayKey && colon > 0
     ? (
       <FeaturedMoment
@@ -108,7 +101,6 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
         key={displayKey}
         address={displayKey.slice(0, colon)}
         tokenId={displayKey.slice(colon + 1)}
-        initialMoment={displayMoment}
         priority
         onResolved={setHeroHasContent}
       />
