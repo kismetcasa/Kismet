@@ -15,20 +15,22 @@ const DEFAULT_RATIO = 1.5
 const MIN_RATIO = 0.2
 const MAX_RATIO = 5
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
+// Cap the artwork's rendered HEIGHT so portrait/tall pieces don't tower off the
+// screen. Applied as a max-WIDTH of (cap × ratio): a wide/landscape piece's cap
+// exceeds the column so it just fills the width (height stays well under the
+// cap, unchanged from before); a portrait piece is capped at this height and
+// centered. `min(80vh, …)` keeps it inside the viewport on any device; the px
+// ceiling stops it dominating huge monitors.
+const MAX_ART_HEIGHT = 'min(80vh, 760px)'
 
 /**
- * Patron Collection showcase — the bespoke single-artwork presentation for the
- * Kismet Patron Collection page, in the spirit of the featured Mint Pass
- * Display but pared down per the brief: the artwork alone (no frame, badges,
- * price, or flanking text) given a large full-width display, then a
- * "Patron Pass Description" panel beneath it.
- *
- * The artwork box hugs the image's own aspect ratio — sized from the thumbhash
- * up front and corrected to the natural ratio once the image loads — so the
- * image fills the column edge-to-edge with no crop and no letterbox. Clicking
- * it opens the moment, where the edition can be collected.
+ * One Patron artwork — the image alone (no frame, badges, price, or text),
+ * given a large display. The box hugs the image's own aspect ratio (sized from
+ * the thumbhash up front, corrected to the natural ratio on load) so there's no
+ * crop and no letterbox; the height cap keeps portrait pieces from towering.
+ * Clicking opens the moment, where the edition can be collected.
  */
-export function PatronArtworkShowcase({ moment }: { moment: Moment }) {
+function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolean }) {
   const [naturalRatio, setNaturalRatio] = useState<number | null>(null)
   const [mediaError, setMediaError] = useState(false)
 
@@ -52,14 +54,13 @@ export function PatronArtworkShowcase({ moment }: { moment: Moment }) {
   const momentHref = `/moment/${moment.address}/${moment.token_id}`
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Artwork — just the image, no frame or overlays. The box matches the
-          artwork's aspect ratio so object-contain fills it without cropping or
-          letterboxing. Clicking opens the moment (where it can be collected). */}
+    // Center the piece so a height-capped portrait sits in the middle of the
+    // column; a full-width landscape is unaffected by the centering.
+    <div className="flex justify-center">
       <Link
         href={momentHref}
         className="relative block w-full overflow-hidden"
-        style={{ aspectRatio }}
+        style={{ aspectRatio, maxWidth: `calc(${MAX_ART_HEIGHT} * ${aspectRatio})` }}
       >
         {isVideo && media.src && !mediaError ? (
           <MomentVideo
@@ -68,7 +69,7 @@ export function PatronArtworkShowcase({ moment }: { moment: Moment }) {
             thumbhash={meta.kismet_thumbhash}
             showPosterLayer
             className="w-full h-full object-contain"
-            priority
+            priority={priority}
             onAllError={() => setMediaError(true)}
           />
         ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
@@ -80,7 +81,7 @@ export function PatronArtworkShowcase({ moment }: { moment: Moment }) {
             sizes="(max-width: 896px) 100vw, 896px"
             mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
             thumbhash={meta.kismet_thumbhash}
-            priority
+            priority={priority}
             onNaturalSize={handleNaturalSize}
             onAllError={() => setMediaError(true)}
           />
@@ -96,6 +97,27 @@ export function PatronArtworkShowcase({ moment }: { moment: Moment }) {
           </div>
         )}
       </Link>
+    </div>
+  )
+}
+
+/**
+ * Patron Collection showcase — the bespoke presentation for the Kismet Patron
+ * Collection page: every artwork gets the same large borderless display (the
+ * standard for this collection, so there's no per-moment discrepancy), followed
+ * once by the "Patron Pass Description" panel. Only the first artwork loads
+ * eagerly (the LCP); the rest are lazy.
+ */
+export function PatronArtworkShowcase({ moments }: { moments: Moment[] }) {
+  return (
+    <div className="flex flex-col gap-6">
+      {moments.map((m, i) => (
+        <PatronArtwork
+          key={m.id || `${m.address}-${m.token_id}`}
+          moment={m}
+          priority={i === 0}
+        />
+      ))}
 
       {/* Patron Pass Description */}
       <div className="border border-line bg-[#0d0d0d] p-4 sm:p-5">

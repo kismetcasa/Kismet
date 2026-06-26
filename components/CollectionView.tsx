@@ -1191,7 +1191,7 @@ export function CollectionView({
             <p className="text-xs font-mono text-muted">no moments in this collection yet</p>
           )
         ) : isPatron ? (
-          <PatronArtworkShowcase moment={firstMoment} />
+          <PatronArtworkShowcase moments={loadedMoments} />
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {loadedMoments.map((m, i) => {
