@@ -124,7 +124,16 @@ export function PatronArtworkShowcase({ moments }: { moments: Moment[] }) {
           patron pass description
         </h3>
         <p className="text-sm font-mono text-dim leading-relaxed whitespace-pre-line">
-          {PATRON_PASS_DESCRIPTION}
+          {PATRON_PASS_DESCRIPTION.split('Kismet Casa')[0]}
+          <a
+            href="https://kismetcasa.xyz"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-ink transition-colors"
+          >
+            Kismet Casa
+          </a>
+          {PATRON_PASS_DESCRIPTION.split('Kismet Casa')[1]}
         </p>
       </div>
     </div>
