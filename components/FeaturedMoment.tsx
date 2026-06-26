@@ -52,7 +52,19 @@ interface FeaturedMomentProps {
 const DESKTOP_H = 560
 // Fraction of the row the artwork may occupy, leaving room for the flanking
 // text. The artwork takes the smaller of (height × ratio) and this.
-const ART_MAX_W = '60%'
+const ART_MAX_FRACTION = 0.6
+const ART_MAX_W = `${ART_MAX_FRACTION * 100}%`
+// Widest the artwork box can ever render, in CSS px — the `sizes` px cap is
+// clamped to this so a wide-landscape hero on a big monitor doesn't over-fetch.
+// The featured tab's container is max-w-[88rem] with px-4 (DiscoverPage.tsx), so
+// the row tops out at 1408 − 32 = 1376px, and the box at ART_MAX_FRACTION of it.
+// Kept in sync with that container by hand (no shared token links this JS to the
+// Tailwind class, so a change there silently desyncs this). Drift never causes a
+// layout bug — this only feeds `sizes` — but it's not free: if the container
+// shrinks this over-states the box (over-fetch); if it grows this under-states
+// it (a soft LCP, the very failure this fix targets). At worst a mis-sized LCP.
+const FEED_ROW_MAX_W = 1408 - 32
+const HERO_MAX_W = Math.round(ART_MAX_FRACTION * FEED_ROW_MAX_W)
 // Pre-load guess until the thumbhash (then the image) reports the real shape.
 const DEFAULT_RATIO = 1.5
 // Safety bounds only — wide enough that no real artwork is clamped (which is
@@ -180,22 +192,43 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
     if (w > 0 && h > 0) setNaturalRatio(w / h)
   }, [])
 
-  // The box width is `min(560px * ratio, 60vw)` (see the Link style below), so
-  // for anything but a very wide landscape the artwork renders FAR narrower than
-  // 60vw — a square tops out at 560px, a 2:3 portrait at ~373px. Feeding
-  // next/image a flat `sizes="60vw"` made the browser pick a srcSet variant for
-  // the full 60vw of the viewport (≈1536–1920px on a desktop monitor) and
-  // download that many bytes for a box that never paints wider than
-  // `560 * ratio`. Mirror the real CSS width-cap into `sizes` so the browser
-  // selects the variant that actually fits the hero — the single biggest LCP win
-  // for this image, since it's the same content-addressed source whether we
-  // downscale it or not. The trailing `60vw` is the wide-landscape ceiling AND
-  // the token next/image reads to size the srcSet (it parses only `vw` values);
-  // the leading px cap is what the browser honours when picking the variant.
-  // 2× the cap to stay crisp on retina without reaching for the full-viewport
-  // bytes; clamped at 60vw so an ultra-wide piece still can't over-fetch.
-  const heroPxCap = Math.round(DESKTOP_H * aspectRatio * 2)
-  const heroSizes = `(min-width: 1024px) min(${heroPxCap}px, 60vw), 60vw`
+  // Right-size the LCP fetch. The box renders at `min(560px * ratio, 60% of the
+  // row)` (the Link style below), and the row is itself max-width-capped, so the
+  // box is bounded on BOTH ends: never wider than HERO_MAX_W (~826px) and, for
+  // square/portrait, just `560 * ratio` (a square 560px, a 2:3 portrait ~373px).
+  // `heroPxCap` mirrors that exact CSS width — `min(560 * ratio, HERO_MAX_W)` —
+  // so it tracks the box for every ratio: the `560 * ratio` term binds for
+  // square/portrait, the HERO_MAX_W term binds for wide landscape on a large
+  // monitor. `sizes` is a CSS-PX hint the browser multiplies by device DPR
+  // before snapping up to a srcSet variant, so the cap must be the box's CSS
+  // width with NO manual retina factor (#502's `* 2` double-counted DPR — a
+  // 560px square became a 1120px cap, ×2 = 2240 → the 3840w variant; dropping it
+  // and capping at HERO_MAX_W lands a square on 1200w, a 2:3 portrait on 750w,
+  // and a panorama on 1920w at DPR 2 — the box exactly on a full-width row.
+  // On a narrow lg viewport (1024–1376px) the row is smaller than its 1376px max,
+  // so a wide-landscape hero clamps to HERO_MAX_W and can over-fetch one srcSet
+  // step there — bounded, never under-fetched, and unavoidable for an SSR `sizes`
+  // string that can't know the live row width). The trailing `60vw` is only the
+  // <1024px fallback AND the `vw`
+  // token next/image's generator scans to floor the srcSet candidate list (it
+  // reads every vw token and takes the smallest); the lg-clause px value is what
+  // the browser honours when picking the variant.
+  //
+  // Cap tracks the LIVE `aspectRatio` (thumbhash guess → exact natural ratio on
+  // load), not a frozen guess. The `priority` preload <link> commits to the
+  // guess at first render and MomentImage's <Image> key omits `sizes`, so when
+  // the natural ratio lands `heroSizes` is patched in place on the live <img>:
+  //   • guess UNDER-estimated the ratio → the browser may pull a larger variant
+  //     (a second hero fetch). Accepted: that fetch is the correction that keeps
+  //     the LCP crisp; pinning to the guess avoids it but leaves the hero
+  //     permanently soft. A crisp LCP beats saving a rare re-fetch.
+  //   • guess OVER-estimated (notably no-thumbhash → DEFAULT_RATIO 1.5 for a
+  //     narrow piece) → the oversized variant is already fetched and the in-place
+  //     patch only lowers the cap, which never DOWN-fetches, so those bytes are
+  //     spent. Bounded by HERO_MAX_W, and thumbhash (which encodes aspect) makes
+  //     guess ≈ true in the common case, so neither path fires for most heroes.
+  const heroPxCap = Math.round(Math.min(DESKTOP_H * aspectRatio, HERO_MAX_W))
+  const heroSizes = `(min-width: 1024px) ${heroPxCap}px, 60vw`
 
   // Below-lg presentation: the same mint as an ordinary MomentCard. Before the
   // self-fetch resolves, render the timeline moment as-is so the artwork paints
