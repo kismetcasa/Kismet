@@ -146,12 +146,17 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       .catch(() => {})
   }, [creatorAddress, creatorUsername, creditOverride])
 
-  // Collection label — falls back to the short contract address.
+  // Collection label — falls back to the short contract address. Hero-only: the
+  // right column reads `collection`, and the mobile <MomentCard> resolves its
+  // own chip. So skip the fetch + re-render on mobile, where the hero never
+  // mounts (the `isMobile` early return below). SSR-stable flag, so a desktop
+  // device never wrongly skips it.
   useEffect(() => {
+    if (isMobile) return
     fetchCollectionChip(address)
       .then(({ name }) => setCollection(name ?? shortAddress(address)))
       .catch(() => setCollection(shortAddress(address)))
-  }, [address])
+  }, [address, isMobile])
 
   // Hero artwork source. Seed from the featured-timeline moment when present so
   // the lg+ hero paints before /api/moment resolves; `detail` wins once it
@@ -164,7 +169,9 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
   const isTextMoment = media.kind === 'text'
   const blurPreview = useMemo(() => thumbhashToBlurDataURL(meta.kismet_thumbhash), [meta.kismet_thumbhash])
   const thumbRatio = useMemo(() => thumbhashToRatio(meta.kismet_thumbhash), [meta.kismet_thumbhash])
-  const textSnippet = useTextContent(isTextMoment ? meta.content?.uri : undefined)
+  // Hero-only (the text branch in the hero JSX reads it). Pass undefined on
+  // mobile so the hook doesn't fetch the writing body for a hero we never mount.
+  const textSnippet = useTextContent(!isMobile && isTextMoment ? meta.content?.uri : undefined)
 
   // Exact natural ratio (once the image loads) wins; the thumbhash ratio is the
   // shift-free initial guess; a landscape guess covers the pre-data window.
