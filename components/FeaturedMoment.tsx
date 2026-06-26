@@ -20,14 +20,27 @@ interface FeaturedMomentProps {
   /** Above-the-fold hint — the hero leads the featured tab and is the LCP. */
   priority?: boolean
   /** The mint's moment from the featured-timeline payload, when available.
-   *  Seeds ONLY the lg+ hero's artwork (image / thumbhash / ratio) so it paints
-   *  immediately instead of waiting on the /api/moment round-trip. The mobile
-   *  <MomentCard> deliberately does NOT use it — it stays on the self-fetched
-   *  `detail` path, byte-identical to a normal feed card, because that's the
-   *  surface (miniapp iframe) where changing the load path is risky. Undefined
-   *  when the mint isn't a standalone featured-timeline entry; then the hero
-   *  waits on the self-fetch, exactly as before. */
+   *  Seeds the artwork (image / thumbhash / ratio) for BOTH presentations so it
+   *  paints immediately instead of waiting on the /api/moment round-trip — the
+   *  same payload every other feed card already renders from, so the load path
+   *  is byte-identical to a normal card. The self-fetch still runs to enrich
+   *  (KV-corrected creator, saleConfig). Undefined when the mint only lives
+   *  inside a featured collection (never a standalone timeline entry); then both
+   *  presentations wait on the self-fetch, exactly as before. */
   initialMoment?: Moment
+  /** Server-detected mobile UA (SSR-baked in app/page.tsx, so it's stable
+   *  through hydration — no post-mount flip). When true we mount ONLY the
+   *  below-lg card and skip the lg+ hero entirely. On a phone the hero is
+   *  display:none, yet its `priority` artwork STILL preloads (next/image injects
+   *  a <link rel=preload> regardless of CSS) and MomentImage force-enables eager
+   *  loading inside the miniapp iframe / WebKit (skipDirectWalk). Mounting both
+   *  there pulls the heavy painting twice into the iframe's shared, easily
+   *  saturated HTTP/2 pool, and the two fetches starve each other — leaving the
+   *  visible card a blank, pulsing box (the reported bug). Gating on the SSR
+   *  flag mounts exactly one image with no desktop flash — unlike a post-mount
+   *  matchMedia gate, which mounted the wrong presentation first and regressed
+   *  desktop. */
+  isMobile?: boolean
   /** Reports whether this slot paints anything. A configured display still
    *  renders null when its mint is hidden or the fetch fails; the feed uses
    *  this so its empty state shows a message instead of a blank tab then. */
@@ -66,27 +79,31 @@ const CREDIT_PROFILE_OVERRIDES: Record<string, string> = {
 }
 
 /**
- * Mint Pass Display — the single curated mint atop the featured tab, rendered
- * in two CSS-toggled presentations so the *viewport* (never a JS device/UA
- * guess) picks which one paints:
+ * Mint Pass Display — the single curated mint atop the featured tab, in two
+ * presentations:
  *   • lg and up → a rich three-column hero: [title · by · @artist] | artwork |
  *     [collection] on a soft-gold box, the box hugging the artwork's aspect
  *     ratio (no crop, no letterbox) with the flanking columns matching height.
  *   • below lg  → an ordinary <MomentCard>, identical to any other feed card.
- * `hidden lg:flex` / `lg:hidden` do the switch, so it stays correct on every
- * surface (web, miniapp, RN-webview) with no environment detection — the only
- * thing that matters is whether there's room for the wide layout.
+ *
+ * On desktop both are mounted and `hidden lg:flex` / `lg:hidden` CSS-toggle
+ * between them as the window resizes — the hidden card stays lazy, so it never
+ * fetches its artwork while the hero is the visible one. On mobile (the SSR
+ * `isMobile` flag) only the card mounts; the hero is skipped so its `priority`
+ * artwork can't preload behind display:none and starve the visible card's fetch
+ * in the miniapp's shared connection pool. See the `isMobile` prop doc.
  *
  * Hero click targets: the @artist opens the artist's profile; clicking anywhere
  * else on the left (or the artwork) opens the moment; the right text opens the
  * collection.
  *
- * Self-contained: fetches the mint once by address/tokenId, so it renders
- * whether or not the mint is a standalone featured-timeline entry, and drives
- * both presentations from that single fetch. Renders nothing if the moment
- * fails to load or is hidden.
+ * Self-contained: fetches the mint once by address/tokenId to enrich it, so it
+ * renders whether or not the mint is a standalone featured-timeline entry. When
+ * `initialMoment` is supplied the artwork paints from it immediately and the
+ * fetch only fills in the rest. Renders nothing if the moment fails to load
+ * (with no `initialMoment` fallback) or is hidden.
  */
-export function FeaturedMoment({ address, tokenId, priority, initialMoment, onResolved }: FeaturedMomentProps) {
+export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMobile, onResolved }: FeaturedMomentProps) {
   const router = useRouter()
   const [detail, setDetail] = useState<MomentDetail | null>(null)
   const [failed, setFailed] = useState(false)
@@ -138,9 +155,9 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, onRe
 
   // Hero artwork source. Seed from the featured-timeline moment when present so
   // the lg+ hero paints before /api/moment resolves; `detail` wins once it
-  // lands (same token → same image src, so no refetch). NOTE: only the hero
-  // reads `meta` — `cardMoment` below builds from `detail` alone, so the mobile
-  // card's load path is unchanged.
+  // lands (same token → same image src, so no refetch). `cardMoment` below
+  // seeds from the same `initialMoment`, so both presentations paint from one
+  // payload — the one every other feed card already uses.
   const meta = detail?.metadata ?? initialMoment?.metadata ?? {}
   const media = resolveMomentMedia(meta)
   const isVideo = media.kind === 'video'
@@ -156,13 +173,15 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, onRe
     if (w > 0 && h > 0) setNaturalRatio(w / h)
   }, [])
 
-  // Below-lg presentation: the same mint as an ordinary MomentCard, built from
-  // the single fetch above. saleConfig is forwarded so the card takes its fast
-  // price path and skips a redundant /api/moment round-trip; the creator is the
-  // KV-corrected artist EOA (username left to resolve from the profile cache,
-  // exactly as the hero's @artist does).
+  // Below-lg presentation: the same mint as an ordinary MomentCard. Before the
+  // self-fetch resolves, render the timeline moment as-is so the artwork paints
+  // with the rest of the feed instead of lagging a round-trip behind it; once
+  // `detail` lands we swap to the enriched version (KV-corrected creator EOA +
+  // saleConfig for the fast price path). Same image src either way, so the swap
+  // never refetches the artwork. Null only when there's neither — the mint
+  // lives solely inside a featured collection and the self-fetch hasn't landed.
   const cardMoment = useMemo<Moment | null>(() => {
-    if (!detail) return null
+    if (!detail) return initialMoment ?? null
     return {
       address,
       token_id: tokenId,
@@ -173,15 +192,33 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, onRe
       metadata: detail.metadata,
       saleConfig: detail.saleConfig,
     }
-  }, [detail, address, tokenId, creatorAddress, creatorUsername, creditOverride])
+  }, [detail, initialMoment, address, tokenId, creatorAddress, creatorUsername, creditOverride])
 
-  // Whether the hero will paint. It returns null just below for a hidden or
+  // Whether this slot will paint. It returns null just below for a hidden or
   // failed mint; report that up so the feed shows its empty message instead of
-  // a blank tab when this display is the only featured content.
-  const blank = failed || !!detail?.hidden
+  // a blank tab when this display is the only featured content. A failed
+  // self-fetch only blanks when there's no timeline moment to fall back on —
+  // with `initialMoment` the mint is a real, visible featured entry, so keep
+  // rendering it; `detail.hidden` still blanks once known.
+  const blank = (failed && !initialMoment) || !!detail?.hidden
   useEffect(() => { onResolved?.(!blank) }, [blank, onResolved])
 
   if (blank) return null
+
+  // The below-lg card. On mobile it's the ONLY presentation we mount (the lg+
+  // hero is skipped — see the isMobile prop doc); on desktop it's wrapped
+  // `lg:hidden` below the hero. priority={false} keeps it at normal fetch
+  // priority (it still loads eagerly on WebKit/iframe via MomentImage's
+  // skipDirectWalk) and, on desktop, leaves the lg:hidden copy lazy so it never
+  // fetches while the hero is the visible presentation. showCreator follows the
+  // resolved artist so the chip drops exactly when the hero drops its @artist
+  // line — never a dead /profile/ link.
+  const card = cardMoment ? (
+    <MomentCard moment={cardMoment} showCreator={!!creatorAddress} priority={false} isMobile={isMobile} />
+  ) : null
+
+  if (isMobile) return card
+
   const loading = !detail
   const momentHref = `/moment/${address}/${tokenId}`
   const profileHref = creatorAddress
@@ -306,19 +343,13 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, onRe
         </Link>
       </article>
 
-      {/* Below lg — the same mint as a normal feed card. `lg:hidden` keeps it
-          out of the desktop view, where the hero takes over. Mirrors how
-          CollectionRow renders its mobile presentation: priority={false}, so
-          while this card is display:none on desktop it never fetches its image
-          (lazy + no layout box → never intersects), and at the top of the
-          mobile feed it still paints promptly off its thumbhash blur.
-          showCreator follows the resolved artist so the chip is dropped exactly
-          when the hero drops its @artist line — never a dead /profile/ link. */}
-      {cardMoment && (
-        <div className="lg:hidden">
-          <MomentCard moment={cardMoment} showCreator={!!creatorAddress} priority={false} />
-        </div>
-      )}
+      {/* Below lg — the same card, `lg:hidden` to keep it out of the desktop
+          view where the hero takes over. display:none + the card's lazy image
+          (priority={false}, and not WebKit/iframe on desktop so skipDirectWalk
+          doesn't force eager) means it never fetches its artwork here — only the
+          hero does. On mobile this branch isn't reached; the card is returned
+          on its own above so the hero never mounts to preload a second copy. */}
+      {card && <div className="lg:hidden">{card}</div>}
     </>
   )
 }

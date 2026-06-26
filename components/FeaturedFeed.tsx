@@ -84,20 +84,22 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   }
 
   // The curated Mint Pass Display — one at a time, always leading the tab.
-  // FeaturedMoment renders it in two CSS-toggled presentations (a rich hero at
-  // lg+, an ordinary card below lg), so the VIEWPORT alone — not a device/UA/
-  // miniapp guess — decides which one shows. That's why there's no isMobile/
-  // inMiniApp gate here: the same node is correct on web, mobile, and every
-  // embed. FeaturedMoment self-fetches, so it shows even for a mint that only
-  // appears inside a featured collection (never as a standalone timeline mint).
+  // FeaturedMoment renders a rich hero at lg+ and an ordinary card below lg.
+  // On desktop both mount and CSS toggles between them as the window resizes;
+  // on mobile (the SSR isMobile flag) only the card mounts, because the lg+
+  // hero's `priority` artwork preloads even while display:none and would starve
+  // the visible card's fetch in the miniapp's shared HTTP/2 pool — the blank/
+  // pulsing-artwork bug. We hand it the mint's timeline moment as initialMoment
+  // so the artwork paints immediately; it still self-fetches to enrich (and to
+  // show even for a mint that only lives inside a featured collection).
   const displayKey = mintPassKeys.size > 0 ? [...mintPassKeys][0] : undefined
   const keyOf = (m: Moment) => `${m.address?.toLowerCase()}:${m.token_id}`
   const colon = displayKey ? displayKey.indexOf(':') : -1
   // The mint is usually already in the featured-timeline payload (we filter it
-  // out of the grid below). Pass it so the lg+ hero's artwork paints from that
-  // metadata immediately instead of waiting on its own /api/moment fetch — only
-  // the hero uses it; the mobile card stays on the self-fetch path. Undefined
-  // when the mint lives only inside a featured collection.
+  // out of the grid below). Pass it so BOTH presentations' artwork paints from
+  // that metadata immediately — the same payload every other feed card already
+  // renders from — instead of lagging FeaturedMoment's own /api/moment fetch.
+  // Undefined when the mint lives only inside a featured collection.
   const displayMoment = displayKey ? moments.find((m) => keyOf(m) === displayKey) : undefined
   const hero = displayKey && colon > 0
     ? (
@@ -108,6 +110,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
         address={displayKey.slice(0, colon)}
         tokenId={displayKey.slice(colon + 1)}
         initialMoment={displayMoment}
+        isMobile={isMobile}
         priority
         onResolved={setHeroHasContent}
       />
