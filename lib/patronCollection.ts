@@ -48,6 +48,6 @@ export function deriveArtistsFromRecipients(
  * Body copy for the Patron Pass Description panel. Rendered with
  * `whitespace-pre-line`, so the line breaks below are preserved verbatim.
  */
-export const PATRON_PASS_DESCRIPTION = `Turro’s artwork Facing Desolation marks the debut of the Kismet Patron Collection. Kismet commissioned a physical artwork that represents the collection which will be gifted to one collector of the digital work.
+export const PATRON_PASS_DESCRIPTION = `Turro’s artwork "Facing Desolation" marks the debut of the Kismet Patron Collection. Facing Desolation is a physical Artwork commissioned by Kismet Casa (kismetcasa.xyz) to gift to one collector of the digital edition.
 
-There will only ever be 100 editions available: 80 editions for public sale and up to 20 editions reserved for Turro to invite artists to the platform. At the end of the sale, any unsold editions will be unavailable to mint.`
+There will only ever be 100 editions available of which up to 20 are reserved for Turro to invite artists to the platform. At the end of the sale, any remaining editions will be permanently unavailable to mint.`

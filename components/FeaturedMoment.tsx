@@ -58,6 +58,13 @@ const CREDIT_OVERRIDES: Record<string, string> = {
   '0x099b9bbe0937428e145a3003ddf58e7e0cf69801': 'turro',
 }
 
+// Where a credited override's profile link should point — the artist's real
+// Kismet profile, which differs from the on-chain creator (the platform
+// treasury). Keyed by the same creator address as CREDIT_OVERRIDES.
+const CREDIT_PROFILE_OVERRIDES: Record<string, string> = {
+  '0x099b9bbe0937428e145a3003ddf58e7e0cf69801': '0x6c1cbe8cfc32a74188a9d3bf364945ea53b01b04',
+}
+
 /**
  * Mint Pass Display — the single curated mint atop the featured tab, rendered
  * in two CSS-toggled presentations so the *viewport* (never a JS device/UA
@@ -177,7 +184,9 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, onRe
   if (blank) return null
   const loading = !detail
   const momentHref = `/moment/${address}/${tokenId}`
-  const profileHref = creatorAddress ? `/profile/${creatorAddress}` : undefined
+  const profileHref = creatorAddress
+    ? `/profile/${CREDIT_PROFILE_OVERRIDES[creatorAddress.toLowerCase()] ?? creatorAddress}`
+    : undefined
   const title = meta.name ?? `#${tokenId}`
 
   return (
@@ -225,7 +234,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, onRe
             space). Height follows the ratio up to DESKTOP_H; width is capped at
             ART_MAX_W so the flanking text always has room. */}
         <Link
-          href={momentHref}
+          href={`/collection/${address}`}
           className="relative flex-none block overflow-hidden"
           style={{
             width: `min(calc(${DESKTOP_H}px * ${aspectRatio}), ${ART_MAX_W})`,
