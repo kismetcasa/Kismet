@@ -7,6 +7,7 @@ import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
+import { MaybeLazy } from './LazyMount'
 import { PATRON_PASS_DESCRIPTION } from '@/lib/patronCollection'
 
 // Pre-load guess until the thumbhash (then the loaded image) reports the real
@@ -104,18 +105,34 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
  * Patron Collection showcase — the bespoke presentation for the Kismet Patron
  * Collection page: every artwork gets the same large borderless display (the
  * standard for this collection, so there's no per-moment discrepancy), followed
- * once by the "Patron Pass Description" panel. Only the first artwork loads
- * eagerly (the LCP); the rest are lazy.
+ * once by the "Patron Pass Description" panel.
+ *
+ * Only the first artwork loads eagerly as the LCP (priority={i === 0}). On
+ * mobile the rest are windowed via MaybeLazy so they don't all mount at once:
+ * without it every artwork's MomentImage mounts on first paint and — inside the
+ * miniapp iframe/WebKit, where MomentImage force-eagers via skipDirectWalk — all
+ * of them fetch full-resolution art simultaneously at fetchPriority="auto",
+ * saturating the iframe's shared HTTP/2 pool (the same failure mode the
+ * featured-tab fixes target). MaybeLazy defers MOUNT past EAGER_MOUNT_COUNT, so
+ * a lazy artwork never even creates its MomentImage until it nears the viewport.
+ * Harmless today (this collection is a single token, so only the LCP renders)
+ * but keeps the surface correct if it grows to multiple distinct artworks.
+ * Desktop runs lazy=false and mounts every artwork eagerly, unchanged.
  */
-export function PatronArtworkShowcase({ moments }: { moments: Moment[] }) {
+export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: Moment[]; isMobile?: boolean }) {
   return (
     <div className="flex flex-col gap-6">
       {moments.map((m, i) => (
-        <PatronArtwork
+        // Key on MaybeLazy itself, not PatronArtwork — its mounted/placeholder
+        // branches are different React types, so the key must live on the stable
+        // outer position (see LazyMount).
+        <MaybeLazy
           key={m.id || `${m.address}-${m.token_id}`}
-          moment={m}
-          priority={i === 0}
-        />
+          index={i}
+          lazy={isMobile}
+        >
+          {() => <PatronArtwork moment={m} priority={i === 0} />}
+        </MaybeLazy>
       ))}
 
       {/* Patron Pass Description */}
