@@ -13,10 +13,16 @@ export const runtime = 'nodejs'
 // Encoding a large GIF takes longer than the default function budget.
 export const maxDuration = 300
 
-// Hard cap on the source GIF. Way past the client's 100MB ffmpeg.wasm
-// limit (this route exists precisely for the GIFs that exceed it) but
-// bounded so a single request can't pull an unbounded blob onto the box.
-const MAX_GIF_BYTES = 300 * 1024 * 1024
+// Hard cap on the source GIF. Past the client's 100MB ffmpeg.wasm limit
+// (this route exists precisely for the GIFs that exceed it) but kept tight:
+// the whole GIF is buffered into one Node Buffer (Buffer.from(arrayBuffer))
+// alongside the ffmpeg working set + sharp decode + the output buffers, so on
+// the single uncapped box one near-max transcode racing a heavy request is a
+// real OOM-kill contributor. 128MB comfortably covers the GIFs that exceed the
+// in-browser path while halving that peak. (OWASP API4:2023 — bound resource
+// consumption.) A streaming source→tempfile→ffmpeg refactor would remove the
+// buffer entirely and is the follow-up if the cap ever needs to rise.
+const MAX_GIF_BYTES = 128 * 1024 * 1024
 
 // One transcode at a time per process. ffmpeg is CPU- and memory-heavy;
 // on a resource-constrained host, two concurrent large encodes could push

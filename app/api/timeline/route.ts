@@ -13,11 +13,47 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 
+// Bounded-concurrency map: cap how many inprocess /timeline fetches are in
+// flight at once. A plain Promise.all over the full tracked-collection set
+// opens one upstream socket per collection simultaneously; when inprocess
+// (a single upstream dependency for all content) is slow, that pile-up
+// exhausts sockets + in-flight parse buffers on the single box and saturates
+// the event loop. A small concurrency window keeps the fan-out fast without
+// unbounded simultaneous load. (SRE handling-overload / Azure Bulkhead.)
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker)
+  await Promise.all(workers)
+  return results
+}
+
+const FANOUT_CONCURRENCY = 10
+
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
   let moments: unknown[] = []
   try {
-    const res = await fetch(url, { headers: { Accept: 'application/json' }, next: { revalidate: 30 } })
+    // Per-call timeout: inprocess is a single point of dependency, and without
+    // an AbortSignal a hung upstream pins this handler (and its fan-out slot)
+    // until Node's ~300s request timeout. 8s matches lib/inprocess.ts's
+    // fetchCollectionMoments default. On timeout the catch degrades this
+    // collection to [] rather than stalling the whole feed request.
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 30 },
+      signal: AbortSignal.timeout(8_000),
+    })
     const text = await res.text()
     const data = JSON.parse(text)
     moments = Array.isArray(data.moments) ? data.moments : []
@@ -141,8 +177,23 @@ export async function GET(req: NextRequest) {
   // can each thin the result set below `page * limit`. Bump the per-
   // collection sample so paginated pages don't empty out prematurely.
   const needsLargerSample = sort === 'trending' || featured || filterToCreators
-  const fetchLimit = needsLargerSample ? Math.max(page * limit, 200) : page * limit
-  const results = await Promise.all(collections.map((c) => fetchCollection(c, fetchLimit)))
+  // Hard-cap the per-collection upstream sample regardless of page depth. The
+  // fan-out pulls `fetchLimit` moments from EVERY collection in parallel and
+  // holds the full merged set in heap to sort before slicing `limit`. Uncapped
+  // (page*limit → up to 100*100 = 10,000 per collection) this is an OOM vector
+  // on the single box once the catalog reaches low-tens of moment-dense
+  // collections — the merged array + its MGET stitch + sort all scale with it.
+  // 500 keeps deep pages well-fed across a multi-collection fan-out while
+  // bounding peak heap; pagination past the cap degrades gracefully, the same
+  // posture as the page<=100 cap above. (SRE handling-overload / load shed.)
+  const FETCH_LIMIT_CAP = 500
+  const fetchLimit = Math.min(
+    needsLargerSample ? Math.max(page * limit, 200) : page * limit,
+    FETCH_LIMIT_CAP,
+  )
+  const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
+    fetchCollection(c, fetchLimit),
+  )
 
   // Merge and deduplicate
   const seen = new Set<string>()

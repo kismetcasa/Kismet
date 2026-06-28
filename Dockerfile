@@ -70,6 +70,30 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
+# ─── Runtime memory model (READ BEFORE adding NODE_OPTIONS here) ──────
+# We deliberately set NO --max-old-space-size at runtime. Node 22 is
+# cgroup-memory-aware: when the container has a memory limit, V8 derives its
+# own heap ceiling FROM that limit. Hardcoding --max-old-space-size would
+# OVERRIDE that auto-sizing with a fixed number and, on a smaller host, push
+# the JS-heap ceiling ABOVE the cgroup limit — making OOM-kills MORE frequent,
+# not fewer. (The builder stage caps the heap because `next build` has a known
+# fixed peak on a fixed builder; request-serving does not.)
+#
+# The load-bearing controls live in Coolify (cgroup-level, not in this image),
+# and on a single-instance deploy they are REQUIRED — every OOM-kill or crash
+# is a full-site outage with no peer to absorb it:
+#   • Memory limit + swap: set a container memory limit with GENEROUS headroom
+#     above the real runtime peak (ffmpeg transcode ~128MB buffer + working set,
+#     concurrent /api/img streams, the timeline merge) and enable swap so a
+#     spike PAGES instead of being SIGKILLed. Sizing it tight turns rare spikes
+#     into frequent kills — worse than no limit on one pod.
+#   • Restart policy: `restart: unless-stopped` (or always) so an OOM-kill or
+#     an uncaughtException exit (instrumentation.ts) recovers in seconds. The
+#     process-level crash net is only safe BECAUSE this is set.
+# The off-heap spikes (ffmpeg child process, undici stream chunks, arrayBuffer
+# reads) are bounded in code, not by a heap flag — see app/api/transcode-gif,
+# app/api/img, and app/api/timeline.
+
 # ffmpeg powers the server-side GIF→MP4 transcode (/api/transcode-gif),
 # the no-wasm-cap fallback for GIFs too large for the in-browser path.
 # Static Alpine package, no extra runtime deps; the route shells out to
