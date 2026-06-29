@@ -107,21 +107,32 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   //   • MOBILE  — there is NO special presentation; it's just a normal card. So
   //     when the mint is in the timeline payload we render it as a plain
   //     MomentCard with the EXACT same props every other featured card uses —
-  //     same component, same image path, same priority semantics — so it cannot
-  //     load or look any different from them. No FeaturedMoment wrapper, no
-  //     /api/moment self-fetch competing in the miniapp's pool, no detail-driven
-  //     showCreator override. `priority` marks it the above-the-fold LCP (and,
-  //     via the grid's hero-aware rule below, the SOLE high-priority image).
+  //     same component, same image path, priority={false} like every mobile card
+  //     — so it cannot load or look any different from them. No FeaturedMoment
+  //     wrapper, no /api/moment self-fetch competing in the miniapp's pool, no
+  //     detail-driven showCreator override, and no priority preload (mobile
+  //     preloads nothing — see the grid below; a preload fetches during bootstrap
+  //     and lags in the miniapp's shared pool).
   // Only when the mint isn't a standalone timeline entry (no displayMoment — it
   // lives solely inside a featured collection) do we fall back to FeaturedMoment
   // on mobile too, which self-fetches that one mint so it can render at all.
   const hero = displayKey && colon > 0
     ? isMobile && displayMoment
       ? (
+        // NO priority on mobile — render exactly like the other featured cards,
+        // which load instantly precisely because they DON'T preload. `priority`
+        // injects a <link rel=preload as=image> into <head> that fetches during
+        // app bootstrap and competes with the critical JS/CSS in the miniapp's
+        // tiny shared HTTP/2 pool, so the preloaded image lags behind the
+        // non-preloaded grid cards (which fetch after hydration, once the pool is
+        // free). MomentImage force-eagers it in the miniapp via skipDirectWalk,
+        // so it still loads eagerly — just without the counter-productive preload.
+        // Now byte-identical to a grid card. (Desktop keeps the rich priority
+        // hero in the FeaturedMoment branch below.)
         <MomentCard
           key={displayKey}
           moment={displayMoment}
-          priority
+          priority={false}
           isMobile={isMobile}
         />
       )
@@ -204,18 +215,17 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
             key={`m-${i}`}
             className={soleMomentBlock ? fillGridClass(b.items.length) : FULL_GRID}
           >
-            {/* Mark only the above-the-fold LCP image as priority — the right
-                count is layout-dependent, so it differs by device:
-                  • Desktop — the first block is a row of up to 4 columns, so the
-                    first 3 are genuinely above the fold.
-                  • Mobile — a single column, so only ONE image leads the fold.
-                    When a hero (Mint Pass Display) is present it IS that LCP and
-                    already loads priority; prioritising the below-the-fold grid
-                    cards here would split the miniapp's scarce, shared HTTP/2
-                    bandwidth away from the hero and make the featured artwork
-                    load SLOWER than the cards beneath it (the reported symptom).
-                    So on mobile prioritise a grid card only when no hero owns the
-                    LCP, and only the very first one. */}
+            {/* Priority (the next/image <link rel=preload>) is DESKTOP-ONLY.
+                Desktop's first block is a row of up to 4 columns, so its first 3
+                are above the fold and benefit from the preload. On MOBILE we
+                preload nothing: a preload fetches during app bootstrap and
+                competes with the critical JS/CSS in the miniapp's tiny shared
+                HTTP/2 pool, so a preloaded card lags behind the others (which
+                fetch after hydration, pool free). MomentImage already force-
+                eagers the visible cards in the miniapp via skipDirectWalk, so
+                they still load promptly — just without the counter-productive
+                preload. Keeping every mobile card priority={false} is also what
+                makes the featured Mint Pass card load identically to the rest. */}
             {b.items.map((m, idx) => {
               const flatIdx = flatMomentIdx++
               return (
@@ -227,7 +237,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
                   {() => (
                     <MomentCard
                       moment={m}
-                      priority={isMobile ? !hero && i === 0 && idx === 0 : i === 0 && idx < 3}
+                      priority={isMobile ? false : i === 0 && idx < 3}
                       isMobile={isMobile}
                     />
                   )}
@@ -239,11 +249,10 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
           <CollectionRow
             key={`c-${b.row.contractAddress}`}
             collection={b.row}
-            // Same LCP rule as the grid above: on mobile a hero owns the
-            // above-the-fold LCP, so a collection row (always below it) must not
-            // compete for the hero's bandwidth. Without a hero the leading block
-            // — grid or collection — is the LCP.
-            priority={isMobile ? !hero && i === 0 : i === 0}
+            // Desktop-only preload, same rule as the grid above: on mobile we
+            // preload nothing (preloads lag in the miniapp's shared pool), so
+            // every surface loads uniformly.
+            priority={isMobile ? false : i === 0}
             isMobile={isMobile}
           />
         ),
