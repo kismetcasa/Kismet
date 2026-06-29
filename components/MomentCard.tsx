@@ -94,13 +94,20 @@ interface MomentCardProps {
    * iOS-memory mitigation desktop doesn't need. Absent ⇒ treated as mobile.
    */
   isMobile?: boolean
+  /**
+   * Forward to MomentImage: skip the next/image optimizer and go straight to
+   * the (downscaling) /api/img proxy. Set for known-heavy covers — e.g. the
+   * Patron Collection's physical-artwork scans — whose source 413s the
+   * optimizer anyway, so the wasted 413 round-trip (and its blink) is avoided.
+   */
+  preferProxy?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin, isMobile }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin, isMobile, preferProxy }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -138,6 +145,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const ensureConnected = useEnsureConnected()
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
+  // The "hidden" badge is a creator-self affordance — only the creator viewing
+  // their OWN work should see that one of their moments is hidden (so they can
+  // open it and unhide). `moment.hidden` can otherwise arrive true straight from
+  // the upstream feed (Kismet only legitimately sets it in the creator's own
+  // timeline view, and drops hidden moments from public feeds entirely), so
+  // trusting the flag alone leaks the badge into public/featured feeds. Gate on
+  // own-moment so the badge means what it was designed to, regardless of source.
+  const isOwnMoment =
+    !!connectedAddress &&
+    moment.creator.address.toLowerCase() === connectedAddress.toLowerCase()
 
   useEffect(() => {
     // Skip when the server stitched both fields. FC-only creators
@@ -383,7 +400,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           tokenId={moment.token_id}
           className="absolute top-1.5 left-1.5"
         />
-        {moment.hidden && (
+        {isOwnMoment && moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
             <EyeOff size={10} className="text-muted" />
           </span>
@@ -473,6 +490,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
               thumbhash={meta.kismet_thumbhash}
               priority={priority}
+              preferProxy={preferProxy}
             />
           )
         ) : isTextMoment ? (

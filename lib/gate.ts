@@ -1,4 +1,5 @@
 import { isAddress } from '@/lib/address'
+import { isFlagSet } from './gateFlags'
 import { redis } from './redis'
 import { hasValidPass } from './pass-validity'
 import { getCollectionMeta } from './kv'
@@ -23,13 +24,9 @@ export interface GateConfig {
   paused: boolean
 }
 
-// Upstash's REST client sends string args to SET unchanged but JSON-parses
-// GET results, so the flag stored as '1' comes back as the number 1 — a
-// strict `=== '1'` would always be false and the toggle would never persist.
-// Normalize both representations.
-function isFlagSet(raw: string | number | null): boolean {
-  return String(raw) === '1'
-}
+// isFlagSet (Upstash '1'-string vs numeric-1 normalization) lives in
+// lib/gateFlags so the verify harness can unit-test it — gate.ts itself pulls
+// in redis/kv and can't be loaded under --experimental-strip-types.
 
 // In-process cache for gate config. Avoids 3 Redis reads on every gated
 // request (getGateConfig is called once each by hasGateAccess,
@@ -96,10 +93,11 @@ export async function setGateConfig(config: GateConfig): Promise<void> {
 
 /**
  * Returns true if `address` may perform a platform action targeting
- * `targetCollection`. Admin is always exempt. The Pass collection itself is
- * admin-only as a target — non-admins can't mint additional Passes through
- * our API even though Zora's on-chain permissions would also reject them.
- * Otherwise defers to the provenance-aware validity ledger.
+ * `targetCollection`. Admin is always exempt. Minting INTO the pass collection
+ * is governed by on-chain ADMIN on the pass collection (mint-proxy's
+ * checkSmartWalletAdmin), so any wallet the platform has granted ADMIN there
+ * can issue passes and everyone else is rejected on-chain; minting into any
+ * OTHER collection defers to the provenance-aware validity ledger.
  *
  * Mint-proxy wires this in *addition* to main's existing on-chain Zora
  * ADMIN check (`checkSmartWalletAdmin`) — so the caller must (a) hold a
@@ -115,7 +113,18 @@ export async function hasGateAccess(
 
   const config = await getGateConfig()
   if (!config.enabled || !config.passCollection) return true
-  if (targetCollection.toLowerCase() === config.passCollection) return false
+  // Minting INTO the pass collection is governed by on-chain ADMIN on the pass
+  // collection itself, enforced on this exact path by mint-proxy's
+  // checkSmartWalletAdmin (the only caller that can reach this branch; the
+  // collections route never targets the pass collection). Issuing a pass means
+  // setupNewToken, which Zora gates on ADMIN regardless, so a platform-admin-
+  // only block here was a redundant override of that on-chain truth that also
+  // locked out a delegated pass-issuer. Defer to the single on-chain source:
+  // any wallet the platform has granted ADMIN on the pass collection (via the
+  // authorize/authorized-creators flow) can issue passes; every other wallet,
+  // including mere pass-holders, is still rejected by checkSmartWalletAdmin.
+  // Admin bypasses above.
+  if (targetCollection.toLowerCase() === config.passCollection) return true
 
   return hasValidPass(config.passCollection, addrLower)
 }

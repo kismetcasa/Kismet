@@ -18,7 +18,7 @@ export const runtime = 'nodejs'
  * Read-only and inert: returns the EIP-712 typed data to sign, an optional
  * one-time setApprovalForAll batch, and the /api/listings POST body. No funds
  * move; the listing is created only after the user signs and the order is
- * posted (where it is independently re-validated). See AGENT_COMMERCE_DESIGN.md.
+ * posted (where it is independently re-validated).
  *
  * Inputs: a moment ref ({ collection, tokenId } or a pasted url), the seller's
  * Base Account, a human `price`, and `currency` ('eth' | 'usdc').

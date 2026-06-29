@@ -235,6 +235,34 @@ export function toastError(
 }
 
 /**
+ * Chain-stall toast: Base block production has halted, so an on-chain write
+ * can't confirm no matter how many times it's retried (retrying only queues
+ * duplicate mempool txs that all mine on recovery). Points the user at Base's
+ * status page and tells them to wait rather than resubmit. `description`
+ * overrides the default for the "tx already submitted/queued" vs. "nothing
+ * broadcast" wording at the call site.
+ */
+export function toastChainStalled(
+  options: { id?: string; description?: string } = {},
+): void {
+  toast.error('Base isn’t responding', {
+    id: options.id,
+    description:
+      options.description ??
+      'Base’s network looks stalled right now, so your transaction can’t confirm. Check the chain status and try again once it recovers.',
+    action: {
+      label: 'Chain status',
+      onClick: (event) => {
+        event.preventDefault()
+        if (typeof window !== 'undefined') {
+          window.open('https://status.base.org', '_blank', 'noopener')
+        }
+      },
+    },
+  })
+}
+
+/**
  * Terminal recovery toast offering a full page reload. Default copy targets
  * the wallet-recovery case (reconnect ran, wallet still erroring — a reload
  * re-bootstraps the SDK, wagmi connectors, and EIP-1193 provider, notably

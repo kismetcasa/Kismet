@@ -238,6 +238,24 @@ export async function proxyMintRequest(
     typeof contractField?.address === 'string' ? (contractField.address as string) : undefined
   if (collectionAddress) {
     const preflight = await checkSmartWalletAdmin(account, collectionAddress, [0n])
+    if (preflight.status === 'no_account') {
+      // The caller has no inprocess account (definitive notFound), so no smart
+      // wallet exists to execute this mint — forwarding would just revert at
+      // gas estimation ("execution reverted"). Return a clean, actionable error.
+      // The client guards this before any Arweave upload (MintForm); this is
+      // defense-in-depth for a transient-then-notFound race or a non-UI caller.
+      // Auto-deploy never reaches here: it has no collectionAddress, so the
+      // preflight is skipped and inprocess provisions the wallet on first mint.
+      return NextResponse.json(
+        {
+          code: 'NO_ACCOUNT',
+          error:
+            'This wallet has no inprocess account yet, so it can’t mint into an existing collection. Mint your first moment (we’ll create a collection for you) to set up your account, then mint here.',
+          collectionAddress,
+        },
+        { status: 403 },
+      )
+    }
     if (preflight.status === 'unauthorized') {
       return NextResponse.json(
         {
@@ -435,6 +453,33 @@ export async function proxyMintRequest(
         await Promise.all(tasks)
       })
     }
+  }
+
+  // Non-OK upstream: do NOT forward inprocess's body verbatim. The relay
+  // frequently returns a bare { error: 'Error' } / { message: 'Error' } with
+  // no real reason — forwarding it produced the infamous useless "Mint failed
+  // / Error" toast, which is why this failure class kept getting diagnosed by
+  // reading source instead of the screen. Surface the upstream HTTP status (a
+  // 5xx is an inprocess / on-chain failure — most often the executor smart
+  // wallet lacking ADMIN on the collection; a 4xx is our payload) and inline
+  // inprocess's own message. Preserve that original text inside the message so
+  // the client's revert/auth detection (maybeHandleAuthError matching
+  // "execution reverted") still fires, and keep any structured fields (code,
+  // errors, smartWallet, perms) inprocess may have sent.
+  if (!upstream.ok) {
+    const rec = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+    const upstreamMsg = [rec.detail, rec.error, rec.message].find(
+      (v): v is string => typeof v === 'string' && v.trim().length > 0,
+    )
+    const informative =
+      upstreamMsg && upstreamMsg.trim().toLowerCase() !== 'error'
+        ? upstreamMsg.trim()
+        : `inprocess gave no reason (raw: ${JSON.stringify(data).slice(0, 200)})`
+    const detail = `inprocess minting failed (HTTP ${upstream.status}): ${informative}`
+    return NextResponse.json(
+      { ...rec, error: detail, detail, upstreamStatus: upstream.status },
+      { status: upstream.status },
+    )
   }
 
   return NextResponse.json(data, { status: upstream.status })

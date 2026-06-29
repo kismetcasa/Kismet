@@ -77,7 +77,7 @@ export async function assertPlatformCollectionAuthorized(): Promise<void> {
 // Shared remediation hint for the /smartwallet drift logs below. That lookup
 // resolves the per-creator wallet that executes /moment/create (see
 // resolveSmartWallet), so a silent break skips deploy-time relay authorization
-// and reverts mints — the 2026 regression.
+// and reverts mints — a silent upstream-drift failure mode.
 const SMARTWALLET_DRIFT_HINT =
   'Deploy-time relay authorization will silently skip and mints will revert. ' +
   'Check lib/resolveSmartWallet.ts against the LIVE api.inprocess.world/api/smartwallet ' +
@@ -94,7 +94,11 @@ export async function assertSmartWalletResolves(): Promise<void> {
   if (!ADMIN_ADDRESS || !isAddress(ADMIN_ADDRESS)) return
   let result: SmartWalletResult
   try {
-    result = await resolveSmartWallet(ADMIN_ADDRESS)
+    // skipCache: probe the LIVE endpoint. Without it, ADMIN_ADDRESS (a long-
+    // registered account) is served from the durable cache during a systemic
+    // /smartwallet outage, so the probe logs OK while the endpoint is 500-ing
+    // for every uncached creator — masking the very drift it's meant to detect.
+    result = await resolveSmartWallet(ADMIN_ADDRESS, { skipCache: true })
   } catch (err) {
     console.error(
       `[healthcheck] /smartwallet resolve THREW for ${ADMIN_ADDRESS}. ${SMARTWALLET_DRIFT_HINT}`,

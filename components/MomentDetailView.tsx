@@ -10,7 +10,7 @@ import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, E
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
-import { fetchCreatorProfile } from '@/lib/profileCache'
+import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
@@ -25,7 +25,7 @@ import { useMomentSplits } from '@/hooks/useMomentSplits'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
-import { generateThumbhash } from '@/lib/media/thumbhash'
+import { generateThumbhash, thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
@@ -478,20 +478,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   useEffect(() => { fetchComments() }, [fetchComments])
 
-  // Batch-resolve activity-row sender profiles (name + avatar) via shared cache
+  // Batch-resolve activity-row sender profiles (name + avatar) via the shared
+  // cache + a single /api/profiles request, rather than one /api/profile call
+  // per sender. In-process comments carry only the bare sender address, so
+  // every unique sender needs identity resolution; collapsing that fan-out
+  // into one round-trip is what keeps the activity list from trickling in.
   useEffect(() => {
     if (comments.length === 0) return
     let cancelled = false
     const senders = Array.from(new Set(comments.map((c) => c.sender.toLowerCase())))
-    Promise.all(senders.map((a) => fetchCreatorProfile(a))).then((profiles) => {
+    fetchCreatorProfilesBatch(senders).then((profiles) => {
       if (cancelled) return
-      setCommentSenderProfiles((prev) => {
-        const next = { ...prev }
-        for (let i = 0; i < senders.length; i++) {
-          next[senders[i]] = { name: profiles[i].name, avatarUrl: profiles[i].avatarUrl }
-        }
-        return next
-      })
+      setCommentSenderProfiles((prev) => ({ ...prev, ...profiles }))
     })
     return () => { cancelled = true }
   }, [comments])
@@ -919,6 +917,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Still images and gifs open the zoom lightbox; videos use native
   // fullscreen via their controls.
   const isZoomable = media.kind === 'image' || media.kind === 'gif'
+  // Low-fi blur for the no-preview fallback. When every gateway is exhausted
+  // or the codec is undecodable there's no poster left to show (MomentVideo
+  // only surfaces onAllError once its own poster has failed too) — but the
+  // ~25-byte thumbhash still decodes, so paint it behind the label instead of
+  // a flat empty tile. undefined for older mints / audio (no thumbhash).
+  const noPreviewBlur = thumbhashToBlurDataURL(meta.kismet_thumbhash)
   const price = saleConfig
     ? formatPrice(saleConfig.pricePerToken, currency)
     : null
@@ -1024,7 +1028,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-line font-mono text-xs">no preview</span>
+                  {noPreviewBlur && (
+                    <span
+                      aria-hidden
+                      className="absolute inset-0 bg-cover bg-center pointer-events-none"
+                      style={{ backgroundImage: `url(${noPreviewBlur})` }}
+                    />
+                  )}
+                  <span className="relative text-line font-mono text-xs">no preview</span>
                 </div>
               )}
             </div>

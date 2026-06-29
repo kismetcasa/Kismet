@@ -91,13 +91,19 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Re-resolve the smart wallet for the supplied EOA — refuse if the
-  //    client supplied a different smartWallet than inprocess returns.
+  //    client supplied a different smartWallet than inprocess returns. Keep the
+  //    three failure modes distinct so the admin gets an accurate reason (a
+  //    transient outage is NOT a "mismatch", and "no account" is actionable).
   const expected = await resolveSmartWallet(eoa)
-  if (
-    !expected ||
-    'notFound' in expected ||
-    expected.address.toLowerCase() !== smartWallet.toLowerCase()
-  ) {
+  if (!expected) {
+    // Transient upstream failure (network / 5xx / timeout) — not a client error.
+    return errorResponse(502, 'Could not reach inprocess to verify the smart wallet — try again')
+  }
+  if ('notFound' in expected) {
+    // The EOA has no inprocess account, so there's no smart wallet to authorize.
+    return errorResponse(400, 'This wallet has no inprocess account yet — it must mint once to set one up before it can be authorized')
+  }
+  if (expected.address.toLowerCase() !== smartWallet.toLowerCase()) {
     return errorResponse(400, 'eoa / smartWallet mismatch — re-resolve and retry')
   }
 

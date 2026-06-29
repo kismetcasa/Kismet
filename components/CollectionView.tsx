@@ -27,6 +27,13 @@ import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CollectAllAction } from './CollectAllAction'
 import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
+import { PatronArtworkShowcase } from './PatronArtworkShowcase'
+import {
+  isPatronCollection,
+  deriveArtistsFromRecipients,
+} from '@/lib/patronCollection'
+import { CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -113,6 +120,10 @@ export function CollectionView({
   // data, and hidden-moment filtering is applied via the session-aware
   // /api/timeline route (creator sees their own hidden moments; others don't).
   const [moments, setMoments] = useState<Moment[] | null>(null)
+  // Patron Collection only: artist addresses derived from the moments' on-chain
+  // split recipients (null = loading, [] = resolved with no artist payee → the
+  // artist section is omitted). See the splits effect below.
+  const [patronArtists, setPatronArtists] = useState<string[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
   const [editing, setEditing] = useState(false)
   const [metaOverride, setMetaOverride] = useState<EditedMeta | null>(null)
@@ -144,11 +155,17 @@ export function CollectionView({
   // chip routes to the Airdrop tab.
   const viewerHasMinter =
     viewerPerms !== undefined && hasMinterBit(viewerPerms as bigint)
+  // On-chain ADMIN on the CONNECTED wallet's own EOA — i.e. the capability to
+  // call addPermission. This is who can authorize, independent of any
+  // creator-attribution (KV row, inprocess `creator`, etc.).
+  const viewerEoaHasAdmin =
+    viewerPerms !== undefined && hasAdminBit(viewerPerms as bigint)
 
   // Creator-tier chip reads the smart wallet's perms, since MintForm
   // relays through inprocess and the on-chain actor is the SW.
-  const { address: viewerSmartWallet } = useInprocessSmartWallet(connectedAddress)
-  const { data: viewerSmartWalletPerms } = useReadContract({
+  const { address: viewerSmartWallet, loading: viewerSwLoading, notFound: viewerSwNotFound } =
+    useInprocessSmartWallet(connectedAddress)
+  const { data: viewerSmartWalletPerms, refetch: refetchViewerSmartWalletPerms } = useReadContract({
     address: address as `0x${string}`,
     abi: COLLECTION_ABI,
     functionName: 'permissions',
@@ -169,33 +186,30 @@ export function CollectionView({
   const showCreatorChip = !canGrantHere && viewerSmartWalletHasAdmin
   const showMinterChip = !canGrantHere && !showCreatorChip && viewerHasMinter
 
-  // Retroactive authorize flow — for collections deployed before we
-  // started granting the artist's inprocess smart wallet ADMIN as a
-  // setupAction. The smart wallet on inprocess is per-EOA, so we look
-  // up the wallet bound to *this collection's creator*
-  // (defaultAdminAddress) — that's the wallet whose ADMIN status the
-  // banner is gating on, and that's the grantee on the addPermission
-  // tx fired from canGrantHere viewers.
-  const { address: inprocessSmartWallet, loading: swLoading, notFound: swNotFound } = useInprocessSmartWallet(
-    defaultAdminAddress,
-  )
-  const inprocessConfigured =
-    !!inprocessSmartWallet && isAddress(inprocessSmartWallet)
-  const { data: inprocessPerms, refetch: refetchInprocessPerms } = useReadContract({
-    address: address as `0x${string}`,
-    abi: COLLECTION_ABI,
-    functionName: 'permissions',
-    args: inprocessConfigured
-      ? [0n, inprocessSmartWallet as `0x${string}`]
-      : undefined,
-    query: { enabled: inprocessConfigured && canGrantHere },
-  })
-  const inprocessIsAdmin =
-    inprocessPerms !== undefined && hasAdminBit(inprocessPerms as bigint)
-  const showAuthorize = canGrantHere && inprocessConfigured && inprocessPerms !== undefined && !inprocessIsAdmin
-  // Show when the creator has no inprocess account yet — collection deployed
-  // but minting is gated until they create one.
-  const showNoAccount = canGrantHere && !swLoading && swNotFound
+  // Retroactive authorize flow — for collections whose deploy-time grant to
+  // the artist's inprocess smart wallet was skipped (it's best-effort at
+  // deploy), so relayed mints revert until ADMIN is granted. Gate the banner
+  // on the CONNECTED wallet's OWN on-chain state rather than creator-
+  // attribution: show it when the viewer holds on-chain ADMIN (so they CAN
+  // grant) AND their own relay smart wallet lacks ADMIN (so they NEED it). The
+  // grantee is the viewer's own smart wallet (viewerSmartWallet). This is the
+  // correct, robust gate:
+  //   - it works immediately after deploy, before the KV row that names the
+  //     creator EOA has been written/propagated (the page is server-rendered,
+  //     so an attribution-based gate goes blank exactly when the grant was just
+  //     skipped), and
+  //   - it never shows a banner the viewer can't act on (you only see it if
+  //     your EOA actually holds ADMIN to sign the addPermission).
+  const showAuthorize =
+    viewerEoaHasAdmin &&
+    !!viewerSmartWallet &&
+    isAddress(viewerSmartWallet) &&
+    viewerSmartWalletPerms !== undefined &&
+    !viewerSmartWalletHasAdmin
+  // Viewer holds ADMIN but has no inprocess account yet — the smart wallet that
+  // would execute the relayed mint doesn't exist, so minting is gated until
+  // they create one.
+  const showNoAccount = viewerEoaHasAdmin && !viewerSwLoading && viewerSwNotFound
 
   // Centralized addPermission flow — same hook AirdropForm uses. Banner
   // grants the smart wallet ADMIN at tokenId 0 (collection-wide) since
@@ -487,17 +501,17 @@ export function CollectionView({
       toast.error('Authorize failed', { id: 'authorize', description: 'The transaction reverted on-chain.' })
       return
     }
-    void refetchInprocessPerms()
+    void refetchViewerSmartWalletPerms()
     toast.success('Kismet authorized — minting now works for this collection', { id: 'authorize' })
-  }, [authorizeReceipt, refetchInprocessPerms, resetGrant])
+  }, [authorizeReceipt, refetchViewerSmartWalletPerms, resetGrant])
 
   async function handleAuthorize() {
-    if (!connectedAddress || !inprocessConfigured || !inprocessSmartWallet) return
+    if (!connectedAddress || !viewerSmartWallet || !isAddress(viewerSmartWallet)) return
     try {
       toast.loading('Confirm in wallet…', { id: 'authorize' })
       const outcome = await grant({
         collection: address as `0x${string}`,
-        grantee: inprocessSmartWallet as `0x${string}`,
+        grantee: viewerSmartWallet as `0x${string}`,
         tokenId: 0n,
         bit: 'admin',
       })
@@ -507,7 +521,7 @@ export function CollectionView({
       }
       // Already had ADMIN on chain — refetch so the banner hides
       // immediately instead of waiting for the (nonexistent) tx.
-      void refetchInprocessPerms()
+      void refetchViewerSmartWalletPerms()
       toast.success('Kismet already authorized for this collection', { id: 'authorize' })
     } catch (err) {
       toastError('Authorize', err, { id: 'authorize' })
@@ -586,6 +600,59 @@ export function CollectionView({
       cancelled = true
     }
   }, [authorizedCreators, profiles])
+
+  // Patron Collection only: derive the artist(s) from each moment's on-chain
+  // split recipients (the creator's payout array). The moment "creator"
+  // resolves to the platform treasury, so the split — not the creator — is the
+  // real source of artist attribution here, and it generalizes to future
+  // multi-artist drops. We drop the non-artist payees (treasury / residencies /
+  // referral / collection owner+payout) and hydrate the survivors' profiles so
+  // their chips render names + avatars. Empty result → no artist section.
+  useEffect(() => {
+    if (!isPatronCollection(address)) return
+    let cancelled = false
+    setPatronArtists(null)
+    if (moments === null) return // wait for the moments fetch
+    const ms = moments
+    const exclude = new Set(
+      [
+        PLATFORM_FEE_RECIPIENT,
+        CREATE_REFERRAL,
+        RESIDENCIES_ADDRESS,
+        defaultAdminAddress,
+        payoutRecipient,
+      ]
+        .filter((a): a is string => !!a)
+        .map((a) => a.toLowerCase()),
+    )
+    Promise.all(
+      ms.map((m) =>
+        fetch(`/api/moment/splits?collectionAddress=${m.address}&tokenId=${m.token_id}`)
+          .then((r) => (r.ok ? r.json() : { hasSplits: false, recipients: [] }))
+          .then((d) =>
+            d?.hasSplits && Array.isArray(d.recipients)
+              ? (d.recipients as { address: string }[])
+              : [],
+          )
+          .catch(() => [] as { address: string }[]),
+      ),
+    ).then((lists) => {
+      if (cancelled) return
+      const artists = deriveArtistsFromRecipients(lists, exclude)
+      setPatronArtists(artists)
+      artists.forEach((addr) => {
+        fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
+          if (!cancelled)
+            setProfiles((prev) =>
+              prev[addr] ? prev : { ...prev, [addr]: { name, avatarUrl } },
+            )
+        })
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [address, moments, defaultAdminAddress, payoutRecipient])
 
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
@@ -677,6 +744,11 @@ export function CollectionView({
   )
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
+
+  // Patron Collection gets a bespoke presentation: the single artwork is shown
+  // via PatronArtworkShowcase instead of the generic grid, and the artist
+  // credit is derived from the moments' on-chain splits (see the effect above).
+  const isPatron = isPatronCollection(address)
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -881,7 +953,7 @@ export function CollectionView({
                 Minting requires an inprocess account
               </p>
               <p className="text-[11px] font-mono text-dim mt-0.5">
-                Create a free account at inprocess.world, then return here to authorize minting.
+                Set up your inprocess account to issue your smart wallet — mint your first moment (we’ll create a collection for you), or sign in at inprocess.world. Then return here to authorize.
               </p>
             </div>
           </div>
@@ -1044,18 +1116,49 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists */}
-      {uniqueCreators.length > 0 && (
-        <section className="mb-10">
-          <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-            {uniqueCreators.length === 1 ? 'artist' : 'artists'}
-          </h2>
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            {uniqueCreators.map((addr) => (
-              <AvatarRow key={addr} addr={addr} profiles={profiles} />
-            ))}
-          </div>
-        </section>
+      {/* Artists — for the Patron Collection the credit is derived from each
+          moment's on-chain split recipients (the moment creator resolves to the
+          platform treasury, so the split is the real attribution); every artist
+          shows their own resolved profile, no hardcoded label. Other
+          collections list the moment creators. */}
+      {isPatron ? (
+        patronArtists === null ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              artist
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto animate-pulse">
+                <span className="w-6 h-6 bg-raised shrink-0" />
+                <span className="h-3 w-16 bg-raised" />
+              </div>
+            </div>
+          </section>
+        ) : patronArtists.length > 0 ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {patronArtists.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {patronArtists.map((a) => (
+                <AvatarRow key={a} addr={a} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        ) : null
+      ) : (
+        uniqueCreators.length > 0 && (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {uniqueCreators.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {uniqueCreators.map((addr) => (
+                <AvatarRow key={addr} addr={addr} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        )
       )}
 
       {/* NFT grid */}
@@ -1087,6 +1190,8 @@ export function CollectionView({
           ) : (
             <p className="text-xs font-mono text-muted">no moments in this collection yet</p>
           )
+        ) : isPatron ? (
+          <PatronArtworkShowcase moments={loadedMoments} isMobile={isMobile} />
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {loadedMoments.map((m, i) => {

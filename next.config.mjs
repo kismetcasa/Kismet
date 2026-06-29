@@ -48,7 +48,7 @@ const nextConfig = {
   // webpack's intermediate caches during compilation for another
   // 15-30% reduction. Together they trade build wall-time for headroom
   // against SIGKILL. If the build still OOMs, the host needs more
-  // RAM/swap — the V8 heap alone is capped at 4 GB (Dockerfile).
+  // RAM/swap — the V8 heap alone is capped at 3 GB (Dockerfile).
   experimental: {
     cpus: 1,
     webpackMemoryOptimizations: true,
@@ -58,15 +58,15 @@ const nextConfig = {
   serverExternalPackages: ['@ardrive/turbo-sdk'],
 
   images: {
-    // Mirror the AR.IO + IPFS gateway pool in lib/arweave/gateways.ts so
-    // MomentImage can fall through to alternates when one edge has a stale
-    // 404 (e.g. CDN77 in front of arweave.net during the propagation window).
-    // Wildcards cover subdomain redirects (`<txid>.arweave.net` style).
+    // Allowlist for the AR.IO + IPFS gateways lib/arweave/gateways.ts can emit;
+    // keep it in sync with that pool. The Arweave side is currently a single
+    // host (arweave.net) with no alternate to fall through to; the IPFS side
+    // keeps alternates so MomentImage can route around a stale-404 edge. Re-add
+    // an AR.IO host here whenever one is added back to the pool. Wildcards cover
+    // subdomain redirects (`<txid>.arweave.net` style).
     remotePatterns: [
       { protocol: 'https', hostname: 'arweave.net' },
       { protocol: 'https', hostname: '*.arweave.net' },
-      { protocol: 'https', hostname: 'permagate.io' },
-      { protocol: 'https', hostname: '*.permagate.io' },
       { protocol: 'https', hostname: 'ipfs.io' },
       { protocol: 'https', hostname: '*.ipfs.io' },
       { protocol: 'https', hostname: 'dweb.link' },

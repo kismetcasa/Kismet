@@ -28,7 +28,6 @@ const MAX_AGENT_COLLECT_QUANTITY = 50
  * a mint that would revert (inactive sale, sold out, or per-wallet cap hit).
  *
  * Settlement recording stays on the existing, on-chain-verified /api/collect.
- * See AGENT_COMMERCE_DESIGN.md.
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-collect:${getClientIp(req)}`, 60, 60))) {

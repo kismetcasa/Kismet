@@ -4,8 +4,8 @@ import { gatewayUrls } from './gateways'
 // try doesn't pay a sleep; once the schedule is exhausted the LAST entry
 // repeats until `budgetMs` runs out — the budget, not this array, bounds the
 // polling. (An earlier version iterated the array exactly once, which
-// silently capped every call at ~43s of polling and made wider budgets —
-// like the mint flow's 90s media budget — unreachable dead config.)
+// silently capped every call at ~43s of polling and made wider budgets
+// unreachable dead config — so callers' budgets are now honored exactly.)
 const BACKOFF_MS = [0, 1000, 2000, 3000, 5000, 8000]
 
 // Per-probe timeout. Without it, a gateway whose socket hangs (never
@@ -24,7 +24,8 @@ const PROBE_TIMEOUT_MS = 12000
  * once it returns an id; inprocess's own flow mints without this check), they
  * just wait briefly to avoid a momentarily-broken display. Probing the pool
  * in parallel is robust to single-edge stale 404s during the propagation
- * window.
+ * window. (That fallback currently applies to ipfs:// and to any AR.IO gateway
+ * re-added to the pool; the Arweave side is a single host today.)
  *
  * Returns true on the first success from any gateway, false once the budget is
  * spent (checked before each round so we never sleep past it). Per-gateway

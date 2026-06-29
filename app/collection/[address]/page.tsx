@@ -205,15 +205,21 @@ export default async function CollectionPage({ params }: Props) {
     isCollectionHidden(address),
   ])
 
-  // Prefer the inprocess `creator` field (current shape); fall back to
-  // `default_admin` for older cached responses; finally fall back to the
-  // KV-stored artist (set at deploy time) so the chip never goes missing
-  // for collections we deployed even when inprocess hasn't surfaced an
-  // admin yet.
+  // Resolve the collection's admin EOA. PREFER the KV-stored deployer EOA
+  // (written at deploy time = the wallet that actually controls the contract
+  // on-chain) over inprocess's `creator.address` — which, for Kismet-relayed
+  // collections, is the per-creator SMART WALLET, not the artist's EOA.
+  // Using the smart wallet here was the bug behind "no authorize banner even
+  // though I'm the creator": it made `isCreator` false for the real creator
+  // (their EOA != the smart wallet), gating them out of the authorize banner +
+  // creators panel on a collection they own, AND it resolved the WRONG smart
+  // wallet downstream (useInprocessSmartWallet of a smart wallet). The moment
+  // detail page already prefers the KV minter EOA for exactly this reason.
+  // Falls through to the inprocess fields for non-Kismet collections (no KV row).
   const adminAddressRaw =
+    kvMeta?.artist ??
     detail?.creator?.address ??
-    detail?.default_admin?.address ??
-    kvMeta?.artist
+    detail?.default_admin?.address
   const adminUsername =
     detail?.creator?.username ?? detail?.default_admin?.username ?? undefined
   const defaultAdminAddress = adminAddressRaw?.toLowerCase()
