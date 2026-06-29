@@ -246,7 +246,21 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       creator: { address: creatorAddress ?? '', username: creditOverride ?? creatorUsername ?? undefined, hidden: false },
       admins: [],
       created_at: '',
-      metadata: detail.metadata,
+      // Render the artwork from the TIMELINE metadata when we have it — it
+      // carries kismet_thumbhash and the exact image src every other feed card
+      // uses, and it's ALREADY painting by the time `detail` lands. Swapping to
+      // detail.metadata here remounts the <img> mid-load: /api/moment returns
+      // the inprocess detail verbatim, whose metadata can resolve a different
+      // image src (MomentImage keys its <Image> off the resolved URL, so the
+      // element remounts) and can omit kismet_thumbhash (dropping the blur
+      // placeholder). In the miniapp's saturated HTTP/2 pool that interrupted
+      // refetch stalls and leaves the card a blank box, while the ordinary grid
+      // cards — which never swap — render fine. This is what stopped the
+      // featured card from "acting like a normal card" on mobile. `detail` still
+      // drives price (saleConfig) and the credit-corrected creator below. Falls
+      // back to detail.metadata only when there was no timeline seed (the mint
+      // lives solely inside a featured collection, so it never had one).
+      metadata: initialMoment?.metadata ?? detail.metadata,
       saleConfig: detail.saleConfig,
       // Carry the timeline-stitched chip across the swap. /api/moment doesn't
       // return it, so without this the field would go defined→undefined when we
