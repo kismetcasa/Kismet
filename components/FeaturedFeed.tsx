@@ -101,20 +101,43 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   // renders from — instead of lagging FeaturedMoment's own /api/moment fetch.
   // Undefined when the mint lives only inside a featured collection.
   const displayMoment = displayKey ? moments.find((m) => keyOf(m) === displayKey) : undefined
+  // The Mint Pass Display leads the tab. The two surfaces are deliberately
+  // different:
+  //   • DESKTOP — FeaturedMoment's rich 3-column hero (the special presentation).
+  //   • MOBILE  — there is NO special presentation; it's just a normal card. So
+  //     when the mint is in the timeline payload we render it as a plain
+  //     MomentCard with the EXACT same props every other featured card uses —
+  //     same component, same image path, same priority semantics — so it cannot
+  //     load or look any different from them. No FeaturedMoment wrapper, no
+  //     /api/moment self-fetch competing in the miniapp's pool, no detail-driven
+  //     showCreator override. `priority` marks it the above-the-fold LCP (and,
+  //     via the grid's hero-aware rule below, the SOLE high-priority image).
+  // Only when the mint isn't a standalone timeline entry (no displayMoment — it
+  // lives solely inside a featured collection) do we fall back to FeaturedMoment
+  // on mobile too, which self-fetches that one mint so it can render at all.
   const hero = displayKey && colon > 0
-    ? (
-      <FeaturedMoment
-        // Key by the mint so a different display mounts a fresh instance,
-        // never inheriting the prior one's fetch/ratio/resolved state.
-        key={displayKey}
-        address={displayKey.slice(0, colon)}
-        tokenId={displayKey.slice(colon + 1)}
-        initialMoment={displayMoment}
-        isMobile={isMobile}
-        priority
-        onResolved={setHeroHasContent}
-      />
-    )
+    ? isMobile && displayMoment
+      ? (
+        <MomentCard
+          key={displayKey}
+          moment={displayMoment}
+          priority
+          isMobile={isMobile}
+        />
+      )
+      : (
+        <FeaturedMoment
+          // Key by the mint so a different display mounts a fresh instance,
+          // never inheriting the prior one's fetch/ratio/resolved state.
+          key={displayKey}
+          address={displayKey.slice(0, colon)}
+          tokenId={displayKey.slice(colon + 1)}
+          initialMoment={displayMoment}
+          isMobile={isMobile}
+          priority
+          onResolved={setHeroHasContent}
+        />
+      )
     : null
 
   // The display mint leads the tab as the hero above, so pull it out of the
