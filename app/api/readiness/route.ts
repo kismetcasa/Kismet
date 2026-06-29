@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { Redis } from '@upstash/redis'
 import { serverBaseClient } from '@/lib/rpc'
+import { msSinceRedisSuccess } from '@/lib/redisHealth'
 
 /**
  * Readiness probe. 200 when this pod can serve a typical request; 503 only
@@ -44,6 +45,15 @@ const CHECK_TIMEOUT_MS = 3_000
 const READINESS_FAILURE_THRESHOLD = 3
 let consecutiveRedisFailures = 0
 
+// Passive-liveness window. If a real Redis op succeeded within this many ms,
+// live traffic already proves Redis is reachable and the probe skips its PING
+// (Upstash bills per command; a probe pinging 24/7 is a constant drain). Kept
+// short so a genuine Redis outage — which stops real ops from succeeding — is
+// detected within ~this window before the probe falls through to an actual
+// ping and starts failing. Should be >= the external probe interval for the
+// skip to actually fire under normal traffic.
+const REDIS_FRESHNESS_MS = 10_000
+
 // Isolated, non-pipelined client for the probe only (see hardening #1 above).
 const probeRedis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL ?? 'https://placeholder.upstash.io',
@@ -86,8 +96,14 @@ async function check(label: string, fn: () => Promise<unknown>): Promise<CheckRe
 }
 
 export async function GET() {
+  // Passive Redis check: if live traffic exercised Redis successfully within
+  // the freshness window, that IS the readiness signal — skip the billed PING.
+  // Only an idle (or genuinely down) Redis falls through to an actual ping.
+  const redisFresh = msSinceRedisSuccess() < REDIS_FRESHNESS_MS
   const [redisCheck, rpcCheck] = await Promise.all([
-    check('redis', () => probeRedis.ping()),
+    redisFresh
+      ? Promise.resolve<CheckResult>({ ok: true, latencyMs: 0 })
+      : check('redis', () => probeRedis.ping()),
     check('rpc', () => serverBaseClient().getBlockNumber()),
   ])
 
@@ -110,6 +126,7 @@ export async function GET() {
       ready,
       degraded,
       redis: redisCheck,
+      redisViaTraffic: redisFresh,
       rpc: rpcCheck,
       consecutiveRedisFailures,
       timestamp: Date.now(),

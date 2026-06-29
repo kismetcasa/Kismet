@@ -50,4 +50,7 @@ async function _getHiddenMomentsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
-export const getHiddenMomentsSet = memoize(_getHiddenMomentsSet, 5 * 60_000)
+// 15-min memo: every hide/unhide calls .invalidate() so own-pod reads are
+// already fresh; the TTL only bounds redundant SMEMBERS of an unchanged set
+// (single instance → no cross-pod staleness, so this is a free command saving).
+export const getHiddenMomentsSet = memoize(_getHiddenMomentsSet, 15 * 60_000)

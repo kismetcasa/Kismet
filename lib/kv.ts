@@ -8,10 +8,15 @@ import { memoize } from './memoCache'
 // In-memory TTL for the hot collection-set getters below. These read
 // SMEMBERS on every request from a wide range of routes (timeline,
 // search, featured, collections feed) but the underlying sets change
-// rarely — a new collection deploy is once-a-day at most. 5 min is short
-// enough to be invisible to users (cross-pod, worst case) and the
-// per-write invalidators below make own-pod consistency immediate.
-const SET_CACHE_TTL_MS = 5 * 60_000
+// rarely — a new collection deploy is once-a-day at most. Every write path
+// calls the matching .invalidate() below, so own-pod consistency is
+// IMMEDIATE regardless of this TTL; the TTL only governs how often an
+// UNCHANGED set is re-read from Upstash. On the current single instance
+// that makes a longer window a pure command-cost saving with no staleness
+// (there is no other pod to be stale against). 15 min trims the steady-state
+// SMEMBERS rate 3× vs the old 5 min. (If this ever runs multi-pod, this is
+// also the worst-case cross-pod staleness window — revisit then.)
+const SET_CACHE_TTL_MS = 15 * 60_000
 
 // Per-collection set of "authorized creators": addresses an admin
 // granted ADMIN to via the post-deploy panel. Stored as JSON-encoded

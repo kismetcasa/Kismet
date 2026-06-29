@@ -48,4 +48,6 @@ async function _getHiddenCollectionsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
-export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 5 * 60_000)
+// 15-min memo: hide/unhide invalidate immediately, so the longer TTL only
+// trims redundant SMEMBERS of an unchanged set (single instance → free).
+export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 15 * 60_000)

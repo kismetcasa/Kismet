@@ -71,4 +71,6 @@ async function _getHiddenUsersSet(): Promise<Set<string>> {
     return new Set()
   }
 }
-export const getHiddenUsersSet = memoize(_getHiddenUsersSet, 5 * 60_000)
+// 15-min memo: admin hide/unhide invalidate immediately, so the longer TTL
+// only trims redundant SMEMBERS of an unchanged set (single instance → free).
+export const getHiddenUsersSet = memoize(_getHiddenUsersSet, 15 * 60_000)

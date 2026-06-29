@@ -108,16 +108,22 @@ export async function getArtistEarnings(artist: string, wallets?: string[]): Pro
   const lower = artist.toLowerCase()
   try {
     const ws = wallets ?? (await expandToFidSiblings(lower))
-    // 3 keys × N wallets of zscore plus the price, all issued in one tick so
-    // Upstash auto-pipelining collapses them into a single round trip (N = the
-    // sibling count, usually 1). Sum each currency across the artist's wallets.
+    if (ws.length === 0) return { address: lower, eth: 0, usdc: 0, usd: 0, mints: 0 }
+    // One ZMSCORE per key (3 commands total) instead of one ZSCORE per wallet
+    // (3 × N). Auto-pipelining only collapses round-trips, not billed command
+    // count, so for multi-wallet (FC sibling) artists this is a real per-call
+    // saving; for the common N=1 case it's identical. Sum each currency across
+    // the artist's wallets.
     const [eth, usdc, mints, ethUsd] = await Promise.all([
-      Promise.all(ws.map((w) => redis.zscore(ETH_KEY, w))),
-      Promise.all(ws.map((w) => redis.zscore(USDC_KEY, w))),
-      Promise.all(ws.map((w) => redis.zscore(MINTS_KEY, w))),
+      redis.zmscore(ETH_KEY, ws),
+      redis.zmscore(USDC_KEY, ws),
+      redis.zmscore(MINTS_KEY, ws),
       getEthUsd(),
     ])
-    const sum = (xs: unknown[]) => xs.reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
+    // zmscore returns number[] | null (null only if the key is missing); a
+    // missing key means no earnings, so coalesce to [] → sum 0.
+    const sum = (xs: (number | null)[] | null) =>
+      (xs ?? []).reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
     const e = sum(eth)
     const u = sum(usdc)
     return { address: lower, eth: e, usdc: u, usd: e * (ethUsd ?? 0) + u, mints: sum(mints) }

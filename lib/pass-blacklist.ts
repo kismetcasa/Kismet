@@ -44,7 +44,9 @@ async function _getPassBlacklistSet(): Promise<Set<string>> {
     return new Set()
   }
 }
-const getPassBlacklistSet = memoize(_getPassBlacklistSet, 5 * 60_000)
+// 15-min memo: add/remove invalidate immediately, so the longer TTL only trims
+// redundant SMEMBERS of an unchanged set (single instance → free saving).
+const getPassBlacklistSet = memoize(_getPassBlacklistSet, 15 * 60_000)
 
 export async function isPassBlacklisted(
   address: string | null | undefined,

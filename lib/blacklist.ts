@@ -16,7 +16,9 @@ async function _getBlacklistSet(): Promise<Set<string>> {
     return new Set()
   }
 }
-const getBlacklistSet = memoize(_getBlacklistSet, 5 * 60_000)
+// 15-min memo: add/remove invalidate immediately, so the longer TTL only trims
+// redundant SMEMBERS of an unchanged set (single instance → free saving).
+const getBlacklistSet = memoize(_getBlacklistSet, 15 * 60_000)
 
 /**
  * ACTION blacklist — addresses listed here are blocked from creator
