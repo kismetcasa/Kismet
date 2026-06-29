@@ -24,6 +24,15 @@ function isGifUri(url: string): boolean {
   return url.split(/[?#]/, 1)[0].toLowerCase().endsWith('.gif')
 }
 
+// When the next/image optimizer 413s a too-large source and we fall back to the
+// /api/img proxy, ask the proxy to downscale to this width instead of streaming
+// the full-res original (which stalls mobile + the miniapp's shared HTTP/2
+// pool). 2048 covers the largest display we render (a retina desktop hero) while
+// turning a multi-MB source into a small WebP. NOT applied to GIF / preferProxy
+// proxy requests — those START in proxy mode and must pass through untouched
+// (animation preserved; preferProxy callers opted out of optimization).
+const PROXY_FALLBACK_MAX_WIDTH = 2048
+
 type DeliveryMode = 'optimized' | 'proxy' | 'direct'
 
 type NextImageProps = CommonProps & {
@@ -97,8 +106,14 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // 'direct' rather than restarting the state machine.
   useEffect(() => { setMode(initialMode) }, [src, initialMode])
 
-  // 'proxy' uses one stable URL — the proxy fans out internally.
-  const renderUrl = mode === 'proxy' ? proxyUrl(src) : url
+  // 'proxy' uses one stable URL — the proxy fans out internally. On the
+  // optimizer→proxy fallback (a 413 on a too-large source) request a downscale
+  // so we don't ship the full-res original; GIF / preferProxy proxy requests
+  // (skipOptimizer) pass through untouched.
+  const renderUrl =
+    mode === 'proxy'
+      ? proxyUrl(src, skipOptimizer ? undefined : PROXY_FALLBACK_MAX_WIDTH)
+      : url
   const unoptimized = mode !== 'optimized'
 
   const [loaded, setLoaded] = useState(false)
