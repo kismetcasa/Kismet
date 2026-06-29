@@ -34,7 +34,7 @@ const KEY = 'kismetart:pass-blacklist'
 
 // Full-set cache — same pattern as lib/blacklist.ts / lib/hidden-users.ts.
 // Converts one SISMEMBER per hasValidPass call into one SMEMBERS per
-// 5-minute window per process. Fails open so a Redis outage doesn't deny
+// 15-minute window per process. Fails open so a Redis outage doesn't deny
 // every Pass holder; admin is always exempt regardless.
 async function _getPassBlacklistSet(): Promise<Set<string>> {
   try {

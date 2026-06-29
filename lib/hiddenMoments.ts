@@ -43,7 +43,7 @@ export async function unhideMoment(
 /**
  * Bulk lookup for filtering a feed of moments. Single Redis call; returns
  * a Set keyed on `<lowercaseAddr>:<tokenId>` for O(1) membership checks.
- * Memoized 5 min; the underlying set changes only on hide/unhide writes,
+ * Memoized 15 min; the underlying set changes only on hide/unhide writes,
  * which invalidate own-pod immediately.
  */
 async function _getHiddenMomentsSet(): Promise<Set<string>> {

@@ -29,7 +29,7 @@ deaths/evictions* (in-repo) **and** *survive + recover fast* (ops).
 | 2 | **Readiness hard-gated on one 3s Upstash ping**; a transient blip evicts the only pod and darks the whole site | no server available | ✅ in-repo |
 | 6 | **Auto-pipelining co-batched the readiness ping** behind a fat Redis payload → false-slow ping → false 503 | no server available | ✅ in-repo |
 | 9 | **Blocking cold start** — `register()` awaited an on-chain RPC healthcheck + an unbounded `SMEMBERS` warmup before serving, widening every restart's dark window | no server available | ✅ in-repo |
-| 10 | **No process-level crash handlers** — a stray unhandled rejection/exception kills the single process | both | ✅ in-repo |
+| 10 | ~~No process-level crash handlers~~ — **non-issue (see Refuted)**: Next 15's server already installs log-and-continue handlers that keep the single process alive | both | N/A — framework-provided |
 | 3 | **Timeline fan-out** held `collections × up-to-10,000` moments in heap to render 20 (OOM at low-tens of dense collections) | 502 (OOM) | ✅ in-repo |
 | 5 | **Timeline fan-out fetches lacked timeouts + concurrency cap** → a slow inprocess piles up handlers/sockets | both | ✅ in-repo |
 | 7 | **`/api/transcode-gif` buffers up to 300MB** + ffmpeg + sharp | 502 (OOM) | Bounded by the `MAX_CONCURRENT=1` semaphore + the ops memory limit; streaming refactor is the follow-up |
@@ -39,19 +39,24 @@ deaths/evictions* (in-repo) **and** *survive + recover fast* (ops).
 Upstash's 10MB cap → a 500, not a SIGKILL); an event-loop-wedge cascade
 (measured well under the probe budget); `after()`-callback crashes (all
 wrapped); `/api/img` raw-stream-error crash (Next 15 wraps it); `maxDuration`
-as a real handler timeout (it's a Vercel no-op on self-hosted `node server.js`).
+as a real handler timeout (it's a Vercel no-op on self-hosted `node server.js`);
+**"no process-level crash handlers"** — Next 15's production server
+(`next-server.js`) already installs `uncaughtException`/`unhandledRejection`
+handlers that **log and keep the process alive** (React-postpone aware). Adding
+our own `uncaughtException → process.exit(1)` would have *overridden* that and
+crashed the single container Next intended to keep serving — a regression we
+caught in review and removed. Crash survival is the framework's job here.
 
 ---
 
 ## What this PR changed (in-repo)
 
-- **`instrumentation.ts`** — (a) installs a process-level crash net:
-  `unhandledRejection` logs-and-continues (a stray background rejection must not
-  dark the single site), `uncaughtException` logs-and-`exit(1)` (undefined
-  state → clean restart — **requires** the restart policy below). (b) De-blocks
-  cold start: the on-chain healthcheck, cache warmup, and backfill now run
-  fire-and-forget so `register()` returns instantly (Next awaits it before
-  listening). (c) Drops the unbounded `getCreatedMintsSet()` from the warmup.
+- **`instrumentation.ts`** — de-blocks cold start: the on-chain healthcheck,
+  cache warmup, and backfill now run fire-and-forget so `register()` returns
+  instantly (Next awaits it before listening, so anything awaited there widens
+  every restart's dark window), and drops the unbounded `getCreatedMintsSet()`
+  from the warmup. Process-level crash survival is intentionally left to Next
+  15's own log-and-continue handlers (see the file docstring + Refuted above).
 - **`app/api/readiness/route.ts`** — dedicated **non-pipelined** Upstash client
   for the probe (so the ping's latency reflects Redis health, not a co-batched
   payload), plus **consecutive-failure tolerance** (only 503 after 3 failures
@@ -87,9 +92,10 @@ difference between "recovers in seconds" and "dark until someone notices."
    frequent OOM-kills and makes outages **worse**. (AWS WA Reliability: contain
    failure without amplifying it.)
 2. **Set the restart policy to `unless-stopped`** (or `always`). This is the
-   single most important "survive a crash" lever and is what makes the
-   `uncaughtException → exit(1)` handler safe: an OOM-kill or clean exit then
-   recovers in seconds instead of staying dark. (12-Factor IX disposability.)
+   single most important "survive a crash" lever: when the kernel OOM-kills the
+   process (the primary remaining crash vector — Next survives stray
+   exceptions), the container recovers in seconds instead of staying dark.
+   (12-Factor IX disposability.)
 3. **Tune the readiness probe** (if Coolify is configured to probe
    `/api/readiness`): `failureThreshold` **3–5**, `timeout` ≥ Upstash tail
    latency, a sane `interval`. Keep the Docker `HEALTHCHECK` pointed at

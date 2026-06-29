@@ -5,7 +5,7 @@ import { ADMIN_ADDRESS } from './config'
 const KEY = 'kismetart:blacklist'
 
 // Full-set cache — same pattern as lib/hidden-users.ts. Converts one
-// SISMEMBER per action into one SMEMBERS per 5-minute window per process.
+// SISMEMBER per action into one SMEMBERS per 15-minute window per process.
 // Fails open (empty Set) so a Redis outage doesn't block every user.
 // Own-pod consistency: invalidated on every add/remove.
 async function _getBlacklistSet(): Promise<Set<string>> {

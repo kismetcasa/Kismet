@@ -185,11 +185,13 @@ export async function GET(req: NextRequest) {
   // stitch, and the O(n log n) sort all scale as collections × baseSample and
   // become an OOM vector on the single box. Distributing a fixed budget across
   // the fan-out caps the merged size regardless of how deep `page` goes or how
-  // many collections are tracked — while preserving FULL pagination depth when
-  // only a few collections are in play (the per-collection budget is then large,
-  // so a single collection page is unchanged). The `limit` floor guarantees
-  // every collection can still fill at least one page. (SRE handling-overload /
-  // Azure Bulkhead.)
+  // many collections are tracked — while preserving pagination depth when only
+  // a few collections are in play (the per-collection budget is then large: a
+  // single collection is unchanged until its requested depth, page*limit,
+  // exceeds MERGE_BUDGET=5000 items, i.e. only a very deep page on a single
+  // dense collection is capped — the same graceful degrade as the page<=100
+  // cap). The `limit` floor guarantees every collection can still fill at least
+  // one page. (SRE handling-overload / Azure Bulkhead.)
   const MERGE_BUDGET = 5000
   const perCollectionCap = Math.max(limit, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
   const fetchLimit = Math.min(baseSample, perCollectionCap)

@@ -87,9 +87,9 @@ ENV PORT=3000
 #     working set, concurrent /api/img streams, the timeline merge) and swap so a
 #     spike PAGES instead of being SIGKILLed. Sizing it tight turns rare spikes
 #     into frequent kills — worse than no limit on one pod.
-#   • Restart policy: `restart: unless-stopped` (or always) so an OOM-kill or
-#     an uncaughtException exit (instrumentation.ts) recovers in seconds. The
-#     process-level crash net is only safe BECAUSE this is set.
+#   • Restart policy: `restart: unless-stopped` (or always) so a kernel
+#     OOM-kill recovers in seconds (Next 15 already keeps the process alive
+#     through stray exceptions, so OOM is the primary remaining crash vector).
 # The off-heap spikes (ffmpeg child process, undici stream chunks, arrayBuffer
 # reads) are bounded in code, not by a heap flag — see app/api/transcode-gif,
 # app/api/img, and app/api/timeline.

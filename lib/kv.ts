@@ -99,8 +99,8 @@ export const getUserCollections = memoize(_getUserCollections, SET_CACHE_TTL_MS)
 // Note: NO try/catch wrapping the SMEMBERS. The earlier `catch { return new Set() }`
 // silently turned every Redis failure into "no created mints", which the
 // timeline's scope=standalone filter then read as "filter everything out" —
-// blanking the mints/trending feeds for a full 60s after recovery (memoize
-// cached the empty result as a successful read). Letting the throw propagate
+// blanking the mints/trending feeds for a full cache-TTL window after recovery
+// (memoize cached the empty result as a successful read). Letting the throw propagate
 // means memoize won't cache the failure, the next call retries, and the
 // caller in app/api/timeline/route.ts handles the throw by skipping the
 // filter for THIS request (showing unfiltered moments — safer degradation
@@ -116,7 +116,7 @@ export async function markCreatedMint(address: string, tokenId: string): Promise
     await redis.sadd(CREATED_MINTS_KEY, `${address.toLowerCase()}:${tokenId}`)
     // Own-pod consistency: a creator who just minted should see their
     // moment on the next Mints-feed read from the same pod immediately,
-    // not 60s later. Other pods will catch up on their own TTL expiry.
+    // not after the cache-TTL window. Other pods catch up on their own TTL expiry.
     getCreatedMintsSet.invalidate()
   } catch (err) {
     console.error('[kv] markCreatedMint failed', { address, tokenId, err })

@@ -41,7 +41,7 @@ export async function unhideCollection(address: string): Promise<void> {
 
 /**
  * Bulk lookup for filtering a collections feed. Single Redis call; returns
- * a Set of lowercase addresses for O(1) membership checks. Memoized 5 min;
+ * a Set of lowercase addresses for O(1) membership checks. Memoized 15 min;
  * the set changes only on hide/unhide writes which invalidate own-pod.
  */
 async function _getHiddenCollectionsSet(): Promise<Set<string>> {

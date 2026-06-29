@@ -1,9 +1,19 @@
 /**
  * Next.js instrumentation hook — runs once per cold start before any
- * request is served. We use it to (1) install a process-level crash net
- * and (2) surface on-chain permission invariants (see lib/healthcheck.ts)
- * so misconfigs show up in function logs immediately rather than at first
- * user mint.
+ * request is served. We use it to surface on-chain permission invariants
+ * (see lib/healthcheck.ts) so misconfigs show up in function logs
+ * immediately rather than at first user mint, and to warm the hot caches.
+ *
+ * We deliberately do NOT install process-level uncaughtException /
+ * unhandledRejection handlers here. Next 15's production server already
+ * installs its own (node_modules/next/dist/server/next-server.js) that
+ * LOG-AND-CONTINUE — keeping the single process alive through a stray
+ * uncaught error or rejection (it's even React-postpone aware so it won't
+ * crash on framework-internal rejections). Adding our own uncaughtException
+ * handler that called process.exit() would OVERRIDE that and crash the one
+ * container Next intended to keep serving — the opposite of what we want on
+ * a single instance with no peer to absorb a restart. Crash survival is the
+ * framework's job; ours here is only to not BLOCK serving.
  *
  * Critical: never blocks serving. Next AWAITS register() before it starts
  * listening, so anything awaited here pads every cold-start / restart dark
@@ -11,49 +21,6 @@
  * unservable. Everything that isn't required to serve the first request is
  * therefore kicked off fire-and-forget; register() returns immediately.
  */
-let safetyNetInstalled = false
-
-/**
- * Process-level safety net. Next.js catches errors thrown INSIDE a request
- * handler, but an unhandled rejection or uncaught exception raised OUTSIDE
- * that boundary (a background setInterval sweep, an after() callback, a
- * stream 'error' event) would otherwise terminate the single container in
- * Node 22 — a full-site outage with no peer to absorb it.
- *
- * Single-instance policy (deliberate, and the inverse of the textbook
- * "always crash on unhandledRejection" advice — that advice assumes N
- * replicas behind a load balancer; we have exactly one pod):
- *   - unhandledRejection → LOG and CONTINUE. A stray rejection in
- *     fire-and-forget background work must not dark the whole site. Logging
- *     it loudly is how it gets fixed at the source.
- *   - uncaughtException → the process is in an undefined state (Node docs),
- *     so LOG and EXIT(1) for a clean restart. This is only safe because the
- *     container is configured to auto-restart on crash (Coolify restart
- *     policy / Docker `restart: unless-stopped` — see Dockerfile deploy
- *     notes). With it, MTTR is seconds; without it, exiting would dark the
- *     site until a manual redeploy, so the restart policy is REQUIRED.
- */
-function installProcessSafetyNet(): void {
-  if (safetyNetInstalled) return
-  safetyNetInstalled = true
-
-  process.on('unhandledRejection', (reason) => {
-    console.error(
-      '[process] unhandledRejection (non-fatal — logging and continuing; fix the source):',
-      reason instanceof Error ? (reason.stack ?? reason.message) : reason,
-    )
-  })
-
-  process.on('uncaughtException', (err) => {
-    console.error(
-      '[process] uncaughtException (fatal — process is in an undefined state, exiting for a clean restart):',
-      err instanceof Error ? (err.stack ?? err.message) : err,
-    )
-    // Exit so the orchestrator restarts a fresh process. REQUIRES a container
-    // restart policy; see installProcessSafetyNet's docstring above.
-    process.exit(1)
-  })
-}
 
 /**
  * Boot-time observability + cache warming. NONE of this is required to serve
@@ -137,13 +104,10 @@ function startBootTasks(): void {
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
 
-  // Install the crash net FIRST and synchronously, before any other code can
-  // schedule async work that might reject.
-  installProcessSafetyNet()
-
   // Kick off boot tasks detached and return immediately so Next starts
   // listening without waiting on RPC/Redis. (register() is awaited before the
   // server accepts requests; keeping it instant is what keeps cold-start and
-  // every restart's dark window short.)
+  // every restart's dark window short.) Each boot task is individually
+  // try/catch-guarded; Next's own unhandledRejection handler is the backstop.
   startBootTasks()
 }

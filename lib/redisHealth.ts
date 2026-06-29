@@ -9,9 +9,12 @@
  * that Redis is reachable. So instead of a dedicated PING, the readiness probe
  * checks "did any real Redis op succeed recently?" and only falls through to an
  * actual PING when Redis hasn't been exercised within the freshness window
- * (genuinely idle, or genuinely down). Outage-detection latency is unchanged
- * (a down Redis stops updating this timestamp within the window, then the probe
- * pings and fails); the steady-state PING cost under load drops to ~zero.
+ * (genuinely idle, or genuinely down). Outage-detection latency rises by AT
+ * MOST the freshness window (~10s): a down Redis stops updating this timestamp,
+ * then within the window the probe falls through to a real ping and fails. On a
+ * single instance that small delay is benign — even beneficial — since pulling
+ * the only pod gains nothing (no peer to serve); the trade buys eliminating a
+ * 24/7 billed PING, and steady-state PING cost under load drops to ~zero.
  *
  * Updated from the highest-coverage hot paths (checkRateLimit, safeRead/
  * strictRead). Module-scoped, so it is per-process — correct for the single
