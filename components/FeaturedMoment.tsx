@@ -284,36 +284,28 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
 
   if (blank) return null
 
-  // The below-lg card. On mobile it's the ONLY presentation we mount (the lg+
-  // hero is skipped — see the isMobile prop doc); on desktop it's wrapped
-  // `lg:hidden` below the hero.
+  // The below-lg card. On mobile this component is only reached as a FALLBACK —
+  // when the mint isn't a standalone timeline entry, FeaturedFeed renders this
+  // instead of a plain MomentCard (the common mobile path lives there now). On
+  // desktop it's the `lg:hidden` duplicate beneath the rich hero.
   //
-  // `priority` MUST split on isMobile, because the card plays opposite roles:
-  //   • Mobile — this card IS the featured slot, at the very top of the tab, so
-  //     it's the LCP and must fetch at HIGH priority. priority={false} *looked*
-  //     fine because MomentImage force-eagers it in the miniapp/WebKit
-  //     (`priority || skipDirectWalk`), but eager ≠ high: with priority false the
-  //     <img> gets fetchPriority="auto" while the first grid row below renders
-  //     `priority` (fetchPriority="high"). In the miniapp's shared, saturated
-  //     HTTP/2 pool the browser then services those lower cards FIRST, so the
-  //     featured artwork paints visibly AFTER the cards beneath it — the reported
-  //     lag. On standalone mobile Chrome it's worse: skipDirectWalk is false
-  //     there, so priority={false} left the top card fully lazy. Forwarding
-  //     `priority` makes it a true LCP on every mobile surface — eager + high + a
-  //     <link rel=preload> — i.e. an ordinary top-of-feed card, which is exactly
-  //     the "just a normal card on mobile" behaviour we want. Only one image
-  //     mounts on mobile (the hero is skipped), so this can't re-create the
-  //     dual-fetch starvation the isMobile gate fixed.
-  //   • Desktop — this is the lg:hidden duplicate beneath the rich hero, which
-  //     owns the LCP. Keep it priority={false} so the hidden copy never competes
-  //     for bandwidth while the hero is the visible presentation.
+  // priority={false} on BOTH surfaces:
+  //   • Desktop — the hero owns the LCP; this hidden copy must never fetch while
+  //     the hero is the visible presentation.
+  //   • Mobile — match every other feed card, which renders WITHOUT priority.
+  //     `priority` injects a <link rel=preload> that fetches during app bootstrap
+  //     and competes with the critical JS/CSS in the miniapp's tiny shared HTTP/2
+  //     pool, so the preloaded image LAGS behind the non-preloaded cards (which
+  //     fetch after hydration, pool free). MomentImage still force-eagers it in
+  //     the miniapp via skipDirectWalk, so it loads eagerly — just without the
+  //     counter-productive preload, identical to the others.
   // showCreator follows the resolved artist so the chip drops exactly when the
   // hero drops its @artist line — never a dead /profile/ link.
   const card = cardMoment ? (
     <MomentCard
       moment={cardMoment}
       showCreator={!!creatorAddress}
-      priority={isMobile ? !!priority : false}
+      priority={false}
       isMobile={isMobile}
     />
   ) : null

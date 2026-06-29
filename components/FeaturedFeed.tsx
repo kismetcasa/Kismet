@@ -118,10 +118,20 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   const hero = displayKey && colon > 0
     ? isMobile && displayMoment
       ? (
+        // NO priority on mobile — render exactly like the other featured cards,
+        // which load instantly precisely because they DON'T preload. `priority`
+        // injects a <link rel=preload as=image> into <head> that fetches during
+        // app bootstrap and competes with the critical JS/CSS in the miniapp's
+        // tiny shared HTTP/2 pool, so the preloaded image lags behind the
+        // non-preloaded grid cards (which fetch after hydration, once the pool is
+        // free). MomentImage force-eagers it in the miniapp via skipDirectWalk,
+        // so it still loads eagerly — just without the counter-productive preload.
+        // Now byte-identical to a grid card. (Desktop keeps the rich priority
+        // hero in the FeaturedMoment branch below.)
         <MomentCard
           key={displayKey}
           moment={displayMoment}
-          priority
+          priority={false}
           isMobile={isMobile}
         />
       )
