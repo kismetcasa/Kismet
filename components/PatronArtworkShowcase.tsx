@@ -83,6 +83,10 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
           mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
           thumbhash={meta.kismet_thumbhash}
           priority={priority}
+          // Every Patron piece is a heavy physical-art scan that 413s the
+          // optimizer; go straight to the downscaling proxy and skip the wasted
+          // round-trip on each one.
+          preferProxy
           onNaturalSize={handleNaturalSize}
           onAllError={() => setMediaError(true)}
         />

@@ -9,6 +9,7 @@ import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { MomentCard } from './MomentCard'
@@ -307,6 +308,10 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       showCreator={!!creatorAddress}
       priority={false}
       isMobile={isMobile}
+      // Heavy Patron physical-art scans 413 the optimizer; skip to the
+      // downscaling proxy so the mobile fallback doesn't blink through the
+      // wasted round-trip. Matches the FeaturedFeed mobile display card.
+      preferProxy={isPatronCollection(address)}
     />
   ) : null
 
@@ -387,9 +392,12 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               src={media.src}
               alt={title}
               fill
-              // No preferProxy: the hero is the LCP, so let next/image optimize
-              // (AVIF/WebP + downscale via `sizes`); MomentImage still falls back
-              // to the proxy if the optimizer 413s heavy art.
+              // The hero is the LCP, so for normal art let next/image optimize
+              // (AVIF + downscale via `sizes`). But Patron mints are heavy
+              // physical-art scans that 413 the optimizer on every load — skip
+              // straight to the downscaling proxy so we don't re-pay that doomed
+              // round-trip (desktop's pool would mask it, but it's still waste).
+              preferProxy={isPatronCollection(address)}
               className="object-contain"
               sizes={heroSizes}
               mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
