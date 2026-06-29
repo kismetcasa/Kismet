@@ -181,9 +181,18 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
             key={`m-${i}`}
             className={soleMomentBlock ? fillGridClass(b.items.length) : FULL_GRID}
           >
-            {/* Prioritize the first row of moments only when it leads the
-                feed (i === 0). Subsequent moment blocks render below other
-                content and shouldn't compete with LCP. */}
+            {/* Mark only the above-the-fold LCP image as priority — the right
+                count is layout-dependent, so it differs by device:
+                  • Desktop — the first block is a row of up to 4 columns, so the
+                    first 3 are genuinely above the fold.
+                  • Mobile — a single column, so only ONE image leads the fold.
+                    When a hero (Mint Pass Display) is present it IS that LCP and
+                    already loads priority; prioritising the below-the-fold grid
+                    cards here would split the miniapp's scarce, shared HTTP/2
+                    bandwidth away from the hero and make the featured artwork
+                    load SLOWER than the cards beneath it (the reported symptom).
+                    So on mobile prioritise a grid card only when no hero owns the
+                    LCP, and only the very first one. */}
             {b.items.map((m, idx) => {
               const flatIdx = flatMomentIdx++
               return (
@@ -195,7 +204,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
                   {() => (
                     <MomentCard
                       moment={m}
-                      priority={i === 0 && idx < 3}
+                      priority={isMobile ? !hero && i === 0 && idx === 0 : i === 0 && idx < 3}
                       isMobile={isMobile}
                     />
                   )}
@@ -207,7 +216,11 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
           <CollectionRow
             key={`c-${b.row.contractAddress}`}
             collection={b.row}
-            priority={i === 0}
+            // Same LCP rule as the grid above: on mobile a hero owns the
+            // above-the-fold LCP, so a collection row (always below it) must not
+            // compete for the hero's bandwidth. Without a hero the leading block
+            // — grid or collection — is the LCP.
+            priority={isMobile ? !hero && i === 0 : i === 0}
             isMobile={isMobile}
           />
         ),
