@@ -138,12 +138,19 @@ function installFetchInterceptor(
 const OPEN_COUNT_KEY = 'kismetart:miniapp-opens'
 const PROMPT_TARGET_OPEN = 2
 
-// Hard ceiling on how long the host splash may stay up. The normal bounded
-// path resolves well under this (isInMiniApp ≤1s, then sdk.context ≤2.5s /
-// /api/me ≤3s in parallel ≈ 4s worst case), so this only fires when an await
-// hangs outright — a dropped host bridge reply, a stalled chunk fetch. Set
-// above the normal worst case so it never pre-empts a fully-painted load, but
-// low enough that a genuine hang surfaces the app instead of an endless splash.
+// Pre-ready() await bounds. Both the host-context round-trip and the /api/me
+// lookup are individually raced against these so a hung host bridge can't pin
+// the splash; context is the cheaper call so it gets the tighter bound.
+const CONTEXT_TIMEOUT_MS = 2500
+const ME_FETCH_TIMEOUT_MS = 3000
+
+// Hard ceiling on how long the host splash may stay up — the ultimate backstop
+// once the per-await bounds above are exhausted. The normal path dismisses well
+// under this (isInMiniApp <=1s, then context + me raced in parallel <=3s, ~4s
+// worst case), so this only fires when something OUTSIDE those bounds hangs — a
+// stalled SDK chunk fetch, or a future unbounded await. Set above the normal
+// worst case so it never pre-empts a fully-painted load, but low enough that a
+// genuine hang surfaces the app instead of an endless splash.
 const SPLASH_READY_DEADLINE_MS = 6000
 
 // One-shot (per device) flag for the post-first-mint "Add Kismet" prompt.
@@ -343,33 +350,34 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // user, THEN call ready() so the splash dismisses to a
         // fully-painted page.
         //
-        // sdk.context: host posts user identity (fid, username, pfp,
-        //   safeAreaInsets) over the bridge.
-        // /api/me: server-side primary-address resolution (Redis cached
-        //   after first hit). The interceptor we just installed injects
-        //   the Quick Auth JWT. Wrapped in a 3s timeout so a hung
-        //   backend can't pin the splash forever — falls through with
-        //   no address (visible profile link + bell stay deferred
-        //   until a later retry) and the rest of the identity still
-        //   paints from sdk.context.user.
-        const meController = new AbortController()
-        const meTimeout = setTimeout(() => meController.abort(), 3000)
-        // Bound sdk.context the same way as /api/me. Unlike sdk.isInMiniApp()
-        // (which carries its own internal timeout), this access has none: it is
-        // a Comlink postMessage round-trip to the host — window.parent on
-        // desktop, a cross-origin bridge that is more fragile than mobile's
-        // direct RN-WebView bridge. A dropped/slow reply here would otherwise
-        // hang the whole bootstrap before ready(), pinning the host splash. On
-        // timeout we fall through with ctx = null: identity stays unresolved
-        // (isInMiniApp already confirmed the host) but the splash still
-        // dismisses, and the rest of the page paints.
-        const [ctx, meResponse] = await Promise.all([
-          Promise.race([
-            sdk.context,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
-          ]),
-          fetch('/api/me', { signal: meController.signal }).catch(() => null),
+        // Both awaits are host/network round-trips with NO internal timeout
+        // (unlike sdk.isInMiniApp), and on desktop the host bridge is a fragile
+        // cross-origin postMessage — so each is individually raced against a
+        // bound below. On timeout we fall through with null and STILL dismiss
+        // the splash; identity/address just resolve later or stay deferred:
+        //   • sdk.context — host posts user identity (fid, username, pfp,
+        //     safeAreaInsets) over the bridge. null → identity unresolved (host
+        //     already confirmed via isInMiniApp), name/pfp deferred.
+        //   • /api/me — server-side primary-address resolution (Redis cached
+        //     after first hit). It rides the JWT interceptor, which first awaits
+        //     sdk.quickAuth.getToken() — ANOTHER unbounded host round-trip (via
+        //     signIn). meController.abort() cannot cancel that token step (the
+        //     underlying fetch hasn't started yet), so the race — not the
+        //     AbortController — is what bounds a hung token acquisition; the
+        //     AbortController still earns its keep by freeing a started-but-slow
+        //     network request. null → no address (profile link + bell deferred),
+        //     rest of identity still paints from sdk.context.user.
+        const ctxOrNull = Promise.race([
+          sdk.context,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), CONTEXT_TIMEOUT_MS)),
         ])
+        const meController = new AbortController()
+        const meTimeout = setTimeout(() => meController.abort(), ME_FETCH_TIMEOUT_MS)
+        const meOrNull = Promise.race([
+          fetch('/api/me', { signal: meController.signal }).catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), ME_FETCH_TIMEOUT_MS)),
+        ])
+        const [ctx, meResponse] = await Promise.all([ctxOrNull, meOrNull])
         clearTimeout(meTimeout)
         if (cancelled) return
 
