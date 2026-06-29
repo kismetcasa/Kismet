@@ -9,7 +9,7 @@ import {
 } from '@/lib/raffleMessage'
 import {
   addEntry,
-  getRaffleState,
+  entriesOpen,
   holdsEdition,
   isEntered,
   isRaffleEnabled,
@@ -82,14 +82,14 @@ export async function POST(req: NextRequest) {
   }
   if (!valid) return errorResponse(401, 'Signature does not match wallet')
 
-  // The raffle must be enabled for this specific moment AND still open. Gating
-  // here (not just in the UI) stops a crafted request entering a moment that
-  // has no raffle.
+  // The raffle must be enabled for this specific moment AND still accepting
+  // entries (not ended, and before the auto-close time). Gating here (not just
+  // in the UI) stops a crafted request entering a moment with no/closed raffle.
   if (!(await isRaffleEnabled(collection, tokenId))) {
     return errorResponse(409, 'There is no raffle for this edition')
   }
-  if ((await getRaffleState(collection, tokenId)) !== 'open') {
-    return errorResponse(409, 'The raffle is closed')
+  if (!(await entriesOpen(collection, tokenId))) {
+    return errorResponse(409, 'Raffle entries are closed')
   }
 
   // Idempotent: already in → success without a redundant on-chain read.

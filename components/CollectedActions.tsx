@@ -36,6 +36,9 @@ export function CollectedActions({
         tokenId={props.tokenId}
         buttonClassName={props.buttonClassName}
         stacked={props.stacked}
+        // So a released non-winner (raffle ended) or a holder who never entered
+        // once entries close falls through to the normal listing action.
+        listProps={props}
       />
     )
   }

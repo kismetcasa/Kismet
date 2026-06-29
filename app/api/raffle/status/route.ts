@@ -4,6 +4,7 @@ import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import {
   getEntrantCount,
+  getEntriesCloseAt,
   getRaffleState,
   getWinner,
   isEntered,
@@ -34,18 +35,25 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid address')
   }
 
-  const [enabled, state, entrantCount, winner] = await Promise.all([
+  const [enabled, state, entrantCount, winner, closeAt] = await Promise.all([
     isRaffleEnabled(collection, tokenId),
     getRaffleState(collection, tokenId),
     getEntrantCount(collection, tokenId),
     getWinner(collection, tokenId),
+    getEntriesCloseAt(collection, tokenId),
   ])
   const entered = address ? await isEntered(collection, tokenId, address) : false
   const isWinner = !!address && !!winner && winner.toLowerCase() === address
+  const ended = state === 'ended'
+  const now = Math.floor(Date.now() / 1000)
+  // Entries are accepted only while live and before the close time passes.
+  const isEntriesOpen = !ended && (closeAt == null || now < closeAt)
 
   return NextResponse.json({
     enabled,
-    open: state === 'open',
+    ended,
+    entriesOpen: isEntriesOpen,
+    entriesCloseAt: closeAt,
     entrantCount,
     entered,
     winner,

@@ -1558,10 +1558,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
           </div>
 
-          {/* Site admin — feature/unfeature + per-moment raffle controls.
-              RaffleAdminPanel is where an admin turns this moment's raffle on
-              (which surfaces "enter raffle" to holders) and later picks the
-              winner. */}
+          {/* Site admin — feature/unfeature. */}
           {isAdmin && (
             <div className="px-5 pb-4">
               <button
@@ -1573,7 +1570,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
                 {isFeatured ? 'unfeature' : 'feature'}
               </button>
-              <RaffleAdminPanel collection={address} tokenId={tokenId} />
+            </div>
+          )}
+
+          {/* Per-moment raffle controls — self-serve for the moment's creator /
+              a moment admin / the platform admin (self-hides for anyone else).
+              Enabling snapshots the sale end as the entries auto-close time. */}
+          {(isCreator || isMomentAdmin || isAdmin) && (
+            <div className="px-5 pb-4">
+              <RaffleAdminPanel
+                collection={address}
+                tokenId={tokenId}
+                canManage
+                defaultCloseAt={saleEndNum > 0 ? saleEndNum : null}
+              />
             </div>
           )}
 

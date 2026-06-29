@@ -24,6 +24,7 @@ import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { RaffleButton } from './RaffleButton'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
+import { useAdmin } from '@/contexts/AdminContext'
 
 // Soft-gold showcase box — the same signifier the Mint Pass Display
 // (FeaturedMoment) uses, so the Patron page reads as the same "this is the
@@ -61,7 +62,20 @@ export function PatronArtwork({ moment, description, priority }: PatronArtworkPr
   const meta = moment.metadata ?? {}
   const { address: connectedAddress, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { isAdmin } = useAdmin()
   const { collect, status: collectStatus } = useDirectCollect()
+
+  // The creator (or a platform admin) manages this moment's raffle here too;
+  // the panel self-hides for everyone else and the manage route re-authorizes.
+  const canManageRaffle =
+    isAdmin ||
+    (!!connectedAddress &&
+      !!moment.creator?.address &&
+      connectedAddress.toLowerCase() === moment.creator.address.toLowerCase())
+  const raffleDefaultCloseAt = (() => {
+    const n = moment.saleConfig?.saleEnd ? Number(moment.saleConfig.saleEnd) : 0
+    return Number.isFinite(n) && n > 0 ? n : null
+  })()
   const collecting =
     collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
 
@@ -291,8 +305,13 @@ export function PatronArtwork({ moment, description, priority }: PatronArtworkPr
           </div>
         )}
 
-        {/* Admin-only raffle controls (self-hides for non-admins). */}
-        <RaffleAdminPanel collection={address} tokenId={tokenId} />
+        {/* Raffle controls — creator/admin only (self-hides otherwise). */}
+        <RaffleAdminPanel
+          collection={address}
+          tokenId={tokenId}
+          canManage={canManageRaffle}
+          defaultCloseAt={raffleDefaultCloseAt}
+        />
       </div>
     </article>
   )

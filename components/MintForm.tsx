@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
-import { useAccount, useReadContract, usePublicClient } from 'wagmi'
+import { useAccount, useReadContract, usePublicClient, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
@@ -32,6 +32,7 @@ import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError } from '@/lib/toast'
+import { performRaffleManage } from '@/hooks/useRaffleManage'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
@@ -321,10 +322,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // lib/mint-proxy runs the authoritative hasGateAccess on every request.
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
-  // Admins can flag a mint to host the off-chain raffle. Gating the checkbox on
-  // isAdmin keeps it invisible to everyone else; enabling reuses the admin
-  // helper (which ensures the admin session) so the write authenticates.
-  const { isAdmin, toggleRaffleEnabled } = useAdmin()
+  // A creator can flag their own mint to host the off-chain raffle. Enabling is
+  // a signed, self-serve manage call after the mint lands (the minter is the
+  // creator, so they're authorized); applyRaffleEnabled syncs the local set.
+  const { applyRaffleEnabled } = useAdmin()
+  const { signMessageAsync } = useSignMessage()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
@@ -926,11 +928,26 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
-        if (enableRaffle && data.contractAddress && data.tokenId) {
-          // Admin opted this mint into the raffle: enable it now its address +
-          // tokenId are known. Fire-and-forget via the admin helper so the
-          // session is ensured and the client raffle set updates immediately.
-          void toggleRaffleEnabled(data.contractAddress, data.tokenId)
+        if (enableRaffle && address && data.contractAddress && data.tokenId) {
+          // Creator opted this mint into the raffle: enable it now its address +
+          // tokenId are known. One signed manage call (the minter IS the creator
+          // → authorized); snapshots the sale end as the entries-close time and
+          // syncs the local set so the raffle shows without a reload.
+          const closeAt = saleEndInput
+            ? Math.floor(new Date(saleEndInput).getTime() / 1000)
+            : null
+          const raffleCollection = data.contractAddress
+          const raffleTokenId = data.tokenId
+          performRaffleManage({
+            collection: raffleCollection,
+            tokenId: raffleTokenId,
+            address,
+            action: 'enable',
+            signMessage: (m) => signMessageAsync({ message: m }),
+            closeAt: closeAt != null && Number.isFinite(closeAt) ? closeAt : null,
+          })
+            .then(() => applyRaffleEnabled(raffleCollection, raffleTokenId, true))
+            .catch((err) => toastError('Raffle', err))
         }
         if (isAutoDeploy && data.contractAddress) {
           // Text moments don't have a media file, so the new
@@ -1268,11 +1285,26 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
-        if (enableRaffle && data.contractAddress && data.tokenId) {
-          // Admin opted this mint into the raffle: enable it now its address +
-          // tokenId are known. Fire-and-forget via the admin helper so the
-          // session is ensured and the client raffle set updates immediately.
-          void toggleRaffleEnabled(data.contractAddress, data.tokenId)
+        if (enableRaffle && address && data.contractAddress && data.tokenId) {
+          // Creator opted this mint into the raffle: enable it now its address +
+          // tokenId are known. One signed manage call (the minter IS the creator
+          // → authorized); snapshots the sale end as the entries-close time and
+          // syncs the local set so the raffle shows without a reload.
+          const closeAt = saleEndInput
+            ? Math.floor(new Date(saleEndInput).getTime() / 1000)
+            : null
+          const raffleCollection = data.contractAddress
+          const raffleTokenId = data.tokenId
+          performRaffleManage({
+            collection: raffleCollection,
+            tokenId: raffleTokenId,
+            address,
+            action: 'enable',
+            signMessage: (m) => signMessageAsync({ message: m }),
+            closeAt: closeAt != null && Number.isFinite(closeAt) ? closeAt : null,
+          })
+            .then(() => applyRaffleEnabled(raffleCollection, raffleTokenId, true))
+            .catch((err) => toastError('Raffle', err))
         }
         if (isAutoDeploy && data.contractAddress) {
           // The moment's media doubles as the collection cover for
@@ -2080,35 +2112,33 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         </p>
       )}
 
-      {/* Admin-only: flag this mint to host the off-chain raffle. Hidden for
-          everyone else; the enable write authenticates via toggleRaffleEnabled
-          after the mint lands (see handleMint). */}
-      {isAdmin && (
-        <div className="flex items-start justify-between gap-3 border border-line px-3 py-2.5">
-          <div className="min-w-0">
-            <label className="block text-xs font-mono text-dim uppercase tracking-wider">
-              Enable raffle
-              <span className="ml-1.5 text-[9px] text-muted normal-case tracking-normal">admin</span>
-            </label>
-            <p className="text-xs text-muted font-mono mt-1">
-              {enableRaffle
-                ? 'holders of this edition can enter to win the physical'
-                : 'no raffle — holders get the standard list action'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setEnableRaffle((v) => !v)}
-            aria-pressed={enableRaffle}
-            aria-label="Enable raffle for this moment"
-            className="flex-shrink-0 mt-0.5"
-          >
-            <div className={`relative w-8 h-4 rounded-full transition-colors ${enableRaffle ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
-              <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${enableRaffle ? 'translate-x-4' : 'translate-x-0'}`} />
-            </div>
-          </button>
+      {/* Flag this mint to host the off-chain raffle. Self-serve: after the mint
+          lands, a signed manage call (authorized because the minter is the
+          creator) enables it. You can also turn it on/off later from the
+          moment's page. Entries auto-close at the sale end if one is set. */}
+      <div className="flex items-start justify-between gap-3 border border-line px-3 py-2.5">
+        <div className="min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider">
+            Enable raffle
+          </label>
+          <p className="text-xs text-muted font-mono mt-1">
+            {enableRaffle
+              ? 'holders of this edition can enter to win the physical'
+              : 'no raffle — holders get the standard list action'}
+          </p>
         </div>
-      )}
+        <button
+          type="button"
+          onClick={() => setEnableRaffle((v) => !v)}
+          aria-pressed={enableRaffle}
+          aria-label="Enable raffle for this moment"
+          className="flex-shrink-0 mt-0.5"
+        >
+          <div className={`relative w-8 h-4 rounded-full transition-colors ${enableRaffle ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${enableRaffle ? 'translate-x-4' : 'translate-x-0'}`} />
+          </div>
+        </button>
+      </div>
     </form>
   )
 }

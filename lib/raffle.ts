@@ -29,11 +29,16 @@ const entrantsKey = (c: string, t: string) => `${base(c, t)}:entrants`
 const enteredAtKey = (c: string, t: string) => `${base(c, t)}:entered-at`
 const winnerKey = (c: string, t: string) => `${base(c, t)}:winner`
 const stateKey = (c: string, t: string) => `${base(c, t)}:state`
+// Unix seconds at which entries auto-close (snapshotted from the moment's sale
+// end at enable time; editable). Absent → entries never auto-close.
+const entriesCloseAtKey = (c: string, t: string) => `${base(c, t)}:entries-close-at`
 
 /** Member form for the cross-moment RAFFLE_ENABLED_KEY zset. */
 const enabledMember = (c: string, t: string) => `${norm(c)}:${t}`
 
-export type RaffleState = 'open' | 'closed'
+// 'open'  — live; entries accepted until entriesCloseAt passes.
+// 'ended' — finalized; winner (if any) recorded, non-winners released to "list".
+export type RaffleState = 'open' | 'ended'
 
 export interface EnabledRaffle {
   collectionAddress: string
@@ -173,7 +178,7 @@ export async function getRaffleState(
   tokenId: string,
 ): Promise<RaffleState> {
   const s = await redis.get<string>(stateKey(collection, tokenId))
-  return s === 'closed' ? 'closed' : 'open'
+  return s === 'ended' ? 'ended' : 'open'
 }
 
 export async function setRaffleState(
@@ -182,6 +187,42 @@ export async function setRaffleState(
   state: RaffleState,
 ): Promise<void> {
   await redis.set(stateKey(collection, tokenId), state)
+}
+
+/** Unix seconds entries auto-close at, or null if none set. */
+export async function getEntriesCloseAt(
+  collection: string,
+  tokenId: string,
+): Promise<number | null> {
+  const v = await redis.get<number | string>(entriesCloseAtKey(collection, tokenId))
+  if (v == null) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Set (or clear, with null) the entries auto-close time. */
+export async function setEntriesCloseAt(
+  collection: string,
+  tokenId: string,
+  closeAt: number | null,
+): Promise<void> {
+  if (closeAt == null) {
+    await redis.del(entriesCloseAtKey(collection, tokenId))
+  } else {
+    await redis.set(entriesCloseAtKey(collection, tokenId), Math.floor(closeAt))
+  }
+}
+
+/** Are entries currently being accepted? False once ended or the close time
+ *  has passed. (Enablement is checked separately via isRaffleEnabled.) */
+export async function entriesOpen(
+  collection: string,
+  tokenId: string,
+): Promise<boolean> {
+  if ((await getRaffleState(collection, tokenId)) === 'ended') return false
+  const closeAt = await getEntriesCloseAt(collection, tokenId)
+  if (closeAt == null) return true
+  return Math.floor(Date.now() / 1000) < closeAt
 }
 
 export async function isEntered(
@@ -238,18 +279,44 @@ export async function getWinner(
   return (await redis.get<string>(winnerKey(collection, tokenId))) ?? null
 }
 
-/** Admin action: set the winner and close entries in one step. */
-export async function setWinner(
+/**
+ * Eligible entrants: those who STILL hold the edition (entered-then-sold are
+ * ineligible to win). One batched on-chain read; preserves entry order.
+ */
+export async function getEligibleEntrants(
   collection: string,
   tokenId: string,
-  address: string,
-): Promise<void> {
-  await redis.set(winnerKey(collection, tokenId), norm(address))
-  await setRaffleState(collection, tokenId, 'closed')
+): Promise<RaffleEntrant[]> {
+  const entrants = await getEntrants(collection, tokenId)
+  if (entrants.length === 0) return []
+  const holding = await holdsEditionBatch(
+    collection,
+    tokenId,
+    entrants.map((e) => e.address),
+  )
+  return entrants.filter((e) => holding[norm(e.address)])
 }
 
-/** Admin action: clear the winner and reopen entries (re-pick). */
-export async function clearWinner(
+/**
+ * Finalize the raffle: record the winner (if any) and mark it ended. Non-winners
+ * are released back to "list"; the winner sees "you won". Entrants are kept, so
+ * a reopen can restore the live state.
+ */
+export async function endRaffle(
+  collection: string,
+  tokenId: string,
+  winner: string | null,
+): Promise<void> {
+  if (winner) {
+    await redis.set(winnerKey(collection, tokenId), norm(winner))
+  } else {
+    await redis.del(winnerKey(collection, tokenId))
+  }
+  await setRaffleState(collection, tokenId, 'ended')
+}
+
+/** Un-end: clear the winner and reopen entries (recover from a mistaken draw). */
+export async function reopenRaffle(
   collection: string,
   tokenId: string,
 ): Promise<void> {

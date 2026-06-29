@@ -55,7 +55,9 @@ interface AdminContextValue {
   // choose "enter raffle" vs "list" synchronously with no per-card request.
   // Admin-only to toggle; mint-time configuration can write the same set later.
   raffleEnabledKeys: Set<string>
-  toggleRaffleEnabled: (collectionAddress: string, tokenId: string) => Promise<void>
+  // Sync the local raffle-enabled set after a successful signed manage call
+  // (useRaffleManage). Pure local mutation — not the network write.
+  applyRaffleEnabled: (collectionAddress: string, tokenId: string, enabled: boolean) => void
   // Run `fn` with a valid privileged session in scope. Auto-prompts a
   // one-time SIWE signature + login round-trip if no session is active.
   // Returns whatever `fn` returns, or null if unprivileged / cancelled.
@@ -77,7 +79,7 @@ const AdminContext = createContext<AdminContextValue>({
   toggleFeaturedCollection: async () => {},
   toggleMintPassDisplay: async () => {},
   raffleEnabledKeys: new Set(),
-  toggleRaffleEnabled: async () => {},
+  applyRaffleEnabled: () => {},
   withSession: async () => null,
 })
 
@@ -383,38 +385,23 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     [address, isAdmin, isCurator, ensureSession, mintPassKeys, bumpFeaturedRevision],
   )
 
-  const toggleRaffleEnabled = useCallback(
-    async (collectionAddress: string, tokenId: string) => {
-      // Admin-only (the route uses verifyAdminSession); curators never see the
-      // control, so gate here too rather than letting a curator hit a 403.
-      if (!address || !isAdmin) return
-      const s = await ensureSession()
-      if (!s) return // user cancelled signing
-
+  // Reflect a raffle enable/disable in the client set so owned-edition surfaces
+  // swap "list"/"enter raffle" without a reload. The privileged write itself is
+  // a signed, self-serve call in useRaffleManage (authorized per-moment for the
+  // creator / moment admin / platform admin) — this just syncs local state after
+  // it succeeds, which is why it's a plain mutator, not a network call.
+  const applyRaffleEnabled = useCallback(
+    (collectionAddress: string, tokenId: string, enabled: boolean) => {
       const key = `${collectionAddress.toLowerCase()}:${tokenId}`
-      const isEnabled = raffleEnabledKeys.has(key)
-
-      try {
-        const res = await fetch('/api/raffle/enabled', {
-          method: isEnabled ? 'DELETE' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: collectionAddress, tokenId }),
-        })
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}))
-          throw new Error((d as { error?: string }).error ?? 'Failed')
-        }
-        setRaffleEnabledKeys((prev) => {
-          const next = new Set(prev)
-          if (isEnabled) next.delete(key)
-          else next.add(key)
-          return next
-        })
-      } catch (err) {
-        toastError('Raffle update', err)
-      }
+      setRaffleEnabledKeys((prev) => {
+        if (enabled === prev.has(key)) return prev
+        const next = new Set(prev)
+        if (enabled) next.add(key)
+        else next.delete(key)
+        return next
+      })
     },
-    [address, isAdmin, ensureSession, raffleEnabledKeys],
+    [],
   )
 
   const withSession = useCallback(
@@ -481,7 +468,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       toggleFeaturedCollection,
       toggleMintPassDisplay,
       raffleEnabledKeys,
-      toggleRaffleEnabled,
+      applyRaffleEnabled,
       withSession,
     }),
     [
@@ -489,7 +476,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       startSession,
       featuredKeys, featuredCollectionAddrs, mintPassKeys, featuredRevision,
       toggleFeatured, toggleFeaturedCollection, toggleMintPassDisplay,
-      raffleEnabledKeys, toggleRaffleEnabled, withSession,
+      raffleEnabledKeys, applyRaffleEnabled, withSession,
     ],
   )
 
