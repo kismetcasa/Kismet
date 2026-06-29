@@ -83,8 +83,8 @@ ENV PORT=3000
 # and on a single-instance deploy they are REQUIRED — every OOM-kill or crash
 # is a full-site outage with no peer to absorb it:
 #   • Memory limit + swap: set a container memory limit with GENEROUS headroom
-#     above the real runtime peak (ffmpeg transcode ~128MB buffer + working set,
-#     concurrent /api/img streams, the timeline merge) and enable swap so a
+#     above the real runtime peak (ffmpeg transcode up to a ~300MB buffer +
+#     working set, concurrent /api/img streams, the timeline merge) and swap so a
 #     spike PAGES instead of being SIGKILLed. Sizing it tight turns rare spikes
 #     into frequent kills — worse than no limit on one pod.
 #   • Restart policy: `restart: unless-stopped` (or always) so an OOM-kill or

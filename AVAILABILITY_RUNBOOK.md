@@ -32,7 +32,7 @@ deaths/evictions* (in-repo) **and** *survive + recover fast* (ops).
 | 10 | **No process-level crash handlers** — a stray unhandled rejection/exception kills the single process | both | ✅ in-repo |
 | 3 | **Timeline fan-out** held `collections × up-to-10,000` moments in heap to render 20 (OOM at low-tens of dense collections) | 502 (OOM) | ✅ in-repo |
 | 5 | **Timeline fan-out fetches lacked timeouts + concurrency cap** → a slow inprocess piles up handlers/sockets | both | ✅ in-repo |
-| 7 | **`/api/transcode-gif` buffered up to 300MB** + ffmpeg + sharp | 502 (OOM) | ✅ in-repo (cap 300→128MB) |
+| 7 | **`/api/transcode-gif` buffers up to 300MB** + ffmpeg + sharp | 502 (OOM) | Bounded by the `MAX_CONCURRENT=1` semaphore + the ops memory limit; streaming refactor is the follow-up |
 | 4 | **`/api/img` unbounded streaming concurrency**, no CDN | 502 (aggregate RSS) | Ops — **CDN** (see `CDN_RUNBOOK.md`) |
 
 **Refuted — do not chase:** unbounded `SMEMBERS` as an *OOM* (it hard-fails at
@@ -57,12 +57,17 @@ as a real handler timeout (it's a Vercel no-op on self-hosted `node server.js`).
   payload), plus **consecutive-failure tolerance** (only 503 after 3 failures
   in a row, so a single blip can't evict the only pod). A sustained outage
   still trips it.
-- **`app/api/timeline/route.ts`** — caps the per-collection upstream sample at
-  500 regardless of page depth; adds `AbortSignal.timeout(8s)` to the
-  per-collection fetch; bounds the fan-out to 10 concurrent upstream fetches.
+- **`app/api/timeline/route.ts`** — bounds the total moments pulled into the
+  merge via a fixed budget distributed across the fan-out (caps peak heap + the
+  MGET stitch + the sort regardless of page depth or collection count, while
+  preserving full pagination depth when only a few collections are in play);
+  adds `AbortSignal.timeout(8s)` to the per-collection fetch; bounds the fan-out
+  to 10 concurrent upstream fetches.
 - **`lib/coverMomentSynthesis.ts`** — adds `AbortSignal.timeout(8s)` to its two
   inprocess fetches (they run inside the timeline fan-out).
-- **`app/api/transcode-gif/route.ts`** — lowers `MAX_GIF_BYTES` 300MB → 128MB.
+- **`app/api/transcode-gif/route.ts`** — documents that the 300MB source cap is
+  held bounded by the `MAX_CONCURRENT=1` semaphore + the ops memory limit (cap
+  unchanged to avoid narrowing the route's purpose; streaming is the follow-up).
 - **`Dockerfile`** — documents the runtime memory model (we intentionally do
   **not** hardcode `--max-old-space-size`: Node 22 is cgroup-aware and a fixed
   flag would *override* that auto-sizing and OOM a smaller box sooner).
@@ -75,7 +80,7 @@ These are the half the repo cannot ship. On a single instance they are the
 difference between "recovers in seconds" and "dark until someone notices."
 
 1. **Set a container memory limit + swap.** Give it **generous headroom** over
-   the real runtime peak (ffmpeg ~128MB buffer + working set + concurrent
+   the real runtime peak (ffmpeg transcode up to a ~300MB buffer + working set + concurrent
    `/api/img` streams + the timeline merge). With a limit set, Node 22 auto-caps
    V8's heap from it. Enable swap so a spike **pages** instead of being killed.
    _Do not size it tight_ — on one pod, an aggressive cap turns rare spikes into

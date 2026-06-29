@@ -124,12 +124,14 @@ function startBootTasks(): void {
   })()
 
   // Periodic Redis cleanup (expired listings, old notifications, trending
-  // zset trim) — only viable now on a long-running Node process.
-  try {
-    void import('@/lib/backgroundTasks').then((m) => m.startBackgroundTasks())
-  } catch (err) {
-    console.error('[instrumentation] background tasks failed to start (non-fatal):', err)
-  }
+  // zset trim) — only viable now on a long-running Node process. The .catch()
+  // (not a try/catch) is what actually handles a dynamic-import rejection here,
+  // since the import resolves asynchronously.
+  void import('@/lib/backgroundTasks')
+    .then((m) => m.startBackgroundTasks())
+    .catch((err) =>
+      console.error('[instrumentation] background tasks failed to start (non-fatal):', err),
+    )
 }
 
 export async function register() {

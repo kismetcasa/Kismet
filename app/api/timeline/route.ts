@@ -177,20 +177,22 @@ export async function GET(req: NextRequest) {
   // can each thin the result set below `page * limit`. Bump the per-
   // collection sample so paginated pages don't empty out prematurely.
   const needsLargerSample = sort === 'trending' || featured || filterToCreators
-  // Hard-cap the per-collection upstream sample regardless of page depth. The
-  // fan-out pulls `fetchLimit` moments from EVERY collection in parallel and
-  // holds the full merged set in heap to sort before slicing `limit`. Uncapped
-  // (page*limit → up to 100*100 = 10,000 per collection) this is an OOM vector
-  // on the single box once the catalog reaches low-tens of moment-dense
-  // collections — the merged array + its MGET stitch + sort all scale with it.
-  // 500 keeps deep pages well-fed across a multi-collection fan-out while
-  // bounding peak heap; pagination past the cap degrades gracefully, the same
-  // posture as the page<=100 cap above. (SRE handling-overload / load shed.)
-  const FETCH_LIMIT_CAP = 500
-  const fetchLimit = Math.min(
-    needsLargerSample ? Math.max(page * limit, 200) : page * limit,
-    FETCH_LIMIT_CAP,
-  )
+  const baseSample = needsLargerSample ? Math.max(page * limit, 200) : page * limit
+  // Bound the TOTAL moments pulled into the in-memory merge, not just the
+  // per-collection request. The fan-out hits EVERY collection in parallel and
+  // holds the whole merged set in heap to sort before slicing `limit`; uncapped
+  // (baseSample → up to 100*100 = 10,000 per collection) the heap, its MGET
+  // stitch, and the O(n log n) sort all scale as collections × baseSample and
+  // become an OOM vector on the single box. Distributing a fixed budget across
+  // the fan-out caps the merged size regardless of how deep `page` goes or how
+  // many collections are tracked — while preserving FULL pagination depth when
+  // only a few collections are in play (the per-collection budget is then large,
+  // so a single collection page is unchanged). The `limit` floor guarantees
+  // every collection can still fill at least one page. (SRE handling-overload /
+  // Azure Bulkhead.)
+  const MERGE_BUDGET = 5000
+  const perCollectionCap = Math.max(limit, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
+  const fetchLimit = Math.min(baseSample, perCollectionCap)
   const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
     fetchCollection(c, fetchLimit),
   )
