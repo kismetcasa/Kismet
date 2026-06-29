@@ -197,6 +197,36 @@ export async function updateCollectionMeta(
   await redis.set(keyCollectionMeta(address), JSON.stringify(data))
 }
 
+/**
+ * Backfill a creation timestamp onto an EXISTING tracked collection's meta
+ * record, preserving every other field and never touching set membership.
+ * For collections deployed before the deploy-time stamp shipped, whose
+ * `created_at` the collection page can no longer source from inprocess's
+ * (removed) singular endpoint.
+ *
+ * Returns:
+ *  - 'set'        wrote the timestamp
+ *  - 'skipped'    a stamp already exists and force was not set (idempotent)
+ *  - 'no-record'  no KV meta to merge into — we don't synthesize a partial
+ *                 record here, so the caller can report it instead
+ */
+export async function setCollectionCreatedAt(
+  address: string,
+  createdAt: number,
+  force = false,
+): Promise<'set' | 'skipped' | 'no-record'> {
+  const existing = await getCollectionMeta(address)
+  if (!existing) return 'no-record'
+  if (existing.createdAt && !force) return 'skipped'
+  const data: CollectionMeta = {
+    ...existing,
+    address: address.toLowerCase(),
+    createdAt,
+  }
+  await redis.set(keyCollectionMeta(address), JSON.stringify(data))
+  return 'set'
+}
+
 // Inprocess-indexer-lag fallback for the collection page.
 export async function getCollectionMeta(
   address: string
