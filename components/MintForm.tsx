@@ -399,8 +399,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [residenciesPercent, setResidenciesPercent] = useState(DEFAULT_RESIDENCIES_PERCENT)
   const [editingResidencies, setEditingResidencies] = useState(false)
   const [residenciesInput, setResidenciesInput] = useState(String(DEFAULT_RESIDENCIES_PERCENT))
-  // Admin-only: enable the raffle for this moment at mint time (written after
-  // the mint succeeds, once its contractAddress + tokenId are known).
+  // Self-serve: flag this mint to host the raffle. Written after the mint
+  // succeeds (once its contractAddress + tokenId are known) via a signed manage
+  // call — the minter is the creator, so they're authorized.
   const [enableRaffle, setEnableRaffle] = useState(false)
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)

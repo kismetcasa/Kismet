@@ -4,12 +4,14 @@ import { serverBaseClient } from './rpc'
 
 /**
  * Off-chain raffle store. A raffle is identified by (collection, tokenId) — the
- * edition collectors hold. An admin enables a raffle PER MOMENT (see
- * RAFFLE_ENABLED_KEY + /api/raffle/enabled); entering is then recorded here in
- * Redis (verified server-side: the entrant signed, and holds the edition
- * on-chain); the winner is chosen MANUALLY by an admin (no on-chain
- * randomness). "Announce only" — nothing is burned, the winner just keeps
- * their edition and is notified; physical fulfilment happens off-platform.
+ * edition collectors hold. The moment's creator (or a moment admin / the
+ * platform admin) enables a raffle PER MOMENT and runs its lifecycle through the
+ * signed /api/raffle/manage route (see lib/raffleAuth); entering is recorded
+ * here in Redis (verified server-side: the entrant signed, and holds the edition
+ * on-chain). The winner is DRAWN from eligible entrants — those who still hold
+ * the edition — when the creator ends the raffle. "Announce only" — nothing is
+ * burned, the winner keeps their edition and is notified; physical fulfilment
+ * happens off-platform.
  *
  * Keys (kismetart: prefix, matching lib/redis + lib/pass-validity conventions):
  *   <base>:entrants    SET   lowercased entrant addresses
@@ -57,9 +59,10 @@ export async function isRaffleEnabled(
   return score != null
 }
 
-/** Admin action: enable the raffle for one moment. Idempotent (re-stamps the
- *  enabled-at score). Does NOT touch entrants/winner/state — re-enabling a
- *  previously-disabled raffle restores its entrants as they were. */
+/** Enable the raffle for one moment (self-serve via /api/raffle/manage).
+ *  Idempotent (re-stamps the enabled-at score). Does NOT touch
+ *  entrants/winner/state — re-enabling a previously-disabled raffle restores its
+ *  entrants as they were. */
 export async function setRaffleEnabled(
   collection: string,
   tokenId: string,
@@ -70,8 +73,8 @@ export async function setRaffleEnabled(
   })
 }
 
-/** Admin action: disable the raffle for one moment. Leaves entrant/winner data
- *  intact so it can be re-enabled without loss. */
+/** Disable the raffle for one moment. Leaves entrant/winner data intact so it
+ *  can be re-enabled without loss. */
 export async function clearRaffleEnabled(
   collection: string,
   tokenId: string,
@@ -146,8 +149,9 @@ export async function holdsEdition(
   }
 }
 
-/** One-RPC balanceOfBatch for the admin entrants list (≤100 entrants). Maps
- *  lowercased address -> currently-holds. Fails closed (all false) on error. */
+/** One-RPC balanceOfBatch for the eligibility draw (getEligibleEntrants, ≤100
+ *  entrants). Maps lowercased address -> currently-holds. Fails closed (all
+ *  false) on error. */
 export async function holdsEditionBatch(
   collection: string,
   tokenId: string,

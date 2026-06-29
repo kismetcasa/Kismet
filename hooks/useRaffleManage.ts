@@ -49,7 +49,7 @@ export async function performRaffleManage({
     tokenId,
     address,
     nonce,
-    // Floor to match the server (manage route Math.floor)s body.closeAt) — a
+    // Floor to match the server (the manage route floors body.closeAt) — a
     // fractional value would make the signed string diverge from the rebuild and
     // silently fail auth. Callers already pass integers; this is belt-and-braces.
     ...(action === 'enable' || action === 'setCloseAt'

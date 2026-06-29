@@ -47,8 +47,9 @@ export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'
 // Per-moment raffle enablement. A zset of `<addr>:<tokenId>` members (score =
-// enabledAt) marking which mints have an active raffle. An admin toggles this
-// per moment (see /api/raffle/enabled); the client learns the whole set once
-// on mount (AdminContext.raffleEnabledKeys), the same way it learns FEATURED_KEY,
-// so owned-edition surfaces can choose "enter raffle" vs "list" synchronously.
+// enabledAt) marking which mints have a raffle (active or ended). The moment's
+// creator/admin toggles it per moment via the signed /api/raffle/manage route;
+// the client learns the whole set once on mount (AdminContext.raffleEnabledKeys),
+// the same way it learns FEATURED_KEY, so owned-edition surfaces can choose
+// "enter raffle" vs "list" synchronously.
 export const RAFFLE_ENABLED_KEY = 'kismetart:raffle-enabled'

@@ -55,7 +55,8 @@ interface PatronArtworkProps {
  * button the same way MomentCard does, so collecting here unlocks mint access
  * without leaving the page.
  *
- * Owners get an "enter raffle" affordance; admins get the raffle picker panel.
+ * Owners get an "enter raffle" affordance; the creator/admin gets the raffle
+ * management panel.
  */
 export function PatronArtwork({ moment, description, priority }: PatronArtworkProps) {
   const { address, token_id: tokenId } = moment

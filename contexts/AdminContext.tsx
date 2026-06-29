@@ -49,11 +49,12 @@ interface AdminContextValue {
   // Display. Promoting also features the mint (DISPLAY ⊆ FEATURED); demoting
   // leaves it featured.
   toggleMintPassDisplay: (collectionAddress: string, tokenId: string) => Promise<void>
-  // Mints with an active raffle, keyed `<addr>:<tokenId>` (lowercase addr).
-  // Loaded once on mount from /api/raffle/enabled (public), the same way
-  // featuredKeys loads — so owned-edition surfaces (CollectedActions) can
-  // choose "enter raffle" vs "list" synchronously with no per-card request.
-  // Admin-only to toggle; mint-time configuration can write the same set later.
+  // Mints that have a raffle (active or ended), keyed `<addr>:<tokenId>`
+  // (lowercase addr). Loaded once on mount from /api/raffle/enabled (public),
+  // the same way featuredKeys loads — so owned-edition surfaces
+  // (CollectedActions) can choose "enter raffle" vs "list" synchronously with no
+  // per-card request. The set is mutated by applyRaffleEnabled after a signed,
+  // self-serve manage call (creator/admin); the mint form writes it too.
   raffleEnabledKeys: Set<string>
   // Sync the local raffle-enabled set after a successful signed manage call
   // (useRaffleManage). Pure local mutation — not the network write.
