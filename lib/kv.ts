@@ -54,6 +54,12 @@ export interface CollectionMeta {
   // mint card). Not used by /collection/[address] — the full
   // collection page is the moment's actual home, so it stays there.
   coverTokenId?: string
+  // Deploy-time creation timestamp (ms epoch), stamped by
+  // addTrackedCollection. The collection page reads this as a fallback for
+  // the "created <date>" chip when inprocess's /collection endpoint doesn't
+  // return `created_at`, so the chip survives indexer gaps. Preserved across
+  // metadata edits in updateCollectionMeta.
+  createdAt?: number
 }
 
 export type CollectionSource = 'create-form' | 'auto-deploy'
@@ -136,7 +142,17 @@ export async function addTrackedCollection(
       ops.push(redis.sadd(CREATED_COLLECTIONS_KEY, address))
     }
     if (meta?.name) {
-      const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
+      // Stamp a creation timestamp so the collection page can show
+      // "created <date>" even before — or without — inprocess indexing the
+      // contract's created_at. Preserve any existing stamp so re-registering
+      // the same collection never resets its original creation date.
+      const existing = await getCollectionMeta(address)
+      const createdAt = existing?.createdAt ?? meta.createdAt ?? Date.now()
+      const data: CollectionMeta = {
+        ...meta,
+        address: address.toLowerCase(),
+        createdAt,
+      }
       ops.push(redis.set(keyCollectionMeta(address), JSON.stringify(data)))
     }
     await Promise.all(ops)
@@ -168,7 +184,16 @@ export async function updateCollectionMeta(
   address: string,
   meta: Omit<CollectionMeta, 'address'>,
 ): Promise<void> {
-  const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
+  // Preserve the immutable deploy-time creation timestamp across metadata
+  // edits — the edit form never sends one, so without this an edit would wipe
+  // the "created <date>" the collection page reads back from KV.
+  const existing = await getCollectionMeta(address)
+  const createdAt = meta.createdAt ?? existing?.createdAt
+  const data: CollectionMeta = {
+    ...meta,
+    address: address.toLowerCase(),
+    ...(createdAt ? { createdAt } : {}),
+  }
   await redis.set(keyCollectionMeta(address), JSON.stringify(data))
 }
 

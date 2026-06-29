@@ -280,7 +280,10 @@ export default async function CollectionPage({ params }: Props) {
       defaultAdminUsername={adminUsername}
       defaultAdminAddress={adminAddressRaw}
       payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
-      createdAt={detail?.created_at}
+      createdAt={
+        detail?.created_at ??
+        (kvMeta?.createdAt ? new Date(kvMeta.createdAt).toISOString() : undefined)
+      }
       initialHidden={hidden}
       isMobile={isMobile}
     />
