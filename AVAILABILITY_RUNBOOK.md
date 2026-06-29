@@ -79,29 +79,60 @@ caught in review and removed. Crash survival is the framework's job here.
 
 ---
 
+## Confirmed from production telemetry (a Coolify deploy log + Upstash metrics)
+
+- **Cold-start blocking was real.** The first `/api/health` probe on a freshly
+  booted container **timed out (>5s)**, then passed in ~0.15s once warm — exactly
+  the symptom of `register()` blocking serving on its awaited RPC + (cross-region)
+  Redis warmup. The de-block fix in this PR directly targets this.
+- **Deploys are clean.** Coolify does a health-gated rolling update (new
+  container must pass `/api/health` before the old is removed), so "no server
+  available" is **not** a deploy artifact — it's the lone process being *down*
+  (crash/restart), which makes the memory + restart-policy items below the crux.
+- **Redis cost is GET-dominated.** Upstash "Top Commands" shows one command
+  (GET — per-request session validation + the unread-count poll) dwarfing all
+  others; `EVAL`/`SMEMBERS`/`ZRANGE` are comparatively flat. ⇒ the zero-tradeoff
+  changes here (ZMSCORE, longer TTLs) help only modestly; **the real cost cut is
+  the deferred process-local session cache** (Core tier).
+- **Redis is in AWS `us-east-1`** while the app runs on Oracle — every Redis call
+  pays cross-cloud latency, which also *amplified* the cold-start block.
+  Co-locating Redis with the app (or a closer region) cuts latency on every call.
+
 ## Ops changes you MUST make in Coolify (load-bearing — not in the repo)
 
 These are the half the repo cannot ship. On a single instance they are the
 difference between "recovers in seconds" and "dark until someone notices."
 
-1. **Set a container memory limit + swap.** Give it **generous headroom** over
-   the real runtime peak (ffmpeg transcode up to a ~300MB buffer + working set + concurrent
-   `/api/img` streams + the timeline merge). With a limit set, Node 22 auto-caps
-   V8's heap from it. Enable swap so a spike **pages** instead of being killed.
-   _Do not size it tight_ — on one pod, an aggressive cap turns rare spikes into
-   frequent OOM-kills and makes outages **worse**. (AWS WA Reliability: contain
-   failure without amplifying it.)
-2. **Set the restart policy to `unless-stopped`** (or `always`). This is the
-   single most important "survive a crash" lever: when the kernel OOM-kills the
-   process (the primary remaining crash vector — Next survives stray
-   exceptions), the container recovers in seconds instead of staying dark.
+1. **Set a generous container memory limit; swap likely UNAVAILABLE on this
+   host.** Give the limit **generous headroom** over the real runtime peak
+   (ffmpeg transcode up to a ~300MB buffer + working set + concurrent `/api/img`
+   streams + the timeline merge). With a limit set, Node 22 auto-caps V8's heap
+   from it. **Caveat from the deploy log:** this Oracle kernel reports *"memory
+   swappiness discarded — kernel does not support … or the cgroup is not
+   mounted,"* so **swap is probably not available** to cushion a spike, and you
+   should **verify the memory limit is even being enforced** (`docker inspect
+   <container> --format '{{.HostConfig.Memory}}'` — `0` = not enforced). Without
+   a swap cushion, a spike past the limit is a *hard* OOM-kill, so size the limit
+   with EXTRA headroom and lean on the in-code spike bounding (timeline budget,
+   transcode cap) + fast restart. _Do not size it tight_ — on one pod an
+   aggressive cap turns rare spikes into frequent kills and makes outages
+   **worse**. (Enabling swap is a host change: a swapfile + `swapaccount=1
+   cgroup_enable=memory` kernel args — optional, more involved.)
+2. **Set the restart policy to `unless-stopped`** (or `always`). The single most
+   important "survive a crash" lever: when the kernel OOM-kills the process (the
+   primary remaining crash vector — Next survives stray exceptions), the
+   container recovers in seconds instead of staying dark. Coolify generates a
+   `docker-compose.yaml`; verify the `restart:` line there, or
+   `docker inspect <container> --format '{{.HostConfig.RestartPolicy.Name}}'`.
    (12-Factor IX disposability.)
-3. **Tune the readiness probe** (if Coolify is configured to probe
-   `/api/readiness`): `failureThreshold` **3–5**, `timeout` ≥ Upstash tail
-   latency, a sane `interval`. Keep the Docker `HEALTHCHECK` pointed at
-   `/api/health` (liveness, always-200) so a wedged-but-alive process is never
-   restart-looped. (Google SRE: never hard-gate health on a variable-latency
-   dependency.)
+3. **Readiness probe is currently DORMANT — `/api/health` is the gate.** The
+   deploy log confirms Coolify health-gates the rolling update on the Dockerfile
+   `HEALTHCHECK` (`/api/health`, always-200), not `/api/readiness`. For a single
+   instance that's the *correct* choice (you never want to evict your only pod
+   for a dependency blip), so the readiness hardening in this PR is harmless
+   future-proofing for a multi-pod world, not an active fix today. Only wire
+   `/api/readiness` (with `failureThreshold` **3–5**) if/when you run ≥2 replicas.
+   (Google SRE: never hard-gate health on a variable-latency dependency.)
 4. **Put a CDN in front of `/api/img` + static** (`CDN_RUNBOOK.md`). The media
    is immutable + content-addressed, so the edge absorbs the streaming RSS/FD
    pressure the origin can't. Highest-leverage durable fix for the `/api/img`
