@@ -7,6 +7,7 @@ import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
 import { MaybeLazy } from './LazyMount'
+import { isPatronCollection } from '@/lib/patronCollection'
 
 // Number of moments rendered as a single grid row before the next collection
 // breaks in. Picked to match the lg+ 4-col grid so the collection always
@@ -101,20 +102,59 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   // renders from — instead of lagging FeaturedMoment's own /api/moment fetch.
   // Undefined when the mint lives only inside a featured collection.
   const displayMoment = displayKey ? moments.find((m) => keyOf(m) === displayKey) : undefined
+  // The Mint Pass Display leads the tab. The two surfaces are deliberately
+  // different:
+  //   • DESKTOP — FeaturedMoment's rich 3-column hero (the special presentation).
+  //   • MOBILE  — there is NO special presentation; it's just a normal card. So
+  //     when the mint is in the timeline payload we render it as a plain
+  //     MomentCard with the EXACT same props every other featured card uses —
+  //     same component, same image path, priority={false} like every mobile card
+  //     — so it cannot load or look any different from them. No FeaturedMoment
+  //     wrapper, no /api/moment self-fetch competing in the miniapp's pool, no
+  //     detail-driven showCreator override, and no priority preload (mobile
+  //     preloads nothing — see the grid below; a preload fetches during bootstrap
+  //     and lags in the miniapp's shared pool).
+  // Only when the mint isn't a standalone timeline entry (no displayMoment — it
+  // lives solely inside a featured collection) do we fall back to FeaturedMoment
+  // on mobile too, which self-fetches that one mint so it can render at all.
   const hero = displayKey && colon > 0
-    ? (
-      <FeaturedMoment
-        // Key by the mint so a different display mounts a fresh instance,
-        // never inheriting the prior one's fetch/ratio/resolved state.
-        key={displayKey}
-        address={displayKey.slice(0, colon)}
-        tokenId={displayKey.slice(colon + 1)}
-        initialMoment={displayMoment}
-        isMobile={isMobile}
-        priority
-        onResolved={setHeroHasContent}
-      />
-    )
+    ? isMobile && displayMoment
+      ? (
+        // NO priority on mobile — render exactly like the other featured cards,
+        // which load instantly precisely because they DON'T preload. `priority`
+        // injects a <link rel=preload as=image> into <head> that fetches during
+        // app bootstrap and competes with the critical JS/CSS in the miniapp's
+        // tiny shared HTTP/2 pool, so the preloaded image lags behind the
+        // non-preloaded grid cards (which fetch after hydration, once the pool is
+        // free). MomentImage force-eagers it in the miniapp via skipDirectWalk,
+        // so it still loads eagerly — just without the counter-productive preload.
+        // Now byte-identical to a grid card. (Desktop keeps the rich priority
+        // hero in the FeaturedMoment branch below.)
+        <MomentCard
+          key={displayKey}
+          moment={displayMoment}
+          priority={false}
+          isMobile={isMobile}
+          // Patron mints are physical-artwork scans heavy enough to 413 the
+          // next/image optimizer; skip it and go straight to the downscaling
+          // proxy so we don't re-pay that doomed round-trip (+ its blink) on
+          // every load. Normal featured displays keep the optimizer.
+          preferProxy={isPatronCollection(displayMoment.address)}
+        />
+      )
+      : (
+        <FeaturedMoment
+          // Key by the mint so a different display mounts a fresh instance,
+          // never inheriting the prior one's fetch/ratio/resolved state.
+          key={displayKey}
+          address={displayKey.slice(0, colon)}
+          tokenId={displayKey.slice(colon + 1)}
+          initialMoment={displayMoment}
+          isMobile={isMobile}
+          priority
+          onResolved={setHeroHasContent}
+        />
+      )
     : null
 
   // The display mint leads the tab as the hero above, so pull it out of the
@@ -181,9 +221,17 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
             key={`m-${i}`}
             className={soleMomentBlock ? fillGridClass(b.items.length) : FULL_GRID}
           >
-            {/* Prioritize the first row of moments only when it leads the
-                feed (i === 0). Subsequent moment blocks render below other
-                content and shouldn't compete with LCP. */}
+            {/* Priority (the next/image <link rel=preload>) is DESKTOP-ONLY.
+                Desktop's first block is a row of up to 4 columns, so its first 3
+                are above the fold and benefit from the preload. On MOBILE we
+                preload nothing: a preload fetches during app bootstrap and
+                competes with the critical JS/CSS in the miniapp's tiny shared
+                HTTP/2 pool, so a preloaded card lags behind the others (which
+                fetch after hydration, pool free). MomentImage already force-
+                eagers the visible cards in the miniapp via skipDirectWalk, so
+                they still load promptly — just without the counter-productive
+                preload. Keeping every mobile card priority={false} is also what
+                makes the featured Mint Pass card load identically to the rest. */}
             {b.items.map((m, idx) => {
               const flatIdx = flatMomentIdx++
               return (
@@ -195,7 +243,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
                   {() => (
                     <MomentCard
                       moment={m}
-                      priority={i === 0 && idx < 3}
+                      priority={isMobile ? false : i === 0 && idx < 3}
                       isMobile={isMobile}
                     />
                   )}
@@ -207,7 +255,10 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
           <CollectionRow
             key={`c-${b.row.contractAddress}`}
             collection={b.row}
-            priority={i === 0}
+            // Desktop-only preload, same rule as the grid above: on mobile we
+            // preload nothing (preloads lag in the miniapp's shared pool), so
+            // every surface loads uniformly.
+            priority={isMobile ? false : i === 0}
             isMobile={isMobile}
           />
         ),

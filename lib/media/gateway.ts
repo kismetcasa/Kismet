@@ -28,8 +28,16 @@ export function isProxiable(uri: string): boolean {
   return uri.startsWith('ar://') || uri.startsWith('ipfs://')
 }
 
-export function proxyUrl(uri: string): string {
-  return `/api/img?u=${encodeURIComponent(uri)}`
+/**
+ * URL for the `/api/img` proxy. Pass `width` to request a server-side downscale
+ * — the NextImage optimizer→proxy fallback uses this so a source too large for
+ * next/image (it 413s) still degrades to a small image instead of streaming the
+ * full-res original. Omit it (video, the lightbox, posters, the detail prefetch)
+ * to stream the bytes untouched.
+ */
+export function proxyUrl(uri: string, width?: number): string {
+  const w = width && width > 0 ? `&w=${Math.round(width)}` : ''
+  return `/api/img?u=${encodeURIComponent(uri)}${w}`
 }
 
 /**

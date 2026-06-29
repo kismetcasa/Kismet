@@ -9,6 +9,7 @@ import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { MomentCard } from './MomentCard'
@@ -246,7 +247,21 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       creator: { address: creatorAddress ?? '', username: creditOverride ?? creatorUsername ?? undefined, hidden: false },
       admins: [],
       created_at: '',
-      metadata: detail.metadata,
+      // Render the artwork from the TIMELINE metadata when we have it — it
+      // carries kismet_thumbhash and the exact image src every other feed card
+      // uses, and it's ALREADY painting by the time `detail` lands. Swapping to
+      // detail.metadata here remounts the <img> mid-load: /api/moment returns
+      // the inprocess detail verbatim, whose metadata can resolve a different
+      // image src (MomentImage keys its <Image> off the resolved URL, so the
+      // element remounts) and can omit kismet_thumbhash (dropping the blur
+      // placeholder). In the miniapp's saturated HTTP/2 pool that interrupted
+      // refetch stalls and leaves the card a blank box, while the ordinary grid
+      // cards — which never swap — render fine. This is what stopped the
+      // featured card from "acting like a normal card" on mobile. `detail` still
+      // drives price (saleConfig) and the credit-corrected creator below. Falls
+      // back to detail.metadata only when there was no timeline seed (the mint
+      // lives solely inside a featured collection, so it never had one).
+      metadata: initialMoment?.metadata ?? detail.metadata,
       saleConfig: detail.saleConfig,
       // Carry the timeline-stitched chip across the swap. /api/moment doesn't
       // return it, so without this the field would go defined→undefined when we
@@ -270,20 +285,34 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
 
   if (blank) return null
 
-  // The below-lg card. On mobile it's the ONLY presentation we mount (the lg+
-  // hero is skipped — see the isMobile prop doc); on desktop it's wrapped
-  // `lg:hidden` below the hero. priority={false} isn't the whole story for fetch
-  // priority: MomentImage does `priority || skipDirectWalk`, so on WebKit/iframe
-  // (the miniapp — the surface this fix targets) the image is force-eager
-  // regardless of this prop, which is what we want for the mobile LCP there. On
-  // standalone mobile Chrome (not WebKit, not framed) skipDirectWalk is false,
-  // so the card image stays lazy — pre-existing for this card, accepted here.
-  // On desktop, priority={false} leaves the lg:hidden copy lazy so it never
-  // fetches while the hero is the visible presentation. showCreator follows the
-  // resolved artist so the chip drops exactly when the hero drops its @artist
-  // line — never a dead /profile/ link.
+  // The below-lg card. On mobile this component is only reached as a FALLBACK —
+  // when the mint isn't a standalone timeline entry, FeaturedFeed renders this
+  // instead of a plain MomentCard (the common mobile path lives there now). On
+  // desktop it's the `lg:hidden` duplicate beneath the rich hero.
+  //
+  // priority={false} on BOTH surfaces:
+  //   • Desktop — the hero owns the LCP; this hidden copy must never fetch while
+  //     the hero is the visible presentation.
+  //   • Mobile — match every other feed card, which renders WITHOUT priority.
+  //     `priority` injects a <link rel=preload> that fetches during app bootstrap
+  //     and competes with the critical JS/CSS in the miniapp's tiny shared HTTP/2
+  //     pool, so the preloaded image LAGS behind the non-preloaded cards (which
+  //     fetch after hydration, pool free). MomentImage still force-eagers it in
+  //     the miniapp via skipDirectWalk, so it loads eagerly — just without the
+  //     counter-productive preload, identical to the others.
+  // showCreator follows the resolved artist so the chip drops exactly when the
+  // hero drops its @artist line — never a dead /profile/ link.
   const card = cardMoment ? (
-    <MomentCard moment={cardMoment} showCreator={!!creatorAddress} priority={false} isMobile={isMobile} />
+    <MomentCard
+      moment={cardMoment}
+      showCreator={!!creatorAddress}
+      priority={false}
+      isMobile={isMobile}
+      // Heavy Patron physical-art scans 413 the optimizer; skip to the
+      // downscaling proxy so the mobile fallback doesn't blink through the
+      // wasted round-trip. Matches the FeaturedFeed mobile display card.
+      preferProxy={isPatronCollection(address)}
+    />
   ) : null
 
   if (isMobile) return card
@@ -363,9 +392,12 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               src={media.src}
               alt={title}
               fill
-              // No preferProxy: the hero is the LCP, so let next/image optimize
-              // (AVIF/WebP + downscale via `sizes`); MomentImage still falls back
-              // to the proxy if the optimizer 413s heavy art.
+              // The hero is the LCP, so for normal art let next/image optimize
+              // (AVIF + downscale via `sizes`). But Patron mints are heavy
+              // physical-art scans that 413 the optimizer on every load — skip
+              // straight to the downscaling proxy so we don't re-pay that doomed
+              // round-trip (desktop's pool would mask it, but it's still waste).
+              preferProxy={isPatronCollection(address)}
               className="object-contain"
               sizes={heroSizes}
               mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}

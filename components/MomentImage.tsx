@@ -24,6 +24,16 @@ function isGifUri(url: string): boolean {
   return url.split(/[?#]/, 1)[0].toLowerCase().endsWith('.gif')
 }
 
+// Any time MomentImage delivers a still image through the /api/img proxy — the
+// optimizer→proxy fallback on a 413, OR a preferProxy caller that skips the
+// optimizer outright — ask the proxy to downscale to this width instead of
+// streaming the full-res original (which stalls mobile + the miniapp's shared
+// HTTP/2 pool). 2048 covers the largest display we render (a retina desktop
+// hero) while turning a multi-MB source into a small WebP. Only GIFs are exempt
+// — they pass through untouched so animation is preserved (the route also
+// re-checks the real content-type, so a mislabeled gif stays safe).
+const PROXY_DISPLAY_MAX_WIDTH = 2048
+
 type DeliveryMode = 'optimized' | 'proxy' | 'direct'
 
 type NextImageProps = CommonProps & {
@@ -32,10 +42,11 @@ type NextImageProps = CommonProps & {
   /**
    * Skip the optimizer attempt and go straight to the proxy. For cover-style
    * contexts where the source is typically heavy enough that the optimizer
-   * 413's anyway — saves the failed-optimizer round-trip and replaces a
-   * single-source arweave.net fetch with the proxy's parallel-gateway race.
-   * Tradeoff: forgoes AVIF/WebP transcode + downscaling, so apply only for
-   * medium-or-larger display sizes where unoptimized bytes are acceptable.
+   * 413's anyway — saves the failed-optimizer round-trip (and the
+   * optimized→proxy remount it triggers) and replaces a single-source
+   * arweave.net fetch with the proxy's parallel-gateway race. The proxy still
+   * downscales to PROXY_DISPLAY_MAX_WIDTH (WebP), so bytes stay small; it only
+   * forgoes the optimizer's AVIF + per-breakpoint sizing.
    */
   preferProxy?: boolean
   /**
@@ -72,7 +83,8 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
-  const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
+  const isGif = isGifMime(mime) || isGifUri(src)
+  const skipOptimizer = preferProxy || isGif
   // Memoized once at mount — sniffing UA on every error would be wasteful.
   // Skip the direct-gateway-walk fallback on:
   //   - WebKit (Safari + iOS Mini App webview): stalls Safari's connection
@@ -97,8 +109,12 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // 'direct' rather than restarting the state machine.
   useEffect(() => { setMode(initialMode) }, [src, initialMode])
 
-  // 'proxy' uses one stable URL — the proxy fans out internally.
-  const renderUrl = mode === 'proxy' ? proxyUrl(src) : url
+  // 'proxy' uses one stable URL — the proxy fans out internally. Request a
+  // downscale for any still image (the 413 fallback OR a preferProxy caller) so
+  // we never ship the full-res original; only GIFs pass through untouched
+  // (animation preserved).
+  const renderUrl =
+    mode === 'proxy' ? proxyUrl(src, isGif ? undefined : PROXY_DISPLAY_MAX_WIDTH) : url
   const unoptimized = mode !== 'optimized'
 
   const [loaded, setLoaded] = useState(false)
