@@ -73,9 +73,11 @@ caught in review and removed. Crash survival is the framework's job here.
 - **`app/api/transcode-gif/route.ts`** — documents that the 300MB source cap is
   held bounded by the `MAX_CONCURRENT=1` semaphore + the ops memory limit (cap
   unchanged to avoid narrowing the route's purpose; streaming is the follow-up).
-- **`Dockerfile`** — documents the runtime memory model (we intentionally do
-  **not** hardcode `--max-old-space-size`: Node 22 is cgroup-aware and a fixed
-  flag would *override* that auto-sizing and OOM a smaller box sooner).
+- **`Dockerfile`** — sets `NODE_OPTIONS=--max-old-space-size=4096` in the runner
+  stage. This is the fix for the confirmed crash: production was dying at V8's
+  ~2 GB default heap while the 11 GB host sat ~9 GB idle (no cgroup limit for
+  Node 22 to size against). 4 GB uses the available RAM; the timeline
+  `MERGE_BUDGET` cap stops the unbounded climb that was hitting the ceiling.
 
 ---
 
