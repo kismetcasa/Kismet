@@ -70,29 +70,24 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
-# ─── Runtime memory model (READ BEFORE adding NODE_OPTIONS here) ──────
-# We deliberately set NO --max-old-space-size at runtime. Node 22 is
-# cgroup-memory-aware: when the container has a memory limit, V8 derives its
-# own heap ceiling FROM that limit. Hardcoding --max-old-space-size would
-# OVERRIDE that auto-sizing with a fixed number and, on a smaller host, push
-# the JS-heap ceiling ABOVE the cgroup limit — making OOM-kills MORE frequent,
-# not fewer. (The builder stage caps the heap because `next build` has a known
-# fixed peak on a fixed builder; request-serving does not.)
+# ─── Runtime V8 heap cap (set, per production crash evidence) ─────────
+# Production was crashing every ~45 min with `FATAL ERROR: ... JavaScript heap
+# out of memory` at ~2030 MB — a V8 HEAP OOM (not a kernel/cgroup OOM, so
+# Docker's OOMKilled stayed false and `dmesg` was clean, which masked it). Root
+# cause: the container has NO cgroup memory limit (`memory.max = max`), so Node
+# 22 had nothing to size against and fell back to V8's ~2 GB DEFAULT old-space
+# ceiling — while the 11 GB host sat with ~9 GB free. The app hit 2 GB and died
+# while most of the box's RAM was idle.
 #
-# The load-bearing controls live in Coolify (cgroup-level, not in this image),
-# and on a single-instance deploy they are REQUIRED — every OOM-kill or crash
-# is a full-site outage with no peer to absorb it:
-#   • Memory limit + swap: set a container memory limit with GENEROUS headroom
-#     above the real runtime peak (ffmpeg transcode up to a ~300MB buffer +
-#     working set, concurrent /api/img streams, the timeline merge) and swap so a
-#     spike PAGES instead of being SIGKILLed. Sizing it tight turns rare spikes
-#     into frequent kills — worse than no limit on one pod.
-#   • Restart policy: `restart: unless-stopped` (or always) so a kernel
-#     OOM-kill recovers in seconds (Next 15 already keeps the process alive
-#     through stray exceptions, so OOM is the primary remaining crash vector).
-# The off-heap spikes (ffmpeg child process, undici stream chunks, arrayBuffer
-# reads) are bounded in code, not by a heap flag — see app/api/transcode-gif,
-# app/api/img, and app/api/timeline.
+# So we raise the ceiling explicitly to use the available RAM. 4096 MB leaves
+# generous headroom under an 11 GB host even alongside a concurrent `next build`
+# (~3.5 GB). Tune via a Coolify NODE_OPTIONS env var if the host size changes
+# (a runtime env var overrides this ENV). The real driver of the growth — the
+# timeline fan-out merge — is ALSO bounded in code now (app/api/timeline
+# MERGE_BUDGET); this cap is the headroom, that cap stops the unbounded climb.
+# Belt-and-suspenders, set a Coolify container --memory limit too (then Node 22
+# would derive the heap from it and this flag becomes redundant but harmless).
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # ffmpeg powers the server-side GIF→MP4 transcode (/api/transcode-gif),
 # the no-wasm-cap fallback for GIFs too large for the in-browser path.

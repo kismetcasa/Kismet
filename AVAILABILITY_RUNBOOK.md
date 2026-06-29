@@ -25,8 +25,8 @@ deaths/evictions* (in-repo) **and** *survive + recover fast* (ops).
 
 | # | Cause | Error | Fixed in this PR? |
 |---|-------|-------|-------------------|
-| 1 | **No container memory ceiling** → off-heap RSS spike (ffmpeg, stream buffers, timeline merge) gets OOM-SIGKILLed | both | Partly (in-repo spike-bounding); **load-bearing fix is ops — see below** |
-| 2 | **Readiness hard-gated on one 3s Upstash ping**; a transient blip evicts the only pod and darks the whole site | no server available | ✅ in-repo |
+| 1 | **⭐ CONFIRMED: V8 JS-heap OOM at ~2 GB every ~45 min** — no cgroup limit ⇒ V8 used its ~2 GB default while the 11 GB host sat ~9 GB idle; timeline fan-out grew the heap until it died (`FATAL ERROR: ...JavaScript heap out of memory`). **THE crash behind your errors.** | both | ✅ heap cap (`--max-old-space-size=4096`) + timeline `MERGE_BUDGET` |
+| 2 | **Readiness hard-gated on one 3s Upstash ping** (NB: Coolify actually gates on `/api/health`, so this is dormant/future-proofing) | no server available | ✅ in-repo (dormant) |
 | 6 | **Auto-pipelining co-batched the readiness ping** behind a fat Redis payload → false-slow ping → false 503 | no server available | ✅ in-repo |
 | 9 | **Blocking cold start** — `register()` awaited an on-chain RPC healthcheck + an unbounded `SMEMBERS` warmup before serving, widening every restart's dark window | no server available | ✅ in-repo |
 | 10 | ~~No process-level crash handlers~~ — **non-issue (see Refuted)**: Next 15's server already installs log-and-continue handlers that keep the single process alive | both | N/A — framework-provided |
@@ -81,10 +81,26 @@ caught in review and removed. Crash survival is the framework's job here.
 
 ## Confirmed from production telemetry (a Coolify deploy log + Upstash metrics)
 
+- **⭐ CONFIRMED ROOT CAUSE — V8 JavaScript heap OOM at ~2 GB, every ~45 min.**
+  The container logs caught it: `FATAL ERROR: Ineffective mark-compacts near heap
+  limit — JavaScript heap out of memory` at ~2030 MB, with the timeline
+  `airdroppable` fan-out logged immediately before the death. This is a **V8 heap
+  OOM, not a kernel/cgroup OOM** — which is why `OOMKilled=false`, `dmesg` was
+  clean, and the cgroup `oom_kill` counter was 0 (all of which masked it; the
+  cgroup `memory.peak` also reset to ~669 MB on each restart, hiding the true 2 GB
+  peak). Two compounding causes: (1) **no cgroup memory limit** (`memory.max =
+  max`) ⇒ Node 22 fell back to V8's **~2 GB default heap** while the **11 GB host
+  had ~9 GB free** — it died with most of the box idle; (2) the **timeline
+  fan-out merge** grew the heap unbounded over ~45 min until it hit 2 GB. Each
+  crash + slow restart = a "no server available" / "bad gateway" window. **Fix:
+  raise the heap (`NODE_OPTIONS=--max-old-space-size=4096`, now in the Dockerfile)
+  + the timeline `MERGE_BUDGET` cap in this PR that bounds the growth.** (Secondary
+  contributor in the same log: `next/image` choking on ~50 MB Arweave images.)
 - **Cold-start blocking was real.** The first `/api/health` probe on a freshly
   booted container **timed out (>5s)**, then passed in ~0.15s once warm — exactly
   the symptom of `register()` blocking serving on its awaited RPC + (cross-region)
-  Redis warmup. The de-block fix in this PR directly targets this.
+  Redis warmup. The de-block fix in this PR shrinks the restart-window outage that
+  follows each heap-OOM crash above.
 - **Deploys are clean.** Coolify does a health-gated rolling update (new
   container must pass `/api/health` before the old is removed), so "no server
   available" is **not** a deploy artifact — it's the lone process being *down*
@@ -103,21 +119,19 @@ caught in review and removed. Crash survival is the framework's job here.
 These are the half the repo cannot ship. On a single instance they are the
 difference between "recovers in seconds" and "dark until someone notices."
 
-1. **Set a generous container memory limit; swap likely UNAVAILABLE on this
-   host.** Give the limit **generous headroom** over the real runtime peak
-   (ffmpeg transcode up to a ~300MB buffer + working set + concurrent `/api/img`
-   streams + the timeline merge). With a limit set, Node 22 auto-caps V8's heap
-   from it. **Caveat from the deploy log:** this Oracle kernel reports *"memory
-   swappiness discarded — kernel does not support … or the cgroup is not
-   mounted,"* so **swap is probably not available** to cushion a spike, and you
-   should **verify the memory limit is even being enforced** (`docker inspect
-   <container> --format '{{.HostConfig.Memory}}'` — `0` = not enforced). Without
-   a swap cushion, a spike past the limit is a *hard* OOM-kill, so size the limit
-   with EXTRA headroom and lean on the in-code spike bounding (timeline budget,
-   transcode cap) + fast restart. _Do not size it tight_ — on one pod an
-   aggressive cap turns rare spikes into frequent kills and makes outages
-   **worse**. (Enabling swap is a host change: a swapfile + `swapaccount=1
-   cgroup_enable=memory` kernel args — optional, more involved.)
+1. **Raise V8's heap ceiling — this is the load-bearing fix for the confirmed
+   crash.** The app was dying at V8's ~2 GB default heap while the 11 GB host had
+   ~9 GB free. The Dockerfile now sets `NODE_OPTIONS=--max-old-space-size=4096`,
+   but the **fastest relief is a Coolify env var** (Environment Variables →
+   `NODE_OPTIONS=--max-old-space-size=4096`), which applies on the next restart
+   with no rebuild and overrides the image default. 4 GB leaves headroom under
+   11 GB even alongside a `next build`. **Optionally also set a container --memory
+   limit** (e.g. 6–8 GB) — then Node 22 derives the heap from it automatically and
+   the flag becomes redundant; verify with `docker inspect <c> --format
+   '{{.HostConfig.Memory}}'` (`0` = none, which is the current state). Note: swap
+   is likely unavailable on this kernel (the deploy log reports *"memory
+   swappiness discarded / cgroup not mounted"*), so don't rely on paging — the
+   heap cap + the in-code timeline `MERGE_BUDGET` bound are what prevent the OOM.
 2. **Set the restart policy to `unless-stopped`** (or `always`). The single most
    important "survive a crash" lever: when the kernel OOM-kills the process (the
    primary remaining crash vector — Next survives stray exceptions), the
