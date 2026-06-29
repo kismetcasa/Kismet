@@ -101,20 +101,43 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   // renders from — instead of lagging FeaturedMoment's own /api/moment fetch.
   // Undefined when the mint lives only inside a featured collection.
   const displayMoment = displayKey ? moments.find((m) => keyOf(m) === displayKey) : undefined
+  // The Mint Pass Display leads the tab. The two surfaces are deliberately
+  // different:
+  //   • DESKTOP — FeaturedMoment's rich 3-column hero (the special presentation).
+  //   • MOBILE  — there is NO special presentation; it's just a normal card. So
+  //     when the mint is in the timeline payload we render it as a plain
+  //     MomentCard with the EXACT same props every other featured card uses —
+  //     same component, same image path, same priority semantics — so it cannot
+  //     load or look any different from them. No FeaturedMoment wrapper, no
+  //     /api/moment self-fetch competing in the miniapp's pool, no detail-driven
+  //     showCreator override. `priority` marks it the above-the-fold LCP (and,
+  //     via the grid's hero-aware rule below, the SOLE high-priority image).
+  // Only when the mint isn't a standalone timeline entry (no displayMoment — it
+  // lives solely inside a featured collection) do we fall back to FeaturedMoment
+  // on mobile too, which self-fetches that one mint so it can render at all.
   const hero = displayKey && colon > 0
-    ? (
-      <FeaturedMoment
-        // Key by the mint so a different display mounts a fresh instance,
-        // never inheriting the prior one's fetch/ratio/resolved state.
-        key={displayKey}
-        address={displayKey.slice(0, colon)}
-        tokenId={displayKey.slice(colon + 1)}
-        initialMoment={displayMoment}
-        isMobile={isMobile}
-        priority
-        onResolved={setHeroHasContent}
-      />
-    )
+    ? isMobile && displayMoment
+      ? (
+        <MomentCard
+          key={displayKey}
+          moment={displayMoment}
+          priority
+          isMobile={isMobile}
+        />
+      )
+      : (
+        <FeaturedMoment
+          // Key by the mint so a different display mounts a fresh instance,
+          // never inheriting the prior one's fetch/ratio/resolved state.
+          key={displayKey}
+          address={displayKey.slice(0, colon)}
+          tokenId={displayKey.slice(colon + 1)}
+          initialMoment={displayMoment}
+          isMobile={isMobile}
+          priority
+          onResolved={setHeroHasContent}
+        />
+      )
     : null
 
   // The display mint leads the tab as the hero above, so pull it out of the
@@ -181,9 +204,18 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
             key={`m-${i}`}
             className={soleMomentBlock ? fillGridClass(b.items.length) : FULL_GRID}
           >
-            {/* Prioritize the first row of moments only when it leads the
-                feed (i === 0). Subsequent moment blocks render below other
-                content and shouldn't compete with LCP. */}
+            {/* Mark only the above-the-fold LCP image as priority — the right
+                count is layout-dependent, so it differs by device:
+                  • Desktop — the first block is a row of up to 4 columns, so the
+                    first 3 are genuinely above the fold.
+                  • Mobile — a single column, so only ONE image leads the fold.
+                    When a hero (Mint Pass Display) is present it IS that LCP and
+                    already loads priority; prioritising the below-the-fold grid
+                    cards here would split the miniapp's scarce, shared HTTP/2
+                    bandwidth away from the hero and make the featured artwork
+                    load SLOWER than the cards beneath it (the reported symptom).
+                    So on mobile prioritise a grid card only when no hero owns the
+                    LCP, and only the very first one. */}
             {b.items.map((m, idx) => {
               const flatIdx = flatMomentIdx++
               return (
@@ -195,7 +227,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
                   {() => (
                     <MomentCard
                       moment={m}
-                      priority={i === 0 && idx < 3}
+                      priority={isMobile ? !hero && i === 0 && idx === 0 : i === 0 && idx < 3}
                       isMobile={isMobile}
                     />
                   )}
@@ -207,7 +239,11 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
           <CollectionRow
             key={`c-${b.row.contractAddress}`}
             collection={b.row}
-            priority={i === 0}
+            // Same LCP rule as the grid above: on mobile a hero owns the
+            // above-the-fold LCP, so a collection row (always below it) must not
+            // compete for the hero's bandwidth. Without a hero the leading block
+            // — grid or collection — is the LCP.
+            priority={isMobile ? !hero && i === 0 : i === 0}
             isMobile={isMobile}
           />
         ),
