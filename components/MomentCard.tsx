@@ -94,13 +94,20 @@ interface MomentCardProps {
    * iOS-memory mitigation desktop doesn't need. Absent ⇒ treated as mobile.
    */
   isMobile?: boolean
+  /**
+   * Forward to MomentImage: skip the next/image optimizer and go straight to
+   * the (downscaling) /api/img proxy. Set for known-heavy covers — e.g. the
+   * Patron Collection's physical-artwork scans — whose source 413s the
+   * optimizer anyway, so the wasted 413 round-trip (and its blink) is avoided.
+   */
+  preferProxy?: boolean
 }
 
 // Memoized — feeds render 18+ cards each doing 3-5 async lookups, so a
 // parent re-render would otherwise re-run them all. Default shallow
 // compare works: `moment` is stable across renders (held in parent
 // useState arrays); other props are primitives.
-function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin, isMobile }: MomentCardProps) {
+function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreator, fillCell, passBadge, profileCta, pinned, onTogglePin, isMobile, preferProxy }: MomentCardProps) {
   // Default: creator chip follows compact mode (visible non-compact,
   // hidden compact). `showCreator` overrides either direction.
   const renderCreator = showCreator ?? !compact
@@ -483,6 +490,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
               thumbhash={meta.kismet_thumbhash}
               priority={priority}
+              preferProxy={preferProxy}
             />
           )
         ) : isTextMoment ? (

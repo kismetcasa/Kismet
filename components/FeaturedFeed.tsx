@@ -7,6 +7,7 @@ import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
 import { MaybeLazy } from './LazyMount'
+import { isPatronCollection } from '@/lib/patronCollection'
 
 // Number of moments rendered as a single grid row before the next collection
 // breaks in. Picked to match the lg+ 4-col grid so the collection always
@@ -134,6 +135,11 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
           moment={displayMoment}
           priority={false}
           isMobile={isMobile}
+          // Patron mints are physical-artwork scans heavy enough to 413 the
+          // next/image optimizer; skip it and go straight to the downscaling
+          // proxy so we don't re-pay that doomed round-trip (+ its blink) on
+          // every load. Normal featured displays keep the optimizer.
+          preferProxy={isPatronCollection(displayMoment.address)}
         />
       )
       : (
