@@ -13,11 +13,47 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 
+// Bounded-concurrency map: cap how many inprocess /timeline fetches are in
+// flight at once. A plain Promise.all over the full tracked-collection set
+// opens one upstream socket per collection simultaneously; when inprocess
+// (a single upstream dependency for all content) is slow, that pile-up
+// exhausts sockets + in-flight parse buffers on the single box and saturates
+// the event loop. A small concurrency window keeps the fan-out fast without
+// unbounded simultaneous load. (SRE handling-overload / Azure Bulkhead.)
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker)
+  await Promise.all(workers)
+  return results
+}
+
+const FANOUT_CONCURRENCY = 10
+
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
   let moments: unknown[] = []
   try {
-    const res = await fetch(url, { headers: { Accept: 'application/json' }, next: { revalidate: 30 } })
+    // Per-call timeout: inprocess is a single point of dependency, and without
+    // an AbortSignal a hung upstream pins this handler (and its fan-out slot)
+    // until Node's ~300s request timeout. 8s matches lib/inprocess.ts's
+    // fetchCollectionMoments default. On timeout the catch degrades this
+    // collection to [] rather than stalling the whole feed request.
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 30 },
+      signal: AbortSignal.timeout(8_000),
+    })
     const text = await res.text()
     const data = JSON.parse(text)
     moments = Array.isArray(data.moments) ? data.moments : []
@@ -141,8 +177,27 @@ export async function GET(req: NextRequest) {
   // can each thin the result set below `page * limit`. Bump the per-
   // collection sample so paginated pages don't empty out prematurely.
   const needsLargerSample = sort === 'trending' || featured || filterToCreators
-  const fetchLimit = needsLargerSample ? Math.max(page * limit, 200) : page * limit
-  const results = await Promise.all(collections.map((c) => fetchCollection(c, fetchLimit)))
+  const baseSample = needsLargerSample ? Math.max(page * limit, 200) : page * limit
+  // Bound the TOTAL moments pulled into the in-memory merge, not just the
+  // per-collection request. The fan-out hits EVERY collection in parallel and
+  // holds the whole merged set in heap to sort before slicing `limit`; uncapped
+  // (baseSample → up to 100*100 = 10,000 per collection) the heap, its MGET
+  // stitch, and the O(n log n) sort all scale as collections × baseSample and
+  // become an OOM vector on the single box. Distributing a fixed budget across
+  // the fan-out caps the merged size regardless of how deep `page` goes or how
+  // many collections are tracked — while preserving pagination depth when only
+  // a few collections are in play (the per-collection budget is then large: a
+  // single collection is unchanged until its requested depth, page*limit,
+  // exceeds MERGE_BUDGET=5000 items, i.e. only a very deep page on a single
+  // dense collection is capped — the same graceful degrade as the page<=100
+  // cap). The `limit` floor guarantees every collection can still fill at least
+  // one page. (SRE handling-overload / Azure Bulkhead.)
+  const MERGE_BUDGET = 5000
+  const perCollectionCap = Math.max(limit, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
+  const fetchLimit = Math.min(baseSample, perCollectionCap)
+  const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
+    fetchCollection(c, fetchLimit),
+  )
 
   // Merge and deduplicate
   const seen = new Set<string>()

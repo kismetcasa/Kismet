@@ -70,6 +70,25 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
+# ─── Runtime V8 heap cap (set, per production crash evidence) ─────────
+# Production was crashing every ~45 min with `FATAL ERROR: ... JavaScript heap
+# out of memory` at ~2030 MB — a V8 HEAP OOM (not a kernel/cgroup OOM, so
+# Docker's OOMKilled stayed false and `dmesg` was clean, which masked it). Root
+# cause: the container has NO cgroup memory limit (`memory.max = max`), so Node
+# 22 had nothing to size against and fell back to V8's ~2 GB DEFAULT old-space
+# ceiling — while the 11 GB host sat with ~9 GB free. The app hit 2 GB and died
+# while most of the box's RAM was idle.
+#
+# So we raise the ceiling explicitly to use the available RAM. 4096 MB leaves
+# generous headroom under an 11 GB host even alongside a concurrent `next build`
+# (~3.5 GB). Tune via a Coolify NODE_OPTIONS env var if the host size changes
+# (a runtime env var overrides this ENV). The real driver of the growth — the
+# timeline fan-out merge — is ALSO bounded in code now (app/api/timeline
+# MERGE_BUDGET); this cap is the headroom, that cap stops the unbounded climb.
+# Belt-and-suspenders, set a Coolify container --memory limit too (then Node 22
+# would derive the heap from it and this flag becomes redundant but harmless).
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+
 # ffmpeg powers the server-side GIF→MP4 transcode (/api/transcode-gif),
 # the no-wasm-cap fallback for GIFs too large for the in-browser path.
 # Static Alpine package, no extra runtime deps; the route shells out to

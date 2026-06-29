@@ -13,6 +13,8 @@
 // the SDK retries blindly and would silently double-count. Counters
 // belong behind explicit idempotency keys, not behind these helpers.
 
+import { markRedisSuccess } from './redisHealth'
+
 function isTransient(err: unknown): boolean {
   const e = err as { code?: string; cause?: { code?: string }; name?: string }
   const code = e?.code ?? e?.cause?.code
@@ -43,7 +45,9 @@ export async function safeRead<T>(
   fallback: T,
 ): Promise<T> {
   try {
-    return await fn()
+    const result = await fn()
+    markRedisSuccess()
+    return result
   } catch (err) {
     logFailure(label, err, true)
     return fallback
@@ -52,7 +56,9 @@ export async function safeRead<T>(
 
 export async function strictRead<T>(label: string, fn: () => Promise<T>): Promise<T> {
   try {
-    return await fn()
+    const result = await fn()
+    markRedisSuccess()
+    return result
   } catch (err) {
     logFailure(label, err, false)
     throw err

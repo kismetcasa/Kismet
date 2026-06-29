@@ -126,19 +126,31 @@ export async function getArtistEarnings(artist: string, wallets?: string[]): Pro
   const lower = artist.toLowerCase()
   try {
     const ws = wallets ?? (await expandToFidSiblings(lower))
-    // 5 keys × N wallets of zscore plus the price, all issued in one tick so
-    // Upstash auto-pipelining collapses them into a single round trip (N = the
-    // sibling count, usually 1). Primary (mints) and secondary (royalties) are
-    // summed separately so the card can break them out, then added for the total.
+    if (ws.length === 0) {
+      // ZMSCORE requires ≥1 member; with no wallets there are no earnings.
+      return {
+        address: lower, eth: 0, usdc: 0, usd: 0, mints: 0,
+        primary: { eth: 0, usdc: 0, usd: 0 }, secondary: { eth: 0, usdc: 0, usd: 0 },
+      }
+    }
+    // One ZMSCORE per key (5 commands total) instead of one ZSCORE per wallet
+    // (5 × N). Auto-pipelining only collapses round-trips, not billed command
+    // count, so for multi-wallet (FC sibling) artists this is a real per-call
+    // saving; for the common N=1 case it's identical. Primary (mints) and
+    // secondary (royalties) are summed separately so the card can break them
+    // out, then added for the total.
     const [pEth, pUsdc, mints, rEth, rUsdc, ethUsd] = await Promise.all([
-      Promise.all(ws.map((w) => redis.zscore(ETH_KEY, w))),
-      Promise.all(ws.map((w) => redis.zscore(USDC_KEY, w))),
-      Promise.all(ws.map((w) => redis.zscore(MINTS_KEY, w))),
-      Promise.all(ws.map((w) => redis.zscore(ROYALTY_ETH_KEY, w))),
-      Promise.all(ws.map((w) => redis.zscore(ROYALTY_USDC_KEY, w))),
+      redis.zmscore(ETH_KEY, ws),
+      redis.zmscore(USDC_KEY, ws),
+      redis.zmscore(MINTS_KEY, ws),
+      redis.zmscore(ROYALTY_ETH_KEY, ws),
+      redis.zmscore(ROYALTY_USDC_KEY, ws),
       getEthUsd(),
     ])
-    const sum = (xs: unknown[]) => xs.reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
+    // zmscore returns number[] | null (null only if the key is missing); a
+    // missing key means no earnings, so coalesce to [] → sum 0.
+    const sum = (xs: (number | null)[] | null) =>
+      (xs ?? []).reduce<number>((acc, x) => acc + Number(x ?? 0), 0)
     const price = ethUsd ?? 0
     const primEth = sum(pEth)
     const primUsdc = sum(pUsdc)
