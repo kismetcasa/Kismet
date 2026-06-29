@@ -14,8 +14,9 @@ import { serverBaseClient } from './rpc'
  * Keys (kismetart: prefix, matching lib/redis + lib/pass-validity conventions):
  *   <base>:entrants    SET   lowercased entrant addresses
  *   <base>:entered-at  HASH  addr -> unix seconds (audit / ordering)
- *   <base>:winner      STR   the admin-chosen winner (lowercased)
- *   <base>:state       STR   'open' | 'closed'
+ *   <base>:winner          STR   the drawn winner (lowercased)
+ *   <base>:state           STR   'open' | 'ended'
+ *   <base>:entries-close-at STR  unix seconds entries auto-close at (optional)
  * plus the cross-moment RAFFLE_ENABLED_KEY zset of `<addr>:<tokenId>` (which
  * mints have a raffle at all). Enablement is independent of entrant/winner
  * data, so disabling then re-enabling a moment preserves its entrants.
@@ -178,7 +179,10 @@ export async function getRaffleState(
   tokenId: string,
 ): Promise<RaffleState> {
   const s = await redis.get<string>(stateKey(collection, tokenId))
-  return s === 'ended' ? 'ended' : 'open'
+  // 'closed' is the legacy terminal value (the old setWinner wrote it); treat it
+  // as 'ended' so any pre-migration finalized raffle still reads as concluded
+  // (winner shown, non-winners released) without a data migration.
+  return s === 'ended' || s === 'closed' ? 'ended' : 'open'
 }
 
 export async function setRaffleState(

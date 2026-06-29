@@ -57,7 +57,6 @@ export async function GET(req: NextRequest) {
     entrantCount,
     entered,
     winner,
-    winnerChosen: !!winner,
     isWinner,
   })
 }
