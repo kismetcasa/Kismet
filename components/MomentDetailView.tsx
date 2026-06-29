@@ -25,6 +25,14 @@ import { useMomentSplits } from '@/hooks/useMomentSplits'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import {
+  loadPersistedEditMedia,
+  savePersistedEditMedia,
+  loadPersistedCover,
+  savePersistedCover,
+  loadPersistedJson,
+  savePersistedJson,
+} from '@/lib/arweave/uploadPersistence'
 import { generateThumbhash, thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
@@ -718,7 +726,65 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // 1b) CHANGE MEDIA (upload) — mirrors the mint pipeline: video →
       // faststart MP4 + poster; GIF → transcoded MP4 + poster (server fallback
       // over the 100MB wasm cap); image → still moment.
+      //
+      // Cross-reload / retry resume: if we already uploaded THIS exact file
+      // (name|size|lastModified) in a prior attempt — a wallet rejection, a
+      // soft-gate lag, or a page reload — reuse its durable txids instead of
+      // re-transcoding and re-uploading paid bytes under a fresh Turbo txid
+      // (data-item ids are salted, so identical bytes never reuse an id). Uses
+      // edit-moment's OWN store (never mint's, whose schema differs); the
+      // PRESENCE of animationUri discriminates a video binding from a still image.
+      let mediaResumed = false
       if (mediaMode === 'upload' && mediaFile) {
+        const persisted = loadPersistedEditMedia(mediaFile)
+        if (persisted) {
+          if (persisted.animationUri) {
+            animationUri = persisted.animationUri
+            contentField = { uri: persisted.animationUri, mime: 'video/mp4' }
+            // Poster only applies when no cover is set (the cover block wins).
+            if (!coverFile) {
+              if (persisted.imageUri) {
+                imageUri = persisted.imageUri
+                if (persisted.thumbhash) thumbhash = persisted.thumbhash
+              } else {
+                // The banked attempt had a cover, so no poster was made. Extract
+                // one now from the re-selected file so a cover-removed retry
+                // still gets a real video frame, not the stale pre-edit image.
+                try {
+                  const poster = await extractVideoPoster(mediaFile)
+                  if (poster) {
+                    const tp = generateThumbhash(poster)
+                    imageUri = await uploadToArweave(poster)
+                    thumbhash = (await tp) ?? thumbhash
+                    savePersistedEditMedia(mediaFile, {
+                      animationUri: persisted.animationUri,
+                      imageUri: imageUri ?? null,
+                      thumbhash: thumbhash ?? null,
+                    })
+                  }
+                } catch (err) {
+                  console.warn('[MomentDetailView] poster extraction on resume failed', err)
+                }
+              }
+            }
+          } else if (persisted.imageUri) {
+            // Still image → it IS the moment; drop any video binding.
+            imageUri = persisted.imageUri
+            animationUri = undefined
+            contentField = undefined
+            if (persisted.thumbhash) thumbhash = persisted.thumbhash
+          }
+          mediaResumed = true
+        }
+      }
+      if (mediaMode === 'upload' && mediaFile && !mediaResumed) {
+        // Tracks ONLY a freshly-uploaded poster/still for THIS media — never the
+        // carried-over detail.metadata.image. We bank this, not `imageUri`,
+        // because banking the stale carry-over as a poster would poison the
+        // resume discriminator (presence of imageUri = "a real poster exists"),
+        // so a retry would reuse the stale image instead of re-extracting after
+        // a transient extractVideoPoster miss.
+        let freshMediaImage: string | undefined
         const isGif = mediaFile.type === 'image/gif' || mediaFile.name.toLowerCase().endsWith('.gif')
         if (mediaFile.type.startsWith('video/')) {
           toast.loading('Optimizing video…', { id: 'edit-meta' })
@@ -739,6 +805,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               if (poster) {
                 const tp = generateThumbhash(poster)
                 imageUri = await uploadToArweave(poster)
+                freshMediaImage = imageUri
                 thumbhash = (await tp) ?? thumbhash
               }
             } catch (err) {
@@ -756,7 +823,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               const [a, p] = await Promise.all([uploadToArweave(mp4), uploadToArweave(poster)])
               animationUri = a
               contentField = { uri: a, mime: 'video/mp4' }
-              if (!coverFile) { imageUri = p; thumbhash = (await tp) ?? thumbhash }
+              if (!coverFile) { imageUri = p; freshMediaImage = p; thumbhash = (await tp) ?? thumbhash }
               done = true
             } catch (err) {
               console.warn('[MomentDetailView] client GIF transcode failed; trying server', err)
@@ -772,26 +839,50 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             const r = await serverTranscodeGif(rawUri)
             animationUri = r.animationUri
             contentField = { uri: r.animationUri, mime: 'video/mp4' }
-            if (!coverFile) { imageUri = r.posterUri; thumbhash = r.thumbhash ?? thumbhash }
+            if (!coverFile) { imageUri = r.posterUri; freshMediaImage = r.posterUri; thumbhash = r.thumbhash ?? thumbhash }
           }
         } else {
           // Static image → the image IS the moment; drop any video binding.
           toast.loading('Uploading media…', { id: 'edit-meta' })
           const tp = generateThumbhash(mediaFile)
           imageUri = await uploadToArweave(mediaFile)
+          freshMediaImage = imageUri
           thumbhash = (await tp) ?? thumbhash
           animationUri = undefined
           contentField = undefined
+        }
+        // Bank the verified upload so a retry, soft-gate lag, or reload reuses
+        // these durable txids instead of re-transcoding + re-uploading paid
+        // bytes. We bank freshMediaImage (a poster/still uploaded THIS run), not
+        // `imageUri` — which may still hold the carried-over pre-edit image when
+        // a cover is set or poster extraction missed. Banking null there lets the
+        // resume re-extract instead of freezing the stale image. The resume keys
+        // off animationUri's presence to tell a video binding from a still.
+        if (animationUri || freshMediaImage) {
+          savePersistedEditMedia(mediaFile, {
+            animationUri: animationUri ?? null,
+            imageUri: freshMediaImage ?? null,
+            thumbhash: thumbhash ?? null,
+          })
         }
       }
 
       // 2) CHANGE COVER — replaces only the poster/thumbnail, stored as-is (a
       // GIF cover animates). Never touches the main media (animation_url).
+      // Banked by file identity (like create / edit-collection) so a retry or
+      // reload reuses the durable txid instead of re-uploading the cover.
       if (coverFile) {
-        toast.loading('Uploading cover…', { id: 'edit-meta' })
-        const tp = generateThumbhash(coverFile)
-        imageUri = await uploadToArweave(coverFile)
-        thumbhash = (await tp) ?? thumbhash
+        const persistedCover = loadPersistedCover(coverFile)
+        if (persistedCover) {
+          imageUri = persistedCover.imageUri
+          if (persistedCover.thumbhash) thumbhash = persistedCover.thumbhash
+        } else {
+          toast.loading('Uploading cover…', { id: 'edit-meta' })
+          const tp = generateThumbhash(coverFile)
+          imageUri = await uploadToArweave(coverFile)
+          thumbhash = (await tp) ?? thumbhash
+          savePersistedCover(coverFile, { imageUri, thumbhash: thumbhash ?? null, verifyFailures: 0 })
+        }
       }
 
       // Build the new metadata JSON from the resolved bindings above —
@@ -808,13 +899,27 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       }
 
       toast.loading('Uploading metadata…', { id: 'edit-meta' })
-      const newUri = await uploadJson(newMetadata)
+      // Content-keyed resume: reuse the durable txid for byte-identical metadata
+      // across a retry / reload instead of re-uploading it under a fresh Turbo
+      // txid (matches create / edit-collection). The metadata embeds the media
+      // + cover URIs, so the key changes iff anything the user edited changed.
+      const metadataKey = JSON.stringify(newMetadata)
+      const persistedJson = loadPersistedJson(metadataKey)
+      let newUri: string
+      if (persistedJson) {
+        newUri = persistedJson.uri
+      } else {
+        newUri = await uploadJson(newMetadata)
+        savePersistedJson(metadataKey, { uri: newUri, failures: 0 })
+      }
 
-      // Fail-fast on Arweave propagation lag — same pre-commit gate
-      // MintForm uses. Without this, the on-chain URI updates to point
-      // at an unpropagated bundle and every viewer (not just the editor)
-      // sees broken metadata until the gateway pool catches up. Image
-      // budget mirrors MintForm's 90s for large uploads.
+      // Best-effort propagation wait, then SOFT-GATE — the conclusion the mint
+      // + create flows already reached. The ar:// txids are PERMANENT the
+      // moment Turbo returned them, so the old hard throw stranded legitimate
+      // edits whenever arweave.net (now the pool's only gateway) hadn't yet
+      // surfaced a fresh upload. We wait up to 90s for a smoother first paint,
+      // but on a miss we still commit the on-chain pointer; the not-yet-
+      // propagated URI self-heals on display once the pool catches up.
       toast.loading('Verifying Arweave propagation…', { id: 'edit-meta' })
       // A media change is either a fresh upload or a re-point at existing
       // content; both want their image/animation URIs verified before we
@@ -824,22 +929,27 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // Verify freshly-resolved URIs (image when media/cover changed, the MP4
       // when media changed). image is pushed before animation, so positional
       // destructuring stays correct.
-      const verifies: Promise<boolean>[] = [verifyArweaveAvailable(newUri)]
+      const verifies: Promise<boolean>[] = [verifyArweaveAvailable(newUri, 90_000, 'edit-moment:metadata')]
       if ((mediaChanged || coverFile) && imageUri?.startsWith('ar://')) {
-        verifies.push(verifyArweaveAvailable(imageUri, 90_000))
+        verifies.push(verifyArweaveAvailable(imageUri, 90_000, 'edit-moment:image'))
       }
       if (mediaChanged && animationUri?.startsWith('ar://')) {
-        verifies.push(verifyArweaveAvailable(animationUri, 90_000))
+        verifies.push(verifyArweaveAvailable(animationUri, 90_000, 'edit-moment:animation'))
       }
       const [metaOk, imageOk = true, animOk = true] = await Promise.all(verifies)
       if (!metaOk || !imageOk || !animOk) {
-        const failed: string[] = []
-        if (!imageOk) failed.push('image')
-        if (!animOk) failed.push('media')
-        if (!metaOk) failed.push('metadata')
-        throw new Error(
-          `Arweave still settling (${failed.join(' + ')} not yet propagated) — try again in a minute`,
-        )
+        // Don't strand the editor: log the lagging txids (so a genuinely-lost
+        // upload is diagnosable — `curl -I` the logged ar:// id) and proceed.
+        const laggy: string[] = []
+        if (!imageOk) laggy.push('image')
+        if (!animOk) laggy.push('media')
+        if (!metaOk) laggy.push('metadata')
+        console.warn('[MomentDetailView] proceeding despite Arweave propagation lag', {
+          laggy,
+          newUri,
+          imageUri,
+          animationUri,
+        })
       }
 
       toast.loading('Sign update in wallet…', { id: 'edit-meta' })

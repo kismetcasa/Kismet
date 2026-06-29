@@ -14,25 +14,31 @@
 // serialized content itself; LRU-capped and TTL'd. Three independent stores:
 //   - media (mint): the moment's media bindings. The File objects are never
 //     stored — after a resume MintForm reads the media File only for its
-//     `.type`, persisted here as a string. Callers MUST re-verify the stored
-//     mediaUri resolves before minting (the mint path is non-blocking, so a
-//     phantom URI would otherwise mint broken media).
-//   - cover (collection create + edit): the cover image URI + thumbhash +
-//     strike count. Create soft-gates propagation (deploys even if the cover
-//     hasn't settled; it self-heals on display) so it does NOT pre-verify on
-//     reuse; edit blocks on verify, so a reused-but-unsettled cover just
-//     re-verifies on the next save — either way a slow-settling cover is
-//     reused, not needlessly re-uploaded.
-//   - json (mint + collection create/edit): the small moment/contract metadata JSON,
-//     content-keyed (there is no File). Both flows soft-gate propagation and
-//     mint/deploy anyway, so a reload reuses the durable txid instead of
-//     re-billing a byte-identical upload; carries a strike count like the cover
-//     so a genuinely lost upload self-heals.
+//     `.type`, persisted here as a string (mediaType). Rehydrate is
+//     UNCONDITIONAL on a file-identity match: the bytes are PERMANENT once Turbo
+//     returns the txid, so there is no phantom-URI risk worth a re-upload, and
+//     the non-blocking propagation verify is just a display spinner.
+//   - editMedia (edit-moment): a DISTINCT store (not the mint one) holding the
+//     resolved {animationUri | null, imageUri | null, thumbhash} the edit flow
+//     needs. Kept separate so it can never read a mint entry (whose mediaType /
+//     serverTranscode semantics differ); the PRESENCE of animationUri — not a
+//     mime string — tells a video binding from a still image. Same soft-gate as
+//     create: a not-yet-propagated reuse self-heals on display.
+//   - cover (collection create + edit, edit-moment): the cover image URI +
+//     thumbhash + strike count. All callers soft-gate propagation (proceed even
+//     if the cover hasn't settled; it self-heals on display), so a reused-but-
+//     unsettled cover is reused, not needlessly re-uploaded.
+//   - json (mint + collection create/edit + edit-moment): the small moment /
+//     contract metadata JSON, content-keyed (there is no File). Every flow
+//     soft-gates propagation and mints / deploys / updates anyway, so a reload
+//     reuses the durable txid instead of re-billing a byte-identical upload;
+//     carries a strike count like the cover so a genuinely lost upload self-heals.
 //
 // Every access is wrapped so a disabled or full localStorage can never throw
 // into the upload/mint/deploy flow.
 
 const STORAGE_KEY_MEDIA = 'kismet:upload-resume:v1'
+const STORAGE_KEY_EDIT_MEDIA = 'kismet:edit-media-resume:v1'
 const STORAGE_KEY_COVER = 'kismet:cover-resume:v1'
 const STORAGE_KEY_JSON = 'kismet:json-resume:v1'
 const MAX_ENTRIES = 3
@@ -142,6 +148,52 @@ export function savePersistedUpload(file: File, data: PersistedUpload): void {
     (e) => e.key !== key,
   )
   writeEntries(STORAGE_KEY_MEDIA, [{ key, savedAt: Date.now(), ...data }, ...others])
+}
+
+// ─── edit-moment media ───────────────────────────────────────────────────────
+// A SEPARATE store from the mint media above — deliberately not shared. Mint
+// banks its raw bytes under STORAGE_KEY_MEDIA with mint-specific semantics (e.g.
+// a server-transcoded GIF stores mediaUri = the RAW GIF and the real MP4 only in
+// `serverTranscode`, with mediaType 'image/gif'). The edit-moment flow doesn't
+// read `serverTranscode`, so reading a mint entry would misclassify that GIF as
+// a still image and bake the raw-GIF txid on-chain. Keeping a distinct key makes
+// a cross-flow read impossible. Here the PRESENCE of animationUri — not a mime
+// string — discriminates a video binding from a still image, so there is no mime
+// convention to drift.
+
+export interface PersistedEditMedia {
+  // The mp4 animation binding (video / transcoded GIF), or null for a still image.
+  animationUri: string | null
+  // Poster for a video, or the still image itself; null when a separate cover
+  // is being set (the cover supplies `image`).
+  imageUri: string | null
+  thumbhash: string | null
+}
+
+interface StoredEditMedia extends StoredEntry, PersistedEditMedia {}
+
+const hasEditMediaPayload = (r: Record<string, unknown>): boolean =>
+  (typeof r.animationUri === 'string' || r.animationUri === null) &&
+  (typeof r.imageUri === 'string' || r.imageUri === null) &&
+  // At least one real URI — an all-null record carries no resumable upload.
+  (typeof r.animationUri === 'string' || typeof r.imageUri === 'string')
+
+/** The persisted edit-moment media for this exact file, or null if none / expired. */
+export function loadPersistedEditMedia(file: File): PersistedEditMedia | null {
+  const entry = readEntries<StoredEditMedia>(STORAGE_KEY_EDIT_MEDIA, hasEditMediaPayload).find(
+    (e) => e.key === fileKey(file),
+  )
+  if (!entry) return null
+  return { animationUri: entry.animationUri, imageUri: entry.imageUri, thumbhash: entry.thumbhash }
+}
+
+/** Persist (or refresh) the banked edit-moment media for this file, newest-first. */
+export function savePersistedEditMedia(file: File, data: PersistedEditMedia): void {
+  const key = fileKey(file)
+  const others = readEntries<StoredEditMedia>(STORAGE_KEY_EDIT_MEDIA, hasEditMediaPayload).filter(
+    (e) => e.key !== key,
+  )
+  writeEntries(STORAGE_KEY_EDIT_MEDIA, [{ key, savedAt: Date.now(), ...data }, ...others])
 }
 
 // ─── cover (collection create) ───────────────────────────────────────────────
