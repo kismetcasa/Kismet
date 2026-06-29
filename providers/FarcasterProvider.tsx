@@ -138,6 +138,14 @@ function installFetchInterceptor(
 const OPEN_COUNT_KEY = 'kismetart:miniapp-opens'
 const PROMPT_TARGET_OPEN = 2
 
+// Hard ceiling on how long the host splash may stay up. The normal bounded
+// path resolves well under this (isInMiniApp ≤1s, then sdk.context ≤2.5s /
+// /api/me ≤3s in parallel ≈ 4s worst case), so this only fires when an await
+// hangs outright — a dropped host bridge reply, a stalled chunk fetch. Set
+// above the normal worst case so it never pre-empts a fully-painted load, but
+// low enough that a genuine hang surfaces the app instead of an endless splash.
+const SPLASH_READY_DEADLINE_MS = 6000
+
 // One-shot (per device) flag for the post-first-mint "Add Kismet" prompt.
 // Set the first time we surface that prompt so a creator who mints
 // repeatedly is asked at most once. Independent of OPEN_COUNT_KEY: the two
@@ -259,6 +267,7 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false
     let teardownFetch: (() => void) | null = null
+    let splashWatchdog: ReturnType<typeof setTimeout> | null = null
 
     // Dismiss the host splash exactly once, in EVERY path. The Mini App loading
     // guide's #1 pitfall is an infinite/long splash from a ready() that never
@@ -280,6 +289,19 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           // disableNativeGestures: true — see the note at the call site below.
           return sdk.actions.ready({ disableNativeGestures: true }).catch(() => {})
         }
+
+        // Splash watchdog — the ultimate backstop against an infinite splash.
+        // Every await before ready() below is individually bounded (isInMiniApp
+        // self-times-out at 1000ms, sdk.context and /api/me are raced against
+        // timeouts), but a hang is a throw the catch can't see: if any await
+        // never settles, dismissSplash() is never reached and the host pins its
+        // splash forever (the #1 Mini App loading pitfall). This unconditional
+        // timer guarantees ready() fires regardless. Idempotent via the
+        // splashDismissed guard, so the normal fully-painted path still wins
+        // when the bootstrap completes in time; cleared once it does.
+        splashWatchdog = setTimeout(() => {
+          void dismissSplash()
+        }, SPLASH_READY_DEADLINE_MS)
 
         // sdk.isInMiniApp races a host context probe against the SDK's 1000ms
         // timeout, returning false if the probe loses — a non-host iframe
@@ -332,8 +354,20 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         //   paints from sdk.context.user.
         const meController = new AbortController()
         const meTimeout = setTimeout(() => meController.abort(), 3000)
+        // Bound sdk.context the same way as /api/me. Unlike sdk.isInMiniApp()
+        // (which carries its own internal timeout), this access has none: it is
+        // a Comlink postMessage round-trip to the host — window.parent on
+        // desktop, a cross-origin bridge that is more fragile than mobile's
+        // direct RN-WebView bridge. A dropped/slow reply here would otherwise
+        // hang the whole bootstrap before ready(), pinning the host splash. On
+        // timeout we fall through with ctx = null: identity stays unresolved
+        // (isInMiniApp already confirmed the host) but the splash still
+        // dismisses, and the rest of the page paints.
         const [ctx, meResponse] = await Promise.all([
-          sdk.context,
+          Promise.race([
+            sdk.context,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+          ]),
           fetch('/api/me', { signal: meController.signal }).catch(() => null),
         ])
         clearTimeout(meTimeout)
@@ -429,6 +463,9 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // later throw lands us in the catch, its dismissSplash() is a no-op
         // rather than a duplicate ready().
         await dismissSplash()
+        // Normal path reached ready() in time — retire the watchdog so it
+        // doesn't fire a redundant (no-op) ready() later.
+        if (splashWatchdog) clearTimeout(splashWatchdog)
         if (cancelled) return
 
         // --- Post-paint bootstrap ---
@@ -498,6 +535,7 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
       teardownFetch?.()
+      if (splashWatchdog) clearTimeout(splashWatchdog)
     }
     // Mount-once bootstrap: dynamic SDK import, ready(), wagmi connect,
     // and fetch interceptor install all need to run exactly once. The
