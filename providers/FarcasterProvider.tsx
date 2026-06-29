@@ -138,6 +138,21 @@ function installFetchInterceptor(
 const OPEN_COUNT_KEY = 'kismetart:miniapp-opens'
 const PROMPT_TARGET_OPEN = 2
 
+// Pre-ready() await bounds. Both the host-context round-trip and the /api/me
+// lookup are individually raced against these so a hung host bridge can't pin
+// the splash; context is the cheaper call so it gets the tighter bound.
+const CONTEXT_TIMEOUT_MS = 2500
+const ME_FETCH_TIMEOUT_MS = 3000
+
+// Hard ceiling on how long the host splash may stay up — the ultimate backstop
+// once the per-await bounds above are exhausted. The normal path dismisses well
+// under this (isInMiniApp <=1s, then context + me raced in parallel <=3s, ~4s
+// worst case), so this only fires when something OUTSIDE those bounds hangs — a
+// stalled SDK chunk fetch, or a future unbounded await. Set above the normal
+// worst case so it never pre-empts a fully-painted load, but low enough that a
+// genuine hang surfaces the app instead of an endless splash.
+const SPLASH_READY_DEADLINE_MS = 6000
+
 // One-shot (per device) flag for the post-first-mint "Add Kismet" prompt.
 // Set the first time we surface that prompt so a creator who mints
 // repeatedly is asked at most once. Independent of OPEN_COUNT_KEY: the two
@@ -259,6 +274,7 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false
     let teardownFetch: (() => void) | null = null
+    let splashWatchdog: ReturnType<typeof setTimeout> | null = null
 
     // Dismiss the host splash exactly once, in EVERY path. The Mini App loading
     // guide's #1 pitfall is an infinite/long splash from a ready() that never
@@ -280,6 +296,19 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           // disableNativeGestures: true — see the note at the call site below.
           return sdk.actions.ready({ disableNativeGestures: true }).catch(() => {})
         }
+
+        // Splash watchdog — the ultimate backstop against an infinite splash.
+        // Every await before ready() below is individually bounded (isInMiniApp
+        // self-times-out at 1000ms, sdk.context and /api/me are raced against
+        // timeouts), but a hang is a throw the catch can't see: if any await
+        // never settles, dismissSplash() is never reached and the host pins its
+        // splash forever (the #1 Mini App loading pitfall). This unconditional
+        // timer guarantees ready() fires regardless. Idempotent via the
+        // splashDismissed guard, so the normal fully-painted path still wins
+        // when the bootstrap completes in time; cleared once it does.
+        splashWatchdog = setTimeout(() => {
+          void dismissSplash()
+        }, SPLASH_READY_DEADLINE_MS)
 
         // sdk.isInMiniApp races a host context probe against the SDK's 1000ms
         // timeout, returning false if the probe loses — a non-host iframe
@@ -321,21 +350,34 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // user, THEN call ready() so the splash dismisses to a
         // fully-painted page.
         //
-        // sdk.context: host posts user identity (fid, username, pfp,
-        //   safeAreaInsets) over the bridge.
-        // /api/me: server-side primary-address resolution (Redis cached
-        //   after first hit). The interceptor we just installed injects
-        //   the Quick Auth JWT. Wrapped in a 3s timeout so a hung
-        //   backend can't pin the splash forever — falls through with
-        //   no address (visible profile link + bell stay deferred
-        //   until a later retry) and the rest of the identity still
-        //   paints from sdk.context.user.
-        const meController = new AbortController()
-        const meTimeout = setTimeout(() => meController.abort(), 3000)
-        const [ctx, meResponse] = await Promise.all([
+        // Both awaits are host/network round-trips with NO internal timeout
+        // (unlike sdk.isInMiniApp), and on desktop the host bridge is a fragile
+        // cross-origin postMessage — so each is individually raced against a
+        // bound below. On timeout we fall through with null and STILL dismiss
+        // the splash; identity/address just resolve later or stay deferred:
+        //   • sdk.context — host posts user identity (fid, username, pfp,
+        //     safeAreaInsets) over the bridge. null → identity unresolved (host
+        //     already confirmed via isInMiniApp), name/pfp deferred.
+        //   • /api/me — server-side primary-address resolution (Redis cached
+        //     after first hit). It rides the JWT interceptor, which first awaits
+        //     sdk.quickAuth.getToken() — ANOTHER unbounded host round-trip (via
+        //     signIn). meController.abort() cannot cancel that token step (the
+        //     underlying fetch hasn't started yet), so the race — not the
+        //     AbortController — is what bounds a hung token acquisition; the
+        //     AbortController still earns its keep by freeing a started-but-slow
+        //     network request. null → no address (profile link + bell deferred),
+        //     rest of identity still paints from sdk.context.user.
+        const ctxOrNull = Promise.race([
           sdk.context,
-          fetch('/api/me', { signal: meController.signal }).catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), CONTEXT_TIMEOUT_MS)),
         ])
+        const meController = new AbortController()
+        const meTimeout = setTimeout(() => meController.abort(), ME_FETCH_TIMEOUT_MS)
+        const meOrNull = Promise.race([
+          fetch('/api/me', { signal: meController.signal }).catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), ME_FETCH_TIMEOUT_MS)),
+        ])
+        const [ctx, meResponse] = await Promise.all([ctxOrNull, meOrNull])
         clearTimeout(meTimeout)
         if (cancelled) return
 
@@ -429,6 +471,9 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // later throw lands us in the catch, its dismissSplash() is a no-op
         // rather than a duplicate ready().
         await dismissSplash()
+        // Normal path reached ready() in time — retire the watchdog so it
+        // doesn't fire a redundant (no-op) ready() later.
+        if (splashWatchdog) clearTimeout(splashWatchdog)
         if (cancelled) return
 
         // --- Post-paint bootstrap ---
@@ -498,6 +543,7 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
       teardownFetch?.()
+      if (splashWatchdog) clearTimeout(splashWatchdog)
     }
     // Mount-once bootstrap: dynamic SDK import, ready(), wagmi connect,
     // and fetch interceptor install all need to run exactly once. The

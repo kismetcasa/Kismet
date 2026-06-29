@@ -27,16 +27,22 @@ export function isCoinbaseWebView(): boolean {
 export function isPotentialMiniAppEnv(): boolean {
   if (typeof window === 'undefined') return false
   try {
-    // Coinbase contexts are not Farcaster hosts, so the FC connector and the
-    // bootstrap are skipped for them — registering the FC connector would just
-    // burn its eth_accounts probe (and the 1.5s timeout in lib/wagmi.ts)
-    // before falling through, producing visible flicker. Exclude both the
-    // mobile in-app browser (UA) and any Coinbase-injected provider (the
-    // isCoinbaseWallet flag — also covers the desktop extension inside an
-    // embed, where the iframe check below would otherwise return true).
+    // The ONLY Coinbase context we hard-exclude is the *mobile in-app browser*,
+    // detected by UA (isCoinbaseWebView) — it dropped the Mini App spec, so
+    // registering the FC connector there would just burn its eth_accounts probe
+    // (and the 1.5s timeout in lib/wagmi.ts) before falling through.
+    //
+    // We deliberately do NOT exclude on the bare window.ethereum.isCoinbaseWallet
+    // flag. A browser *extension* (Coinbase Wallet, and wallets that mirror the
+    // flag) injects window.ethereum into EVERY frame — including a genuine
+    // Farcaster *desktop* Mini App iframe. Excluding on that flag classified a
+    // real FC desktop host as "not a Mini App", so FarcasterProvider bailed
+    // before sdk.actions.ready() and the host splash hung forever. Extensions
+    // only exist on desktop, which is exactly why that bug was desktop-only.
+    // The cheap pre-flight stays permissive (iframe / RN WebView); the async
+    // sdk.isInMiniApp() context probe in FarcasterProvider is the authoritative
+    // confirmation that we're inside a real host.
     if (isCoinbaseWebView()) return false
-    const eth = (window as { ethereum?: { isCoinbaseWallet?: boolean } }).ethereum
-    if (eth?.isCoinbaseWallet === true) return false
     const inIframe = window.self !== window.top
     const inReactNativeWebView =
       typeof (window as { ReactNativeWebView?: unknown }).ReactNativeWebView !==
