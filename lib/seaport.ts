@@ -503,10 +503,22 @@ interface ListingLike {
   orderComponents: SerializedOrderComponents
 }
 
+// One consideration item as actually paid on-chain, decoded from the
+// OrderFulfilled event. `amount` is the real settled value (base units), which is
+// what financial logic must use — never the stored, informational listing fields.
+export interface FulfilledConsiderationItem {
+  itemType: number
+  token: Address
+  amount: bigint
+  recipient: Address
+}
+
 /**
  * Scan a transaction receipt for a Seaport fulfillment event matching
  * `listing.orderComponents`. Returns the on-chain recipient (msg.sender of
- * fulfillOrder) on a match, or null otherwise.
+ * fulfillOrder) and the actual consideration paid on a match, or null otherwise.
+ * The consideration array is in the SAME order as the signed order's, so callers
+ * can index into it by the order's known item positions (seller / fee / royalty).
  *
  * Match conditions:
  *   - Log emitted by SEAPORT_ADDRESS (no other contract's events count)
@@ -519,7 +531,7 @@ interface ListingLike {
 export function findFulfillmentInLogs(
   listing: ListingLike,
   logs: ReadonlyArray<{ address: string; topics: readonly Hex[]; data: Hex }>,
-): { recipient: Address } | null {
+): { recipient: Address; consideration: FulfilledConsiderationItem[] } | null {
   const expected = deriveOrderHash(deserializeOrder(listing.orderComponents))
   for (const log of logs) {
     if (log.address.toLowerCase() !== SEAPORT_ADDRESS.toLowerCase()) continue
@@ -535,7 +547,13 @@ export function findFulfillmentInLogs(
       continue
     }
     if (decoded.args.orderHash !== expected) continue
-    return { recipient: decoded.args.recipient }
+    const consideration: FulfilledConsiderationItem[] = decoded.args.consideration.map((c) => ({
+      itemType: c.itemType,
+      token: c.token,
+      amount: c.amount,
+      recipient: c.recipient,
+    }))
+    return { recipient: decoded.args.recipient, consideration }
   }
   return null
 }

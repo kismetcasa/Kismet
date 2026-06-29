@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Pin, Share2, Check } from 'lucide-react'
+import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
-import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/earningsFormat'
+import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
 
 interface Pending {
   eth: number
@@ -13,11 +13,15 @@ interface Pending {
 }
 
 interface Stats {
+  // Totals = primary (mints) + secondary (listing royalties).
   eth: number
   usdc: number
   usd: number
   mints: number
   public: boolean
+  // Source split of the totals, so the card can show "mints vs resales".
+  primary?: EarningsAmounts
+  secondary?: EarningsAmounts
   // Undistributed earnings sitting on the artist's splits. Owner-only; absent
   // for visitors and for the public profile payload.
   pending?: Pending | null
@@ -33,13 +37,25 @@ export function ProfileStats({
 }: {
   address: string
   asVisitor: boolean
-  initialEarnings: { eth: number; usdc: number; usd: number; mints: number } | null
+  initialEarnings: {
+    eth: number
+    usdc: number
+    usd: number
+    mints: number
+    primary?: EarningsAmounts
+    secondary?: EarningsAmounts
+  } | null
 }) {
   const { isInMiniApp } = useFarcaster()
   const [stats, setStats] = useState<Stats | null>(null)
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Mint-vs-resale breakdown disclosure. `splitPinned` is the click toggle (the
+  // canonical action, works on touch); `splitHover` is a desktop mouse-only
+  // preview. Either opens it.
+  const [splitPinned, setSplitPinned] = useState(false)
+  const [splitHover, setSplitHover] = useState(false)
 
   // Public earnings arrive with the profile read (no extra request) — paint them
   // immediately. Visitors stop there. The owner always then fetches /api/stats:
@@ -63,6 +79,8 @@ export function ProfileStats({
             usd: d.usd ?? 0,
             mints: d.mints ?? 0,
             public: !!d.public,
+            primary: d.primary,
+            secondary: d.secondary,
             pending: d.pending ?? null,
           })
         }
@@ -72,6 +90,13 @@ export function ProfileStats({
       cancelled = true
     }
   }, [address, asVisitor, initialEarnings])
+
+  // Collapse the breakdown when switching profiles, so it never carries an
+  // expanded (or stuck mouse-hover) state over from another artist's card.
+  useEffect(() => {
+    setSplitPinned(false)
+    setSplitHover(false)
+  }, [address])
 
   // Offer only denominations the artist earned in, plus the blended USD.
   const denoms = useMemo<EarningsMetric[]>(() => {
@@ -86,6 +111,17 @@ export function ProfileStats({
 
   if (!stats) return null
   const hasEarnings = denoms.length > 0
+  // The mint-vs-resale breakdown is only meaningful when the artist earned from
+  // BOTH sources — then the mint-count line becomes a tap-to-expand toggle.
+  const hasSecondary = !!stats.secondary && (stats.secondary.eth > 0 || stats.secondary.usdc > 0)
+  const hasPrimaryValue = !!stats.primary && (stats.primary.eth > 0 || stats.primary.usdc > 0)
+  const hasBothSources = hasSecondary && hasPrimaryValue
+  const splitOpen = splitPinned || splitHover
+  // The mint-count line anchors a tap-to-expand toggle. A split collaborator can
+  // have primary earnings but 0 personal mints (no count line) — there's nothing
+  // to anchor a toggle to, so their breakdown shows statically (no toggle). Toggle
+  // only when there IS a count line to declutter.
+  const showSplitToggle = hasBothSources && stats.mints > 0
   // The owner sees the card on ANY primary-sale activity — earnings OR mints — so
   // an artist whose attributed earnings resolve to 0 (e.g. value split entirely
   // to collaborators) still gets their mint count and the pin, instead of a card
@@ -183,9 +219,50 @@ export function ProfileStats({
               </p>
             )
           )}
-          {active && stats.mints > 0 && (
-            <p className="text-muted text-xs mt-0.5">
-              {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+          {active && stats.mints > 0 &&
+            (showSplitToggle ? (
+              // Mint count doubles as a tap-to-expand toggle. Click pins it
+              // (touch-safe); mouse hover previews it (desktop only, gated to a
+              // mouse pointer so a tap on mobile can't get stuck open via a
+              // synthetic hover).
+              <button
+                type="button"
+                onClick={() => setSplitPinned((v) => !v)}
+                onPointerEnter={(e) => {
+                  if (e.pointerType === 'mouse') setSplitHover(true)
+                }}
+                onPointerLeave={(e) => {
+                  if (e.pointerType === 'mouse') setSplitHover(false)
+                }}
+                aria-expanded={splitOpen}
+                aria-controls="earnings-source-split"
+                title="Mint sales vs resale royalties"
+                className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
+              >
+                <span>
+                  {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                </span>
+                <ChevronDown
+                  size={11}
+                  strokeWidth={2}
+                  className={`transition-transform ${splitOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+            ) : (
+              <p className="text-muted text-xs mt-0.5">
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+              </p>
+            ))}
+          {/* Always mounted when both sources exist so the toggle's aria-controls
+              resolves; `hidden` (display:none) collapses it for the toggle case and
+              the 0-mint collaborator (no toggle) just shows it. */}
+          {active && hasBothSources && stats.primary && stats.secondary && (
+            <p
+              id="earnings-source-split"
+              hidden={showSplitToggle && !splitOpen}
+              className="text-faint text-xs mt-0.5 tabular-nums"
+            >
+              {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
           {pending && pendingDenom && (

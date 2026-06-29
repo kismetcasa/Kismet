@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server'
-import { verifyMessage, type Hex } from 'viem'
+import { verifyMessage, formatEther, formatUnits, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { bestEffort } from '@/lib/bestEffort'
 import { getGateConfig } from '@/lib/gate'
@@ -11,6 +11,8 @@ import { writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
 import { serverBaseClient } from '@/lib/rpc'
 import { findFulfillmentInLogs } from '@/lib/seaport'
+import { creditListingRoyalty } from '@/lib/stats'
+import { auditRoyaltyReceiver } from '@/lib/royaltyAudit'
 
 export async function PATCH(
   req: NextRequest,
@@ -54,6 +56,9 @@ export async function PATCH(
   // the OrderFulfilled event, which is unforgeable and authoritative.
   const { signature, nonce, signer } = body
   let buyer = ''
+  // Creator royalty actually paid on this fill (human units), credited to the
+  // artist's earnings after the status update. Null when the order carried none.
+  let royalty: { amount: number; currency: 'eth' | 'usdc' } | null = null
 
   if (body.status === 'cancelled') {
     if (!signature || !nonce || !signer || !isAddress(signer)) {
@@ -89,6 +94,7 @@ export async function PATCH(
     // reject a real sale. The buyer is the event recipient, not a self-claimed
     // address — so a marker can't redirect the sale (or Pass validity) to anyone.
     let onchainBuyer: string | null = null
+    let fulfillment: ReturnType<typeof findFulfillmentInLogs> = null
     try {
       const receipt = await serverBaseClient().waitForTransactionReceipt({
         hash: body.txHash as Hex,
@@ -97,7 +103,10 @@ export async function PATCH(
       })
       if (receipt.status === 'success') {
         const found = findFulfillmentInLogs(listing, receipt.logs)
-        if (found) onchainBuyer = found.recipient.toLowerCase()
+        if (found) {
+          onchainBuyer = found.recipient.toLowerCase()
+          fulfillment = found
+        }
       }
     } catch {
       // Timeout / decode / RPC error — fail-closed; the client can retry.
@@ -107,6 +116,31 @@ export async function PATCH(
     }
     if (onchainBuyer === listing.seller.toLowerCase()) {
       return errorResponse(403, 'Seller cannot mark own listing filled')
+    }
+
+    // Creator royalty for the earnings card. buildSellOrder always appends the
+    // royalty item LAST (after seller proceeds [0] and the platform fee), so when
+    // the order carries a royalty it's the final consideration item paying
+    // royaltyReceiver. Take the amount ACTUALLY settled from the matched event
+    // (same item order as the signed order) — never the informational stored
+    // field. Indexing by the known position correctly excludes seller proceeds
+    // even when the seller is also the royalty receiver (reselling own work).
+    if (fulfillment) {
+      const stored = listing.orderComponents.consideration
+      const idx = stored.length - 1
+      const evt = fulfillment.consideration[idx]
+      const receiver = listing.royaltyReceiver.toLowerCase()
+      if (
+        idx > 0 &&
+        stored[idx]?.recipient?.toLowerCase() === receiver &&
+        evt?.recipient?.toLowerCase() === receiver
+      ) {
+        const human =
+          listing.currency === 'usdc'
+            ? Number(formatUnits(evt.amount, 6))
+            : Number(formatEther(evt.amount))
+        if (human > 0) royalty = { amount: human, currency: listing.currency }
+      }
     }
 
     // Optional buyer signature. When the caller supplies one (web path), keep the
@@ -152,6 +186,34 @@ export async function PATCH(
   }
 
   if (body.status === 'filled') {
+    // Credit the creator royalty to the artist's earnings. Synchronous (not
+    // after()) for reliability — there's no webhook backstop for this stat — and
+    // safe to await: creditListingRoyalty is idempotent per listing and swallows
+    // its own errors, so it can never fail the sale response.
+    if (royalty) {
+      await creditListingRoyalty({
+        listingId: listing.id,
+        currency: royalty.currency,
+        amount: royalty.amount,
+        receiver: listing.royaltyReceiver,
+      })
+      // Instrumentation: record whether this royalty paid a wallet (itemizes on
+      // the card today) or a split contract (can't yet), and if a contract,
+      // whether it matches a Kismet payout split — so a future resolver is
+      // decided on real data. Off the response path; best-effort. A Seaport order
+      // fills once, so this runs at most once per listing.
+      after(() =>
+        auditRoyaltyReceiver({
+          listingId: listing.id,
+          collection: listing.collectionAddress,
+          tokenId: listing.tokenId,
+          receiver: listing.royaltyReceiver,
+          currency: royalty.currency,
+          amount: royalty.amount,
+        }),
+      )
+    }
+
     after(() =>
       writeNotification({
         type: 'sale',
