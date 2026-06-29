@@ -35,13 +35,30 @@ const PROBE_TIMEOUT_MS = 12000
 export async function verifyArweaveAvailable(
   uri: string,
   budgetMs: number = 45_000,
+  // Optional diagnostic tag. When set, a budget-exhausted miss logs the uri +
+  // the gateway pool it polled, so a stuck propagation (or a genuinely-lost
+  // upload) is identifiable from the console — `curl -I` the logged txid to
+  // tell a slow gateway (404 now, 200 later) from an upload that never landed
+  // (404 forever).
+  debugLabel?: string,
 ): Promise<boolean> {
   const urls = gatewayUrls(uri)
-  if (urls.length === 0) return false
+  if (urls.length === 0) {
+    if (debugLabel) console.warn(`[arweave-verify:${debugLabel}] no gateway URLs for`, uri)
+    return false
+  }
   const start = Date.now()
   for (let round = 0; ; round++) {
     const delay = BACKOFF_MS[Math.min(round, BACKOFF_MS.length - 1)]
-    if (Date.now() - start + delay >= budgetMs) return false
+    if (Date.now() - start + delay >= budgetMs) {
+      if (debugLabel) {
+        console.warn(
+          `[arweave-verify:${debugLabel}] not propagated within ${budgetMs}ms`,
+          { uri, urls, rounds: round },
+        )
+      }
+      return false
+    }
     if (delay > 0) await new Promise((r) => setTimeout(r, delay))
     const probes = urls.map((u) =>
       fetch(u, {

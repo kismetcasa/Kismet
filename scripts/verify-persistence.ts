@@ -42,6 +42,10 @@ const {
   loadPersistedJson,
   savePersistedCover,
   loadPersistedCover,
+  savePersistedUpload,
+  loadPersistedUpload,
+  savePersistedEditMedia,
+  loadPersistedEditMedia,
 } = await import('../lib/arweave/uploadPersistence.ts')
 
 let failures = 0
@@ -92,6 +96,55 @@ mem.clear()
 savePersistedCover(fileLike('cover.png'), { imageUri: 'ar://cov', thumbhash: null, verifyFailures: 0 })
 check('cover round-trips', loadPersistedCover(fileLike('cover.png'))?.imageUri === 'ar://cov')
 check('stores are independent (cover write not visible to json)', loadPersistedJson('cover.png') === null)
+
+// ── behavioural: mint media store ────────────────────────────────────────────
+mem.clear()
+const vid = fileLike('clip.mp4')
+savePersistedUpload(vid, {
+  mediaUri: 'ar://anim', posterUri: 'ar://poster', thumbhash: 'th', durationSec: null,
+  needsServerTranscode: false, serverTranscode: null, mediaType: 'video/mp4',
+})
+const mv = loadPersistedUpload(vid)
+check('mint media round-trips', mv?.mediaUri === 'ar://anim' && mv?.posterUri === 'ar://poster')
+check('mint media file-key isolation (different file → null)', loadPersistedUpload(fileLike('other.mp4')) === null)
+
+// ── behavioural: edit-moment media store (presence discriminates video/still) ─
+mem.clear()
+const ev = fileLike('edit-clip.mp4')
+savePersistedEditMedia(ev, { animationUri: 'ar://anim', imageUri: 'ar://poster', thumbhash: 'th' })
+const emv = loadPersistedEditMedia(ev)
+check('edit media (video) round-trips', emv?.animationUri === 'ar://anim' && emv?.imageUri === 'ar://poster')
+check('edit media discriminator: video has animationUri', emv?.animationUri !== null)
+
+const es = fileLike('edit-art.png')
+savePersistedEditMedia(es, { animationUri: null, imageUri: 'ar://img', thumbhash: null })
+const ems = loadPersistedEditMedia(es)
+check('edit media (still) round-trips', ems?.animationUri === null && ems?.imageUri === 'ar://img')
+check('edit media file-key isolation (different file → null)', loadPersistedEditMedia(fileLike('nope.png')) === null)
+
+// A video banked WITHOUT a poster (cover was set, or extraction missed) must
+// round-trip imageUri = null — that null is what tells the resume to re-extract
+// a poster instead of freezing a stale carried-over image.
+const evc = fileLike('edit-clip-cover.mp4')
+savePersistedEditMedia(evc, { animationUri: 'ar://anim2', imageUri: null, thumbhash: null })
+const emvc = loadPersistedEditMedia(evc)
+check('edit media (video, no poster) round-trips imageUri null', emvc?.animationUri === 'ar://anim2' && emvc?.imageUri === null)
+
+// THE CRITICAL GUARD: a mint-banked entry (e.g. a server-transcoded GIF whose
+// mediaType is 'image/gif' and whose real MP4 lives in serverTranscode) must be
+// INVISIBLE to the edit-moment loader — else edit-moment would misread it as a
+// still image and bake the raw-GIF txid on-chain. Separate store keys enforce it.
+mem.clear()
+const gif = fileLike('big.gif')
+savePersistedUpload(gif, {
+  mediaUri: 'ar://raw-gif', posterUri: null, thumbhash: null, durationSec: null,
+  needsServerTranscode: true,
+  serverTranscode: { animationUri: 'ar://mp4', posterUri: 'ar://poster', thumbhash: null },
+  mediaType: 'image/gif',
+})
+check('edit-moment cannot read a mint media entry (cross-flow collision guard)',
+  loadPersistedEditMedia(gif) === null)
+check('mint can still read its own entry', loadPersistedUpload(gif)?.mediaUri === 'ar://raw-gif')
 
 if (failures > 0) {
   console.error(`\n${failures} persistence check(s) FAILED`)
