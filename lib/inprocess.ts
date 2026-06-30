@@ -363,8 +363,9 @@ export function getSaleWindow(
  * (or far-past) one reads unambiguously. Locale + timezone come from the
  * runtime, so this MUST run client-side (see components/SaleWindow) or the SSR
  * pass would format in the server's timezone and mismatch on hydration.
+ * Internal — callers go through formatSaleWindowLabel.
  */
-export function formatSaleDate(
+function formatSaleDate(
   unixSec: number,
   { withTime = true, withTimeZone = false }: { withTime?: boolean; withTimeZone?: boolean } = {},
 ): string {
