@@ -6,10 +6,10 @@ import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, getSaleWindow, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
@@ -40,6 +40,7 @@ import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
+import { SaleWindow } from './SaleWindow'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -567,11 +568,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const saleEndNum = detail?.saleConfig?.saleEnd ? Number(detail.saleConfig.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
-  // Human-readable companion to the gating above so the collector can see WHEN
-  // a scheduled drop opens or a live one closes — "opens in 2h" / "closes in
-  // 3d" / "ended 5d ago" — instead of only a disabled button. null label =
-  // live open-ended sale (no date to surface).
-  const saleWindow = getSaleWindow(detail?.saleConfig, saleNowSec)
   const collectLabel = collecting
     ? 'collecting…'
     : saleNotStarted
@@ -1571,18 +1567,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
-          {/* Sale-window line — surfaces the schedule the collect button only
-              gates on: "opens in …" for a scheduled drop, "closes in …" for a
-              live one with an end, "ended … ago" once closed. Hidden for live
-              open-ended sales (no date to show). */}
-          {saleWindow?.label && (
-            <div className="px-5 pb-1 flex items-center gap-1.5">
-              <Clock size={11} className={saleWindow.state === 'ended' ? 'text-[#444]' : 'text-dim'} />
-              <p className={`text-[10px] font-mono uppercase tracking-widest ${saleWindow.state === 'ended' ? 'text-[#444]' : 'text-dim'}`}>
-                {saleWindow.label}
-              </p>
-            </div>
-          )}
+          {/* Sale-window line — the absolute date the collect button only gates
+              on: "Opens Jul 3, 3:00 PM" for a scheduled drop, "Closes …" for a
+              live one with an end, "Ended …" once closed (with the timezone, on
+              this roomy surface). Hidden for live open-ended sales. */}
+          <SaleWindow saleConfig={detail?.saleConfig} variant="detail" className="px-5 pb-1" />
 
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
