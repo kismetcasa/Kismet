@@ -51,3 +51,45 @@ export function deriveArtistsFromRecipients(
 export const PATRON_PASS_DESCRIPTION = `Turro’s artwork "Facing Desolation" marks the debut of the Kismet Patron Collection. Facing Desolation is a physical Artwork commissioned by Kismet Casa to gift to one collector of the digital edition.
 
 There will only ever be 100 editions available of which up to 20 are reserved for Turro to invite artists to the platform. At the end of the sale, any remaining editions will be permanently unavailable to mint.`
+
+/**
+ * Content for the "Mint Pass Ruleset" modal, surfaced from the Patron
+ * Collection page's Information button. Structured (not a flat string) so the
+ * modal can render each section with its own tone/icon and the copy stays in
+ * one place. `tone` drives the section's accent in PatronInfoModal.
+ */
+export const PATRON_MINT_PASS_RULESET = {
+  title: 'Mint Pass Ruleset',
+  notice: 'Always make sure you are on Kismet.art before purchasing a Mint Pass.',
+  sections: [
+    {
+      tone: 'valid' as const,
+      heading: 'Valid for minting',
+      items: [
+        'Receive an airdrop of the artwork.',
+        'Mint the artwork on Kismet.',
+        'Purchase the artwork on the Kismet secondary market.',
+      ],
+    },
+    {
+      tone: 'invalid' as const,
+      heading: 'Invalid for minting',
+      items: [
+        'Transfer the artwork to another wallet.',
+        'Sell the artwork outside the platform.',
+      ],
+    },
+    {
+      tone: 'contact' as const,
+      heading: 'Contact us if',
+      items: [
+        'You lose access to the wallet holding the artwork.',
+        'You encounter an issue minting with a valid NFT.',
+        'You are unable to perform an airdrop after being authorized.',
+      ],
+    },
+  ],
+} as const
+
+export type PatronRulesetTone =
+  (typeof PATRON_MINT_PASS_RULESET)['sections'][number]['tone']

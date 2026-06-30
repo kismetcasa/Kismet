@@ -8,7 +8,7 @@ import { useAccount, usePublicClient, useReadContract, useReadContracts } from '
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check, Pencil } from 'lucide-react'
+import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check, Pencil, Info, ChevronDown, ChevronUp } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -28,6 +28,7 @@ import { ProfileAvatar } from './ProfileAvatar'
 import { CollectAllAction } from './CollectAllAction'
 import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
 import { PatronArtworkShowcase } from './PatronArtworkShowcase'
+import { PatronInfoModal } from './PatronInfoModal'
 import {
   isPatronCollection,
   deriveArtistsFromRecipients,
@@ -127,6 +128,13 @@ export function CollectionView({
   const [hidePending, setHidePending] = useState(false)
   const [editing, setEditing] = useState(false)
   const [metaOverride, setMetaOverride] = useState<EditedMeta | null>(null)
+  // Patron-only "Mint Pass Ruleset" modal, opened from the header Information button.
+  const [showInfo, setShowInfo] = useState(false)
+  // Header description expand/collapse — the copy is clamped to 3 lines and a
+  // "show more" toggle reveals the rest (descRef measures whether it overflows).
+  const [showFullDesc, setShowFullDesc] = useState(false)
+  const [descOverflows, setDescOverflows] = useState(false)
+  const descRef = useRef<HTMLParagraphElement>(null)
   const { ensureSession } = useUploadSession()
 
   const isFeatured = featuredCollectionAddrs.has(address.toLowerCase())
@@ -687,6 +695,22 @@ export function CollectionView({
   const coverThumbhash = effImage ? effThumbhash : firstMoment?.metadata?.kismet_thumbhash
   const description = metaOverride?.description ?? collectionDescription
 
+  // Measure whether the clamped header description overflows so the "show more"
+  // toggle only appears when there's hidden copy. Only measure while collapsed —
+  // expanded, the clamp is off so scrollHeight === clientHeight; descOverflows
+  // keeps its last collapsed value and the toggle persists via `|| showFullDesc`.
+  // Re-measures on resize since the line count is width-dependent (mobile clamps
+  // more lines than desktop).
+  useEffect(() => {
+    if (showFullDesc) return
+    const el = descRef.current
+    if (!el) return
+    const measure = () => setDescOverflows(el.scrollHeight > el.clientHeight)
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [description, showFullDesc])
+
   // Total collects: sum on-chain totalMinted per token — no aggregated count
   // exists upstream. Batched into one multicall by wagmi.
   const { data: tokenInfos } = useReadContracts({
@@ -752,13 +776,31 @@ export function CollectionView({
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      <button
-        onClick={() => router.back()}
-        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors mb-8"
-      >
-        <ArrowLeft size={12} />
-        back
-      </button>
+      <div className="flex items-center justify-between mb-8">
+        <button
+          onClick={() => router.back()}
+          className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors"
+        >
+          <ArrowLeft size={12} />
+          back
+        </button>
+        {/* Patron Collection only: opens the Mint Pass Ruleset modal. Full
+            "Information" label on desktop; bare info glyph on mobile (the
+            label is hidden, the icon keeps a 44px tap target). */}
+        {isPatron && (
+          <button
+            onClick={() => setShowInfo(true)}
+            className="flex items-center gap-1.5 min-h-[44px] sm:min-h-0 px-1 -mr-1 text-xs font-mono text-muted hover:text-dim transition-colors"
+            aria-label="Mint Pass Ruleset information"
+            title="Mint Pass Ruleset"
+          >
+            <Info size={14} />
+            <span className="hidden sm:inline">Information</span>
+          </button>
+        )}
+      </div>
+
+      {showInfo && <PatronInfoModal onClose={() => setShowInfo(false)} />}
 
       {editing && isCreator && (
         <EditCollectionForm
@@ -889,7 +931,26 @@ export function CollectionView({
             </Link>
           )}
           {description && (
-            <p className="text-xs font-mono text-muted mt-1 line-clamp-3">{description}</p>
+            <div className="mt-1">
+              <p
+                ref={descRef}
+                className={`text-xs font-mono text-muted ${showFullDesc ? '' : 'line-clamp-3'}`}
+              >
+                {description}
+              </p>
+              {(descOverflows || showFullDesc) && (
+                <button
+                  onClick={() => setShowFullDesc((v) => !v)}
+                  className="flex items-center gap-1 text-[10px] font-mono text-dim hover:text-ink transition-colors mt-1.5"
+                >
+                  {showFullDesc ? (
+                    <><ChevronUp size={10} /> show less</>
+                  ) : (
+                    <><ChevronDown size={10} /> show more</>
+                  )}
+                </button>
+              )}
+            </div>
           )}
           <div className="flex items-center gap-3 mt-2">
             {isAdmin && (
