@@ -23,6 +23,7 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { ListButton } from './ListButton'
+import { SaleWindow } from './SaleWindow'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -606,6 +607,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             )}
           </Link>
         )}
+        {/* Sale-window badge — the absolute date the feed answers WHEN with
+            (the collect button only gates on it): "Opens Jul 3" for a scheduled
+            drop, "Closes Jul 8, 5:00 PM" for a live one with an end, "Ended …"
+            once closed. Compact cards show date-only; tap through for the time.
+            Hidden for live open-ended sales (no date to show). */}
+        <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
       </div>
 
       {/* Actions row. Default: [price|supply] [list] [collect] in one flex

@@ -40,6 +40,7 @@ import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
 import { ListButton } from './ListButton'
+import { SaleWindow } from './SaleWindow'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -1565,6 +1566,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               )}
             </div>
           )}
+
+          {/* Sale-window line — the absolute date the collect button only gates
+              on: "Opens Jul 3, 3:00 PM" for a scheduled drop, "Closes …" for a
+              live one with an end, "Ended …" once closed (with the timezone, on
+              this roomy surface). Hidden for live open-ended sales. */}
+          <SaleWindow saleConfig={detail?.saleConfig} variant="detail" className="px-5 pb-1" />
 
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
