@@ -3,13 +3,14 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
+import { Copy, Check, EyeOff, ArrowUpRight, Pin, Clock } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import {
   resolveUri,
   formatPrice,
   shortAddress,
+  getSaleWindow,
   inferCollectCurrency,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
@@ -310,6 +311,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
+  // Time-bound companion to the gating above, so the feed answers WHEN a drop
+  // opens/closes rather than just disabling the button: "opens in 2h" /
+  // "closes in 3d" / "ended 5d ago". null label = live open-ended (no date).
+  const saleWindow = getSaleWindow(activeSale, saleNowSec)
   const collectLabel = collecting
     ? 'collecting…'
     : saleNotStarted
@@ -605,6 +610,25 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </span>
             )}
           </Link>
+        )}
+        {/* Sale-window badge — tells the feed WHEN this drop opens or closes
+            (the collect button only gates on it). "opens in …" for a scheduled
+            drop, "closes in …" for a live one with an end, "ended … ago" once
+            closed. Hidden for live open-ended sales (no date to show). */}
+        {saleWindow?.label && (
+          <div className="flex items-center gap-1 min-w-0">
+            <Clock
+              size={compact ? 9 : 11}
+              className={`flex-shrink-0 ${saleWindow.state === 'ended' ? 'text-faint' : 'text-dim'}`}
+            />
+            <span
+              className={`${compact ? 'text-[9px]' : 'text-[10px]'} font-mono uppercase tracking-wider truncate ${
+                saleWindow.state === 'ended' ? 'text-faint' : 'text-dim'
+              }`}
+            >
+              {saleWindow.label}
+            </span>
+          </div>
         )}
       </div>
 

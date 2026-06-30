@@ -286,6 +286,84 @@ export function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diff / 86400)}d`
 }
 
+// Max-uint64 "never expires" sentinel the mint form writes for an open-ended
+// sale (components/MintForm.tsx). Any saleEnd at or above this is not a real
+// deadline — it must never render as a countdown ("closes in 5e11 years").
+const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
+
+export type SaleWindowState = 'scheduled' | 'closing' | 'live' | 'ended'
+
+export interface SaleWindowInfo {
+  /** Where the (collection, token) sits in its sale window right now. */
+  state: SaleWindowState
+  /** Short human label for the time-bound edge — "opens in 2h", "closes in
+   *  3d", "ended 5d ago". null only for `live` (an open-ended sale in
+   *  progress has no date to surface). */
+  label: string | null
+}
+
+// Coarse "2h" / "3d" magnitude for a second delta, matching the terse style of
+// formatRelativeTime. Direction ("opens in" / "ago") is added by the caller.
+function formatTimeMagnitude(deltaSec: number): string {
+  const d = Math.abs(deltaSec)
+  if (d < 60) return '<1m'
+  if (d < 3600) return `${Math.floor(d / 60)}m`
+  if (d < 86400) return `${Math.floor(d / 3600)}h`
+  return `${Math.floor(d / 86400)}d`
+}
+
+/**
+ * Classify a moment's sale window for display — the human-readable companion
+ * to the saleStart/saleEnd gating MomentCard + MomentDetailView already do, so
+ * collectors can see WHEN a scheduled drop opens or a live one closes instead
+ * of just a disabled "not started" / "mint ended" button. Returns null when
+ * there's no saleConfig at all (nothing to say).
+ *
+ * saleStart/saleEnd are unix-second strings. saleStart "0"/absent = opens-now;
+ * saleEnd "0"/absent or the max-uint64 sentinel = open-ended. BigInt-parses the
+ * end first so the sentinel can't overflow Number precision and read as a real
+ * (astronomically distant) deadline.
+ */
+export function getSaleWindow(
+  saleConfig: { saleStart?: string; saleEnd?: string } | null | undefined,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): SaleWindowInfo | null {
+  if (!saleConfig) return null
+
+  const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
+
+  // Resolve a real end (in seconds) or treat as open-ended. Non-numeric, zero,
+  // or sentinel ends → open-ended (no deadline to show) rather than throw.
+  let endNum = 0
+  let openEnded = true
+  if (saleConfig.saleEnd) {
+    try {
+      const endBig = BigInt(saleConfig.saleEnd)
+      if (endBig > 0n && endBig < OPEN_ENDED_SALE_SENTINEL) {
+        endNum = Number(endBig)
+        openEnded = false
+      }
+    } catch {
+      // non-numeric → leave open-ended
+    }
+  }
+
+  // Not opened yet → scheduled.
+  if (Number.isFinite(startNum) && startNum > nowSec) {
+    return { state: 'scheduled', label: `opens in ${formatTimeMagnitude(startNum - nowSec)}` }
+  }
+  // Real end already passed → ended.
+  if (!openEnded && endNum <= nowSec) {
+    return { state: 'ended', label: `ended ${formatTimeMagnitude(nowSec - endNum)} ago` }
+  }
+  // Live with a real upcoming close → closing.
+  if (!openEnded) {
+    return { state: 'closing', label: `closes in ${formatTimeMagnitude(endNum - nowSec)}` }
+  }
+  // Live and open-ended → no date to surface.
+  return { state: 'live', label: null }
+}
+
 /**
  * Fetch the moments inside a single collection from inprocess's timeline API.
  * Returns [] on any error (network, non-2xx, malformed JSON, timeout) so
