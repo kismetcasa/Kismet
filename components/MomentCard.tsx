@@ -609,7 +609,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         )}
         {/* Sale-window badge — the absolute date the feed answers WHEN with
             (the collect button only gates on it): "Opens Jul 3" for a scheduled
-            drop, "Closes Jul 8, 5:00 PM" for a live one with an end, "Ended …"
+            drop, "Sale ends Jul 8, 5:00 PM" for a live one with an end, "Ended …"
             once closed. Compact cards show date-only; tap through for the time.
             Hidden for live open-ended sales (no date to show). */}
         <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />

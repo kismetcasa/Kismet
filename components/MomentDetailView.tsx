@@ -1567,12 +1567,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
-          {/* Sale-window line — the absolute date the collect button only gates
-              on: "Opens Jul 3, 3:00 PM" for a scheduled drop, "Closes …" for a
-              live one with an end, "Ended …" once closed (with the timezone, on
-              this roomy surface). Hidden for live open-ended sales. */}
-          <SaleWindow saleConfig={detail?.saleConfig} variant="detail" className="px-5 pb-1" />
-
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
             <div className="flex border border-line flex-none">
@@ -1615,11 +1609,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Secondary actions row: share + (send when owned). Share
-              always renders so every viewer has a one-click way to copy
-              the moment link; send sits to its right for holders only. */}
+          {/* Secondary actions row: scan / share (+ send when owned) on the
+              left, the sale-window date centered under the collect button, and
+              the admin feature toggle pinned right — one band beneath collect.
+              Share always renders so every viewer can copy the moment link. */}
           <div className="px-5 pb-4">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3 gap-y-2">
               <button
                 onClick={handleCopyScan}
                 className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
@@ -1644,6 +1639,24 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 >
                   <Send size={12} strokeWidth={1.5} />
                   {sendOpen ? 'cancel' : 'send'}
+                </button>
+              )}
+              {/* Sale-window date — centered under the collect button. The
+                  flex-1 spacer keeps it centered (and pins the feature toggle
+                  to the right) even when there's no date to show / before
+                  mount. Hidden for live open-ended sales. */}
+              <div className="flex-1 flex justify-center">
+                <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={() => toggleFeatured(address, tokenId)}
+                  className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
+                    isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
+                  }`}
+                >
+                  <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                  {isFeatured ? 'unfeature' : 'feature'}
                 </button>
               )}
             </div>
@@ -1684,21 +1697,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               </div>
             )}
           </div>
-
-          {/* Site admin — feature/unfeature */}
-          {isAdmin && (
-            <div className="px-5 pb-4">
-              <button
-                onClick={() => toggleFeatured(address, tokenId)}
-                className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                  isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
-                }`}
-              >
-                <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-                {isFeatured ? 'unfeature' : 'feature'}
-              </button>
-            </div>
-          )}
 
         </div>
       </div>

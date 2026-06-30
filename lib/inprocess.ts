@@ -383,14 +383,14 @@ function formatSaleDate(
 // Verb fronting the absolute date per state. `live` has no date, so no verb.
 const SALE_STATE_VERB: Record<SaleWindowState, string | null> = {
   scheduled: 'Opens',
-  closing: 'Closes',
+  closing: 'Sale ends',
   ended: 'Ended',
   live: null,
 }
 
 /**
  * Build the display label for a sale window — "Opens Jul 3, 3:00 PM",
- * "Closes Jul 8, 5:00 PM", "Ended Jun 25". Returns null when there's no dated
+ * "Sale ends Jul 8, 5:00 PM", "Ended Jun 25". Returns null when there's no dated
  * edge to show (no saleConfig, or a live open-ended sale). Formatting opts
  * (time, timezone) are forwarded to formatSaleDate so a roomy surface can show
  * the zone while a compact card shows date-only.

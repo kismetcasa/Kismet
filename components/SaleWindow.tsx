@@ -18,7 +18,7 @@ interface SaleWindowProps {
 
 /**
  * Renders the absolute, viewer-local sale-window date a collector needs to know
- * WHEN a drop opens or closes — "Opens Jul 3, 3:00 PM" / "Closes Jul 8, 5:00 PM
+ * WHEN a drop opens or closes — "Opens Jul 3, 3:00 PM" / "Sale ends Jul 8, 5:00 PM
  * EDT" / "Ended Jun 25" — the human-readable companion to the saleStart/saleEnd
  * button gating. Renders nothing for a live open-ended sale (no date) or a
  * moment with no sale config.
@@ -54,7 +54,7 @@ export function SaleWindow({ saleConfig, variant = 'card', compact = false, clas
   return (
     <div className={`flex items-center gap-1.5 min-w-0 ${className}`}>
       <Clock size={iconSize} className={`flex-shrink-0 ${tone}`} />
-      <span className={`${textSize} font-mono uppercase ${tracking} ${tone}${variant === 'card' ? ' truncate' : ''}`}>
+      <span className={`${textSize} font-mono uppercase ${tracking} ${tone}${variant === 'card' ? ' truncate' : ' whitespace-nowrap'}`}>
         {label}
       </span>
     </div>
