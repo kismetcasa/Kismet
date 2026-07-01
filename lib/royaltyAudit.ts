@@ -33,8 +33,10 @@ const MAX_DETAIL = 500
 
 // The on-chain creator-reward recipient for a token — the 0xSplits address when
 // the moment has a split, else the payout wallet. null when the read reverts
-// (collection predates the interface, RPC blip). Used only to classify the audit.
-async function creatorRewardRecipient(collection: string, tokenId: string): Promise<string | null> {
+// (collection predates the interface, RPC blip). Classifies the audit below,
+// and verifies the receiver↔split match before creditListingRoyalty (lib/stats.ts)
+// decomposes a split-contract royalty into per-member credits.
+export async function creatorRewardRecipient(collection: string, tokenId: string): Promise<string | null> {
   try {
     const r = await serverBaseClient().readContract({
       address: collection as `0x${string}`,

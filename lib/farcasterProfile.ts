@@ -87,6 +87,12 @@ async function getFarcasterProfileByFid(
           pfpUrl: user.pfp?.url ?? null,
         }
       }
+    } else if (res.status !== 404) {
+      // Transient upstream failure (429/5xx) — treat like a network blip.
+      // Caching '' here would assert "this FID doesn't exist" for the fail
+      // TTL, wrongly stripping FC identity (and the earnings sibling union)
+      // for a real user. Only a 404 is a definitive miss.
+      return null
     }
   } catch {
     // Network blip — don't poison the cache.
@@ -139,6 +145,13 @@ export async function getVerifiedAddressesByFid(
         .map((v) => v.address)
         .filter((a): a is string => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a))
         .map((a) => a.toLowerCase())
+    } else if (res.status !== 404) {
+      // Transient upstream failure (429/5xx) — treat like a network blip.
+      // Caching '' here would assert "no verifications" for the fail TTL,
+      // collapsing the sibling union to [self] — a multi-wallet artist's
+      // mints and earnings visibly under-report for those 5 minutes. Only a
+      // 404 is a definitive empty answer.
+      return []
     }
   } catch {
     // Network failure — don't poison the cache.
@@ -188,6 +201,12 @@ export async function getFarcasterProfileByAddress(
           result?: { user?: { fid?: number } }
         }
         fid = body.result?.user?.fid ?? null
+      } else if (res.status !== 404) {
+        // Transient upstream failure (429/5xx): return null WITHOUT writing
+        // the no-FID sentinel. Caching it would strip the user's FC identity
+        // — and with it the earnings sibling union — for the fail TTL. A 404
+        // (address genuinely has no FC user) falls through and caches.
+        return null
       }
     } catch {
       return null

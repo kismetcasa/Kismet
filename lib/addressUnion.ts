@@ -4,6 +4,7 @@ import {
   getVerifiedAddressesByFid,
   type FarcasterProfile,
 } from './farcasterProfile'
+import { getCachedSmartWallet } from './smartWalletCache'
 import { getFidProfile, getProfile, type FidProfile, type Profile } from './profile'
 
 /**
@@ -36,6 +37,35 @@ export async function expandToFidSiblings(address: string): Promise<string[]> {
   // original address at the front for any caller that cares about
   // ordering (e.g. logs that surface the "queried" address first).
   return Array.from(new Set<string>([lower, ...siblings]))
+}
+
+/**
+ * The wallets an artist's EARNINGS can legitimately live under: their FC
+ * sibling set PLUS each sibling's inprocess per-creator smart wallet.
+ *
+ * The smart wallets matter because In•Process executes Kismet mints as the
+ * per-creator smart wallet (the on-chain msg.sender), and its feeds often
+ * attribute the mint to that contract address (see the creator-resolution
+ * comment in MomentDetailView). A contract can never be an FC verification,
+ * so the plain sibling union reads 0 for anything credited to it — the
+ * "artist with real sales sees an empty earnings card" failure. Stats reads
+ * (getArtistEarnings / getArtistPending) union over THIS set; identity-facing
+ * callers (timeline filters, profile resolution) keep using
+ * expandToFidSiblings — a smart wallet is a payment alias, not an identity.
+ *
+ * Cost: one Redis MGET-shaped read on top of expandToFidSiblings (the
+ * per-sibling lookups auto-pipeline into a single round trip). Missing cache
+ * entries just mean that sibling's smart wallet isn't unioned yet — same
+ * degraded-but-correct behavior as before this helper existed.
+ */
+export async function expandToEarningsWallets(address: string): Promise<string[]> {
+  const siblings = await expandToFidSiblings(address)
+  const smartWallets = await Promise.all(siblings.map((s) => getCachedSmartWallet(s)))
+  const all = new Set<string>(siblings)
+  for (const sw of smartWallets) {
+    if (sw) all.add(sw.toLowerCase())
+  }
+  return Array.from(all)
 }
 
 export interface ResolvedProfile {

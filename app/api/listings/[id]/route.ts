@@ -189,13 +189,17 @@ export async function PATCH(
     // Credit the creator royalty to the artist's earnings. Synchronous (not
     // after()) for reliability — there's no webhook backstop for this stat — and
     // safe to await: creditListingRoyalty is idempotent per listing and swallows
-    // its own errors, so it can never fail the sale response.
+    // its own errors, so it can never fail the sale response. collection/tokenId
+    // let it decompose a 0xSplits royalty receiver into per-member credits so
+    // split collaborators' cards see their share instead of a stranded contract.
     if (royalty) {
       await creditListingRoyalty({
         listingId: listing.id,
         currency: royalty.currency,
         amount: royalty.amount,
         receiver: listing.royaltyReceiver,
+        collection: listing.collectionAddress,
+        tokenId: listing.tokenId,
       })
       // Instrumentation: record whether this royalty paid a wallet (itemizes on
       // the card today) or a split contract (can't yet), and if a contract,

@@ -238,14 +238,21 @@ export default async function Image({ params }: Props) {
               {secondary}
             </div>
           )}
-          {earnings && earnings.mints > 0 && (
+          {/* Show earnings on ANY value, not only when mints > 0: a split
+              collaborator can hold real (public) earnings with zero personal
+              mints — gating on the mint count blanked their share card while
+              the profile card showed the figure. The mint chip stays
+              count-gated. */}
+          {earnings && (earnings.mints > 0 || earnings.eth > 0 || earnings.usdc > 0) && (
             <div style={{ display: 'flex', alignItems: 'baseline', marginTop: 28 }}>
               <div style={{ fontSize: 52, color: theme ? theme.palette.primary : '#efefef' }}>
                 {formatEarningsValue(cardDenom, earnings)}
               </div>
-              <div style={{ fontSize: 26, color: '#888', marginLeft: 18 }}>
-                {`${earnings.mints} mints`}
-              </div>
+              {earnings.mints > 0 && (
+                <div style={{ fontSize: 26, color: '#888', marginLeft: 18 }}>
+                  {`${earnings.mints} mints`}
+                </div>
+              )}
             </div>
           )}
           {/* Palette swatch strip — the clearest "themed" signal. marginLeft

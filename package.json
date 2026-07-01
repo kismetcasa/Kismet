@@ -16,7 +16,7 @@
     "check:bundle": "node scripts/check-bundle-size.mjs",
     "verify:agent": "node --experimental-strip-types scripts/verify-agent-collect.ts && node --experimental-strip-types scripts/verify-agent-buy.ts && node --experimental-strip-types scripts/verify-agent-list.ts && node --experimental-strip-types scripts/verify-agent-collect-batch.ts && node scripts/verify-agent-skill.mjs && node --experimental-strip-types scripts/verify-agent-scout.ts && node --experimental-strip-types scripts/verify-agent-scout-server.ts",
     "verify:chunk-guard": "node --experimental-strip-types scripts/verify-chunk-reload-guard.ts",
-    "verify:flows": "node --experimental-strip-types scripts/verify-mint.ts && node --experimental-strip-types scripts/verify-gateways.ts && node --experimental-strip-types scripts/verify-persistence.ts && node --experimental-strip-types scripts/verify-chain-health.ts && node --experimental-strip-types scripts/verify-smartwallet.ts && node --experimental-strip-types scripts/verify-gate-flags.ts",
+    "verify:flows": "node --experimental-strip-types scripts/verify-mint.ts && node --experimental-strip-types scripts/verify-gateways.ts && node --experimental-strip-types scripts/verify-persistence.ts && node --experimental-strip-types scripts/verify-chain-health.ts && node --experimental-strip-types scripts/verify-smartwallet.ts && node --experimental-strip-types scripts/verify-gate-flags.ts && node --experimental-strip-types scripts/verify-stats.ts",
     "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent && npm run verify:chunk-guard && npm run verify:flows",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },

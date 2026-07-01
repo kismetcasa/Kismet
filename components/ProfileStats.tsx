@@ -98,14 +98,17 @@ export function ProfileStats({
     setSplitHover(false)
   }, [address])
 
-  // Offer only denominations the artist earned in, plus the blended USD.
+  // Offer only denominations that RENDER as non-zero at the card's display
+  // precision (rendersNonZero), plus the blended USD. Gating on raw `> 0` let
+  // sub-display dust through — an artist whose only earnings round to zero saw
+  // a headline of "$0" / "0 ETH", which reads as a broken total. USD also
+  // hides when the price is unavailable (the server sends usd=0 then).
   const denoms = useMemo<EarningsMetric[]>(() => {
     if (!stats) return []
     const d: EarningsMetric[] = []
-    if (stats.eth > 0) d.push('eth')
-    if (stats.usdc > 0) d.push('usdc')
-    // USD only when it's actually computable (price available) — never show $0.
-    if (stats.usd > 0) d.push('usd')
+    if (rendersNonZero('eth', stats)) d.push('eth')
+    if (rendersNonZero('usdc', stats)) d.push('usdc')
+    if (rendersNonZero('usd', stats)) d.push('usd')
     return d
   }, [stats])
 
@@ -206,7 +209,14 @@ export function ProfileStats({
             <button
               onClick={multi ? () => setDenom(denoms[(denoms.indexOf(active) + 1) % denoms.length]) : undefined}
               className={`text-ink text-xl leading-tight tabular-nums ${multi ? 'cursor-pointer hover:text-accent transition-colors' : 'cursor-default'}`}
-              title={multi ? 'Tap to switch currency' : undefined}
+              title={[
+                // The blended USD is lifetime crypto at TODAY'S price, not the
+                // sum of what each sale was worth on its day — say so, or an
+                // artist reconciling against their wallet history reads the
+                // moving figure as a wrong total.
+                active === 'usd' ? 'USD value at the current ETH price' : null,
+                multi ? 'Tap to switch currency' : null,
+              ].filter(Boolean).join(' — ') || undefined}
             >
               {formatEarningsValue(active, stats)}
             </button>
