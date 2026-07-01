@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8_000),
     })
     const text = await res.text()
     // inprocess returns non-JSON (often empty / "Not Found") when an artist

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
-import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY, FEATURED_MOMENT_DISPLAYS_KEY } from '@/lib/redis'
+import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY, FEATURED_MOMENT_DISPLAYS_KEY, MAX_FEATURED } from '@/lib/redis'
 import { verifyPrivilegedSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -26,9 +26,9 @@ function parseMomentZset(raw: (string | number)[]) {
 // `mintPassDisplays`.
 export async function GET() {
   const [rawMoments, rawCollections, rawDisplays] = await Promise.all([
-    redis.zrange(FEATURED_KEY, 0, -1, { rev: true, withScores: true }) as Promise<(string | number)[]>,
-    redis.zrange(FEATURED_COLLECTIONS_KEY, 0, -1, { rev: true, withScores: true }) as Promise<(string | number)[]>,
-    redis.zrange(FEATURED_MOMENT_DISPLAYS_KEY, 0, -1, { rev: true, withScores: true }) as Promise<(string | number)[]>,
+    redis.zrange(FEATURED_KEY, 0, MAX_FEATURED - 1, { rev: true, withScores: true }) as Promise<(string | number)[]>,
+    redis.zrange(FEATURED_COLLECTIONS_KEY, 0, MAX_FEATURED - 1, { rev: true, withScores: true }) as Promise<(string | number)[]>,
+    redis.zrange(FEATURED_MOMENT_DISPLAYS_KEY, 0, MAX_FEATURED - 1, { rev: true, withScores: true }) as Promise<(string | number)[]>,
   ])
 
   const featured = parseMomentZset(rawMoments)
@@ -66,10 +66,15 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.type === 'collection') {
-    await redis.zadd(FEATURED_COLLECTIONS_KEY, {
-      score: Date.now(),
-      member: collectionAddress.toLowerCase(),
-    })
+    // Trim-on-write keeps the zset bounded forever (the TRENDING pattern).
+    await redis
+      .multi()
+      .zadd(FEATURED_COLLECTIONS_KEY, {
+        score: Date.now(),
+        member: collectionAddress.toLowerCase(),
+      })
+      .zremrangebyrank(FEATURED_COLLECTIONS_KEY, 0, -(MAX_FEATURED + 1))
+      .exec()
     return NextResponse.json({ featured: true })
   }
 
@@ -91,12 +96,20 @@ export async function POST(req: NextRequest) {
     await redis.del(FEATURED_MOMENT_DISPLAYS_KEY)
     await Promise.all([
       redis.zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: now, member }),
-      redis.zadd(FEATURED_KEY, { score: now, member }),
+      redis
+        .multi()
+        .zadd(FEATURED_KEY, { score: now, member })
+        .zremrangebyrank(FEATURED_KEY, 0, -(MAX_FEATURED + 1))
+        .exec(),
     ])
     return NextResponse.json({ featured: true })
   }
 
-  await redis.zadd(FEATURED_KEY, { score: now, member })
+  await redis
+    .multi()
+    .zadd(FEATURED_KEY, { score: now, member })
+    .zremrangebyrank(FEATURED_KEY, 0, -(MAX_FEATURED + 1))
+    .exec()
   return NextResponse.json({ featured: true })
 }
 

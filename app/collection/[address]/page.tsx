@@ -45,6 +45,7 @@ async function fetchCollectionDetail(address: string): Promise<CollectionDetail 
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 120 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return null
     const text = await res.text()
@@ -62,6 +63,7 @@ async function fetchCollectionMeta(
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 120 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return loadKvFallback(address)
     const data = await res.json()
@@ -95,6 +97,7 @@ async function findFirstMomentTokenId(address: string): Promise<string | null> {
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return null
     const data = (await res.json()) as { moments?: { token_id?: string }[] }

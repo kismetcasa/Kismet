@@ -48,7 +48,10 @@ async function fetchGif(gifUri: string): Promise<Buffer> {
   let lastErr: unknown
   for (const url of urls) {
     try {
-      const res = await fetch(url)
+      // Generous timeout — this pulls up to MAX_GIF_BYTES of media — but
+      // bounded, so a stalled gateway can't pin the transcode slot
+      // (MAX_CONCURRENT=1) indefinitely and starve every later request.
+      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
       if (!res.ok) {
         lastErr = new Error(`${res.status} ${url}`)
         continue

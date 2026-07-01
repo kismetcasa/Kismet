@@ -23,6 +23,77 @@ const MAX_RESIZE_WIDTH = 4096
 // through untouched rather than risking an OOM.
 const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
 
+/**
+ * Read `body` fully into a Buffer, enforcing `maxBytes` on ACTUAL bytes read.
+ * Content-Length is advisory: chunked upstreams (common for IPFS gateways)
+ * omit it entirely, and a misbehaving one can under-report — so a cap gated on
+ * the header alone lets an unbounded body straight into RAM (that exact bypass
+ * existed here: `!declaredLen` passed the resize gate into an uncapped
+ * `arrayBuffer()`; OWASP API4:2023). On overflow the caller gets the chunks
+ * read so far plus the live reader, so the bytes already in flight can be
+ * spliced back into a streaming passthrough without a wasteful re-fetch.
+ */
+async function readBodyBounded(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<
+  | { kind: 'complete'; buffer: Buffer }
+  | { kind: 'overflow'; chunks: Uint8Array[]; reader: ReadableStreamDefaultReader<Uint8Array> }
+> {
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    total += value.byteLength
+    if (total > maxBytes) return { kind: 'overflow', chunks, reader }
+  }
+  return { kind: 'complete', buffer: Buffer.concat(chunks) }
+}
+
+/**
+ * Stream `prefix` chunks, then everything remaining on `reader`, erroring the
+ * response and cancelling the upstream once `maxBytes` total have passed —
+ * MAX_DECLARED_BYTES enforced on real bytes, not the header's claim. Memory
+ * stays flat: chunks flow through under client backpressure, never accumulate.
+ */
+function passthroughStream(
+  prefix: Uint8Array[],
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maxBytes: number,
+): ReadableStream<Uint8Array> {
+  let sent = 0
+  let i = 0
+  const guard = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: Uint8Array) => {
+    sent += chunk.byteLength
+    if (sent > maxBytes) {
+      controller.error(new Error('response exceeded size cap'))
+      void reader.cancel().catch(() => {})
+      return
+    }
+    controller.enqueue(chunk)
+  }
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (i < prefix.length) {
+        guard(controller, prefix[i++])
+        return
+      }
+      const { done, value } = await reader.read()
+      if (done) {
+        controller.close()
+        return
+      }
+      guard(controller, value)
+    },
+    cancel(reason) {
+      void reader.cancel(reason).catch(() => {})
+    },
+  })
+}
+
 async function raceFetchGateways(
   uri: string,
   timeoutMs: number,
@@ -130,7 +201,21 @@ export async function GET(req: NextRequest) {
     !upstreamCt.startsWith('image/svg') &&
     (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
   if (canResize) {
-    const original = Buffer.from(await upstream.arrayBuffer())
+    const read = await readBodyBounded(upstream.body, MAX_RESIZE_SOURCE_BYTES)
+    if (read.kind === 'overflow') {
+      // The header claimed small (or said nothing) but the body is past the
+      // resize cap — give it the exact treatment a truthfully-declared large
+      // source gets: stream through untouched. The bytes already read are
+      // replayed ahead of the live remainder, so nothing re-fetches.
+      return new Response(passthroughStream(read.chunks, read.reader, MAX_DECLARED_BYTES), {
+        status: 200,
+        headers: {
+          'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      })
+    }
+    const original = read.buffer
     try {
       const resized = await sharp(original, { failOn: 'none' })
         .rotate() // honour EXIF orientation (phone/scanner captures)
@@ -172,7 +257,9 @@ export async function GET(req: NextRequest) {
   if (acceptRanges) headers.set('Accept-Ranges', acceptRanges)
   const contentRange = upstream.headers.get('content-range')
   if (contentRange) headers.set('Content-Range', contentRange)
-  return new Response(upstream.body, {
+  // Wrap the passthrough in a byte-counting guard so MAX_DECLARED_BYTES holds
+  // on actual bytes even when the upstream omits or misreports Content-Length.
+  return new Response(passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES), {
     // Preserve 206 vs 200 — flattening 206 to 200 would make the
     // browser treat the partial body as the full file.
     status: upstream.status === 206 ? 206 : 200,

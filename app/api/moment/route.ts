@@ -27,16 +27,30 @@ export async function GET(req: NextRequest) {
 
   const url = inprocessUrl('/moment', { collectionAddress, tokenId, chainId })
 
-  const [upstream, momentHidden, collectionHidden, timelineCreator, kvCreator] = await Promise.all([
-    fetch(url, {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 60 },
-    }),
-    isMomentHidden(collectionAddress, tokenId),
-    isCollectionHidden(collectionAddress),
-    fetchCreatorFromTimeline(collectionAddress, tokenId, chainId),
-    getKvCreatorAddress(collectionAddress, tokenId),
-  ])
+  // The whole gather is try/caught so an upstream timeout (the 8s signal) or
+  // network failure degrades to the route's 502 shape instead of an unhandled
+  // rejection → generic 500. The non-fetch legs already degrade internally;
+  // without the upstream body there is nothing to serve either way.
+  let upstream: Response
+  let momentHidden: boolean
+  let collectionHidden: boolean
+  let timelineCreator: Awaited<ReturnType<typeof fetchCreatorFromTimeline>>
+  let kvCreator: Awaited<ReturnType<typeof getKvCreatorAddress>>
+  try {
+    ;[upstream, momentHidden, collectionHidden, timelineCreator, kvCreator] = await Promise.all([
+      fetch(url, {
+        headers: { Accept: 'application/json' },
+        next: { revalidate: 60 },
+        signal: AbortSignal.timeout(8_000),
+      }),
+      isMomentHidden(collectionAddress, tokenId),
+      isCollectionHidden(collectionAddress),
+      fetchCreatorFromTimeline(collectionAddress, tokenId, chainId),
+      getKvCreatorAddress(collectionAddress, tokenId),
+    ])
+  } catch {
+    return errorResponse(502, 'upstream unreachable')
+  }
   const text = await upstream.text()
   let data: Record<string, unknown>
   try {

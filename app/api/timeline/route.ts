@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
-import { redis, FEATURED_KEY, TRENDING_KEY } from '@/lib/redis'
+import { redis, FEATURED_KEY, TRENDING_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -39,6 +39,11 @@ async function mapWithConcurrency<T, R>(
 }
 
 const FANOUT_CONCURRENCY = 10
+
+// Throttle for the fan-out-thinning warning below — it fires on every request
+// once the tracked set is large enough, and one line a minute is signal while
+// one per request is noise.
+let lastThinningWarnAt = 0
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
@@ -180,21 +185,33 @@ export async function GET(req: NextRequest) {
   const baseSample = needsLargerSample ? Math.max(page * limit, 200) : page * limit
   // Bound the TOTAL moments pulled into the in-memory merge, not just the
   // per-collection request. The fan-out hits EVERY collection in parallel and
-  // holds the whole merged set in heap to sort before slicing `limit`; uncapped
-  // (baseSample → up to 100*100 = 10,000 per collection) the heap, its MGET
-  // stitch, and the O(n log n) sort all scale as collections × baseSample and
-  // become an OOM vector on the single box. Distributing a fixed budget across
-  // the fan-out caps the merged size regardless of how deep `page` goes or how
-  // many collections are tracked — while preserving pagination depth when only
-  // a few collections are in play (the per-collection budget is then large: a
-  // single collection is unchanged until its requested depth, page*limit,
-  // exceeds MERGE_BUDGET=5000 items, i.e. only a very deep page on a single
-  // dense collection is capped — the same graceful degrade as the page<=100
-  // cap). The `limit` floor guarantees every collection can still fill at least
-  // one page. (SRE handling-overload / Azure Bulkhead.)
+  // holds the whole merged set in heap to sort before slicing `limit`; the
+  // heap, the MGET stitch, and the O(n log n) sort all scale as
+  // collections × fetchLimit and are the OOM vector on the single box.
+  //
+  // The budget MUST hold regardless of how many collections are tracked — the
+  // tracked set grows with every deploy and is never pruned. An earlier
+  // version floored the per-collection share at `limit` ("every collection can
+  // fill a page"), which silently defeated the budget past
+  // MERGE_BUDGET/limit = 250 collections: the merge became limit × N,
+  // unbounded in N. The floor is now 1: past 250 collections each collection's
+  // sample THINS (16 at 300, 10 at 500) instead of the merge growing. A
+  // thinner per-collection sample slightly shallows profile/collected feeds at
+  // high N; that trade is deliberate — degrade depth, never stability. The
+  // durable fix is a materialized feed (REMEDIATION_PLAYBOOK.md §B1). A
+  // single collection (N=1) is unchanged until page*limit exceeds the whole
+  // budget. (SRE handling-overload / Azure Bulkhead.)
   const MERGE_BUDGET = 5000
-  const perCollectionCap = Math.max(limit, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
+  const perCollectionCap = Math.max(1, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
   const fetchLimit = Math.min(baseSample, perCollectionCap)
+  if (perCollectionCap < limit && Date.now() - lastThinningWarnAt > 60_000) {
+    lastThinningWarnAt = Date.now()
+    console.warn('[timeline] fan-out thinned: tracked set exceeds MERGE_BUDGET/limit', {
+      collections: collections.length,
+      perCollectionCap,
+      limit,
+    })
+  }
   const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
     fetchCollection(c, fetchLimit),
   )
@@ -332,7 +349,7 @@ export async function GET(req: NextRequest) {
 
   if (featured) {
     // Fetch featured set (member = "collectionAddress:tokenId", score = featuredAt timestamp)
-    const raw = (await redis.zrange(FEATURED_KEY, 0, -1, {
+    const raw = (await redis.zrange(FEATURED_KEY, 0, MAX_FEATURED - 1, {
       rev: true,
       withScores: true,
     })) as (string | number)[]

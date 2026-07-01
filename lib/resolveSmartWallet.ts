@@ -16,6 +16,27 @@ import { parseSmartWalletAddress } from '@/lib/smartWalletShape'
 const cache = new Map<string, { value: string; expiresAt: number }>()
 const TTL_MS = 24 * 60 * 60 * 1000
 
+// Hard ceiling on the in-memory layer. Expiry used to be enforced only lazily
+// on read, so entries for creators who resolved once and never came back
+// accumulated for the life of the process — small per entry, but a
+// module-level Map that only grows is still a leak on a long-lived server.
+// Prune actively at write time: expired entries first, then oldest-inserted
+// (Map preserves insertion order) down to the cap.
+const MAX_CACHE_ENTRIES = 2000
+function pruneCache(): void {
+  if (cache.size < MAX_CACHE_ENTRIES) return
+  const now = Date.now()
+  for (const [k, v] of cache) {
+    if (v.expiresAt <= now) cache.delete(k)
+  }
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    for (const k of cache.keys()) {
+      cache.delete(k)
+      if (cache.size < MAX_CACHE_ENTRIES) break
+    }
+  }
+}
+
 // Bound the upstream call so a stalled inprocess endpoint can't hang the
 // request indefinitely. Callers treat the resulting null as "could not
 // resolve" (HTTP 502) and surface a retryable error instead of spinning.
@@ -78,6 +99,7 @@ export async function resolveSmartWallet(
     const cached = await getCachedSmartWallet(key)
     if (cached && isAddress(cached)) {
       const resolved = cached.toLowerCase()
+      pruneCache()
       cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
       return { address: resolved }
     }
@@ -147,6 +169,7 @@ export async function resolveSmartWallet(
   // string. Parseable response but no valid address → not found, not transient.
   const resolved = parseSmartWalletAddress(parsed)
   if (!resolved) return { notFound: true }
+  pruneCache()
   cache.set(key, { value: resolved, expiresAt: Date.now() + TTL_MS })
   // Persist for cross-instance / cross-deploy resilience so a later lookup can
   // fall back to this when inprocess is unreachable. Awaited (a fast Redis

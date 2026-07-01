@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
       const res = await fetch(url, {
         headers: { Accept: 'application/json' },
         next: { revalidate: 60 },
+        signal: AbortSignal.timeout(8_000),
       })
       if (res.ok) {
         const data = (await res.json()) as {

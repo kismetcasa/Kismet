@@ -121,26 +121,37 @@ caught in review and removed. Crash survival is the framework's job here.
 These are the half the repo cannot ship. On a single instance they are the
 difference between "recovers in seconds" and "dark until someone notices."
 
-1. **Raise V8's heap ceiling — this is the load-bearing fix for the confirmed
-   crash.** The app was dying at V8's ~2 GB default heap while the 11 GB host had
-   ~9 GB free. The Dockerfile now sets `NODE_OPTIONS=--max-old-space-size=4096`,
-   but the **fastest relief is a Coolify env var** (Environment Variables →
-   `NODE_OPTIONS=--max-old-space-size=4096`), which applies on the next restart
-   with no rebuild and overrides the image default. 4 GB leaves headroom under
-   11 GB even alongside a `next build`. **Optionally also set a container --memory
-   limit** (e.g. 6–8 GB) — then Node 22 derives the heap from it automatically and
-   the flag becomes redundant; verify with `docker inspect <c> --format
-   '{{.HostConfig.Memory}}'` (`0` = none, which is the current state). Note: swap
-   is likely unavailable on this kernel (the deploy log reports *"memory
-   swappiness discarded / cgroup not mounted"*), so don't rely on paging — the
-   heap cap + the in-code timeline `MERGE_BUDGET` bound are what prevent the OOM.
-2. **Set the restart policy to `unless-stopped`** (or `always`). The single most
-   important "survive a crash" lever: when the kernel OOM-kills the process (the
-   primary remaining crash vector — Next survives stray exceptions), the
-   container recovers in seconds instead of staying dark. Coolify generates a
-   `docker-compose.yaml`; verify the `restart:` line there, or
-   `docker inspect <container> --format '{{.HostConfig.RestartPolicy.Name}}'`.
-   (12-Factor IX disposability.)
+1. **Keep V8's heap ceiling explicit — and set a container memory limit for
+   observability (2026-07-01 correction: the limit does NOT replace the flag).**
+   The app was dying at a ~2 GB default heap while the 11 GB host had ~9 GB
+   free. The Dockerfile sets `NODE_OPTIONS=--max-old-space-size=4096`; the
+   **fastest way to change it is a Coolify env var** (Environment Variables →
+   `NODE_OPTIONS=--max-old-space-size=4096`, Runtime flag ON), which applies on
+   restart with no rebuild and overrides the image default. **Also set a
+   container memory limit** (Application → Advanced → Memory Limit `6g`) — NOT
+   because Node derives a good heap from it (an earlier revision claimed the
+   flag becomes redundant; that is WRONG — auto-derived defaults are
+   undocumented, version-dependent, and can come out ~2 GB, reintroducing the
+   crash), but because it (a) protects the host from any one runaway container
+   and (b) turns a silent breach into an attributable `OOMKilled=true` /
+   exit 137 event. Keep flag ≈ ⅔–¾ of the limit (4096 with 6g) so off-heap
+   (undici, sharp, ffmpeg, /api/img) fits underneath. Verify:
+   `docker inspect <c> --format '{{.HostConfig.Memory}}'` (`0` = none) and
+   `docker logs <c> | grep '\[mem\] boot'` (heapLimitMb ≈ 4144 when the flag is
+   live). Note: swap is likely unavailable on this kernel (the deploy log
+   reports *"memory swappiness discarded / cgroup not mounted"*), so don't rely
+   on paging — the heap cap + the in-code bounds are what prevent the OOM.
+2. **Restart policy: nothing to configure — Coolify hardcodes `unless-stopped`**
+   (`const RESTART_MODE = 'unless-stopped'` in coolify's
+   `bootstrap/helpers/constants.php`; there is no per-app UI knob). A V8 FATAL
+   aborts the process (exit 134), which `unless-stopped` restarts in seconds —
+   so the recurring symptom is the crash+cold-start window, not a
+   stays-dark outage. Just verify:
+   `docker inspect <container> --format '{{.HostConfig.RestartPolicy.Name}}'`
+   → `unless-stopped`. Caveat: restart policies act on process EXIT only — a
+   hung-but-alive process is not restarted by Docker (the Dockerfile
+   HEALTHCHECK marks it unhealthy and Traefik stops routing; recovery from a
+   true wedge is manual/Coolify-level). (12-Factor IX disposability.)
 3. **Readiness probe is currently DORMANT — `/api/health` is the gate.** The
    deploy log confirms Coolify health-gates the rolling update on the Dockerfile
    `HEALTHCHECK` (`/api/health`, always-200), not `/api/readiness`. For a single
@@ -153,6 +164,58 @@ difference between "recovers in seconds" and "dark until someone notices."
    is immutable + content-addressed, so the edge absorbs the streaming RSS/FD
    pressure the origin can't. Highest-leverage durable fix for the `/api/img`
    vector. (OWASP API4:2023 — bound paid/origin resource consumption.)
+
+## Update 2026-07-01 — validated root-cause model + the fixes that landed
+
+Every claim above was re-validated against primary sources (the shipped
+`next@15.5.19` source from the lockfile, Coolify's source, Traefik's FAQ,
+empirical Node heap tests). The validated model:
+
+1. **Past crashes (~2030 MB, ~45 min):** V8's ~2 GB default old-space on a
+   container with no memory limit — fixed by the Dockerfile heap flag, IF the
+   post-June-29 image is actually deployed (verify via the `[mem] boot` log).
+2. **Ongoing growth mechanism:** next@15.5.19 ships the fetch-clone leak
+   (vercel/next.js #85914; fix #88577 never backported to 15.x — verified in
+   the published tarball). Next's dedupe layer tees every **signal-less**
+   server-side GET and strands the second branch. Now fixed two ways:
+   `scripts/patch-next-clone-response.mjs` (postinstall) applies the upstream
+   fix to the installed package, and every upstream fetch now carries
+   `AbortSignal.timeout(...)` — which bypasses the dedupe-clone layer entirely
+   AND bounds hung upstreams (REMEDIATION_PLAYBOOK §B10). Fetches WITH signals
+   were already immune (the timeline fan-out never had this leak).
+3. **Amplifier:** the timeline merge budget's `limit` floor silently stopped
+   bounding past 250 tracked collections (merge = 20×N). Fixed: the floor is
+   now 1, so per-collection sampling thins past 250 collections instead of the
+   merge growing; a `[timeline] fan-out thinned` warn fires when engaged.
+4. **Latent second failure mode (different signature — kernel OOMKilled, not
+   V8 FATAL):** `/api/img` buffered the whole upstream when Content-Length was
+   absent. Fixed: caps are enforced on actual bytes; oversized undeclared
+   bodies spill to a streaming passthrough.
+5. Also landed: chunked moment-meta MGET (Upstash 10 MB cap defense), featured
+   zset trim + bounded reads, bounded `resolveSmartWallet` cache, pinned
+   `node:22.22-alpine` base (heap defaults drift across Node versions), and
+   `[mem]` telemetry (boot heap limit + 60s rss/heap/external/arrayBuffers).
+
+### Ops procedure (do once, then verify after next deploy)
+
+1. Coolify → Application → **Advanced → Memory Limit `6g`** (Reservation `4g`).
+2. Coolify → **Environment Variables → `NODE_OPTIONS=--max-old-space-size=4096`**
+   (Runtime ON). Redeploy so the new image (patched next, pinned base) ships.
+3. Verify, on the host:
+   - `docker inspect <c> --format '{{.HostConfig.Memory}}'` → `6442450944`
+   - `docker inspect <c> --format '{{.HostConfig.RestartPolicy.Name}}'` → `unless-stopped`
+   - `docker logs <c> | grep '\[mem\] boot'` → `heapLimitMb` ≈ **4144**
+   - `docker logs <c> | grep '\[patch-next\]'` in the BUILD log → `patched …clone-response.js`
+4. After any future incident:
+   `docker inspect <c> --format 'exit={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}'`
+   → exit 134 / OOMKilled=false = V8 heap OOM (JS-heap leak/growth — check
+   `[mem]` heapUsedMb trend); exit 137 / OOMKilled=true = container limit
+   breached (off-heap — check `[mem]` externalMb/arrayBuffersMb trend).
+5. In Upstash: `SCARD kismetart:collections` — >250 means the fan-out is in
+   thinning territory (expected, logged); revisit the materialized feed
+   (REMEDIATION_PLAYBOOK §B1) as it grows. `SCARD kismetart:created-mints` —
+   the Mints filter hard-fails past ~10 MB (~200k members; feed degrades
+   gracefully but plan the split before then).
 
 ## Later (architectural — real redundancy)
 
