@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
-import { isEarningsPublic, setEarningsPublic } from '@/lib/earningsVisibility'
+import { isEarningsPublicAuthoritative, setEarningsPublic } from '@/lib/earningsVisibility'
 import { verifyFarcasterJwt, setKismetIdentityAddress } from '@/lib/farcasterAuth'
 import { getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import {
@@ -110,12 +110,14 @@ export async function POST(req: NextRequest) {
   // The earnings-public pin is keyed by canonical address; without this
   // migration an identity switch silently flips a pinned-public earnings
   // card back to private (the new canonical isn't in the pinned set).
-  // Best-effort, off the response path.
+  // MUST read the authoritative set, not the 60s memo — a stale cross-pod
+  // snapshot would either drop a pin made moments ago or re-publicize
+  // earnings the user just hid. Best-effort, off the response path.
   if (previousCanonical && previousCanonical !== lower) {
     const from = previousCanonical
     after(async () => {
       try {
-        if (await isEarningsPublic(from)) {
+        if (await isEarningsPublicAuthoritative(from)) {
           await setEarningsPublic(lower, true)
           await setEarningsPublic(from, false)
         }

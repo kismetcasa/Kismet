@@ -1,8 +1,9 @@
 // Verifies the stats rebuild's pure, load-bearing attribution invariants in CI
 // so a regression goes red on the PR instead of silently corrupting artists'
 // earnings cards:
-//   1. Currency classification FAILS CLOSED — an unknown ERC20 is skipped, not
-//      summed into the ETH bucket (where it would later be priced as ETH).
+//   1. Currency classification FAILS CLOSED for VALUE — an unknown ERC20 is
+//      never summed into the ETH bucket (where it would later be priced as
+//      ETH) — while the currency-independent MINT count is still credited.
 //   2. Attribution precedence — the KV per-moment creator override beats the
 //      collection-level creator (delegated/curated mints credit the ARTIST),
 //      and a missing creator recovers from the dominant fee recipient.
@@ -47,9 +48,11 @@ const run = (
   return { maps, counters }
 }
 
-// ── 1. Currency classification fails closed ──────────────────────────────────
+// ── 1. Currency classification fails closed for VALUE, never for mints ───────
 check('currency: null -> eth', classifyTransferCurrency(null, USDC) === 'eth')
 check('currency: undefined -> eth', classifyTransferCurrency(undefined, USDC) === 'eth')
+check('currency: zero address -> eth (native sentinel)',
+  classifyTransferCurrency('0x0000000000000000000000000000000000000000', USDC) === 'eth')
 check('currency: usdc (case-insensitive) -> usdc',
   classifyTransferCurrency(USDC.toUpperCase().replace('0X', '0x'), USDC) === 'usdc')
 check('currency: unknown ERC20 -> unknown (NOT eth)',
@@ -60,10 +63,13 @@ const degen = run({
   currency: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed',
   moment: { collection: { artist: { address: ARTIST } } },
 })
-check('accumulate: unknown currency skipped entirely',
-  degen.maps[0].size === 0 && degen.maps[1].size === 0 && degen.maps[2].size === 0 &&
-    degen.counters.unknownCurrency === 1 && degen.counters.counted === 0,
-  JSON.stringify({ eth: [...degen.maps[1]], counters: degen.counters }))
+check('accumulate: unknown currency skips VALUE buckets only',
+  degen.maps[1].size === 0 && degen.maps[2].size === 0 &&
+    degen.counters.unknownCurrency === 1,
+  JSON.stringify({ eth: [...degen.maps[1]], usdc: [...degen.maps[2]], counters: degen.counters }))
+check('accumulate: unknown currency STILL credits the mint (currency-independent)',
+  degen.maps[0].get(ARTIST.toLowerCase()) === 1 && degen.counters.counted === 1,
+  JSON.stringify({ mints: [...degen.maps[0]], counters: degen.counters }))
 
 // ── 2. Attribution precedence ────────────────────────────────────────────────
 const base: StatsTransfer = {

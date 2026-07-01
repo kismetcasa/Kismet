@@ -26,6 +26,14 @@ const PROFILE_TTL = 60 * 60          // 1h on hit — pfp/name change rarely
 const PROFILE_FAIL_TTL = 5 * 60      // 5m on miss — let new FC accounts appear quickly
 const FID_BY_ADDRESS_TTL = 60 * 60
 const FID_BY_ADDRESS_FAIL_TTL = 5 * 60
+// Non-OK non-404 upstream answers (429/5xx) are TRANSIENT, not definitive
+// absence. Caching them as absence for the full fail TTL wrongly stripped FC
+// identity — and the earnings sibling union — for 5 minutes; caching nothing
+// at all turns a sustained FC rate-limit into an unthrottled request storm
+// (every profile view re-fires the fetch, perpetuating the 429). A short
+// negative cache throttles upstream traffic to one attempt per address per
+// window while keeping the blast radius of a blip to seconds, not minutes.
+const TRANSIENT_FAIL_TTL = 30
 
 const profileKey = (fid: number) => `kismetart:fc:profile:${fid}`
 const verificationsKey = (fid: number) => `kismetart:fc:verifications:${fid}`
@@ -59,6 +67,7 @@ async function getFarcasterProfileByFid(
   }
 
   let profile: FarcasterProfile | null = null
+  let transient = false
   try {
     // The Farcaster Hub HTTP API exposes user data through user-by-fid.
     // Response shape (best-effort — we tolerate any shape via optional chains):
@@ -88,11 +97,10 @@ async function getFarcasterProfileByFid(
         }
       }
     } else if (res.status !== 404) {
-      // Transient upstream failure (429/5xx) — treat like a network blip.
-      // Caching '' here would assert "this FID doesn't exist" for the fail
-      // TTL, wrongly stripping FC identity (and the earnings sibling union)
-      // for a real user. Only a 404 is a definitive miss.
-      return null
+      // 429/5xx: cache the miss only for TRANSIENT_FAIL_TTL — long enough to
+      // throttle a retry storm, short enough that a real user's identity
+      // (and earnings sibling union) isn't stripped for minutes.
+      transient = true
     }
   } catch {
     // Network blip — don't poison the cache.
@@ -101,7 +109,7 @@ async function getFarcasterProfileByFid(
 
   await redis
     .set(cacheKey, profile ?? '', {
-      ex: profile ? PROFILE_TTL : PROFILE_FAIL_TTL,
+      ex: profile ? PROFILE_TTL : transient ? TRANSIENT_FAIL_TTL : PROFILE_FAIL_TTL,
     })
     .catch(() => {})
   return profile
@@ -129,6 +137,7 @@ export async function getVerifiedAddressesByFid(
   }
 
   let addresses: string[] = []
+  let transient = false
   try {
     // Public Farcaster API; no key required. Response shape (defensive
     // against minor variations across the v1 → v2 transition):
@@ -146,12 +155,11 @@ export async function getVerifiedAddressesByFid(
         .filter((a): a is string => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a))
         .map((a) => a.toLowerCase())
     } else if (res.status !== 404) {
-      // Transient upstream failure (429/5xx) — treat like a network blip.
-      // Caching '' here would assert "no verifications" for the fail TTL,
-      // collapsing the sibling union to [self] — a multi-wallet artist's
-      // mints and earnings visibly under-report for those 5 minutes. Only a
-      // 404 is a definitive empty answer.
-      return []
+      // 429/5xx: an empty answer cached for the full fail TTL would collapse
+      // the sibling union to [self] — a multi-wallet artist's mints and
+      // earnings visibly under-report for those minutes. Cache it only for
+      // TRANSIENT_FAIL_TTL to throttle a retry storm without that cost.
+      transient = true
     }
   } catch {
     // Network failure — don't poison the cache.
@@ -163,7 +171,11 @@ export async function getVerifiedAddressesByFid(
   // verifications would hit the network on every request.
   await redis
     .set(cacheKey, addresses.length ? addresses : '', {
-      ex: addresses.length ? VERIFICATIONS_TTL : VERIFICATIONS_FAIL_TTL,
+      ex: addresses.length
+        ? VERIFICATIONS_TTL
+        : transient
+          ? TRANSIENT_FAIL_TTL
+          : VERIFICATIONS_FAIL_TTL,
     })
     .catch(() => {})
   return addresses
@@ -191,6 +203,7 @@ export async function getFarcasterProfileByAddress(
     const parsed = Number(cached)
     if (Number.isFinite(parsed)) fid = parsed
   } else {
+    let transient = false
     try {
       const res = await fetch(
         `https://api.farcaster.xyz/v2/user-by-verification?address=${lower}`,
@@ -202,18 +215,23 @@ export async function getFarcasterProfileByAddress(
         }
         fid = body.result?.user?.fid ?? null
       } else if (res.status !== 404) {
-        // Transient upstream failure (429/5xx): return null WITHOUT writing
-        // the no-FID sentinel. Caching it would strip the user's FC identity
-        // — and with it the earnings sibling union — for the fail TTL. A 404
-        // (address genuinely has no FC user) falls through and caches.
-        return null
+        // 429/5xx: caching the no-FID sentinel for the full fail TTL would
+        // strip the user's FC identity — and the earnings sibling union —
+        // for minutes; caching nothing turns a sustained rate-limit into an
+        // unthrottled storm. Short transient TTL bounds both costs. A 404
+        // (address genuinely has no FC user) caches at the normal fail TTL.
+        transient = true
       }
     } catch {
       return null
     }
     await redis
       .set(cacheKey, fid ? String(fid) : NO_FID_SENTINEL, {
-        ex: fid ? FID_BY_ADDRESS_TTL : FID_BY_ADDRESS_FAIL_TTL,
+        ex: fid
+          ? FID_BY_ADDRESS_TTL
+          : transient
+            ? TRANSIENT_FAIL_TTL
+            : FID_BY_ADDRESS_FAIL_TTL,
       })
       .catch(() => {})
   }

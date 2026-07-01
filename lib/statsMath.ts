@@ -12,7 +12,9 @@
 //     curated-collection mints to the collection owner; the KV creator
 //     override (same one /api/timeline stitches) must win when present.
 //   - an unknown ERC20 currency silently summed into the ETH bucket (and then
-//     priced as ETH in USD) — unknown currencies must be SKIPPED, not defaulted.
+//     priced as ETH in USD) — unknown currencies must skip the VALUE. The
+//     MINT count is currency-independent and must still be credited (dropping
+//     it erased whole artists on the next absolute overwrite).
 //   - a transfer returned twice by the live offset-paged feed counted twice —
 //     rows with a stable identifier must dedup.
 
@@ -38,7 +40,6 @@ export interface StatsTransfer {
   tx_hash?: string | null
   log_index?: number | null
   moment?: {
-    id?: string | number | null
     token_id?: string | number | null
     address?: string | null
     contract_address?: string | null
@@ -55,18 +56,25 @@ export interface StatsTransfer {
 
 export type StatsCurrency = 'eth' | 'usdc' | 'unknown'
 
+// Common on-chain sentinel for "native currency" — some feeds report native
+// sales with the zero address instead of a null currency field.
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
 /**
  * Bucket a transfer's payment currency. Unlike inferCollectCurrency (which
  * safe-defaults to ETH for UI display), the stats path must FAIL CLOSED: an
  * unrecognized ERC20 summed into the ETH bucket would later be multiplied by
- * the ETH/USD price, fabricating earnings. null/absent currency = native ETH.
+ * the ETH/USD price, fabricating earnings. null/absent/zero-address currency
+ * = native ETH.
  */
 export function classifyTransferCurrency(
   currency: string | null | undefined,
   usdcAddress: string,
 ): StatsCurrency {
   if (currency == null || currency === '') return 'eth'
-  return currency.toLowerCase() === usdcAddress.toLowerCase() ? 'usdc' : 'unknown'
+  const lower = currency.toLowerCase()
+  if (lower === ZERO_ADDRESS) return 'eth'
+  return lower === usdcAddress.toLowerCase() ? 'usdc' : 'unknown'
 }
 
 /**
@@ -99,11 +107,13 @@ export function transferMomentRef(
 }
 
 export interface AccumulateCounters {
-  /** Paid transfers folded into the maps. */
+  /** Paid transfers folded into the maps (mints and/or earnings). */
   counted: number
   /** Skipped: value missing/zero (free rows that leaked into type=payment). */
   skippedFree: number
-  /** Skipped entirely: unrecognized ERC20 currency (would corrupt ETH bucket). */
+  /** Rows whose VALUE was skipped: unrecognized ERC20 currency (would corrupt
+   *  the ETH bucket). Their mint count is still credited — it is
+   *  currency-independent. */
   unknownCurrency: number
   /** Editions whose mint credit was dropped — no creator resolvable at all. */
   droppedMints: number
@@ -140,7 +150,9 @@ const bump = (m: Map<string, number>, k: string, by: number) =>
  *      separately so its share of attribution stays observable.
  *
  * Earnings: split across fee_recipients by percent; else 100% to the resolved
- * creator. Same rules as before, minus the unknown-currency leak.
+ * creator. An unknown ERC20 currency skips ONLY the value — pricing a foreign
+ * token as ETH would fabricate earnings — while the mint count (currency-
+ * independent) is still credited, as the pre-statsMath code always did.
  */
 export function accumulateTransfer(
   t: StatsTransfer,
@@ -155,12 +167,6 @@ export function accumulateTransfer(
     counters.skippedFree++
     return
   }
-  const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
-  if (currency === 'unknown') {
-    counters.unknownCurrency++
-    return
-  }
-  const earned = currency === 'usdc' ? usdc : eth
   const qty = typeof t.quantity === 'number' && t.quantity > 0 ? Math.floor(t.quantity) : 1
 
   const feedCreatorRaw = t.moment?.creator
@@ -190,6 +196,13 @@ export function accumulateTransfer(
   if (creator) bump(mints, creator, qty)
   else counters.droppedMints += qty
 
+  const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
+  if (currency === 'unknown') {
+    counters.unknownCurrency++
+    counters.counted++
+    return
+  }
+  const earned = currency === 'usdc' ? usdc : eth
   if (recipients.length) {
     for (const r of recipients) {
       bump(earned, r.artist_address.toLowerCase(), (value * r.percent_allocation) / 100)

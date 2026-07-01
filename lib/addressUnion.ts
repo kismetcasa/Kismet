@@ -4,7 +4,7 @@ import {
   getVerifiedAddressesByFid,
   type FarcasterProfile,
 } from './farcasterProfile'
-import { getCachedSmartWallet } from './smartWalletCache'
+import { getCachedSmartWallets } from './smartWalletCache'
 import { getFidProfile, getProfile, type FidProfile, type Profile } from './profile'
 
 /**
@@ -53,14 +53,15 @@ export async function expandToFidSiblings(address: string): Promise<string[]> {
  * callers (timeline filters, profile resolution) keep using
  * expandToFidSiblings — a smart wallet is a payment alias, not an identity.
  *
- * Cost: one Redis MGET-shaped read on top of expandToFidSiblings (the
- * per-sibling lookups auto-pipeline into a single round trip). Missing cache
- * entries just mean that sibling's smart wallet isn't unioned yet — same
- * degraded-but-correct behavior as before this helper existed.
+ * Cost: ONE Redis MGET on top of expandToFidSiblings, regardless of sibling
+ * count (Upstash bills per command, and this runs on the visitor-hot public
+ * profile path). Missing cache entries just mean that sibling's smart wallet
+ * isn't unioned yet — same degraded-but-correct behavior as before this
+ * helper existed.
  */
 export async function expandToEarningsWallets(address: string): Promise<string[]> {
   const siblings = await expandToFidSiblings(address)
-  const smartWallets = await Promise.all(siblings.map((s) => getCachedSmartWallet(s)))
+  const smartWallets = await getCachedSmartWallets(siblings)
   const all = new Set<string>(siblings)
   for (const sw of smartWallets) {
     if (sw) all.add(sw.toLowerCase())

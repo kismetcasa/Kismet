@@ -4,7 +4,7 @@ import { fetchTransfersPage } from './inprocessTransfers'
 import { expandToEarningsWallets } from './addressUnion'
 import { getMomentMetaBatch } from './notifications'
 import { getStoredSplits } from './splits'
-import { creatorRewardRecipient } from './royaltyAudit'
+import { getCachedCreatorRewardRecipient } from './pending'
 import { getSmartWalletOwners } from './smartWalletCache'
 import { USDC_BASE } from './zoraMint'
 import {
@@ -63,13 +63,22 @@ export interface ArtistEarnings {
 // full-scan design — move to an incremental sync (cursor + ZINCRBY deltas).
 const MAX_PAGES = 1000
 
-// Refuse to overwrite when the new scan finds dramatically fewer artists than
-// the sets currently hold. Lifetime totals only grow, so a big shrink means a
-// malfunctioning scan (upstream data loss, silent filtering), not reality.
-// Floor of 20 artists keeps the guard out of the way while the platform is
-// small. Self-healing: an aborted write is retried by the next cron run.
-const MIN_ARTIST_RETENTION = 0.8
-const GUARD_FLOOR = 20
+// Refuse to overwrite when the new scan folded dramatically fewer TRANSFERS
+// than the last successful run. The feed is an append-only lifetime history,
+// so the counted-row total only grows; a big shrink means a malfunctioning
+// scan (upstream truncation the shape check couldn't classify), not reality.
+// Counted rows — unlike member cardinality — are independent of attribution
+// re-keying and the smart-wallet fold, so legitimate re-attribution can never
+// wedge the guard; and because the baseline comes from the last SUCCESSFUL
+// run (stored below), it protects platforms of any size, including an
+// all-artists wipe by an empty-but-shape-valid response. Self-healing: an
+// aborted write is retried by the next cron run against the same baseline.
+const MIN_COUNT_RETENTION = 0.8
+const LAST_REBUILD_KEY = 'kismetart:stats:last-rebuild'
+interface LastRebuild {
+  counted: number
+  at: number
+}
 
 export interface RebuildResult {
   artists: number
@@ -77,7 +86,9 @@ export interface RebuildResult {
   pages: number
   /** Rows skipped as duplicates via a stable feed identifier. */
   duplicates: number
-  /** Rows skipped entirely: unrecognized ERC20 currency. */
+  /** Rows skipped as free (zero/absent value) despite type=payment. */
+  skippedFree: number
+  /** Rows whose VALUE was skipped (unrecognized ERC20); mints still counted. */
   unknownCurrency: number
   /** Editions whose mint credit was dropped — no creator resolvable at all. */
   droppedMints: number
@@ -89,32 +100,46 @@ export interface RebuildResult {
   remappedWallets: number
 }
 
-// Absolute swap of all three sets in ONE MULTI/EXEC: DEL + chunked ZADDs.
-// Previously each key was written independently (and per-chunk) in a
-// background after() callback — a mid-write suspend left mints from scan N
-// beside earnings from scan N-1. A transaction commits the whole snapshot or
-// none of it. The DEL also drops stale members: without it, an artist absent
-// from the current scan kept their old score forever (scores could only ever
-// stick high, never correct downward).
+// Absolute swap of all three sets: chunked ZADDs into per-key STAGING keys,
+// then one tiny MULTI/EXEC of RENAMEs. Previously each live key was written
+// independently (and per-chunk) in a background after() callback — a
+// mid-write suspend left mints from scan N beside earnings from scan N-1.
+// Staging keeps the bulk writes off the live keys entirely (a crash mid-
+// staging leaves live data untouched; orphaned staging keys are DEL'd on the
+// next run), and the RENAME transaction commits the whole snapshot or none of
+// it while staying tiny — packing every ZADD into one MULTI would make the
+// single REST request grow with artist count toward Upstash's max-request
+// size. The swap also drops stale members: without it, an artist absent from
+// the current scan kept their old score forever (scores could only ever stick
+// high, never correct downward). An empty map maps to DEL of the live key
+// (RENAME of a nonexistent staging key would error).
 async function writeStatsAtomically(
   mints: Map<string, number>,
   eth: Map<string, number>,
   usdc: Map<string, number>,
 ): Promise<void> {
-  const tx = redis.multi()
-  for (const [key, m] of [
+  const keys = [
     [MINTS_KEY, mints],
     [ETH_KEY, eth],
     [USDC_KEY, usdc],
-  ] as const) {
-    tx.del(key)
+  ] as const
+  const staged: { live: string; staging: string; hasEntries: boolean }[] = []
+  for (const [key, m] of keys) {
+    const staging = `${key}:staging`
+    await redis.del(staging)
     const entries = [...m]
       .filter(([, v]) => v > 0)
       .map(([member, score]) => ({ score, member }))
     for (let i = 0; i < entries.length; i += 1000) {
       const chunk = entries.slice(i, i + 1000)
-      if (chunk.length) tx.zadd(key, chunk[0], ...chunk.slice(1))
+      await redis.zadd(staging, chunk[0], ...chunk.slice(1))
     }
+    staged.push({ live: key, staging, hasEntries: entries.length > 0 })
+  }
+  const tx = redis.multi()
+  for (const s of staged) {
+    if (s.hasEntries) tx.rename(s.staging, s.live)
+    else tx.del(s.live)
   }
   await tx.exec()
 }
@@ -145,6 +170,11 @@ export async function rebuildStats(): Promise<RebuildResult> {
     // widening the offset-drift race for no coverage gain (new rows are
     // picked up by the next hourly run anyway).
     if (page === 1) totalPages = res.pagination.total_pages || 1
+    // A shape-valid but EMPTY page is the end of the feed: offset pagination
+    // has no legitimate empty middle pages. Break instead of continuing so a
+    // feed that shrank mid-scan (below the page-1 snapshot) ends the walk
+    // cleanly rather than throwing on out-of-range pages every run.
+    if (res.transfers.length === 0) break
 
     // Per-moment creator override: when the feed exposes a (collection,
     // tokenId), prefer the minter EOA mint-proxy persisted at mint time — the
@@ -184,38 +214,58 @@ export async function rebuildStats(): Promise<RebuildResult> {
     )
   }
 
+  // Circuit breaker on the dedup itself: boundary drift on a live feed
+  // produces a handful of duplicates per scan, never a majority. A duplicate
+  // count exceeding the rows kept means the "unique" identifier is not
+  // row-unique (e.g. the feed's id is a moment id shared by every sale of
+  // that moment) — folding would collapse repeat sales platform-wide, so
+  // abort rather than write the gutted totals.
+  if (duplicates > counters.counted) {
+    throw new Error(
+      `dedup discarded ${duplicates} rows vs ${counters.counted} kept — ` +
+        'feed identifier is not row-unique, refusing to overwrite',
+    )
+  }
+
+  // Sanity guard before the destructive swap: the feed is append-only, so the
+  // folded-row total from the last SUCCESSFUL run can only grow. A shrink
+  // means a malfunctioning scan (upstream truncation the shape check couldn't
+  // classify) — keep the last good totals and let the next run retry. Read
+  // failures on the baseline fail OPEN (null → no guard) so a Redis blip
+  // can't wedge the rebuild.
+  const prev = await redis.get<LastRebuild>(LAST_REBUILD_KEY).catch(() => null)
+  if (
+    typeof prev?.counted === 'number' &&
+    prev.counted > 0 &&
+    counters.counted < prev.counted * MIN_COUNT_RETENTION
+  ) {
+    throw new Error(
+      `rebuild folded ${counters.counted} transfers vs ${prev.counted} last run — ` +
+        'implausible shrink, refusing to overwrite',
+    )
+  }
+
   // Fold smart-wallet-credited scores onto the owning EOA so profile reads
   // (which union FC-verified wallets + known smart wallets) see them under
   // the artist. One MGET over the unique members; unknown members pass through.
   const members = [...new Set([...mints.keys(), ...eth.keys(), ...usdc.keys()])]
   const remap = await getSmartWalletOwners(members)
-  const [mintsFinal, ethFinal, usdcFinal] = [
-    remapEntries(mints, remap),
-    remapEntries(eth, remap),
-    remapEntries(usdc, remap),
-  ]
-
-  // Sanity guard before the destructive swap: lifetime artist counts only
-  // grow. A scan that "succeeds" but loses a fifth of the artists is a
-  // malfunction (upstream truncation this code failed to classify) — keep the
-  // last good totals and let the next run retry.
-  const prevArtists = await redis.zcard(MINTS_KEY).catch(() => 0)
-  if (
-    prevArtists >= GUARD_FLOOR &&
-    mintsFinal.size < prevArtists * MIN_ARTIST_RETENTION
-  ) {
-    throw new Error(
-      `rebuild produced ${mintsFinal.size} artists vs ${prevArtists} existing — ` +
-        'implausible shrink, refusing to overwrite',
-    )
-  }
+  const mintsFinal = remapEntries(mints, remap)
+  const ethFinal = remapEntries(eth, remap)
+  const usdcFinal = remapEntries(usdc, remap)
 
   await writeStatsAtomically(mintsFinal, ethFinal, usdcFinal)
+  // Advance the guard baseline only after the swap committed, so an aborted
+  // or crashed write never moves it.
+  await redis
+    .set(LAST_REBUILD_KEY, { counted: counters.counted, at: Date.now() } satisfies LastRebuild)
+    .catch(() => {})
   return {
     artists: new Set([...mintsFinal.keys(), ...ethFinal.keys(), ...usdcFinal.keys()]).size,
     transfers: counters.counted,
     pages: page - 1,
     duplicates,
+    skippedFree: counters.skippedFree,
     unknownCurrency: counters.unknownCurrency,
     droppedMints: counters.droppedMints,
     kvCreatorOverrides: counters.kvCreatorOverrides,
@@ -383,6 +433,14 @@ export async function creditListingRoyalty(args: {
 // The per-member decomposition for a split-contract royalty receiver, or null
 // when membership can't be established (wallet receiver, unstored split,
 // mismatched addresses, RPC failure). Members with a zero share are dropped.
+// Candidate tokens: the listed one, else the cover token #1 (collection-wide
+// royalty receivers are usually configured from the cover's split — same
+// precedent as auditRoyaltyReceiver). Stored-splits reads go out together in
+// one auto-pipelined round trip; only a membership hit pays the recipient
+// lookup, which reads the SAME permanent kismetart:splitaddr:* cache the
+// pending roll-up maintains and race-bounds any cold on-chain read — this
+// runs awaited on the sale-confirmation path, so latency must stay bounded
+// and the common case must stay Redis-only.
 async function resolveRoyaltySplitCredits(
   collection: string,
   tokenId: string,
@@ -390,12 +448,13 @@ async function resolveRoyaltySplitCredits(
   amount: number,
 ): Promise<Array<{ member: string; amount: number }> | null> {
   try {
-    for (const tid of tokenId === '1' ? ['1'] : [tokenId, '1']) {
-      const stored = await getStoredSplits(collection, tid)
-      if (!stored.recipients.length) continue
-      const onchain = await creatorRewardRecipient(collection, tid)
+    const tids = [...new Set([tokenId, '1'])]
+    const stored = await Promise.all(tids.map((tid) => getStoredSplits(collection, tid)))
+    for (let i = 0; i < tids.length; i++) {
+      if (!stored[i].recipients.length) continue
+      const onchain = await getCachedCreatorRewardRecipient(collection, tids[i])
       if (!onchain || onchain !== receiver) continue
-      const credits = stored.recipients
+      const credits = stored[i].recipients
         .map((r) => ({
           member: r.address.toLowerCase(),
           amount: (amount * r.percentAllocation) / 100,

@@ -1,4 +1,5 @@
 import { redis } from '@/lib/redis'
+import { safeRead } from '@/lib/redisRead'
 
 // Durable EOA -> inprocess smart-wallet cache (SERVER-ONLY; Upstash Redis).
 //
@@ -58,28 +59,47 @@ export async function setCachedSmartWallet(eoa: string, smartWallet: string): Pr
 }
 
 /**
+ * Batch forward lookup: each EOA's cached smart wallet (or null), index-
+ * aligned. One MGET regardless of input size — the earnings-wallet union
+ * calls this per profile view, and Upstash bills per command, so per-sibling
+ * GETs would cost N commands where this costs 1. safeRead so an Upstash blip
+ * degrades to "no smart wallets" with a grep-able [redis] log line.
+ */
+export async function getCachedSmartWallets(eoas: string[]): Promise<(string | null)[]> {
+  if (eoas.length === 0) return []
+  return safeRead(
+    'smartWalletCache.forwardBatch',
+    async () => {
+      const vals = await redis.mget<(string | null)[]>(...eoas.map((e) => key(e)))
+      return vals.map((v) => (typeof v === 'string' && v.length > 0 ? v : null))
+    },
+    eoas.map(() => null),
+  )
+}
+
+/**
  * Batch reverse lookup: which of these addresses are known inprocess smart
  * wallets, and who owns them. Returns alias→owner (lowercase) for the hits
  * only. One MGET regardless of input size; empty map on Redis failure so the
- * stats rebuild degrades to unmapped attribution rather than aborting.
+ * stats rebuild degrades to unmapped attribution rather than aborting —
+ * safeRead makes that degradation visible in the [redis] failure log instead
+ * of silently zeroing the rebuild's remappedWallets telemetry.
  */
 export async function getSmartWalletOwners(
   addresses: string[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   if (addresses.length === 0) return out
-  try {
-    const owners = await redis.mget<(string | null)[]>(
-      ...addresses.map((a) => ownerKey(a)),
-    )
-    addresses.forEach((a, i) => {
-      const owner = owners[i]
-      if (typeof owner === 'string' && owner.length > 0) {
-        out.set(a.toLowerCase(), owner.toLowerCase())
-      }
-    })
-  } catch {
-    // Degrade to no remap.
-  }
+  const owners = await safeRead(
+    'smartWalletCache.ownersBatch',
+    () => redis.mget<(string | null)[]>(...addresses.map((a) => ownerKey(a))),
+    addresses.map(() => null),
+  )
+  addresses.forEach((a, i) => {
+    const owner = owners[i]
+    if (typeof owner === 'string' && owner.length > 0) {
+      out.set(a.toLowerCase(), owner.toLowerCase())
+    }
+  })
   return out
 }

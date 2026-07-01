@@ -23,6 +23,19 @@ export async function isEarningsPublic(address: string): Promise<boolean> {
   return (await getPublicEarners()).has(address.toLowerCase())
 }
 
+// Authoritative (uncached) membership read, for WRITE decisions that must not
+// act on the memo's 60s cross-pod snapshot — e.g. the identity-switch pin
+// migration, where a stale read either drops a fresh pin (no-op migration) or
+// resurrects a fresh unpin (re-publicizing earnings the user just hid).
+// Display reads should keep using the memoized isEarningsPublic.
+export async function isEarningsPublicAuthoritative(address: string): Promise<boolean> {
+  try {
+    return (await redis.sismember(KEY_EARNINGS_PUBLIC, address.toLowerCase())) === 1
+  } catch {
+    return false
+  }
+}
+
 export async function setEarningsPublic(address: string, isPublic: boolean): Promise<void> {
   const member = address.toLowerCase()
   if (isPublic) await redis.sadd(KEY_EARNINGS_PUBLIC, member)

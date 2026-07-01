@@ -290,7 +290,12 @@ export function ProfileStats({
               {copied ? <Check size={15} className="text-accent" /> : <Share2 size={15} strokeWidth={1.5} />}
             </button>
           )}
-          {!asVisitor && hasEarnings && (
+          {/* Pin renders on hasEarnings OR an existing public pin: an owner
+              whose earnings round to zero at display precision (dust) must
+              still be able to UNPIN — this button is the only unpin surface,
+              and without the stats.public escape hatch a dust artist would be
+              stuck publicly pinned forever. */}
+          {!asVisitor && (hasEarnings || stats.public) && (
             <button
               onClick={togglePublic}
               disabled={pinning}
