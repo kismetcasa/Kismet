@@ -1,5 +1,6 @@
 import sharp from 'sharp'
 import { isSafePublicHttpsUrl } from './safeUrl'
+import { readBodyBounded } from './boundedBody'
 
 // Content-derived profile palette. Extracts the dominant colors from a moment's
 // image (server-side, set-time — never per view) and synthesizes a structured,
@@ -180,11 +181,18 @@ export async function extractPalette(imageUrl: string): Promise<Palette | null> 
   const timer = setTimeout(() => controller.abort(), 8000)
   try {
     const res = await fetch(imageUrl, { signal: controller.signal, headers: { Accept: 'image/*' } })
-    if (!res.ok) return null
+    if (!res.ok || !res.body) return null
     if (Number(res.headers.get('content-length') || 0) > MAX_BYTES) return null
-    const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.length > MAX_BYTES) return null
-    return await paletteFromBuffer(buf)
+    // Enforce the cap on ACTUAL bytes while reading — the header check above
+    // is advisory only (chunked responses omit it), and the old
+    // `arrayBuffer()` + post-hoc length check buffered the whole body before
+    // rejecting it.
+    const read = await readBodyBounded(res.body, MAX_BYTES)
+    if (read.kind === 'overflow') {
+      await read.reader.cancel().catch(() => {})
+      return null
+    }
+    return await paletteFromBuffer(read.buffer)
   } catch {
     return null
   } finally {

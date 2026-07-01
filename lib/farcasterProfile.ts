@@ -65,7 +65,7 @@ async function getFarcasterProfileByFid(
     //   { result: { user: { fid, username, displayName, pfp: { url } } } }
     const res = await fetch(
       `https://api.farcaster.xyz/v2/user?fid=${fid}`,
-      { headers: { Accept: 'application/json' } },
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (res.ok) {
       const body = (await res.json()) as {
@@ -129,7 +129,7 @@ export async function getVerifiedAddressesByFid(
     //   { result: { verifications: [{ fid, address, timestamp, version }] } }
     const res = await fetch(
       `https://api.farcaster.xyz/v2/verifications?fid=${fid}`,
-      { headers: { Accept: 'application/json' } },
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (res.ok) {
       const body = (await res.json()) as {
@@ -181,7 +181,7 @@ export async function getFarcasterProfileByAddress(
     try {
       const res = await fetch(
         `https://api.farcaster.xyz/v2/user-by-verification?address=${lower}`,
-        { headers: { Accept: 'application/json' } },
+        { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
       )
       if (res.ok) {
         const body = (await res.json()) as {

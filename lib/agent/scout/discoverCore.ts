@@ -46,7 +46,9 @@ export async function discoverCore(creators: readonly string[], baseUrl = ''): P
     creators.map(async (artist) => {
       const watched = artist.toLowerCase()
       try {
-        const r = await fetch(`${baseUrl}/api/timeline?creator=${watched}&limit=${PER_ARTIST_LIMIT}`)
+        const r = await fetch(`${baseUrl}/api/timeline?creator=${watched}&limit=${PER_ARTIST_LIMIT}`, {
+          signal: AbortSignal.timeout(8_000),
+        })
         if (!r.ok) return [] as Array<{ m: TimelineMoment; watched: string }>
         const d = (await r.json()) as { moments?: TimelineMoment[] }
         return (Array.isArray(d.moments) ? d.moments : []).map((m) => ({ m, watched }))
@@ -77,7 +79,9 @@ export async function discoverCore(creators: readonly string[], baseUrl = ''): P
   const ids = batch.map((e) => `${e.m.address}:${e.m.token_id}`).join(',')
   let sales: Record<string, SaleConfig | null> = {}
   try {
-    const r = await fetch(`${baseUrl}/api/moments?ids=${encodeURIComponent(ids)}`)
+    const r = await fetch(`${baseUrl}/api/moments?ids=${encodeURIComponent(ids)}`, {
+      signal: AbortSignal.timeout(8_000),
+    })
     if (r.ok) sales = ((await r.json()) as { sales?: Record<string, SaleConfig | null> }).sales ?? {}
   } catch {
     return [] // no prices → no candidates this run (fail-closed)

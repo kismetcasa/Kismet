@@ -207,7 +207,12 @@ export default async function MomentPage({ params }: Props) {
   let initialTextContent: string | undefined
   if (textUri) {
     try {
-      const tr = await fetch(resolveUri(textUri), { cache: 'force-cache' })
+      const tr = await fetch(resolveUri(textUri), {
+        cache: 'force-cache',
+        // Text bodies are small but the gateway is an external dependency —
+        // bound the read like every other upstream fetch.
+        signal: AbortSignal.timeout(10_000),
+      })
       if (tr.ok) initialTextContent = await tr.text()
     } catch { /* non-fatal — KV fallback below, then client retry on mount */ }
     // Fall through to the KV mirror written at mint time so the body

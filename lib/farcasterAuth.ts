@@ -63,7 +63,7 @@ export async function getPrimaryAddress(
   try {
     const res = await fetch(
       `https://api.farcaster.xyz/fc/primary-address?fid=${fid}&protocol=ethereum`,
-      { headers: { Accept: 'application/json' } },
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (!res.ok) {
       await redis.set(cacheKey, '', { ex: PRIMARY_ADDRESS_FAIL_TTL }).catch(() => {})

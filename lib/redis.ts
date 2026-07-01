@@ -46,3 +46,12 @@ export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 // set first (see /api/featured POST).
 export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'
+
+// Ceiling for the featured zsets — trimmed on every write (mirroring the
+// TRENDING 10k cap in /api/collect) and used to bound every read. Featuring is
+// a manual curator action so growth is slow, but these keys were the only
+// zsets with neither a write trim nor a bounded read: each unbounded
+// `zrange(0, -1)` grows toward Upstash's 10MB per-request cap and an O(N)
+// read forever. Far above anything the UI shows, so the cap never bites a
+// legitimate curation.
+export const MAX_FEATURED = 1000

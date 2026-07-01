@@ -2,6 +2,7 @@ import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { getCachedSmartWallet, setCachedSmartWallet } from '@/lib/smartWalletCache'
 import { parseSmartWalletAddress } from '@/lib/smartWalletShape'
+import { LRUCache } from '@/lib/lruCache'
 
 // Two-layer per-EOA cache. Smart-wallet ↔ EOA is deterministic per inprocess's
 // derivation, so once resolved it doesn't change.
@@ -13,7 +14,11 @@ import { parseSmartWalletAddress } from '@/lib/smartWalletShape'
 //      working through an inprocess outage for any EOA resolved at least once
 //      before. Only successful resolutions are cached; a definitive 404 (no
 //      account) is never masked by the durable layer.
-const cache = new Map<string, { value: string; expiresAt: number }>()
+// Bounded LRU, not a bare Map: an unbounded module-level Map with lazy-only
+// TTL expiry grows for the life of the process (one entry per creator EOA
+// ever resolved). The TTL check on read still governs freshness; the LRU cap
+// governs memory.
+const cache = new LRUCache<string, { value: string; expiresAt: number }>(2000)
 const TTL_MS = 24 * 60 * 60 * 1000
 
 // Bound the upstream call so a stalled inprocess endpoint can't hang the

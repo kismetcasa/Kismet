@@ -37,7 +37,9 @@ async function fetchCollectedKeys(owner: string, baseUrl: string): Promise<Set<s
     // silently truncated). This set is a best-effort pre-filter only — the
     // executor's on-chain balanceOf check (excludeOwnedAtOrAbove) is the
     // authoritative dedup, so an owner of >100 items is never double-charged.
-    const r = await fetch(`${baseUrl}/api/timeline?collector=${owner}&limit=100`)
+    const r = await fetch(`${baseUrl}/api/timeline?collector=${owner}&limit=100`, {
+      signal: AbortSignal.timeout(8_000),
+    })
     if (!r.ok) return null
     const d = (await r.json()) as { moments?: Array<{ address?: string; token_id?: string }> }
     return new Set(
