@@ -4,6 +4,16 @@ import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY, FEATURED_MOMENT_DISPLAYS
 import { verifyPrivilegedSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
 
+// zadd + rank-trim in one atomic MULTI (single Upstash round trip) — the
+// TRENDING pattern from /api/collect. The single trim policy lives here so a
+// future change can't unbound one write path while capping another.
+const zaddCapped = (key: string, member: string, score: number) =>
+  redis
+    .multi()
+    .zadd(key, { score, member })
+    .zremrangebyrank(key, 0, -(MAX_FEATURED + 1))
+    .exec()
+
 // Parse a zset of `<addr>:<tokenId>` members (score = featuredAt) into refs.
 function parseMomentZset(raw: (string | number)[]) {
   const out: { collectionAddress: string; tokenId: string; featuredAt: number }[] = []
@@ -66,15 +76,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.type === 'collection') {
-    // Trim-on-write keeps the zset bounded forever (the TRENDING pattern).
-    await redis
-      .multi()
-      .zadd(FEATURED_COLLECTIONS_KEY, {
-        score: Date.now(),
-        member: collectionAddress.toLowerCase(),
-      })
-      .zremrangebyrank(FEATURED_COLLECTIONS_KEY, 0, -(MAX_FEATURED + 1))
-      .exec()
+    await zaddCapped(FEATURED_COLLECTIONS_KEY, collectionAddress.toLowerCase(), Date.now())
     return NextResponse.json({ featured: true })
   }
 
@@ -94,22 +96,19 @@ export async function POST(req: NextRequest) {
     // set — cleared members stay in FEATURED_KEY, so a previously-displayed
     // mint demotes to an ordinary featured card rather than vanishing.
     await redis.del(FEATURED_MOMENT_DISPLAYS_KEY)
-    await Promise.all([
-      redis.zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: now, member }),
-      redis
-        .multi()
-        .zadd(FEATURED_KEY, { score: now, member })
-        .zremrangebyrank(FEATURED_KEY, 0, -(MAX_FEATURED + 1))
-        .exec(),
-    ])
+    // Both writes in ONE MULTI so a partial failure between two round trips
+    // can't violate DISPLAY ⊆ FEATURED (see lib/redis.ts). The displays set
+    // needs no trim — the del above keeps it single-member.
+    await redis
+      .multi()
+      .zadd(FEATURED_MOMENT_DISPLAYS_KEY, { score: now, member })
+      .zadd(FEATURED_KEY, { score: now, member })
+      .zremrangebyrank(FEATURED_KEY, 0, -(MAX_FEATURED + 1))
+      .exec()
     return NextResponse.json({ featured: true })
   }
 
-  await redis
-    .multi()
-    .zadd(FEATURED_KEY, { score: now, member })
-    .zremrangebyrank(FEATURED_KEY, 0, -(MAX_FEATURED + 1))
-    .exec()
+  await zaddCapped(FEATURED_KEY, member, now)
   return NextResponse.json({ featured: true })
 }
 

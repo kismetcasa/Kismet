@@ -468,18 +468,14 @@ export async function getMomentMetaBatch(
   const MGET_CHUNK = 512
   let raws: (string | MomentMeta | null)[]
   try {
-    if (compactKeys.length <= MGET_CHUNK) {
-      raws = await redis.mget<(string | MomentMeta | null)[]>(...compactKeys)
-    } else {
-      const chunks: string[][] = []
-      for (let i = 0; i < compactKeys.length; i += MGET_CHUNK) {
-        chunks.push(compactKeys.slice(i, i + MGET_CHUNK))
-      }
-      const results = await Promise.all(
-        chunks.map((c) => redis.mget<(string | MomentMeta | null)[]>(...c)),
-      )
-      raws = results.flat()
+    const chunks: string[][] = []
+    for (let i = 0; i < compactKeys.length; i += MGET_CHUNK) {
+      chunks.push(compactKeys.slice(i, i + MGET_CHUNK))
     }
+    const results = await Promise.all(
+      chunks.map((c) => redis.mget<(string | MomentMeta | null)[]>(...c)),
+    )
+    raws = results.flat()
   } catch {
     return out
   }

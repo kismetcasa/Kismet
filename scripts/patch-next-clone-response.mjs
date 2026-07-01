@@ -37,7 +37,13 @@ try {
   process.exit(0)
 }
 const nextRoot = path.dirname(nextPkgPath)
-const nextVersion = JSON.parse(readFileSync(nextPkgPath, 'utf8')).version
+let nextVersion
+try {
+  nextVersion = JSON.parse(readFileSync(nextPkgPath, 'utf8')).version
+} catch (err) {
+  console.warn('[patch-next] WARNING: could not read next/package.json — skipping:', err)
+  process.exit(0)
+}
 
 const major = Number(nextVersion.split('.')[0])
 if (major >= 16) {
@@ -62,35 +68,34 @@ const INSERTION = `    // [kismet patch] Upstream fix from vercel/next.js #88577
 `
 const RETURN_ANCHOR = /(\n)([ \t]*)return \[\s*\n?\s*cloned1,\s*\n?\s*cloned2\s*\n?\s*\];/
 
-let patched = 0
-let failed = 0
 for (const target of TARGETS) {
-  if (!existsSync(target)) {
-    console.warn(`[patch-next] WARNING: ${target} not found — file layout changed?`)
-    failed++
-    continue
+  // Every failure mode inside the loop warns and continues — this script must
+  // NEVER exit non-zero (it runs under `postinstall … && …`, so a throw here
+  // would hard-fail npm ci / the Docker deps stage; e.g. a read-only
+  // node_modules under pnpm or a cached layer makes writeFileSync throw).
+  try {
+    if (!existsSync(target)) {
+      console.warn(`[patch-next] WARNING: ${target} not found — file layout changed?`)
+      continue
+    }
+    const src = readFileSync(target, 'utf8')
+    if (src.includes(MARKER)) {
+      console.log(`[patch-next] already patched: ${path.relative(nextRoot, target)}`)
+      continue
+    }
+    if (!src.includes('registry.register(cloned1') || !RETURN_ANCHOR.test(src)) {
+      console.warn(
+        `[patch-next] WARNING: ${path.relative(nextRoot, target)} does not match the expected ` +
+          `next@15.x shape — NOT patched. The fetch-clone leak (vercel/next.js #85914) may be ` +
+          `live; watch the [mem] arrayBuffersMb telemetry and update this script for next@${nextVersion}.`,
+      )
+      continue
+    }
+    const out = src.replace(RETURN_ANCHOR, `$1${INSERTION}$2return [\n$2    cloned1,\n$2    cloned2\n$2];`)
+    writeFileSync(target, out)
+    console.log(`[patch-next] patched ${path.relative(nextRoot, target)} (next@${nextVersion})`)
+  } catch (err) {
+    console.warn(`[patch-next] WARNING: failed to patch ${target} — continuing:`, err)
   }
-  const src = readFileSync(target, 'utf8')
-  if (src.includes(MARKER)) {
-    console.log(`[patch-next] already patched: ${path.relative(nextRoot, target)}`)
-    continue
-  }
-  if (!src.includes('registry.register(cloned1') || !RETURN_ANCHOR.test(src)) {
-    console.warn(
-      `[patch-next] WARNING: ${path.relative(nextRoot, target)} does not match the expected ` +
-        `next@15.x shape — NOT patched. The fetch-clone leak (vercel/next.js #85914) may be ` +
-        `live; watch the [mem] arrayBuffersMb telemetry and update this script for next@${nextVersion}.`,
-    )
-    failed++
-    continue
-  }
-  const out = src.replace(RETURN_ANCHOR, `$1${INSERTION}$2return [\n$2    cloned1,\n$2    cloned2\n$2];`)
-  writeFileSync(target, out)
-  patched++
-  console.log(`[patch-next] patched ${path.relative(nextRoot, target)} (next@${nextVersion})`)
-}
-
-if (failed > 0 && patched === 0) {
-  console.warn('[patch-next] WARNING: no files patched — see warnings above')
 }
 process.exit(0)

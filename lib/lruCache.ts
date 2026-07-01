@@ -3,7 +3,9 @@
  * most-recently-used; `set` evicts the least-recently-used at capacity.
  * Used by the browser-side caches in lib/momentCache, lib/textCache,
  * lib/profileCache, lib/collectionCache — bare `new Map()` versions
- * leaked memory in long sessions.
+ * leaked memory in long sessions — and by the server-side
+ * lib/resolveSmartWallet cache, where the same unbounded-Map leak applies
+ * to the long-lived Node process.
  */
 export class LRUCache<K, V> {
   private store = new Map<K, V>()

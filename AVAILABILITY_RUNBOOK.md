@@ -215,7 +215,11 @@ empirical Node heap tests). The validated model:
    thinning territory (expected, logged); revisit the materialized feed
    (REMEDIATION_PLAYBOOK §B1) as it grows. `SCARD kismetart:created-mints` —
    the Mints filter hard-fails past ~10 MB (~200k members; feed degrades
-   gracefully but plan the split before then).
+   gracefully but plan the split before then). Pre-deploy sanity for the new
+   featured caps: `ZCARD kismetart:featured` and
+   `ZCARD kismetart:featured-collections` should be far below 1000
+   (MAX_FEATURED) — reads are now bounded to the newest 1000, so a set already
+   past the cap would stop returning its oldest members.
 
 ## Later (architectural — real redundancy)
 

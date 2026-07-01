@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import { gatewayUrls } from '@/lib/arweave/gateways'
+import { readBodyBounded } from '@/lib/boundedBody'
 
 // Pinned to Node's runtime: this proxy streams multi-MB media payloads
 // end-to-end and we want Node's stream primitives plus unbounded request
@@ -22,36 +23,6 @@ const MAX_RESIZE_WIDTH = 4096
 // real still-image scan; a multi-hundred-MB "image" is pathological and streams
 // through untouched rather than risking an OOM.
 const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
-
-/**
- * Read `body` fully into a Buffer, enforcing `maxBytes` on ACTUAL bytes read.
- * Content-Length is advisory: chunked upstreams (common for IPFS gateways)
- * omit it entirely, and a misbehaving one can under-report — so a cap gated on
- * the header alone lets an unbounded body straight into RAM (that exact bypass
- * existed here: `!declaredLen` passed the resize gate into an uncapped
- * `arrayBuffer()`; OWASP API4:2023). On overflow the caller gets the chunks
- * read so far plus the live reader, so the bytes already in flight can be
- * spliced back into a streaming passthrough without a wasteful re-fetch.
- */
-async function readBodyBounded(
-  body: ReadableStream<Uint8Array>,
-  maxBytes: number,
-): Promise<
-  | { kind: 'complete'; buffer: Buffer }
-  | { kind: 'overflow'; chunks: Uint8Array[]; reader: ReadableStreamDefaultReader<Uint8Array> }
-> {
-  const reader = body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(value)
-    total += value.byteLength
-    if (total > maxBytes) return { kind: 'overflow', chunks, reader }
-  }
-  return { kind: 'complete', buffer: Buffer.concat(chunks) }
-}
 
 /**
  * Stream `prefix` chunks, then everything remaining on `reader`, erroring the
@@ -78,7 +49,15 @@ function passthroughStream(
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (i < prefix.length) {
-        guard(controller, prefix[i++])
+        const chunk = prefix[i]
+        // Release the slot as soon as the chunk is handed to the stream —
+        // otherwise the closure pins the whole replay buffer (up to the
+        // resize cap, ~100MB) for the entire remaining download instead of
+        // one chunk at a time. A few dozen concurrent overflow streams
+        // holding full buffers is the OOM class this route exists to avoid.
+        prefix[i] = undefined as unknown as Uint8Array
+        i++
+        guard(controller, chunk)
         return
       }
       const { done, value } = await reader.read()

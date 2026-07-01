@@ -45,13 +45,17 @@ function getTurbo() {
 
 async function fetchGif(gifUri: string): Promise<Buffer> {
   const urls = gatewayUrls(gifUri)
+  // ONE overall budget across all gateway attempts — generous because this
+  // pulls up to MAX_GIF_BYTES of media, but shared, so N stalled gateways
+  // can't hold the single transcode slot (MAX_CONCURRENT=1) for N×120s and
+  // starve every queued request behind it.
+  const deadline = Date.now() + 120_000
   let lastErr: unknown
   for (const url of urls) {
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) break
     try {
-      // Generous timeout — this pulls up to MAX_GIF_BYTES of media — but
-      // bounded, so a stalled gateway can't pin the transcode slot
-      // (MAX_CONCURRENT=1) indefinitely and starve every later request.
-      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+      const res = await fetch(url, { signal: AbortSignal.timeout(remainingMs) })
       if (!res.ok) {
         lastErr = new Error(`${res.status} ${url}`)
         continue
