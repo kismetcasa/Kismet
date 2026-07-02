@@ -161,6 +161,17 @@ size**, and is **per-pod** (5-min cross-pod staleness, acknowledged in comments)
   `ZREMRANGEBYRANK(TRENDING_KEY, 0, -10001)` inside the collect MULTI
   (`app/api/collect/route.ts:230`). The feed reads `ZRANGE 0 9999` — a sizable
   but bounded payload, not unbounded. _(Corrects a common misread.)_
+- **`kismetart:trending-latest`** (latest-sales feed; score = last-collect
+  timestamp) rides the same collect MULTI with the same 10k rank trim, so the
+  per-collect write grows from 2 to 4 commands but stays bounded and amortized
+  identically. Read path mirrors trending's bounded `ZRANGE 0 9999`.
+- **`kismetart:sale-ends`** (ending-soon feed; score = on-chain saleEnd, unix
+  seconds) is written through from the `/api/moments` + `/api/moment` price
+  paths via `after()` (`lib/saleEnds.ts`): a per-pod seen-cache skips re-adds
+  of unchanged (immutable) ends, housekeeping sweeps (ended-entry purge +
+  10k rank cap) are throttled to once per 5 min per pod, and reads are a
+  bounded `ZRANGE BYSCORE now→+inf LIMIT 0 10000`. Steady-state cost is ~0
+  extra commands per priced batch once a pod has warmed.
 - Notifications per user capped at 200 (`notifications.ts:179`) with 60-day lazy
   TTL; trending/notif background sweeps were intentionally replaced by
   inline-on-write / lazy-on-read trimming.

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
-import { redis, FEATURED_KEY, TRENDING_KEY, MAX_FEATURED } from '@/lib/redis'
+import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
+import { getUpcomingSaleEnds } from '@/lib/saleEnds'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -112,7 +113,15 @@ export async function GET(req: NextRequest) {
   // per-token ADMIN delegate. Distinct from ?creator= which is the
   // strict "their work" filter used by profile feeds.
   const airdroppable = searchParams.get('airdroppable')?.toLowerCase() ?? undefined
-  const sort = searchParams.get('sort') // 'trending' | null
+  // Cross-collection sort mode. 'trending' = most sales (all-time collect
+  // count, the original), 'latest-sales' = most recent collect first,
+  // 'ending-soon' = live sale deadlines soonest-first. Unrecognized values
+  // fall through to null (newest-first) instead of silently half-matching.
+  const rawSort = searchParams.get('sort')
+  const sort =
+    rawSort === 'trending' || rawSort === 'latest-sales' || rawSort === 'ending-soon'
+      ? rawSort
+      : null
   const featured = searchParams.get('featured') === '1'
   const followingParam = searchParams.get('following')
   const followingSet = followingParam
@@ -212,7 +221,10 @@ export async function GET(req: NextRequest) {
   // Cross-collection sort, featured curation, and the creators allowlist
   // can each thin the result set below `page * limit`. Bump the per-
   // collection sample so paginated pages don't empty out prematurely.
-  const needsLargerSample = sort === 'trending' || featured || filterToCreators
+  // All three sort modes reorder across collections (a recently-sold or
+  // soon-ending moment can sit deep in its collection's newest-first
+  // timeline), so they all need the deeper sample.
+  const needsLargerSample = sort !== null || featured || filterToCreators
   const baseSample = needsLargerSample ? Math.max(page * limit, 200) : page * limit
   // Bound the TOTAL moments pulled into the in-memory merge, not just the
   // per-collection request. The fan-out hits EVERY collection in parallel and
@@ -399,12 +411,7 @@ export async function GET(req: NextRequest) {
   if (featured) {
     // Featured set (member = "collectionAddress:tokenId", score = featuredAt)
     // was read before the fan-out (it narrowed the collection list) — reuse it.
-    const raw = featuredWithScores ?? []
-
-    const featuredMap = new Map<string, number>()
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      featuredMap.set(String(raw[i]), Number(raw[i + 1]))
-    }
+    const featuredMap = zpairsToMap(featuredWithScores ?? [])
 
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
@@ -418,21 +425,20 @@ export async function GET(req: NextRequest) {
       const scoreB = featuredMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? 0
       return scoreB - scoreA
     })
-  } else if (sort === 'trending') {
-    // Fetch top trending scores in one call (flat alternating member/score array).
-    // Capped at top 10k so the zset's lifetime growth doesn't bloat this read
-    // (every collect is an unbounded ZINCRBY). Moments past the cap fall back
-    // to score 0 via scoreMap.get's undefined → 0 coalesce below, putting them
-    // at the bottom of trending sort — same effective ordering as fetching all.
-    const raw = (await redis.zrange(TRENDING_KEY, 0, 9999, {
+  } else if (sort === 'trending' || sort === 'latest-sales') {
+    // Fetch top scores in one call (flat alternating member/score array).
+    // 'trending' scores by all-time collect count, 'latest-sales' by the
+    // timestamp of the most recent collect — same zset shape, same 10k
+    // write-side cap, so one read + one score-desc sort serves both.
+    // Moments past the cap (or never collected) fall back to score 0 via
+    // scoreMap.get's undefined → 0 coalesce below, putting them at the
+    // bottom of the sort ordered newest-first by the created_at tiebreak.
+    const zsetKey = sort === 'trending' ? TRENDING_KEY : TRENDING_LATEST_KEY
+    const raw = (await redis.zrange(zsetKey, 0, 9999, {
       rev: true,
       withScores: true,
     })) as (string | number)[]
-
-    const scoreMap = new Map<string, number>()
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      scoreMap.set(String(raw[i]), Number(raw[i + 1]))
-    }
+    const scoreMap = zpairsToMap(raw)
 
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
@@ -440,6 +446,25 @@ export async function GET(req: NextRequest) {
       const scoreA = scoreMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? 0
       const scoreB = scoreMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? 0
       if (scoreB !== scoreA) return scoreB - scoreA
+      return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
+    })
+  } else if (sort === 'ending-soon') {
+    // Upcoming sale deadlines from the write-through index (lib/saleEnds.ts):
+    // moments with a live/scheduled sale that actually ends sort soonest-
+    // first; everything else (open-ended, ended, not yet indexed) follows
+    // newest-first so the feed stays full instead of emptying out. Index
+    // read failure degrades the whole feed to newest-first (empty map).
+    const endsMap = await getUpcomingSaleEnds(Math.floor(Date.now() / 1000))
+
+    // No-deadline moments coalesce to Infinity: any real end sorts before
+    // them, and equal values (including Infinity vs Infinity) fall through
+    // to the created_at tiebreak — the `?? 0` shape of the branch above.
+    merged = merged.sort((a: unknown, b: unknown) => {
+      const ma = a as { address?: string; token_id?: string; created_at: string }
+      const mb = b as { address?: string; token_id?: string; created_at: string }
+      const endA = endsMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? Infinity
+      const endB = endsMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? Infinity
+      if (endA !== endB) return endA - endB
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
     })
   } else {
@@ -563,8 +588,9 @@ export async function GET(req: NextRequest) {
   //                 differs for the creator vs everyone else.
   //   - collector= / airdroppable= : address-scoped personal feeds.
   //   - following= : reorders to bubble the caller's follows to the top.
-  // Everything else (trending, featured, the default newest feed, a single
-  // collection, the curated creators= roster) is identical for every viewer:
+  // Everything else (all sort modes — trending / latest-sales / ending-soon —
+  // featured, the default newest feed, a single collection, the curated
+  // creators= roster) is identical for every viewer:
   // the session cookie is read above but only consumed when creatorSet is set,
   // which none of these set. Those get a short shared-cache window with a
   // stale-while-revalidate tail so the first click on trending/main is served
