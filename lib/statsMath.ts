@@ -60,6 +60,13 @@ export type StatsCurrency = 'eth' | 'usdc' | 'unknown'
 // sales with the zero address instead of a null currency field.
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
+// Corruption backstops, NOT business rules — generous enough that no real
+// Kismet sale approaches them, tight enough that a garbage feed row (NaN,
+// Infinity, 1e30, a billion editions) can't poison an artist's total until
+// the next scan. A single paid transfer above these is definitionally corrupt.
+const MAX_SANE_VALUE = 1e9 // human units; real ETH/USDC sales are << this
+const MAX_SANE_QTY = 1_000_000 // editions in ONE transfer
+
 /**
  * Bucket a transfer's payment currency. Unlike inferCollectCurrency (which
  * safe-defaults to ETH for UI display), the stats path must FAIL CLOSED: an
@@ -111,6 +118,9 @@ export interface AccumulateCounters {
   counted: number
   /** Skipped: value missing/zero (free rows that leaked into type=payment). */
   skippedFree: number
+  /** Skipped: corrupt value (NaN/Infinity or beyond the sanity ceiling) — a
+   *  garbage feed row that would otherwise poison a total. */
+  skippedInvalid: number
   /** Rows whose VALUE was skipped: unrecognized ERC20 currency (would corrupt
    *  the ETH bucket). Their mint count is still credited — it is
    *  currency-independent. */
@@ -134,6 +144,7 @@ export interface AccumulateCounters {
 export const newAccumulateCounters = (): AccumulateCounters => ({
   counted: 0,
   skippedFree: 0,
+  skippedInvalid: 0,
   unknownCurrency: 0,
   droppedMints: 0,
   kvCreatorOverrides: 0,
@@ -214,11 +225,27 @@ export function accumulateTransfer(
   counters: AccumulateCounters,
 ): void {
   const value = typeof t.value === 'number' ? t.value : 0
+  // Corrupt value (NaN/Infinity — both pass `typeof === 'number'` — or an
+  // absurd magnitude) is dropped and counted separately from a legitimate
+  // free/zero row, so one bad feed row can't inject garbage into a total.
+  if (!Number.isFinite(value) || value > MAX_SANE_VALUE) {
+    counters.skippedInvalid++
+    return
+  }
   if (value <= 0) {
     counters.skippedFree++
     return
   }
-  const qty = typeof t.quantity === 'number' && t.quantity > 0 ? Math.floor(t.quantity) : 1
+  // An absent, non-finite, or absurd quantity falls back to 1 (the same
+  // "unknown quantity → assume one edition" default), so it can't inflate the
+  // mint count while still crediting the sale.
+  const qty =
+    typeof t.quantity === 'number' &&
+    Number.isFinite(t.quantity) &&
+    t.quantity > 0 &&
+    t.quantity <= MAX_SANE_QTY
+      ? Math.floor(t.quantity)
+      : 1
 
   const feedCreatorRaw = t.moment?.creator
   const feedCreator =
@@ -258,8 +285,16 @@ export function accumulateTransfer(
   }
   const earned = currency === 'usdc' ? usdc : eth
   if (recipients.length) {
+    // Divide by max(100, Σpct) so the credited shares can never sum to MORE
+    // than the sale value: a corrupt feed row whose percentages exceed 100
+    // is scaled down instead of over-reporting earnings, while a legitimate
+    // sub-100 split (e.g. an unlisted platform cut) still credits exactly the
+    // listed percentages (divisor stays 100). Over-crediting a money figure
+    // is the worst failure class, so this fails toward under-report.
+    const totalPct = recipients.reduce((s, r) => s + r.percent_allocation, 0)
+    const divisor = Math.max(100, totalPct)
     for (const r of recipients) {
-      bump(earned, r.artist_address.toLowerCase(), (value * r.percent_allocation) / 100)
+      bump(earned, r.artist_address.toLowerCase(), (value * r.percent_allocation) / divisor)
     }
   } else if (creator) {
     bump(earned, creator, value)

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { redis } from './redis'
 import { getEthUsd } from './ethPrice'
 import { fetchTransfersPage } from './inprocessTransfers'
@@ -87,7 +88,27 @@ interface LastRebuild {
   at: number
 }
 
+// Single-flight lock so overlapping runs (a manual trigger during the hourly
+// cron, or — as the feed grows — a scan that runs longer than the cron
+// interval) can't interleave writes into the shared :staging keys and commit a
+// mix of two scans. TTL > a healthy full scan but short enough that a crashed
+// run frees the lock well before the next hourly cron. If a rebuild ever
+// exceeds this, the lock lapses mid-run — the same scale threshold that says
+// "move to an incremental sync" (see MAX_PAGES).
+const REBUILD_LOCK_KEY = 'kismetart:stats:rebuild-lock'
+const REBUILD_LOCK_TTL_S = 900
+// Release only if we still hold the lock (token match), so a run whose lock
+// already expired can't delete a newer run's lock — the standard safe-release
+// CAS (mirrors the atomic pattern used for royalty crediting).
+const RELEASE_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`
+
 export interface RebuildResult {
+  /** True when another rebuild held the single-flight lock and this call was a
+   *  no-op — distinct from a completed run so the cron log can tell them apart. */
+  skipped: boolean
   artists: number
   transfers: number
   pages: number
@@ -95,6 +116,8 @@ export interface RebuildResult {
   duplicates: number
   /** Rows skipped as free (zero/absent value) despite type=payment. */
   skippedFree: number
+  /** Rows skipped as corrupt (non-finite / absurd value). */
+  skippedInvalid: number
   /** Rows whose VALUE was skipped (unrecognized ERC20); mints still counted. */
   unknownCurrency: number
   /** Editions whose mint credit was dropped — no creator resolvable at all. */
@@ -157,11 +180,43 @@ async function writeStatsAtomically(
 }
 
 // Rebuild all stats from /transfers. Idempotent, self-healing, backfills history.
-// Aborts (throws) on a fetch failure, a wrong-shaped 200, an over-window feed,
-// a non-row-unique dedup identifier, a zero-row scan over live data, or an
-// implausible counted-transfers shrink — so a bad scan never overwrites good
-// totals. Drive from the cron route, or call once to backfill.
+// Single-flight (a concurrent run returns { skipped: true }). Aborts (throws)
+// on a fetch failure, a wrong-shaped 200, an over-window feed, a non-row-unique
+// dedup identifier, a zero-row scan over live data, or an implausible
+// counted-transfers shrink — so a bad scan never overwrites good totals. Drive
+// from the cron route, or call once to backfill.
 export async function rebuildStats(): Promise<RebuildResult> {
+  const lockToken = randomUUID()
+  const acquired = await redis.set(REBUILD_LOCK_KEY, lockToken, {
+    nx: true,
+    ex: REBUILD_LOCK_TTL_S,
+  })
+  if (acquired !== 'OK') return { ...EMPTY_REBUILD_RESULT, skipped: true }
+  try {
+    return await runRebuild()
+  } finally {
+    await redis.eval(RELEASE_LOCK_LUA, [REBUILD_LOCK_KEY], [lockToken]).catch(() => {})
+  }
+}
+
+// The zero-work result shape, reused for the skipped path.
+const EMPTY_REBUILD_RESULT: RebuildResult = {
+  skipped: false,
+  artists: 0,
+  transfers: 0,
+  pages: 0,
+  duplicates: 0,
+  skippedFree: 0,
+  skippedInvalid: 0,
+  unknownCurrency: 0,
+  droppedMints: 0,
+  kvCreatorOverrides: 0,
+  collectionFallbacks: 0,
+  recoveredCreators: 0,
+  remappedWallets: 0,
+}
+
+async function runRebuild(): Promise<RebuildResult> {
   const mints = new Map<string, number>()
   const eth = new Map<string, number>()
   const usdc = new Map<string, number>()
@@ -298,11 +353,13 @@ export async function rebuildStats(): Promise<RebuildResult> {
       .catch(() => {})
   }
   return {
+    skipped: false,
     artists: new Set([...mintsFinal.keys(), ...ethFinal.keys(), ...usdcFinal.keys()]).size,
     transfers: counters.counted,
     pages: page - 1,
     duplicates,
     skippedFree: counters.skippedFree,
+    skippedInvalid: counters.skippedInvalid,
     unknownCurrency: counters.unknownCurrency,
     droppedMints: counters.droppedMints,
     kvCreatorOverrides: counters.kvCreatorOverrides,

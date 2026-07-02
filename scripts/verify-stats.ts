@@ -141,6 +141,58 @@ const free = run({ value: 0, moment: { collection: { creator: ARTIST } } })
 check('accumulate: zero-value row skipped as free',
   free.counters.skippedFree === 1 && free.counters.counted === 0 && free.maps[0].size === 0)
 
+// ── 2c. Corruption backstops: garbage value/qty can't poison a total ─────────
+for (const [label, bad] of [
+  ['NaN', NaN],
+  ['Infinity', Infinity],
+  ['1e30 (absurd)', 1e30],
+] as const) {
+  const r = run({ value: bad, moment: { collection: { artist: { address: ARTIST } } } })
+  check(`accumulate: corrupt value (${label}) skipped as invalid, nothing credited`,
+    r.counters.skippedInvalid === 1 && r.counters.counted === 0 &&
+      r.maps[0].size === 0 && r.maps[1].size === 0,
+    JSON.stringify(r.counters))
+}
+const absurdQty = run({
+  value: 0.1,
+  quantity: 1e12,
+  moment: { collection: { artist: { address: ARTIST } } },
+})
+check('accumulate: absurd quantity falls back to 1 (no mint-count inflation)',
+  absurdQty.maps[0].get(ARTIST.toLowerCase()) === 1, JSON.stringify([...absurdQty.maps[0]]))
+const nanQty = run({
+  value: 0.1,
+  quantity: NaN,
+  moment: { collection: { artist: { address: ARTIST } } },
+})
+check('accumulate: NaN quantity falls back to 1',
+  nanQty.maps[0].get(ARTIST.toLowerCase()) === 1)
+
+// ── 2d. fee_recipients that over-sum can't over-credit earnings ──────────────
+const over = run({
+  value: 1,
+  currency: null,
+  moment: {
+    fee_recipients: [
+      { artist_address: ARTIST, percent_allocation: 100 },
+      { artist_address: COLLAB, percent_allocation: 100 },
+    ],
+  },
+})
+const overTotal = (over.maps[1].get(ARTIST.toLowerCase()) ?? 0) + (over.maps[1].get(COLLAB.toLowerCase()) ?? 0)
+check('accumulate: Σpct>100 scales down so credited earnings never exceed value',
+  Math.abs(overTotal - 1) < 1e-12 &&
+    Math.abs((over.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.5) < 1e-12,
+  JSON.stringify([...over.maps[1]]))
+const under = run({
+  value: 1,
+  currency: null,
+  moment: { fee_recipients: [{ artist_address: ARTIST, percent_allocation: 80 }] },
+})
+check('accumulate: Σpct<100 (unlisted platform cut) credits EXACTLY the listed %',
+  Math.abs((under.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.8) < 1e-12,
+  JSON.stringify([...under.maps[1]]))
+
 const bareString = run({ value: 1, moment: { creator: ARTIST, collection: { artist: { address: OWNER } } } })
 check('accumulate: per-moment creator (bare string) beats collection level',
   bareString.maps[0].get(ARTIST.toLowerCase()) === 1, JSON.stringify([...bareString.maps[0]]))
