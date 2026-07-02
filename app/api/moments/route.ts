@@ -1,9 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl, type MomentSaleConfig } from '@/lib/inprocess'
 import { onchainSaleConfigFallback } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
+import { recordSaleEnds } from '@/lib/saleEnds'
+import { bestEffort } from '@/lib/bestEffort'
 
 // Lean batch sibling of /api/moment for the feed's price badges. A feed card
 // needs ONLY saleConfig (price + currency) — not the hidden/creator stitch
@@ -100,6 +102,22 @@ export async function GET(req: NextRequest) {
       }),
     )
   }
+
+  // Write-through the resolved sale windows into the ending-soon index
+  // (lib/saleEnds.ts). This endpoint fires for every card that renders a
+  // price badge, so the index self-backfills from normal browsing — no
+  // extra upstream reads, and post-response via after() so it never adds
+  // latency to the batch. `known: false` (null config = upstream blip)
+  // leaves the existing entry alone rather than erasing it.
+  after(() =>
+    recordSaleEnds(
+      results.map((e) => ({
+        key: e.key,
+        saleEnd: e.config?.saleEnd,
+        known: e.config !== null,
+      })),
+    ).catch(bestEffort('moments.recordSaleEnds')),
+  )
 
   return NextResponse.json(
     { sales: Object.fromEntries(results.map((e) => [e.key, e.config])) },

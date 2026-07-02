@@ -46,13 +46,13 @@ const ACTIVE_KEY = 'kismetart:active-tab'
 // 1-2s wait on the Mini App webview's constrained pool) into an instant
 // cache hit. Must match the apiUrl each tab's feed passes to PaginatedGrid
 // verbatim, or the prefetched entry won't dedupe against the live query:
-//   trending → MomentFeed apiUrl below
+//   trending → TrendingFeed's default sort (latest-sales)
 //   main     → MainFeed's mints sub-tab default (no `following=`)
 // featured (raw fetch, not react-query) and roster (depends on an async
 // creator-lists fetch) are intentionally excluded; featured is also the
 // default landing tab, so it loads on first paint regardless.
 const PREFETCH_URL: Partial<Record<TabId, string>> = {
-  trending: '/api/timeline?sort=trending&scope=standalone',
+  trending: '/api/timeline?sort=latest-sales&scope=standalone',
   main: '/api/timeline?scope=standalone',
 }
 
@@ -278,6 +278,64 @@ function CollectionsFeed({
           <p className="text-sm font-mono text-muted">no collections yet</p>
         </div>
       }
+    />
+  )
+}
+
+// ─── trending feed with sort buttons ─────────────────────────────────────────
+
+type TrendingSort = 'latest-sales' | 'trending' | 'ending-soon'
+
+// API sort value + button label per mode, in display order. 'trending' is the
+// original all-time collect-count sort, relabeled "most sales" now that it
+// has siblings; the API value stays 'trending' so the roster feed and any
+// cached clients keep working unchanged.
+const TRENDING_SORTS: { id: TrendingSort; label: string }[] = [
+  { id: 'latest-sales', label: 'latest sales' },
+  { id: 'trending', label: 'most sales' },
+  { id: 'ending-soon', label: 'ending soon' },
+]
+
+const TRENDING_EMPTY: Record<TrendingSort, string> = {
+  'latest-sales': 'no collects recorded yet — latest sales appear as mints are collected',
+  trending: 'no collects recorded yet — trending appears as mints are collected',
+  'ending-soon': 'no mints to show yet',
+}
+
+function TrendingFeed() {
+  const [sort, setSort] = useState<TrendingSort>('latest-sales')
+
+  // Radio-style row of the main feed's "following" button: exactly one sort
+  // active at a time. Switching sorts swaps the PaginatedGrid apiUrl —
+  // react-query keeps each sort's pages cached, so flipping back is instant.
+  const sortButtons = (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {TRENDING_SORTS.map(({ id, label }) => {
+        const on = sort === id
+        return (
+          <button
+            key={id}
+            onClick={() => setSort(id)}
+            aria-pressed={on}
+            className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
+              on
+                ? 'border-accent text-accent'
+                : 'border-line text-muted hover:border-[#444] hover:text-dim'
+            }`}
+          >
+            {label}
+          </button>
+        )
+      })}
+    </div>
+  )
+
+  return (
+    <MomentFeed
+      apiUrl={`/api/timeline?sort=${sort}&scope=standalone`}
+      emptyMessage={TRENDING_EMPTY[sort]}
+      header={sortButtons}
+      withViewToggle
     />
   )
 }
@@ -511,11 +569,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
 
         {hydrated && visitedTabs.has('trending') && (
           <div hidden={active !== 'trending'}>
-            <MomentFeed
-              apiUrl="/api/timeline?sort=trending&scope=standalone"
-              emptyMessage="no collects recorded yet — trending appears as mints are collected"
-              withViewToggle
-            />
+            <TrendingFeed />
           </div>
         )}
 

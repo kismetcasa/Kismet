@@ -46,6 +46,17 @@ export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 // set first (see /api/featured POST).
 export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'
+// Latest-sales feed: member = "collection:tokenId", score = timestamp (ms) of
+// the most recent verified collect. Written alongside TRENDING_KEY's zincrby
+// in /api/collect (zadd overwrites — last collect wins) with the same 10k
+// write-side rank trim, so the two feed zsets stay cost-identical.
+export const TRENDING_LATEST_KEY = 'kismetart:trending-latest'
+// Ending-soon feed: member = "collection:tokenId", score = on-chain saleEnd
+// (unix seconds). Populated write-through by /api/moments — the batch
+// sale-config endpoint every feed card already hits for its price badge — so
+// it self-backfills as users browse, with zero new upstream fan-out. Reads
+// take only future ends (ZRANGE BYSCORE now→+inf); see lib/saleEnds.ts.
+export const SALE_ENDS_KEY = 'kismetart:sale-ends'
 
 // Ceiling for the featured zsets — trimmed on every write (mirroring the
 // TRENDING 10k cap in /api/collect) and used to bound every read. Featuring is

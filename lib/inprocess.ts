@@ -289,7 +289,9 @@ export function formatRelativeTime(timestamp: number): string {
 // Max-uint64 "never expires" sentinel the mint form writes for an open-ended
 // sale (components/MintForm.tsx). Any saleEnd at or above this is not a real
 // deadline — it must never render as a countdown ("closes in 5e11 years").
-const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
+// Exported for lib/saleEnds.ts, which applies the same "real deadline" test
+// when indexing sale ends for the ending-soon feed.
+export const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
 
 export type SaleWindowState = 'scheduled' | 'closing' | 'live' | 'ended'
 
