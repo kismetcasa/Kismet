@@ -34,6 +34,19 @@ export const redis = new Redis({
   // unchanged; explicit `multi()`/`eval` (rate limit, graph writes) are atomic
   // and unaffected.
   enableAutoPipelining: true,
+  // Cap retries at 2 (SDK default is 5). The default's exponential backoff
+  // (~exp(n)·50ms) stacks toward multiple seconds per failed command, and the
+  // hot paths (ratelimit/session/quota) have no per-call timeout — so an
+  // Upstash blip turned into a site-wide latency BROWNOUT on the single box.
+  // Two jittered retries bound the worst case to a few hundred ms; jitter
+  // prevents synchronized retry storms across concurrent requests. This also
+  // REDUCES the blind-retry double-count exposure on non-idempotent INCR/EVAL
+  // that lib/redisRead.ts warns about (fewer retries = fewer duplicate writes),
+  // and double-counting here only ever over-counts spend/rate (fail-safe).
+  retry: {
+    retries: 2,
+    backoff: (n) => 2 ** n * 50 + Math.floor(Math.random() * 50),
+  },
 })
 
 export const FEATURED_KEY = 'kismetart:featured'

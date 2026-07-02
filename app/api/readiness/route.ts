@@ -90,7 +90,10 @@ async function check(label: string, fn: () => Promise<unknown>): Promise<CheckRe
     return {
       ok: false,
       latencyMs: Math.round(performance.now() - start),
-      error: err instanceof Error ? err.message : String(err),
+      // Name/class only — this probe is unauthenticated, and a raw message
+      // would leak the Redis/RPC host/URL. The name (TimeoutError vs
+      // TypeError) is enough signal for ops.
+      error: err instanceof Error ? err.name : 'error',
     }
   }
 }

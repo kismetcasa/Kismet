@@ -7,6 +7,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
+import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { transcodeGifToMp4Node } from '@/lib/media/transcodeGifNode'
 
 export const runtime = 'nodejs'
@@ -107,6 +108,23 @@ export async function POST(req: NextRequest) {
   if (!gifUri || (!gifUri.startsWith('ar://') && !gifUri.startsWith('ipfs://') && !gifUri.startsWith('https://'))) {
     return errorResponse(400, 'gifUri must be ar://, ipfs://, or https://')
   }
+  // SSRF: ar:// and ipfs:// resolve to the fixed gateway pool (gatewayUrls),
+  // but a raw https:// is fetched verbatim — gate it through the same
+  // public-only guard every other server-fetch sink uses (blocks localhost,
+  // IP literals, cloud-metadata). The app only ever passes ar:// here, so
+  // this closes the hole with no functional change to real usage.
+  if (gifUri.startsWith('https://') && !isSafePublicHttpsUrl(gifUri)) {
+    return errorResponse(400, 'gifUri must be a public https URL')
+  }
+
+  // Bound per-identity transcode COUNT before any expensive work. fetchGif
+  // (up to MAX_GIF_BYTES) + the ffmpeg encode run through the single
+  // MAX_CONCURRENT slot, so the IP rate limit alone (trivially rotated) lets
+  // one authed user monopolize it. Debited up front; the upload-bytes debit
+  // below still meters the stored Arweave bytes after the encode.
+  if (!(await consumeUserQuota('transcode', address, 1))) {
+    return errorResponse(429, 'Daily transcode limit reached — try again tomorrow')
+  }
 
   if (active >= MAX_CONCURRENT) {
     return errorResponse(503, 'Transcoder busy — try again shortly')
@@ -141,9 +159,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ animationUri, posterUri, thumbhash })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Transcode failed'
-    console.error(`[transcode-gif] ${message} | gifUri: ${gifUri}`)
-    return errorResponse(500, message)
+    // Log detail server-side; return a GENERIC message so the response can't
+    // be used as a status/URL oracle to probe gateways or internal hosts.
+    console.error(`[transcode-gif] ${err instanceof Error ? err.message : String(err)} | gifUri: ${gifUri}`)
+    return errorResponse(500, 'Transcode failed')
   } finally {
     active--
   }

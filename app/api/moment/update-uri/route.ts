@@ -164,10 +164,9 @@ export async function POST(req: NextRequest) {
     console.error(
       `[update-uri] upstream unreachable: ${err instanceof Error ? err.message : String(err)} | request: ${JSON.stringify(upstreamBody)}`,
     )
-    return NextResponse.json(
-      { error: 'upstream unreachable', detail: err instanceof Error ? err.message : String(err) },
-      { status: 502 },
-    )
+    // Detail is logged above, NOT returned — the raw message embeds the
+    // inprocess URL/topology and reaches the client otherwise.
+    return NextResponse.json({ error: 'upstream unreachable' }, { status: 502 })
   }
 
   const text = await res.text()
