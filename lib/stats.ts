@@ -147,8 +147,9 @@ async function writeStatsAtomically(
 
 // Rebuild all stats from /transfers. Idempotent, self-healing, backfills history.
 // Aborts (throws) on a fetch failure, a wrong-shaped 200, an over-window feed,
-// or an implausible artist shrink — so a bad scan never overwrites good totals.
-// Drive from the cron route, or call once to backfill.
+// a non-row-unique dedup identifier, a zero-row scan over live data, or an
+// implausible counted-transfers shrink — so a bad scan never overwrites good
+// totals. Drive from the cron route, or call once to backfill.
 export async function rebuildStats(): Promise<RebuildResult> {
   const mints = new Map<string, number>()
   const eth = new Map<string, number>()
