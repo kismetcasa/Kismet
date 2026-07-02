@@ -50,8 +50,9 @@ const seenEnds = new Map<string, number>()
  *     present and still gets removed.
  *
  * Housekeeping sweeps piggyback on the same pipeline, throttled per pod.
- * Auto-pipelining collapses everything into the request's existing Redis
- * round trip; callers fire-and-forget via after().
+ * The whole write is one atomic multi() — a single Upstash REST round trip
+ * (multi() is not merged by auto-pipelining; see lib/redis.ts) — and callers
+ * fire-and-forget via after(), so it never adds request latency.
  */
 export async function recordSaleEnds(
   entries: { key: string; config: { saleEnd?: string } | null }[],
