@@ -117,7 +117,9 @@ export interface AccumulateCounters {
   unknownCurrency: number
   /** Editions whose mint credit was dropped — no creator resolvable at all. */
   droppedMints: number
-  /** Rows whose creator came from the KV MomentMeta override. */
+  /** Rows where the KV MomentMeta creator CHANGED the attribution (a KV
+   *  value agreeing with the feed reports source 'feed' and is not counted —
+   *  see resolveMomentCreator). */
   kvCreatorOverrides: number
   /** Rows whose creator was recovered from the dominant fee recipient. */
   recoveredCreators: number

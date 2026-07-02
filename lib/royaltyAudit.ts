@@ -57,9 +57,12 @@ export async function auditRoyaltyReceiver(args: {
     }
     // Contract receiver — record whether the credit path decomposed it, which
     // candidate token's split matched, and whether the credit landed. A fill
-    // with decomposed:false here is a royalty stranded on a contract address
-    // (unstored split, receiver↔split mismatch, or a bounded read that timed
-    // out) — the number to watch when judging remaining coverage gaps.
+    // with decomposed:false AND failed:false is a royalty stranded on a
+    // contract address (unstored split, receiver↔split mismatch, or a bounded
+    // read that timed out) — the number to watch when judging remaining
+    // coverage gaps. failed:true entries are infra errors whose decomposition
+    // fields mean "unknown", not "no split matched" — exclude them from
+    // coverage math.
     const entry = JSON.stringify({
       at: Date.now(),
       listingId,
@@ -72,6 +75,7 @@ export async function auditRoyaltyReceiver(args: {
       decomposed: outcome.decomposed,
       matchedTokenId: outcome.matchedTokenId,
       creditCount: outcome.credits.length,
+      failed: outcome.failed,
     })
     await Promise.all([redis.incr(CONTRACT_COUNT_KEY), redis.lpush(DETAIL_KEY, entry)])
     await redis.ltrim(DETAIL_KEY, 0, MAX_DETAIL - 1)

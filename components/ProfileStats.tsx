@@ -132,7 +132,11 @@ export function ProfileStats({
   // pinned-public earnings figure.
   if (asVisitor) {
     if (!stats.public || !hasEarnings) return null
-  } else if (!hasEarnings && stats.mints <= 0) {
+  } else if (!hasEarnings && stats.mints <= 0 && !stats.public) {
+    // stats.public keeps the card mounted for a pinned owner whose figures
+    // have fallen below display precision (e.g. a 0-mint split collaborator
+    // after re-attribution) — the pin below is the ONLY unpin surface, so
+    // unmounting here would leave them publicly pinned with no way out.
     return null
   }
 

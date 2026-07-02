@@ -43,6 +43,14 @@ const VERIFICATIONS_FAIL_TTL = 5 * 60      // 5m on miss
 // FC user attached. An empty string can't be a valid FID so it's
 // unambiguous. Avoids re-hitting the API for every anonymous address.
 const NO_FID_SENTINEL = ''
+// Distinct sentinel for a TRANSIENT lookup failure (429/5xx), cached only for
+// TRANSIENT_FAIL_TTL. Kept separate from NO_FID_SENTINEL so identity-
+// sensitive WRITES (earnings visibility) can tell "definitively not an FC
+// user" from "couldn't find out right now" and fail closed on the latter —
+// treating a blip as non-FC once wrote an FC user's unpin to the wrong member
+// form, leaving their earnings publicly pinned. Profile READS treat both
+// sentinels as "no profile".
+const NO_FID_TRANSIENT = '!transient'
 const fidByAddressKey = (address: string) =>
   `kismetart:fc:fid-by-addr:${address.toLowerCase()}`
 
@@ -182,59 +190,85 @@ export async function getVerifiedAddressesByFid(
 }
 
 /**
+ * Resolve an address to its FID WITHOUT hydrating the profile — the leanest
+ * identity question, with an honest three-way answer:
+ *
+ *   { fid: number }  — FC-verified address
+ *   { fid: null }    — definitively NOT an FC address (404 / empty result)
+ *   null             — UNKNOWN right now (network throw, 429/5xx, or the
+ *                      short transient negative cache)
+ *
+ * Callers that mutate identity-keyed state (earnings visibility) MUST treat
+ * null as "fail closed / retry", never as "non-FC" — conflating the two
+ * writes to the wrong member form. Read-only callers may treat null like
+ * { fid: null } (degrade gracefully).
+ */
+export type FidLookup = { fid: number | null } | null
+
+export async function getFidByAddress(
+  address: string,
+  opts: { skipCache?: boolean } = {},
+): Promise<FidLookup> {
+  const lower = address.toLowerCase()
+  const cacheKey = fidByAddressKey(lower)
+  const cached = opts.skipCache ? undefined : await readCached<string>(cacheKey)
+  if (cached !== undefined) {
+    if (cached === NO_FID_SENTINEL) return { fid: null }
+    if (cached === NO_FID_TRANSIENT) return null
+    const parsed = Number(cached)
+    return Number.isFinite(parsed) ? { fid: parsed } : null
+  }
+
+  let fid: number | null = null
+  let transient = false
+  try {
+    const res = await fetch(
+      `https://api.farcaster.xyz/v2/user-by-verification?address=${lower}`,
+      { headers: { Accept: 'application/json' } },
+    )
+    if (res.ok) {
+      const body = (await res.json()) as {
+        result?: { user?: { fid?: number } }
+      }
+      fid = body.result?.user?.fid ?? null
+    } else if (res.status !== 404) {
+      // 429/5xx: caching the definitive no-FID sentinel for the full fail TTL
+      // would strip the user's FC identity — and the earnings sibling union —
+      // for minutes; caching nothing turns a sustained rate-limit into an
+      // unthrottled storm. The distinct transient sentinel with a short TTL
+      // bounds both costs while staying distinguishable from a real no-FID.
+      transient = true
+    }
+  } catch {
+    // Network blip — unknown, uncached.
+    return null
+  }
+  await redis
+    .set(cacheKey, fid ? String(fid) : transient ? NO_FID_TRANSIENT : NO_FID_SENTINEL, {
+      ex: fid
+        ? FID_BY_ADDRESS_TTL
+        : transient
+          ? TRANSIENT_FAIL_TTL
+          : FID_BY_ADDRESS_FAIL_TTL,
+    })
+    .catch(() => {})
+  return transient ? null : { fid }
+}
+
+/**
  * Resolve an Ethereum address to a Farcaster profile via the address's
  * verified-FID record. Used to auto-propagate FC identity onto any
  * Kismet address that happens to belong to an FC user — works for any
  * visitor's profile page, not just the currently-signed-in user.
  *
- * Returns null when no FC account has verified this address.
+ * Returns null when no FC account has verified this address (or the
+ * lookup/hydration is transiently unavailable — read-only callers degrade;
+ * identity-sensitive writes should use getFidByAddress directly).
  */
 export async function getFarcasterProfileByAddress(
   address: string,
   opts: { skipCache?: boolean } = {},
 ): Promise<FarcasterProfile | null> {
-  const lower = address.toLowerCase()
-  const cacheKey = fidByAddressKey(lower)
-  const cached = opts.skipCache ? undefined : await readCached<string>(cacheKey)
-
-  let fid: number | null = null
-  if (cached !== undefined) {
-    if (cached === NO_FID_SENTINEL) return null
-    const parsed = Number(cached)
-    if (Number.isFinite(parsed)) fid = parsed
-  } else {
-    let transient = false
-    try {
-      const res = await fetch(
-        `https://api.farcaster.xyz/v2/user-by-verification?address=${lower}`,
-        { headers: { Accept: 'application/json' } },
-      )
-      if (res.ok) {
-        const body = (await res.json()) as {
-          result?: { user?: { fid?: number } }
-        }
-        fid = body.result?.user?.fid ?? null
-      } else if (res.status !== 404) {
-        // 429/5xx: caching the no-FID sentinel for the full fail TTL would
-        // strip the user's FC identity — and the earnings sibling union —
-        // for minutes; caching nothing turns a sustained rate-limit into an
-        // unthrottled storm. Short transient TTL bounds both costs. A 404
-        // (address genuinely has no FC user) caches at the normal fail TTL.
-        transient = true
-      }
-    } catch {
-      return null
-    }
-    await redis
-      .set(cacheKey, fid ? String(fid) : NO_FID_SENTINEL, {
-        ex: fid
-          ? FID_BY_ADDRESS_TTL
-          : transient
-            ? TRANSIENT_FAIL_TTL
-            : FID_BY_ADDRESS_FAIL_TTL,
-      })
-      .catch(() => {})
-  }
-
+  const fid = (await getFidByAddress(address, opts))?.fid ?? null
   return fid ? getFarcasterProfileByFid(fid, opts) : null
 }

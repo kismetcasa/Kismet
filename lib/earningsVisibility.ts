@@ -1,6 +1,6 @@
 import { redis } from './redis'
 import { memoize } from './memoCache'
-import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from './farcasterProfile'
+import { getFidByAddress, getVerifiedAddressesByFid } from './farcasterProfile'
 
 // Per-artist "earnings public" opt-in — the gate for the public earnings
 // surfaces (profile card, share card). One SET of opted-in identities;
@@ -20,10 +20,25 @@ import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from './farca
 // The set is memoized (mirrors hidden-users) so the per-request check costs
 // ~0 Redis: one SMEMBERS per TTL per pod, not per profile view. A toggle
 // invalidates the own-pod cache immediately; other pods reflect it within
-// the TTL. FC resolution on the read path uses the Redis-cached FC lookups
-// (warm on every profile view) — a transient FC failure degrades to
-// "address members only", i.e. an FC user's pin may read private for the
-// 30s transient-cache window, never public-by-mistake.
+// the TTL.
+//
+// FAILURE POLICY. Reads degrade: a transient FC failure resolves to "address
+// members only", so an FC user's pin may read private for the 30s transient-
+// cache window — never public-by-mistake. Writes FAIL CLOSED: setEarningsPublic
+// THROWS when the identity can't be resolved (getFidByAddress → null) or an FC
+// user's verifications read comes back empty (an FC identity always carries at
+// least its linked address; empty = transient failure). Degrading a WRITE
+// instead once unpinned only the address member while the fid:<n> member
+// survived — earnings stayed publicly pinned after an explicit hide. The
+// toggle route maps the throw to a retryable error and the card reverts its
+// optimistic state.
+//
+// ACCEPTED EDGE: a pin keyed fid:<n> becomes unreachable if the user later
+// deactivates Farcaster / unverifies every address (reads resolve fid=null →
+// private). If they then re-verify to the same FID, the old pin resurfaces
+// unless they toggled while FC-linked in between (any toggle clears the fid
+// form). Deactivation cycles are rare enough that we prefer this to keeping a
+// second, address-keyed source of truth around.
 const KEY_EARNINGS_PUBLIC = 'kismetart:stats-public'
 const fidMember = (fid: number) => `fid:${fid}`
 
@@ -56,9 +71,7 @@ export async function isEarningsPublic(
   // no identity resolution needed.
   if (members.has(lower)) return true
   const fid =
-    knownFid !== undefined
-      ? knownFid
-      : ((await getFarcasterProfileByAddress(lower))?.fid ?? null)
+    knownFid !== undefined ? knownFid : ((await getFidByAddress(lower))?.fid ?? null)
   if (fid == null) return false
   if (members.has(fidMember(fid))) return true
   // Legacy address pin that lives under a SIBLING: the canonical address that
@@ -68,9 +81,18 @@ export async function isEarningsPublic(
   return siblings.some((s) => members.has(s))
 }
 
+/**
+ * Toggle the pin. THROWS when the identity is transiently unresolvable (see
+ * the failure policy above) — the caller must surface a retryable error, not
+ * a false success over a half-applied write.
+ */
 export async function setEarningsPublic(address: string, isPublic: boolean): Promise<void> {
   const lower = address.toLowerCase()
-  const fid = (await getFarcasterProfileByAddress(lower))?.fid ?? null
+  const lookup = await getFidByAddress(lower)
+  if (lookup === null) {
+    throw new Error('earnings-visibility: identity lookup unavailable, retry')
+  }
+  const fid = lookup.fid
   if (fid == null) {
     if (isPublic) await redis.sadd(KEY_EARNINGS_PUBLIC, lower)
     else await redis.srem(KEY_EARNINGS_PUBLIC, lower)
@@ -78,7 +100,13 @@ export async function setEarningsPublic(address: string, isPublic: boolean): Pro
     // FC user: the FID form is the pin. Either direction also clears any
     // legacy address members across the verification set, so a later unpin
     // can't be shadowed by a stale sibling pin from before the FID keying.
+    // An FC identity always carries its linked address as a verification, so
+    // an empty list is a transient read failure — fail closed rather than
+    // sweep partially.
     const siblings = await getVerifiedAddressesByFid(fid)
+    if (siblings.length === 0) {
+      throw new Error('earnings-visibility: verifications unavailable, retry')
+    }
     const legacy = Array.from(new Set([lower, ...siblings]))
     if (isPublic) {
       await redis

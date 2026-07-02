@@ -17,7 +17,9 @@ export interface ArtistPending {
   eth: number
   /** Undistributed USDC owed to the artist across their splits (human units). */
   usdc: number
-  /** Blended USD (eth × price + usdc); falls back to USDC-only if price is down. */
+  /** Blended USD (eth × price + usdc). 0 when the ETH/USD price is unavailable
+   *  and there IS an ETH leg — honest-USD policy shared with getArtistEarnings;
+   *  never a silently-USDC-only figure presented as the whole total. */
   usd: number
   /** How many split moments currently hold a non-zero share for the artist. */
   count: number

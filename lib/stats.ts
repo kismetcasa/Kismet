@@ -92,7 +92,8 @@ export interface RebuildResult {
   unknownCurrency: number
   /** Editions whose mint credit was dropped — no creator resolvable at all. */
   droppedMints: number
-  /** Rows attributed via the KV MomentMeta creator override. */
+  /** Rows where the KV MomentMeta creator CHANGED the attribution (a KV value
+   *  agreeing with the feed is not counted — see resolveMomentCreator). */
   kvCreatorOverrides: number
   /** Rows whose creator was recovered from the dominant fee recipient. */
   recoveredCreators: number
@@ -227,12 +228,28 @@ export async function rebuildStats(): Promise<RebuildResult> {
     )
   }
 
+  // Zero-row wipe guard, independent of the baseline: the swap below can DEL
+  // live keys (unlike the old ZADD-only writer), and the counted baseline
+  // doesn't exist before the FIRST successful run — so an empty-but-shape-
+  // valid response on that first run (error envelope served as 200 with the
+  // right fields) could otherwise wipe every artist exactly once, unguarded.
+  // An empty scan may only proceed when there is nothing live to lose.
+  if (counters.counted === 0) {
+    const live = await redis.zcard(MINTS_KEY).catch(() => 0)
+    if (live > 0) {
+      throw new Error(
+        'rebuild folded 0 transfers but live stats exist — refusing wipe',
+      )
+    }
+  }
+
   // Sanity guard before the destructive swap: the feed is append-only, so the
   // folded-row total from the last SUCCESSFUL run can only grow. A shrink
   // means a malfunctioning scan (upstream truncation the shape check couldn't
   // classify) — keep the last good totals and let the next run retry. Read
   // failures on the baseline fail OPEN (null → no guard) so a Redis blip
-  // can't wedge the rebuild.
+  // can't wedge the rebuild; the zero-row guard above still backstops a
+  // total wipe.
   const prev = await redis.get<LastRebuild>(LAST_REBUILD_KEY).catch(() => null)
   if (
     typeof prev?.counted === 'number' &&
@@ -256,10 +273,14 @@ export async function rebuildStats(): Promise<RebuildResult> {
 
   await writeStatsAtomically(mintsFinal, ethFinal, usdcFinal)
   // Advance the guard baseline only after the swap committed, so an aborted
-  // or crashed write never moves it.
-  await redis
-    .set(LAST_REBUILD_KEY, { counted: counters.counted, at: Date.now() } satisfies LastRebuild)
-    .catch(() => {})
+  // or crashed write never moves it — and only to a POSITIVE count, so a
+  // legitimate pre-launch empty scan can't disarm the shrink guard with a
+  // zero baseline.
+  if (counters.counted > 0) {
+    await redis
+      .set(LAST_REBUILD_KEY, { counted: counters.counted, at: Date.now() } satisfies LastRebuild)
+      .catch(() => {})
+  }
   return {
     artists: new Set([...mintsFinal.keys(), ...ethFinal.keys(), ...usdcFinal.keys()]).size,
     transfers: counters.counted,
@@ -376,8 +397,15 @@ export interface RoyaltyCreditOutcome {
   /** The candidate token whose split matched the receiver (the listed token
    *  or the cover '1'); null when no decomposition happened. */
   matchedTokenId: string | null
-  /** The credits this call wrote (or would write — empty when not credited). */
+  /** The credits this call computed. NON-empty on an already-claimed retry
+   *  (credited:false but the match/decomposition still reflect this fill);
+   *  empty only when the credit was rejected before decomposition (invalid
+   *  amount/receiver) or errored (failed:true). */
   credits: Array<{ member: string; amount: number }>
+  /** True when the credit attempt ERRORED (Redis eval failure) — the zeroed
+   *  decomposition fields then mean "unknown", not "no split matched". The
+   *  audit records this so infra failures aren't counted as coverage gaps. */
+  failed: boolean
 }
 
 const NO_CREDIT: RoyaltyCreditOutcome = {
@@ -385,6 +413,7 @@ const NO_CREDIT: RoyaltyCreditOutcome = {
   decomposed: false,
   matchedTokenId: null,
   credits: [],
+  failed: false,
 }
 
 // Credit a secondary-sale creator royalty to the artist(s) who earned it.
@@ -460,10 +489,11 @@ export async function creditListingRoyalty(args: {
       decomposed: matchedTokenId !== null,
       matchedTokenId,
       credits,
+      failed: false,
     }
   } catch {
     // Swallow — royalty stats are best-effort and must never fail the sale.
-    return NO_CREDIT
+    return { ...NO_CREDIT, failed: true }
   }
 }
 

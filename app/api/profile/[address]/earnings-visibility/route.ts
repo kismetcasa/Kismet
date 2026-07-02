@@ -10,7 +10,15 @@ async function toggle(req: NextRequest, address: string, isPublic: boolean) {
   if (!isAddress(address)) return errorResponse(400, 'Invalid address')
   const auth = await authorizeProfileOwner(req, address)
   if ('error' in auth) return errorResponse(auth.status, auth.error)
-  await setEarningsPublic(auth.canonical, isPublic)
+  try {
+    await setEarningsPublic(auth.canonical, isPublic)
+  } catch {
+    // Fail-closed write: the identity couldn't be resolved right now, so the
+    // toggle was NOT applied (a half-applied unpin once left earnings
+    // publicly pinned). 503 → the card reverts its optimistic state and the
+    // user retries.
+    return errorResponse(503, 'Identity lookup unavailable — try again shortly')
+  }
   return NextResponse.json({ public: isPublic })
 }
 
