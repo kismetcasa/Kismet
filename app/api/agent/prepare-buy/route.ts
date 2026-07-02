@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { getListing } from '@/lib/listings'
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
         args: [account as Address, SEAPORT_ADDRESS],
       })) as bigint
     } catch (err) {
-      return errorResponse(502, err instanceof Error ? err.message : 'Chain read failed — try again')
+      return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-buy')
     }
   }
 

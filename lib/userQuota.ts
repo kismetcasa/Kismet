@@ -29,6 +29,7 @@ export type QuotaKind =
   | 'collection'
   | 'update-uri'
   | 'distribute'
+  | 'transcode'
 
 interface QuotaWindow {
   /** Cap per UTC calendar day. */
@@ -62,6 +63,12 @@ const QUOTAS: Record<QuotaKind, QuotaWindow> = {
   // (gas paid by the platform smart wallet). Above any legitimate cadence.
   'update-uri':   { day: 50,           week: 200            },
   'distribute':   { day: 100,          week: 400            },
+  // Server-side GIF→MP4 transcodes. Each pulls up to MAX_GIF_BYTES of media +
+  // an ffmpeg encode through the single MAX_CONCURRENT=1 slot, so this bounds
+  // per-identity compute abuse (the IP rate limit is trivially rotated).
+  // Debited BEFORE the fetch/encode (see transcode-gif route), separate from
+  // the post-encode upload-bytes debit that meters stored Arweave bytes.
+  'transcode':    { day: 30,           week: 120            },
 }
 
 const TTL_DAY_SECONDS = 25 * 60 * 60       // 25h: covers boundary requests
