@@ -289,9 +289,27 @@ export function formatRelativeTime(timestamp: number): string {
 // Max-uint64 "never expires" sentinel the mint form writes for an open-ended
 // sale (components/MintForm.tsx). Any saleEnd at or above this is not a real
 // deadline — it must never render as a countdown ("closes in 5e11 years").
-// Exported for lib/saleEnds.ts, which applies the same "real deadline" test
-// when indexing sale ends for the ending-soon feed.
-export const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
+const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
+
+/**
+ * Parse a saleConfig.saleEnd string to a real deadline in unix seconds, or
+ * null when it names no deadline ("0" / the sentinel / non-numeric / absent).
+ * THE single "is this a real deadline" classifier — getSaleWindow (countdown
+ * display) and lib/saleEnds (the ending-soon feed index) both apply it, so
+ * the two surfaces can't silently disagree about what counts as a deadline.
+ * BigInt-parses first so the sentinel can't overflow Number precision and
+ * read as a real (astronomically distant) deadline.
+ */
+export function parseRealSaleEnd(saleEnd: string | undefined | null): number | null {
+  if (!saleEnd) return null
+  try {
+    const end = BigInt(saleEnd)
+    if (end > 0n && end < OPEN_ENDED_SALE_SENTINEL) return Number(end)
+  } catch {
+    // non-numeric → no deadline
+  }
+  return null
+}
 
 export type SaleWindowState = 'scheduled' | 'closing' | 'live' | 'ended'
 
@@ -313,9 +331,8 @@ export interface SaleWindowInfo {
  * to render an absolute, viewer-local date.
  *
  * saleStart/saleEnd are unix-second strings. saleStart "0"/absent = opens-now;
- * saleEnd "0"/absent or the max-uint64 sentinel = open-ended. BigInt-parses the
- * end first so the sentinel can't overflow Number precision and read as a real
- * (astronomically distant) deadline.
+ * saleEnd "0"/absent or the max-uint64 sentinel = open-ended (per
+ * parseRealSaleEnd, the shared deadline classifier).
  */
 export function getSaleWindow(
   saleConfig: { saleStart?: string; saleEnd?: string } | null | undefined,
@@ -325,21 +342,10 @@ export function getSaleWindow(
 
   const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
 
-  // Resolve a real end (in seconds) or treat as open-ended. Non-numeric, zero,
-  // or sentinel ends → open-ended (no deadline to show) rather than throw.
-  let endNum = 0
-  let openEnded = true
-  if (saleConfig.saleEnd) {
-    try {
-      const endBig = BigInt(saleConfig.saleEnd)
-      if (endBig > 0n && endBig < OPEN_ENDED_SALE_SENTINEL) {
-        endNum = Number(endBig)
-        openEnded = false
-      }
-    } catch {
-      // non-numeric → leave open-ended
-    }
-  }
+  // Resolve a real end (in seconds) or treat as open-ended.
+  const realEnd = parseRealSaleEnd(saleConfig.saleEnd)
+  const openEnded = realEnd === null
+  const endNum = realEnd ?? 0
 
   // Not opened yet → scheduled (the start date is what matters).
   if (Number.isFinite(startNum) && startNum > nowSec) {

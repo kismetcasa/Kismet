@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
-import { redis, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
+import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds } from '@/lib/saleEnds'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -411,12 +411,7 @@ export async function GET(req: NextRequest) {
   if (featured) {
     // Featured set (member = "collectionAddress:tokenId", score = featuredAt)
     // was read before the fan-out (it narrowed the collection list) — reuse it.
-    const raw = featuredWithScores ?? []
-
-    const featuredMap = new Map<string, number>()
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      featuredMap.set(String(raw[i]), Number(raw[i + 1]))
-    }
+    const featuredMap = zpairsToMap(featuredWithScores ?? [])
 
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
@@ -443,11 +438,7 @@ export async function GET(req: NextRequest) {
       rev: true,
       withScores: true,
     })) as (string | number)[]
-
-    const scoreMap = new Map<string, number>()
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      scoreMap.set(String(raw[i]), Number(raw[i + 1]))
-    }
+    const scoreMap = zpairsToMap(raw)
 
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
@@ -465,14 +456,15 @@ export async function GET(req: NextRequest) {
     // read failure degrades the whole feed to newest-first (empty map).
     const endsMap = await getUpcomingSaleEnds(Math.floor(Date.now() / 1000))
 
+    // No-deadline moments coalesce to Infinity: any real end sorts before
+    // them, and equal values (including Infinity vs Infinity) fall through
+    // to the created_at tiebreak — the `?? 0` shape of the branch above.
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
       const mb = b as { address?: string; token_id?: string; created_at: string }
-      const endA = endsMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`)
-      const endB = endsMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`)
-      if (endA !== undefined && endB !== undefined && endA !== endB) return endA - endB
-      if (endA !== undefined && endB === undefined) return -1
-      if (endA === undefined && endB !== undefined) return 1
+      const endA = endsMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? Infinity
+      const endB = endsMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? Infinity
+      if (endA !== endB) return endA - endB
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
     })
   } else {

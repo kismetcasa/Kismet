@@ -1,7 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { recordSaleEnds } from '@/lib/saleEnds'
+import { bestEffort } from '@/lib/bestEffort'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { fetchCreatorFromTimeline, getKvCreatorAddress } from '@/lib/momentDetail'
@@ -88,5 +90,23 @@ export async function GET(req: NextRequest) {
   const creator = kvCreator
     ? { address: kvCreator, username: null }
     : timelineCreator
+
+  // Same ending-soon index write-through as /api/moments, for the detail-view
+  // price path — widens the index's coverage to moments reached by direct
+  // link (shared URLs, notifications) that may never render in a feed batch.
+  // Only on a successfully priced response: an upstream error returned above
+  // never reaches this line, so a blip can't erase a live entry.
+  if (upstream.ok) {
+    const saleConfig = data.saleConfig as { saleEnd?: string } | null | undefined
+    after(() =>
+      recordSaleEnds([
+        {
+          key: `${collectionAddress.toLowerCase()}:${BigInt(tokenId).toString()}`,
+          config: saleConfig ?? null,
+        },
+      ]).catch(bestEffort('moment.recordSaleEnds')),
+    )
+  }
+
   return NextResponse.json({ ...data, hidden, creator }, { status: upstream.status })
 }

@@ -58,6 +58,21 @@ export const TRENDING_LATEST_KEY = 'kismetart:trending-latest'
 // take only future ends (ZRANGE BYSCORE now→+inf); see lib/saleEnds.ts.
 export const SALE_ENDS_KEY = 'kismetart:sale-ends'
 
+/**
+ * Build a member → score Map from a `zrange(..., { withScores: true })` reply
+ * (a flat alternating [member, score, member, score, …] array). Map insertion
+ * order preserves the zrange order, so callers can also rely on iteration
+ * order (e.g. ascending BYSCORE reads). One place encodes the flat-pair shape
+ * instead of a hand-rolled loop per read site.
+ */
+export function zpairsToMap(raw: (string | number)[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    map.set(String(raw[i]), Number(raw[i + 1]))
+  }
+  return map
+}
+
 // Ceiling for the featured zsets — trimmed on every write (mirroring the
 // TRENDING 10k cap in /api/collect) and used to bound every read. Featuring is
 // a manual curator action so growth is slow, but these keys were the only

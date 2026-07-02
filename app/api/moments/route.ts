@@ -104,17 +104,20 @@ export async function GET(req: NextRequest) {
   }
 
   // Write-through the resolved sale windows into the ending-soon index
-  // (lib/saleEnds.ts). This endpoint fires for every card that renders a
-  // price badge, so the index self-backfills from normal browsing — no
-  // extra upstream reads, and post-response via after() so it never adds
-  // latency to the batch. `known: false` (null config = upstream blip)
-  // leaves the existing entry alone rather than erasing it.
+  // (lib/saleEnds.ts). This runs whenever a batch is priced at the origin
+  // (cache misses + background revalidations), so the index self-backfills
+  // from normal browsing — no extra upstream reads, and post-response via
+  // after() so it never adds latency to the batch. The member tokenId is
+  // BigInt-canonicalized (same normalization /api/collect applies to the
+  // trending members): the response stays keyed by the id the client sent,
+  // but the index must use the canonical form the timeline's token_id
+  // lookup produces — and so a crafted "007"-style id can't plant orphan
+  // members that squat the index's 10k cap.
   after(() =>
     recordSaleEnds(
       results.map((e) => ({
-        key: e.key,
-        saleEnd: e.config?.saleEnd,
-        known: e.config !== null,
+        key: `${e.address.toLowerCase()}:${BigInt(e.tokenId).toString()}`,
+        config: e.config,
       })),
     ).catch(bestEffort('moments.recordSaleEnds')),
   )

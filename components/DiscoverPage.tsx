@@ -282,58 +282,79 @@ function CollectionsFeed({
   )
 }
 
+// ─── filter pill ─────────────────────────────────────────────────────────────
+
+// The accent-bordered toggle pill shared by the main feed's "following"
+// button and the trending feed's sort buttons — one source so the two
+// surfaces can't drift visually. (The roster list buttons keep their own
+// ink-bordered variant deliberately: they're content selectors, not filters.)
+function FilterPill({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={on}
+      className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
+        on
+          ? 'border-accent text-accent'
+          : 'border-line text-muted hover:border-[#444] hover:text-dim'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
 // ─── trending feed with sort buttons ─────────────────────────────────────────
 
 type TrendingSort = 'latest-sales' | 'trending' | 'ending-soon'
 
-// API sort value + button label per mode, in display order. 'trending' is the
-// original all-time collect-count sort, relabeled "most sales" now that it
-// has siblings; the API value stays 'trending' so the roster feed and any
-// cached clients keep working unchanged.
-const TRENDING_SORTS: { id: TrendingSort; label: string }[] = [
-  { id: 'latest-sales', label: 'latest sales' },
-  { id: 'trending', label: 'most sales' },
-  { id: 'ending-soon', label: 'ending soon' },
+// Per-sort config, in display order: API sort value, button label, empty-state
+// copy. 'trending' is the original all-time collect-count sort, relabeled
+// "most sales" now that it has siblings; the API value stays 'trending' so
+// the roster feed and any cached clients keep working unchanged.
+const TRENDING_SORTS: { id: TrendingSort; label: string; empty: string }[] = [
+  {
+    id: 'latest-sales',
+    label: 'latest sales',
+    empty: 'no collects recorded yet — latest sales appear as mints are collected',
+  },
+  {
+    id: 'trending',
+    label: 'most sales',
+    empty: 'no collects recorded yet — trending appears as mints are collected',
+  },
+  { id: 'ending-soon', label: 'ending soon', empty: 'no mints to show yet' },
 ]
-
-const TRENDING_EMPTY: Record<TrendingSort, string> = {
-  'latest-sales': 'no collects recorded yet — latest sales appear as mints are collected',
-  trending: 'no collects recorded yet — trending appears as mints are collected',
-  'ending-soon': 'no mints to show yet',
-}
 
 function TrendingFeed() {
   const [sort, setSort] = useState<TrendingSort>('latest-sales')
+  const active = TRENDING_SORTS.find((s) => s.id === sort) ?? TRENDING_SORTS[0]
 
-  // Radio-style row of the main feed's "following" button: exactly one sort
-  // active at a time. Switching sorts swaps the PaginatedGrid apiUrl —
-  // react-query keeps each sort's pages cached, so flipping back is instant.
+  // Radio-style row of FilterPills: exactly one sort active at a time.
+  // Switching sorts swaps the PaginatedGrid apiUrl — react-query keeps each
+  // sort's pages cached, so flipping back is instant.
   const sortButtons = (
     <div className="flex items-center gap-1.5 flex-wrap">
-      {TRENDING_SORTS.map(({ id, label }) => {
-        const on = sort === id
-        return (
-          <button
-            key={id}
-            onClick={() => setSort(id)}
-            aria-pressed={on}
-            className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
-              on
-                ? 'border-accent text-accent'
-                : 'border-line text-muted hover:border-[#444] hover:text-dim'
-            }`}
-          >
-            {label}
-          </button>
-        )
-      })}
+      {TRENDING_SORTS.map(({ id, label }) => (
+        <FilterPill key={id} on={sort === id} onClick={() => setSort(id)}>
+          {label}
+        </FilterPill>
+      ))}
     </div>
   )
 
   return (
     <MomentFeed
       apiUrl={`/api/timeline?sort=${sort}&scope=standalone`}
-      emptyMessage={TRENDING_EMPTY[sort]}
+      emptyMessage={active.empty}
       header={sortButtons}
       withViewToggle
     />
@@ -391,16 +412,9 @@ function MainFeed() {
         </button>
       </div>
       {address && (
-        <button
-          onClick={() => setFollowingOn((v) => !v)}
-          className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
-            followingOn
-              ? 'border-accent text-accent'
-              : 'border-line text-muted hover:border-[#444] hover:text-dim'
-          }`}
-        >
+        <FilterPill on={followingOn} onClick={() => setFollowingOn((v) => !v)}>
           following
-        </button>
+        </FilterPill>
       )}
     </div>
   )
