@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse, after } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
-import { isEarningsPublicAuthoritative, setEarningsPublic } from '@/lib/earningsVisibility'
 import { verifyFarcasterJwt, setKismetIdentityAddress } from '@/lib/farcasterAuth'
 import { getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import {
@@ -81,9 +80,7 @@ export async function POST(req: NextRequest) {
   //     currentAddress = lower (miniapp-first user picking a wallet
   //     before they've added a username).
   const existing = await getFidProfile(session.fid)
-  let previousCanonical: string | null = null
   if (existing) {
-    previousCanonical = existing.currentAddress?.toLowerCase() ?? null
     await setFidCurrentAddress(session.fid, lower)
   } else {
     // Reuse `verifications` from the membership check above instead of
@@ -96,7 +93,6 @@ export async function POST(req: NextRequest) {
         break
       }
     }
-    previousCanonical = anchorProfile?.address?.toLowerCase() ?? null
     await upsertFidProfile(session.fid, lower, {
       username: anchorProfile?.username,
       avatarUrl: anchorProfile?.avatarUrl,
@@ -106,26 +102,10 @@ export async function POST(req: NextRequest) {
   // fallback path (for callers that haven't migrated) sees the same
   // value. Cheap; safe to drop once we're confident no caller reads
   // the legacy key directly.
+  // (No earnings-pin migration needed here: visibility is keyed by FID for
+  // FC users — see lib/earningsVisibility.ts — so the pin follows the
+  // identity across every canonical-address change, including this one.)
   await setKismetIdentityAddress(session.fid, lower)
-  // The earnings-public pin is keyed by canonical address; without this
-  // migration an identity switch silently flips a pinned-public earnings
-  // card back to private (the new canonical isn't in the pinned set).
-  // MUST read the authoritative set, not the 60s memo — a stale cross-pod
-  // snapshot would either drop a pin made moments ago or re-publicize
-  // earnings the user just hid. Best-effort, off the response path.
-  if (previousCanonical && previousCanonical !== lower) {
-    const from = previousCanonical
-    after(async () => {
-      try {
-        if (await isEarningsPublicAuthoritative(from)) {
-          await setEarningsPublic(lower, true)
-          await setEarningsPublic(from, false)
-        }
-      } catch {
-        // Pin migration is cosmetic; never disturb the identity switch.
-      }
-    })
-  }
   return NextResponse.json(
     { address: lower },
     { headers: { 'Cache-Control': 'private, no-store' } },

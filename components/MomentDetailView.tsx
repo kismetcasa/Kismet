@@ -11,6 +11,7 @@ import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
+import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
 import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
@@ -143,10 +144,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // smart wallet that inprocess returns as creator.address.
   const [creatorName, setCreatorName] = useState(() => {
     const seedAddr =
-      kvCreatorAddress
-      ?? initialDetail?.creator?.address
-      ?? pickFirstNonOperatorAdmin(initialDetail?.momentAdmins)
-      ?? ''
+      resolveMomentCreator({
+        kvCreator: kvCreatorAddress,
+        feedCreator:
+          initialDetail?.creator?.address
+          ?? pickFirstNonOperatorAdmin(initialDetail?.momentAdmins),
+      }).address ?? ''
     return initialDetail?.creator?.username || (seedAddr ? shortAddress(seedAddr) : '')
   })
   const [creatorAvatar, setCreatorAvatar] = useState<string | undefined>(undefined)
@@ -345,25 +348,24 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const totalMinted = tokenInfo?.totalMinted
 
   const isFeatured = featuredKeys.has(`${address.toLowerCase()}:${tokenId}`)
-  // Resolution order for the moment's creator EOA:
-  //   1. kvCreatorAddress — the EOA mint-proxy wrote to KV moment-meta
-  //      at mint time. For Kismet-minted moments inprocess often
-  //      reports the platform smart wallet as creator.address (the
-  //      on-chain msg.sender of the mint), which has no Kismet
-  //      profile and breaks the display-name / avatar / profile-link
-  //      chain. KV is authoritative for who actually minted.
-  //   2. detail.creator.address — inprocess timeline's dedicated
-  //      creator field. Used for moments not minted through Kismet's
-  //      proxy (no KV entry) — there inprocess is the only signal.
-  //   3. first non-operator entry in detail.momentAdmins — last-resort
-  //      fallback. The list is unordered and may contain the operator
-  //      smart wallet (filtered out here) or a 0xSplits contract;
-  //      kept for moments where neither (1) nor (2) is populated.
+  // Creator EOA via the SHARED precedence (lib/statsMath resolveMomentCreator
+  // — same order the stats rebuild and /api/timeline use, so this page, the
+  // feed, and the earnings card agree on who made the moment):
+  //   kv    — the EOA mint-proxy wrote to KV moment-meta at mint time.
+  //           For Kismet-minted moments inprocess often reports the platform
+  //           smart wallet as creator.address (the on-chain msg.sender),
+  //           which has no Kismet profile and breaks the display-name /
+  //           avatar / profile-link chain. KV is authoritative.
+  //   feed  — detail.creator.address (inprocess timeline's dedicated creator
+  //           field), else the first non-operator momentAdmins entry as the
+  //           last-resort display fallback (unordered list; may contain the
+  //           operator smart wallet — filtered — or a 0xSplits contract).
   const creatorAddress =
-    kvCreatorAddress
-    ?? detail?.creator?.address
-    ?? pickFirstNonOperatorAdmin(detail?.momentAdmins)
-    ?? ''
+    resolveMomentCreator({
+      kvCreator: kvCreatorAddress,
+      feedCreator:
+        detail?.creator?.address ?? pickFirstNonOperatorAdmin(detail?.momentAdmins),
+    }).address ?? ''
   const isHidden = detail?.hidden === true
   const [hidePending, setHidePending] = useState(false)
   const isCreator =

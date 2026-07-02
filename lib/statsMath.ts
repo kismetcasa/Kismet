@@ -135,19 +135,61 @@ export const newAccumulateCounters = (): AccumulateCounters => ({
 const bump = (m: Map<string, number>, k: string, by: number) =>
   m.set(k, (m.get(k) ?? 0) + by)
 
+export type MomentCreatorSource = 'kv' | 'feed' | 'collection' | 'recipient'
+
+/**
+ * THE creator-resolution precedence, shared by every surface that attributes
+ * a moment to its maker — the stats rebuild (accumulateTransfer below), the
+ * /api/timeline stitch, and MomentDetailView's display chain — so "what you
+ * see" and "what you're paid" can never disagree on who made a moment:
+ *
+ *   1. kv         — the minter EOA mint-proxy persisted at mint time.
+ *                   Authoritative for Kismet-minted moments; inprocess often
+ *                   reports the platform smart wallet / collection
+ *                   defaultAdmin / factory instead. Wins only when it CHANGES
+ *                   the answer (differs case-insensitively from the feed
+ *                   value) — callers that rewrite on 'kv' (the timeline
+ *                   clobbers username to null) must not churn equal values.
+ *   2. feed       — the per-moment creator the upstream feed reports.
+ *   3. collection — the collection-level artist/creator (correct only for
+ *                   single-artist collections; last-resort feed data).
+ *   4. recipient  — the dominant fee recipient: a paid sale always paid
+ *                   someone, and for a solo artist that payee IS the artist.
+ *
+ * Returns the chosen input VERBATIM (no lowercasing — display callers keep
+ * their casing; the stats path lowercases the result itself) plus which tier
+ * won, so callers can act on overrides ('kv') or count heuristics
+ * ('recipient') without re-deriving the order.
+ */
+export function resolveMomentCreator(inputs: {
+  kvCreator?: string | null
+  feedCreator?: string | null
+  collectionCreator?: string | null
+  dominantFeeRecipient?: string | null
+}): { address: string | null; source: MomentCreatorSource | null } {
+  const { kvCreator, feedCreator, collectionCreator, dominantFeeRecipient } = inputs
+  if (kvCreator) {
+    if (!feedCreator || feedCreator.toLowerCase() !== kvCreator.toLowerCase()) {
+      return { address: kvCreator, source: 'kv' }
+    }
+    // KV agrees with the feed — report 'feed' so rewrite-on-override callers
+    // treat it as a no-op.
+    return { address: feedCreator, source: 'feed' }
+  }
+  if (feedCreator) return { address: feedCreator, source: 'feed' }
+  if (collectionCreator) return { address: collectionCreator, source: 'collection' }
+  if (dominantFeeRecipient) return { address: dominantFeeRecipient, source: 'recipient' }
+  return { address: null, source: null }
+}
+
 /**
  * Fold one paid transfer into the aggregates.
  *
- * Mint-credit key precedence (most-specific attribution wins):
- *   1. kvCreator — the minter EOA mint-proxy persisted at mint time. The same
- *      override /api/timeline stitches; without it, delegated mints into a
- *      curated collection credit the collection OWNER, not the artist.
- *   2. moment.creator — per-moment feed field (object or bare-string shape).
- *   3. collection.artist.address ?? collection.creator — legacy collection-
- *      level fallback (correct only for single-artist collections).
- *   4. The highest-percent fee recipient — a paid sale always paid someone;
- *      for a solo artist that payee IS the artist. Heuristic, counted
- *      separately so its share of attribution stays observable.
+ * The mint-credit key comes from resolveMomentCreator above — ONE precedence
+ * order shared with the timeline stitch and the detail view, so the profile's
+ * earnings figure and its feed can't attribute the same moment to different
+ * people. The 'kv' and 'recipient' tiers are counted so their share of
+ * attribution stays observable in the rebuild log.
  *
  * Earnings: split across fee_recipients by percent; else 100% to the resolved
  * creator. An unknown ERC20 currency skips ONLY the value — pricing a foreign
@@ -172,8 +214,6 @@ export function accumulateTransfer(
   const feedCreatorRaw = t.moment?.creator
   const feedCreator =
     typeof feedCreatorRaw === 'string' ? feedCreatorRaw : feedCreatorRaw?.address
-  const collectionCreator =
-    t.moment?.collection?.artist?.address ?? t.moment?.collection?.creator ?? undefined
 
   const recipients = (t.moment?.fee_recipients ?? []).filter(
     (r): r is { artist_address: string; percent_allocation: number } =>
@@ -183,15 +223,19 @@ export function accumulateTransfer(
       r.percent_allocation > 0,
   )
 
-  let creator = (opts.kvCreator ?? feedCreator ?? collectionCreator)?.toLowerCase()
-  if (opts.kvCreator) counters.kvCreatorOverrides++
-  if (!creator && recipients.length) {
-    // Recover from the dominant payee rather than silently dropping the mint.
-    creator = [...recipients]
-      .sort((a, b) => b.percent_allocation - a.percent_allocation)[0]
-      .artist_address.toLowerCase()
-    counters.recoveredCreators++
-  }
+  const resolved = resolveMomentCreator({
+    kvCreator: opts.kvCreator,
+    feedCreator,
+    collectionCreator:
+      t.moment?.collection?.artist?.address ?? t.moment?.collection?.creator,
+    dominantFeeRecipient: recipients.length
+      ? [...recipients].sort((a, b) => b.percent_allocation - a.percent_allocation)[0]
+          .artist_address
+      : null,
+  })
+  const creator = resolved.address?.toLowerCase()
+  if (resolved.source === 'kv') counters.kvCreatorOverrides++
+  if (resolved.source === 'recipient') counters.recoveredCreators++
 
   if (creator) bump(mints, creator, qty)
   else counters.droppedMints += qty

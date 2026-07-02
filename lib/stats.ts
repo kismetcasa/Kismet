@@ -361,6 +361,32 @@ end
 return 1
 `
 
+// What creditListingRoyalty actually did for a fill. Returned to the caller
+// so the royalty AUDIT (lib/royaltyAudit.ts) records the credit path's real
+// outcome instead of re-deriving the receiver↔split match with its own RPC
+// reads — two independent resolvers for the same question had already drifted
+// once, and instrumentation that disagrees with the mechanism it measures is
+// worse than none.
+export interface RoyaltyCreditOutcome {
+  /** False when the per-listing claim was already taken (retry / concurrent
+   *  fill) or the credit failed — nothing was written this call. */
+  credited: boolean
+  /** True when the receiver decomposed into stored-split member credits. */
+  decomposed: boolean
+  /** The candidate token whose split matched the receiver (the listed token
+   *  or the cover '1'); null when no decomposition happened. */
+  matchedTokenId: string | null
+  /** The credits this call wrote (or would write — empty when not credited). */
+  credits: Array<{ member: string; amount: number }>
+}
+
+const NO_CREDIT: RoyaltyCreditOutcome = {
+  credited: false,
+  decomposed: false,
+  matchedTokenId: null,
+  credits: [],
+}
+
 // Credit a secondary-sale creator royalty to the artist(s) who earned it.
 // Called once per fill from the on-chain-verified listings PATCH handler with
 // the royalty amount actually settled on-chain (human units).
@@ -370,15 +396,15 @@ return 1
 // amount is credited to it (it surfaces on the owner's card via the earnings-
 // wallet union). When it is the moment's 0xSplits payout split — the default
 // for split mints — crediting the contract address stranded the royalty where
-// no artist's read could see it (lib/royaltyAudit.ts documents the gap), so:
-// if the receiver matches the token's on-chain creator-reward recipient AND we
-// hold that split's recipient list, the amount is decomposed pro-rata and each
-// member wallet credited directly. Falls back to the single-receiver credit
-// whenever the membership can't be established (never guesses).
+// no artist's read could see it, so: if the receiver matches the token's
+// on-chain creator-reward recipient AND we hold that split's recipient list,
+// the amount is decomposed pro-rata and each member wallet credited directly.
+// Falls back to the single-receiver credit whenever the membership can't be
+// established (never guesses).
 //
 // Idempotent per listing via the NX claim, committed atomically with the
 // credit and a ledger entry (see CREDIT_ROYALTY_LUA). Best-effort — never
-// fails the sale.
+// fails the sale; a swallowed failure reports credited: false.
 export async function creditListingRoyalty(args: {
   listingId: string
   currency: 'eth' | 'usdc'
@@ -387,27 +413,31 @@ export async function creditListingRoyalty(args: {
   /** Listed token, for split decomposition. Optional: absent = wallet credit. */
   collection?: string
   tokenId?: string
-}): Promise<void> {
+}): Promise<RoyaltyCreditOutcome> {
   const { listingId, currency, amount, receiver, collection, tokenId } = args
-  if (!Number.isFinite(amount) || amount <= 0) return
+  if (!Number.isFinite(amount) || amount <= 0) return NO_CREDIT
   const member = receiver.toLowerCase()
-  if (!member) return
+  if (!member) return NO_CREDIT
   try {
     // Default: the receiver takes the whole amount.
     let credits: Array<{ member: string; amount: number }> = [{ member, amount }]
+    let matchedTokenId: string | null = null
 
     if (collection && tokenId) {
       // Stored-splits first (Redis, cheap); only a membership hit pays the
-      // on-chain receiver-verification read. Mirror royaltyAudit's precondition:
-      // the listed token's split, else the cover token #1's (collection-wide
-      // royalty receivers are usually configured from the cover's split).
+      // receiver-verification read. Candidates: the listed token's split,
+      // else the cover token #1's (collection-wide royalty receivers are
+      // usually configured from the cover's split).
       const decomposed = await resolveRoyaltySplitCredits(
         collection,
         tokenId,
         member,
         amount,
       )
-      if (decomposed) credits = decomposed
+      if (decomposed) {
+        credits = decomposed.credits
+        matchedTokenId = decomposed.matchedTokenId
+      }
     }
 
     const ledgerEntry = JSON.stringify({
@@ -420,33 +450,37 @@ export async function creditListingRoyalty(args: {
       ...(collection ? { collection: collection.toLowerCase(), tokenId } : {}),
     })
     const zsetKey = currency === 'usdc' ? ROYALTY_USDC_KEY : ROYALTY_ETH_KEY
-    await redis.eval(
+    const wrote = await redis.eval(
       CREDIT_ROYALTY_LUA,
       [royaltyCreditedKey(listingId), zsetKey, ROYALTY_LEDGER_KEY],
       [listingId, ledgerEntry, ...credits.flatMap((c) => [c.member, String(c.amount)])],
     )
+    return {
+      credited: wrote === 1,
+      decomposed: matchedTokenId !== null,
+      matchedTokenId,
+      credits,
+    }
   } catch {
     // Swallow — royalty stats are best-effort and must never fail the sale.
+    return NO_CREDIT
   }
 }
 
 // The per-member decomposition for a split-contract royalty receiver, or null
 // when membership can't be established (wallet receiver, unstored split,
 // mismatched addresses, RPC failure). Members with a zero share are dropped.
-// Candidate tokens: the listed one, else the cover token #1 (collection-wide
-// royalty receivers are usually configured from the cover's split — same
-// precedent as auditRoyaltyReceiver). Stored-splits reads go out together in
-// one auto-pipelined round trip; only a membership hit pays the recipient
-// lookup, which reads the SAME permanent kismetart:splitaddr:* cache the
-// pending roll-up maintains and race-bounds any cold on-chain read — this
-// runs awaited on the sale-confirmation path, so latency must stay bounded
-// and the common case must stay Redis-only.
+// Stored-splits reads go out together in one auto-pipelined round trip; only
+// a membership hit pays the recipient lookup, which reads the SAME permanent
+// kismetart:splitaddr:* cache the pending roll-up maintains and race-bounds
+// any cold on-chain read — this runs awaited on the sale-confirmation path,
+// so latency must stay bounded and the common case must stay Redis-only.
 async function resolveRoyaltySplitCredits(
   collection: string,
   tokenId: string,
   receiver: string,
   amount: number,
-): Promise<Array<{ member: string; amount: number }> | null> {
+): Promise<{ matchedTokenId: string; credits: Array<{ member: string; amount: number }> } | null> {
   try {
     const tids = [...new Set([tokenId, '1'])]
     const stored = await Promise.all(tids.map((tid) => getStoredSplits(collection, tid)))
@@ -460,7 +494,7 @@ async function resolveRoyaltySplitCredits(
           amount: (amount * r.percentAllocation) / 100,
         }))
         .filter((c) => c.amount > 0)
-      return credits.length ? credits : null
+      return credits.length ? { matchedTokenId: tids[i], credits } : null
     }
     return null
   } catch {

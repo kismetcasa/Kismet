@@ -17,6 +17,7 @@ import {
   classifyTransferCurrency,
   newAccumulateCounters,
   remapEntries,
+  resolveMomentCreator,
   transferDedupKey,
   transferMomentRef,
   type StatsTransfer,
@@ -141,6 +142,34 @@ check('accumulate: zero-value row skipped as free',
 const bareString = run({ value: 1, moment: { creator: ARTIST, collection: { artist: { address: OWNER } } } })
 check('accumulate: per-moment creator (bare string) beats collection level',
   bareString.maps[0].get(ARTIST.toLowerCase()) === 1, JSON.stringify([...bareString.maps[0]]))
+
+// ── 2b. resolveMomentCreator: THE shared precedence (stats + timeline + detail)
+const rmc = resolveMomentCreator
+check('creator: kv wins when it differs from feed',
+  JSON.stringify(rmc({ kvCreator: ARTIST, feedCreator: OWNER })) ===
+    JSON.stringify({ address: ARTIST, source: 'kv' }))
+check('creator: kv equal to feed (case-insensitive) reports feed — no-op for rewrite-on-kv callers',
+  JSON.stringify(rmc({ kvCreator: ARTIST.toUpperCase().replace('0X', '0x'), feedCreator: ARTIST })) ===
+    JSON.stringify({ address: ARTIST, source: 'feed' }))
+check('creator: kv alone wins', rmc({ kvCreator: ARTIST }).source === 'kv')
+check('creator: feed > collection',
+  rmc({ feedCreator: ARTIST, collectionCreator: OWNER }).address === ARTIST)
+check('creator: collection > recipient',
+  rmc({ collectionCreator: OWNER, dominantFeeRecipient: COLLAB }).address === OWNER)
+check('creator: recipient as last resort',
+  JSON.stringify(rmc({ dominantFeeRecipient: COLLAB })) ===
+    JSON.stringify({ address: COLLAB, source: 'recipient' }))
+check('creator: nothing -> null',
+  JSON.stringify(rmc({})) === JSON.stringify({ address: null, source: null }))
+
+const kvEqual = run(
+  { value: 1, moment: { creator: ARTIST, collection: { artist: { address: OWNER } } } },
+  ARTIST,
+)
+check('accumulate: kv equal to feed does NOT count as an override',
+  kvEqual.counters.kvCreatorOverrides === 0 &&
+    kvEqual.maps[0].get(ARTIST.toLowerCase()) === 1,
+  JSON.stringify(kvEqual.counters))
 
 // ── 3. Dedup keys: real identifiers only ─────────────────────────────────────
 check('dedup: id used', transferDedupKey({ id: 42 }) === 'id:42')
