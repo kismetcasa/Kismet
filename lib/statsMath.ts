@@ -121,6 +121,12 @@ export interface AccumulateCounters {
    *  value agreeing with the feed reports source 'feed' and is not counted —
    *  see resolveMomentCreator). */
   kvCreatorOverrides: number
+  /** Rows attributed at the COLLECTION tier (no KV meta, no per-moment feed
+   *  creator) — the residual delegated-mint misattribution risk: correct for
+   *  single-artist collections, wrong for curated ones. Counted so the
+   *  rebuild log directly exposes how much attribution still rides the
+   *  least-specific tier. */
+  collectionFallbacks: number
   /** Rows whose creator was recovered from the dominant fee recipient. */
   recoveredCreators: number
 }
@@ -131,6 +137,7 @@ export const newAccumulateCounters = (): AccumulateCounters => ({
   unknownCurrency: 0,
   droppedMints: 0,
   kvCreatorOverrides: 0,
+  collectionFallbacks: 0,
   recoveredCreators: 0,
 })
 
@@ -237,6 +244,7 @@ export function accumulateTransfer(
   })
   const creator = resolved.address?.toLowerCase()
   if (resolved.source === 'kv') counters.kvCreatorOverrides++
+  if (resolved.source === 'collection') counters.collectionFallbacks++
   if (resolved.source === 'recipient') counters.recoveredCreators++
 
   if (creator) bump(mints, creator, qty)

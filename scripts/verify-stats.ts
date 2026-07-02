@@ -85,6 +85,8 @@ check('accumulate: collection creator fallback credits mints qty + full value',
   plain.maps[0].get(OWNER.toLowerCase()) === 2 &&
     plain.maps[1].get(OWNER.toLowerCase()) === 0.1,
   JSON.stringify([...plain.maps[0], ...plain.maps[1]]))
+check('accumulate: collection-tier attribution is counted (residual-misattribution telemetry)',
+  plain.counters.collectionFallbacks === 1, JSON.stringify(plain.counters))
 
 const kv = run(base, ARTIST)
 check('accumulate: KV creator override beats collection owner (mints)',
@@ -170,6 +172,8 @@ check('accumulate: kv equal to feed does NOT count as an override',
   kvEqual.counters.kvCreatorOverrides === 0 &&
     kvEqual.maps[0].get(ARTIST.toLowerCase()) === 1,
   JSON.stringify(kvEqual.counters))
+check('accumulate: kv-attributed row is NOT a collection fallback',
+  kv.counters.collectionFallbacks === 0, JSON.stringify(kv.counters))
 
 // ── 3. Dedup keys: real identifiers only ─────────────────────────────────────
 check('dedup: id used', transferDedupKey({ id: 42 }) === 'id:42')

@@ -44,13 +44,14 @@ const VERIFICATIONS_FAIL_TTL = 5 * 60      // 5m on miss
 // unambiguous. Avoids re-hitting the API for every anonymous address.
 const NO_FID_SENTINEL = ''
 // Distinct sentinel for a TRANSIENT lookup failure (429/5xx), cached only for
-// TRANSIENT_FAIL_TTL. Kept separate from NO_FID_SENTINEL so identity-
+// TRANSIENT_FAIL_TTL — used by BOTH the fid-by-address and verifications
+// caches. Kept separate from the definitive negative sentinels so identity-
 // sensitive WRITES (earnings visibility) can tell "definitively not an FC
-// user" from "couldn't find out right now" and fail closed on the latter —
-// treating a blip as non-FC once wrote an FC user's unpin to the wrong member
-// form, leaving their earnings publicly pinned. Profile READS treat both
-// sentinels as "no profile".
-const NO_FID_TRANSIENT = '!transient'
+// user / genuinely zero verifications" from "couldn't find out right now"
+// and fail closed on the latter — treating a blip as a definitive negative
+// once wrote an FC user's unpin to the wrong member form, leaving their
+// earnings publicly pinned. Lenient READS treat all sentinels as "nothing".
+const TRANSIENT_SENTINEL = '!transient'
 const fidByAddressKey = (address: string) =>
   `kismetart:fc:fid-by-addr:${address.toLowerCase()}`
 
@@ -124,24 +125,33 @@ async function getFarcasterProfileByFid(
 }
 
 /**
- * Return every Ethereum address verified to a given FID — the FC user's
- * full wallet set. Used by lib/addressUnion to unify activity across all
- * of a user's wallets so e.g. a mint signed from one verified address
- * appears on the profile page of any other verified address.
+ * Verifications lookup with an honest three-way answer, mirroring
+ * getFidByAddress:
  *
- * Returns an empty array on lookup failure or for FIDs with no
- * verifications. Cached in Redis with a 1h TTL — verifications are
- * rare-write (user has to sign a verifyAddress claim on-chain for each
- * one) so staleness within an hour is benign.
+ *   { addresses: [...] } — fetched/cached successfully (POSSIBLY EMPTY: an
+ *                          FID genuinely holds zero verifications after a
+ *                          user unverifies their wallets)
+ *   null                 — UNKNOWN right now (network throw, 429/5xx, or the
+ *                          short transient negative cache)
+ *
+ * Identity-sensitive writes (earnings visibility) branch on the difference —
+ * conflating "definitively empty" with "couldn't find out" either bricked
+ * toggles for genuinely-unverified users or let an unpin sweep partially.
+ * Lenient readers use getVerifiedAddressesByFid below.
  */
-export async function getVerifiedAddressesByFid(
+export async function getVerifiedAddressesByFidChecked(
   fid: number,
   opts: { skipCache?: boolean } = {},
-): Promise<string[]> {
+): Promise<{ addresses: string[] } | null> {
   const cacheKey = verificationsKey(fid)
   if (!opts.skipCache) {
-    const cached = await readCached<string[] | ''>(cacheKey)
-    if (cached !== undefined) return cached === '' ? [] : cached
+    const cached = await readCached<string[] | string>(cacheKey)
+    if (cached !== undefined) {
+      if (cached === TRANSIENT_SENTINEL) return null
+      if (cached === '') return { addresses: [] }
+      if (Array.isArray(cached)) return { addresses: cached }
+      return null // unrecognized cache shape — treat as unknown
+    }
   }
 
   let addresses: string[] = []
@@ -165,20 +175,21 @@ export async function getVerifiedAddressesByFid(
     } else if (res.status !== 404) {
       // 429/5xx: an empty answer cached for the full fail TTL would collapse
       // the sibling union to [self] — a multi-wallet artist's mints and
-      // earnings visibly under-report for those minutes. Cache it only for
-      // TRANSIENT_FAIL_TTL to throttle a retry storm without that cost.
+      // earnings visibly under-report for those minutes. Cache the distinct
+      // transient sentinel for TRANSIENT_FAIL_TTL to throttle a retry storm
+      // without that cost, and without masquerading as a definitive empty.
       transient = true
     }
   } catch {
-    // Network failure — don't poison the cache.
-    return []
+    // Network failure — unknown, uncached.
+    return null
   }
 
   // Use sentinel '' for "no verifications" so cache differentiates from
   // a genuine miss (undefined → re-fetch). Otherwise a user with zero
   // verifications would hit the network on every request.
   await redis
-    .set(cacheKey, addresses.length ? addresses : '', {
+    .set(cacheKey, addresses.length ? addresses : transient ? TRANSIENT_SENTINEL : '', {
       ex: addresses.length
         ? VERIFICATIONS_TTL
         : transient
@@ -186,7 +197,26 @@ export async function getVerifiedAddressesByFid(
           : VERIFICATIONS_FAIL_TTL,
     })
     .catch(() => {})
-  return addresses
+  return transient ? null : { addresses }
+}
+
+/**
+ * Return every Ethereum address verified to a given FID — the FC user's
+ * full wallet set. Used by lib/addressUnion to unify activity across all
+ * of a user's wallets so e.g. a mint signed from one verified address
+ * appears on the profile page of any other verified address.
+ *
+ * Returns an empty array on lookup failure or for FIDs with no
+ * verifications (the lenient projection of the checked variant above).
+ * Cached in Redis with a 1h TTL — verifications are rare-write (user has
+ * to sign a verifyAddress claim on-chain for each one) so staleness within
+ * an hour is benign.
+ */
+export async function getVerifiedAddressesByFid(
+  fid: number,
+  opts: { skipCache?: boolean } = {},
+): Promise<string[]> {
+  return (await getVerifiedAddressesByFidChecked(fid, opts))?.addresses ?? []
 }
 
 /**
@@ -214,7 +244,7 @@ export async function getFidByAddress(
   const cached = opts.skipCache ? undefined : await readCached<string>(cacheKey)
   if (cached !== undefined) {
     if (cached === NO_FID_SENTINEL) return { fid: null }
-    if (cached === NO_FID_TRANSIENT) return null
+    if (cached === TRANSIENT_SENTINEL) return null
     const parsed = Number(cached)
     return Number.isFinite(parsed) ? { fid: parsed } : null
   }
@@ -244,7 +274,7 @@ export async function getFidByAddress(
     return null
   }
   await redis
-    .set(cacheKey, fid ? String(fid) : transient ? NO_FID_TRANSIENT : NO_FID_SENTINEL, {
+    .set(cacheKey, fid ? String(fid) : transient ? TRANSIENT_SENTINEL : NO_FID_SENTINEL, {
       ex: fid
         ? FID_BY_ADDRESS_TTL
         : transient

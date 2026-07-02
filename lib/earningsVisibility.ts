@@ -1,6 +1,10 @@
 import { redis } from './redis'
 import { memoize } from './memoCache'
-import { getFidByAddress, getVerifiedAddressesByFid } from './farcasterProfile'
+import {
+  getFidByAddress,
+  getVerifiedAddressesByFid,
+  getVerifiedAddressesByFidChecked,
+} from './farcasterProfile'
 
 // Per-artist "earnings public" opt-in — the gate for the public earnings
 // surfaces (profile card, share card). One SET of opted-in identities;
@@ -24,14 +28,15 @@ import { getFidByAddress, getVerifiedAddressesByFid } from './farcasterProfile'
 //
 // FAILURE POLICY. Reads degrade: a transient FC failure resolves to "address
 // members only", so an FC user's pin may read private for the 30s transient-
-// cache window — never public-by-mistake. Writes FAIL CLOSED: setEarningsPublic
-// THROWS when the identity can't be resolved (getFidByAddress → null) or an FC
-// user's verifications read comes back empty (an FC identity always carries at
-// least its linked address; empty = transient failure). Degrading a WRITE
-// instead once unpinned only the address member while the fid:<n> member
-// survived — earnings stayed publicly pinned after an explicit hide. The
-// toggle route maps the throw to a retryable error and the card reverts its
-// optimistic state.
+// cache window — never public-by-mistake. Writes FAIL CLOSED on the UNKNOWN:
+// setEarningsPublic THROWS when the identity or the verification set is
+// transiently unresolvable (the checked FC lookups return null) — degrading a
+// WRITE instead once unpinned only the address member while the fid:<n>
+// member survived, so earnings stayed publicly pinned after an explicit hide.
+// A DEFINITIVE answer always proceeds, including a genuinely-empty
+// verification set (a user who unverified every wallet while the address→fid
+// cache is still warm must still be able to toggle). The toggle route maps
+// the throw to a retryable error and the card reverts its optimistic state.
 //
 // ACCEPTED EDGE: a pin keyed fid:<n> becomes unreachable if the user later
 // deactivates Farcaster / unverifies every address (reads resolve fid=null →
@@ -100,14 +105,16 @@ export async function setEarningsPublic(address: string, isPublic: boolean): Pro
     // FC user: the FID form is the pin. Either direction also clears any
     // legacy address members across the verification set, so a later unpin
     // can't be shadowed by a stale sibling pin from before the FID keying.
-    // An FC identity always carries its linked address as a verification, so
-    // an empty list is a transient read failure — fail closed rather than
-    // sweep partially.
-    const siblings = await getVerifiedAddressesByFid(fid)
-    if (siblings.length === 0) {
+    // The CHECKED read distinguishes transient failure (null → fail closed,
+    // else the sweep is partial) from a definitively-empty set (proceed with
+    // just the queried address: any legacy sibling member is unreadable
+    // through the same empty list, so skipping its sweep is harmless — and
+    // throwing would brick the toggle until the fid cache expires).
+    const checked = await getVerifiedAddressesByFidChecked(fid)
+    if (checked === null) {
       throw new Error('earnings-visibility: verifications unavailable, retry')
     }
-    const legacy = Array.from(new Set([lower, ...siblings]))
+    const legacy = Array.from(new Set([lower, ...checked.addresses]))
     if (isPublic) {
       await redis
         .multi()

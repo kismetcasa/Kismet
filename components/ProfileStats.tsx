@@ -250,7 +250,7 @@ export function ProfileStats({
                 }}
                 aria-expanded={splitOpen}
                 aria-controls="earnings-source-split"
-                title="Mint sales vs resale royalties"
+                title="Mint sales vs resale royalties (resales sold through Kismet listings)"
                 className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
               >
                 <span>
@@ -275,6 +275,7 @@ export function ProfileStats({
               id="earnings-source-split"
               hidden={showSplitToggle && !splitOpen}
               className="text-faint text-xs mt-0.5 tabular-nums"
+              title="Resales counted are those sold through Kismet listings"
             >
               {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>

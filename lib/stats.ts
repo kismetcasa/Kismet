@@ -34,6 +34,13 @@ const USDC_KEY = 'kismetart:stats:earned:usdc'
 // journaled into ROYALTY_LEDGER_KEY (an HSET keyed by listingId), giving a
 // durable per-fill record a future reconcile/rebuild pass can replay; the live
 // zsets remain the read path.
+//
+// SCOPE LIMIT: only resales filled through Kismet's OWN listings observe this
+// path — an off-platform resale (OpenSea/Blur/Zora) pays the artist's EIP-2981
+// royalty on-chain but is structurally invisible here (no webhook/indexer
+// watches receiver addresses). The card's "resales" figure is therefore
+// Kismet-listing royalties, not lifetime secondary income; capturing external
+// fills needs an on-chain indexer and a creditExternalRoyalty() writer.
 const ROYALTY_ETH_KEY = 'kismetart:stats:royalty:eth'
 const ROYALTY_USDC_KEY = 'kismetart:stats:royalty:usdc'
 const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
@@ -95,6 +102,10 @@ export interface RebuildResult {
   /** Rows where the KV MomentMeta creator CHANGED the attribution (a KV value
    *  agreeing with the feed is not counted — see resolveMomentCreator). */
   kvCreatorOverrides: number
+  /** Rows attributed at the COLLECTION tier — the residual delegated-mint
+   *  misattribution risk (correct for single-artist collections only). The
+   *  direct read on how much attribution still lacks per-moment data. */
+  collectionFallbacks: number
   /** Rows whose creator was recovered from the dominant fee recipient. */
   recoveredCreators: number
   /** Members whose scores were folded onto their owner EOA (smart wallets). */
@@ -234,9 +245,13 @@ export async function rebuildStats(): Promise<RebuildResult> {
   // doesn't exist before the FIRST successful run — so an empty-but-shape-
   // valid response on that first run (error envelope served as 200 with the
   // right fields) could otherwise wipe every artist exactly once, unguarded.
-  // An empty scan may only proceed when there is nothing live to lose.
+  // An empty scan may only proceed when there is nothing live to lose. The
+  // zcard deliberately has NO catch: this guard must FAIL CLOSED — treating a
+  // failed liveness read as "nothing live" would disarm the wipe backstop
+  // during exactly the flapping-Redis incident it exists for, and a thrown
+  // read costs nothing (the write phase needs Redis anyway; next cron retries).
   if (counters.counted === 0) {
-    const live = await redis.zcard(MINTS_KEY).catch(() => 0)
+    const live = await redis.zcard(MINTS_KEY)
     if (live > 0) {
       throw new Error(
         'rebuild folded 0 transfers but live stats exist — refusing wipe',
@@ -291,6 +306,7 @@ export async function rebuildStats(): Promise<RebuildResult> {
     unknownCurrency: counters.unknownCurrency,
     droppedMints: counters.droppedMints,
     kvCreatorOverrides: counters.kvCreatorOverrides,
+    collectionFallbacks: counters.collectionFallbacks,
     recoveredCreators: counters.recoveredCreators,
     remappedWallets: remap.size,
   }
