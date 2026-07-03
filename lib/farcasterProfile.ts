@@ -83,7 +83,7 @@ async function getFarcasterProfileByFid(
     //   { result: { user: { fid, username, displayName, pfp: { url } } } }
     const res = await fetch(
       `https://api.farcaster.xyz/v2/user?fid=${fid}`,
-      { headers: { Accept: 'application/json' } },
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (res.ok) {
       const body = (await res.json()) as {
@@ -162,7 +162,7 @@ export async function getVerifiedAddressesByFidChecked(
     //   { result: { verifications: [{ fid, address, timestamp, version }] } }
     const res = await fetch(
       `https://api.farcaster.xyz/v2/verifications?fid=${fid}`,
-      { headers: { Accept: 'application/json' } },
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (res.ok) {
       const body = (await res.json()) as {
@@ -252,9 +252,12 @@ export async function getFidByAddress(
   let fid: number | null = null
   let transient = false
   try {
+    // 8s bound (main's downtime hardening, carried into this moved fetch): a
+    // hung upstream must not pin the caller; the timeout fires as a throw →
+    // the catch below returns null (unknown, uncached) — the honest answer.
     const res = await fetch(
       `https://api.farcaster.xyz/v2/user-by-verification?address=${lower}`,
-      { headers: { Accept: 'application/json' } },
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (res.ok) {
       const body = (await res.json()) as {

@@ -29,6 +29,7 @@ export async function fetchCreatorFromTimeline(
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return null
     const data = (await res.json()) as {
@@ -69,7 +70,7 @@ export const fetchMomentDetail = cache(async (
   try {
     const url = inprocessUrl('/moment', { collectionAddress: address, tokenId, chainId: '8453' })
     const [res, hidden, timelineCreator, kvCreator] = await Promise.all([
-      fetch(url, { next: { revalidate: 60 } }),
+      fetch(url, { next: { revalidate: 60 }, signal: AbortSignal.timeout(8_000) }),
       isMomentHidden(address, tokenId),
       fetchCreatorFromTimeline(address, tokenId),
       getKvCreatorAddress(address, tokenId),

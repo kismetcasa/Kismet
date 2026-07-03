@@ -36,6 +36,7 @@ async function fetchMoment(
       fetch(inprocessUrl('/moment', { collectionAddress, tokenId, chainId: '8453' }), {
         headers: { Accept: 'application/json' },
         next: { revalidate: 60 },
+        signal: AbortSignal.timeout(8_000),
       }),
       getKvCreatorAddress(collectionAddress, tokenId),
       fetchCreatorFromTimeline(collectionAddress, tokenId),

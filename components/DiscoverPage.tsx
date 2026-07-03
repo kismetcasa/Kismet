@@ -46,13 +46,13 @@ const ACTIVE_KEY = 'kismetart:active-tab'
 // 1-2s wait on the Mini App webview's constrained pool) into an instant
 // cache hit. Must match the apiUrl each tab's feed passes to PaginatedGrid
 // verbatim, or the prefetched entry won't dedupe against the live query:
-//   trending → MomentFeed apiUrl below
+//   trending → TrendingFeed's default sort (latest-sales)
 //   main     → MainFeed's mints sub-tab default (no `following=`)
 // featured (raw fetch, not react-query) and roster (depends on an async
 // creator-lists fetch) are intentionally excluded; featured is also the
 // default landing tab, so it loads on first paint regardless.
 const PREFETCH_URL: Partial<Record<TabId, string>> = {
-  trending: '/api/timeline?sort=trending&scope=standalone',
+  trending: '/api/timeline?sort=latest-sales&scope=standalone',
   main: '/api/timeline?scope=standalone',
 }
 
@@ -282,6 +282,85 @@ function CollectionsFeed({
   )
 }
 
+// ─── filter pill ─────────────────────────────────────────────────────────────
+
+// The accent-bordered toggle pill shared by the main feed's "following"
+// button and the trending feed's sort buttons — one source so the two
+// surfaces can't drift visually. (The roster list buttons keep their own
+// ink-bordered variant deliberately: they're content selectors, not filters.)
+function FilterPill({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={on}
+      className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
+        on
+          ? 'border-accent text-accent'
+          : 'border-line text-muted hover:border-[#444] hover:text-dim'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// ─── trending feed with sort buttons ─────────────────────────────────────────
+
+type TrendingSort = 'latest-sales' | 'trending' | 'ending-soon'
+
+// Per-sort config, in display order: API sort value, button label, empty-state
+// copy. 'trending' is the original all-time collect-count sort, relabeled
+// "most sales" now that it has siblings; the API value stays 'trending' so
+// the roster feed and any cached clients keep working unchanged.
+const TRENDING_SORTS: { id: TrendingSort; label: string; empty: string }[] = [
+  {
+    id: 'latest-sales',
+    label: 'latest sales',
+    empty: 'no collects recorded yet — latest sales appear as mints are collected',
+  },
+  {
+    id: 'trending',
+    label: 'most sales',
+    empty: 'no collects recorded yet — trending appears as mints are collected',
+  },
+  { id: 'ending-soon', label: 'ending soon', empty: 'no mints to show yet' },
+]
+
+function TrendingFeed() {
+  const [sort, setSort] = useState<TrendingSort>('latest-sales')
+  const active = TRENDING_SORTS.find((s) => s.id === sort) ?? TRENDING_SORTS[0]
+
+  // Radio-style row of FilterPills: exactly one sort active at a time.
+  // Switching sorts swaps the PaginatedGrid apiUrl — react-query keeps each
+  // sort's pages cached, so flipping back is instant.
+  const sortButtons = (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {TRENDING_SORTS.map(({ id, label }) => (
+        <FilterPill key={id} on={sort === id} onClick={() => setSort(id)}>
+          {label}
+        </FilterPill>
+      ))}
+    </div>
+  )
+
+  return (
+    <MomentFeed
+      apiUrl={`/api/timeline?sort=${sort}&scope=standalone`}
+      emptyMessage={active.empty}
+      header={sortButtons}
+      withViewToggle
+    />
+  )
+}
+
 // ─── main feed with sub-tabs (mints / collections) ───────────────────────────
 
 type MainSubTab = 'mints' | 'collections'
@@ -333,16 +412,9 @@ function MainFeed() {
         </button>
       </div>
       {address && (
-        <button
-          onClick={() => setFollowingOn((v) => !v)}
-          className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
-            followingOn
-              ? 'border-accent text-accent'
-              : 'border-line text-muted hover:border-[#444] hover:text-dim'
-          }`}
-        >
+        <FilterPill on={followingOn} onClick={() => setFollowingOn((v) => !v)}>
           following
-        </button>
+        </FilterPill>
       )}
     </div>
   )
@@ -511,11 +583,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
 
         {hydrated && visitedTabs.has('trending') && (
           <div hidden={active !== 'trending'}>
-            <MomentFeed
-              apiUrl="/api/timeline?sort=trending&scope=standalone"
-              emptyMessage="no collects recorded yet — trending appears as mints are collected"
-              withViewToggle
-            />
+            <TrendingFeed />
           </div>
         )}
 

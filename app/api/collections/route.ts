@@ -41,6 +41,7 @@ async function loadCollectionMeta(address: string): Promise<Record<string, unkno
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (res.ok) {
       const text = await res.text()
@@ -109,6 +110,7 @@ async function loadCollectAllEligibility(
     const tlRes = await fetch(tlUrl, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!tlRes.ok) return empty
     const tlData = (await tlRes.json()) as { moments?: { address?: string; token_id?: string }[] }
@@ -170,6 +172,7 @@ export async function GET(req: NextRequest) {
       const res = await fetch(url, {
         headers: { Accept: 'application/json' },
         next: { revalidate: 120 },
+        signal: AbortSignal.timeout(8_000),
       })
       if (res.ok) {
         const text = await res.text()
@@ -289,6 +292,7 @@ export async function GET(req: NextRequest) {
         fetch(url, {
           headers: { Accept: 'application/json' },
           next: { revalidate: 120 },
+          signal: AbortSignal.timeout(8_000),
         }),
         getUserCollections(),
         getCollectionsByArtist(artist),

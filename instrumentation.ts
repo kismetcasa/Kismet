@@ -99,6 +99,45 @@ function startBootTasks(): void {
     .catch((err) =>
       console.error('[instrumentation] background tasks failed to start (non-fatal):', err),
     )
+
+  // Memory telemetry. The production OOMs were diagnosed by inference because
+  // nothing recorded the heap between crashes — these two lines make the next
+  // incident self-evident from `docker logs` alone. The boot line answers "is
+  // the heap flag live?" (heapLimitMb ≈ 4144 when --max-old-space-size=4096
+  // applies; ~2000-8000 and drifting per Node version when it doesn't). The
+  // periodic line tracks the climb: heapUsed for JS-heap growth, external +
+  // arrayBuffers for the fetch-clone / Buffer class of leak that heapUsed
+  // alone misses. unref() so the timer never holds the process open.
+  void (async () => {
+    try {
+      const { getHeapStatistics } = await import('node:v8')
+      const mb = (n: number) => Math.round(n / 1048576)
+      console.log(
+        '[mem] boot',
+        JSON.stringify({
+          node: process.version,
+          heapLimitMb: mb(getHeapStatistics().heap_size_limit),
+        }),
+      )
+      const tick = () => {
+        const m = process.memoryUsage()
+        console.log(
+          '[mem]',
+          JSON.stringify({
+            rssMb: mb(m.rss),
+            heapUsedMb: mb(m.heapUsed),
+            heapTotalMb: mb(m.heapTotal),
+            externalMb: mb(m.external),
+            arrayBuffersMb: mb(m.arrayBuffers),
+          }),
+        )
+      }
+      const timer = setInterval(tick, 60_000)
+      timer.unref()
+    } catch (err) {
+      console.error('[instrumentation] memory telemetry failed to start (non-fatal):', err)
+    }
+  })()
 }
 
 export async function register() {

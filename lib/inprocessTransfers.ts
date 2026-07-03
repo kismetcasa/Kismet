@@ -19,7 +19,11 @@ export async function fetchTransfersPage(page: number): Promise<TransfersPage | 
   try {
     const res = await fetch(
       inprocessUrl('/transfers', { type: 'payment', chainId: 8453, page, limit: 100 }),
-      { headers: { Accept: 'application/json' }, cache: 'no-store' },
+      {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(8_000),
+      },
     )
     if (!res.ok) return null
     const data = (await res.json()) as Partial<TransfersPage>

@@ -296,6 +296,7 @@ async function fetchInprocessCollectionImage(address: string): Promise<string | 
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 300 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return undefined
     const text = await res.text()

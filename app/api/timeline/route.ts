@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
-import { redis, FEATURED_KEY, TRENDING_KEY } from '@/lib/redis'
+import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
+import { getUpcomingSaleEnds } from '@/lib/saleEnds'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -40,6 +41,11 @@ async function mapWithConcurrency<T, R>(
 }
 
 const FANOUT_CONCURRENCY = 10
+
+// Throttle for the fan-out-thinning warning below — it fires on every request
+// once the tracked set is large enough, and one line a minute is signal while
+// one per request is noise.
+let lastThinningWarnAt = 0
 
 async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
@@ -108,7 +114,15 @@ export async function GET(req: NextRequest) {
   // per-token ADMIN delegate. Distinct from ?creator= which is the
   // strict "their work" filter used by profile feeds.
   const airdroppable = searchParams.get('airdroppable')?.toLowerCase() ?? undefined
-  const sort = searchParams.get('sort') // 'trending' | null
+  // Cross-collection sort mode. 'trending' = most sales (all-time collect
+  // count, the original), 'latest-sales' = most recent collect first,
+  // 'ending-soon' = live sale deadlines soonest-first. Unrecognized values
+  // fall through to null (newest-first) instead of silently half-matching.
+  const rawSort = searchParams.get('sort')
+  const sort =
+    rawSort === 'trending' || rawSort === 'latest-sales' || rawSort === 'ending-soon'
+      ? rawSort
+      : null
   const featured = searchParams.get('featured') === '1'
   const followingParam = searchParams.get('following')
   const followingSet = followingParam
@@ -163,39 +177,103 @@ export async function GET(req: NextRequest) {
     collectedCollections = Array.from(fromZset)
   }
 
+  // Featured requests read the zset up front (reused by the filter/sort
+  // below) so the fan-out can be narrowed to just the collections that
+  // actually contain featured members.
+  let featuredWithScores: (string | number)[] | null = null
+  if (featured) {
+    featuredWithScores = (await redis.zrange(FEATURED_KEY, 0, MAX_FEATURED - 1, {
+      rev: true,
+      withScores: true,
+    })) as (string | number)[]
+  }
+
   const trackedCollections = singleCollection
     ? [singleCollection]
     : await getTrackedCollectionsByScope(scope)
 
-  // Union with any collections found in the collector's zset. Order
-  // doesn't matter (results are merged + deduped below), but a Set
-  // dedupe avoids re-fetching collections that are in both lists.
-  const collections = Array.from(
-    new Set([...trackedCollections, ...collectedCollections]),
-  )
+  // Narrow the fan-out when the post-merge filter makes most of it provably
+  // wasted — this is both the load fix (a handful of upstream calls instead of
+  // every tracked contract) and the completeness fix (per-collection depth is
+  // budget/width, so a narrow width keeps deep samples and curated/collected
+  // items can't fall outside a thinned sample):
+  //  - featured=1 keeps only FEATURED_KEY members, so only the collections
+  //    those members live in can contribute a surviving moment.
+  //  - collector= keeps only collectedSet pairs, whose collections are by
+  //    construction in collectedCollections.
+  // Everything else keeps the tracked∪collected union so an airdrop into an
+  // untracked collection still reaches the recipient's feed — the original
+  // reason collectedCollections is merged in.
+  let collections: string[]
+  if (!singleCollection && featuredWithScores) {
+    const fromFeatured = new Set<string>()
+    for (let i = 0; i + 1 < featuredWithScores.length; i += 2) {
+      const member = String(featuredWithScores[i])
+      const colon = member.indexOf(':')
+      if (colon > 0) fromFeatured.add(member.slice(0, colon).toLowerCase())
+    }
+    collections = Array.from(fromFeatured)
+  } else if (!singleCollection && collectorSet && collectedSet) {
+    collections = collectedCollections
+  } else {
+    collections = Array.from(new Set([...trackedCollections, ...collectedCollections]))
+  }
 
   // Cross-collection sort, featured curation, and the creators allowlist
   // can each thin the result set below `page * limit`. Bump the per-
   // collection sample so paginated pages don't empty out prematurely.
-  const needsLargerSample = sort === 'trending' || featured || filterToCreators
+  // All three sort modes reorder across collections (a recently-sold or
+  // soon-ending moment can sit deep in its collection's newest-first
+  // timeline), so they all need the deeper sample.
+  const needsLargerSample = sort !== null || featured || filterToCreators
   const baseSample = needsLargerSample ? Math.max(page * limit, 200) : page * limit
   // Bound the TOTAL moments pulled into the in-memory merge, not just the
   // per-collection request. The fan-out hits EVERY collection in parallel and
-  // holds the whole merged set in heap to sort before slicing `limit`; uncapped
-  // (baseSample → up to 100*100 = 10,000 per collection) the heap, its MGET
-  // stitch, and the O(n log n) sort all scale as collections × baseSample and
-  // become an OOM vector on the single box. Distributing a fixed budget across
-  // the fan-out caps the merged size regardless of how deep `page` goes or how
-  // many collections are tracked — while preserving pagination depth when only
-  // a few collections are in play (the per-collection budget is then large: a
-  // single collection is unchanged until its requested depth, page*limit,
-  // exceeds MERGE_BUDGET=5000 items, i.e. only a very deep page on a single
-  // dense collection is capped — the same graceful degrade as the page<=100
-  // cap). The `limit` floor guarantees every collection can still fill at least
-  // one page. (SRE handling-overload / Azure Bulkhead.)
-  const MERGE_BUDGET = 5000
-  const perCollectionCap = Math.max(limit, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
+  // holds the whole merged set in heap to sort before slicing `limit`; the
+  // heap, the MGET stitch, and the O(n log n) sort all scale as
+  // collections × fetchLimit and are the OOM vector on the single box.
+  //
+  // The budget MUST hold regardless of how many collections are tracked — the
+  // tracked set grows with every deploy and is never pruned. An earlier
+  // version floored the per-collection share at `limit` ("every collection can
+  // fill a page"), which silently defeated the budget past
+  // MERGE_BUDGET/limit collections: the merge became limit × N, unbounded in
+  // N. The floor is now 1: past that width each collection's sample THINS
+  // instead of the merge growing — degrade depth, never stability. The durable
+  // fix is a materialized feed (REMEDIATION_PLAYBOOK.md §B1). A single
+  // collection (N=1) is unchanged until page*limit exceeds the whole budget.
+  // (SRE handling-overload / Azure Bulkhead.)
+  //
+  // Personal filtered feeds (creator= / airdroppable=) keep only one address's
+  // moments out of the whole merge, so per-collection depth decides whether an
+  // artist's older work surfaces on their own profile. Those requests get a 2×
+  // budget: they are `private, no-store` low-QPS views and the doubled
+  // transient merge stays hard-bounded. Collector feeds don't need it — their
+  // fan-out is already narrowed to collectedCollections above.
+  const MERGE_BUDGET = creatorRaw || airdroppable ? 10_000 : 5_000
+  // Absolute width ceiling: past MERGE_BUDGET collections even 1 moment per
+  // collection breaches the budget, and the wall-clock of that many upstream
+  // calls (FANOUT_CONCURRENCY at a time, 8s worst case each) is its own
+  // outage. Deterministic subset (sorted) + error log — an explicit degraded
+  // mode, never a silent one. If this ever fires, the materialized feed is
+  // overdue.
+  if (collections.length > MERGE_BUDGET) {
+    console.error('[timeline] fan-out width exceeds MERGE_BUDGET — truncating', {
+      collections: collections.length,
+      budget: MERGE_BUDGET,
+    })
+    collections = [...collections].sort().slice(0, MERGE_BUDGET)
+  }
+  const perCollectionCap = Math.max(1, Math.floor(MERGE_BUDGET / Math.max(1, collections.length)))
   const fetchLimit = Math.min(baseSample, perCollectionCap)
+  if (perCollectionCap < limit && Date.now() - lastThinningWarnAt > 60_000) {
+    lastThinningWarnAt = Date.now()
+    console.warn('[timeline] fan-out thinned: tracked set exceeds MERGE_BUDGET/limit', {
+      collections: collections.length,
+      perCollectionCap,
+      limit,
+    })
+  }
   const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
     fetchCollection(c, fetchLimit),
   )
@@ -339,16 +417,9 @@ export async function GET(req: NextRequest) {
   }
 
   if (featured) {
-    // Fetch featured set (member = "collectionAddress:tokenId", score = featuredAt timestamp)
-    const raw = (await redis.zrange(FEATURED_KEY, 0, -1, {
-      rev: true,
-      withScores: true,
-    })) as (string | number)[]
-
-    const featuredMap = new Map<string, number>()
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      featuredMap.set(String(raw[i]), Number(raw[i + 1]))
-    }
+    // Featured set (member = "collectionAddress:tokenId", score = featuredAt)
+    // was read before the fan-out (it narrowed the collection list) — reuse it.
+    const featuredMap = zpairsToMap(featuredWithScores ?? [])
 
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
@@ -362,21 +433,20 @@ export async function GET(req: NextRequest) {
       const scoreB = featuredMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? 0
       return scoreB - scoreA
     })
-  } else if (sort === 'trending') {
-    // Fetch top trending scores in one call (flat alternating member/score array).
-    // Capped at top 10k so the zset's lifetime growth doesn't bloat this read
-    // (every collect is an unbounded ZINCRBY). Moments past the cap fall back
-    // to score 0 via scoreMap.get's undefined → 0 coalesce below, putting them
-    // at the bottom of trending sort — same effective ordering as fetching all.
-    const raw = (await redis.zrange(TRENDING_KEY, 0, 9999, {
+  } else if (sort === 'trending' || sort === 'latest-sales') {
+    // Fetch top scores in one call (flat alternating member/score array).
+    // 'trending' scores by all-time collect count, 'latest-sales' by the
+    // timestamp of the most recent collect — same zset shape, same 10k
+    // write-side cap, so one read + one score-desc sort serves both.
+    // Moments past the cap (or never collected) fall back to score 0 via
+    // scoreMap.get's undefined → 0 coalesce below, putting them at the
+    // bottom of the sort ordered newest-first by the created_at tiebreak.
+    const zsetKey = sort === 'trending' ? TRENDING_KEY : TRENDING_LATEST_KEY
+    const raw = (await redis.zrange(zsetKey, 0, 9999, {
       rev: true,
       withScores: true,
     })) as (string | number)[]
-
-    const scoreMap = new Map<string, number>()
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      scoreMap.set(String(raw[i]), Number(raw[i + 1]))
-    }
+    const scoreMap = zpairsToMap(raw)
 
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
@@ -384,6 +454,25 @@ export async function GET(req: NextRequest) {
       const scoreA = scoreMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? 0
       const scoreB = scoreMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? 0
       if (scoreB !== scoreA) return scoreB - scoreA
+      return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
+    })
+  } else if (sort === 'ending-soon') {
+    // Upcoming sale deadlines from the write-through index (lib/saleEnds.ts):
+    // moments with a live/scheduled sale that actually ends sort soonest-
+    // first; everything else (open-ended, ended, not yet indexed) follows
+    // newest-first so the feed stays full instead of emptying out. Index
+    // read failure degrades the whole feed to newest-first (empty map).
+    const endsMap = await getUpcomingSaleEnds(Math.floor(Date.now() / 1000))
+
+    // No-deadline moments coalesce to Infinity: any real end sorts before
+    // them, and equal values (including Infinity vs Infinity) fall through
+    // to the created_at tiebreak — the `?? 0` shape of the branch above.
+    merged = merged.sort((a: unknown, b: unknown) => {
+      const ma = a as { address?: string; token_id?: string; created_at: string }
+      const mb = b as { address?: string; token_id?: string; created_at: string }
+      const endA = endsMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? Infinity
+      const endB = endsMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? Infinity
+      if (endA !== endB) return endA - endB
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
     })
   } else {
@@ -507,8 +596,9 @@ export async function GET(req: NextRequest) {
   //                 differs for the creator vs everyone else.
   //   - collector= / airdroppable= : address-scoped personal feeds.
   //   - following= : reorders to bubble the caller's follows to the top.
-  // Everything else (trending, featured, the default newest feed, a single
-  // collection, the curated creators= roster) is identical for every viewer:
+  // Everything else (all sort modes — trending / latest-sales / ending-soon —
+  // featured, the default newest feed, a single collection, the curated
+  // creators= roster) is identical for every viewer:
   // the session cookie is read above but only consumed when creatorSet is set,
   // which none of these set. Those get a short shared-cache window with a
   // stale-while-revalidate tail so the first click on trending/main is served

@@ -1,9 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { inprocessUrl, type MomentSaleConfig } from '@/lib/inprocess'
 import { onchainSaleConfigFallback } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
+import { recordSaleEnds } from '@/lib/saleEnds'
+import { bestEffort } from '@/lib/bestEffort'
 
 // Lean batch sibling of /api/moment for the feed's price badges. A feed card
 // needs ONLY saleConfig (price + currency) — not the hidden/creator stitch
@@ -100,6 +102,25 @@ export async function GET(req: NextRequest) {
       }),
     )
   }
+
+  // Write-through the resolved sale windows into the ending-soon index
+  // (lib/saleEnds.ts). This runs whenever a batch is priced at the origin
+  // (cache misses + background revalidations), so the index self-backfills
+  // from normal browsing — no extra upstream reads, and post-response via
+  // after() so it never adds latency to the batch. The member tokenId is
+  // BigInt-canonicalized (same normalization /api/collect applies to the
+  // trending members): the response stays keyed by the id the client sent,
+  // but the index must use the canonical form the timeline's token_id
+  // lookup produces — and so a crafted "007"-style id can't plant orphan
+  // members that squat the index's 10k cap.
+  after(() =>
+    recordSaleEnds(
+      results.map((e) => ({
+        key: `${e.address.toLowerCase()}:${BigInt(e.tokenId).toString()}`,
+        config: e.config,
+      })),
+    ).catch(bestEffort('moments.recordSaleEnds')),
+  )
 
   return NextResponse.json(
     { sales: Object.fromEntries(results.map((e) => [e.key, e.config])) },

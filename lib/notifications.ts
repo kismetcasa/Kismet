@@ -459,9 +459,23 @@ export async function getMomentMetaBatch(
   }
   if (compactKeys.length === 0) return out
 
+  // Chunked MGET: callers pass batches that scale with feed fan-out (the
+  // timeline stitch sends its whole merged set), and Upstash rejects any
+  // single REST request over 10MB ("ERR max request size exceeded"). 512
+  // keys/chunk keeps each request ~35KB — two orders of magnitude under the
+  // cap — and auto-pipelining (lib/redis.ts) still collapses all chunks into
+  // ONE HTTP round trip, so latency and billed commands are unchanged.
+  const MGET_CHUNK = 512
   let raws: (string | MomentMeta | null)[]
   try {
-    raws = await redis.mget<(string | MomentMeta | null)[]>(...compactKeys)
+    const chunks: string[][] = []
+    for (let i = 0; i < compactKeys.length; i += MGET_CHUNK) {
+      chunks.push(compactKeys.slice(i, i + MGET_CHUNK))
+    }
+    const results = await Promise.all(
+      chunks.map((c) => redis.mget<(string | MomentMeta | null)[]>(...c)),
+    )
+    raws = results.flat()
   } catch {
     return out
   }
