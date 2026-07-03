@@ -9,6 +9,7 @@ import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMetaBatch } from '@/lib/notifications'
+import { resolveMomentCreator } from '@/lib/statsMath'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
@@ -314,16 +315,23 @@ export async function GET(req: NextRequest) {
     const moment = m as {
       creator?: { address?: string; username?: string | null }
     }
-    const needsCreatorOverride =
-      !!meta.creator &&
-      moment.creator?.address?.toLowerCase() !== meta.creator.toLowerCase()
+    // Shared precedence (lib/statsMath resolveMomentCreator) — the same order
+    // the stats rebuild uses to credit mints, so the feed and the earnings
+    // card can't attribute a moment to different people. source === 'kv'
+    // means the KV creator CHANGED the answer (an equal value reports 'feed',
+    // so we never clobber a real username with null for a no-op rewrite).
+    const resolved = resolveMomentCreator({
+      kvCreator: meta.creator,
+      feedCreator: moment.creator?.address,
+    })
+    const needsCreatorOverride = resolved.source === 'kv'
     const hasDuration =
       typeof meta.durationSec === 'number' && meta.durationSec > 0
     if (!needsCreatorOverride && !hasDuration) return m
     return {
       ...moment,
       ...(needsCreatorOverride
-        ? { creator: { address: meta.creator, username: null } }
+        ? { creator: { address: resolved.address as string, username: null } }
         : {}),
       // Surfaced for the client durationCache so InlineVideo can
       // skip the metadata→auto preload upgrade dance for long-form.

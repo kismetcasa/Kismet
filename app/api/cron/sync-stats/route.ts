@@ -32,7 +32,13 @@ export async function GET(req: NextRequest) {
     const started = Date.now()
     try {
       const result = await rebuildStats()
-      console.log('[sync-stats] rebuild ok', { ...result, ms: Date.now() - started })
+      if (result.skipped) {
+        // Another run held the single-flight lock — a benign no-op, not a
+        // failure; logged distinctly so it doesn't read as a missed rebuild.
+        console.log('[sync-stats] rebuild skipped (already running)')
+      } else {
+        console.log('[sync-stats] rebuild ok', { ...result, ms: Date.now() - started })
+      }
     } catch (err) {
       console.error('[sync-stats] rebuild failed', err)
     }

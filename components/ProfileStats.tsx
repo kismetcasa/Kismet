@@ -98,14 +98,17 @@ export function ProfileStats({
     setSplitHover(false)
   }, [address])
 
-  // Offer only denominations the artist earned in, plus the blended USD.
+  // Offer only denominations that RENDER as non-zero at the card's display
+  // precision (rendersNonZero), plus the blended USD. Gating on raw `> 0` let
+  // sub-display dust through — an artist whose only earnings round to zero saw
+  // a headline of "$0" / "0 ETH", which reads as a broken total. USD also
+  // hides when the price is unavailable (the server sends usd=0 then).
   const denoms = useMemo<EarningsMetric[]>(() => {
     if (!stats) return []
     const d: EarningsMetric[] = []
-    if (stats.eth > 0) d.push('eth')
-    if (stats.usdc > 0) d.push('usdc')
-    // USD only when it's actually computable (price available) — never show $0.
-    if (stats.usd > 0) d.push('usd')
+    if (rendersNonZero('eth', stats)) d.push('eth')
+    if (rendersNonZero('usdc', stats)) d.push('usdc')
+    if (rendersNonZero('usd', stats)) d.push('usd')
     return d
   }, [stats])
 
@@ -129,7 +132,11 @@ export function ProfileStats({
   // pinned-public earnings figure.
   if (asVisitor) {
     if (!stats.public || !hasEarnings) return null
-  } else if (!hasEarnings && stats.mints <= 0) {
+  } else if (!hasEarnings && stats.mints <= 0 && !stats.public) {
+    // stats.public keeps the card mounted for a pinned owner whose figures
+    // have fallen below display precision (e.g. a 0-mint split collaborator
+    // after re-attribution) — the pin below is the ONLY unpin surface, so
+    // unmounting here would leave them publicly pinned with no way out.
     return null
   }
 
@@ -206,7 +213,14 @@ export function ProfileStats({
             <button
               onClick={multi ? () => setDenom(denoms[(denoms.indexOf(active) + 1) % denoms.length]) : undefined}
               className={`text-ink text-xl leading-tight tabular-nums ${multi ? 'cursor-pointer hover:text-accent transition-colors' : 'cursor-default'}`}
-              title={multi ? 'Tap to switch currency' : undefined}
+              title={[
+                // The blended USD is lifetime crypto at TODAY'S price, not the
+                // sum of what each sale was worth on its day — say so, or an
+                // artist reconciling against their wallet history reads the
+                // moving figure as a wrong total.
+                active === 'usd' ? 'USD value at the current ETH price' : null,
+                multi ? 'Tap to switch currency' : null,
+              ].filter(Boolean).join(' — ') || undefined}
             >
               {formatEarningsValue(active, stats)}
             </button>
@@ -236,7 +250,7 @@ export function ProfileStats({
                 }}
                 aria-expanded={splitOpen}
                 aria-controls="earnings-source-split"
-                title="Mint sales vs resale royalties"
+                title="Mint sales vs resale royalties (resales sold through Kismet listings)"
                 className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
               >
                 <span>
@@ -261,6 +275,7 @@ export function ProfileStats({
               id="earnings-source-split"
               hidden={showSplitToggle && !splitOpen}
               className="text-faint text-xs mt-0.5 tabular-nums"
+              title="Resales counted are those sold through Kismet listings"
             >
               {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
             </p>
@@ -280,7 +295,12 @@ export function ProfileStats({
               {copied ? <Check size={15} className="text-accent" /> : <Share2 size={15} strokeWidth={1.5} />}
             </button>
           )}
-          {!asVisitor && hasEarnings && (
+          {/* Pin renders on hasEarnings OR an existing public pin: an owner
+              whose earnings round to zero at display precision (dust) must
+              still be able to UNPIN — this button is the only unpin surface,
+              and without the stats.public escape hatch a dust artist would be
+              stuck publicly pinned forever. */}
+          {!asVisitor && (hasEarnings || stats.public) && (
             <button
               onClick={togglePublic}
               disabled={pinning}

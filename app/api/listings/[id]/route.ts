@@ -189,19 +189,25 @@ export async function PATCH(
     // Credit the creator royalty to the artist's earnings. Synchronous (not
     // after()) for reliability — there's no webhook backstop for this stat — and
     // safe to await: creditListingRoyalty is idempotent per listing and swallows
-    // its own errors, so it can never fail the sale response.
+    // its own errors, so it can never fail the sale response. collection/tokenId
+    // let it decompose a 0xSplits royalty receiver into per-member credits so
+    // split collaborators' cards see their share instead of a stranded contract.
     if (royalty) {
-      await creditListingRoyalty({
+      const outcome = await creditListingRoyalty({
         listingId: listing.id,
         currency: royalty.currency,
         amount: royalty.amount,
         receiver: listing.royaltyReceiver,
+        collection: listing.collectionAddress,
+        tokenId: listing.tokenId,
       })
-      // Instrumentation: record whether this royalty paid a wallet (itemizes on
-      // the card today) or a split contract (can't yet), and if a contract,
-      // whether it matches a Kismet payout split — so a future resolver is
-      // decided on real data. Off the response path; best-effort. A Seaport order
-      // fills once, so this runs at most once per listing.
+      // Instrumentation: record whether this royalty paid a wallet (itemizes
+      // on the card directly) or a split contract, and for contracts what the
+      // credit path ACTUALLY did (decomposed vs stranded) — the audit records
+      // the outcome above rather than re-deriving it, so it can never
+      // disagree with the mechanism it measures. Off the response path;
+      // best-effort. A Seaport order fills once, so this runs at most once
+      // per listing.
       after(() =>
         auditRoyaltyReceiver({
           listingId: listing.id,
@@ -210,6 +216,7 @@ export async function PATCH(
           receiver: listing.royaltyReceiver,
           currency: royalty.currency,
           amount: royalty.amount,
+          outcome,
         }),
       )
     }

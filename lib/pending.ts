@@ -17,7 +17,9 @@ export interface ArtistPending {
   eth: number
   /** Undistributed USDC owed to the artist across their splits (human units). */
   usdc: number
-  /** Blended USD (eth × price + usdc); falls back to USDC-only if price is down. */
+  /** Blended USD (eth × price + usdc). 0 when the ETH/USD price is unavailable
+   *  and there IS an ETH leg — honest-USD policy shared with getArtistEarnings;
+   *  never a silently-USDC-only figure presented as the whole total. */
   usd: number
   /** How many split moments currently hold a non-zero share for the artist. */
   count: number
@@ -35,6 +37,47 @@ const MULTICALL3_BALANCE_ABI = parseAbi([
 // cache the resolved mapping forever so only first-seen moments pay the read.
 const splitAddrKey = (collection: string, tokenId: string) =>
   `kismetart:splitaddr:${collection.toLowerCase()}:${tokenId}`
+
+// Bound a single ad-hoc recipient read the same way getEthUsd bounds its RPC —
+// viem's default timeout × retries can run tens of seconds, which is fatal on
+// an awaited response path (the listings fill handler).
+const RECIPIENT_READ_TIMEOUT_MS = 3000
+
+/**
+ * Single-token creator-reward-recipient, through the SAME permanent
+ * kismetart:splitaddr:* cache resolveSplitAddresses maintains — so the
+ * listings fill path (creditListingRoyalty's split decomposition) reuses
+ * mappings the pending roll-up already paid for, and vice versa. Bounded and
+ * best-effort: null on miss + RPC failure/timeout, never throws. The mapping
+ * is immutable on-chain, so a cache hit is always authoritative.
+ */
+export async function getCachedCreatorRewardRecipient(
+  collection: string,
+  tokenId: string,
+): Promise<string | null> {
+  const key = splitAddrKey(collection, tokenId)
+  const cached = await redis.get<string>(key).catch(() => null)
+  if (typeof cached === 'string' && isAddress(cached)) return cached.toLowerCase()
+  try {
+    const r = await Promise.race([
+      serverBaseClient().readContract({
+        address: collection as `0x${string}`,
+        abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
+        functionName: 'getCreatorRewardRecipient',
+        args: [BigInt(tokenId)],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('recipient read timeout')), RECIPIENT_READ_TIMEOUT_MS),
+      ),
+    ])
+    const addr = String(r).toLowerCase()
+    if (!isAddress(addr) || addr === ZERO_ADDR) return null
+    await redis.set(key, addr).catch(() => {})
+    return addr
+  } catch {
+    return null
+  }
+}
 
 // Bound the per-profile fan-out. SMEMBERS order is undefined, so past this many
 // split moments the *arbitrary* tail is dropped (not the lowest-balance one) —
@@ -177,7 +220,12 @@ async function compute(address: string, wallets?: string[]): Promise<ArtistPendi
   const ethUsd = await getEthUsd()
   const eth = Number(formatEther(ethWei))
   const usdc = Number(formatUnits(usdcBase, 6))
-  return { eth, usdc, usd: eth * (ethUsd ?? 0) + usdc, count }
+  // Same honest-USD policy as getArtistEarnings: when the price is down and
+  // there IS an ETH leg, usd=0 (the card's rendersNonZero gate then falls back
+  // to the ETH/USDC denominations) instead of a silently-USDC-only figure that
+  // understates the pending total. No ETH leg → no price needed → exact.
+  const usd = ethUsd == null && eth > 0 ? 0 : eth * (ethUsd ?? 0) + usdc
+  return { eth, usdc, usd, count }
 }
 
 /**

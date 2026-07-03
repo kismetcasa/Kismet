@@ -36,8 +36,9 @@ export async function GET(
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private
   // figures come from /api/stats only when an owner views their own unpinned
-  // profile). One SISMEMBER here, +reads only when public.
-  const earnings = (await isEarningsPublic(canonicalAddress))
+  // profile). Passing the already-resolved fid skips the visibility check's
+  // internal FC lookup. Memoized set read here, +reads only when public.
+  const earnings = (await isEarningsPublic({ address: canonicalAddress, fid: canonical.fid }))
     ? await getArtistEarnings(canonicalAddress)
     : null
   if (!profile.username && cachedEns === undefined) {

@@ -6,7 +6,7 @@ import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { getProfileTheme, type ProfileTheme } from '@/lib/profileTheme'
 import { getArtistEarnings, type ArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
-import { formatEarningsValue, type EarningsMetric } from '@/lib/earningsFormat'
+import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/earningsFormat'
 
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
 // image and the Farcaster Mini App embed image. Matches the styling of
@@ -105,10 +105,21 @@ export default async function Image({ params }: Props) {
       earnings = null
     }
   }
-  // Prefer the blended USD headline; fall back to native ETH only if the price
-  // lookup is unavailable (rare) so an ETH earner never shows "$0".
-  const cardDenom: EarningsMetric =
-    earnings && earnings.usd <= 0 && earnings.eth > 0 ? 'eth' : 'usd'
+  // Headline denomination: the first that RENDERS as non-zero at display
+  // precision — USD preferred, then ETH, then USDC; null when every figure is
+  // sub-display dust. Same rendersNonZero gate ProfileStats uses, so the
+  // share card can never headline "$0"/"0 ETH": during an ETH-price outage
+  // the server sends usd=0, USD fails the gate, and a dust-ETH artist with
+  // real USDC falls through to their USDC figure instead of "0 ETH".
+  const cardDenom: EarningsMetric | null = !earnings
+    ? null
+    : rendersNonZero('usd', earnings)
+      ? 'usd'
+      : rendersNonZero('eth', earnings)
+        ? 'eth'
+        : rendersNonZero('usdc', earnings)
+          ? 'usdc'
+          : null
 
   // SSRF guard at the render sink: ImageResponse fetches <img src> server-
   // side. Drop any avatar that isn't a public https host (covers values
@@ -238,14 +249,30 @@ export default async function Image({ params }: Props) {
               {secondary}
             </div>
           )}
-          {earnings && earnings.mints > 0 && (
+          {/* Show earnings when a figure renders non-zero OR there are mints,
+              not only when mints > 0: a split collaborator can hold real
+              (public) earnings with zero personal mints — gating on the mint
+              count blanked their share card while the profile card showed the
+              figure. rendersNonZero (via cardDenom) keeps sub-display dust
+              from headlining "$0". The mint chip stays count-gated. */}
+          {earnings && (earnings.mints > 0 || cardDenom) && (
             <div style={{ display: 'flex', alignItems: 'baseline', marginTop: 28 }}>
-              <div style={{ fontSize: 52, color: theme ? theme.palette.primary : '#efefef' }}>
-                {formatEarningsValue(cardDenom, earnings)}
-              </div>
-              <div style={{ fontSize: 26, color: '#888', marginLeft: 18 }}>
-                {`${earnings.mints} mints`}
-              </div>
+              {cardDenom && (
+                <div style={{ fontSize: 52, color: theme ? theme.palette.primary : '#efefef' }}>
+                  {formatEarningsValue(cardDenom, earnings)}
+                </div>
+              )}
+              {earnings.mints > 0 && (
+                <div
+                  style={{
+                    fontSize: 26,
+                    color: '#888',
+                    ...(cardDenom ? { marginLeft: 18 } : {}),
+                  }}
+                >
+                  {`${earnings.mints} mints`}
+                </div>
+              )}
             </div>
           )}
           {/* Palette swatch strip — the clearest "themed" signal. marginLeft
