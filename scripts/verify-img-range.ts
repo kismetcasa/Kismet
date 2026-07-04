@@ -11,6 +11,7 @@
 // Run: node --experimental-strip-types scripts/verify-img-range.ts
 
 import {
+  countWithWindow,
   isHtmlFallback,
   parseRangeHeader,
   planSyntheticRange,
@@ -34,7 +35,8 @@ check('parse bytes=0-1 (the AVFoundation probe)', eq(parseRangeHeader('bytes=0-1
 check('parse bytes=100- (open)', eq(parseRangeHeader('bytes=100-'), { start: 100, end: null }))
 check('parse bytes=0-0', eq(parseRangeHeader('bytes=0-0'), { start: 0, end: 0 }))
 check('parse is case-insensitive', eq(parseRangeHeader('BYTES=2-4'), { start: 2, end: 4 }))
-check('suffix bytes=-500 → null (forwarded upstream, never synthesized)', parseRangeHeader('bytes=-500') === null)
+check('suffix bytes=-500 parses', eq(parseRangeHeader('bytes=-500'), { start: 0, end: null, suffix: 500 }))
+check('suffix bytes=-0 → null (zero-length suffix is invalid)', parseRangeHeader('bytes=-0') === null)
 check('multi-range → null', parseRangeHeader('bytes=0-1,5-9') === null)
 check('inverted bytes=5-4 → null', parseRangeHeader('bytes=5-4') === null)
 check('garbage → null', parseRangeHeader('items=0-1') === null)
@@ -83,6 +85,22 @@ check('open range vs unknown total → full (no valid Content-Range exists)',
   eq(planSyntheticRange({ start: 100, end: null }, null), { kind: 'full' }))
 check('open-from-zero vs unknown total → full',
   eq(planSyntheticRange({ start: 0, end: null }, null), { kind: 'full' }))
+check(
+  'suffix vs known total → tail window',
+  eq(planSyntheticRange({ start: 0, end: null, suffix: 10 }, 100), {
+    kind: 'serve', start: 90, end: 99, contentRange: 'bytes 90-99/100', contentLength: 10,
+  }),
+)
+check(
+  'suffix larger than file clamps to whole file',
+  eq(planSyntheticRange({ start: 0, end: null, suffix: 500 }, 100), {
+    kind: 'serve', start: 0, end: 99, contentRange: 'bytes 0-99/100', contentLength: 100,
+  }),
+)
+check('suffix vs unknown total → full',
+  eq(planSyntheticRange({ start: 0, end: null, suffix: 10 }, null), { kind: 'full' }))
+check('suffix vs empty file → 416',
+  eq(planSyntheticRange({ start: 0, end: null, suffix: 10 }, 0), { kind: 'unsatisfiable', contentRange: 'bytes */0' }))
 
 // ---- isHtmlFallback ----
 check('text/html rejected', isHtmlFallback('text/html'))
@@ -143,6 +161,45 @@ const capped = await drain(
   skipCapStream(sourceOf(body), { skipBytes: 0, emitBytes: null, maxTotalBytes: 4 }),
 ).then(() => 'no-error', (e: unknown) => (e instanceof Error ? e.message : 'error'))
 check('total-consumption cap errors the stream', capped === 'response exceeded size cap', capped)
+
+// ---- countWithWindow: learn a real total from a lengthless stream ----
+// The AVFoundation fix: `bytes 0-1/*` is rejected by iOS; the count reads a
+// rangeless body to EOF once so the route can answer with the exact total.
+{
+  const r = await countWithWindow(sourceOf(body), {
+    window: { start: 0, end: 1 }, maxBytes: 1000, maxMs: 5000,
+  })
+  check('count(0-1): exact total + 2-byte window',
+    r.kind === 'counted' && r.total === 10 && new TextDecoder().decode(r.window) === 'ab', JSON.stringify(r))
+}
+{
+  const r = await countWithWindow(sourceOf(body), {
+    window: { start: 2, end: 6 }, maxBytes: 1000, maxMs: 5000,
+  })
+  check('count window spans chunk boundaries',
+    r.kind === 'counted' && r.total === 10 && new TextDecoder().decode(r.window) === 'cdefg', JSON.stringify(r))
+}
+{
+  const r = await countWithWindow(sourceOf(body), {
+    window: { suffix: 4 }, maxBytes: 1000, maxMs: 5000,
+  })
+  check('count suffix ring keeps exactly the tail',
+    r.kind === 'counted' && r.total === 10 && new TextDecoder().decode(r.window) === 'ghij', JSON.stringify(r))
+}
+{
+  const r = await countWithWindow(sourceOf(body), {
+    window: { start: 5, end: 20 }, maxBytes: 1000, maxMs: 5000,
+  })
+  check('count window clamped by EOF (end past file)',
+    r.kind === 'counted' && r.total === 10 && new TextDecoder().decode(r.window) === 'fghij', JSON.stringify(r))
+}
+{
+  const r = await countWithWindow(sourceOf(body), {
+    window: { start: 0, end: 1 }, maxBytes: 4, maxMs: 5000,
+  })
+  check('count aborts on byte budget, window already complete',
+    r.kind === 'aborted' && new TextDecoder().decode(r.window) === 'ab', JSON.stringify(r))
+}
 
 // ---- fetchGatewayResolved: the manual redirect walk, against a mock fetch ----
 // Guards: the Range header reaching the FINAL host (the whole point — a range

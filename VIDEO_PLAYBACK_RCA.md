@@ -252,7 +252,19 @@ avoid killing slow-but-alive loads.
   `lib/media/gatewayFetch.ts` (manual redirect walk, domain-pinned, final-URL
   LRU), `app/api/img/route.ts` (206 synthesis on rangeless upstreams, 416,
   always-advertised `Accept-Ranges`). Guarded by
-  `scripts/verify-img-range.ts` (45 checks, wired into `verify:flows`).
+  `scripts/verify-img-range.ts` (wired into `verify:flows`).
+  - **Production follow-up (2026-07-04):** the first deploy proved the
+    contract live (`206 + Content-Range` from kismet.art) but iOS still
+    refused — AVFoundation rejects a synthesized `bytes 0-1/*`
+    (unknown-total) answer. Fixed by making totals REAL: per-URI
+    `totalBytesCache` harvested from Content-Length / 206 denominators /
+    completed passthroughs, plus a bounded **count-through** (read a
+    rangeless body to EOF once, buffering only the requested window) so
+    even the first probe answers `bytes 0-1/<exact-size>`. Suffix ranges
+    (`bytes=-N`) now resolve against known totals too. Verified end-to-end
+    against a live-shaped mock gateway in a real `next start`: probe →
+    `206 …/65536`, follow-up `bytes=0-` → full-range real 206, mid-file
+    byte-exact, suffix + 416 correct.
 - **F2 — IMPLEMENTED.** HTML fallback pages lose the gateway race
   (`gatewayFetch.ts`) — never streamed, never cached.
 - **F3 — IMPLEMENTED.** MintForm writes `content: {uri, mime}` for video
