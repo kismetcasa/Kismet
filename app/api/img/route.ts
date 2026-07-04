@@ -356,7 +356,19 @@ export async function GET(req: NextRequest) {
           }
           // Budget exceeded before EOF. The stream is consumed, so the only
           // honest answers are a best-effort `*` (when the window is whole
-          // — start-form windows fill early) or a clean failure.
+          // — start-form windows fill early) or a clean failure. Logged
+          // (throttled) because this is the "iOS keeps rejecting a big
+          // rangeless file" signature — if it recurs for the same URI, the
+          // file is too large to count within budget and needs the CDN (or
+          // a range-capable gateway) rather than more retries.
+          if (Date.now() - lastSynthWarnAt > 60_000) {
+            lastSynthWarnAt = Date.now()
+            console.warn('[img] count-through budget exceeded — total unknown', {
+              u,
+              range,
+              consumed: counted.consumed,
+            })
+          }
           const expected =
             parsed.suffix == null && parsed.end != null ? parsed.end - parsed.start + 1 : null
           if (expected != null && counted.window.byteLength === expected) {

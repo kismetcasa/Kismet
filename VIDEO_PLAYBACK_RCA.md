@@ -280,6 +280,42 @@ avoid killing slow-but-alive loads.
 - **F5 — preload mismatch IMPLEMENTED** (detail page preloads the proxy URL
   for WebKit-only UAs via the shared `isWebKitOnlyUaString`). CDN rollout and
   the mint-side 100MB caps remain open ops/product items.
+- **Field follow-ups (2026-07-04, post-deploy):** video posters
+  (`MomentImg skipProxy`) walked direct gateways only — on Mini App
+  surfaces the direct path is the fragile one, so a failed video's poster
+  died with it and the detail rendered "no preview" with nothing on
+  screen; posters now try `/api/img` once after the direct walk exhausts
+  (direct-first economics preserved). Feed page size capped at 10 on
+  constrained surfaces (mobile UA or any iframe context, via
+  `feedPageLimit` in `lib/paginatedGridQuery.ts`); standalone desktop
+  stays 18.
+
+### Open items (post-fix)
+
+1. **CDN in front of `/api/img`** (CDN_RUNBOOK) — still the biggest lever
+   for Mini App feel and the systemic answer to the box streaming every
+   constrained-surface byte (and to the count-through's one-time full
+   reads). Must forward `Range`/preserve `206` — the runbook's probes
+   verify it.
+2. **Second gateway in the pool** — `lib/arweave/gateways.ts` is down to
+   arweave.net alone; when it degrades there is no fallback anywhere.
+   Re-add a curl-verified AR.IO gateway (file comment documents the
+   verification steps + next.config allowlist coupling).
+3. **Desktop Mini App autoplay** — if feed videos still don't autoplay
+   there after the delivery fixes, run
+   `document.permissionsPolicy?.allowsFeature('autoplay')` in its console;
+   a `false` means the host iframe lacks `allow="autoplay"` and no
+   delivery fix can change it (detail playback via tap still works).
+4. **Monitoring** — an external probe of
+   `/api/img?u=ar://<known-txid>` with `Range: bytes=0-1` alerting on
+   anything but `206` turns this class of outage into an alert instead of
+   artist reports.
+5. **Collection-chip covers that aren't images** (`_next/image` 400 at
+   w=32): the optimizer rejects non-image sources; dwn2erth-style
+   video-as-collection-cover data should be fixed at the source (the chip
+   falls back gracefully meanwhile).
+6. Upstream asks: inprocess `content:null` timeline rows; mint-side 100MB
+   faststart/duration caps for large Kismet uploads.
 
 ---
 
