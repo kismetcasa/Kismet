@@ -233,7 +233,20 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
  * resilience benefit.
  */
 export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: ImgProps) {
-  const { url: walkedUrl, onError: walkGateway } = useFallbackUrl(src, onAllError)
+  // skipProxy paths get ONE last-resort proxy attempt after the direct walk
+  // exhausts, instead of failing outright. The skipProxy economics hold in
+  // the healthy case (posters stream from the gateway, zero proxy egress);
+  // this only spends proxy bandwidth when direct delivery is already broken
+  // — which on WebKit/iframe surfaces is the norm whenever the gateway's
+  // direct path degrades (the Mini App "no preview" class: the video fails
+  // AND its direct-only poster died with it, leaving nothing on screen).
+  // Hydration-safe: the first render is still the direct URL.
+  const [directExhausted, setDirectExhausted] = useState(false)
+  useEffect(() => { setDirectExhausted(false) }, [src])
+  const { url: walkedUrl, onError: walkGateway } = useFallbackUrl(src, () => {
+    if (skipProxy && isProxiable(src)) setDirectExhausted(true)
+    else onAllError?.()
+  })
   const proxiable = isProxiable(src) && !skipProxy
   const [proxyFailed, setProxyFailed] = useState(false)
   useEffect(() => { setProxyFailed(false) }, [src])
@@ -243,24 +256,23 @@ export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: Img
   const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
 
   const useProxy = proxiable && !proxyFailed
-  const renderUrl = useProxy ? proxyUrl(src) : walkedUrl
+  const renderUrl = directExhausted ? proxyUrl(src) : useProxy ? proxyUrl(src) : walkedUrl
   if (!renderUrl) return null
 
-  const handleError = useProxy
-    ? () => {
-        // Proxy failed: on WebKit, surrender to the poster fallback
-        // instead of starting a direct-mode gateway walk that's likely
-        // to stall the browser's connection pool. See gateway.ts.
-        // skipProxy=true paths intentionally bypass proxy entirely and
-        // walk directly — those callers (video posters etc.) accept
-        // the trade-off knowingly and we don't override them.
-        if (skipDirectWalk) {
-          onAllError?.()
-          return
+  const handleError = directExhausted
+    ? () => onAllError?.()
+    : useProxy
+      ? () => {
+          // Proxy failed: on WebKit, surrender to the poster fallback
+          // instead of starting a direct-mode gateway walk that's likely
+          // to stall the browser's connection pool. See gateway.ts.
+          if (skipDirectWalk) {
+            onAllError?.()
+            return
+          }
+          setProxyFailed(true)
         }
-        setProxyFailed(true)
-      }
-    : walkGateway
+      : walkGateway
 
   // alt comes through ...rest.
   return (

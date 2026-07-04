@@ -207,10 +207,15 @@ function MomentFeed({
       getKey={(m) => `${m.address}-${m.token_id}`}
       viewMode={viewMode}
       lazy={lazy}
-      // Smaller page on mobile: fewer cards mounted per fetch means
-      // less initial fiber/decode/multicall work on the iframe's
-      // constrained connection pool. Desktop has capacity for 18.
-      pageLimit={lazy ? 12 : 18}
+      // Smaller page on mobile/miniapp: 10 ≈ two viewports of the 2-col
+      // grid (five rows) before "load more", and every unit off the limit
+      // compounds server-side — /api/timeline's per-collection sample is
+      // page×limit, so page 1 pulls ~17% less upstream JSON + merge heap
+      // than the previous 12 and each deeper page widens the gap. Client
+      // cost is already bounded elsewhere (LazyMount eager-mounts 4, the
+      // video coordinator caps play/buffer slots), so payload + fan-out is
+      // the lever the limit actually controls. Desktop has capacity for 18.
+      pageLimit={lazy ? 10 : 18}
       renderItem={(m, { index }) => (
         <MomentCard
           key={`${m.address}-${m.token_id}`}
@@ -261,7 +266,7 @@ function CollectionsFeed({
       getKey={(c) => c.contractAddress}
       viewMode={viewMode}
       lazy={lazy}
-      pageLimit={lazy ? 12 : 18}
+      pageLimit={lazy ? 10 : 18}
       renderItem={(c, { index }) => (
         <CollectionCard
           key={c.contractAddress}
@@ -442,9 +447,9 @@ function MainFeed() {
 export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredRevision } = useAdmin()
   const queryClient = useQueryClient()
-  // Mirror MomentFeed's page size (lazy=isMobile → 12 mobile / 18 desktop)
+  // Mirror MomentFeed's page size (lazy=isMobile → 10 mobile / 18 desktop)
   // so a warmed entry shares the live grid's exact query key.
-  const pageLimit = isMobile ? 12 : 18
+  const pageLimit = isMobile ? 10 : 18
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
   // Defer the first tab-content render until we've reconciled with
@@ -761,7 +766,7 @@ function ArtistsFeed() {
       itemsKey="moments"
       getKey={(m) => `${m.address}-${m.token_id}`}
       lazy={lazy}
-      pageLimit={lazy ? 12 : 18}
+      pageLimit={lazy ? 10 : 18}
       filter={filterToArtists}
       header={header}
       renderItem={(m, { index }) => (
