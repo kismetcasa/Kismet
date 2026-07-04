@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { MarketCard } from '@/components/MarketCard'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
+import { feedPageLimit } from '@/lib/paginatedGridQuery'
 import { ViewModeToggle } from '@/components/ViewModeToggle'
 import { useViewMode } from '@/hooks/useViewMode'
 import type { Listing } from '@/lib/listings'
@@ -24,10 +25,11 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
         // every navigation in. Desktop: lazy=false (default), eager
         // for everyone, same as before this prop existed.
         lazy={isMobile}
-        // Same mobile page cap as the discover feeds (see DiscoverPage):
-        // 10 before "load more" on constrained surfaces, 18 on desktop.
-        // Previously this grid silently used the 18 default everywhere.
-        pageLimit={isMobile ? 10 : 18}
+        // Same page cap as the discover feeds: 10 before "load more" on
+        // constrained surfaces (mobile UA or any iframe/miniapp context),
+        // 18 on standalone desktop. Previously this grid silently used
+        // the 18 default everywhere.
+        pageLimit={feedPageLimit(isMobile)}
         renderItem={(l, { remove }) => (
           <MarketCard
             key={l.id}

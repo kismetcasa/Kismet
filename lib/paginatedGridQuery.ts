@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
+import { isInIframe } from '@/lib/media/gateway'
 
 // Single source of truth for the react-query identity of a PaginatedGrid's
 // first page. PaginatedGrid (the live consumer) and prefetch callers (e.g.
@@ -7,6 +8,26 @@ import type { QueryClient } from '@tanstack/react-query'
 // against the grid's own useQuery instead of firing a second request. If the
 // two ever computed the key differently, the prefetch would be silently
 // wasted.
+
+/**
+ * Page size for the paginated feeds — the third leg of the shared identity
+ * above (the limit is baked into the URL, so grid + prefetch must agree).
+ *
+ * Constrained surfaces get 10 items before "load more", desktop 18.
+ * "Constrained" = the SSR-baked mobile UA signal OR any iframe context
+ * (the Farcaster/Base Mini App on DESKTOP runs with a desktop UA the
+ * server can't distinguish, but shares the mobile constraints: an embedded
+ * connection pool and a host page contending for it). isInIframe() is
+ * synchronous and stable from the first client render, and the limit only
+ * shapes the fetch URL + react-query key — never SSR markup (PaginatedGrid
+ * renders a skeleton until its client query resolves) — so the SSR/client
+ * divergence (the server always computes false for iframes) cannot cause a
+ * hydration mismatch or a duplicate fetch. That is NOT true of `lazy`
+ * (LazyMount), which shapes the SSR tree and must stay server-decided.
+ */
+export function feedPageLimit(serverConstrained: boolean): number {
+  return serverConstrained || isInIframe() ? 10 : 18
+}
 
 // Shape of a paginated JSON response. itemsKey is dynamic per caller,
 // so the items array is left un-typed here and narrowed per-call.
