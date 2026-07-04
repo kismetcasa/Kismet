@@ -1087,6 +1087,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // moment points animation_url at the uploaded MP4 and image at the
         // poster; everything else uses the media itself as the image.
         let animationUri: string | undefined = mediaFile.type.startsWith('video/') ? mediaUri : undefined
+        // Mime for the metadata `content` field below — tracks animationUri
+        // through the server-transcode swaps (whose output is always mp4).
+        let animationMime: string | undefined = animationUri ? mediaFile.type : undefined
         let finalImageUri = animationUri ? posterUri : (posterUri ?? mediaUri)
         let finalThumbhash = thumbhash
         // Oversized / wasm-failed GIF: `mediaUri` is the raw GIF we just
@@ -1099,6 +1102,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // reuse its outputs (the transcode route verified their
           // propagation server-side before returning them).
           animationUri = cachedUpload.serverTranscode.animationUri
+          animationMime = 'video/mp4'
           finalImageUri = cachedUpload.serverTranscode.posterUri
           finalThumbhash = cachedUpload.serverTranscode.thumbhash ?? finalThumbhash
         } else if (needsServerTranscode) {
@@ -1110,6 +1114,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             if (!rawOk) throw new Error('source GIF not yet propagated')
             const r = await serverTranscodeGif(mediaUri)
             animationUri = r.animationUri
+            animationMime = 'video/mp4'
             finalImageUri = r.posterUri
             finalThumbhash = r.thumbhash ?? finalThumbhash
             if (uploadSession) uploadSession.serverTranscode = r
@@ -1136,6 +1141,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           description: description.trim(),
           ...(imageUri ? { image: imageUri } : {}),
           ...(animationUri ? { animation_url: animationUri } : {}),
+          // Zora-convention mime hint. ar:// URIs carry no extension, so
+          // without this every surface's video classification (isVideoMoment)
+          // depends on the inprocess indexer attaching content.mime — the
+          // dependency that left mime-less /timeline rows rendering as
+          // stills in the feed (VIDEO_PLAYBACK_RCA.md). Self-carried mime
+          // removes it for all future mints; the resolveMomentMedia fallback
+          // covers legacy ones.
+          ...(animationUri
+            ? { content: { uri: animationUri, mime: animationMime ?? 'video/mp4' } }
+            : {}),
           ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
         }
         const metadataKey = JSON.stringify(metadata)

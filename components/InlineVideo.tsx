@@ -260,6 +260,19 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   function handleLoadedMetadata() {
     const el = ref.current
     if (!el) return
+    // FEED cards only: no video track (an audio file, or a non-video asset
+    // reaching the ambiguous-animation fallback in resolveMomentMedia) would
+    // fade in as a silent black box over the poster — muted, it presents
+    // nothing. Dimensions are known by loadedmetadata, and no other gateway
+    // will serve different bytes for a content-addressed URI — skip the walk
+    // and fail straight to the parent's poster fallback. Committed (detail)
+    // playback is exempt: there the native controls make an audio-only
+    // "video" (a mislabeled video/mp4 music file) fully usable, and killing
+    // it would strand the owner with an unplayable moment.
+    if (!controls && el.videoWidth === 0) {
+      onErrorRef.current?.()
+      return
+    }
     const saved = currentTimeMemory.get(src)
     if (
       saved !== undefined &&

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { gatewayUrls } from '@/lib/arweave/gateways'
+import { isWebKitOnlyUaString } from '@/lib/deviceUA'
 
 /**
  * Walk the AR.IO / IPFS gateway pool for `uri` on render error. Resets when
@@ -88,8 +89,10 @@ export function videoGatewayUrls(uri: string): string[] {
  */
 export function isWebKitOnly(): boolean {
   if (typeof navigator === 'undefined') return false
-  const ua = navigator.userAgent
-  return ua.includes('AppleWebKit') && !ua.includes('Chrome') && !ua.includes('Chromium')
+  // Shared with the server's isWebKitOnlyUA (lib/serverDevice) via
+  // lib/deviceUA so SSR predictions (video preload target) and this runtime
+  // decision can never disagree.
+  return isWebKitOnlyUaString(navigator.userAgent)
 }
 
 /**

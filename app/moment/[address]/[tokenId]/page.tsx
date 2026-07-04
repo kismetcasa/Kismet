@@ -10,6 +10,7 @@ import { getMomentContent } from '@/lib/momentContent'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { PLATFORM_COLLECTION } from '@/lib/config'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
+import { isWebKitOnlyUA } from '@/lib/serverDevice'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
@@ -164,11 +165,12 @@ export default async function MomentPage({ params }: Props) {
   const sessionToken = cookieStore.get(SESSION_COOKIE)?.value
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
-  const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress] = await Promise.all([
+  const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, webKitOnly] = await Promise.all([
     fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
     getInitialCollectionMeta(address),
     getKvCreatorAddress(address, tokenId),
+    isWebKitOnlyUA(),
   ])
 
   // Prefer KV moment-meta (the EOA mint-proxy wrote at mint time) so
@@ -234,13 +236,25 @@ export default async function MomentPage({ params }: Props) {
           <video> element this preload is feeding (InlineVideo doesn't set
           crossOrigin). A mismatched preload
           ends up in a different cache partition and Chrome warns
-          "preload was not used" — the bytes are wasted. */}
+          "preload was not used" — the bytes are wasted.
+
+          The href must be the URL the client will actually play, or the
+          preload becomes a full duplicate download: videoGatewayUrls routes
+          WebKit-only viewers (all of iOS + desktop Safari) through the
+          /api/img proxy first, everyone else direct. Mirror that split with
+          the server-side twin of the same UA test. (URL shape matches
+          lib/media/gateway proxyUrl — not importable here: that module is
+          'use client'.) */}
       {detail?.metadata?.animation_url &&
         isVideoMoment(detail.metadata) && (
           <link
             rel="preload"
             as="video"
-            href={resolveUri(detail.metadata.animation_url)}
+            href={
+              webKitOnly
+                ? `/api/img?u=${encodeURIComponent(detail.metadata.animation_url)}`
+                : resolveUri(detail.metadata.animation_url)
+            }
           />
         )}
       <MomentDetailView

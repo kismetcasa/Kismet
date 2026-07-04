@@ -1,5 +1,5 @@
 import { headers } from 'next/headers'
-import { isMobileUaString } from './deviceUA'
+import { isMobileUaString, isWebKitOnlyUaString } from './deviceUA'
 
 /**
  * Server-side mobile detection from the request's User-Agent header.
@@ -26,4 +26,18 @@ export async function isMobileUA(): Promise<boolean> {
   // Shares the UA test with the client (isMobileDevice) via lib/deviceUA so the
   // SSR-baked `isMobile` prop and runtime decisions can never disagree.
   return isMobileUaString(h.get('user-agent') ?? '')
+}
+
+/**
+ * Server-side twin of the client's isWebKitOnly() (lib/media/gateway) —
+ * same shared UA test via lib/deviceUA. Used where the server must predict
+ * which video URL the client will play (videoGatewayUrls puts the /api/img
+ * proxy first for WebKit-only viewers), e.g. the detail page's
+ * <link rel="preload" as="video"> target. Iframe embedding — the other
+ * proxy-first trigger — is not knowable server-side; accepted, since the
+ * canonical page (the only preload emitter) is overwhelmingly top-level.
+ */
+export async function isWebKitOnlyUA(): Promise<boolean> {
+  const h = await headers()
+  return isWebKitOnlyUaString(h.get('user-agent') ?? '')
 }
