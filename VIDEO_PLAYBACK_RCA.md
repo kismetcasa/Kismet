@@ -290,6 +290,18 @@ avoid killing slow-but-alive loads.
   `feedPageLimit` in `lib/paginatedGridQuery.ts`); standalone desktop
   stays 18.
 
+- **Mobile Mini App misclassification (2026-07-04, field):** the Farcaster
+  MOBILE Mini App hosts the app in a **React Native WebView** — not an
+  iframe — and its custom UA carries none of the mobile tokens, so the
+  surface fell through BOTH legs of every "constrained" check and was
+  treated as an unconstrained desktop: 18-item eager feed, uncapped video
+  decoders, no proxy-first media. (Field fingerprint: the 10-cap
+  bifurcated on the desktop Mini App but not mobile.) Fixed with a third
+  leg — `isReactNativeWebView()` (`lib/miniAppEnv.ts`), the host-injected
+  `window.ReactNativeWebView` marker, definitionally a phone webview —
+  wired through the feed cap, decoder caps, proxy-first video sourcing,
+  the image walk short-circuits, and the detail first-frame seek.
+
 ### Open items (post-fix)
 
 1. **CDN in front of `/api/img`** (CDN_RUNBOOK) — still the biggest lever

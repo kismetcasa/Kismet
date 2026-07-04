@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { isInIframe } from '@/lib/media/gateway'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 
 // Single source of truth for the react-query identity of a PaginatedGrid's
 // first page. PaginatedGrid (the live consumer) and prefetch callers (e.g.
@@ -26,7 +27,7 @@ import { isInIframe } from '@/lib/media/gateway'
  * (LazyMount), which shapes the SSR tree and must stay server-decided.
  */
 export function feedPageLimit(serverConstrained: boolean): number {
-  return serverConstrained || isInIframe() ? 10 : 18
+  return serverConstrained || isInIframe() || isReactNativeWebView() ? 10 : 18
 }
 
 // Shape of a paginated JSON response. itemsKey is dynamic per caller,

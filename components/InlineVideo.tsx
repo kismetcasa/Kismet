@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { videoGatewayUrls, isWebKitOnly } from '@/lib/media/gateway'
 import { isMobileDevice } from '@/lib/deviceUA'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 import { getVideoDuration } from '@/lib/media/durationCache'
 import { acquireCommitted, committedActive } from '@/lib/media/videoFocus'
 import { registerFeedVideo, type FeedVideoSlot } from '@/lib/media/feedPlayback'
@@ -80,9 +81,11 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   // preload on its own, so a poster-less detail video shows a black box until
   // playback starts. Gated to iOS (mobile × WebKit): Chromium and desktop Safari
   // preload fine, and the forced seek can stall a non-faststart file there, so
-  // they skip it. The engine×device split for the detail seek.
+  // they skip it. The engine×device split for the detail seek. The RN WebView
+  // (mobile Mini App host) IS iOS WebKit underneath but its custom UA can miss
+  // both tokens — include it explicitly.
   const seekToFirstFrame = useMemo(
-    () => controls && isMobileDevice() && isWebKitOnly(),
+    () => controls && (isReactNativeWebView() || (isMobileDevice() && isWebKitOnly())),
     [controls],
   )
 

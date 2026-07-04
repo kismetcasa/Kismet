@@ -20,6 +20,23 @@ export function isCoinbaseWebView(): boolean {
   return eth?.isCoinbaseWallet === true && isMobile
 }
 
+// True inside a React Native WebView — how the Farcaster/Base MOBILE Mini
+// App hosts embed the app on phones (an RN WebView, NOT an iframe, and its
+// custom UA carries none of the tokens isMobileUaString matches — field-
+// verified: the mobile Mini App fell through BOTH the mobile-UA and iframe
+// legs of every "constrained surface" check and was treated as an
+// unconstrained desktop: 18-item eager feeds, uncapped video decoders, no
+// proxy-first media). The host injects window.ReactNativeWebView before
+// page scripts run, so this is synchronous and stable from the first
+// client render, and it is definitionally a phone in-app webview — no
+// desktop surface can match it.
+export function isReactNativeWebView(): boolean {
+  if (typeof window === 'undefined') return false
+  return (
+    typeof (window as { ReactNativeWebView?: unknown }).ReactNativeWebView !== 'undefined'
+  )
+}
+
 // True only for a *potential* Farcaster Mini App host: an embedded context
 // (iframe on web, RN WebView on mobile) that is NOT a Coinbase context. A
 // regular browser tab short-circuits to false without touching the SDK; the
@@ -44,10 +61,7 @@ export function isPotentialMiniAppEnv(): boolean {
     // confirmation that we're inside a real host.
     if (isCoinbaseWebView()) return false
     const inIframe = window.self !== window.top
-    const inReactNativeWebView =
-      typeof (window as { ReactNativeWebView?: unknown }).ReactNativeWebView !==
-      'undefined'
-    return inIframe || inReactNativeWebView
+    return inIframe || isReactNativeWebView()
   } catch {
     // Cross-origin iframe access throws on `window.top` — that itself is a
     // strong signal we're embedded. (A Coinbase WebView can't reach here: it's
