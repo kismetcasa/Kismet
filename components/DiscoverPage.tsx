@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback, startTransition } from 'react'
 import { useAccount } from 'wagmi'
 import { useQueryClient } from '@tanstack/react-query'
-import { prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
+import { feedPageLimit, prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
@@ -215,7 +215,7 @@ function MomentFeed({
       // cost is already bounded elsewhere (LazyMount eager-mounts 4, the
       // video coordinator caps play/buffer slots), so payload + fan-out is
       // the lever the limit actually controls. Desktop has capacity for 18.
-      pageLimit={lazy ? 10 : 18}
+      pageLimit={feedPageLimit(lazy)}
       renderItem={(m, { index }) => (
         <MomentCard
           key={`${m.address}-${m.token_id}`}
@@ -266,7 +266,7 @@ function CollectionsFeed({
       getKey={(c) => c.contractAddress}
       viewMode={viewMode}
       lazy={lazy}
-      pageLimit={lazy ? 10 : 18}
+      pageLimit={feedPageLimit(lazy)}
       renderItem={(c, { index }) => (
         <CollectionCard
           key={c.contractAddress}
@@ -447,9 +447,10 @@ function MainFeed() {
 export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredRevision } = useAdmin()
   const queryClient = useQueryClient()
-  // Mirror MomentFeed's page size (lazy=isMobile → 10 mobile / 18 desktop)
-  // so a warmed entry shares the live grid's exact query key.
-  const pageLimit = isMobile ? 10 : 18
+  // Mirror MomentFeed's page size so a warmed entry shares the live grid's
+  // exact query key — feedPageLimit is the single source (10 on mobile AND
+  // in any iframe/miniapp context, 18 on standalone desktop).
+  const pageLimit = feedPageLimit(isMobile)
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
   // Defer the first tab-content render until we've reconciled with
@@ -766,7 +767,7 @@ function ArtistsFeed() {
       itemsKey="moments"
       getKey={(m) => `${m.address}-${m.token_id}`}
       lazy={lazy}
-      pageLimit={lazy ? 10 : 18}
+      pageLimit={feedPageLimit(lazy)}
       filter={filterToArtists}
       header={header}
       renderItem={(m, { index }) => (
