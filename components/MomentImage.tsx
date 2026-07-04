@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
 import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly, isInIframe } from '@/lib/media/gateway'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { trackPerf } from '@/lib/telemetry'
 
@@ -99,7 +100,7 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // Top-level Chrome (kismet.art opened directly) is neither WebKit
   // nor in an iframe — `skipDirectWalk` is false and the existing
   // direct-walk fallback runs unchanged.
-  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
+  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe() || isReactNativeWebView(), [])
 
   const initialMode: DeliveryMode = skipOptimizer
     ? (proxiable ? 'proxy' : 'direct')
@@ -253,7 +254,7 @@ export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: Img
   // Same gateway-walk short-circuit as MomentImage's proxy→direct
   // transition. Skip on WebKit OR in any iframe context — both share
   // the connection-pool-stall failure mode. See lib/media/gateway.ts.
-  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
+  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe() || isReactNativeWebView(), [])
 
   const useProxy = proxiable && !proxyFailed
   const renderUrl = directExhausted ? proxyUrl(src) : useProxy ? proxyUrl(src) : walkedUrl

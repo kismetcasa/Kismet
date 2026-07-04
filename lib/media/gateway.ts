@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { isWebKitOnlyUaString } from '@/lib/deviceUA'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 
 /**
  * Walk the AR.IO / IPFS gateway pool for `uri` on render error. Resets when
@@ -60,7 +61,10 @@ export function proxyUrl(uri: string, width?: number): string {
  */
 export function videoGatewayUrls(uri: string): string[] {
   const direct = gatewayUrls(uri)
-  if (isProxiable(uri) && (isInIframe() || isWebKitOnly())) {
+  // RN WebView (the mobile Mini App host) shares the constrained-pool
+  // failure mode with iframes and its UA may carry neither WebKit nor
+  // mobile tokens — include it explicitly so its video rides the proxy.
+  if (isProxiable(uri) && (isInIframe() || isWebKitOnly() || isReactNativeWebView())) {
     return [proxyUrl(uri), ...direct]
   }
   return direct

@@ -32,6 +32,7 @@
 
 import { committedActive, onCommittedChange } from './videoFocus'
 import { isMobileDevice } from '../deviceUA'
+import { isReactNativeWebView } from '../miniAppEnv'
 import { isInIframe } from './gateway'
 
 // The mobile/web split for video, capped on the two surfaces that are
@@ -46,7 +47,10 @@ import { isInIframe } from './gateway'
 // video and keeps them warm. Read once at module load on the client; the
 // coordinator is client-only (see ensureInstalled), so the server value is
 // never used.
-const CONSTRAINED = isMobileDevice() || isInIframe()
+// RN WebView = the Farcaster/Base MOBILE Mini App host — not an iframe, and
+// its custom UA misses the mobile regex, so without the third leg it was
+// classified as unconstrained desktop (uncapped decoders on a phone webview).
+const CONSTRAINED = isMobileDevice() || isInIframe() || isReactNativeWebView()
 const MAX_CONCURRENT_PLAY = CONSTRAINED ? 3 : Infinity
 const BUFFER_AHEAD = CONSTRAINED ? 5 : Infinity
 
