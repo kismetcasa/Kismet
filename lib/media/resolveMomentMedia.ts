@@ -81,6 +81,39 @@ export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
     }
   }
 
+  // Ambiguous animation_url → attempt VIDEO. ar:// URIs carry no extension
+  // and many mints (Kismet's own until content.mime was added at mint time,
+  // plus external ones) rely on the inprocess indexer to attach the mime —
+  // when that enrichment is missing (e.g. /timeline rows with content:null,
+  // see VIDEO_PLAYBACK_RCA.md) the moment used to fall through to the
+  // still-image branch and a <video> never mounted on feed surfaces, even
+  // though the detail page (whose /moment copy carries the mime) played it.
+  // A wrong guess is cheap and self-healing: a non-video animation_url
+  // errors in <video>, MomentVideo falls back to the poster — exactly what
+  // rendered before — and InlineVideo rejects sources with no video track
+  // (audio files) before they can present as a silent black box.
+  const anim = meta.animation_url
+  if (anim) {
+    const mime = meta.content?.mime
+    // A mime hint vetoes the attempt only when it plausibly describes the
+    // animation bytes (content.uri IS the animation_url, or there's no
+    // content.uri at all) and names a concrete non-video type — video/*,
+    // text/plain, and image/gif were all handled above. A mime describing a
+    // DIFFERENT uri (e.g. Zora content pointing at the still) says nothing
+    // about the animation.
+    const mimeDescribesAnim = !!mime && (!meta.content?.uri || meta.content.uri === anim)
+    const vetoedByMime = mimeDescribesAnim && mime !== 'application/octet-stream'
+    // Known non-video extensions keep their current handling: stills fall
+    // through to the image branch below; audio/document types were never
+    // renderable here and keep degrading to the poster path.
+    const NON_VIDEO_EXT =
+      /\.(png|jpe?g|webp|avif|svg|mp3|wav|ogg|oga|flac|m4a|aac|opus|html?|pdf|txt|json|zip|glb|gltf|usdz)$/
+    const animPath = anim.split(/[?#]/, 1)[0]!.toLowerCase()
+    if (!vetoedByMime && !NON_VIDEO_EXT.test(animPath)) {
+      return { kind: 'video', src: anim, poster: meta.image }
+    }
+  }
+
   // Still image, or any renderable URL we couldn't classify — attempt it
   // rather than show a blank tile. The render surfaces fall back to the
   // thumbhash blur if every gateway errors.

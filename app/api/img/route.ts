@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server'
 import sharp from 'sharp'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { readBodyBounded } from '@/lib/boundedBody'
+import { fetchGatewayResolved } from '@/lib/media/gatewayFetch'
+import { parseRangeHeader, planSyntheticRange, skipCapStream } from '@/lib/media/rangeContract'
 
 // Pinned to Node's runtime: this proxy streams multi-MB media payloads
 // end-to-end and we want Node's stream primitives plus unbounded request
@@ -23,6 +25,12 @@ const MAX_RESIZE_WIDTH = 4096
 // real still-image scan; a multi-hundred-MB "image" is pathological and streams
 // through untouched rather than risking an OOM.
 const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
+
+// Throttle for the range-synthesis warning below: <video> playback through a
+// degraded upstream issues many ranged requests per view, and one line a
+// minute is signal while one per chunk is noise (same pattern as the
+// timeline fan-out warning).
+let lastSynthWarnAt = 0
 
 /**
  * Stream `prefix` chunks, then everything remaining on `reader`, erroring the
@@ -86,18 +94,10 @@ async function raceFetchGateways(
   clientSignal.addEventListener('abort', cancelAll, { once: true })
   try {
     const probes = urls.map((u, idx) =>
-      fetch(u, {
-        cache: 'no-store',
-        signal: controllers[idx].signal,
-        headers: forwardHeaders,
-      }).then((r) => {
-        // 200 and 206 (Partial Content) are both winning states when
-        // forwarding a Range header — gateways that honor ranges
-        // return 206; ones that don't fall back to 200 + full body
-        // and the browser will discard bytes outside the range.
-        if (!r.ok && r.status !== 206) throw new Error()
-        return { response: r, idx }
-      }),
+      fetchGatewayResolved(u, forwardHeaders, controllers[idx].signal).then((r) => ({
+        response: r,
+        idx,
+      })),
     )
     const winner = await Promise.any(probes)
     controllers.forEach((c, i) => { if (i !== winner.idx) c.abort() })
@@ -228,12 +228,66 @@ export async function GET(req: NextRequest) {
     // ar://<txid> / ipfs://<cid> are content-addressed — bytes never change.
     'Cache-Control': 'public, max-age=31536000, immutable',
   })
+
+  // Own the byte-range contract when the upstream ignored the range. iOS +
+  // macOS Safari (AVFoundation) probe every <video> with `Range: bytes=0-1`
+  // and refuse to play a source that answers 200 — and the WebKit population
+  // is exactly who videoGatewayUrls routes through this proxy. A degraded
+  // upstream (arweave.net sandbox hosts serving chunked 200s with no
+  // Accept-Ranges/Content-Length) therefore used to make videos unplayable
+  // on every Apple surface while desktop Chrome played fine. Synthesize the
+  // 206 ourselves: skip to the requested window in the stream and cap it.
+  // Bandwidth note: skipping burns upstream bytes up to `start`, bounded by
+  // MAX_DECLARED_BYTES like everything else — acceptable for the degraded
+  // case, and range-capable upstreams never enter this branch (their 206
+  // passes through verbatim below).
+  if (range && upstream.status !== 206) {
+    const parsed = parseRangeHeader(range)
+    if (parsed) {
+      const total =
+        declaredLen && Number.isSafeInteger(Number(declaredLen)) ? Number(declaredLen) : null
+      const plan = planSyntheticRange(parsed, total)
+      if (plan.kind === 'unsatisfiable') {
+        upstream.body.cancel().catch(() => {})
+        return new Response(null, {
+          status: 416,
+          headers: { 'Content-Range': plan.contentRange, 'Cache-Control': 'no-store' },
+        })
+      }
+      if (plan.kind === 'serve') {
+        if (Date.now() - lastSynthWarnAt > 60_000) {
+          lastSynthWarnAt = Date.now()
+          console.warn('[img] upstream ignored Range — synthesizing 206', {
+            u,
+            range,
+            total,
+          })
+        }
+        headers.set('Accept-Ranges', 'bytes')
+        headers.set('Content-Range', plan.contentRange)
+        headers.set('Content-Length', String(plan.contentLength))
+        return new Response(
+          skipCapStream(upstream.body.getReader(), {
+            skipBytes: plan.start,
+            emitBytes: plan.contentLength,
+            maxTotalBytes: MAX_DECLARED_BYTES,
+          }),
+          { status: 206, headers },
+        )
+      }
+      // 'full' (open range, unknown total): fall through to the plain 200 —
+      // RFC 9110 permits ignoring a Range; a 200 is honest where a
+      // malformed Content-Range would not be.
+    }
+  }
+
   if (declaredLen) headers.set('Content-Length', declaredLen)
-  // Range-related headers pass through verbatim so the browser knows
-  // (a) the resource supports ranges and (b) which byte window the
-  // 206 response actually contains.
-  const acceptRanges = upstream.headers.get('accept-ranges')
-  if (acceptRanges) headers.set('Accept-Ranges', acceptRanges)
+  // Range-related headers pass through verbatim so the browser knows which
+  // byte window a 206 actually contains. Accept-Ranges is always advertised:
+  // even when the upstream omits it, this route now honors ranges itself
+  // (206 passthrough or the synthesis above), and without the advertisement
+  // AVFoundation won't attempt ranged playback at all.
+  headers.set('Accept-Ranges', upstream.headers.get('accept-ranges') ?? 'bytes')
   const contentRange = upstream.headers.get('content-range')
   if (contentRange) headers.set('Content-Range', contentRange)
   // Wrap the passthrough in a byte-counting guard so MAX_DECLARED_BYTES holds

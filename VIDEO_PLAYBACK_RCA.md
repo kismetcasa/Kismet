@@ -246,6 +246,28 @@ avoid killing slow-but-alive loads.
    inprocess row refresh is still worth requesting upstream.
 4. F4/F5 as hardening follow-ups.
 
+### Implementation status (2026-07-04, this branch)
+
+- **F1 — IMPLEMENTED.** `lib/media/rangeContract.ts` (pure range math),
+  `lib/media/gatewayFetch.ts` (manual redirect walk, domain-pinned, final-URL
+  LRU), `app/api/img/route.ts` (206 synthesis on rangeless upstreams, 416,
+  always-advertised `Accept-Ranges`). Guarded by
+  `scripts/verify-img-range.ts` (45 checks, wired into `verify:flows`).
+- **F2 — IMPLEMENTED.** HTML fallback pages lose the gateway race
+  (`gatewayFetch.ts`) — never streamed, never cached.
+- **F3 — IMPLEMENTED.** MintForm writes `content: {uri, mime}` for video
+  mints; `resolveMomentMedia` attempts video for ambiguous animation_urls
+  (mime-less + extensionless); `InlineVideo` rejects sources with no video
+  track (`videoWidth === 0`) so a wrong guess degrades to the poster, never a
+  black box.
+- **F4 — deliberately NOT implemented.** F1 removes the primary stall source
+  (rangeless proxy responses); a stall watchdog's false-positive risk (killing
+  slow-but-alive loads on weak links) currently outweighs its benefit. Revisit
+  only with field evidence of stalls surviving F1.
+- **F5 — preload mismatch IMPLEMENTED** (detail page preloads the proxy URL
+  for WebKit-only UAs via the shared `isWebKitOnlyUaString`). CDN rollout and
+  the mint-side 100MB caps remain open ops/product items.
+
 ---
 
 ## 5. Probe appendix (reproducible checks)

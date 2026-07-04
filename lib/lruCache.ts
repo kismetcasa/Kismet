@@ -9,7 +9,13 @@
  */
 export class LRUCache<K, V> {
   private store = new Map<K, V>()
-  constructor(private readonly max: number) {}
+  // Assigned explicitly (not a constructor parameter property) so the module
+  // loads under Node's strip-only TypeScript mode — the verify scripts
+  // (scripts/verify-img-range.ts) import server modules that use this cache.
+  private readonly max: number
+  constructor(max: number) {
+    this.max = max
+  }
 
   get(key: K): V | undefined {
     const value = this.store.get(key)
