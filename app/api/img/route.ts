@@ -3,7 +3,13 @@ import sharp from 'sharp'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { readBodyBounded } from '@/lib/boundedBody'
 import { fetchGatewayResolved } from '@/lib/media/gatewayFetch'
-import { parseRangeHeader, planSyntheticRange, skipCapStream } from '@/lib/media/rangeContract'
+import { LRUCache } from '@/lib/lruCache'
+import {
+  countWithWindow,
+  parseRangeHeader,
+  planSyntheticRange,
+  skipCapStream,
+} from '@/lib/media/rangeContract'
 
 // Pinned to Node's runtime: this proxy streams multi-MB media payloads
 // end-to-end and we want Node's stream primitives plus unbounded request
@@ -32,6 +38,42 @@ const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
 // timeline fan-out warning).
 let lastSynthWarnAt = 0
 
+// URI → exact byte size. AVFoundation refuses a synthesized 206 whose
+// Content-Range total is `*` (validated in production: iOS kept rejecting
+// playback until totals were real) — it needs the actual size to plan its
+// range schedule. Content-addressed bytes never change, so a total learned
+// once — from a Content-Length, a 206's Content-Range, a completed
+// passthrough, or the count-through below — is true forever; the LRU only
+// bounds memory.
+const totalBytesCache = new LRUCache<string, number>(2048)
+// Count-through gate: only buffer request windows up to this size (iOS
+// probes are 2 bytes; generous headroom for players probing larger heads
+// or moov tails via suffix ranges).
+const COUNT_WINDOW_MAX_BYTES = 8 * 1024 * 1024
+// Wall-clock budget for one count-through read. The count streams the whole
+// file through the box once (then it's cached + the gateway edge is warm),
+// so this bounds worst-case latency on the FIRST ranged request for a big
+// file on a degraded upstream; on exceed we fall back to the best-effort
+// `*` answer.
+const COUNT_BUDGET_MS = 12_000
+
+/** Authoritative total from a response, when it reveals one. */
+function totalFromResponse(upstream: Response, declaredLen: string | null): number | null {
+  if (upstream.status === 206) {
+    const m = /\/(\d+)\s*$/.exec(upstream.headers.get('content-range') ?? '')
+    if (m) {
+      const n = Number(m[1])
+      if (Number.isSafeInteger(n) && n >= 0) return n
+    }
+    return null
+  }
+  if (upstream.status === 200 && declaredLen) {
+    const n = Number(declaredLen)
+    if (Number.isSafeInteger(n) && n >= 0) return n
+  }
+  return null
+}
+
 /**
  * Stream `prefix` chunks, then everything remaining on `reader`, erroring the
  * response and cancelling the upstream once `maxBytes` total have passed —
@@ -42,6 +84,10 @@ function passthroughStream(
   prefix: Uint8Array[],
   reader: ReadableStreamDefaultReader<Uint8Array>,
   maxBytes: number,
+  // Fires with the total bytes streamed when the body completes cleanly —
+  // the opportunistic totals harvest (see totalBytesCache): any full 200
+  // that finishes teaches us the file's exact size for later range math.
+  onDone?: (totalBytes: number) => void,
 ): ReadableStream<Uint8Array> {
   let sent = 0
   let i = 0
@@ -71,6 +117,7 @@ function passthroughStream(
       const { done, value } = await reader.read()
       if (done) {
         controller.close()
+        onDone?.(sent)
         return
       }
       guard(controller, value)
@@ -241,11 +288,90 @@ export async function GET(req: NextRequest) {
   // MAX_DECLARED_BYTES like everything else — acceptable for the degraded
   // case, and range-capable upstreams never enter this branch (their 206
   // passes through verbatim below).
+  // Harvest authoritative totals whenever a response reveals one (a 200's
+  // Content-Length, a 206's Content-Range denominator) — content-addressed,
+  // so once learned it's true forever.
+  const headerTotal = totalFromResponse(upstream, declaredLen)
+  if (headerTotal != null) totalBytesCache.set(u, headerTotal)
+
   if (range && upstream.status !== 206) {
     const parsed = parseRangeHeader(range)
     if (parsed) {
-      const total =
-        declaredLen && Number.isSafeInteger(Number(declaredLen)) ? Number(declaredLen) : null
+      let total = headerTotal ?? totalBytesCache.get(u) ?? null
+
+      // Count-through: the upstream ignored the range AND told us nothing
+      // about its size. Serving `bytes 0-1/*` here is spec-legal but
+      // AVFoundation rejects unknown totals, so for small request windows
+      // (the iOS probe class) read the body to EOF once — buffering only
+      // the window — to learn the exact total, cache it, and answer with a
+      // REAL Content-Range. One bounded read per URI, ever; it also warms
+      // the gateway edge for the follow-up requests iOS then issues.
+      if (total == null) {
+        const windowSpec =
+          parsed.suffix != null
+            ? parsed.suffix <= COUNT_WINDOW_MAX_BYTES
+              ? { suffix: parsed.suffix }
+              : null
+            : parsed.end != null && parsed.end - parsed.start + 1 <= COUNT_WINDOW_MAX_BYTES
+              ? { start: parsed.start, end: parsed.end }
+              : null
+        if (windowSpec) {
+          const counted = await countWithWindow(upstream.body.getReader(), {
+            window: windowSpec,
+            maxBytes: MAX_DECLARED_BYTES,
+            maxMs: COUNT_BUDGET_MS,
+          })
+          if (counted.kind === 'counted') {
+            total = counted.total
+            totalBytesCache.set(u, total)
+            console.log('[img] counted total for rangeless upstream', { u, total })
+            const plan = planSyntheticRange(parsed, total)
+            if (plan.kind === 'unsatisfiable') {
+              return new Response(null, {
+                status: 416,
+                headers: { 'Content-Range': plan.contentRange, 'Cache-Control': 'no-store' },
+              })
+            }
+            if (plan.kind === 'serve' && counted.window.byteLength >= plan.contentLength) {
+              // start-form windows begin exactly at plan.start; suffix
+              // windows hold the tail, whose last contentLength bytes are
+              // the requested slice. Both reduce to "take the last/first
+              // contentLength bytes" — for start-form the window length
+              // equals contentLength already (EOF clamps it).
+              const body =
+                parsed.suffix != null
+                  ? counted.window.subarray(counted.window.byteLength - plan.contentLength)
+                  : counted.window.subarray(0, plan.contentLength)
+              headers.set('Accept-Ranges', 'bytes')
+              headers.set('Content-Range', plan.contentRange)
+              headers.set('Content-Length', String(plan.contentLength))
+              return new Response(body as BodyInit, { status: 206, headers })
+            }
+            // Window shorter than the plan demands (shouldn't happen: EOF
+            // clamping keeps them consistent) — fail honestly, no caching.
+            return new Response('upstream window incomplete', {
+              status: 502,
+              headers: { 'Cache-Control': 'no-store' },
+            })
+          }
+          // Budget exceeded before EOF. The stream is consumed, so the only
+          // honest answers are a best-effort `*` (when the window is whole
+          // — start-form windows fill early) or a clean failure.
+          const expected =
+            parsed.suffix == null && parsed.end != null ? parsed.end - parsed.start + 1 : null
+          if (expected != null && counted.window.byteLength === expected) {
+            headers.set('Accept-Ranges', 'bytes')
+            headers.set('Content-Range', `bytes ${parsed.start}-${parsed.end}/*`)
+            headers.set('Content-Length', String(expected))
+            return new Response(counted.window as BodyInit, { status: 206, headers })
+          }
+          return new Response('upstream size unresolvable', {
+            status: 502,
+            headers: { 'Cache-Control': 'no-store' },
+          })
+        }
+      }
+
       const plan = planSyntheticRange(parsed, total)
       if (plan.kind === 'unsatisfiable') {
         upstream.body.cancel().catch(() => {})
@@ -292,10 +418,20 @@ export async function GET(req: NextRequest) {
   if (contentRange) headers.set('Content-Range', contentRange)
   // Wrap the passthrough in a byte-counting guard so MAX_DECLARED_BYTES holds
   // on actual bytes even when the upstream omits or misreports Content-Length.
-  return new Response(passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES), {
-    // Preserve 206 vs 200 — flattening 206 to 200 would make the
-    // browser treat the partial body as the full file.
-    status: upstream.status === 206 ? 206 : 200,
-    headers,
-  })
+  // A rangeless full-body 200 that completes teaches us the exact total for
+  // the totals cache (206 parts and client-ranged responses don't — their
+  // byte count isn't the file size).
+  const harvestTotal =
+    upstream.status === 200 && !range
+      ? (totalBytes: number) => totalBytesCache.set(u, totalBytes)
+      : undefined
+  return new Response(
+    passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES, harvestTotal),
+    {
+      // Preserve 206 vs 200 — flattening 206 to 200 would make the
+      // browser treat the partial body as the full file.
+      status: upstream.status === 206 ? 206 : 200,
+      headers,
+    },
+  )
 }

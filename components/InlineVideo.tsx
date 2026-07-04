@@ -274,11 +274,18 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
       return
     }
     const saved = currentTimeMemory.get(src)
+    // Resume guard: skip only when we KNOW the position is at/past the end.
+    // duration can be Infinity/NaN at loadedmetadata when the source is a
+    // chunked, length-less stream (arweave's sandbox hosts serve exactly
+    // that on the direct path) — requiring a finite duration silently
+    // disabled resume for those, so the detail restarted from 0 instead of
+    // continuing where the feed card left off. Seek best-effort instead:
+    // the browser clamps to the seekable range, and the try/catch keeps a
+    // not-yet-seekable element from throwing.
     if (
       saved !== undefined &&
       saved > 0 &&
-      Number.isFinite(el.duration) &&
-      saved < el.duration - 0.5
+      !(Number.isFinite(el.duration) && saved >= el.duration - 0.5)
     ) {
       try {
         el.currentTime = saved
