@@ -258,8 +258,9 @@ avoid killing slow-but-alive loads.
 - **F3 — IMPLEMENTED.** MintForm writes `content: {uri, mime}` for video
   mints; `resolveMomentMedia` attempts video for ambiguous animation_urls
   (mime-less + extensionless); `InlineVideo` rejects sources with no video
-  track (`videoWidth === 0`) so a wrong guess degrades to the poster, never a
-  black box.
+  track (`videoWidth === 0`) on FEED surfaces so a wrong guess degrades to
+  the poster, never a black box — committed (detail) playback is exempt so a
+  mislabeled audio-only video/mp4 stays playable through its native controls.
 - **F4 — deliberately NOT implemented.** F1 removes the primary stall source
   (rangeless proxy responses); a stall watchdog's false-positive risk (killing
   slow-but-alive loads on weak links) currently outweighs its benefit. Revisit
