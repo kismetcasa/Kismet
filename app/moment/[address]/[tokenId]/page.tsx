@@ -265,6 +265,10 @@ export default async function MomentPage({ params }: Props) {
         initialCollectionMeta={initialCollectionMeta}
         kvCreatorAddress={kvCreatorAddress}
         initialTextContent={initialTextContent}
+        // Same server signal the <video> preload above uses, so the SSR
+        // <video src> is proxy-first for WebKit-only surfaces and matches
+        // the preload target instead of emitting a doomed direct fetch.
+        ssrWebKit={webKitOnly}
       />
     </>
   )

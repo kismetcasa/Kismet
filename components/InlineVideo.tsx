@@ -40,6 +40,12 @@ interface InlineVideoProps {
   className?: string
   /** Fired once every gateway has errored — parent falls back to poster. */
   onError?: () => void
+  /** SSR proxy hint: the server-rendered detail page threads its
+   *  isWebKitOnlyUA() here so the initial (server + first-client) gateway
+   *  list is proxy-first for server-detectable constrained surfaces, instead
+   *  of emitting the direct url and flipping on hydration. Feed cards mount
+   *  client-side (no SSR) so they leave this false. See videoGatewayUrls. */
+  ssrProxyHint?: boolean
 }
 
 /**
@@ -63,12 +69,16 @@ interface InlineVideoProps {
  *   - currentTime resume across surfaces
  *   - feed quiets while a committed (detail) video is open (videoFocus)
  */
-export function InlineVideo({ src, controls = false, className, onError }: InlineVideoProps) {
+export function InlineVideo({ src, controls = false, className, onError, ssrProxyHint = false }: InlineVideoProps) {
   const ref = useRef<HTMLVideoElement>(null)
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
 
-  const gateways = useMemo(() => videoGatewayUrls(src), [src])
+  // ssrProxyHint is a stable prop (identical server + client), so the proxy
+  // decision is consistent through hydration for the surfaces the server can
+  // detect; the client-only checks inside videoGatewayUrls still OR in for
+  // iframe/RN cases the server can't see.
+  const gateways = useMemo(() => videoGatewayUrls(src, ssrProxyHint), [src, ssrProxyHint])
   const [gatewayIndex, setGatewayIndex] = useState(0)
   const [loaded, setLoaded] = useState(false)
 
@@ -222,14 +232,25 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
       tryPlay()
     })
 
-    // One IntersectionObserver reports this card's distance to the viewport
-    // centre + whether it actually overlaps the viewport. rootMargin '100%' =
-    // "within one viewport above/below", so approaching cards are reported (and
-    // warmed) before they scroll in, while PLAY gates on true-viewport overlap
-    // (computed from the rect below) so a just-off-screen card never wins a
-    // decode slot. The rects come from the entry the browser already computed —
-    // no main-thread getBoundingClientRect, no layout thrash.
-    const io = new IntersectionObserver(
+    // TWO observers, because one cannot serve both jobs. The play gate needs
+    // TRUE-viewport overlap; the distance/buffer ranking needs the wide
+    // ±1-viewport root so approaching cards are warmed before they scroll in.
+    // A single wide-root observer cannot report the play gate: a card SHORTER
+    // than the viewport (the common feed card) is fully contained in the 3×
+    // viewport wide root for its entire on-screen transit, so its
+    // intersectionRatio pins at 1.0 and NO threshold fires while it is
+    // actually visible — the callback only fires at the ±1-viewport
+    // boundaries, where the card is off-screen. Sampling `visible` there left
+    // below-the-fold cards reporting visible=false forever, so they never won
+    // a play slot and never autoplayed. Split them: a true-viewport observer
+    // (rootMargin 0) flips `visible` on real entry/exit, and the wide observer
+    // keeps ranking distance. The rects come from the entry the browser
+    // already computed — no main-thread getBoundingClientRect, no thrash.
+    let lastDistance = Number.POSITIVE_INFINITY
+    let lastVisible = false
+    const push = () => reg.update(lastDistance, lastVisible)
+
+    const distanceIo = new IntersectionObserver(
       ([entry]) => {
         if (!entry) return
         const br = entry.boundingClientRect
@@ -239,15 +260,26 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
           typeof window !== 'undefined' && window.innerHeight
             ? window.innerHeight
             : entry.rootBounds?.height ?? 0
-        const distance = Math.abs((br.top + br.bottom) / 2 - vpH / 2)
-        const visible = br.bottom > 0 && br.top < vpH
-        reg.update(distance, visible)
+        lastDistance = Math.abs((br.top + br.bottom) / 2 - vpH / 2)
+        push()
       },
       { threshold: [0, 0.25, 0.5, 0.75, 1], rootMargin: '100% 0px' },
     )
-    io.observe(el)
+    // Play gate: rootMargin 0 → fires the moment the card truly enters/leaves
+    // the viewport, so `visible` is correct for cards of any height.
+    const visibilityIo = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry) return
+        lastVisible = entry.isIntersecting
+        push()
+      },
+      { threshold: 0 },
+    )
+    distanceIo.observe(el)
+    visibilityIo.observe(el)
     return () => {
-      io.disconnect()
+      distanceIo.disconnect()
+      visibilityIo.disconnect()
       reg.release()
     }
     // tryPlay is intentionally omitted — it only reads refs, and adding it

@@ -32,6 +32,11 @@ interface MomentVideoProps {
    *  moments the poster is the LCP candidate (the <video> doesn't paint
    *  until metadata loads). */
   priority?: boolean
+  /** SSR proxy hint forwarded to InlineVideo — the detail page passes its
+   *  server-computed isWebKitOnlyUA() so the SSR-rendered <video src> is
+   *  proxy-first (not direct) for server-detectable constrained surfaces.
+   *  Feed cards mount client-side and leave this false. */
+  ssrProxyHint?: boolean
 }
 
 /**
@@ -54,6 +59,7 @@ export function MomentVideo({
   className,
   onAllError,
   priority,
+  ssrProxyHint,
 }: MomentVideoProps) {
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
 
@@ -138,6 +144,7 @@ export function MomentVideo({
       <InlineVideo
         src={src}
         controls={!!controls}
+        ssrProxyHint={ssrProxyHint}
         onError={() => setVideoFailed(true)}
         // When a poster layer sits behind it, the video overlays it
         // (absolute inset-0); otherwise it sizes itself in-flow.
