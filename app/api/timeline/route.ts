@@ -3,6 +3,7 @@ import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope 
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds } from '@/lib/saleEnds'
+import { bestEffort } from '@/lib/bestEffort'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -45,9 +46,12 @@ const FANOUT_CONCURRENCY = 10
 // One-shot-per-UA diagnostic: the mobile Mini App host's WebView sends a
 // custom User-Agent that server-side surface detection cannot currently
 // recognize (VIDEO_PLAYBACK_RCA.md open items) and phones offer no
-// inspector — log each distinct UA once so an operator can read it out of
-// the app logs. Bounded set; remove once the UA is captured and encoded
-// into the server-side surface tests.
+// inspector — record each distinct UA once, to the app log AND to a Redis
+// set so an operator can read it from anywhere with the Upstash REST creds
+// (SMEMBERS debug:ua-seen) without shelling into the box. The in-process
+// set bounds writes per process; UA variety bounds the Redis set itself.
+// Remove once the UA is captured and encoded into verify-surfaces.
+const UA_SEEN_KEY = 'debug:ua-seen'
 const seenUAs = new Set<string>()
 
 // Throttle for the fan-out-thinning warning below — it fires on every request
@@ -98,7 +102,13 @@ export async function GET(req: NextRequest) {
   const ua = req.headers.get('user-agent') ?? ''
   if (!seenUAs.has(ua) && seenUAs.size < 100) {
     seenUAs.add(ua)
-    console.log('[timeline] ua-seen', { ua, limit: searchParams.get('limit') })
+    const limitParam = searchParams.get('limit')
+    console.log('[timeline] ua-seen', { ua, limit: limitParam })
+    // Stamp the requested limit alongside the UA so one SMEMBERS read shows
+    // both which client string arrived and which page size it was served.
+    void redis
+      .sadd(UA_SEEN_KEY, `limit=${limitParam ?? '?'} :: ${ua}`)
+      .catch(bestEffort('timeline.uaSeen'))
   }
   // page is capped: fetchLimit below is `page * limit`, sent verbatim as the
   // upstream /timeline `limit` for EVERY tracked collection in parallel. An
