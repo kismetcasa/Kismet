@@ -4,6 +4,8 @@ import { gatewayUrls } from '@/lib/arweave/gateways'
 import { readBodyBounded } from '@/lib/boundedBody'
 import { fetchGatewayResolved } from '@/lib/media/gatewayFetch'
 import { LRUCache } from '@/lib/lruCache'
+import { redis } from '@/lib/redis'
+import { bestEffort } from '@/lib/bestEffort'
 import {
   countWithWindow,
   parseRangeHeader,
@@ -46,6 +48,32 @@ let lastSynthWarnAt = 0
 // passthrough, or the count-through below — is true forever; the LRU only
 // bounds memory.
 const totalBytesCache = new LRUCache<string, number>(2048)
+// Redis mirror of the totals cache. The in-memory LRU dies on every deploy
+// and is per-replica, so each restart re-paid the count-through's full-file
+// read for every video's first ranged request — count time scales with file
+// size, which surfaced in the field as "small videos start fast, big ones
+// take much longer" right after deploys. Totals are immutable (content-
+// addressed), so persist them: read-through only on the exact path that
+// would otherwise COUNT (one ~tens-of-ms REST call in place of a
+// seconds-long read), write-behind whenever a total is learned. Redis
+// failure degrades to today's behavior.
+const TOTAL_KEY_PREFIX = 'img:total:'
+
+function learnTotal(u: string, total: number): void {
+  if (totalBytesCache.get(u) === total) return
+  totalBytesCache.set(u, total)
+  void redis.set(TOTAL_KEY_PREFIX + u, total).catch(bestEffort('img.totalPersist'))
+}
+
+async function persistedTotal(u: string): Promise<number | null> {
+  try {
+    const v = await redis.get(TOTAL_KEY_PREFIX + u)
+    const n = Number(v)
+    return v != null && Number.isSafeInteger(n) && n >= 0 ? n : null
+  } catch {
+    return null
+  }
+}
 // Count-through gate: only buffer request windows up to this size (iOS
 // probes are 2 bytes; generous headroom for players probing larger heads
 // or moov tails via suffix ranges).
@@ -292,12 +320,21 @@ export async function GET(req: NextRequest) {
   // Content-Length, a 206's Content-Range denominator) — content-addressed,
   // so once learned it's true forever.
   const headerTotal = totalFromResponse(upstream, declaredLen)
-  if (headerTotal != null) totalBytesCache.set(u, headerTotal)
+  if (headerTotal != null) learnTotal(u, headerTotal)
 
   if (range && upstream.status !== 206) {
     const parsed = parseRangeHeader(range)
     if (parsed) {
       let total = headerTotal ?? totalBytesCache.get(u) ?? null
+      // Cold memory (fresh deploy / other replica): one Redis round trip on
+      // exactly the path that would otherwise re-read the whole file.
+      if (total == null) {
+        const persisted = await persistedTotal(u)
+        if (persisted != null) {
+          totalBytesCache.set(u, persisted)
+          total = persisted
+        }
+      }
 
       // Count-through: the upstream ignored the range AND told us nothing
       // about its size. Serving `bytes 0-1/*` here is spec-legal but
@@ -323,7 +360,7 @@ export async function GET(req: NextRequest) {
           })
           if (counted.kind === 'counted') {
             total = counted.total
-            totalBytesCache.set(u, total)
+            learnTotal(u, total)
             console.log('[img] counted total for rangeless upstream', { u, total })
             const plan = planSyntheticRange(parsed, total)
             if (plan.kind === 'unsatisfiable') {
@@ -435,7 +472,7 @@ export async function GET(req: NextRequest) {
   // byte count isn't the file size).
   const harvestTotal =
     upstream.status === 200 && !range
-      ? (totalBytes: number) => totalBytesCache.set(u, totalBytes)
+      ? (totalBytes: number) => learnTotal(u, totalBytes)
       : undefined
   return new Response(
     passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES, harvestTotal),

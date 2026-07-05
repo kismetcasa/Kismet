@@ -42,6 +42,14 @@ async function mapWithConcurrency<T, R>(
 
 const FANOUT_CONCURRENCY = 10
 
+// One-shot-per-UA diagnostic: the mobile Mini App host's WebView sends a
+// custom User-Agent that server-side surface detection cannot currently
+// recognize (VIDEO_PLAYBACK_RCA.md open items) and phones offer no
+// inspector — log each distinct UA once so an operator can read it out of
+// the app logs. Bounded set; remove once the UA is captured and encoded
+// into the server-side surface tests.
+const seenUAs = new Set<string>()
+
 // Throttle for the fan-out-thinning warning below — it fires on every request
 // once the tracked set is large enough, and one line a minute is signal while
 // one per request is noise.
@@ -87,6 +95,11 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
+  const ua = req.headers.get('user-agent') ?? ''
+  if (!seenUAs.has(ua) && seenUAs.size < 100) {
+    seenUAs.add(ua)
+    console.log('[timeline] ua-seen', { ua, limit: searchParams.get('limit') })
+  }
   // page is capped: fetchLimit below is `page * limit`, sent verbatim as the
   // upstream /timeline `limit` for EVERY tracked collection in parallel. An
   // uncapped page (e.g. 1e8) would fan out billions-sized upstream requests —
