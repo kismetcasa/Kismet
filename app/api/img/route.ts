@@ -58,11 +58,19 @@ const totalBytesCache = new LRUCache<string, number>(2048)
 // seconds-long read), write-behind whenever a total is learned. Redis
 // failure degrades to today's behavior.
 const TOTAL_KEY_PREFIX = 'img:total:'
+// Generous TTL on the persisted totals: the value is immutable (content-
+// addressed), so expiry only forces a re-learn (one count-through) on an
+// asset untouched for this long — cheap self-heal — while bounding the key
+// set so the mirror can't grow one key per unique asset forever. Refreshed
+// on every write (learnTotal), so any asset still being viewed stays warm.
+const TOTAL_TTL_SECONDS = 90 * 24 * 60 * 60
 
 function learnTotal(u: string, total: number): void {
   if (totalBytesCache.get(u) === total) return
   totalBytesCache.set(u, total)
-  void redis.set(TOTAL_KEY_PREFIX + u, total).catch(bestEffort('img.totalPersist'))
+  void redis
+    .set(TOTAL_KEY_PREFIX + u, total, { ex: TOTAL_TTL_SECONDS })
+    .catch(bestEffort('img.totalPersist'))
 }
 
 async function persistedTotal(u: string): Promise<number | null> {
