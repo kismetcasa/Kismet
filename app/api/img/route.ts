@@ -4,6 +4,8 @@ import { gatewayUrls } from '@/lib/arweave/gateways'
 import { readBodyBounded } from '@/lib/boundedBody'
 import { fetchGatewayResolved } from '@/lib/media/gatewayFetch'
 import { LRUCache } from '@/lib/lruCache'
+import { redis } from '@/lib/redis'
+import { bestEffort } from '@/lib/bestEffort'
 import {
   countWithWindow,
   parseRangeHeader,
@@ -46,6 +48,43 @@ let lastSynthWarnAt = 0
 // passthrough, or the count-through below — is true forever; the LRU only
 // bounds memory.
 const totalBytesCache = new LRUCache<string, number>(2048)
+// Redis mirror of the totals cache. The in-memory LRU dies on every deploy
+// and is per-replica, so each restart re-paid the count-through's full-file
+// read for every video's first ranged request — count time scales with file
+// size, which surfaced in the field as "small videos start fast, big ones
+// take much longer" right after deploys. Totals are immutable (content-
+// addressed), so persist them: read-through only on the exact path that
+// would otherwise COUNT (one ~tens-of-ms REST call in place of a
+// seconds-long read), write-behind whenever a total is learned. Redis
+// failure degrades to today's behavior.
+const TOTAL_KEY_PREFIX = 'img:total:'
+
+function learnTotal(u: string, total: number): void {
+  if (totalBytesCache.get(u) === total) return
+  totalBytesCache.set(u, total)
+  void redis.set(TOTAL_KEY_PREFIX + u, total).catch(bestEffort('img.totalPersist'))
+}
+
+async function persistedTotal(u: string): Promise<number | null> {
+  try {
+    const v = await redis.get(TOTAL_KEY_PREFIX + u)
+    const n = Number(v)
+    return v != null && Number.isSafeInteger(n) && n >= 0 ? n : null
+  } catch {
+    return null
+  }
+}
+
+// Doomed-asset memo. Some sources die mid-body on EVERY attempt (observed
+// live: a >50MB poster whose upstream edge closes the socket at ~52.4MB,
+// exactly reproducibly) — and the buffering paths (resize, count-through)
+// pay the full read each time a feed card scrolls past. Remember mid-read
+// failures briefly and answer 502 immediately so a broken asset costs one
+// doomed read per minute, not one per viewer-scroll. Short TTL: a healed
+// upstream self-recovers within a minute; nothing is ever poisoned durably
+// (the 502s are no-store).
+const failedReadMemo = new LRUCache<string, number>(256)
+const FAILED_READ_TTL_MS = 60_000
 // Count-through gate: only buffer request windows up to this size (iOS
 // probes are 2 bytes; generous headroom for players probing larger heads
 // or moov tails via suffix ranges).
@@ -187,6 +226,15 @@ export async function GET(req: NextRequest) {
   // without this pass-through the proxy was effectively forcing
   // progressive-only playback even when the upstream gateway supported
   // ranges natively.
+  // Doomed-asset fast-fail: a source that died mid-read moments ago will
+  // die again — don't re-pay a multi-MB buffered read per viewer-scroll.
+  const failedAt = failedReadMemo.get(u)
+  if (failedAt !== undefined && Date.now() - failedAt < FAILED_READ_TTL_MS) {
+    return new Response('upstream repeatedly failing mid-read', {
+      status: 502,
+      headers: { 'Cache-Control': 'no-store' },
+    })
+  }
   const range = req.headers.get('range')
   const forwardHeaders = range ? { range } : undefined
   const upstream = await raceFetchGateways(
@@ -227,7 +275,20 @@ export async function GET(req: NextRequest) {
     !upstreamCt.startsWith('image/svg') &&
     (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
   if (canResize) {
-    const read = await readBodyBounded(upstream.body, MAX_RESIZE_SOURCE_BYTES)
+    // The buffered read can reject mid-body (observed: an upstream edge that
+    // closes the socket ~52MB into a >50MB poster, every attempt). Uncaught,
+    // that surfaced as a 500 "failed to pipe response" after wasting the
+    // whole read — catch it, memo the asset, fail fast and cacheable-never.
+    let read: Awaited<ReturnType<typeof readBodyBounded>>
+    try {
+      read = await readBodyBounded(upstream.body, MAX_RESIZE_SOURCE_BYTES)
+    } catch {
+      if (!req.signal.aborted) failedReadMemo.set(u, Date.now())
+      return new Response('upstream stream failed mid-read', {
+        status: 502,
+        headers: { 'Cache-Control': 'no-store' },
+      })
+    }
     if (read.kind === 'overflow') {
       // The header claimed small (or said nothing) but the body is past the
       // resize cap — give it the exact treatment a truthfully-declared large
@@ -292,12 +353,21 @@ export async function GET(req: NextRequest) {
   // Content-Length, a 206's Content-Range denominator) — content-addressed,
   // so once learned it's true forever.
   const headerTotal = totalFromResponse(upstream, declaredLen)
-  if (headerTotal != null) totalBytesCache.set(u, headerTotal)
+  if (headerTotal != null) learnTotal(u, headerTotal)
 
   if (range && upstream.status !== 206) {
     const parsed = parseRangeHeader(range)
     if (parsed) {
       let total = headerTotal ?? totalBytesCache.get(u) ?? null
+      // Cold memory (fresh deploy / other replica): one Redis round trip on
+      // exactly the path that would otherwise re-read the whole file.
+      if (total == null) {
+        const persisted = await persistedTotal(u)
+        if (persisted != null) {
+          totalBytesCache.set(u, persisted)
+          total = persisted
+        }
+      }
 
       // Count-through: the upstream ignored the range AND told us nothing
       // about its size. Serving `bytes 0-1/*` here is spec-legal but
@@ -316,14 +386,26 @@ export async function GET(req: NextRequest) {
               ? { start: parsed.start, end: parsed.end }
               : null
         if (windowSpec) {
-          const counted = await countWithWindow(upstream.body.getReader(), {
-            window: windowSpec,
-            maxBytes: MAX_DECLARED_BYTES,
-            maxMs: COUNT_BUDGET_MS,
-          })
+          // Same mid-read failure class as the resize buffer above — the
+          // count walks the whole body and an upstream that dies partway
+          // must not become an unhandled 500 (or a per-viewer repeat cost).
+          let counted: Awaited<ReturnType<typeof countWithWindow>>
+          try {
+            counted = await countWithWindow(upstream.body.getReader(), {
+              window: windowSpec,
+              maxBytes: MAX_DECLARED_BYTES,
+              maxMs: COUNT_BUDGET_MS,
+            })
+          } catch {
+            if (!req.signal.aborted) failedReadMemo.set(u, Date.now())
+            return new Response('upstream stream failed mid-read', {
+              status: 502,
+              headers: { 'Cache-Control': 'no-store' },
+            })
+          }
           if (counted.kind === 'counted') {
             total = counted.total
-            totalBytesCache.set(u, total)
+            learnTotal(u, total)
             console.log('[img] counted total for rangeless upstream', { u, total })
             const plan = planSyntheticRange(parsed, total)
             if (plan.kind === 'unsatisfiable') {
@@ -435,7 +517,7 @@ export async function GET(req: NextRequest) {
   // byte count isn't the file size).
   const harvestTotal =
     upstream.status === 200 && !range
-      ? (totalBytes: number) => totalBytesCache.set(u, totalBytes)
+      ? (totalBytes: number) => learnTotal(u, totalBytes)
       : undefined
   return new Response(
     passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES, harvestTotal),
