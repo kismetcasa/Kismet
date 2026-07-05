@@ -21,6 +21,12 @@ touches, how they fit together, and why each exists — validated against the co
 > first becomes visible, so for many files "first commit" means "entered the clone
 > here", not "was written here". The unusually detailed commit messages are mined
 > as the authoritative design record where granular history is unavailable.
+>
+> **Validation.** Every claim in this document was subsequently re-verified in a
+> second, independent adversarial pass: ~600 discrete claims (file:line anchors,
+> addresses, constants, quotas/TTLs/caps, mechanism and ordering claims, and all
+> 63 cited commit refs) were traced back to source and git. The corrections from
+> that pass (a handful of commit attributions and step orderings) are folded in.
 
 **Companion docs already in the repo:** `SCALING_AUDIT.md` (scale cliffs),
 `AVAILABILITY_RUNBOOK.md` (single-container uptime), `REMEDIATION_PLAYBOOK.md`
@@ -89,7 +95,8 @@ fallbacks (`mainnet.base.org`, viem's default) rate-limit under load.
 |---|---|---|---|
 | Zora 1155 FixedPriceSaleStrategy (inprocess variant) | `0x2994762aA0E4C750c51f333C10d81961faEBE785` | ETH primary mints | `lib/zoraMint.ts:31` |
 | Zora ERC20Minter | `0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014` | USDC primary mints | `lib/zoraMint.ts:32` |
-| Zora 1155 factory | `0x777777E8850d8D6d98De2B5f64fae401F96eFF31` (`lib/zoraMint`) / `0x540C18B7f99b3b599c6FeB99964498931c211858` (`lib/collections.ts:12`) | Collection deploy | `lib/collections.ts:12` |
+| Zora 1155 factory | `0x540C18B7f99b3b599c6FeB99964498931c211858` | Collection deploy (inprocess-documented Base factory) | `lib/collections.ts:12` |
+| Canonical Zora ERC20Minter | `0x777777E8850d8D6d98De2B5f64fae401F96eFF31` | Reference only — the address inprocess uses on *other* chains and Zora-native Base collections use; Kismet targets the inprocess-specific deployment above | `lib/zoraMint.ts:26-30` (comment) |
 | Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` | ETH collect-all batching (`aggregate3Value`) | `lib/zoraMint.ts:141` |
 | USDC (Base) | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | USDC sale currency | `lib/zoraMint.ts:35` |
 | **Seaport 1.5** | `0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC` (EIP-712 domain `version: '1.5'`) | Secondary marketplace settlement | `lib/seaport.ts:11,93` |
@@ -235,7 +242,9 @@ the creator's **own** per-creator smart wallet, obtainable **only** via the live
 `GET /smartwallet` endpoint (no counterfactual derivation), so an outage of that
 endpoint simultaneously broke deploy-time ADMIN grants, the mint preflight, and the
 authorize banner. The git history is dominated by hardening that fragility:
-`c40cac7` (wrong `artist_wallet` param → 400), `6e5cdcd` (a bogus `x-api-key` on a
+`c40cac7` (a stale `artist_wallet` param sent alongside the correct one → upstream
+400, surfaced as 502), `6e5cdcd` (a spurious `x-api-key` header — the key value was
+valid, but sending any auth header on a
 public read → 500), `3550ab3` (durable Redis cache restoring the fixed-address
 design's robustness), `8fda3a4` (split `notFound` from transient), `17f45ee`
 (un-mask the boot drift-detector; records the audit that **Agent Collect is
@@ -343,8 +352,8 @@ only covers splits Kismet minted and stored; the Redis mirror can drift from cha
 #### C1. inprocess.world API integration (`inprocess-api`)
 **What.** Kismet's entire backend — a Zora-on-Base indexer + ERC-4337 relay reached
 at `https://api.inprocess.world/api`. **Reads** (`/timeline`, `/moment`,
-`/collection(s)`, `/comments`, `/payments`, `/transfers`, `/smartwallet`) are
-keyless with 8 s timeouts; **writes** (`/moment/create[/writing]`, `/distribute`,
+`/collection(s)`, `/moment/comments`, `/payments`, `/transfers`, `/smartwallet`) are
+keyless with 8 s timeouts (10 s for `/smartwallet`); **writes** (`/moment/create[/writing]`, `/distribute`,
 `PATCH /moment`) carry `x-api-key: INPROCESS_API_KEY` and execute a gas-sponsored
 userOp as the caller's per-creator smart wallet (45–60 s timeouts).
 
@@ -356,11 +365,13 @@ authoritative paid-sales record from which earnings are rebuilt. History: `6e5cd
 established the read-keyless/write-keyed split; `24e8da9` hardened `/transfers`
 shape validation (a wrong-shaped 200 now aborts the scan instead of overwriting
 every artist's totals with a truncated partial); `83767c1` treated inprocess as an
-unreliable SPOF (bounded timeouts, strict shapes, observability); `1bf7b1b`
-made `/distribute` treat timeouts as indeterminate.
+unreliable SPOF (bounded timeouts, strict shapes, observability). `/distribute`'s
+indeterminate-timeout handling (502, never auto-retry) shipped with the subsystem at
+`1160af1`; `1bf7b1b` later stopped its 502 body leaking the raw upstream error.
 
-**Key mechanisms.** The `proxyMintRequest` funnel (intent auth → gates → quota →
-smart-wallet preflight → field sanitization → `createReferral` overwrite → forward →
+**Key mechanisms.** The `proxyMintRequest` funnel (intent auth → gates → splits
+validation → quota → field sanitization + `createReferral` overwrite → smart-wallet
+preflight → forward →
 `after()` side effects); durable two-layer smart-wallet cache; KV creator override
 preferred over inprocess `momentAdmins` (which credit the platform SW for delegated
 mints).
@@ -386,8 +397,9 @@ everything else is incident scar tissue: `e345018` added **cross-reload resume
 persistence** because salted data-item ids never dedupe, so a creator retrying after
 a failed mint re-uploaded (and re-billed) byte-identical files; `d7c090d` surfaced
 the opaque Turbo 402 (credit exhaustion); `0ce38ee` turned propagation verification
-into a soft-gate (Turbo guarantees durability on txid return); `1bf7b1b` added the
-per-address sign-calls/upload-bytes quotas.
+into a soft-gate (Turbo guarantees durability on txid return). The per-address
+sign-calls/upload-bytes quotas shipped with the subsystem at `1160af1`; `1bf7b1b`
+added the sibling `transcode` quota kind.
 
 **Key mechanisms.** Duck-typed Arweave signer (only `publicKey`+`sign`); `paidBy`
 shareCredits so users need no Turbo balance; deterministic 4xx short-circuit; a
@@ -461,7 +473,7 @@ revocation.
 **What.** Four deliberately-separated auth paths: **user SIWE** cookie sessions
 (EIP-4361, 7-day sliding, `__Host-` opaque token), **Farcaster Quick-Auth** JWTs
 (the Bearer fallback for cookie-hostile iframes), **intent-auth** (per-action EIP-712
-signatures binding every economic field for mint/agent actions), and a separate
+signatures binding every economic field for mint/write actions), and a separate
 **admin/curator SIWE** session (`SameSite=Strict`, 4 h, gated on
 `ADMIN_ADDRESS`/`CURATOR_ADDRESSES`).
 
@@ -476,7 +488,8 @@ that runs on every authed Mini App request (a hung upstream drove OOM).
 **Key mechanisms.** Verify-then-consume nonce ordering everywhere (signature checked
 before atomic Redis `GETDEL`/`DEL`, so a bogus-signature flood can't burn a
 legitimate nonce); **domain==Host** binding (anti-phishing); ERC-1271 support free
-via viem `verifyHash`; strict separation of four Redis nonce/session namespaces and
+via viem `verifyHash`; strict separation of five Redis nonce/session namespaces
+(`nonce` / `auth-nonce` / `intent-nonce` / `session` / `auth-session`) and
 two cookie names; intent-auth is what makes `body.account` trustworthy for the
 downstream gate/blacklist/pause policy layer.
 
@@ -521,9 +534,10 @@ Redis leader lock, a periodic sweep, and a passive health signal.
 simultaneously the datastore and a coordination primitive. The shape is dominated by
 **cost** (`3a97179`: audited all 53 call sites — ~1M cmds/mo vs a 500K free cap →
 auto-pipelining, 15-min memo TTLs, passive PING-skipping readiness, write-through
-zsets) and **availability** (`80eae06`/`1bf7b1b`: retry cap 5→2 to stop an Upstash
-blip becoming a site-wide brownout, dedicated non-pipelined probe client, bounds
-against Upstash's 10 MB request cap).
+zsets) and **availability** (`80eae06`: dedicated non-pipelined probe client +
+dropping the unbounded warmup read; `1bf7b1b`: retry cap 5→2 to stop an Upstash
+blip becoming a site-wide brownout; `83767c1`: the hard bounds against Upstash's
+10 MB request cap — 512-key MGET chunking and write-side zset trims).
 
 **Key mechanisms.** `enableAutoPipelining` collapses same-tick commands into one
 REST round-trip; `safeRead`/`strictRead` two-contract helpers; `memoize`
@@ -689,8 +703,10 @@ sender on any off-platform transfer and **permanently taints** the tokenId
 you earn it through Kismet, and you can't buy one on OpenSea to become a creator, nor
 resell/launder a used Pass. A naive "holds the NFT" gate fails both goals. History:
 lands at `1160af1`; `d30958e` deferred pass-collection minting to on-chain ADMIN;
-`42d1c63` added CI guards for the Upstash string-vs-number flag bug; `3a97179` cut
-the per-recipient/per-tx Redis command inflation.
+`42d1c63` added CI guards for the Upstash string-vs-number flag bug; `a088224` had
+earlier collapsed the per-recipient platform-tx flag writes into one Lua eval (a
+200-recipient airdrop is one Redis command again), and `3a97179` cut command volume
+around the gate's blacklist/hidden-set reads (memo TTLs 5→15 min).
 
 **Key mechanisms.** Any-transfer-revokes invariant (unconditional `from` decrement
 on every non-mint transfer); permanent taint (a tainted tokenId can never confer
@@ -714,10 +730,12 @@ notifies recipients, credits Pass validity, and is throttled by a per-artist quo
 
 **Why.** Gift freshly-minted copies (especially the Pass NFT), with those gifts
 appearing in the profile, notifying recipients, and granting the validity needed to
-mint. The defining decision (`00a7e53`, 2026-06-21): the inprocess `/moment/airdrop`
-relay rejected "admin permission" regardless of ADMIN grants, so airdrops moved to be
-signed client-side by the creator's own already-authorized EOA (gas shifts to the
-user). A cluster of race fixes (`99789dc`/`727fb0e`/`082deb3`/`a088224`) hardened the
+mint. The defining decision (documented in `hooks/useAirdrop.ts:26-33`, landed via
+`1160af1`): the inprocess `/moment/airdrop` relay rejected "admin permission"
+regardless of ADMIN grants, so airdrops moved to be signed client-side by the
+creator's own already-authorized EOA (gas shifts to the user). The adjacent commit
+`00a7e53` (2026-06-21) locked in the on-chain-verified smart-wallet model that
+framed it — the operator wallet is the admin-write path, not the mint executor. A cluster of race fixes (`99789dc`/`727fb0e`/`082deb3`/`a088224`) hardened the
 Pass-validity credit and Redis command volume.
 
 **Key mechanisms.** On-chain proof before any side effect (decode `TransferSingle`,
@@ -820,11 +838,13 @@ the browser signs the Zora factory `createContract` directly, baking `setupActio
 that grant the inprocess SW + operator ADMIN so future relayed mints work.
 
 Path: prepare media client-side (transcode/poster/thumbhash/duration) → establish
-upload session → stream media browser→Turbo while `/api/sign` signs the 48-byte hash
-server-side → soft-gate propagation → sign the EIP-712 intent (the *only* wallet
-prompt on the mint path) → `POST /api/mint|/api/write` → `mint-proxy` (the platform
-trust boundary: verify intent, blacklist/pause/gate/quota, `validateSplitsArray`,
-smart-wallet ADMIN preflight, **overwrite `createReferral`**, strip private fields) →
+upload session (a cold web session signs a SIWE prompt here; Mini App users skip it)
+→ stream media browser→Turbo while `/api/sign` signs the 48-byte hash
+server-side → soft-gate propagation → sign the EIP-712 intent (the only *other*
+wallet prompt on the mint path) → `POST /api/mint|/api/write` → `mint-proxy` (the
+platform trust boundary: verify intent, blacklist/pause/gate, `validateSplitsArray`,
+quota, strip private fields + **overwrite `createReferral`**, then the smart-wallet
+ADMIN preflight) →
 forward to inprocess with `INPROCESS_API_KEY` → inprocess submits the userOp (Zora
 `setupNewToken` + SplitMain deploy) → synchronous `creditValidityOnce` for Pass mints
 → `after()` KV writes (`markCreatedMint`, `setMomentMeta`, splits index,
@@ -840,8 +860,8 @@ signs a Zora `mint()` (ETH) or `ERC20Minter.mint()` (USDC), then best-effort POS
 `verifyMintOnChain`, which fetches the receipt and requires a `TransferSingle` from
 the collection contract with `from=0x0, to=account, id=tokenId` (fail-closed 403).
 tokenId is `BigInt`-canonicalized (defeats `'01'` idempotency bypass); a `SET NX`
-idempotency gate; then trending zsets, collected list, synchronous
-`creditValidityOnce` (Pass), and a server-derived notification price. **Collect-all**
+idempotency gate; then synchronous `creditValidityOnce` (Pass), the trending zsets +
+collected list, and a server-derived notification price. **Collect-all**
 batches via Multicall3 (`aggregate3Value` for pure-ETH) or EIP-5792
 `wallet_sendCalls`. The **agent variant** returns inert EIP-5792 calldata that
 re-enters the same `/api/collect`. A **secondary buy** is a separate Seaport
@@ -877,9 +897,11 @@ tokenId if the transfer wasn't platform-flagged and wasn't Kismet-listed. Enforc
 down; the `usePassGate` client read is a UX hint only.
 
 ### 4.5 Media upload → delivery → playback
-Media bytes go **browser→Turbo→Arweave and never through the Kismet server** on
-upload; only the 48-byte deep hash (→`/api/sign`) and metadata JSON (→`/api/upload`)
-touch the server. On delivery, bytes come back via next/image's optimizer (still
+On the primary upload path media bytes go **browser→Turbo→Arweave without touching
+the Kismet server**; only the 48-byte deep hash (→`/api/sign`) and metadata JSON
+(→`/api/upload`) do. The one exception is the oversized-GIF fallback
+(`/api/transcode-gif`), where the server fetches the GIF from a gateway, transcodes
+it, and uploads the MP4 + poster bytes itself. On delivery, bytes come back via next/image's optimizer (still
 images, AVIF/WebP, 31-day edge cache) or `/api/img` (proxy for GIFs/large images and
 for video on WebKit/iframe/Mini-App), which races the gateway pool, follows
 arweave.net's 302→sandbox redirects manually so `Range` reaches the final host,
@@ -925,8 +947,8 @@ Next 15's built-in shutdown does it).
   fetch-clone leak patch) plus `[mem]` telemetry.
 - **Redis cost + the 10 MB request cap** shape the data layer: auto-pipelining,
   15-min memo TTLs, passive readiness, write-through zsets, MGET chunking, and
-  bounded fan-outs all exist to stay under ~500K commands/month and avoid unbounded
-  `SMEMBERS`.
+  bounded fan-outs all exist to pull command volume (measured ~1M/month) back toward
+  the 500K free cap and to avoid unbounded `SMEMBERS`.
 - **Treasury-critical constants** (`CREATE_REFERRAL`/`KISMET_REFERRAL`,
   `PLATFORM_FEE_RECIPIENT`, `RESIDENCIES_ADDRESS`) route real revenue; a silent env
   swap redirects future income. The server overwrites client-supplied referral to
@@ -938,7 +960,8 @@ Next 15's built-in shutdown does it).
   the only thing stopping the funding key from signing arbitrary data.
 - **Spend controls are layered but the ultimate backstop is operational.** Arweave
   credit drain is bounded by sign-call quotas but ultimately by keeping the wallet a
-  bounded float and alerting on balance; autonomous agent spend is bounded on-chain by
+  bounded float (balance alerting is recommended in `.env.example` but not yet
+  automated — see Finding 5); autonomous agent spend is bounded on-chain by
   the Spend Permission and operationally by the kill switch.
 
 ---
