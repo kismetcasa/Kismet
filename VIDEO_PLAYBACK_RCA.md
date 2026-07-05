@@ -304,11 +304,19 @@ avoid killing slow-but-alive loads.
 
 ### Open items (post-fix)
 
-1. **CDN in front of `/api/img`** (CDN_RUNBOOK) — still the biggest lever
-   for Mini App feel and the systemic answer to the box streaming every
-   constrained-surface byte (and to the count-through's one-time full
-   reads). Must forward `Range`/preserve `206` — the runbook's probes
-   verify it.
+1. **CDN in front of `/api/img` — now URGENT, not just high-leverage.**
+   With real totals live, AVFoundation trusts our ranges and seeks straight
+   to resume offsets — and on a rangeless upstream every mid-file range is
+   served by reading-and-discarding from byte 0 (observed live: gargoyle
+   cat is a 186,458,160-byte file; resume seeks produced
+   `bytes=30867456-…` and `bytes=112066560-…` requests = 30–112MB of
+   discarded origin reads each, plus ~155MB tail transfers per resume-view).
+   That is the "clicking into moments is slower on Mini Apps" report: the
+   player waits while the box skips to the offset. A CDN-cached full object
+   serves those mid-file ranges instantly at the edge and removes the
+   origin egress. Must forward `Range`/preserve `206` — the runbook's
+   probes verify it. (App-side interim considered and rejected: refusing
+   mid-file ranges breaks resume; capping skip depth breaks playback.)
 2. **Second gateway in the pool** — `lib/arweave/gateways.ts` is down to
    arweave.net alone; when it degrades there is no fallback anywhere.
    Re-add a curl-verified AR.IO gateway (file comment documents the
@@ -318,6 +326,15 @@ avoid killing slow-but-alive loads.
    `document.permissionsPolicy?.allowsFeature('autoplay')` in its console;
    a `false` means the host iframe lacks `allow="autoplay"` and no
    delivery fix can change it (detail playback via tap still works).
+   3b. **Mobile Mini App UA: captured and encoded (2026-07-05).** The
+   Warpcast RN WebView sends literally `warpcast` (Redis `debug:ua-seen`).
+   Now matched by `MOBILE_APP_SHELL_RE` in `lib/deviceUA.ts` (mobile +
+   webkit-only semantics), so SSR finally bakes the mobile treatment
+   (lazy-mount, mobile image policy, preload target) for that surface —
+   pinned in `verify-surfaces`. The ua-seen logger + Redis mirror are
+   removed; `DEL debug:ua-seen` in Upstash is optional cleanup. The
+   RN-WebView runtime leg REMAINS as the catch-all for future unknown
+   shells (also pinned).
 4. **Monitoring** — an external probe of
    `/api/img?u=ar://<known-txid>` with `Range: bytes=0-1` alerting on
    anything but `206` turns this class of outage into an alert instead of

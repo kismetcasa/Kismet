@@ -157,6 +157,23 @@ check('skip past EOF yields empty',
   (await drain(skipCapStream(sourceOf(body), { skipBytes: 50, emitBytes: 5, maxTotalBytes: 1000 }))) === '')
 check('emit cap larger than body yields remainder',
   (await drain(skipCapStream(sourceOf(body), { skipBytes: 8, emitBytes: 100, maxTotalBytes: 1000 }))) === 'ij')
+{
+  let flagged = -1
+  const dying = new ReadableStream<Uint8Array>({
+    pull() {
+      throw new Error('socket closed mid-body')
+    },
+  }).getReader()
+  const outcome = await drain(
+    skipCapStream(dying, {
+      skipBytes: 0, emitBytes: null, maxTotalBytes: 1000,
+      onStreamError: (n) => { flagged = n },
+    }),
+  ).then(() => 'no-error', () => 'errored')
+  check('skipCap: upstream death errors the stream and fires onStreamError',
+    outcome === 'errored' && flagged === 0, `outcome=${outcome} flagged=${flagged}`)
+}
+
 const capped = await drain(
   skipCapStream(sourceOf(body), { skipBytes: 0, emitBytes: null, maxTotalBytes: 4 }),
 ).then(() => 'no-error', (e: unknown) => (e instanceof Error ? e.message : 'error'))

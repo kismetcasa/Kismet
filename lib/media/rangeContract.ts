@@ -261,7 +261,14 @@ export async function countWithWindow(
  */
 export function skipCapStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  opts: { skipBytes: number; emitBytes: number | null; maxTotalBytes: number },
+  opts: {
+    skipBytes: number
+    emitBytes: number | null
+    maxTotalBytes: number
+    /** Upstream body died mid-stream (not a client abort) — lets callers
+     *  arm fail-fast state; the stream itself still errors. */
+    onStreamError?: (consumedBytes: number) => void
+  },
 ): ReadableStream<Uint8Array> {
   let toSkip = opts.skipBytes
   let remaining = opts.emitBytes
@@ -271,7 +278,15 @@ export function skipCapStream(
       // Loop until we enqueue something, close, or error — a pull that
       // returns without any of those stalls the consumer forever.
       for (;;) {
-        const { done, value } = await reader.read()
+        let step: ReadableStreamReadResult<Uint8Array>
+        try {
+          step = await reader.read()
+        } catch (err) {
+          opts.onStreamError?.(consumed)
+          controller.error(err)
+          return
+        }
+        const { done, value } = step
         if (done) {
           controller.close()
           return
