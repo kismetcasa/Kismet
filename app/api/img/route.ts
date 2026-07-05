@@ -58,11 +58,19 @@ const totalBytesCache = new LRUCache<string, number>(2048)
 // seconds-long read), write-behind whenever a total is learned. Redis
 // failure degrades to today's behavior.
 const TOTAL_KEY_PREFIX = 'img:total:'
+// Generous TTL on the persisted totals: the value is immutable (content-
+// addressed), so expiry only forces a re-learn (one count-through) on an
+// asset untouched for this long — cheap self-heal — while bounding the key
+// set so the mirror can't grow one key per unique asset forever. Refreshed
+// on every write (learnTotal), so any asset still being viewed stays warm.
+const TOTAL_TTL_SECONDS = 90 * 24 * 60 * 60
 
 function learnTotal(u: string, total: number): void {
   if (totalBytesCache.get(u) === total) return
   totalBytesCache.set(u, total)
-  void redis.set(TOTAL_KEY_PREFIX + u, total).catch(bestEffort('img.totalPersist'))
+  void redis
+    .set(TOTAL_KEY_PREFIX + u, total, { ex: TOTAL_TTL_SECONDS })
+    .catch(bestEffort('img.totalPersist'))
 }
 
 async function persistedTotal(u: string): Promise<number | null> {
@@ -127,6 +135,12 @@ function passthroughStream(
   // the opportunistic totals harvest (see totalBytesCache): any full 200
   // that finishes teaches us the file's exact size for later range math.
   onDone?: (totalBytes: number) => void,
+  // Fires when the UPSTREAM body dies mid-stream (socket closed, terminated).
+  // Streaming paths can't switch to a 502 after headers are sent, but they
+  // can arm the doomed-asset memo so the NEXT request fails fast instead of
+  // re-paying a multi-MB read — the observed >50MB-poster storm came through
+  // here, not the buffered paths.
+  onStreamError?: (consumedBytes: number) => void,
 ): ReadableStream<Uint8Array> {
   let sent = 0
   let i = 0
@@ -153,7 +167,15 @@ function passthroughStream(
         guard(controller, chunk)
         return
       }
-      const { done, value } = await reader.read()
+      let step: ReadableStreamReadResult<Uint8Array>
+      try {
+        step = await reader.read()
+      } catch (err) {
+        onStreamError?.(sent)
+        controller.error(err)
+        return
+      }
+      const { done, value } = step
       if (done) {
         controller.close()
         onDone?.(sent)
@@ -235,6 +257,12 @@ export async function GET(req: NextRequest) {
       headers: { 'Cache-Control': 'no-store' },
     })
   }
+  // Arm the doomed-asset memo when an upstream body dies mid-stream on any
+  // delivery path. Client aborts (viewer scrolled away) don't count — only
+  // genuine upstream deaths.
+  const onUpstreamStreamError = () => {
+    if (!req.signal.aborted) failedReadMemo.set(u, Date.now())
+  }
   const range = req.headers.get('range')
   const forwardHeaders = range ? { range } : undefined
   const upstream = await raceFetchGateways(
@@ -294,13 +322,16 @@ export async function GET(req: NextRequest) {
       // resize cap — give it the exact treatment a truthfully-declared large
       // source gets: stream through untouched. The bytes already read are
       // replayed ahead of the live remainder, so nothing re-fetches.
-      return new Response(passthroughStream(read.chunks, read.reader, MAX_DECLARED_BYTES), {
-        status: 200,
-        headers: {
-          'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-          'Cache-Control': 'public, max-age=31536000, immutable',
+      return new Response(
+        passthroughStream(read.chunks, read.reader, MAX_DECLARED_BYTES, undefined, onUpstreamStreamError),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          },
         },
-      })
+      )
     }
     const original = read.buffer
     try {
@@ -491,6 +522,7 @@ export async function GET(req: NextRequest) {
             skipBytes: plan.start,
             emitBytes: plan.contentLength,
             maxTotalBytes: MAX_DECLARED_BYTES,
+            onStreamError: onUpstreamStreamError,
           }),
           { status: 206, headers },
         )
@@ -520,7 +552,7 @@ export async function GET(req: NextRequest) {
       ? (totalBytes: number) => learnTotal(u, totalBytes)
       : undefined
   return new Response(
-    passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES, harvestTotal),
+    passthroughStream([], upstream.body.getReader(), MAX_DECLARED_BYTES, harvestTotal, onUpstreamStreamError),
     {
       // Preserve 206 vs 200 — flattening 206 to 200 would make the
       // browser treat the partial body as the full file.

@@ -15,9 +15,22 @@
     "subtitle": "Onchain Art",
     "tagline": "collect, create, curate",
     "primaryCategory": "art-creativity",
-    "requiredChains": ["eip155:8453"],
-    "requiredCapabilities": ["wallet.getEthereumProvider"],
+    "requiredChains": [
+      "eip155:8453"
+    ],
+    "requiredCapabilities": [
+      "wallet.getEthereumProvider"
+    ],
     "webhookUrl": "https://kismet.art/api/farcaster/webhook",
-    "canonicalDomain": "kismet.art"
+    "canonicalDomain": "kismet.art",
+    "tags": [
+      "art",
+      "artists",
+      "collectibles",
+      "onchain",
+      "base"
+    ],
+    "ogTitle": "Kismet - Onchain Art",
+    "ogDescription": "Artists and collectors converge on Kismet"
   }
 }

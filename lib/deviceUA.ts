@@ -11,9 +11,19 @@
 // memory. Desktop browsers (incl. desktop Safari) have neither limit, so they
 // opt out of those mitigations.
 
+// Known phone-app webview shells whose custom UA carries NONE of the
+// standard tokens. Captured from production (Redis debug:ua-seen): the
+// Farcaster mobile Mini App host sends literally "warpcast" — no Mozilla,
+// no AppleWebKit, no iPhone/Android — so it fell through every UA test and
+// SSR rendered it the desktop tree (eager-mount, desktop image policy)
+// while the client-side RN-WebView leg could only fix runtime decisions.
+// These shells are phones by definition; extend the list as new hosts
+// appear, and pin each addition in scripts/verify-surfaces.ts.
+const MOBILE_APP_SHELL_RE = /warpcast/i
+
 /** Pure UA test — the one regex both surfaces share. */
 export function isMobileUaString(ua: string): boolean {
-  return /Mobile|Android|iPhone|iPad|iPod/i.test(ua)
+  return /Mobile|Android|iPhone|iPad|iPod/i.test(ua) || MOBILE_APP_SHELL_RE.test(ua)
 }
 
 /**
@@ -26,6 +36,14 @@ export function isMobileUaString(ua: string): boolean {
  * URL a WebKit viewer will actually play.
  */
 export function isWebKitOnlyUaString(ua: string): boolean {
+  // App-shell UAs (see MOBILE_APP_SHELL_RE) are included deliberately: the
+  // decisions this test drives — proxy-first media sourcing and the video
+  // preload target — are the correct ones inside those webviews on BOTH
+  // OSes (the constrained-pool failure mode is the embed, not the engine),
+  // and the client-side equivalents already route them via the RN-WebView
+  // leg. Server and client must agree or the detail preload warms a URL
+  // the player never requests.
+  if (MOBILE_APP_SHELL_RE.test(ua)) return true
   return ua.includes('AppleWebKit') && !ua.includes('Chrome') && !ua.includes('Chromium')
 }
 

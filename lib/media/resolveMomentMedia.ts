@@ -107,7 +107,7 @@ export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
     // through to the image branch below; audio/document types were never
     // renderable here and keep degrading to the poster path.
     const NON_VIDEO_EXT =
-      /\.(png|jpe?g|webp|avif|svg|mp3|wav|ogg|oga|flac|m4a|aac|opus|html?|pdf|txt|json|zip|glb|gltf|usdz)$/
+      /\.(png|jpe?g|gif|webp|avif|bmp|tiff?|hei[cf]|ico|apng|svg|mp3|wav|ogg|oga|flac|m4a|aac|opus|aiff?|midi?|wma|html?|pdf|txt|json|zip|glb|gltf|usdz)$/
     const animPath = anim.split(/[?#]/, 1)[0]!.toLowerCase()
     if (!vetoedByMime && !NON_VIDEO_EXT.test(animPath)) {
       return { kind: 'video', src: anim, poster: meta.image }

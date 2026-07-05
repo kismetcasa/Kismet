@@ -92,9 +92,17 @@ interface Props {
   // backdrop click) and the in-page link would navigate to "/" instead
   // of closing the overlay.
   inOverlay?: boolean
+  // Server-computed isWebKitOnlyUA(), passed only by the canonical
+  // (hard-navigation / share-link) page — the one path that SSRs this view
+  // with data. Threaded to the video so its SSR <video src> is proxy-first
+  // for WebKit-only surfaces (iOS Safari, the warpcast RN host) instead of
+  // emitting the direct url and wasting a doomed fetch on hydration. The IR
+  // overlay mounts client-side (soft nav), where client detection already
+  // handles it, so it leaves this false.
+  ssrWebKit?: boolean
 }
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
+export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay, ssrWebKit }: Props) {
   const router = useRouter()
   const { address: connectedAddress } = useAccount()
 
@@ -1118,6 +1126,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   thumbhash={meta.kismet_thumbhash}
                   showPosterLayer
                   controls
+                  ssrProxyHint={ssrWebKit}
                   className="w-full h-full object-contain"
                   onAllError={() => setVideoError(true)}
                 />
