@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { resolveCanonicalProfile } from '@/lib/addressUnion'
+import { getHiddenProfilesSet } from '@/lib/hidden-profiles'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
@@ -22,14 +23,25 @@ export async function GET(req: NextRequest) {
     new Set(raw.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean)),
   ).filter(isAddress).slice(0, MAX_ADDRESSES)
 
+  // Memoized set read, fetched once for the whole batch. Hidden profiles
+  // resolve to the empty identity — the client's documented fallback is
+  // shortAddress, so rows render address-only instead of leaking the name.
+  const hiddenProfiles = await getHiddenProfilesSet()
+
   const profiles: Record<string, { name: string; avatarUrl?: string }> = Object.fromEntries(
     await Promise.all(
       addresses.map(async (addr): Promise<[string, { name: string; avatarUrl?: string }]> => {
         try {
-          const [{ profile, farcaster }, ens] = await Promise.all([
+          const [{ profile, farcaster, canonicalAddress }, ens] = await Promise.all([
             resolveCanonicalProfile(addr),
             getCachedEns(addr),
           ])
+          // Direct + canonical check (no per-row sibling expansion — this is
+          // the N-address batch path; the canonical address is where any
+          // inherited identity actually lives, so it covers the leak).
+          if (hiddenProfiles.has(addr) || hiddenProfiles.has(canonicalAddress.toLowerCase())) {
+            return [addr, { name: '', avatarUrl: undefined }]
+          }
           // Warm ENS in the background on a miss, like the single route, so the
           // next view resolves the .eth name from cache.
           if (!profile.username && ens === undefined) after(() => resolveEnsAndCache(addr))

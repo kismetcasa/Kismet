@@ -2,7 +2,8 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce } from '@/lib/profile'
-import { resolveCanonicalProfile } from '@/lib/addressUnion'
+import { expandToFidSiblings, isProfileIdentityHidden, resolveCanonicalProfile } from '@/lib/addressUnion'
+import { getSessionAddress } from '@/lib/session'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
@@ -12,7 +13,7 @@ import { getArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 
 export async function GET(
-  _: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ address: string }> }
 ) {
   const { address } = await params
@@ -33,6 +34,20 @@ export async function GET(
     getCachedEns(address),
   ])
   const { profile, canonicalAddress } = canonical
+  // Admin-hidden profile → 404 for everyone but the owner (any of their
+  // FID-sibling wallets, via session cookie or Farcaster bearer). The
+  // owner keeps API access so their own profile page — which the SSR
+  // gate still renders for them — hydrates normally. 404 rather than 403
+  // so hidden state isn't distinguishable from a nonexistent profile.
+  if (await isProfileIdentityHidden(address, canonicalAddress)) {
+    const viewer = await getSessionAddress(req)
+    const isOwner =
+      !!viewer &&
+      (await expandToFidSiblings(canonicalAddress)).some(
+        (s) => s.toLowerCase() === viewer.toLowerCase(),
+      )
+    if (!isOwner) return errorResponse(404, 'Profile not found')
+  }
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private
   // figures come from /api/stats only when an owner views their own unpinned

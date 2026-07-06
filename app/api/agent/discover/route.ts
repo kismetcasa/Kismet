@@ -5,6 +5,10 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getListings, type Listing } from '@/lib/listings'
 import { fetchCollectionMoments, resolveUri, formatPrice, type Moment } from '@/lib/inprocess'
 import { getCollectedMembers } from '@/lib/collected'
+import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
+import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getListingVisibility } from '@/lib/hiddenListings'
 import { priceToBaseUnits } from '@/lib/agent/list'
 
 export const runtime = 'nodejs'
@@ -81,8 +85,24 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Agent discovery is a public feed surface — apply the same hide
+    // filters the timeline and search apply (hidden moments, hidden
+    // collections, admin-hidden creators). Without this, agents could
+    // enumerate content every human-facing feed suppresses.
+    const [hiddenMoments, hiddenCollections, hiddenUsers] = await Promise.all([
+      getHiddenMomentsSet(),
+      getHiddenCollectionsSet(),
+      getHiddenUsersSet(),
+    ])
+
     const rows: DiscoverRow[] = moments
       .filter((m) => m.address && m.token_id && !collected.has(`${m.address.toLowerCase()}:${m.token_id}`))
+      .filter((m) => {
+        const addr = m.address.toLowerCase()
+        if (hiddenMoments.has(`${addr}:${m.token_id}`) || hiddenCollections.has(addr)) return false
+        const creator = m.creator?.address?.toLowerCase()
+        return !creator || !hiddenUsers.has(creator)
+      })
       .slice(0, limit)
       .map((m) => ({
         kind: 'collectable',
@@ -116,7 +136,13 @@ export async function GET(req: NextRequest) {
 
   const cap = maxPrice && currency ? priceToBaseUnits(maxPrice, currency) : undefined
 
+  // Same visibility rules as the /api/listings market feed: per-listing
+  // hides, the hidden-moment/collection cascade, and hidden sellers/creators
+  // all apply to agents too.
+  const visibility = await getListingVisibility()
+
   const rows: DiscoverRow[] = listings
+    .filter((l) => !visibility.feedHidden(l))
     .filter((l) => (currency ? (l.currency ?? 'eth') === currency : true))
     .filter((l) => {
       if (cap === undefined) return true

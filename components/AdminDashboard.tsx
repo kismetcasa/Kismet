@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useAdmin } from '@/contexts/AdminContext'
+import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
 
 /**
@@ -160,7 +161,7 @@ function TokenGateCard() {
       href: '/admin/blacklist',
       title: 'Moderation',
       desc:
-        'three address lists: action blacklist (block mint/list/airdrop), pass blacklist (deny validity), hidden users (strip content from public feeds).',
+        'four address lists: action blacklist (block mint/list/airdrop), pass blacklist (deny validity), hidden users (strip content from public feeds), hidden profiles (404 the profile page).',
     },
   ]
 
@@ -194,10 +195,12 @@ function TokenGateCard() {
 type ParsedTarget =
   | { type: 'moment'; address: string; tokenId: string }
   | { type: 'collection'; address: string }
+  | { type: 'profile'; address: string }
 
-// Match the moment/collection segment in either a full URL or a bare path —
-// the leading `/` anchor handles both forms, so we don't need to URL-parse.
-// Anything after the address/tokenId (query strings, fragments) is ignored.
+// Match the moment/collection/profile segment in either a full URL or a bare
+// path — the leading `/` anchor handles both forms, so we don't need to
+// URL-parse. Anything after the address/tokenId (query strings, fragments)
+// is ignored.
 function parseTarget(input: string): ParsedTarget | null {
   const trimmed = input.trim()
   if (!trimmed) return null
@@ -205,7 +208,21 @@ function parseTarget(input: string): ParsedTarget | null {
   if (moment) return { type: 'moment', address: moment[1], tokenId: moment[2] }
   const collection = trimmed.match(/\/collection\/(0x[a-fA-F0-9]{40})/)
   if (collection) return { type: 'collection', address: collection[1] }
+  const profile = trimmed.match(/\/profile\/(0x[a-fA-F0-9]{40})/)
+  if (profile) return { type: 'profile', address: profile[1] }
   return null
+}
+
+// Row shape returned by GET /api/admin/hide for a moment's marketplace
+// listings — includes already-hidden ones the public feed filters out.
+type AdminListingRow = {
+  id: string
+  seller: string
+  price: string
+  currency: 'eth' | 'usdc'
+  name?: string
+  expiresAt: number
+  hidden: boolean
 }
 
 function HideContentCard({
@@ -216,6 +233,10 @@ function HideContentCard({
   const [link, setLink] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [currentlyHidden, setCurrentlyHidden] = useState<boolean | null>(null)
+  // null = not applicable (no moment parsed). 'error' covers both fetch
+  // failures and a declined SIWE prompt — the GET is admin-gated.
+  const [listings, setListings] = useState<AdminListingRow[] | 'loading' | 'error' | null>(null)
+  const [listingBusy, setListingBusy] = useState<string | null>(null)
 
   const target = parseTarget(link)
   // Effect deps need stable scalars, not a fresh object every render.
@@ -225,13 +246,34 @@ function HideContentCard({
 
   // Re-fetch current visibility on every parsed target so the toggle
   // label reflects actual server state (and we don't issue redundant
-  // hide/unhide writes).
+  // hide/unhide writes). Moment/collection status comes from the public
+  // hide GETs; profile status has no public endpoint (hidden state
+  // shouldn't be probeable), so it reads the admin-gated list via
+  // withSession like the moderation page does.
   useEffect(() => {
     if (!targetType || !targetAddress) {
       setCurrentlyHidden(null)
       return
     }
     let cancelled = false
+    if (targetType === 'profile') {
+      withSession(async () => {
+        const res = await fetch('/api/admin/hidden-profiles')
+        if (!res.ok) return null
+        const d = (await res.json()) as { addresses?: string[] }
+        return Array.isArray(d.addresses) ? d.addresses : null
+      })
+        .then((addrs) => {
+          if (cancelled) return
+          setCurrentlyHidden(addrs ? addrs.includes(targetAddress.toLowerCase()) : null)
+        })
+        .catch(() => {
+          if (!cancelled) setCurrentlyHidden(null)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
     const url =
       targetType === 'moment'
         ? `/api/moment/hide?collectionAddress=${targetAddress}&tokenId=${targetTokenId}`
@@ -247,21 +289,51 @@ function HideContentCard({
     return () => {
       cancelled = true
     }
-  }, [targetType, targetAddress, targetTokenId])
+  }, [targetType, targetAddress, targetTokenId, withSession])
 
-  async function submit() {
-    if (!target || currentlyHidden === null) return
-    const next = !currentlyHidden
-    setSubmitting(true)
+  // Marketplace listings for a parsed moment, via the admin-gated GET on
+  // /api/admin/hide (withSession — may prompt the one-per-session SIWE
+  // signature, same as the moderation page's list loads). The public
+  // /api/listings feed filters hidden listings out, so this is the only
+  // surface where the admin can see one to unhide it.
+  useEffect(() => {
+    if (targetType !== 'moment' || !targetAddress || !targetTokenId) {
+      setListings(null)
+      return
+    }
+    let cancelled = false
+    setListings('loading')
+    withSession(async () => {
+      const res = await fetch(`/api/admin/hide?address=${targetAddress}&tokenId=${targetTokenId}`)
+      if (!res.ok) return null
+      const d = (await res.json()) as { listings?: AdminListingRow[] }
+      return Array.isArray(d.listings) ? d.listings : null
+    })
+      .then((rows) => {
+        if (!cancelled) setListings(rows ?? 'error')
+      })
+      .catch(() => {
+        if (!cancelled) setListings('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [targetType, targetAddress, targetTokenId, withSession])
+
+  async function toggleListing(row: AdminListingRow) {
+    if (!target || target.type !== 'moment') return
+    const next = !row.hidden
+    setListingBusy(row.id)
     try {
       const ok = await withSession(async () => {
         const res = await fetch('/api/admin/hide', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            type: target.type,
+            type: 'listing',
             address: target.address,
-            ...(target.type === 'moment' ? { tokenId: target.tokenId } : {}),
+            tokenId: target.tokenId,
+            seller: row.seller,
             hidden: next,
           }),
         })
@@ -270,13 +342,52 @@ function HideContentCard({
         return true
       })
       if (!ok) return // user cancelled signing
-      setCurrentlyHidden(next)
-      toast.success(
-        next
-          ? `${target.type === 'moment' ? 'Moment' : 'Collection'} hidden`
-          : `${target.type === 'moment' ? 'Moment' : 'Collection'} restored`,
-        { id: 'admin-hide' },
+      setListings((prev) =>
+        Array.isArray(prev) ? prev.map((l) => (l.id === row.id ? { ...l, hidden: next } : l)) : prev,
       )
+      toast.success(next ? 'Listing hidden' : 'Listing restored', { id: 'admin-hide-listing' })
+    } catch (err) {
+      toastError(next ? 'Hide listing' : 'Unhide listing', err, { id: 'admin-hide-listing' })
+    } finally {
+      setListingBusy(null)
+    }
+  }
+
+  async function submit() {
+    if (!target || currentlyHidden === null) return
+    const next = !currentlyHidden
+    setSubmitting(true)
+    try {
+      const ok = await withSession(async () => {
+        // Profiles live on their own admin list (POST hides, DELETE
+        // restores) — same list the moderation page manages by raw
+        // address; moments and collections share /api/admin/hide.
+        const res =
+          target.type === 'profile'
+            ? await fetch('/api/admin/hidden-profiles', {
+                method: next ? 'POST' : 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address: target.address }),
+              })
+            : await fetch('/api/admin/hide', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  type: target.type,
+                  address: target.address,
+                  ...(target.type === 'moment' ? { tokenId: target.tokenId } : {}),
+                  hidden: next,
+                }),
+              })
+        const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+        if (!res.ok || !json.ok) throw new Error(json.error ?? 'Request failed')
+        return true
+      })
+      if (!ok) return // user cancelled signing
+      setCurrentlyHidden(next)
+      const label =
+        target.type === 'moment' ? 'Moment' : target.type === 'collection' ? 'Collection' : 'Profile'
+      toast.success(next ? `${label} hidden` : `${label} restored`, { id: 'admin-hide' })
     } catch (err) {
       toastError(next ? 'Hide' : 'Unhide', err, { id: 'admin-hide' })
     } finally {
@@ -289,17 +400,22 @@ function HideContentCard({
       <div>
         <h2 className="text-ink font-mono text-sm">Hide content</h2>
         <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
-          Paste a moment or collection link to toggle its visibility on
-          public feeds. Bypasses the creator/on-chain admin gate that the
+          Paste a moment, collection, or profile link to toggle its
+          visibility. Bypasses the creator/on-chain admin gate that the
           user-facing hide actions enforce. Hiding a collection removes it
           from the collections feed and 404s the collection page; moments
           inside stay reachable by direct link unless hidden individually.
+          Hiding a moment (or collection) also pulls its marketplace
+          listings; for a listing that should go while the moment stays
+          up, use the per-listing toggles below. Hiding a profile 404s the
+          profile page for everyone but its owner — content visibility is
+          unaffected (use Moderation → Hidden users for that).
         </p>
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label className="text-[10px] font-mono text-dim uppercase tracking-wider">
-          moment or collection link
+          moment, collection, or profile link
         </label>
         <input
           value={link}
@@ -311,7 +427,7 @@ function HideContentCard({
 
       {link.trim() && !target && (
         <p className="text-[10px] font-mono text-[#c87474]">
-          Could not parse a moment or collection from that link.
+          Could not parse a moment, collection, or profile from that link.
         </p>
       )}
 
@@ -335,6 +451,45 @@ function HideContentCard({
             <span className="text-muted uppercase tracking-wider mr-2">status</span>
             {currentlyHidden === null ? 'checking…' : currentlyHidden ? 'hidden' : 'visible'}
           </div>
+        </div>
+      )}
+
+      {target?.type === 'moment' && listings !== null && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-mono text-dim uppercase tracking-wider">
+            marketplace listings
+          </span>
+          {listings === 'loading' ? (
+            <p className="text-[10px] font-mono text-muted">loading listings…</p>
+          ) : listings === 'error' ? (
+            <p className="text-[10px] font-mono text-muted">
+              listings unavailable — sign in with the admin wallet and re-paste the link.
+            </p>
+          ) : listings.length === 0 ? (
+            <p className="text-[10px] font-mono text-muted">no active listings for this moment.</p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {listings.map((l) => (
+                <li
+                  key={l.id}
+                  className="flex items-center justify-between gap-2 border border-line bg-[#0a0a0a] px-2 py-1.5"
+                >
+                  <span className="text-[10px] font-mono text-ink truncate">
+                    {shortAddress(l.seller)} · {formatPrice(l.price, l.currency)} ·{' '}
+                    {l.hidden ? 'hidden' : 'visible'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void toggleListing(l)}
+                    disabled={listingBusy === l.id}
+                    className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink disabled:opacity-50"
+                  >
+                    {listingBusy === l.id ? 'signing…' : l.hidden ? 'unhide' : 'hide'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

@@ -1,7 +1,10 @@
 import type { Metadata } from 'next'
-import { notFound, redirect } from 'next/navigation'
+import { cache } from 'react'
+import { cookies } from 'next/headers'
+import { notFound, redirect, unstable_rethrow } from 'next/navigation'
 import { isAddress } from '@/lib/address'
-import { resolveCanonicalProfile } from '@/lib/addressUnion'
+import { expandToFidSiblings, isProfileIdentityHidden, resolveCanonicalProfile } from '@/lib/addressUnion'
+import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 import { shortAddress } from '@/lib/inprocess'
@@ -12,6 +15,26 @@ import { getProfileTheme } from '@/lib/profileTheme'
 interface Props {
   params: Promise<{ address: string }>
 }
+
+// Admin-hidden profile → hidden from this viewer unless they own it (any
+// of their FID-sibling wallets, via the session cookie — same viewer
+// mechanism as the moment page's hidden-moment gate; Mini App bearer auth
+// doesn't reach SSR page loads, an accepted limitation there too). React
+// cache: generateMetadata and the page render share one evaluation per
+// request. Both call sites 404 on true — the metadata call is what makes
+// the STATUS a real 404: this route has a loading.tsx, so by the time the
+// page body throws notFound() the 200 shell may already be streaming;
+// metadata resolution runs before the first flush.
+const isProfileHiddenFromViewer = cache(
+  async (address: string, canonicalAddress: string): Promise<boolean> => {
+    if (!(await isProfileIdentityHidden(address, canonicalAddress))) return false
+    const token = (await cookies()).get(SESSION_COOKIE)?.value
+    const viewer = token ? await verifySession(token) : null
+    if (!viewer) return true
+    const siblings = await expandToFidSiblings(canonicalAddress)
+    return !siblings.some((s) => s.toLowerCase() === viewer.toLowerCase())
+  },
+)
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // Wrap in try/catch because error.tsx does NOT catch generateMetadata
@@ -30,6 +53,17 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // that index without following the redirect (some SEO tools) emit
   // the right canonical link.
   const { profile, farcaster, canonicalAddress } = await resolveCanonicalProfile(address)
+
+  // Admin-hidden profile: non-owners get notFound() — thrown HERE rather
+  // than only in the page body because metadata blocks the first flush,
+  // making the response status a genuine 404 (the page-body gate alone
+  // fires after the loading.tsx shell has streamed with a 200). The owner
+  // still gets a page, but with generic metadata — no name/avatar/FID in
+  // the crawler payload regardless of who fetches.
+  if (await isProfileIdentityHidden(address, canonicalAddress)) {
+    if (await isProfileHiddenFromViewer(address, canonicalAddress)) notFound()
+    return { title: 'Profile — Kismet Art' }
+  }
 
   const displayName =
     profile.username ||
@@ -88,6 +122,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     ...(avatarUrl ? { icons: { icon: avatarUrl } } : {}),
   }
   } catch (err) {
+    // Let Next control-flow errors (the notFound() above) propagate — the
+    // catch exists only to keep transient Redis blips from crashing SEO.
+    unstable_rethrow(err)
     console.error('[generateMetadata] profile', err)
     return { title: 'Profile — Kismet Art' }
   }
@@ -115,6 +152,15 @@ export default async function ProfilePage({ params }: Props) {
     getProfileTheme(address),
     isMobileUA(),
   ])
+  // Admin-hidden profile → 404 for everyone but the owner, checked BEFORE
+  // the canonical redirect so a hidden identity doesn't bounce visitors to
+  // its canonical URL first. The status-bearing 404 comes from the same
+  // check in generateMetadata (see isProfileHiddenFromViewer); this one is
+  // defense in depth for the page body itself — React cache makes it the
+  // same single evaluation.
+  if (await isProfileHiddenFromViewer(address, canonical.canonicalAddress)) {
+    notFound()
+  }
   if (canonical.canonicalAddress.toLowerCase() !== address.toLowerCase()) {
     redirect(`/profile/${canonical.canonicalAddress}`)
   }

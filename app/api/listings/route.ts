@@ -8,6 +8,8 @@ import {
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getListingVisibility } from '@/lib/hiddenListings'
+import { getSessionAddress } from '@/lib/session'
 import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,
@@ -319,33 +321,46 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid seller address')
   }
 
-  const hiddenUsers = await getHiddenUsersSet()
+  const visibility = await getListingVisibility()
 
-  // Single-token lookup — direct deeplink, not filtered (matches the
-  // single-collection lookup precedent in /api/collections; BuyButton
-  // needs to be able to resolve a known listing to fulfill).
+  // Single-token lookup — direct deeplink. Author-level (hidden-user)
+  // filtering is deliberately NOT applied here, matching the single-
+  // collection lookup precedent in /api/collections (BuyButton needs to
+  // resolve a known listing to fulfill). Content-level hides DO apply:
+  // an admin-hidden listing — or a listing whose moment or collection is
+  // hidden — is off the market entirely, deeplink included.
   if (collection && tokenId && seller) {
     const listing = await getListingForToken(collection, tokenId, seller)
-    return NextResponse.json({ listing: listing ?? null })
+    const visible = listing && !visibility.contentHidden(listing)
+    return NextResponse.json({ listing: visible ? listing : null })
   }
 
-  // Seller-scope lookup — empty list when the seller is admin-hidden,
-  // so we don't leak "this user exists but is hidden".
+  // Seller-scope lookup. Third parties get an empty list when the seller
+  // is admin-hidden (don't leak "this user exists but is hidden") and
+  // never see hidden listings. The seller sees their own list unfiltered —
+  // including admin-hidden entries — so they can still cancel them: the
+  // same own-content exception the timeline applies to hidden moments,
+  // authenticated by the session cookie / Farcaster bearer.
   if (seller && !collection && !tokenId) {
-    if (hiddenUsers.has(seller.toLowerCase())) {
+    const [hiddenUsers, viewer] = await Promise.all([
+      getHiddenUsersSet(),
+      getSessionAddress(req),
+    ])
+    const isOwnView = viewer?.toLowerCase() === seller.toLowerCase()
+    if (!isOwnView && hiddenUsers.has(seller.toLowerCase())) {
       return NextResponse.json({ listings: [], pagination: { page: 1, limit: 0, total: 0, total_pages: 1 } })
     }
-    const listings = await getListingsBySeller(seller)
+    const all = await getListingsBySeller(seller)
+    const listings = isOwnView ? all : all.filter((l) => !visibility.feedHidden(l))
     return NextResponse.json({ listings, pagination: { page: 1, limit: listings.length, total: listings.length, total_pages: 1 } })
   }
 
   const { listings, total } = await getListings({ page, limit, collection })
   // Filter post-pagination; the store isn't indexed by visibility, so
   // `total` may overcount hidden listings on this page. Acceptable for
-  // the marketplace feed.
-  const visibleListings = hiddenUsers.size === 0
-    ? listings
-    : listings.filter((l) => !hiddenUsers.has(l.seller.toLowerCase()))
+  // the marketplace feed. feedHidden covers the per-listing hide, the
+  // hidden-moment/collection cascade, and hidden sellers/creators.
+  const visibleListings = listings.filter((l) => !visibility.feedHidden(l))
   return NextResponse.json({
     listings: visibleListings,
     pagination: {

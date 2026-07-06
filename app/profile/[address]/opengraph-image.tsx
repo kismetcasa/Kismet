@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
-import { resolveProfileWithSiblings } from '@/lib/addressUnion'
+import { isProfileIdentityHidden, resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { getProfileTheme, type ProfileTheme } from '@/lib/profileTheme'
 import { getArtistEarnings, type ArtistEarnings } from '@/lib/stats'
@@ -60,7 +60,13 @@ export default async function Image({ params }: Props) {
   let avatarUrl: string | null = null
   let theme: ProfileTheme | null = null
 
-  if (isAddress(address)) {
+  // Admin-hidden profile → render the bare card (address gradient +
+  // shortAddress only). The URL stays fetchable for crawlers that cached
+  // the link, but leaks no username/avatar/FID/earnings. Sibling-aware so
+  // a hidden identity can't resurface via another verified wallet's URL.
+  const hidden = isAddress(address) && (await isProfileIdentityHidden(address))
+
+  if (isAddress(address) && !hidden) {
     // Sibling-aware: when the queried address has no Kismet profile but
     // a sibling FC-verified address does, the helper surfaces the
     // sibling's username/avatar so share cards still read as "@kismetcasa"
@@ -96,7 +102,7 @@ export default async function Image({ params }: Props) {
   // Public earnings (primary paid sales) for the card. Best-effort — a failure
   // just omits the stat line rather than breaking the card.
   let earnings: ArtistEarnings | null = null
-  if (isAddress(address)) {
+  if (isAddress(address) && !hidden) {
     try {
       // Earnings are private by default — only surface them on the share card
       // once the artist has pinned them public.

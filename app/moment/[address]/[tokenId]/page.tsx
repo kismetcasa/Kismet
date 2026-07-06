@@ -15,6 +15,7 @@ import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { getListings } from '@/lib/listings'
+import { getListingVisibility } from '@/lib/hiddenListings'
 import { safeRead } from '@/lib/redisRead'
 import { SITE_URL } from '@/lib/siteUrl'
 import { MomentDetailView } from '@/components/MomentDetailView'
@@ -115,7 +116,17 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     () => getListings({ collection: address }),
     { listings: [], total: 0 },
   )
-  const hasActiveListing = collectionListings.some((l) => l.tokenId === tokenId)
+  // Visibility mirrors the market feed: a hidden listing shouldn't flip the
+  // embed button to "View Listing". Same safeRead degradation — on failure
+  // treat everything as visible; this only styles a button label.
+  const visibility = await safeRead(
+    'getListingVisibility:moment-metadata',
+    () => getListingVisibility(),
+    null,
+  )
+  const hasActiveListing = collectionListings.some(
+    (l) => l.tokenId === tokenId && !(visibility?.feedHidden(l) ?? false),
+  )
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
     // buildFarcasterEmbed truncates at 32 chars per the FC spec, so a

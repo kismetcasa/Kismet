@@ -6,6 +6,7 @@ import {
 } from './farcasterProfile'
 import { getCachedSmartWallets } from './smartWalletCache'
 import { getFidProfile, getProfile, type FidProfile, type Profile } from './profile'
+import { fetchHiddenProfilesSet } from './hidden-profiles'
 
 /**
  * Expand an Ethereum address into the set of all addresses controlled by
@@ -67,6 +68,44 @@ export async function expandToEarningsWallets(address: string): Promise<string[]
     if (sw) all.add(sw.toLowerCase())
   }
   return Array.from(all)
+}
+
+/**
+ * True when the profile IDENTITY any of `addresses` belongs to is
+ * admin-hidden (lib/hidden-profiles). Checks the given addresses first,
+ * then the FID-sibling set of the first one — a Farcaster user is one
+ * identity across all their verified wallets, so hiding ANY of them hides
+ * the profile at every sibling URL (and closes the "identity inherited
+ * from a hidden sibling" leak on share cards).
+ *
+ * Lives here rather than in lib/hidden-profiles because this file owns
+ * sibling semantics — and because lib/profile imports hidden-profiles,
+ * so the reverse import would create a cycle.
+ *
+ * Reads the set FRESH (not the 15-min memo): this gate runs in the RSC
+ * layer (profile page, OG image) whose module instances the admin route's
+ * own-pod invalidate can't reach — with the memo, a hide would leave the
+ * page up for the full TTL right after the admin toggled it. React cache
+ * dedupes the read within a request (generateMetadata + page render share
+ * one SMEMBERS of a near-always-tiny set), and the sibling expansion
+ * (itself Redis-cached) only runs when the set is non-empty AND the
+ * direct checks missed — i.e. effectively never on a platform with
+ * nothing hidden.
+ */
+const requestHiddenProfilesSet = cache(fetchHiddenProfilesSet)
+
+export async function isProfileIdentityHidden(
+  ...addresses: (string | null | undefined)[]
+): Promise<boolean> {
+  const hidden = await requestHiddenProfilesSet()
+  if (hidden.size === 0) return false
+  const seeds = addresses
+    .filter((a): a is string => !!a)
+    .map((a) => a.toLowerCase())
+  if (seeds.length === 0) return false
+  if (seeds.some((a) => hidden.has(a))) return true
+  const siblings = await expandToFidSiblings(seeds[0])
+  return siblings.some((a) => hidden.has(a.toLowerCase()))
 }
 
 export interface ResolvedProfile {
