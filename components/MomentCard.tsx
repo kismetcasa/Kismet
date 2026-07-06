@@ -27,6 +27,7 @@ import { SaleWindow } from './SaleWindow'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { setVideoDuration } from '@/lib/media/durationCache'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -97,9 +98,11 @@ interface MomentCardProps {
   isMobile?: boolean
   /**
    * Forward to MomentImage: skip the next/image optimizer and go straight to
-   * the (downscaling) /api/img proxy. Set for known-heavy covers — e.g. the
-   * Patron Collection's physical-artwork scans — whose source 413s the
-   * optimizer anyway, so the wasted 413 round-trip (and its blink) is avoided.
+   * the (downscaling) /api/img proxy, for known-heavy covers whose source
+   * 413s the optimizer anyway — saves the wasted 413 round-trip (and its
+   * blink). Patron Collection moments (physical-artwork scans, the one
+   * known-heavy class) are self-detected inside the card, so callers only
+   * pass this for other heavy contexts.
    */
   preferProxy?: boolean
 }
@@ -340,6 +343,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   )
 
   const media = resolveMomentMedia(meta)
+  // Every Patron Collection moment is a physical-artwork scan whose source
+  // 413s the next/image optimizer on EVERY view — a doomed round trip (the
+  // optimizer re-fetches the multi-MB source just to refuse it) before the
+  // card remounts onto the /api/img fallback it always lands on anyway.
+  // Self-detected here rather than threaded through each surface, so the
+  // main mints feed, trending, grids, and profile lists skip straight to
+  // the downscaling proxy exactly like the featured surfaces already did.
+  const heavyCover = preferProxy || isPatronCollection(moment.address)
   const isVideo = media.kind === 'video'
   const isTextMoment = media.kind === 'text'
   const blurPreview = useMemo(
@@ -491,7 +502,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
               thumbhash={meta.kismet_thumbhash}
               priority={priority}
-              preferProxy={preferProxy}
+              preferProxy={heavyCover}
             />
           )
         ) : isTextMoment ? (

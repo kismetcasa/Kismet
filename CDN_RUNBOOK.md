@@ -26,6 +26,11 @@ can't bound (Range streaming).
   (trending/featured/default) and `/api/moments` emit
   `public, s-maxage=30, stale-while-revalidate=…`; viewer-dependent timeline
   variants emit `private, no-store` (`app/api/timeline/route.ts:457`).
+- **`?w=` resize variants are also disk-cached at the origin** (persisted
+  `.next/cache/kismet-img` volume + single-flight compute,
+  `lib/media/imgVariantCache.ts`): an edge miss on a resized still costs the
+  origin a local file read, not a full gateway download + sharp job. The CDN
+  stays the edge/egress control; this bounds the origin's share of each miss.
 
 ## Cloudflare configuration (the actual change)
 

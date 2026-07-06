@@ -170,6 +170,12 @@ wrong). Those are collected first.
   carrier-grade NAT, so a per-IP cap would 429 legitimate viewers — keep the 2 GB
   per-request size cap + a CDN instead. The existing ar://+ipfs:// allow-list +
   no-redirect posture is the correct **SSRF** control (OWASP A10/API7).
+- Origin-side complement (shipped): `?w=` resize variants persist in the
+  `.next/cache/kismet-img` volume with single-flight compute
+  (`lib/media/imgVariantCache.ts`), so each variant's gateway download + sharp
+  job runs at most once ever — the recompute-per-request behind the featured
+  Patron mint pass's multi-second first paint. The CDN verdict stands; this
+  bounds what a cache miss costs the box.
   ([Next.js images](https://nextjs.org/docs/app/api-reference/config/next-config-js/images), [API4:2023](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/), [SSRF Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html))
 
 ### B6. RPC key exposure + resilience  ·  Verdict: **CONFIRMED, with refinements**

@@ -10,6 +10,7 @@ import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, E
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
 import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -1141,6 +1142,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   // Force the gif mime so the optimizer is skipped and the
                   // animated bytes stream through /api/img.
                   mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime}
+                  // Patron physical-art scans 413 the optimizer on every
+                  // open — go straight to the downscaling proxy (same
+                  // detection as MomentCard) so the detail view first-paints
+                  // without the doomed round-trip.
+                  preferProxy={isPatronCollection(address)}
                   thumbhash={meta.kismet_thumbhash}
                   onAllError={() => setImgError(true)}
                 />

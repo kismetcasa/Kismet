@@ -308,10 +308,8 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       showCreator={!!creatorAddress}
       priority={false}
       isMobile={isMobile}
-      // Heavy Patron physical-art scans 413 the optimizer; skip to the
-      // downscaling proxy so the mobile fallback doesn't blink through the
-      // wasted round-trip. Matches the FeaturedFeed mobile display card.
-      preferProxy={isPatronCollection(address)}
+      // Patron scans skip the optimizer via MomentCard's own
+      // isPatronCollection self-detection — no preferProxy needed here.
     />
   ) : null
 
