@@ -253,6 +253,9 @@ interface Profile {
     primary?: EarningsAmounts
     secondary?: EarningsAmounts
   } | null
+  // FC-verified sibling wallets of this profile's identity (lowercase).
+  // Feeds the owner check below; absent for non-FC profiles.
+  fcWallets?: string[]
   updatedAt: number
 }
 
@@ -263,19 +266,25 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
   const { isCurator } = useAdmin()
 
+  const [profile, setProfile] = useState<Profile | null>(null)
+
   // Owner via wagmi (web + Mini App) OR via FC identity (Mini App users
-  // whose wagmi wallet is currently a different sibling). Without the
-  // FC-identity branch, an FC user visiting their own canonical
-  // /profile/<chosen> would see the non-owner view whenever their
-  // wagmi-connected wallet was a sibling.
+  // whose wagmi wallet is currently a different sibling) OR via the FID
+  // sibling set from the profile payload. The third branch is the web
+  // equivalent of the second: fcIdentity is null outside a Mini App, and the
+  // page 307-redirects every profile URL to its canonical address — so a web
+  // FC user connected with a non-canonical sibling wallet landed here with
+  // neither branch matching and was rendered the VISITOR view of their own
+  // profile. Mirrors the server's owner model (authorizeProfileOwner /
+  // isViewerFidSibling both canonicalize); server routes still re-validate
+  // every write, this only chooses which view to render.
   const isOwner =
     connectedAddress?.toLowerCase() === address.toLowerCase() ||
-    fcIdentity?.address?.toLowerCase() === address.toLowerCase()
+    fcIdentity?.address?.toLowerCase() === address.toLowerCase() ||
+    (!!connectedAddress && !!profile?.fcWallets?.includes(connectedAddress.toLowerCase()))
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
-
-  const [profile, setProfile] = useState<Profile | null>(null)
   const [moments, setMoments] = useState<Moment[]>([])
   const [collected, setCollected] = useState<Moment[]>([])
   const [listings, setListings] = useState<Listing[]>([])

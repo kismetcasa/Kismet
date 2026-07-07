@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
+import { toast } from 'sonner'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+import { useUploadSession } from '@/hooks/useUploadSession'
+import { humanError } from '@/lib/toast'
 import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
 
 interface Pending {
@@ -47,10 +50,19 @@ export function ProfileStats({
   } | null
 }) {
   const { isInMiniApp } = useFarcaster()
+  const { ensureSession } = useUploadSession()
   const [stats, setStats] = useState<Stats | null>(null)
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Server said "no credentials" on the owner path (see /api/stats
+  // authRequired). Renders a sign-in card in place of silence — without it a
+  // session-less owner got a 200 shaped exactly like "no activity" and the
+  // card unmounted, hiding real earnings AND the pin (the only opt-in
+  // surface) with no feedback. `reloadTick` re-runs the fetch after sign-in.
+  const [authRequired, setAuthRequired] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
   // Mint-vs-resale breakdown disclosure. `splitPinned` is the click toggle (the
   // canonical action, works on touch); `splitHover` is a desktop mouse-only
   // preview. Either opens it.
@@ -72,30 +84,37 @@ export function ProfileStats({
     fetch(`/api/stats?artist=${address}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!cancelled && d) {
-          setStats({
-            eth: d.eth ?? 0,
-            usdc: d.usdc ?? 0,
-            usd: d.usd ?? 0,
-            mints: d.mints ?? 0,
-            public: !!d.public,
-            primary: d.primary,
-            secondary: d.secondary,
-            pending: d.pending ?? null,
-          })
+        if (cancelled || !d) return
+        if (d.authRequired) {
+          // No credentials reached the server — figures withheld. Show the
+          // sign-in card instead of zeros (which would unmount the card).
+          setAuthRequired(true)
+          return
         }
+        setAuthRequired(false)
+        setStats({
+          eth: d.eth ?? 0,
+          usdc: d.usdc ?? 0,
+          usd: d.usd ?? 0,
+          mints: d.mints ?? 0,
+          public: !!d.public,
+          primary: d.primary,
+          secondary: d.secondary,
+          pending: d.pending ?? null,
+        })
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [address, asVisitor, initialEarnings])
+  }, [address, asVisitor, initialEarnings, reloadTick])
 
   // Collapse the breakdown when switching profiles, so it never carries an
   // expanded (or stuck mouse-hover) state over from another artist's card.
   useEffect(() => {
     setSplitPinned(false)
     setSplitHover(false)
+    setAuthRequired(false)
   }, [address])
 
   // Offer only denominations that RENDER as non-zero at the card's display
@@ -111,6 +130,38 @@ export function ProfileStats({
     if (rendersNonZero('usd', stats)) d.push('usd')
     return d
   }, [stats])
+
+  // Point-of-need sign-in (one SIWE signature → 7-day session; a no-op click
+  // inside a Mini App where the Quick Auth JWT is the session). Only the
+  // owner context ever sets authRequired, so visitors never see this.
+  const signIn = async () => {
+    if (signingIn) return
+    setSigningIn(true)
+    try {
+      await ensureSession()
+      setAuthRequired(false)
+      setReloadTick((t) => t + 1) // refetch with the fresh session
+    } catch (err) {
+      toast.error('Sign in failed', { description: humanError(err) })
+    } finally {
+      setSigningIn(false)
+    }
+  }
+
+  if (!asVisitor && authRequired) {
+    return (
+      <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+        <p className="text-muted text-xs">sign in to view your earnings</p>
+        <button
+          onClick={signIn}
+          disabled={signingIn}
+          className="text-accent text-xs mt-1 hover:underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {signingIn ? 'signing in…' : 'sign in'}
+        </button>
+      </div>
+    )
+  }
 
   if (!stats) return null
   const hasEarnings = denoms.length > 0
@@ -170,7 +221,13 @@ export function ProfileStats({
     setPinning(true)
     try {
       const res = await fetch(`/api/profile/${address}/earnings-visibility`, { method: next ? 'POST' : 'DELETE' })
-      if (!res.ok) setStats((s) => (s ? { ...s, public: !next } : s)) // revert
+      if (!res.ok) {
+        setStats((s) => (s ? { ...s, public: !next } : s)) // revert
+        // Expired session mid-view (e.g. a pinned-public owner whose figures
+        // rode the public payload): surface the sign-in card rather than a
+        // pin that silently snaps back.
+        if (res.status === 401) setAuthRequired(true)
+      }
     } catch {
       setStats((s) => (s ? { ...s, public: !next } : s))
     } finally {

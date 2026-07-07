@@ -63,9 +63,20 @@ export async function GET(
   // figures come from /api/stats only when an owner views their own unpinned
   // profile). Passing the already-resolved fid skips the visibility check's
   // internal FC lookup. Memoized set read here, +reads only when public.
-  const earnings = (await isEarningsPublic({ address: canonicalAddress, fid: canonical.fid }))
-    ? await getArtistEarnings(canonicalAddress)
-    : null
+  //
+  // fcWallets: the identity's FC-verified sibling wallets (public data on
+  // Farcaster; the canonical 307 redirect already implies the linkage). The
+  // client-side owner check needs it: on web there is no FC identity context,
+  // so after the canonical redirect an owner connected with a non-canonical
+  // sibling wallet was rendered the VISITOR view of their own profile —
+  // including a silently absent earnings card. Redis-cached (1h); fetched in
+  // parallel with the earnings read so it adds no latency.
+  const [earnings, fcWallets] = await Promise.all([
+    isEarningsPublic({ address: canonicalAddress, fid: canonical.fid }).then((pub) =>
+      pub ? getArtistEarnings(canonicalAddress) : null,
+    ),
+    canonical.fid != null ? getVerifiedAddressesByFid(canonical.fid) : ([] as string[]),
+  ])
   if (!profile.username && cachedEns === undefined) {
     after(() => resolveEnsAndCache(address))
   }
@@ -95,6 +106,7 @@ export async function GET(
       canonicalAddress,
       farcaster: farcaster ?? undefined,
       earnings,
+      ...(fcWallets.length ? { fcWallets } : {}),
     },
   })
 }
