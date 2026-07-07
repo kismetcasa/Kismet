@@ -91,6 +91,21 @@ export async function isEarningsPublic(
  * the failure policy above) — the caller must surface a retryable error, not
  * a false success over a half-applied write.
  */
+/**
+ * Clear an identity's earnings-public pin during admin profile-erase. Srems
+ * BOTH member forms (the lowercase address and the fid:<fid> form) so the
+ * pin is gone regardless of which keying was used, without the resolve-time
+ * throw setEarningsPublic can raise. Best-effort; invalidates the memo.
+ */
+export async function clearEarningsVisibility(address: string, fid?: number | null): Promise<void> {
+  const lower = address.toLowerCase()
+  await Promise.all([
+    redis.srem(KEY_EARNINGS_PUBLIC, lower).catch(() => {}),
+    fid != null ? redis.srem(KEY_EARNINGS_PUBLIC, fidMember(fid)).catch(() => {}) : Promise.resolve(),
+  ])
+  getPublicEarners.invalidate()
+}
+
 export async function setEarningsPublic(address: string, isPublic: boolean): Promise<void> {
   const lower = address.toLowerCase()
   const lookup = await getFidByAddress(lower)

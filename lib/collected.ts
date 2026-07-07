@@ -10,6 +10,13 @@ const keyCollected = (collector: string) =>
 const member = (collection: string, tokenId: string) =>
   `${collection.toLowerCase()}:${tokenId}`
 
+/** Delete a collector's entire collected ZSET. Admin profile-erase only.
+ *  Re-derives only from NEW collects going forward (it's event-sourced,
+ *  not chain-backfilled) — acceptable for erase targets, who have none. */
+export async function deleteCollected(collector: string): Promise<void> {
+  await redis.del(keyCollected(collector))
+}
+
 export async function recordCollected(
   collector: string,
   collection: string,
