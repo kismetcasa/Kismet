@@ -212,7 +212,7 @@ export async function GET(req: NextRequest) {
   // shared IP) while barely bounding the real resource (egress bytes, not
   // request count). The controls that fit a streaming media proxy are the
   // per-request MAX_DECLARED_BYTES cap below and a CDN in front
-  // (see REMEDIATION_PLAYBOOK.md §B5 for the verdict, CDN_RUNBOOK.md for the
+  // (see SCALING.md §B5 for the verdict, OPS_RUNBOOK.md §3 for the
   // reproducible Cloudflare config + verification).
   const u = req.nextUrl.searchParams.get('u')
   if (!u) return new Response('missing u', { status: 400 })

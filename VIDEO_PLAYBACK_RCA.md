@@ -4,6 +4,16 @@ Root-cause analysis for two reported video moments, validated end-to-end against
 code, live metadata, and live delivery probes. All probe outputs referenced here
 were captured 2026-07-03 from a residential US connection (macOS, curl/ffprobe).
 
+> **STATUS: RESOLVED (2026-07-04).** Both failures were fixed on this branch —
+> F1–F3 and F5 shipped; F4 was deliberately deferred (see §4 Resolution). **§1–§3
+> below describe the pre-fix state captured 2026-07-03** and are retained as the
+> incident record and as the design rationale several code comments still cite
+> (`lib/media/rangeContract.ts`, `lib/media/gatewayFetch.ts`,
+> `lib/media/resolveMomentMedia.ts`, `components/MintForm.tsx`, `InlineVideo`,
+> `scripts/verify-img-range.ts`). Where they say "the feed classifies B as an image"
+> or "`/api/img` answers a Range with 200," that is the *bug that was fixed* — current
+> code does the opposite. For what the code does today, jump to **§4 Resolution**.
+
 - **Moment A** — Dúo Dø, *Mi Amor por Ti — EPP*: `0xbc87bdbd5dbd9253f37237911c50717de4dec94f/1`
   - Reported: plays as intended on desktop; never plays on mobile or in the Mini App — feed **or** detail.
 - **Moment B** — dwn2erth, *gargoyle cat*: `0x5f98221632ca450bab4f2f566ca610e4cb1f9d60/1`
@@ -74,7 +84,7 @@ Feed playback is coordinated (`lib/media/feedPlayback.ts`): mobile/iframe cap of
 | 9 | iOS/AVFoundation requires servers to answer byte-range requests with `206` for progressive `<video>`; a `200` to its `bytes=0-1` probe ⇒ playback refused. Hence every proxy-first surface fails A deterministically, feed and detail | **VALIDATED** (mechanism; Apple-documented behavior) + consistent with all observed surfaces | Probe #8 + user reports + screenshot evidence |
 | 10 | In the desktop Mini App session, A's detail showed the poster `<img>` (`ar://zwQGoi…` = `metadata.image`) with the `<video>` element absent ⇒ `videoFailed` latched (both candidates errored) | **VALIDATED** | DevTools "Selected Element" screenshot; `MomentVideo.tsx:104-110` renders exactly that fallback |
 | 11 | `/api/img` accepts a gateway **HTML fallback page as a "win"** and stamps it `Cache-Control: public, max-age=31536000, immutable` (observed: bogus txid → `200 text/html` + immutable) | **VALIDATED** | Live probe; `app/api/img/route.ts:94-99` (any 2xx wins), `:226-231` (immutable headers unconditional) |
-| 12 | No CDN currently fronts kismet.art `/api/img` (CDN_RUNBOOK not yet applied); arweave.net itself is fronted by CDN77 | **VALIDATED** | Response headers (no CDN markers on kismet.art; `server: CDN77-Turbo` on arweave.net) |
+| 12 | No CDN currently fronts kismet.art `/api/img` (`OPS_RUNBOOK.md §3` not yet applied); arweave.net itself is fronted by CDN77 | **VALIDATED** | Response headers (no CDN markers on kismet.art; `server: CDN77-Turbo` on arweave.net) |
 | 13 | Neither moment was minted through Kismet's MintForm optimizer (no `kismet_thumbhash`, no `kismet_duration_sec`, inprocess-decorated metadata) — so mint-time faststart/duration/mime writes could not have protected them | **VALIDATED** (strong inference) | Metadata shape vs `MintForm.tsx:1134-1140` outputs |
 | 14 | The Cloudflare Stream `401`s in the Mini App console belong to the Farcaster **host page** (farcaster.xyz serves its own videos via `customer-*.cloudflarestream.com`), not to the Kismet moment | **VALIDATED** | A's metadata contains only `ar://` URLs; console context includes host-page errors (`wss://ws.farcaster.xyz`, `wallet.farcaster.xyz`) |
 
@@ -230,104 +240,52 @@ avoid killing slow-but-alive loads.
   gateway URL while WebKit/iframe surfaces play via the proxy URL — duplicate
   full-file download on the most constrained surfaces
   (`app/moment/[address]/[tokenId]/page.tsx:238-245`).
-- CDN in front of `/api/img` (CDN_RUNBOOK) remains unapplied; after F1, a CDN
-  must be configured to preserve `Range`/`206` behavior (runbook already covers
+- CDN in front of `/api/img` (`OPS_RUNBOOK.md §3`) remains unapplied; after F1, a CDN
+  must be configured to preserve `Range`/`206` behavior (the runbook already covers
   this).
 - Mint-side 100MB caps on faststart remux + duration probe
   (`lib/media/remuxFaststart.ts:4`, `lib/media/probeDuration.ts:4`) are real
   gaps for large *Kismet* uploads — not implicated in A or B, but they leave
   big mints without faststart or duration; consider a server-side remux path.
 
-### Suggested order
+### Resolution (shipped 2026-07-04)
 
-1. **F1 + F2** (one PR — both live in `/api/img`; F1 un-breaks A everywhere).
-2. **F3** read-side fallback + mint-side mime (un-breaks B's feed and inoculates the catalog).
-3. Token healing for A and B is unnecessary after F1/F3 respectively, but B's
-   inprocess row refresh is still worth requesting upstream.
-4. F4/F5 as hardening follow-ups.
+- **F1 — done.** `/api/img` now owns the byte-range contract:
+  `lib/media/rangeContract.ts` (range math), `lib/media/gatewayFetch.ts` (manual
+  domain-pinned redirect walk + final-URL LRU), and 206-synthesis / 416 with an
+  always-advertised `Accept-Ranges` in the route. Totals are made **real** (per-URI
+  `totalBytesCache` + a bounded count-through) so even the `bytes=0-1` iOS probe answers
+  `206 …/<exact-size>`. Guarded by `scripts/verify-img-range.ts` (`verify:flows`).
+- **F2 — done.** HTML fallback pages lose the gateway race — never streamed, never
+  stamped `immutable`.
+- **F3 — done.** MintForm writes `content:{uri,mime}` for video mints;
+  `resolveMomentMedia` attempts video for mime-less/extensionless `animation_url`s;
+  `InlineVideo` rejects no-video-track sources (`videoWidth===0`) on FEED surfaces only
+  (committed detail playback is exempt).
+- **F4 — deliberately not done.** F1 removed the primary stall source; a stall
+  watchdog's false-positive risk outweighs its benefit until field evidence says otherwise.
+- **F5 — done.** Detail preloads the proxy URL for WebKit-only UAs.
+- **Post-deploy field fixes:** video posters fall back to `/api/img` once the direct walk
+  exhausts; constrained-surface feed page size capped at 10 (`feedPageLimit`,
+  `lib/paginatedGridQuery.ts`); and the **mobile Mini App** (a React Native WebView whose
+  UA carries no mobile tokens) is now detected via `isReactNativeWebView()`
+  (`lib/miniAppEnv.ts`, the host-injected `window.ReactNativeWebView` marker) and wired
+  through the feed cap, decoder caps, proxy-first sourcing, and the detail first-frame seek.
 
-### Implementation status (2026-07-04, this branch)
+### Still open (ops / upstream)
 
-- **F1 — IMPLEMENTED.** `lib/media/rangeContract.ts` (pure range math),
-  `lib/media/gatewayFetch.ts` (manual redirect walk, domain-pinned, final-URL
-  LRU), `app/api/img/route.ts` (206 synthesis on rangeless upstreams, 416,
-  always-advertised `Accept-Ranges`). Guarded by
-  `scripts/verify-img-range.ts` (wired into `verify:flows`).
-  - **Production follow-up (2026-07-04):** the first deploy proved the
-    contract live (`206 + Content-Range` from kismet.art) but iOS still
-    refused — AVFoundation rejects a synthesized `bytes 0-1/*`
-    (unknown-total) answer. Fixed by making totals REAL: per-URI
-    `totalBytesCache` harvested from Content-Length / 206 denominators /
-    completed passthroughs, plus a bounded **count-through** (read a
-    rangeless body to EOF once, buffering only the requested window) so
-    even the first probe answers `bytes 0-1/<exact-size>`. Suffix ranges
-    (`bytes=-N`) now resolve against known totals too. Verified end-to-end
-    against a live-shaped mock gateway in a real `next start`: probe →
-    `206 …/65536`, follow-up `bytes=0-` → full-range real 206, mid-file
-    byte-exact, suffix + 416 correct.
-- **F2 — IMPLEMENTED.** HTML fallback pages lose the gateway race
-  (`gatewayFetch.ts`) — never streamed, never cached.
-- **F3 — IMPLEMENTED.** MintForm writes `content: {uri, mime}` for video
-  mints; `resolveMomentMedia` attempts video for ambiguous animation_urls
-  (mime-less + extensionless); `InlineVideo` rejects sources with no video
-  track (`videoWidth === 0`) on FEED surfaces so a wrong guess degrades to
-  the poster, never a black box — committed (detail) playback is exempt so a
-  mislabeled audio-only video/mp4 stays playable through its native controls.
-- **F4 — deliberately NOT implemented.** F1 removes the primary stall source
-  (rangeless proxy responses); a stall watchdog's false-positive risk (killing
-  slow-but-alive loads on weak links) currently outweighs its benefit. Revisit
-  only with field evidence of stalls surviving F1.
-- **F5 — preload mismatch IMPLEMENTED** (detail page preloads the proxy URL
-  for WebKit-only UAs via the shared `isWebKitOnlyUaString`). CDN rollout and
-  the mint-side 100MB caps remain open ops/product items.
-- **Field follow-ups (2026-07-04, post-deploy):** video posters
-  (`MomentImg skipProxy`) walked direct gateways only — on Mini App
-  surfaces the direct path is the fragile one, so a failed video's poster
-  died with it and the detail rendered "no preview" with nothing on
-  screen; posters now try `/api/img` once after the direct walk exhausts
-  (direct-first economics preserved). Feed page size capped at 10 on
-  constrained surfaces (mobile UA or any iframe context, via
-  `feedPageLimit` in `lib/paginatedGridQuery.ts`); standalone desktop
-  stays 18.
-
-- **Mobile Mini App misclassification (2026-07-04, field):** the Farcaster
-  MOBILE Mini App hosts the app in a **React Native WebView** — not an
-  iframe — and its custom UA carries none of the mobile tokens, so the
-  surface fell through BOTH legs of every "constrained" check and was
-  treated as an unconstrained desktop: 18-item eager feed, uncapped video
-  decoders, no proxy-first media. (Field fingerprint: the 10-cap
-  bifurcated on the desktop Mini App but not mobile.) Fixed with a third
-  leg — `isReactNativeWebView()` (`lib/miniAppEnv.ts`), the host-injected
-  `window.ReactNativeWebView` marker, definitionally a phone webview —
-  wired through the feed cap, decoder caps, proxy-first video sourcing,
-  the image walk short-circuits, and the detail first-frame seek.
-
-### Open items (post-fix)
-
-1. **CDN in front of `/api/img`** (CDN_RUNBOOK) — still the biggest lever
-   for Mini App feel and the systemic answer to the box streaming every
-   constrained-surface byte (and to the count-through's one-time full
-   reads). Must forward `Range`/preserve `206` — the runbook's probes
-   verify it.
-2. **Second gateway in the pool** — `lib/arweave/gateways.ts` is down to
-   arweave.net alone; when it degrades there is no fallback anywhere.
-   Re-add a curl-verified AR.IO gateway (file comment documents the
-   verification steps + next.config allowlist coupling).
-3. **Desktop Mini App autoplay** — if feed videos still don't autoplay
-   there after the delivery fixes, run
-   `document.permissionsPolicy?.allowsFeature('autoplay')` in its console;
-   a `false` means the host iframe lacks `allow="autoplay"` and no
-   delivery fix can change it (detail playback via tap still works).
-4. **Monitoring** — an external probe of
-   `/api/img?u=ar://<known-txid>` with `Range: bytes=0-1` alerting on
-   anything but `206` turns this class of outage into an alert instead of
-   artist reports.
-5. **Collection-chip covers that aren't images** (`_next/image` 400 at
-   w=32): the optimizer rejects non-image sources; dwn2erth-style
-   video-as-collection-cover data should be fixed at the source (the chip
-   falls back gracefully meanwhile).
-6. Upstream asks: inprocess `content:null` timeline rows; mint-side 100MB
-   faststart/duration caps for large Kismet uploads.
+1. **CDN in front of `/api/img`** (`OPS_RUNBOOK.md §3`) — the biggest remaining lever and
+   the systemic answer to the box streaming every constrained-surface byte; must forward
+   `Range` / preserve `206` (the runbook's probes verify it).
+2. **Second gateway in the pool** — `lib/arweave/gateways.ts` is down to arweave.net
+   alone; re-add a curl-verified AR.IO gateway (file comment documents the steps +
+   `next.config` allowlist coupling).
+3. **Monitoring** — an external `/api/img?u=ar://<known-txid>` probe with
+   `Range: bytes=0-1` alerting on anything but `206` turns this outage class into an alert
+   instead of artist reports.
+4. **Upstream / product:** inprocess `content:null` timeline rows; mint-side 100 MB
+   faststart/duration caps for large Kismet uploads; non-image collection-chip covers
+   (`_next/image` 400 at w=32).
 
 ---
 

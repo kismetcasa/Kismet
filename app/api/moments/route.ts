@@ -20,7 +20,7 @@ import { bestEffort } from '@/lib/bestEffort'
 // unbounded id list. The client batches at the same ceiling.
 const MAX_IDS = 50
 // Per-upstream timeout so one slow /moment can't pin the whole batch — the
-// timeout the single /api/moment route is missing (SCALING_AUDIT §6a).
+// timeout the single /api/moment route is missing (SCALING.md §6a).
 const UPSTREAM_TIMEOUT_MS = 8000
 const CHAIN_ID = '8453'
 // Bound the on-chain price fallback (Phase 2) so a crafted batch of

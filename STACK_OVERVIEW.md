@@ -15,7 +15,7 @@ touches, how they fit together, and why each exists — validated against the co
 > **How this was produced.** A full multi-agent read of `app/`, `lib/`, `hooks/`,
 > `providers/`, `contexts/`, `scripts/`, the Dockerfile/next.config/env template,
 > and the in-repo runbooks, cross-checked against `git log`/`git show` over the
-> repository's history (a shallow clone of ~346 commits, oldest ~2026-06-12). Where
+> repository's history (a shallow clone of 348 commits, oldest 2026-06-12). Where
 > a subsystem's genesis predates the shallow boundary it is noted; the merge
 > `1160af1` (PR #476, 2026-06-23) is the graft point where much of the codebase
 > first becomes visible, so for many files "first commit" means "entered the clone
@@ -28,11 +28,11 @@ touches, how they fit together, and why each exists — validated against the co
 > 63 cited commit refs) were traced back to source and git. The corrections from
 > that pass (a handful of commit attributions and step orderings) are folded in.
 
-**Companion docs already in the repo:** `SCALING_AUDIT.md` (scale cliffs),
-`AVAILABILITY_RUNBOOK.md` (single-container uptime), `REMEDIATION_PLAYBOOK.md`
-(source-verified fixes), `CDN_RUNBOOK.md` (Cloudflare fronting), `VIDEO_PLAYBACK_RCA.md`
-(the iOS range-contract incident). This document is the architectural *map*; those
-are the operational *verdicts*.
+**Companion docs already in the repo:** `SCALING.md` (scale cliffs + source-verified
+remediation, with a status column for what has shipped), `OPS_RUNBOOK.md`
+(single-container uptime + Cloudflare/CDN fronting), and `VIDEO_PLAYBACK_RCA.md` (the
+now-resolved iOS range-contract incident). This document is the architectural *map*;
+those are the operational *verdicts*.
 
 ---
 
@@ -132,7 +132,7 @@ production defaults in `lib/config.ts`):
 | **Farcaster** (`api.farcaster.xyz`, `auth.farcaster.xyz`, `hub.farcaster.xyz`) | Mini App identity, Quick-Auth JWT, profile/verifications, webhook app-key verify, native push | keyless reads; JWKS/Hub verify | `lib/farcasterAuth.ts`, `lib/farcasterProfile.ts` |
 | **WalletConnect Cloud** | WalletConnect wallet option (via RainbowKit) | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | `lib/wagmi.ts` |
 | **Base MCP** (`mcp.base.org`) | External AI-agent runtime consuming the Agent Actions API | n/a (agent-side) | `public/agent-skill/SKILL.md` |
-| **Cloudflare** | Edge (client-IP trust `cf-connecting-ip`; proposed CDN for `/api/img`) | n/a | `lib/ratelimit.ts:5`, `CDN_RUNBOOK.md` |
+| **Cloudflare** | Edge (client-IP trust `cf-connecting-ip`; proposed CDN for `/api/img`) | n/a | `lib/ratelimit.ts:11`, `OPS_RUNBOOK.md §3` |
 
 ### 1.4 Storage, media & content delivery
 
@@ -145,9 +145,9 @@ production defaults in `lib/config.ts`):
 
 | Piece | Detail | Evidence |
 |---|---|---|
-| Compute | Single **Oracle Ampere** (ARM64) VM, ~11 GB RAM, 200 GB disk — **zero redundancy** | `AVAILABILITY_RUNBOOK.md` |
-| Orchestrator | **Coolify** (build, env injection, volume mount on `.next/cache`, health probes) | `AVAILABILITY_RUNBOOK.md` |
-| Ingress | **Traefik** reverse proxy (`502` = node died; "no server available" = zero healthy backends) | `AVAILABILITY_RUNBOOK.md` |
+| Compute | Single **Oracle Ampere** (ARM64) VM, ~11 GB RAM, 200 GB disk — **zero redundancy** | `OPS_RUNBOOK.md` |
+| Orchestrator | **Coolify** (build, env injection, volume mount on `.next/cache`, health probes) | `OPS_RUNBOOK.md` |
+| Ingress | **Traefik** reverse proxy (`502` = node died; "no server available" = zero healthy backends) | `OPS_RUNBOOK.md` |
 | Container | **Docker** multi-stage (deps→builder→runner), **`node:22.22-alpine` pinned** on all stages, non-root uid 1001, execs `node server.js` directly for SIGTERM | `Dockerfile` |
 | Framework | **Next.js 15.5.19** `output: 'standalone'`, App Router, instrumentation hook | `next.config.mjs`, `package.json` |
 | Memory | V8 heap caps: **build 3072 MB / runtime 4096 MB** (fixes a masked V8-heap OOM at ~2030 MB) | `Dockerfile:62,101` |
