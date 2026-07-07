@@ -11,6 +11,8 @@ import { MomentImage } from './MomentImage'
 import { toastError } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
+import { useUploadSession } from '@/hooks/useUploadSession'
+import { useAirdropDelegates } from '@/hooks/useAirdropDelegates'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
 import { MAX_AIRDROP_RECIPIENTS } from '@/lib/config'
@@ -39,6 +41,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     busy: delegating,
     receipt: delegateReceipt,
   } = useGrantPermission()
+  // Separate instance for revoke so its receipt watcher doesn't collide with
+  // the grant instance's (which toasts "Airdrop delegated" on confirm).
+  const { revoke: revokeDelegate, busy: revoking } = useGrantPermission()
+  const { ensureSession } = useUploadSession()
 
   const [selected, setSelected] = useState<Moment | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -47,6 +53,12 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
+
+  // Wallets the admin has delegated airdrop rights to for the selected piece.
+  const { delegates, refetch: refetchDelegates } = useAirdropDelegates(
+    selected?.address,
+    selected?.token_id,
+  )
 
   // Server-side airdrop quota (per-artist daily cadence + weekly cap,
   // configured by admin in /admin/airdrop-quota). The quota only
@@ -142,7 +154,31 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     }
     setDelegateInput('')
     toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
-  }, [delegateReceipt, resetDelegateGrant])
+    void refetchDelegates()
+  }, [delegateReceipt, resetDelegateGrant, refetchDelegates])
+
+  // Persist the delegation so the delegate's picker can surface the piece — a
+  // MINTER grant isn't in inprocess's ADMIN-only admins[] index, so this KV
+  // record is the discovery path (the timeline filter re-verifies the grant
+  // on-chain before showing it). The endpoint is admin-gated, so establish a
+  // session first.
+  async function recordDelegate(
+    collection: string,
+    tokenId: string,
+    delegate: string,
+  ) {
+    await ensureSession()
+    const res = await fetch('/api/moment/airdrop-delegates', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection, tokenId: String(tokenId), delegate }),
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(data.error ?? 'Failed to record delegation')
+    }
+  }
 
   async function handleDelegateAirdrop() {
     if (!selected) {
@@ -160,23 +196,54 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
     }
     try {
       toast.loading('Confirm in wallet…', { id: 'delegate-airdrop' })
+      // Least privilege: grant MINTER on THIS piece's tokenId. Zora's adminMint
+      // accepts MINTER and ORs the tokenId-0 row, so this lets the delegate
+      // airdrop this one piece and nothing else — no permission or sale control.
       const outcome = await grantDelegate({
         collection: selected.address as `0x${string}`,
         grantee: target as `0x${string}`,
         tokenId: BigInt(selected.token_id),
-        bit: 'admin',
+        bit: 'minter',
       })
+      // Record on both outcomes — the grant may already exist on-chain from a
+      // prior attempt, but the discovery record still needs to be written.
+      await recordDelegate(selected.address, selected.token_id, target)
       if (outcome === 'submitted') {
         toast.loading('Delegating…', { id: 'delegate-airdrop' })
+        // Success toast + input clear + refetch happen in the receipt handler.
         return
       }
-      // Already had ADMIN at this tokenId — no tx needed.
       setDelegateInput('')
-      toast.success('Already authorized to airdrop this artwork', {
-        id: 'delegate-airdrop',
-      })
+      toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
+      void refetchDelegates()
     } catch (err) {
       toastError('Delegate airdrop', err, { id: 'delegate-airdrop' })
+    }
+  }
+
+  async function handleRevokeDelegate(delegate: string) {
+    if (!selected) return
+    try {
+      toast.loading('Confirm revoke in wallet…', { id: 'revoke-delegate' })
+      const outcome = await revokeDelegate({
+        collection: selected.address as `0x${string}`,
+        grantee: delegate as `0x${string}`,
+        tokenId: BigInt(selected.token_id),
+        bit: 'minter',
+      })
+      // Drop the discovery record (admin-gated). The on-chain removePermission
+      // is the real revoke; removing the KV hint stops the picker surfacing it.
+      await ensureSession()
+      await fetch(
+        `/api/moment/airdrop-delegates?collection=${selected.address}&tokenId=${selected.token_id}&delegate=${delegate}`,
+        { method: 'DELETE', credentials: 'same-origin' },
+      )
+      toast.success(outcome === 'submitted' ? 'Revoking…' : 'Delegate removed', {
+        id: 'revoke-delegate',
+      })
+      void refetchDelegates()
+    } catch (err) {
+      toastError('Revoke delegate', err, { id: 'revoke-delegate' })
     }
   }
 
@@ -534,13 +601,13 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         </p>
       )}
 
-      {/* Delegate airdrop — moved from the moment detail page so all
-          airdrop-related actions live on this tab. Renders only when a
-          moment is picked (the picker already filtered to moments the
-          connected user has airdrop authority on, so showing the
-          delegate input is contextually safe). Grants per-token ADMIN
-          to the entered address; the recipient airdrops via this same
-          form on their own session. */}
+      {/* Delegate airdrop — the collection admin authorizes another wallet to
+          airdrop THIS piece. Grants per-token MINTER (least privilege: airdrop
+          only, no permission/sale control) and records the delegation so the
+          delegate's picker surfaces the piece (a MINTER grant isn't in
+          inprocess's ADMIN-only admins[] index). Only meaningful for admins —
+          the grant tx reverts for anyone who doesn't hold ADMIN on the piece,
+          and the record endpoint is admin-gated. */}
       {selected && (
         <div className="flex flex-col gap-2 pt-2">
           <p className="text-[10px] font-mono text-muted uppercase tracking-wider">
@@ -574,6 +641,32 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               {delegating ? '…' : '→'}
             </button>
           </div>
+
+          {/* Current delegates for this piece, with one-click revoke
+              (on-chain removePermission + drop the discovery record). */}
+          {delegates.length > 0 && (
+            <ul className="flex flex-col gap-1 mt-0.5">
+              {delegates.map((d) => (
+                <li
+                  key={d}
+                  className="flex items-center justify-between bg-surface border border-line px-3 py-1.5"
+                >
+                  <span className="text-[11px] font-mono text-dim">
+                    {shortAddress(d)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleRevokeDelegate(d)}
+                    disabled={revoking}
+                    aria-label={`Revoke ${shortAddress(d)}`}
+                    className="text-muted hover:text-dim transition-colors disabled:opacity-40"
+                  >
+                    <X size={11} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
