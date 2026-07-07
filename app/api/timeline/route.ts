@@ -15,6 +15,7 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 import { getRecipientSplits } from '@/lib/splits'
+import { getDelegatedMoments } from '@/lib/airdropDelegates'
 import { serverBaseClient } from '@/lib/rpc'
 import { hasAdminBit, hasMinterBit, readPermissions } from '@/lib/permissions'
 
@@ -386,24 +387,25 @@ export async function GET(req: NextRequest) {
   }
 
   // Airdroppable filter — moments this address can mint an airdrop of.
-  // Three signals, cheapest first:
+  // Signals, cheapest first:
   //   1. creator.address === wallet — their own mint.
   //   2. wallet ∈ admins[] — inprocess indexes on-chain ADMIN holders at each
-  //      moment's tokenId, so per-token delegates surface here even though
-  //      they aren't the creator.
-  // Neither covers the Patron model: those moments attribute the creator to
-  // the platform treasury, and the real artist holds ADMIN only via the
-  // collection-wide tokenId-0 row — which inprocess's per-token admins[]
-  // omits. So the artist, named only on the split, never saw their own piece
-  // in the picker even though adminMint (which ORs the tokenId-0 row into its
-  // gate) would let them airdrop it.
-  //   3. wallet is a split payee on the moment AND holds collection-wide
-  //      ADMIN/MINTER on its collection. getRecipientSplits yields the
-  //      candidate set in one SMEMBERS; a single permissions(0, wallet) read
-  //      per distinct candidate collection confirms authority, so the picker
-  //      keeps its invariant — it only lists pieces adminMint can actually
-  //      mint. Per-token grants are already covered by signal 2, so the
-  //      collection-wide read is the exact, minimal complement.
+  //      moment's tokenId, so per-token ADMIN delegates surface here even
+  //      though they aren't the creator.
+  // Neither covers two real cases: (a) the Patron model attributes the moment
+  // creator to the platform treasury and the artist holds ADMIN only via the
+  // collection-wide tokenId-0 row, which inprocess's per-token admins[] omits;
+  // (b) a per-piece MINTER delegate (kismetart.eth authorizing someone to
+  // airdrop one piece at least privilege) — inprocess's admins[] is ADMIN-only
+  // so a MINTER grant never appears there. adminMint would let both airdrop
+  // (Zora ORs the tokenId-0 row into its gate and accepts ADMIN or MINTER).
+  //   3. wallet is a split payee OR a recorded per-piece delegate on the
+  //      moment, AND actually holds ADMIN/MINTER for it on-chain. Both
+  //      candidate sets come from one reverse-index SMEMBERS each; authority
+  //      is then confirmed exactly the way adminMint gates it —
+  //      permissions[tokenId][wallet] | permissions[0][wallet], ADMIN|MINTER —
+  //      so the picker keeps its invariant: it only lists pieces the airdrop
+  //      tx can actually mint.
   if (airdroppable) {
     const wallet = airdroppable as `0x${string}`
     const cheapMatch = (m: unknown): boolean => {
@@ -422,58 +424,84 @@ export async function GET(req: NextRequest) {
       return `${moment.address?.toLowerCase() ?? ''}:${moment.token_id ?? ''}`
     }
 
-    // Split moments the wallet is a payee on (reverse index, one SMEMBERS).
-    // Empty for non-payees, so this whole branch is a no-op read for them.
-    const splitKeys = new Set(
-      (await getRecipientSplits(airdroppable).catch(() => [])).map(
-        (s) => `${s.collection}:${s.tokenId}`,
-      ),
-    )
+    // Candidate pieces: split payee (getRecipientSplits) ∪ per-piece delegate
+    // (getDelegatedMoments). One SMEMBERS each, both empty for wallets with
+    // neither — so this stays a no-op read for the common request.
+    const [splitList, delegateList] = await Promise.all([
+      getRecipientSplits(airdroppable).catch(() => []),
+      getDelegatedMoments(airdroppable).catch(() => []),
+    ])
+    const candidateKeys = new Set<string>([
+      ...splitList.map((s) => `${s.collection}:${s.tokenId}`),
+      ...delegateList.map((d) => `${d.collection}:${d.tokenId}`),
+    ])
 
-    // Only split candidates the cheap signals missed need an authority read,
-    // and only one read per distinct collection (the tokenId-0 grant is
-    // collection-wide).
-    const candidateCollections = new Set<string>()
-    if (splitKeys.size > 0) {
+    // Only candidates that appear in this merge and weren't already matched by
+    // the cheap signals need an on-chain read.
+    const toVerify: { collection: string; tokenId: string; key: string }[] = []
+    if (candidateKeys.size > 0) {
       for (const m of merged) {
         if (cheapMatch(m)) continue
-        if (!splitKeys.has(momentKey(m))) continue
-        const addr = (m as { address?: string }).address?.toLowerCase()
-        if (addr) candidateCollections.add(addr)
+        const key = momentKey(m)
+        if (!candidateKeys.has(key)) continue
+        const mm = m as { address?: string; token_id?: string }
+        const collection = mm.address?.toLowerCase()
+        if (collection && mm.token_id != null) {
+          toVerify.push({ collection, tokenId: String(mm.token_id), key })
+        }
       }
     }
 
-    // A read failure falls OPEN (keep the candidate): the wallet is a named
-    // payee and adminMint independently gates the real airdrop on-chain, so a
-    // transient RPC blip degrades toward showing an artist their own work
-    // rather than hiding it — the same "unknown = keep" stance filterRedundant
-    // takes. Fail-open can never enable an unauthorized airdrop; the chain is
-    // the gate, not this read.
-    const collectionAuthorized = new Map<string, boolean>()
-    if (candidateCollections.size > 0) {
+    // Confirm authority the way adminMint does: ADMIN|MINTER at the per-token
+    // row OR the collection-wide tokenId-0 row. Read collection-wide once per
+    // collection (promise-cached so concurrent workers don't double-read), and
+    // fall through to the per-token row only when it doesn't already grant —
+    // that covers collection-wide split artists in one read and per-piece
+    // MINTER delegates in one more. Any read failure falls OPEN (keep the
+    // candidate): the wallet is a named payee/delegate and adminMint
+    // independently gates the real airdrop on-chain, so a transient RPC blip
+    // shows an artist their own work rather than hiding it. Fail-open can never
+    // enable an unauthorized airdrop; the chain is the gate, not this read.
+    const authorizedKeys = new Set<string>()
+    if (toVerify.length > 0) {
       const client = serverBaseClient()
-      // Bounded concurrency (the same window the collection fan-out uses): a
-      // wallet that's a payee across many collections must not fire an
-      // unbounded burst of eth_calls. readPermissions keeps its own per-read
-      // retry budget, so a transient false-zero right after a grant still
-      // self-corrects.
+      const collWide = new Map<string, Promise<bigint | null>>()
+      const readCollWide = (collection: string): Promise<bigint | null> => {
+        let p = collWide.get(collection)
+        if (!p) {
+          p = readPermissions(client, collection as `0x${string}`, 0n, wallet).catch(
+            () => null,
+          )
+          collWide.set(collection, p)
+        }
+        return p
+      }
+      // Bounded concurrency (the same window the collection fan-out uses) so a
+      // wallet delegated/paid across many pieces can't fire an unbounded burst
+      // of eth_calls.
       await mapWithConcurrency(
-        [...candidateCollections],
+        toVerify,
         FANOUT_CONCURRENCY,
-        async (collection) => {
+        async ({ collection, tokenId, key }) => {
+          const cw = await readCollWide(collection)
+          if (cw === null) {
+            authorizedKeys.add(key) // fail-open: collection-wide read failed
+            return
+          }
+          if (hasAdminBit(cw) || hasMinterBit(cw)) {
+            authorizedKeys.add(key)
+            return
+          }
           try {
-            const perms = await readPermissions(
+            const pt = await readPermissions(
               client,
               collection as `0x${string}`,
-              0n,
+              BigInt(tokenId),
               wallet,
             )
-            collectionAuthorized.set(
-              collection,
-              hasAdminBit(perms) || hasMinterBit(perms),
-            )
+            if (hasAdminBit(pt) || hasMinterBit(pt)) authorizedKeys.add(key)
           } catch {
-            collectionAuthorized.set(collection, true)
+            authorizedKeys.add(key) // fail-open: per-token read failed
           }
         },
       )
@@ -481,9 +509,7 @@ export async function GET(req: NextRequest) {
 
     merged = merged.filter((m: unknown) => {
       if (cheapMatch(m)) return true
-      if (!splitKeys.has(momentKey(m))) return false
-      const addr = (m as { address?: string }).address?.toLowerCase() ?? ''
-      return collectionAuthorized.get(addr) ?? false
+      return authorizedKeys.has(momentKey(m))
     })
   }
 
