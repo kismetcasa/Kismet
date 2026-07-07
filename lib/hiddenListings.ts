@@ -5,11 +5,19 @@ import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
 import type { Listing } from './listings'
 
-// Set of "<lowercaseAddr>:<tokenId>:<lowercaseSeller>" members — the same
-// (collection, tokenId, seller) triple lib/listings keys its owned-slot on,
-// NOT the listing's UUID. Keying on the slot means a hide survives a
-// cancel/re-list cycle: the re-listed order lands in the same slot and stays
-// hidden, so admin moderation isn't whack-a-mole against fresh listing ids.
+// Set of "<lowercaseAddr>:<tokenId>:<lowercaseSeller>" members — keyed on the
+// (collection, tokenId, seller) SLOT lib/listings uses, not the listing's
+// UUID, so a hide is stable across the listing's own id. The slot's terminal
+// transitions (cancel / fill / expire) GC the member via unhideListing (wired
+// into updateListingStatus + handleExpiredListings in lib/listings.ts), so
+// the set self-prunes to currently-hidden ACTIVE listings and never
+// accumulates tombstones for listings that have gone away. A consequence:
+// the per-listing hide does NOT survive a cancel→re-list — that's deliberate.
+//
+// Scope: this is the narrow "hide THIS listing" lever. Durable content
+// moderation that must persist across any future re-list is moment/collection
+// hide, keyed on the on-chain token so it cascades over every listing of it
+// (including brand-new ones) with no per-slot bookkeeping.
 //
 // Admin-only writes (via /api/admin/hide, type "listing") — there is no
 // seller-facing hide because a seller who wants a listing gone can already

@@ -5,6 +5,7 @@ import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { clearKismetListed } from './pass-validity'
+import { unhideListing } from './hiddenListings'
 
 export interface Listing {
   id: string
@@ -184,6 +185,10 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
       redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
       redis.zrem(KEY_ALL, listing.id),
       clearKismetListed(listing.collectionAddress, listing.tokenId, listing.seller).catch(() => {}),
+      // GC any admin hide on this now-dead slot so the hidden-listings set
+      // self-prunes instead of accumulating tombstones for gone listings.
+      // Best-effort: a failed prune must never block the expiry write.
+      unhideListing(listing.collectionAddress, listing.tokenId, listing.seller).catch(() => {}),
     ])
 
     await writeNotification({
@@ -282,5 +287,12 @@ export async function updateListingStatus(
     redis.set(keyById(id), JSON.stringify(updated)),
     redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
     redis.zrem(KEY_ALL, id),
+    // GC any admin hide on this now-dead slot (cancel/fill/expire) so the
+    // hidden-listings set self-prunes instead of accumulating tombstones.
+    // Best-effort: the status transition is critical and must not fail on a
+    // prune error.
+    unhideListing(listing.collectionAddress, listing.tokenId, listing.seller).catch(
+      bestEffort('listings.updateStatus.clearHide', { id, status }),
+    ),
   ])
 }
