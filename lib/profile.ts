@@ -1,6 +1,7 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
+import { getHiddenProfilesSet } from './hidden-profiles'
 import { randomHex } from './random'
 
 export interface Profile {
@@ -144,18 +145,21 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
   const q = query.trim().toLowerCase()
   const isAddressQuery = /^0x[0-9a-fA-F]+$/.test(q)
 
-  // Search is a public feed surface — admin-hidden users are stripped
-  // from results regardless of who's querying. Memoized; cheap to fetch
+  // Search is a public feed surface — admin-hidden users (content hide)
+  // AND admin-hidden profiles (identity hide) are both stripped from
+  // results regardless of who's querying. Memoized; cheap to fetch
   // alongside the profiles smembers.
-  const [addresses, hiddenUsers] = await Promise.all([
+  const [addresses, hiddenUsers, hiddenProfiles] = await Promise.all([
     redis.smembers(KEY_PROFILES) as Promise<string[]>,
     getHiddenUsersSet(),
+    getHiddenProfilesSet(),
   ])
+  const stripped = (a: string) => hiddenUsers.has(a) || hiddenProfiles.has(a)
   const results: Profile[] = []
 
   if (isAddressQuery) {
     // Filter indexed wallets by address prefix
-    const matching = addresses.filter(a => a.startsWith(q) && !hiddenUsers.has(a))
+    const matching = addresses.filter(a => a.startsWith(q) && !stripped(a))
     if (matching.length > 0) {
       const raws = await redis.mget<(string | Profile | null)[]>(...matching.map(keyByAddress))
       for (const raw of raws) {
@@ -167,10 +171,10 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     }
     // If querying a full address and not already found, do a direct lookup
     // so any wallet is discoverable even if they haven't interacted yet.
-    // Still gate on hidden-users — directly typing the address shouldn't
+    // Still gate on the hide lists — directly typing the address shouldn't
     // bypass the filter (matches the listings GET behavior for hidden
     // seller-scoped lookups).
-    if (q.length === 42 && !hiddenUsers.has(q) && !results.some(r => r.address === q)) {
+    if (q.length === 42 && !stripped(q) && !results.some(r => r.address === q)) {
       results.unshift(await getProfile(q))
     }
   } else {
@@ -180,7 +184,7 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     for (let i = 0; i < addresses.length; i++) {
       const raw = raws[i]
       if (!raw) continue
-      if (hiddenUsers.has(addresses[i])) continue
+      if (stripped(addresses[i])) continue
       const p: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
       if ((p.username ?? '').toLowerCase().includes(q)) {
         results.push(p)

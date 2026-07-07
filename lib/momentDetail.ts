@@ -3,7 +3,7 @@ import type { Address } from 'viem'
 import { inprocessUrl, type MomentDetail } from './inprocess'
 import { isMomentHidden } from './hiddenMoments'
 import { getMomentMeta } from './notifications'
-import { resolveCanonicalProfile } from './addressUnion'
+import { isProfileIdentityHidden, resolveCanonicalProfile } from './addressUnion'
 import { onchainSaleConfigFallback } from './saleConfig'
 import { serverBaseClient } from './rpc'
 
@@ -102,6 +102,15 @@ export const fetchMomentDetail = cache(async (
     if (kvCreator) {
       const { profile, farcaster } = await resolveCanonicalProfile(kvCreator)
       creator = { address: kvCreator, username: profile.username || farcaster?.username || null }
+    }
+    // Admin-hidden identity (lib/hidden-profiles) → strip the resolved
+    // username so the page metadata + OG share card attribute by
+    // shortAddress instead of re-publishing a name every profile surface
+    // now withholds. Address stays — attribution is content data, the NAME
+    // is the identity being hidden. Covers both the KV-resolved and the
+    // timeline-fallback creator; near-free via the memoized sibling closure.
+    if (creator?.address && (await isProfileIdentityHidden(creator.address))) {
+      creator = { ...creator, username: null }
     }
     return { ...data, hidden, creator }
   } catch {

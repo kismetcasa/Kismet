@@ -8,6 +8,8 @@ import {
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getListingVisibility } from '@/lib/hiddenListings'
+import { getSessionAddress } from '@/lib/session'
 import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,
@@ -319,33 +321,55 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid seller address')
   }
 
-  const hiddenUsers = await getHiddenUsersSet()
+  const visibility = await getListingVisibility()
 
-  // Single-token lookup — direct deeplink, not filtered (matches the
-  // single-collection lookup precedent in /api/collections; BuyButton
-  // needs to be able to resolve a known listing to fulfill).
+  // Single-token lookup — direct deeplink. Author-level (hidden-user)
+  // filtering is deliberately NOT applied here, matching the single-
+  // collection lookup precedent in /api/collections (BuyButton needs to
+  // resolve a known listing to fulfill). Content-level hides DO apply:
+  // an admin-hidden listing — or a listing whose moment or collection is
+  // hidden — is off the market entirely, deeplink included — EXCEPT for
+  // the authenticated seller themselves, who can still resolve their own
+  // hidden listing (same own-content exception as the seller-scope branch,
+  // so a client driving cancel from this lookup doesn't show "not listed"
+  // while re-listing 409s on the still-occupied slot). Session read is
+  // gated behind the hidden case so the common path stays cookie-free.
   if (collection && tokenId && seller) {
     const listing = await getListingForToken(collection, tokenId, seller)
-    return NextResponse.json({ listing: listing ?? null })
+    let visible = !!listing && !visibility.contentHidden(listing)
+    if (listing && !visible) {
+      const viewer = await getSessionAddress(req)
+      visible = viewer?.toLowerCase() === listing.seller.toLowerCase()
+    }
+    return NextResponse.json({ listing: visible ? listing : null })
   }
 
-  // Seller-scope lookup — empty list when the seller is admin-hidden,
-  // so we don't leak "this user exists but is hidden".
+  // Seller-scope lookup. Third parties get an empty list when the seller
+  // is admin-hidden (don't leak "this user exists but is hidden") and
+  // never see hidden listings. The seller sees their own list unfiltered —
+  // including admin-hidden entries — so they can still cancel them: the
+  // same own-content exception the timeline applies to hidden moments,
+  // authenticated by the session cookie / Farcaster bearer.
   if (seller && !collection && !tokenId) {
-    if (hiddenUsers.has(seller.toLowerCase())) {
+    const [hiddenUsers, viewer] = await Promise.all([
+      getHiddenUsersSet(),
+      getSessionAddress(req),
+    ])
+    const isOwnView = viewer?.toLowerCase() === seller.toLowerCase()
+    if (!isOwnView && hiddenUsers.has(seller.toLowerCase())) {
       return NextResponse.json({ listings: [], pagination: { page: 1, limit: 0, total: 0, total_pages: 1 } })
     }
-    const listings = await getListingsBySeller(seller)
+    const all = await getListingsBySeller(seller)
+    const listings = isOwnView ? all : all.filter((l) => !visibility.feedHidden(l))
     return NextResponse.json({ listings, pagination: { page: 1, limit: listings.length, total: listings.length, total_pages: 1 } })
   }
 
   const { listings, total } = await getListings({ page, limit, collection })
   // Filter post-pagination; the store isn't indexed by visibility, so
   // `total` may overcount hidden listings on this page. Acceptable for
-  // the marketplace feed.
-  const visibleListings = hiddenUsers.size === 0
-    ? listings
-    : listings.filter((l) => !hiddenUsers.has(l.seller.toLowerCase()))
+  // the marketplace feed. feedHidden covers the per-listing hide, the
+  // hidden-moment/collection cascade, and hidden sellers/creators.
+  const visibleListings = listings.filter((l) => !visibility.feedHidden(l))
   return NextResponse.json({
     listings: visibleListings,
     pagination: {
@@ -403,6 +427,14 @@ export async function POST(req: NextRequest) {
     if (!isValidTokenId(tokenId)) {
       return errorResponse(400, 'Invalid tokenId')
     }
+    // Canonical decimal form at the trust boundary. isValidTokenId accepts
+    // leading zeros while every on-chain check below compares via BigInt —
+    // so '01' would otherwise store a listing in a SEPARATE owned slot from
+    // '1' (bypassing the one-active-listing invariant) whose raw tokenId
+    // also evades the hidden-moment cascade and the admin dashboard's
+    // per-listing tooling. Normalize once; everything downstream (storage,
+    // slot key, hide keys) uses the canonical form.
+    const canonicalTokenId = BigInt(tokenId).toString()
     if (BigInt(price) <= 0n) {
       return errorResponse(400, 'Price must be greater than 0')
     }
@@ -581,7 +613,7 @@ export async function POST(req: NextRequest) {
 
     const listing = await createListing({
       collectionAddress,
-      tokenId,
+      tokenId: canonicalTokenId,
       seller,
       price,
       sellerProceeds,
