@@ -452,8 +452,15 @@ export async function GET(req: NextRequest) {
     const collectionAuthorized = new Map<string, boolean>()
     if (candidateCollections.size > 0) {
       const client = serverBaseClient()
-      await Promise.all(
-        [...candidateCollections].map(async (collection) => {
+      // Bounded concurrency (the same window the collection fan-out uses): a
+      // wallet that's a payee across many collections must not fire an
+      // unbounded burst of eth_calls. readPermissions keeps its own per-read
+      // retry budget, so a transient false-zero right after a grant still
+      // self-corrects.
+      await mapWithConcurrency(
+        [...candidateCollections],
+        FANOUT_CONCURRENCY,
+        async (collection) => {
           try {
             const perms = await readPermissions(
               client,
@@ -468,7 +475,7 @@ export async function GET(req: NextRequest) {
           } catch {
             collectionAuthorized.set(collection, true)
           }
-        }),
+        },
       )
     }
 
