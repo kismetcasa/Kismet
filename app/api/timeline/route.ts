@@ -14,6 +14,9 @@ import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
+import { getRecipientSplits } from '@/lib/splits'
+import { serverBaseClient } from '@/lib/rpc'
+import { hasAdminBit, hasMinterBit, readPermissions } from '@/lib/permissions'
 
 // Bounded-concurrency map: cap how many inprocess /timeline fetches are in
 // flight at once. A plain Promise.all over the full tracked-collection set
@@ -382,25 +385,105 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Airdroppable filter — moments this address has admin authority over.
-  // Inprocess populates `admins[]` from on-chain ADMIN holders at each
-  // moment's tokenId, so delegated admins appear here even though they
-  // aren't the creator. Match on either `creator.address` or any entry
-  // in `admins[]` so the creator's own moments still surface (some
-  // inprocess responses don't include the creator in admins[] when they
-  // hold the bit only via tokenId 0).
+  // Airdroppable filter — moments this address can mint an airdrop of.
+  // Three signals, cheapest first:
+  //   1. creator.address === wallet — their own mint.
+  //   2. wallet ∈ admins[] — inprocess indexes on-chain ADMIN holders at each
+  //      moment's tokenId, so per-token delegates surface here even though
+  //      they aren't the creator.
+  // Neither covers the Patron model: those moments attribute the creator to
+  // the platform treasury, and the real artist holds ADMIN only via the
+  // collection-wide tokenId-0 row — which inprocess's per-token admins[]
+  // omits. So the artist, named only on the split, never saw their own piece
+  // in the picker even though adminMint (which ORs the tokenId-0 row into its
+  // gate) would let them airdrop it.
+  //   3. wallet is a split payee on the moment AND holds collection-wide
+  //      ADMIN/MINTER on its collection. getRecipientSplits yields the
+  //      candidate set in one SMEMBERS; a single permissions(0, wallet) read
+  //      per distinct candidate collection confirms authority, so the picker
+  //      keeps its invariant — it only lists pieces adminMint can actually
+  //      mint. Per-token grants are already covered by signal 2, so the
+  //      collection-wide read is the exact, minimal complement.
   if (airdroppable) {
-    merged = merged.filter((m: unknown) => {
+    const wallet = airdroppable as `0x${string}`
+    const cheapMatch = (m: unknown): boolean => {
       const moment = m as {
         creator?: { address?: string }
         admins?: { address?: string }[]
       }
       if (moment.creator?.address?.toLowerCase() === airdroppable) return true
       return (
-        moment.admins?.some(
-          (a) => a.address?.toLowerCase() === airdroppable,
-        ) ?? false
+        moment.admins?.some((a) => a.address?.toLowerCase() === airdroppable) ??
+        false
       )
+    }
+    const momentKey = (m: unknown): string => {
+      const moment = m as { address?: string; token_id?: string }
+      return `${moment.address?.toLowerCase() ?? ''}:${moment.token_id ?? ''}`
+    }
+
+    // Split moments the wallet is a payee on (reverse index, one SMEMBERS).
+    // Empty for non-payees, so this whole branch is a no-op read for them.
+    const splitKeys = new Set(
+      (await getRecipientSplits(airdroppable).catch(() => [])).map(
+        (s) => `${s.collection}:${s.tokenId}`,
+      ),
+    )
+
+    // Only split candidates the cheap signals missed need an authority read,
+    // and only one read per distinct collection (the tokenId-0 grant is
+    // collection-wide).
+    const candidateCollections = new Set<string>()
+    if (splitKeys.size > 0) {
+      for (const m of merged) {
+        if (cheapMatch(m)) continue
+        if (!splitKeys.has(momentKey(m))) continue
+        const addr = (m as { address?: string }).address?.toLowerCase()
+        if (addr) candidateCollections.add(addr)
+      }
+    }
+
+    // A read failure falls OPEN (keep the candidate): the wallet is a named
+    // payee and adminMint independently gates the real airdrop on-chain, so a
+    // transient RPC blip degrades toward showing an artist their own work
+    // rather than hiding it — the same "unknown = keep" stance filterRedundant
+    // takes. Fail-open can never enable an unauthorized airdrop; the chain is
+    // the gate, not this read.
+    const collectionAuthorized = new Map<string, boolean>()
+    if (candidateCollections.size > 0) {
+      const client = serverBaseClient()
+      // Bounded concurrency (the same window the collection fan-out uses): a
+      // wallet that's a payee across many collections must not fire an
+      // unbounded burst of eth_calls. readPermissions keeps its own per-read
+      // retry budget, so a transient false-zero right after a grant still
+      // self-corrects.
+      await mapWithConcurrency(
+        [...candidateCollections],
+        FANOUT_CONCURRENCY,
+        async (collection) => {
+          try {
+            const perms = await readPermissions(
+              client,
+              collection as `0x${string}`,
+              0n,
+              wallet,
+            )
+            collectionAuthorized.set(
+              collection,
+              hasAdminBit(perms) || hasMinterBit(perms),
+            )
+          } catch {
+            collectionAuthorized.set(collection, true)
+          }
+        },
+      )
+    }
+
+    merged = merged.filter((m: unknown) => {
+      if (cheapMatch(m)) return true
+      if (!splitKeys.has(momentKey(m))) return false
+      const addr = (m as { address?: string }).address?.toLowerCase() ?? ''
+      return collectionAuthorized.get(addr) ?? false
     })
   }
 
