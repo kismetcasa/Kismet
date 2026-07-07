@@ -2,10 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
-import { toast } from 'sonner'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { humanError } from '@/lib/toast'
+import { useSignIn } from '@/hooks/useSignIn'
 import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
 
 interface Pending {
@@ -55,13 +54,15 @@ export function ProfileStats({
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
-  // Server said "no credentials" on the owner path (see /api/stats
-  // authRequired). Renders a sign-in card in place of silence — without it a
-  // session-less owner got a 200 shaped exactly like "no activity" and the
-  // card unmounted, hiding real earnings AND the pin (the only opt-in
-  // surface) with no feedback. `reloadTick` re-runs the fetch after sign-in.
+  // Server withheld the figures on the owner path (see /api/stats
+  // authRequired: no session, or a session for a different identity).
+  // Renders a sign-in card in place of silence — without it a session-less
+  // owner got a 200 shaped exactly like "no activity" and the card
+  // unmounted, hiding real earnings AND the pin (the only opt-in surface)
+  // with no feedback. `reloadTick` re-runs the fetch after sign-in; the
+  // response handler — not the sign-in click — clears the flag, so a failed
+  // refetch keeps the card up for a retry instead of unmounting it.
   const [authRequired, setAuthRequired] = useState(false)
-  const [signingIn, setSigningIn] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
   // Mint-vs-resale breakdown disclosure. `splitPinned` is the click toggle (the
   // canonical action, works on touch); `splitHover` is a desktop mouse-only
@@ -131,22 +132,10 @@ export function ProfileStats({
     return d
   }, [stats])
 
-  // Point-of-need sign-in (one SIWE signature → 7-day session; a no-op click
-  // inside a Mini App where the Quick Auth JWT is the session). Only the
-  // owner context ever sets authRequired, so visitors never see this.
-  const signIn = async () => {
-    if (signingIn) return
-    setSigningIn(true)
-    try {
-      await ensureSession()
-      setAuthRequired(false)
-      setReloadTick((t) => t + 1) // refetch with the fresh session
-    } catch (err) {
-      toast.error('Sign in failed', { description: humanError(err) })
-    } finally {
-      setSigningIn(false)
-    }
-  }
+  // Point-of-need sign-in (one SIWE signature → 7-day session). Shared flow
+  // with SignInPrompt via useSignIn; only the owner context ever sets
+  // authRequired, so visitors never see this.
+  const { signIn, signingIn } = useSignIn(() => setReloadTick((t) => t + 1))
 
   if (!asVisitor && authRequired) {
     return (
@@ -220,13 +209,18 @@ export function ProfileStats({
     setStats((s) => (s ? { ...s, public: next } : s)) // optimistic
     setPinning(true)
     try {
+      // Same prompt-first idiom as every session-cookie write (MomentDetailView,
+      // CollectionView, MintForm): a cached-valid session is a no-op, a missing
+      // one costs one SIWE signature and the toggle completes in the same
+      // gesture. A rejected wallet prompt throws → the catch reverts the pin.
+      await ensureSession()
       const res = await fetch(`/api/profile/${address}/earnings-visibility`, { method: next ? 'POST' : 'DELETE' })
       if (!res.ok) {
         setStats((s) => (s ? { ...s, public: !next } : s)) // revert
-        // Expired session mid-view (e.g. a pinned-public owner whose figures
-        // rode the public payload): surface the sign-in card rather than a
-        // pin that silently snaps back.
-        if (res.status === 401) setAuthRequired(true)
+        // Session the cache believed in was actually dead (or belongs to a
+        // different identity): surface the sign-in card rather than a pin
+        // that silently snaps back — its click revalidates the cache.
+        if (res.status === 401 || res.status === 403) setAuthRequired(true)
       }
     } catch {
       setStats((s) => (s ? { ...s, public: !next } : s))

@@ -69,14 +69,35 @@ export async function GET(
   // client-side owner check needs it: on web there is no FC identity context,
   // so after the canonical redirect an owner connected with a non-canonical
   // sibling wallet was rendered the VISITOR view of their own profile —
-  // including a silently absent earnings card. Redis-cached (1h); fetched in
-  // parallel with the earnings read so it adds no latency.
-  const [earnings, fcWallets] = await Promise.all([
-    isEarningsPublic({ address: canonicalAddress, fid: canonical.fid }).then((pub) =>
-      pub ? getArtistEarnings(canonicalAddress) : null,
-    ),
-    canonical.fid != null ? getVerifiedAddressesByFid(canonical.fid) : ([] as string[]),
-  ])
+  // including a silently absent earnings card.
+  //
+  // Shipped ONLY when the identity actually UNIFIES under this canonical —
+  // a FidProfile exists, or an anchor profile holds data — because that is
+  // when authorizeProfileOwner resolves every sibling's session to this
+  // address. For a data-less FC identity ('empty') each sibling canonicalizes
+  // to ITSELF, so a sibling-keyed client owner check would render owner UI
+  // whose every server call 403s; omitting the field keeps those viewers on
+  // the visitor view, exactly as before this field existed. (Accepted edge:
+  // two data-bearing web-first anchors on one FID can still diverge — rare,
+  // and bounded to error toasts on writes.)
+  //
+  // Redis-cached (1h) and passed into isEarningsPublic as its pre-resolved
+  // sibling list, so the unpinned default path pays the SAME single
+  // verifications read it always did — the payload field adds no command.
+  const identityUnifies =
+    canonical.fid != null &&
+    (canonical.source === 'fid' || !!profile.username || !!profile.avatarUrl)
+  const fcWallets =
+    identityUnifies && canonical.fid != null
+      ? await getVerifiedAddressesByFid(canonical.fid)
+      : []
+  const earnings = (await isEarningsPublic({
+    address: canonicalAddress,
+    fid: canonical.fid,
+    siblings: fcWallets.length ? fcWallets : undefined,
+  }))
+    ? await getArtistEarnings(canonicalAddress)
+    : null
   if (!profile.username && cachedEns === undefined) {
     after(() => resolveEnsAndCache(address))
   }

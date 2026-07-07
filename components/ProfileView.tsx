@@ -282,6 +282,16 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     connectedAddress?.toLowerCase() === address.toLowerCase() ||
     fcIdentity?.address?.toLowerCase() === address.toLowerCase() ||
     (!!connectedAddress && !!profile?.fcWallets?.includes(connectedAddress.toLowerCase()))
+  // Edit-profile affordances (pencil, avatar edit, save) stay on the STRICT
+  // branches: the profile PUT verifies a raw wallet signature against the URL
+  // address, which a sibling wallet's signature can never satisfy — so the
+  // sibling-widened isOwner must not offer an edit whose save is guaranteed
+  // to fail. Same gate for the permissions banner: its grant flow sends
+  // transactions from the connected wallet, which only the strict-matched
+  // wallet can execute. Both keep exactly the pre-widening owner population.
+  const canEditProfile =
+    connectedAddress?.toLowerCase() === address.toLowerCase() ||
+    fcIdentity?.address?.toLowerCase() === address.toLowerCase()
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
@@ -332,6 +342,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     setSeededAddr(address)
     setTheme(initialTheme ?? null)
     setCustomizing(false)
+    // Drop the previous profile BEFORE the new address's first paint: isOwner
+    // now reads profile.fcWallets, so a stale payload would briefly mark the
+    // viewer as owner of the NEW profile (owner chrome + owner fetches on
+    // someone else's page) until the fresh fetch lands.
+    setProfile(null)
+    setLoadingProfile(true)
   }
   // One in-view signal for the whole themed header — drives both the backdrop's
   // animation pause and the avatar bloom glow, so they stop together off-screen
@@ -408,13 +424,20 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     if (!isOwner) setEditing(false)
   }, [isOwner])
 
-  // Tier 1 — header + first section.
+  // Tier 1 — header + first section. Cancellation guard: without it, rapid
+  // navigation lets a SLOW previous profile's response land after the new
+  // one and clobber it — and isOwner reads profile.fcWallets, so that stale
+  // payload could mark the viewer as owner of someone else's profile.
   useEffect(() => {
+    let cancelled = false
     fetch(`/api/profile/${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setProfile(d.profile ?? { address, updatedAt: 0 }))
-      .catch(() => setProfile({ address, updatedAt: 0 }))
-      .finally(() => setLoadingProfile(false))
+      .then((d) => { if (!cancelled) setProfile(d.profile ?? { address, updatedAt: 0 }) })
+      .catch(() => { if (!cancelled) setProfile({ address, updatedAt: 0 }) })
+      .finally(() => { if (!cancelled) setLoadingProfile(false) })
+    return () => {
+      cancelled = true
+    }
   }, [address])
 
   // Pass-validity snapshot — drives the "Valid Pass" badge on collected
@@ -597,7 +620,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   }
 
   async function saveProfile() {
-    if (!isOwner || !connectedAddress) { openConnectModal?.(); return }
+    if (!canEditProfile || !connectedAddress) { openConnectModal?.(); return }
     setSaving(true)
     try {
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
@@ -611,7 +634,19 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d.error ?? 'Failed to save') }
       const { profile: updated } = await res.json()
-      setProfile(updated)
+      // MERGE over the enriched GET payload — the PUT returns only the bare
+      // store projection, and replacing wholesale dropped fcWallets (killing
+      // the sibling owner check until reload) plus earnings/ensName/farcaster.
+      // displayName: a new username takes over (server precedence); when
+      // cleared, keep a non-username-derived displayName (FC/ENS enrichment)
+      // and let the render fallback chain handle the rest.
+      setProfile((prev) => ({
+        ...(prev ?? { address, updatedAt: 0 }),
+        ...updated,
+        displayName:
+          updated.username ??
+          (prev && prev.displayName !== prev.username ? prev.displayName : null),
+      }))
       setEditing(false)
       toast.success('Profile updated!', { id: 'profile' })
     } catch (err) {
@@ -978,8 +1013,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Owner-only entry point to the /permissions dashboard. We pass an
   // empty list for non-owners so the wagmi multicall doesn't fire —
   // visitors don't need (and shouldn't see) someone else's permission
-  // state.
-  const collectionAddressesForPerms = isOwner
+  // state. Strict gate (not the sibling-widened isOwner): the check reads
+  // the CONNECTED wallet's smart-wallet admin state, so for a sibling wallet
+  // it would report every canonical-deployed collection as missing admin and
+  // raise an alert whose grant flow that wallet cannot execute.
+  const collectionAddressesForPerms = canEditProfile
     ? artistCollections.map((c) => c.contractAddress)
     : []
   const { missingCount: ownCollectionsMissingAdmin } = useCollectionsPermissions(
@@ -1047,10 +1085,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             {!loadingProfile ? (
               theme ? (
                 <PaletteRing stops={theme.palette.ringStops} ringStart={theme.geometry.ringStart} size={80}>
-                  <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor} onEdit={openEdit} />
+                  <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor && canEditProfile} onEdit={openEdit} />
                 </PaletteRing>
               ) : (
-                <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor} onEdit={openEdit} />
+                <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={80} editable={!asVisitor && canEditProfile} onEdit={openEdit} />
               )
             ) : (
               <div className="w-20 h-20 rounded-full bg-raised animate-pulse" />
@@ -1064,7 +1102,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 ) : (
                   <>
                     <p className="text-ink font-mono text-sm truncate">{displayName}</p>
-                    {!asVisitor && (
+                    {!asVisitor && canEditProfile && (
                       <button onClick={openEdit} className="flex-shrink-0 p-1 text-muted hover:text-dim transition-colors" title="Edit profile">
                         <Pencil size={12} />
                       </button>

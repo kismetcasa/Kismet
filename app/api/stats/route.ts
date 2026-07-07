@@ -13,15 +13,18 @@ import { errorResponse } from '@/lib/apiResponse'
 // the owner themselves (session). Otherwise return just the visibility flag, so
 // the owner's own card knows its pin state without leaking amounts to visitors.
 //
-// The private-path response carries `authRequired: true` when the request had
-// NO credentials at all (401 from the owner gate) — the card renders a sign-in
-// affordance instead of silently unmounting, which left session-less owners
-// with no card, no error, and no way to reach the pin (the only opt-in
+// The private-path response carries `authRequired: true` — the card renders a
+// sign-in affordance instead of silently unmounting, which left session-less
+// owners with no card, no error, and no way to reach the pin (the only opt-in
 // surface). A flag on the 200 rather than a 401 status because this GET is a
 // mixed public/private resource: the pin state IS served, only the figures are
-// withheld. It leaks nothing (every anonymous caller gets the same flag), and
-// a signed-in NON-owner (403) deliberately gets the bare visitor shape — a
-// sign-in prompt would be a lie for them.
+// withheld. The flag rides BOTH non-owner legs (no credentials AND a session
+// for a different identity), keeping every non-owner response byte-identical —
+// no oracle — while covering the stale-cookie case: a viewer whose cookie
+// belongs to another wallet gets the sign-in card, whose flow deletes the
+// mismatched cookie and re-auths as the connected wallet (see
+// useUploadSession). Only the owner's own card ever consumes this flag —
+// visitors read pinned earnings from the profile payload and never call here.
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`stats:${ip}`, 120, 60))) {
@@ -40,11 +43,8 @@ export async function GET(req: NextRequest) {
   // session check isn't on a visitor-hot path.
   const auth = await authorizeProfileOwner(req, artist)
   const isOwner = !('error' in auth)
-  if (!isPublic && 'error' in auth) {
-    return NextResponse.json({
-      public: false,
-      ...(auth.status === 401 ? { authRequired: true } : {}),
-    })
+  if (!isPublic && !isOwner) {
+    return NextResponse.json({ public: false, authRequired: true })
   }
 
   // Earnings and pending both union over the artist's earnings wallets (FC
