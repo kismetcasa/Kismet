@@ -8,6 +8,7 @@ import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useAdmin } from '@/contexts/AdminContext'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
+import type { Listing } from '@/lib/listings'
 import { toastError } from '@/lib/toast'
 
 /**
@@ -26,7 +27,6 @@ import { toastError } from '@/lib/toast'
 export function AdminDashboard() {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
-  const { withSession } = useAdmin()
 
   const [adminCheck, setAdminCheck] = useState<{ checked: boolean; isAdmin: boolean }>({
     checked: false,
@@ -110,7 +110,7 @@ export function AdminDashboard() {
         </p>
       </div>
 
-      <HideContentCard withSession={withSession} />
+      <HideContentCard />
       <TokenGateCard />
       <AirdropQuotaCard />
     </div>
@@ -215,30 +215,57 @@ function parseTarget(input: string): ParsedTarget | null {
 
 // Row shape returned by GET /api/admin/hide for a moment's marketplace
 // listings — includes already-hidden ones the public feed filters out.
-type AdminListingRow = {
-  id: string
-  seller: string
-  price: string
-  currency: 'eth' | 'usdc'
-  name?: string
-  expiresAt: number
+// Derived from the stored Listing shape so the two can't drift.
+type AdminListingRow = Pick<Listing, 'id' | 'seller' | 'price' | 'currency'> & {
   hidden: boolean
 }
 
-function HideContentCard({
-  withSession,
-}: {
-  withSession: <T>(fn: () => Promise<T>) => Promise<T | null>
-}) {
+// Listings-panel state machine. `loaded` pins the (address, tokenId) the
+// rows were fetched FOR, and toggles POST against that pin — not the
+// live-parsed link — so a click landing in the one-paint window after the
+// admin edits the URL can't write a mixed-provenance hide key.
+type ListingsPanel =
+  | { kind: 'idle' }
+  | { kind: 'auth' }
+  | { kind: 'loading' }
+  | { kind: 'error' }
+  | {
+      kind: 'loaded'
+      forAddress: string
+      forTokenId: string
+      momentHidden: boolean
+      collectionHidden: boolean
+      rows: AdminListingRow[]
+    }
+
+function HideContentCard() {
+  const { withSession, hasSession, startSession } = useAdmin()
+
   const [link, setLink] = useState('')
+  // Debounced copy drives parsing + fetches: the tokenId regex matches every
+  // digit of a partial edit, so undebounced effects would fire the admin GET
+  // (a 500-id market scan) once per keystroke.
+  const [debouncedLink, setDebouncedLink] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedLink(link), 300)
+    return () => clearTimeout(t)
+  }, [link])
+
   const [submitting, setSubmitting] = useState(false)
   const [currentlyHidden, setCurrentlyHidden] = useState<boolean | null>(null)
-  // null = not applicable (no moment parsed). 'error' covers both fetch
-  // failures and a declined SIWE prompt — the GET is admin-gated.
-  const [listings, setListings] = useState<AdminListingRow[] | 'loading' | 'error' | null>(null)
+  const [statusError, setStatusError] = useState(false)
+  // The hidden-profiles entry that actually matches the pasted identity —
+  // may be a SIBLING wallet of the pasted address (the gate is sibling-
+  // aware), so unhide must DELETE this entry, not the pasted address.
+  const [matchedAddress, setMatchedAddress] = useState<string | null>(null)
+  // Bumped after a successful toggle so the status + listings effects
+  // refetch server truth (cascade flags, matched entry) instead of trusting
+  // optimistic state.
+  const [refresh, setRefresh] = useState(0)
+  const [listings, setListings] = useState<ListingsPanel>({ kind: 'idle' })
   const [listingBusy, setListingBusy] = useState<string | null>(null)
 
-  const target = parseTarget(link)
+  const target = parseTarget(debouncedLink)
   // Effect deps need stable scalars, not a fresh object every render.
   const targetType = target?.type ?? null
   const targetAddress = target?.address ?? null
@@ -247,28 +274,41 @@ function HideContentCard({
   // Re-fetch current visibility on every parsed target so the toggle
   // label reflects actual server state (and we don't issue redundant
   // hide/unhide writes). Moment/collection status comes from the public
-  // hide GETs; profile status has no public endpoint (hidden state
-  // shouldn't be probeable), so it reads the admin-gated list via
-  // withSession like the moderation page does.
+  // hide GETs. Profile status has no public endpoint (hidden state
+  // shouldn't be probeable) and is sibling-aware server-side — it reads
+  // the admin-gated lookup, and ONLY once a session already exists:
+  // passive reads must never pop a wallet prompt (the sign-in affordance
+  // below covers the no-session case).
   useEffect(() => {
     if (!targetType || !targetAddress) {
       setCurrentlyHidden(null)
+      setStatusError(false)
+      setMatchedAddress(null)
       return
     }
     let cancelled = false
+    setCurrentlyHidden(null)
+    setStatusError(false)
+    setMatchedAddress(null)
     if (targetType === 'profile') {
-      withSession(async () => {
-        const res = await fetch('/api/admin/hidden-profiles')
-        if (!res.ok) return null
-        const d = (await res.json()) as { addresses?: string[] }
-        return Array.isArray(d.addresses) ? d.addresses : null
-      })
-        .then((addrs) => {
+      if (!hasSession) return
+      fetch(`/api/admin/hidden-profiles?address=${targetAddress}`)
+        .then((r) =>
+          r.ok
+            ? (r.json() as Promise<{ hidden?: boolean; matchedAddress?: string | null }>)
+            : null,
+        )
+        .then((d) => {
           if (cancelled) return
-          setCurrentlyHidden(addrs ? addrs.includes(targetAddress.toLowerCase()) : null)
+          if (!d || typeof d.hidden !== 'boolean') {
+            setStatusError(true)
+            return
+          }
+          setCurrentlyHidden(d.hidden)
+          setMatchedAddress(d.matchedAddress ?? null)
         })
         .catch(() => {
-          if (!cancelled) setCurrentlyHidden(null)
+          if (!cancelled) setStatusError(true)
         })
       return () => {
         cancelled = true
@@ -281,47 +321,71 @@ function HideContentCard({
     fetch(url)
       .then((r) => r.json() as Promise<{ hidden?: boolean }>)
       .then((d) => {
-        if (!cancelled) setCurrentlyHidden(typeof d.hidden === 'boolean' ? d.hidden : null)
+        if (cancelled) return
+        if (typeof d.hidden === 'boolean') setCurrentlyHidden(d.hidden)
+        else setStatusError(true)
       })
       .catch(() => {
-        if (!cancelled) setCurrentlyHidden(null)
+        if (!cancelled) setStatusError(true)
       })
     return () => {
       cancelled = true
     }
-  }, [targetType, targetAddress, targetTokenId, withSession])
+  }, [targetType, targetAddress, targetTokenId, hasSession, refresh])
 
   // Marketplace listings for a parsed moment, via the admin-gated GET on
-  // /api/admin/hide (withSession — may prompt the one-per-session SIWE
-  // signature, same as the moderation page's list loads). The public
-  // /api/listings feed filters hidden listings out, so this is the only
-  // surface where the admin can see one to unhide it.
+  // /api/admin/hide. The public /api/listings feed filters hidden listings
+  // out, so this is the only surface where the admin can see one to unhide
+  // it. Gated on hasSession like the profile status; the response also
+  // carries the moment/collection cascade flags so the panel can explain
+  // why a "visible"-flagged row is still off the market.
   useEffect(() => {
     if (targetType !== 'moment' || !targetAddress || !targetTokenId) {
-      setListings(null)
+      setListings({ kind: 'idle' })
+      return
+    }
+    if (!hasSession) {
+      setListings({ kind: 'auth' })
       return
     }
     let cancelled = false
-    setListings('loading')
-    withSession(async () => {
-      const res = await fetch(`/api/admin/hide?address=${targetAddress}&tokenId=${targetTokenId}`)
-      if (!res.ok) return null
-      const d = (await res.json()) as { listings?: AdminListingRow[] }
-      return Array.isArray(d.listings) ? d.listings : null
-    })
-      .then((rows) => {
-        if (!cancelled) setListings(rows ?? 'error')
+    setListings({ kind: 'loading' })
+    fetch(`/api/admin/hide?address=${targetAddress}&tokenId=${targetTokenId}`)
+      .then((r) =>
+        r.ok
+          ? (r.json() as Promise<{
+              momentHidden?: boolean
+              collectionHidden?: boolean
+              listings?: AdminListingRow[]
+            }>)
+          : null,
+      )
+      .then((d) => {
+        if (cancelled) return
+        if (!d || !Array.isArray(d.listings)) {
+          setListings({ kind: 'error' })
+          return
+        }
+        setListings({
+          kind: 'loaded',
+          forAddress: targetAddress,
+          forTokenId: targetTokenId,
+          momentHidden: !!d.momentHidden,
+          collectionHidden: !!d.collectionHidden,
+          rows: d.listings,
+        })
       })
       .catch(() => {
-        if (!cancelled) setListings('error')
+        if (!cancelled) setListings({ kind: 'error' })
       })
     return () => {
       cancelled = true
     }
-  }, [targetType, targetAddress, targetTokenId, withSession])
+  }, [targetType, targetAddress, targetTokenId, hasSession, refresh])
 
   async function toggleListing(row: AdminListingRow) {
-    if (!target || target.type !== 'moment') return
+    if (listings.kind !== 'loaded') return
+    const { forAddress, forTokenId, momentHidden, collectionHidden } = listings
     const next = !row.hidden
     setListingBusy(row.id)
     try {
@@ -331,8 +395,8 @@ function HideContentCard({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             type: 'listing',
-            address: target.address,
-            tokenId: target.tokenId,
+            address: forAddress,
+            tokenId: forTokenId,
             seller: row.seller,
             hidden: next,
           }),
@@ -343,13 +407,27 @@ function HideContentCard({
       })
       if (!ok) return // user cancelled signing
       setListings((prev) =>
-        Array.isArray(prev) ? prev.map((l) => (l.id === row.id ? { ...l, hidden: next } : l)) : prev,
+        prev.kind === 'loaded'
+          ? { ...prev, rows: prev.rows.map((l) => (l.id === row.id ? { ...l, hidden: next } : l)) }
+          : prev,
       )
-      toast.success(next ? 'Listing hidden' : 'Listing restored', { id: 'admin-hide-listing' })
+      // Cascade-aware copy: removing the per-listing flag does NOT restore
+      // a listing whose moment or collection is still hidden.
+      const stillCascaded = !next && (momentHidden || collectionHidden)
+      toast.success(
+        next
+          ? 'Listing hidden'
+          : stillCascaded
+            ? 'Listing flag removed — still hidden via the moment/collection hide'
+            : 'Listing restored',
+        { id: 'admin-hide-listing' },
+      )
     } catch (err) {
       toastError(next ? 'Hide listing' : 'Unhide listing', err, { id: 'admin-hide-listing' })
     } finally {
-      setListingBusy(null)
+      // Functional clear: only release the flag if this toggle still owns
+      // it, so an overlapping toggle on another row keeps its busy state.
+      setListingBusy((prev) => (prev === row.id ? null : prev))
     }
   }
 
@@ -361,13 +439,17 @@ function HideContentCard({
       const ok = await withSession(async () => {
         // Profiles live on their own admin list (POST hides, DELETE
         // restores) — same list the moderation page manages by raw
-        // address; moments and collections share /api/admin/hide.
+        // address; moments and collections share /api/admin/hide. Unhide
+        // targets the SIBLING entry the status lookup matched, which may
+        // differ from the pasted address.
         const res =
           target.type === 'profile'
             ? await fetch('/api/admin/hidden-profiles', {
                 method: next ? 'POST' : 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ address: target.address }),
+                body: JSON.stringify({
+                  address: next ? target.address : (matchedAddress ?? target.address),
+                }),
               })
             : await fetch('/api/admin/hide', {
                 method: 'POST',
@@ -385,6 +467,10 @@ function HideContentCard({
       })
       if (!ok) return // user cancelled signing
       setCurrentlyHidden(next)
+      // Refetch server truth: the listings panel's cascade flags change
+      // when a moment is toggled, and a profile hide's matched entry is
+      // now the pasted address (or gone).
+      setRefresh((v) => v + 1)
       const label =
         target.type === 'moment' ? 'Moment' : target.type === 'collection' ? 'Collection' : 'Profile'
       toast.success(next ? `${label} hidden` : `${label} restored`, { id: 'admin-hide' })
@@ -394,6 +480,8 @@ function HideContentCard({
       setSubmitting(false)
     }
   }
+
+  const needsSignIn = !!target && !hasSession && target.type === 'profile'
 
   return (
     <section className="border border-line bg-[#161616] p-4 flex flex-col gap-3">
@@ -425,7 +513,7 @@ function HideContentCard({
         />
       </div>
 
-      {link.trim() && !target && (
+      {debouncedLink.trim() && !target && (
         <p className="text-[10px] font-mono text-[#c87474]">
           Could not parse a moment, collection, or profile from that link.
         </p>
@@ -449,46 +537,89 @@ function HideContentCard({
           )}
           <div>
             <span className="text-muted uppercase tracking-wider mr-2">status</span>
-            {currentlyHidden === null ? 'checking…' : currentlyHidden ? 'hidden' : 'visible'}
+            {statusError
+              ? 'unavailable — sign in with the admin wallet and retry'
+              : needsSignIn
+                ? 'sign in to check'
+                : currentlyHidden === null
+                  ? 'checking…'
+                  : currentlyHidden
+                    ? 'hidden'
+                    : 'visible'}
           </div>
+          {matchedAddress && matchedAddress !== target.address.toLowerCase() && (
+            <div className="break-all">
+              <span className="text-muted uppercase tracking-wider mr-2">via sibling</span>
+              {matchedAddress}
+            </div>
+          )}
         </div>
       )}
 
-      {target?.type === 'moment' && listings !== null && (
+      {needsSignIn && (
+        <button
+          type="button"
+          onClick={() => void startSession()}
+          className="text-[10px] font-mono uppercase tracking-widest px-3 py-2 border border-line text-dim hover:text-ink hover:border-muted transition-colors w-fit"
+        >
+          sign in to load status
+        </button>
+      )}
+
+      {target?.type === 'moment' && listings.kind !== 'idle' && (
         <div className="flex flex-col gap-1.5">
           <span className="text-[10px] font-mono text-dim uppercase tracking-wider">
             marketplace listings
           </span>
-          {listings === 'loading' ? (
+          {listings.kind === 'auth' ? (
+            <button
+              type="button"
+              onClick={() => void startSession()}
+              className="text-[10px] font-mono uppercase tracking-widest px-3 py-2 border border-line text-dim hover:text-ink hover:border-muted transition-colors w-fit"
+            >
+              sign in to load listings
+            </button>
+          ) : listings.kind === 'loading' ? (
             <p className="text-[10px] font-mono text-muted">loading listings…</p>
-          ) : listings === 'error' ? (
+          ) : listings.kind === 'error' ? (
             <p className="text-[10px] font-mono text-muted">
               listings unavailable — sign in with the admin wallet and re-paste the link.
             </p>
-          ) : listings.length === 0 ? (
-            <p className="text-[10px] font-mono text-muted">no active listings for this moment.</p>
           ) : (
-            <ul className="flex flex-col gap-1">
-              {listings.map((l) => (
-                <li
-                  key={l.id}
-                  className="flex items-center justify-between gap-2 border border-line bg-[#0a0a0a] px-2 py-1.5"
-                >
-                  <span className="text-[10px] font-mono text-ink truncate">
-                    {shortAddress(l.seller)} · {formatPrice(l.price, l.currency)} ·{' '}
-                    {l.hidden ? 'hidden' : 'visible'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void toggleListing(l)}
-                    disabled={listingBusy === l.id}
-                    className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink disabled:opacity-50"
-                  >
-                    {listingBusy === l.id ? 'signing…' : l.hidden ? 'unhide' : 'hide'}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              {(listings.momentHidden || listings.collectionHidden) && (
+                <p className="text-[10px] font-mono text-[#c8a874]">
+                  {listings.collectionHidden
+                    ? 'collection is hidden — every listing below is off the market regardless of its own flag.'
+                    : 'moment is hidden — every listing below is off the market regardless of its own flag.'}
+                </p>
+              )}
+              {listings.rows.length === 0 ? (
+                <p className="text-[10px] font-mono text-muted">no active listings for this moment.</p>
+              ) : (
+                <ul className="flex flex-col gap-1">
+                  {listings.rows.map((l) => (
+                    <li
+                      key={l.id}
+                      className="flex items-center justify-between gap-2 border border-line bg-[#0a0a0a] px-2 py-1.5"
+                    >
+                      <span className="text-[10px] font-mono text-ink truncate">
+                        {shortAddress(l.seller)} · {formatPrice(l.price, l.currency)} ·{' '}
+                        {l.hidden ? 'hidden' : 'visible'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void toggleListing(l)}
+                        disabled={listingBusy === l.id}
+                        className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink disabled:opacity-50"
+                      >
+                        {listingBusy === l.id ? 'signing…' : l.hidden ? 'unhide' : 'hide'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </div>
       )}
@@ -508,5 +639,3 @@ function HideContentCard({
     </section>
   )
 }
-
-

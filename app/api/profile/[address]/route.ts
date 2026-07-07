@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce } from '@/lib/profile'
-import { expandToFidSiblings, isProfileIdentityHidden, resolveCanonicalProfile } from '@/lib/addressUnion'
+import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getSessionAddress } from '@/lib/session'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
@@ -34,19 +34,29 @@ export async function GET(
     getCachedEns(address),
   ])
   const { profile, canonicalAddress } = canonical
-  // Admin-hidden profile → 404 for everyone but the owner (any of their
-  // FID-sibling wallets, via session cookie or Farcaster bearer). The
-  // owner keeps API access so their own profile page — which the SSR
-  // gate still renders for them — hydrates normally. 404 rather than 403
-  // so hidden state isn't distinguishable from a nonexistent profile.
+  // Admin-hidden profile → non-owners get the EMPTY-PROFILE STUB a wallet
+  // that never touched Kismet gets (200, no username/avatar, no FC/ENS
+  // enrichment, canonicalAddress = the queried address so sibling links
+  // don't leak). NOT a 404: this route never 404s any other valid address
+  // (profiles are wallet-keyed), so a 404 here would be a public oracle
+  // uniquely fingerprinting "admin-hidden" — returning the natural void
+  // state makes hidden indistinguishable from unused. The owner (any
+  // FID-sibling wallet, via session cookie or Farcaster bearer) still gets
+  // the full payload so their own profile page hydrates normally.
   if (await isProfileIdentityHidden(address, canonicalAddress)) {
     const viewer = await getSessionAddress(req)
-    const isOwner =
-      !!viewer &&
-      (await expandToFidSiblings(canonicalAddress)).some(
-        (s) => s.toLowerCase() === viewer.toLowerCase(),
-      )
-    if (!isOwner) return errorResponse(404, 'Profile not found')
+    if (!(await isViewerFidSibling(viewer, canonicalAddress))) {
+      const lower = address.toLowerCase()
+      return NextResponse.json({
+        profile: {
+          address: lower,
+          updatedAt: 0,
+          displayName: null,
+          canonicalAddress: lower,
+          earnings: null,
+        },
+      })
+    }
   }
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private

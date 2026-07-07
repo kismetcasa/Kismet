@@ -197,47 +197,67 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   //     same 4h TTL we track locally below).
   // The signature itself never persists client-side; only the opaque cookie
   // and a local expiry marker remain.
+  //
+  // Single-flight via startInFlightRef: concurrent callers (a status effect
+  // firing while the admin clicks a toggle, or StrictMode's double effect
+  // invocation in dev) share ONE wallet prompt + login round trip instead
+  // of stacking signature prompts and racing cookies — the client-side twin
+  // of lib/memoCache's coalescing.
+  const startInFlightRef = useRef<Promise<void> | null>(null)
   const startSession = useCallback(async () => {
     if (!address || (!isAdmin && !isCurator)) return
+    if (startInFlightRef.current) return startInFlightRef.current
+    // Capture the guard-narrowed address: the inner closure runs after
+    // awaits, where TS (correctly) won't carry the outer narrowing.
+    const signerAddress = address
+    const run = doStartSession()
+    startInFlightRef.current = run
     try {
-      const nonceRes = await fetch('/api/auth/nonce', { method: 'POST' })
-      if (!nonceRes.ok) throw new Error('Failed to issue auth nonce')
-      const { nonce } = (await nonceRes.json()) as { nonce: string }
+      await run
+    } finally {
+      startInFlightRef.current = null
+    }
+    async function doStartSession() {
+      try {
+        const nonceRes = await fetch('/api/auth/nonce', { method: 'POST' })
+        if (!nonceRes.ok) throw new Error('Failed to issue auth nonce')
+        const { nonce } = (await nonceRes.json()) as { nonce: string }
 
-      const issuedAt = new Date()
-      const expirationTime = new Date(Date.now() + SESSION_TTL_MS)
-      const message = createSiweMessage({
-        domain: window.location.host,
-        address: address as `0x${string}`,
-        statement: 'Sign in to Kismet admin.',
-        uri: window.location.origin,
-        version: '1',
-        chainId: base.id,
-        nonce,
-        issuedAt,
-        expirationTime,
-      })
+        const issuedAt = new Date()
+        const expirationTime = new Date(Date.now() + SESSION_TTL_MS)
+        const message = createSiweMessage({
+          domain: window.location.host,
+          address: signerAddress as `0x${string}`,
+          statement: 'Sign in to Kismet admin.',
+          uri: window.location.origin,
+          version: '1',
+          chainId: base.id,
+          nonce,
+          issuedAt,
+          expirationTime,
+        })
 
-      const signature = await signMessageAsync({ message })
+        const signature = await signMessageAsync({ message })
 
-      const loginRes = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, signature }),
-      })
-      if (!loginRes.ok) {
-        const data = (await loginRes.json().catch(() => ({}))) as { error?: string }
-        throw new Error(data.error ?? 'Login failed')
+        const loginRes = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, signature }),
+        })
+        if (!loginRes.ok) {
+          const data = (await loginRes.json().catch(() => ({}))) as { error?: string }
+          throw new Error(data.error ?? 'Login failed')
+        }
+
+        const s: AdminSession = {
+          expiresAt: expirationTime.getTime(),
+          address: signerAddress.toLowerCase(),
+        }
+        applySession(s)
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
+      } catch (err) {
+        toastError('Sign in', err)
       }
-
-      const s: AdminSession = {
-        expiresAt: expirationTime.getTime(),
-        address: address.toLowerCase(),
-      }
-      applySession(s)
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
-    } catch (err) {
-      toastError('Sign in', err)
     }
   }, [address, isAdmin, isCurator, signMessageAsync])
 

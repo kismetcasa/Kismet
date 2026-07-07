@@ -1,11 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { verifyAdminSession } from '@/lib/curator'
-import { hideCollection, unhideCollection } from '@/lib/hiddenCollections'
-import { hideMoment, unhideMoment } from '@/lib/hiddenMoments'
-import { getHiddenListingsSet, hideListing, unhideListing, listingHideKey } from '@/lib/hiddenListings'
+import { getHiddenCollectionsSet, hideCollection, unhideCollection } from '@/lib/hiddenCollections'
+import { getHiddenMomentsSet, hideMoment, unhideMoment } from '@/lib/hiddenMoments'
+import { fetchHiddenListingsSet, hideListing, unhideListing, listingHideKey } from '@/lib/hiddenListings'
 import { getListings } from '@/lib/listings'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
+
+// Same per-IP guard the sibling admin routes carry (hidden-users,
+// hidden-profiles, blacklist). Auth is still the session cookie; this only
+// bounds the request rate — the GET below does a 500-id market scan per
+// call, so it shouldn't be free to hammer even with a valid cookie.
+async function rateLimit(req: NextRequest) {
+  const ip = getClientIp(req)
+  const allowed = await checkRateLimit(`admin-hide:${ip}`, 30, 60)
+  return allowed ? null : errorResponse(429, 'Too many requests')
+}
 
 interface HideBody {
   type?: 'moment' | 'collection' | 'listing'
@@ -29,6 +40,9 @@ interface HideBody {
  * /api/auth/login.
  */
 export async function POST(req: NextRequest) {
+  const limited = await rateLimit(req)
+  if (limited) return limited
+
   const auth = await verifyAdminSession()
   if ('error' in auth) return errorResponse(auth.status, auth.error)
 
@@ -71,15 +85,28 @@ export async function POST(req: NextRequest) {
 
 /**
  * GET — admin-only enumeration of the active listings for one token, each
- * with its current hidden flag. Backs the dashboard's Hide-content card:
- * listings aren't URL-addressable (a token can carry one listing per
- * seller), so the card pastes a moment link and this endpoint surfaces the
- * hideable listings behind it — INCLUDING already-hidden ones, which the
- * public /api/listings feed filters out and the admin needs to see to
- * unhide. Admin-gated rather than public so hidden listings' existence
- * isn't enumerable by anyone else.
+ * with its current per-listing hidden flag, plus the token's cascade state
+ * (momentHidden / collectionHidden) so the dashboard can show WHY a
+ * "visible"-flagged listing is still off the market. Backs the dashboard's
+ * Hide-content card: listings aren't URL-addressable (a token can carry one
+ * listing per seller), so the card pastes a moment link and this endpoint
+ * surfaces the hideable listings behind it — INCLUDING already-hidden ones,
+ * which the public /api/listings feed filters out and the admin needs to
+ * see to unhide. Admin-gated rather than public so hidden listings'
+ * existence isn't enumerable by anyone else.
+ *
+ * Known bound: enumeration shares getListings' newest-500 platform-wide
+ * scan window (the same bound the market feed lives within), while the
+ * seller profile tab reads an uncapped per-seller set — so a listing older
+ * than the window can be publicly visible on a profile yet not appear
+ * here. The moment/collection hide (which needs no enumeration and
+ * cascades over the uncapped path too) is the lever for those; add a
+ * per-token index if active-listing volume ever approaches the cap.
  */
 export async function GET(req: NextRequest) {
+  const limited = await rateLimit(req)
+  if (limited) return limited
+
   const auth = await verifyAdminSession()
   if ('error' in auth) return errorResponse(auth.status, auth.error)
 
@@ -93,29 +120,45 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid tokenId')
   }
 
-  // getListings scans the newest 500 listing ids (its internal cap) and
-  // returns active ones; limit=500 keeps the whole scan rather than one
-  // page. Fine for an admin tool — the market feed itself lives within
-  // the same bound.
-  const [{ listings }, hiddenListings] = await Promise.all([
+  // Fresh (unmemoized) hidden-listings read so a toggle is reflected on the
+  // very next dashboard read even across instances/layers — parity with the
+  // hidden-profiles admin GET. Moment/collection sets stay memoized: their
+  // writes happen through this same route layer, so own-instance invalidate
+  // already keeps them fresh here.
+  const [{ listings }, hiddenListings, hiddenMoments, hiddenCollections] = await Promise.all([
     getListings({ page: 1, limit: 500, collection: address }),
-    getHiddenListingsSet(),
+    fetchHiddenListingsSet(),
+    getHiddenMomentsSet(),
+    getHiddenCollectionsSet(),
   ])
 
+  // BigInt compare so a legacy/adversarial row stored with a non-canonical
+  // tokenId ('01') still surfaces under the canonical query ('1') and stays
+  // hideable — same normalization listingHideKey applies.
+  const wanted = BigInt(tokenId)
   const rows = listings
-    .filter((l) => l.tokenId === tokenId)
+    .filter((l) => {
+      try {
+        return BigInt(l.tokenId) === wanted
+      } catch {
+        return l.tokenId === tokenId
+      }
+    })
     .map((l) => ({
       id: l.id,
       seller: l.seller,
       price: l.price,
       currency: l.currency ?? 'eth',
-      name: l.name,
-      expiresAt: l.expiresAt,
       hidden: hiddenListings.has(listingHideKey(l.collectionAddress, l.tokenId, l.seller)),
     }))
 
+  const lowerAddress = address.toLowerCase()
   return NextResponse.json(
-    { listings: rows },
+    {
+      momentHidden: hiddenMoments.has(`${lowerAddress}:${BigInt(tokenId).toString()}`),
+      collectionHidden: hiddenCollections.has(lowerAddress),
+      listings: rows,
+    },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

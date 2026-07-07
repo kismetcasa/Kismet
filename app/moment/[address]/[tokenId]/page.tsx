@@ -107,13 +107,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // instead of "Collect <name>", since the destination conceptually
   // moves from primary-sale collect to secondary-market purchase. Same
   // action.url either way — the moment page is where the listing is
-  // surfaced for purchase. getListings caps its scan at 500 so this is
-  // bounded even on hot collections. On Redis failure, degrade to
-  // "Collect" — losing the button-text refinement is invisible compared
-  // to throwing on a non-essential SSR read.
+  // surfaced for purchase. limit: 500 matches getListings' internal scan
+  // cap — the scan + MGET run over the full window regardless, so this
+  // only widens the returned page (the default 18 silently missed
+  // listings older than the collection's 18 newest). On Redis failure,
+  // degrade to "Collect" — losing the button-text refinement is invisible
+  // compared to throwing on a non-essential SSR read.
   const { listings: collectionListings } = await safeRead(
     'getListings:moment-metadata',
-    () => getListings({ collection: address }),
+    () => getListings({ collection: address, limit: 500 }),
     { listings: [], total: 0 },
   )
   // Visibility mirrors the market feed: a hidden listing shouldn't flip the
@@ -125,7 +127,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     null,
   )
   const hasActiveListing = collectionListings.some(
-    (l) => l.tokenId === tokenId && !(visibility?.feedHidden(l) ?? false),
+    (l) => l.tokenId === tokenId && !visibility?.feedHidden(l),
   )
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,

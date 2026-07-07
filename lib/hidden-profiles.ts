@@ -5,10 +5,16 @@ import { ADMIN_ADDRESS } from './config'
 /**
  * Admin-hidden PROFILES — removes an address's identity surfaces:
  * the /profile/[address] page 404s for everyone but the owner (checked
- * against their FID-sibling wallets), /api/profile/[address] returns 404,
- * the /api/profiles batch resolver returns the empty identity (clients
- * fall back to shortAddress), profile search stops returning them, and
- * the profile OG share card renders without name/avatar/earnings.
+ * against their FID-sibling wallets), /api/profile/[address] returns the
+ * empty-profile stub a never-used wallet gets (NOT a 404 — that route
+ * never 404s any other valid address, so a 404 would be a public oracle
+ * for "admin-hidden"), the /api/profiles batch resolver returns the empty
+ * identity (clients fall back to shortAddress), profile search stops
+ * returning them, the profile OG share card renders without
+ * name/avatar/earnings, and moment attribution drops the username.
+ * Sibling-aware end to end via lib/addressUnion's hidden-identity
+ * closure: hiding ANY of a Farcaster user's verified wallets hides the
+ * identity at every sibling wallet's surfaces.
  *
  * Profiles are deliberately NOT deletable: they're keyed by wallet
  * address, the owner can recreate one with the next signed PUT, and the

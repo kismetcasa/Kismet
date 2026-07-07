@@ -3,7 +3,7 @@ import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { notFound, redirect, unstable_rethrow } from 'next/navigation'
 import { isAddress } from '@/lib/address'
-import { expandToFidSiblings, isProfileIdentityHidden, resolveCanonicalProfile } from '@/lib/addressUnion'
+import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -30,9 +30,7 @@ const isProfileHiddenFromViewer = cache(
     if (!(await isProfileIdentityHidden(address, canonicalAddress))) return false
     const token = (await cookies()).get(SESSION_COOKIE)?.value
     const viewer = token ? await verifySession(token) : null
-    if (!viewer) return true
-    const siblings = await expandToFidSiblings(canonicalAddress)
-    return !siblings.some((s) => s.toLowerCase() === viewer.toLowerCase())
+    return !(await isViewerFidSibling(viewer, canonicalAddress))
   },
 )
 

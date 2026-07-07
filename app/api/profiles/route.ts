@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
-import { resolveCanonicalProfile } from '@/lib/addressUnion'
-import { getHiddenProfilesSet } from '@/lib/hidden-profiles'
+import { getHiddenIdentityClosure, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
@@ -23,10 +22,12 @@ export async function GET(req: NextRequest) {
     new Set(raw.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean)),
   ).filter(isAddress).slice(0, MAX_ADDRESSES)
 
-  // Memoized set read, fetched once for the whole batch. Hidden profiles
-  // resolve to the empty identity — the client's documented fallback is
-  // shortAddress, so rows render address-only instead of leaking the name.
-  const hiddenProfiles = await getHiddenProfilesSet()
+  // Sibling-closure read (memoized), fetched once for the whole batch.
+  // Hidden identities resolve to the empty identity — the client's
+  // documented fallback is shortAddress, so rows render address-only
+  // instead of leaking the name. The closure covers hide-by-sibling: any
+  // wallet of a hidden identity resolves empty, not just the listed one.
+  const hiddenProfiles = await getHiddenIdentityClosure()
 
   const profiles: Record<string, { name: string; avatarUrl?: string }> = Object.fromEntries(
     await Promise.all(
@@ -36,9 +37,9 @@ export async function GET(req: NextRequest) {
             resolveCanonicalProfile(addr),
             getCachedEns(addr),
           ])
-          // Direct + canonical check (no per-row sibling expansion — this is
-          // the N-address batch path; the canonical address is where any
-          // inherited identity actually lives, so it covers the leak).
+          // Closure membership on the queried + canonical address — the
+          // closure already contains every sibling of every hidden entry,
+          // so no per-row expansion is needed for full coverage.
           if (hiddenProfiles.has(addr) || hiddenProfiles.has(canonicalAddress.toLowerCase())) {
             return [addr, { name: '', avatarUrl: undefined }]
           }

@@ -9,6 +9,7 @@ import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getListingVisibility } from '@/lib/hiddenListings'
+import { getMomentMetaBatch } from '@/lib/notifications'
 import { priceToBaseUnits } from '@/lib/agent/list'
 
 export const runtime = 'nodejs'
@@ -86,25 +87,46 @@ export async function GET(req: NextRequest) {
     }
 
     // Agent discovery is a public feed surface — apply the same hide
-    // filters the timeline and search apply (hidden moments, hidden
-    // collections, admin-hidden creators). Without this, agents could
-    // enumerate content every human-facing feed suppresses.
-    const [hiddenMoments, hiddenCollections, hiddenUsers] = await Promise.all([
-      getHiddenMomentsSet(),
-      getHiddenCollectionsSet(),
-      getHiddenUsersSet(),
-    ])
+    // filters the timeline applies (hidden moments, hidden collections,
+    // admin-hidden creators). Creator attribution is KV-STITCHED first,
+    // exactly like the timeline: inprocess attributes mint-proxy and
+    // cover-mint moments to the platform smart wallet / defaultAdmin, so
+    // filtering on the raw feed creator would let an admin-hidden artist's
+    // Kismet-minted moments stay agent-discoverable. Without any of this,
+    // agents could enumerate content every human-facing feed suppresses.
+    //
+    // The whole block degrades to zero rows on Redis failure: fail-closed
+    // for hidden content (nothing is revealed) without turning a blip into
+    // a 5xx — this route's pre-existing contract degrades every upstream
+    // failure to empty rows, and before the hide filters it had no Redis
+    // dependency at all.
+    let rows: DiscoverRow[] = []
+    try {
+      const [hiddenMoments, hiddenCollections, hiddenUsers] = await Promise.all([
+        getHiddenMomentsSet(),
+        getHiddenCollectionsSet(),
+        getHiddenUsersSet(),
+      ])
 
-    const rows: DiscoverRow[] = moments
-      .filter((m) => m.address && m.token_id && !collected.has(`${m.address.toLowerCase()}:${m.token_id}`))
-      .filter((m) => {
-        const addr = m.address.toLowerCase()
-        if (hiddenMoments.has(`${addr}:${m.token_id}`) || hiddenCollections.has(addr)) return false
-        const creator = m.creator?.address?.toLowerCase()
-        return !creator || !hiddenUsers.has(creator)
-      })
-      .slice(0, limit)
-      .map((m) => ({
+      const candidates = moments.filter(
+        (m) => m.address && m.token_id && !collected.has(`${m.address.toLowerCase()}:${m.token_id}`),
+      )
+      const metas =
+        hiddenUsers.size > 0
+          ? await getMomentMetaBatch(
+              candidates.map((m) => ({ address: m.address, tokenId: m.token_id })),
+            )
+          : []
+
+      rows = candidates
+        .filter((m, i) => {
+          const addr = m.address.toLowerCase()
+          if (hiddenMoments.has(`${addr}:${m.token_id}`) || hiddenCollections.has(addr)) return false
+          const creator = (metas[i]?.creator ?? m.creator?.address)?.toLowerCase()
+          return !creator || !hiddenUsers.has(creator)
+        })
+        .slice(0, limit)
+        .map((m) => ({
         kind: 'collectable',
         collection: m.address,
         tokenId: m.token_id,
@@ -118,6 +140,9 @@ export async function GET(req: NextRequest) {
           suggestedBody: { collection: m.address, tokenId: m.token_id, ...accountBody },
         },
       }))
+    } catch {
+      rows = []
+    }
 
     return NextResponse.json(
       { kind: 'collect', count: rows.length, rows, note: 'Price and eligibility are resolved by prepare-collect.' },
@@ -138,40 +163,46 @@ export async function GET(req: NextRequest) {
 
   // Same visibility rules as the /api/listings market feed: per-listing
   // hides, the hidden-moment/collection cascade, and hidden sellers/creators
-  // all apply to agents too.
-  const visibility = await getListingVisibility()
+  // all apply to agents too. Degrades to zero rows on Redis failure — see
+  // the collect branch for the rationale.
+  let rows: DiscoverRow[] = []
+  try {
+    const visibility = await getListingVisibility()
 
-  const rows: DiscoverRow[] = listings
-    .filter((l) => !visibility.feedHidden(l))
-    .filter((l) => (currency ? (l.currency ?? 'eth') === currency : true))
-    .filter((l) => {
-      if (cap === undefined) return true
-      try {
-        return BigInt(l.price) <= cap
-      } catch {
-        return false
-      }
-    })
-    .slice(0, limit)
-    .map((l) => ({
-      kind: 'listing',
-      collection: l.collectionAddress,
-      tokenId: l.tokenId,
-      name: l.name,
-      image: l.image ? resolveUri(l.image) : undefined,
-      price: l.price,
-      priceLabel: formatPrice(l.price, l.currency ?? 'eth'),
-      currency: l.currency ?? 'eth',
-      listingId: l.id,
-      seller: l.seller,
-      momentUrl: momentUrl(l.collectionAddress, l.tokenId),
-      nextAction: {
-        verb: 'buy',
-        endpoint: '/api/agent/prepare-buy',
-        method: 'POST',
-        suggestedBody: { listingId: l.id, ...accountBody },
-      },
-    }))
+    rows = listings
+      .filter((l) => !visibility.feedHidden(l))
+      .filter((l) => (currency ? (l.currency ?? 'eth') === currency : true))
+      .filter((l) => {
+        if (cap === undefined) return true
+        try {
+          return BigInt(l.price) <= cap
+        } catch {
+          return false
+        }
+      })
+      .slice(0, limit)
+      .map((l) => ({
+        kind: 'listing',
+        collection: l.collectionAddress,
+        tokenId: l.tokenId,
+        name: l.name,
+        image: l.image ? resolveUri(l.image) : undefined,
+        price: l.price,
+        priceLabel: formatPrice(l.price, l.currency ?? 'eth'),
+        currency: l.currency ?? 'eth',
+        listingId: l.id,
+        seller: l.seller,
+        momentUrl: momentUrl(l.collectionAddress, l.tokenId),
+        nextAction: {
+          verb: 'buy',
+          endpoint: '/api/agent/prepare-buy',
+          method: 'POST',
+          suggestedBody: { listingId: l.id, ...accountBody },
+        },
+      }))
+  } catch {
+    rows = []
+  }
 
   return NextResponse.json(
     {

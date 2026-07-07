@@ -328,10 +328,19 @@ export async function GET(req: NextRequest) {
   // collection lookup precedent in /api/collections (BuyButton needs to
   // resolve a known listing to fulfill). Content-level hides DO apply:
   // an admin-hidden listing — or a listing whose moment or collection is
-  // hidden — is off the market entirely, deeplink included.
+  // hidden — is off the market entirely, deeplink included — EXCEPT for
+  // the authenticated seller themselves, who can still resolve their own
+  // hidden listing (same own-content exception as the seller-scope branch,
+  // so a client driving cancel from this lookup doesn't show "not listed"
+  // while re-listing 409s on the still-occupied slot). Session read is
+  // gated behind the hidden case so the common path stays cookie-free.
   if (collection && tokenId && seller) {
     const listing = await getListingForToken(collection, tokenId, seller)
-    const visible = listing && !visibility.contentHidden(listing)
+    let visible = !!listing && !visibility.contentHidden(listing)
+    if (listing && !visible) {
+      const viewer = await getSessionAddress(req)
+      visible = viewer?.toLowerCase() === listing.seller.toLowerCase()
+    }
     return NextResponse.json({ listing: visible ? listing : null })
   }
 
@@ -418,6 +427,14 @@ export async function POST(req: NextRequest) {
     if (!isValidTokenId(tokenId)) {
       return errorResponse(400, 'Invalid tokenId')
     }
+    // Canonical decimal form at the trust boundary. isValidTokenId accepts
+    // leading zeros while every on-chain check below compares via BigInt —
+    // so '01' would otherwise store a listing in a SEPARATE owned slot from
+    // '1' (bypassing the one-active-listing invariant) whose raw tokenId
+    // also evades the hidden-moment cascade and the admin dashboard's
+    // per-listing tooling. Normalize once; everything downstream (storage,
+    // slot key, hide keys) uses the canonical form.
+    const canonicalTokenId = BigInt(tokenId).toString()
     if (BigInt(price) <= 0n) {
       return errorResponse(400, 'Price must be greater than 0')
     }
@@ -596,7 +613,7 @@ export async function POST(req: NextRequest) {
 
     const listing = await createListing({
       collectionAddress,
-      tokenId,
+      tokenId: canonicalTokenId,
       seller,
       price,
       sellerProceeds,

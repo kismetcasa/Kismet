@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
-import { isProfileIdentityHidden, resolveProfileWithSiblings } from '@/lib/addressUnion'
+import { isProfileIdentityHidden, resolveCanonicalProfile, resolveProfileWithSiblings } from '@/lib/addressUnion'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { getProfileTheme, type ProfileTheme } from '@/lib/profileTheme'
 import { getArtistEarnings, type ArtistEarnings } from '@/lib/stats'
@@ -62,9 +62,16 @@ export default async function Image({ params }: Props) {
 
   // Admin-hidden profile → render the bare card (address gradient +
   // shortAddress only). The URL stays fetchable for crawlers that cached
-  // the link, but leaks no username/avatar/FID/earnings. Sibling-aware so
-  // a hidden identity can't resurface via another verified wallet's URL.
-  const hidden = isAddress(address) && (await isProfileIdentityHidden(address))
+  // the link, but leaks no username/avatar/FID/earnings. Seeded with BOTH
+  // the URL address and its canonical (same pair the page/API pass) so the
+  // check stays sibling-aware even when the hidden canonical has drifted
+  // out of the FID's verified set — the drift case the closure alone can't
+  // see. resolveCanonicalProfile is Redis-cached, so this adds ~nothing.
+  const canonicalAddress = isAddress(address)
+    ? (await resolveCanonicalProfile(address)).canonicalAddress
+    : null
+  const hidden =
+    isAddress(address) && (await isProfileIdentityHidden(address, canonicalAddress))
 
   if (isAddress(address) && !hidden) {
     // Sibling-aware: when the queried address has no Kismet profile but
