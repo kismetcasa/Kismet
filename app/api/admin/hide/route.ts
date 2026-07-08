@@ -23,8 +23,10 @@ interface HideBody {
   address?: string
   tokenId?: string
   // Listing hides key on the (collection, tokenId, seller) slot — the same
-  // identity lib/listings enforces one active listing per — so the hide
-  // survives a cancel/re-list cycle.
+  // identity lib/listings enforces one active listing per. The slot's
+  // terminal transitions (cancel/fill/expire) GC the hide (lib/listings), so
+  // a per-listing hide is scoped to that listing's life; durable content
+  // moderation that must persist across a re-list is moment/collection hide.
   seller?: string
   hidden?: boolean
 }

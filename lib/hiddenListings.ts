@@ -65,8 +65,16 @@ export async function unhideListing(
   tokenId: string,
   seller: string,
 ): Promise<void> {
-  await redis.srem(HIDDEN_KEY, listingHideKey(collectionAddress, tokenId, seller))
-  getHiddenListingsSet.invalidate()
+  // Only invalidate the memo when we actually removed a member. This is the
+  // hot part: unhideListing is also the lifecycle GC (called on EVERY
+  // cancel/fill/expire), and the overwhelming majority of terminating
+  // listings were never hidden — a no-op srem must not drop the 15-min memo
+  // that getListingVisibility() reads on every market/feed/deeplink request.
+  // Always srem (cheap, pipelined) so GC can't miss a member on a stale
+  // cache; invalidate only on a real removal (admin unhide, or GC of a
+  // genuinely-hidden listing). redis.srem returns the count removed.
+  const removed = await redis.srem(HIDDEN_KEY, listingHideKey(collectionAddress, tokenId, seller))
+  if (removed) getHiddenListingsSet.invalidate()
 }
 
 /**

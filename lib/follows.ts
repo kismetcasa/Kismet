@@ -61,9 +61,12 @@ export async function getFollowingCount(address: string): Promise<number> {
  */
 export async function purgeFollowEdges(address: string): Promise<void> {
   const a = address.toLowerCase()
+  // Reads default to [] on failure so a transient SMEMBERS error only skips
+  // that direction's counterpart cleanup — the final DELs of the erased
+  // user's OWN sets always run (honoring the guarantee below).
   const [following, followers] = await Promise.all([
-    getFollowing(a),
-    getFollowers(a),
+    getFollowing(a).catch(() => [] as string[]),
+    getFollowers(a).catch(() => [] as string[]),
   ])
   await Promise.all([
     ...following.map((t) => redis.srem(keyFollowers(t), a).catch(() => {})),

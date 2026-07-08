@@ -87,11 +87,6 @@ export async function isEarningsPublic(
 }
 
 /**
- * Toggle the pin. THROWS when the identity is transiently unresolvable (see
- * the failure policy above) — the caller must surface a retryable error, not
- * a false success over a half-applied write.
- */
-/**
  * Clear an identity's earnings-public pin during admin profile-erase. Srems
  * BOTH member forms (the lowercase address and the fid:<fid> form) so the
  * pin is gone regardless of which keying was used, without the resolve-time
@@ -106,6 +101,11 @@ export async function clearEarningsVisibility(address: string, fid?: number | nu
   getPublicEarners.invalidate()
 }
 
+/**
+ * Toggle the pin. THROWS when the identity is transiently unresolvable (see
+ * the failure policy above) — the caller must surface a retryable error, not
+ * a false success over a half-applied write.
+ */
 export async function setEarningsPublic(address: string, isPublic: boolean): Promise<void> {
   const lower = address.toLowerCase()
   const lookup = await getFidByAddress(lower)
