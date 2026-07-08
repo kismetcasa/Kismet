@@ -158,6 +158,16 @@ export async function setKismetIdentityAddress(
 }
 
 /**
+ * Clear the chosen Kismet-identity pointer for an FID. Used by admin
+ * profile-erase: this key has NO TTL, so without clearing it the FID's
+ * identity re-anchors to the erased user's old chosen wallet on reconnect
+ * (getKismetIdentityAddress precedence step 2) instead of a clean default.
+ */
+export async function clearKismetIdentityAddress(fid: number): Promise<void> {
+  await redis.del(identityAddressKey(fid))
+}
+
+/**
  * Verify a Quick Auth JWT and resolve to a Kismet session identity.
  *
  * Returns null on any failure: invalid signature, expired, wrong audience,

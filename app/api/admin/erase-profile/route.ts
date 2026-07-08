@@ -15,6 +15,9 @@ import { clearEarningsVisibility } from '@/lib/earningsVisibility'
 import { purgeFollowEdges } from '@/lib/follows'
 import { deleteScout } from '@/lib/agent/scout/store'
 import { removeHiddenProfile } from '@/lib/hidden-profiles'
+import { deleteAirdropsBySender } from '@/lib/airdrops'
+import { clearKismetIdentityAddress } from '@/lib/farcasterAuth'
+import { clearFarcasterPushState } from '@/lib/farcasterNotifications'
 
 /**
  * POST — HARD, IRREVERSIBLE erase of a profile identity and everything the
@@ -44,7 +47,12 @@ import { removeHiddenProfile } from '@/lib/hidden-profiles'
  * safe):
  *   - profile row + FID row + search-index membership + auth nonce
  *   - profile theme, showcase pins, collected ZSET, earnings-public pin
- *   - notification inbox + prefs
+ *   - airdrops-SENT log (send-side mirror of the collected/received ZSET)
+ *   - notification inbox + prefs, AND (FID-scoped) the Farcaster push state —
+ *     tokens + push-type/master/seeded prefs — so an erased FC identity stops
+ *     receiving native push and its settings don't resurface on rebuild
+ *   - the chosen Kismet-identity pointer (FID-scoped, no TTL) so a rebuilt
+ *     identity anchors to a clean default, not the erased user's old choice
  *   - social graph edges (bidirectional — removed from every counterpart)
  *   - the Scout agent record (policy, artist labels, and the stored Spend
  *     Permission signature — so the coordinator can't keep spending), plus
@@ -133,6 +141,7 @@ export async function POST(req: NextRequest) {
       clearProfileTheme(addr).catch(() => {}),
       clearAllPins(addr).catch(() => {}),
       deleteCollected(addr).catch(() => {}),
+      deleteAirdropsBySender(addr).catch(() => {}),
       deleteNotificationData(addr).catch(() => {}),
       clearEarningsVisibility(addr, fid).catch(() => {}),
       purgeFollowEdges(addr).catch(() => {}),
@@ -140,7 +149,17 @@ export async function POST(req: NextRequest) {
       removeHiddenProfile(addr).catch(() => {}),
     ]),
   )
-  if (fid != null) await deleteFidProfile(fid).catch(() => {})
+  // FID-scoped cleanup (once, not per-wallet): the FID row, the FC push state
+  // (tokens + prefs), and the chosen-identity pointer. Only when we resolved a
+  // FID — a transient FC failure leaves fid null and these are retried on the
+  // admin's re-run (fcResolved:false).
+  if (fid != null) {
+    await Promise.all([
+      deleteFidProfile(fid).catch(() => {}),
+      clearFarcasterPushState(fid).catch(() => {}),
+      clearKismetIdentityAddress(fid).catch(() => {}),
+    ])
+  }
 
   // We removed entries from hidden-profiles → refresh the sibling-closure
   // memo so search/batch reads reflect the erase on the next request.

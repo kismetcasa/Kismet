@@ -10,7 +10,7 @@ import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMetaBatch } from '@/lib/notifications'
 import { resolveMomentCreator } from '@/lib/statsMath'
-import { expandToFidSiblings, getHiddenIdentityClosure } from '@/lib/addressUnion'
+import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
@@ -497,11 +497,10 @@ export async function GET(req: NextRequest) {
   // a hidden collection are automatically hidden, and (b) unhiding the
   // collection restores everything that wasn't separately marked
   // moment-hidden — no bulk write needed.
-  const [hiddenSet, hiddenColls, hiddenUsers, hiddenIdentities, viewer] = await Promise.all([
+  const [hiddenSet, hiddenColls, hiddenUsers, viewer] = await Promise.all([
     getHiddenMomentsSet(),
     getHiddenCollectionsSet(),
     getHiddenUsersSet(),
-    getHiddenIdentityClosure(),
     getSessionAddress(req),
   ])
   if (hiddenSet.size > 0 || hiddenColls.size > 0 || hiddenUsers.size > 0) {
@@ -538,24 +537,11 @@ export async function GET(req: NextRequest) {
       })
   }
 
-  // Hidden-PROFILE (identity) strip — independent of the content-hide sets
-  // above. A hidden identity's moments still surface in feeds (that's a
-  // content decision, governed by hidden-users/hidden-moments), but their
-  // NAME must not: the feed is the highest-traffic attribution surface, and
-  // MomentCard seeds its creator chip from creator.username. Null it so the
-  // card falls back to shortAddress, matching every other profile surface.
-  // Sibling-aware via the identity closure; the creator address here is the
-  // KV-stitched EOA, so the check lands on the real identity.
-  if (hiddenIdentities.size > 0) {
-    merged = merged.map((m: unknown) => {
-      const moment = m as { creator?: { address?: string; username?: string | null } }
-      const creatorAddr = moment.creator?.address?.toLowerCase()
-      if (creatorAddr && hiddenIdentities.has(creatorAddr) && moment.creator?.username) {
-        return { ...(m as object), creator: { ...moment.creator, username: null } }
-      }
-      return m
-    })
-  }
+  // Hidden-PROFILE (identity) NAME suppression is applied downstream in
+  // enrichMomentsWithKismetMeta (the single creator-chip choke point), not
+  // here: an earlier strip at this spot was silently re-populated by the
+  // enrichment overlay that runs after it (username AND avatar). See
+  // lib/momentEnrichment.ts.
 
   // Following priority: bubble followed creators to the top, preserve internal order
   if (followingSet && followingSet.size > 0) {
