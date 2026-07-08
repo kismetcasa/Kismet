@@ -81,6 +81,25 @@ const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
 
+/**
+ * Delete an address's entire notification footprint — inbox, read
+ * markers, mute prefs, unread-count cache. Admin profile-erase only.
+ * Note: notifications this address SENT into OTHER users' inboxes are left
+ * as-is (purging them would scan every user's list); they render the actor
+ * as a short address, which is the erased state anyway.
+ */
+export async function deleteNotificationData(address: string): Promise<void> {
+  const a = address.toLowerCase()
+  await Promise.all([
+    redis.del(keyNotif(a)),
+    redis.del(keyLastRead(a)),
+    redis.del(keyReadIds(a)),
+    redis.del(keyMuted(a)),
+    redis.del(keyMutedTypes(a)),
+    redis.del(keyUnreadCount(a)),
+  ])
+}
+
 // Cache window for the precomputed unread count. Every path that can change
 // the priority-unread count (priority writeNotification, markAllRead,
 // markOneRead) calls invalidateUnreadCount which DELs this key immediately,

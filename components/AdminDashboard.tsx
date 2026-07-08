@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ShieldAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAccount } from 'wagmi'
@@ -264,12 +264,29 @@ function HideContentCard() {
   const [refresh, setRefresh] = useState(0)
   const [listings, setListings] = useState<ListingsPanel>({ kind: 'idle' })
   const [listingBusy, setListingBusy] = useState<string | null>(null)
+  // Erase is a hard, irreversible delete — two-tap arm/confirm guards it.
+  // eraseFcFid, set after erasing a Farcaster identity, drives the "also
+  // hide" offer (an FC name re-resolves; erase can't remove it).
+  const [erasing, setErasing] = useState(false)
+  const [eraseArmed, setEraseArmed] = useState(false)
+  const [eraseFcFid, setEraseFcFid] = useState<number | null>(null)
+  const eraseArmRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (eraseArmRef.current) clearTimeout(eraseArmRef.current)
+  }, [])
 
   const target = parseTarget(debouncedLink)
   // Effect deps need stable scalars, not a fresh object every render.
   const targetType = target?.type ?? null
   const targetAddress = target?.address ?? null
   const targetTokenId = target?.type === 'moment' ? target.tokenId : null
+
+  // Reset the destructive-erase arm + FC-residue offer whenever the target
+  // changes, so a "confirm" armed for one profile can't fire on another.
+  useEffect(() => {
+    setEraseArmed(false)
+    setEraseFcFid(null)
+  }, [targetType, targetAddress])
 
   // Re-fetch current visibility on every parsed target so the toggle
   // label reflects actual server state (and we don't issue redundant
@@ -481,6 +498,74 @@ function HideContentCard() {
     }
   }
 
+  function armErase() {
+    setEraseArmed(true)
+    if (eraseArmRef.current) clearTimeout(eraseArmRef.current)
+    // Auto-disarm so a stale "confirm" can't fire a destructive delete later.
+    eraseArmRef.current = setTimeout(() => setEraseArmed(false), 4000)
+  }
+
+  // Hard, irreversible erase of a profile identity (+ its FID siblings).
+  async function eraseProfile() {
+    if (!target || target.type !== 'profile') return
+    setErasing(true)
+    try {
+      const erased = await withSession(async () => {
+        const res = await fetch('/api/admin/erase-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: target.address }),
+        })
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean
+          error?: string
+          erased?: { addresses?: string[]; fid?: number | null }
+        }
+        if (!res.ok || !json.ok) throw new Error(json.error ?? 'Request failed')
+        return json.erased ?? { addresses: [target.address], fid: null }
+      })
+      if (!erased) return // user cancelled signing
+      setEraseArmed(false)
+      const n = erased.addresses?.length ?? 1
+      toast.success(`Profile erased (${n} wallet${n === 1 ? '' : 's'})`, { id: 'admin-erase' })
+      // The identity is gone — reset the card's status view.
+      setCurrentlyHidden(null)
+      setMatchedAddress(null)
+      setRefresh((v) => v + 1)
+      // FC residue: an erased Farcaster identity's name re-resolves from
+      // Farcaster (we can't delete their FC account), so offer a one-click
+      // hide to suppress it too.
+      setEraseFcFid(erased.fid ?? null)
+    } catch (err) {
+      toastError('Erase', err, { id: 'admin-erase' })
+    } finally {
+      setErasing(false)
+    }
+  }
+
+  // One-click "also hide" for the FC residue after an erase.
+  async function hideFcResidue() {
+    if (!target || target.type !== 'profile') return
+    try {
+      const ok = await withSession(async () => {
+        const res = await fetch('/api/admin/hidden-profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: target.address }),
+        })
+        const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+        if (!res.ok || !json.ok) throw new Error(json.error ?? 'Request failed')
+        return true
+      })
+      if (!ok) return
+      setEraseFcFid(null)
+      setCurrentlyHidden(true)
+      toast.success('Farcaster identity hidden', { id: 'admin-erase' })
+    } catch (err) {
+      toastError('Hide', err, { id: 'admin-erase' })
+    }
+  }
+
   const needsSignIn = !!target && !hasSession && target.type === 'profile'
 
   return (
@@ -620,6 +705,53 @@ function HideContentCard() {
                 </ul>
               )}
             </>
+          )}
+        </div>
+      )}
+
+      {/* Destructive erase — profiles only. Hard, irreversible delete of the
+          identity + everything the wallet authored/touched; reconnecting
+          rebuilds a fresh profile. Two-tap arm/confirm. */}
+      {target?.type === 'profile' && (
+        <div className="flex flex-col gap-1.5 border border-[#5a2a2a] bg-[#1a1010] p-2.5">
+          <span className="text-[10px] font-mono text-[#c87474] uppercase tracking-wider">
+            danger — erase profile
+          </span>
+          <p className="text-[10px] font-mono text-dim leading-relaxed">
+            Permanently deletes this identity and everything it authored on
+            Kismet — profile, pins, follows (both directions), collected,
+            notifications — across every verified wallet. On-chain content and
+            earnings are untouched. Irreversible; reconnecting makes a fresh
+            profile. Use for squatters and dead/abandoned accounts.
+          </p>
+          {eraseFcFid != null ? (
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[10px] font-mono text-[#c8a874]">
+                Erased a Farcaster identity — its FC name/avatar re-resolve
+                from Farcaster (we can’t delete their FC account). Hide to
+                suppress the residue too.
+              </p>
+              <button
+                type="button"
+                onClick={() => void hideFcResidue()}
+                className="text-[10px] font-mono uppercase tracking-widest px-3 py-2 border border-line text-dim hover:text-ink hover:border-muted transition-colors w-fit"
+              >
+                also hide the FC identity
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => (eraseArmed ? void eraseProfile() : armErase())}
+              disabled={erasing}
+              className="text-[10px] font-mono uppercase tracking-widest px-3 py-2 border border-[#5a2a2a] text-[#c87474] hover:text-[#e08a8a] hover:border-[#7a3a3a] transition-colors w-fit disabled:opacity-50"
+            >
+              {erasing
+                ? 'erasing…'
+                : eraseArmed
+                  ? 'tap again to permanently erase'
+                  : 'sign & erase profile'}
+            </button>
           )}
         </div>
       )}

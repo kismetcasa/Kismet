@@ -46,3 +46,31 @@ export async function getFollowerCount(address: string): Promise<number> {
 export async function getFollowingCount(address: string): Promise<number> {
   return redis.scard(keyFollowing(address.toLowerCase()))
 }
+
+/**
+ * Remove `address` from the social graph entirely — both its own edge sets
+ * AND the reciprocal membership in every counterpart's sets, so no ghost
+ * edge survives. Used by admin profile-erase ("remove it from everywhere").
+ *
+ * Bidirectional cleanup: for every T that `address` followed, drop `address`
+ * from T's followers; for every F that followed `address`, drop `address`
+ * from F's following — then delete address's own two sets. Every
+ * counterpart's follower/following COUNT (a live SCARD) self-corrects
+ * because it no longer sees the erased member. Best-effort per edge so one
+ * failed srem can't strand the rest; the final DELs always run.
+ */
+export async function purgeFollowEdges(address: string): Promise<void> {
+  const a = address.toLowerCase()
+  // Reads default to [] on failure so a transient SMEMBERS error only skips
+  // that direction's counterpart cleanup — the final DELs of the erased
+  // user's OWN sets always run (honoring the guarantee below).
+  const [following, followers] = await Promise.all([
+    getFollowing(a).catch(() => [] as string[]),
+    getFollowers(a).catch(() => [] as string[]),
+  ])
+  await Promise.all([
+    ...following.map((t) => redis.srem(keyFollowers(t), a).catch(() => {})),
+    ...followers.map((f) => redis.srem(keyFollowing(f), a).catch(() => {})),
+  ])
+  await Promise.all([redis.del(keyFollowing(a)), redis.del(keyFollowers(a))])
+}

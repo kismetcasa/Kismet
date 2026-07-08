@@ -39,6 +39,29 @@ const keyNonce = (address: string) =>
   `kismetart:nonce:${address.toLowerCase()}`
 export const KEY_PROFILES = 'kismetart:profiles'
 
+/**
+ * Hard-delete the address-keyed profile identity: the row, its search-index
+ * membership, and the auth nonce. After this getProfile returns the empty
+ * stub a never-used wallet gets, so a later signed PUT recreates a fresh
+ * profile — the "erase → reconnect makes a new profile" contract. Admin
+ * profile-erase only; irreversible. Does NOT touch on-chain content meta or
+ * financial ledgers (see the erase route for the full purge boundary).
+ */
+export async function deleteProfileRow(address: string): Promise<void> {
+  const lower = address.toLowerCase()
+  await Promise.all([
+    redis.del(keyByAddress(lower)),
+    redis.srem(KEY_PROFILES, lower),
+    redis.del(keyNonce(lower)),
+  ])
+}
+
+/** Hard-delete a FID-keyed profile row (the miniapp-first identity home).
+ *  Paired with deleteProfileRow for every verified wallet by the erase route. */
+export async function deleteFidProfile(fid: number): Promise<void> {
+  await redis.del(keyByFid(fid))
+}
+
 export async function getProfile(address: string): Promise<Profile> {
   const raw = await redis.get<string | Profile>(keyByAddress(address))
   const base: Profile = { address: address.toLowerCase(), updatedAt: 0 }
