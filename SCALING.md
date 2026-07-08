@@ -258,10 +258,23 @@ turbo-sdk/ws/undici). The audit's original "there is no CI / no dependency scann
 
 **`npm audit` today: 65 vulnerabilities — 0 critical, 7 high, 40 moderate, 18 low**
 (down from the first audit's 67 / 3 critical / 8 high). The **critical `arbundles`
-chain is cleared** via root `overrides` (§B13). The remaining 7 **high** live in the
-wallet stack (`ws` via wagmi→walletconnect→reown) and the Turbo/CDP transitive tree,
-not app code — none reachable on the upload path (§B13). **Open:** land the `ws` /
-turbo-sdk major bumps so CI can flip `audit-level=high` to blocking.
+chain is cleared** via root `overrides` (§B13). All 7 **high** are transitive, not app
+code, and split by fix path:
+- **Needs a semver-major bump** (the reason they're not yet cleared): `ws`
+  (7.x/≤8.20.1, wallet stack `wagmi → walletconnect → reown` → fix is `wagmi@3`) and
+  `undici` (≤6.26.0, Turbo/`aoconnect` → fix is `@ardrive/turbo-sdk@1.13`). Both are
+  wallet/upload-signing internals not reachable on the app's critical path (§B13);
+  taking a wallet-stack major warrants its own reviewed pass + a connect smoke test.
+- **The rest of the Turbo signing tree** — `@dha-team/arbundles`, `@ethersproject/*`,
+  `secp256k1` — is the same unused multi-chain payment/signer surface analysed in §B13
+  (RSA upload path doesn't touch it).
+- **Non-major fixes available** (`form-data` CRLF, `hono` ≤4.12.24 SSR/JWT): transitive
+  via tooling, not the request path; safe to clear when the dependabot pass lands.
+
+**Open:** this is a deliberate, tracked deferral — CI gates on `--audit-level=critical`
+(0 today) while `dependabot.yml` proposes the parent bumps; flip the gate to `high` once
+the `wagmi`/`turbo-sdk` majors are taken and smoke-tested (§B11/§B13). Not fixed inline
+here to avoid a wallet-stack major on an unrelated branch.
 
 **Version posture (good):** Next 15.5, React 19, Node 22 LTS, viem 2 / wagmi 2 — all
 current; engines pin `node >=22.11`.
