@@ -63,13 +63,21 @@ export interface EarningsVisibilityIdentity {
   /** FID when the caller already resolved it (e.g. resolveCanonicalProfile);
    *  null = known non-FC; undefined = resolve here via the cached FC lookup. */
   fid?: number | null
+  /** FC-verified sibling addresses (lowercase) when the caller already holds
+   *  them — same dedupe contract as `fid`: skips this check's own
+   *  verifications read so a caller that fetched the list for its payload
+   *  (the profile GET's fcWallets) doesn't pay the Redis command twice.
+   *  undefined = resolve here when needed. */
+  siblings?: string[]
 }
 
 export async function isEarningsPublic(
   identity: string | EarningsVisibilityIdentity,
 ): Promise<boolean> {
-  const { address, fid: knownFid } =
-    typeof identity === 'string' ? { address: identity, fid: undefined } : identity
+  const { address, fid: knownFid, siblings: knownSiblings } =
+    typeof identity === 'string'
+      ? { address: identity, fid: undefined, siblings: undefined }
+      : identity
   const lower = address.toLowerCase()
   const members = await getPublicEarners()
   // Fast path: non-FC pin or legacy address pin under the queried address —
@@ -81,8 +89,8 @@ export async function isEarningsPublic(
   if (members.has(fidMember(fid))) return true
   // Legacy address pin that lives under a SIBLING: the canonical address that
   // pinned it (pre-FID-keying) may differ from today's canonical. One
-  // Redis-cached verifications read.
-  const siblings = await getVerifiedAddressesByFid(fid)
+  // Redis-cached verifications read when the caller didn't pass the list.
+  const siblings = knownSiblings ?? (await getVerifiedAddressesByFid(fid))
   return siblings.some((s) => members.has(s))
 }
 
