@@ -24,6 +24,18 @@ export const PERMISSION_BIT_ADMIN = 2n
 export const PERMISSION_BIT_MINTER = 4n
 export const PERMISSION_BIT_METADATA = 16n
 
+// The two bits Zora's 1155 honors for `updateTokenURI`. Shared by the
+// update-uri server preflight (`canUpdateUri`) and the client edit-affordance
+// gate (useMomentEditPermission) so the two can't drift out of agreement —
+// a mismatch would surface as a pencil that 403s, or a missing pencil for an
+// authorized editor.
+export const METADATA_EDIT_MASK = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
+
+/** True when `perms` grants moment-metadata edit rights (ADMIN or METADATA). */
+export function canEditMomentMetadata(perms: bigint): boolean {
+  return (perms & METADATA_EDIT_MASK) !== 0n
+}
+
 const COLLECTION_PERMISSIONS_ABI = [
   {
     name: 'permissions',

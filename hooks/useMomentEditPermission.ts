@@ -3,11 +3,7 @@
 import { useAccount, useReadContracts } from 'wagmi'
 import { type Address, isAddress } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
-import { PERMISSION_BIT_ADMIN, PERMISSION_BIT_METADATA } from '@/lib/permissions'
-
-// The two bits Zora's 1155 honors for `updateTokenURI` — the same mask the
-// server preflight (`canUpdateUri` in app/api/moment/update-uri/route.ts) uses.
-const EDIT_MASK = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
+import { canEditMomentMetadata } from '@/lib/permissions'
 
 /**
  * Client mirror of `canUpdateUri`: true when the connected EOA is allowed to
@@ -67,6 +63,6 @@ export function useMomentEditPermission(
     (r) =>
       r.status === 'success' &&
       typeof r.result === 'bigint' &&
-      (r.result & EDIT_MASK) !== 0n,
+      canEditMomentMetadata(r.result),
   )
 }
