@@ -52,6 +52,17 @@ export async function recordAirdrop(
   await redis.zremrangebyrank(keyBySender(sender), 0, -MAX_PER_SENDER - 1)
 }
 
+/**
+ * Delete a sender's entire airdrop-sent log. Used by admin profile-erase:
+ * this is the send-side mirror of deleteCollected (the receive side). Both are
+ * address-keyed authored activity rendered on the profile (via
+ * /api/airdrops?artist=<addr>), so erasing one without the other would leave
+ * the sent-airdrops section resurfacing on a rebuilt profile.
+ */
+export async function deleteAirdropsBySender(sender: string): Promise<void> {
+  await redis.del(keyBySender(sender))
+}
+
 export async function getAirdropsBySender(
   sender: string,
   opts: { offset?: number; limit?: number } = {},

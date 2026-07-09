@@ -520,21 +520,37 @@ function HideContentCard() {
           ok?: boolean
           error?: string
           erased?: { addresses?: string[]; fid?: number | null }
+          fcResolved?: boolean
         }
         if (!res.ok || !json.ok) throw new Error(json.error ?? 'Request failed')
-        return json.erased ?? { addresses: [target.address], fid: null }
+        return {
+          ...(json.erased ?? { addresses: [target.address], fid: null }),
+          fcResolved: json.fcResolved !== false,
+        }
       })
       if (!erased) return // user cancelled signing
       setEraseArmed(false)
       const n = erased.addresses?.length ?? 1
-      toast.success(`Profile erased (${n} wallet${n === 1 ? '' : 's'})`, { id: 'admin-erase' })
+      // fcResolved === false → the queried wallet IS erased, but Farcaster
+      // couldn't be reached to confirm/expand its verified siblings. Warn
+      // rather than claim a clean success: the admin re-runs once FC is
+      // reachable (idempotent, so it's a safe no-op if there were no siblings).
+      if (erased.fcResolved === false) {
+        toast.warning(
+          `Wallet erased — couldn't confirm Farcaster-linked wallets. Re-run when Farcaster is reachable to catch any siblings.`,
+          { id: 'admin-erase', duration: 8000 },
+        )
+      } else {
+        toast.success(`Profile erased (${n} wallet${n === 1 ? '' : 's'})`, { id: 'admin-erase' })
+      }
       // The identity is gone — reset the card's status view.
       setCurrentlyHidden(null)
       setMatchedAddress(null)
       setRefresh((v) => v + 1)
       // FC residue: an erased Farcaster identity's name re-resolves from
       // Farcaster (we can't delete their FC account), so offer a one-click
-      // hide to suppress it too.
+      // hide to suppress it too. Only when we actually resolved a FID — a
+      // failed resolution leaves fid null and there's nothing to also-hide.
       setEraseFcFid(erased.fid ?? null)
     } catch (err) {
       toastError('Erase', err, { id: 'admin-erase' })

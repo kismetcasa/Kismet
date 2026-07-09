@@ -3,6 +3,7 @@ import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
+import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import {
   shareCard,
   SHARE_CARD_SIZE,
@@ -55,10 +56,12 @@ export default async function Image({ params }: Props) {
     // at deploy time, fast, canonical for collections we deployed) wins,
     // inprocess is the fallback for collections we didn't. Keeps the card
     // in sync with what the page shows.
-    const [row, kv] = await Promise.all([
+    const [rowRaw, kv] = await Promise.all([
       fetchCollection(address),
       getKvCollectionMeta(address),
     ])
+    // Null a hidden-identity deployer's @handle before the share card renders it.
+    const row = await stripHiddenDeployerIdentity(rowRaw)
     title = kv?.name ?? row?.metadata?.name ?? title
     if (row?.creator) {
       creator = row.creator.username || shortAddress(row.creator.address)
