@@ -6,6 +6,7 @@ import { inprocessUrl, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
+import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -201,12 +202,17 @@ export default async function CollectionPage({ params }: Props) {
 
   // Moments are fetched client-side in CollectionView so the header renders
   // immediately from the fast KV + inprocess-detail fetches below.
-  const [meta, kvMeta, detail, hidden] = await Promise.all([
+  const [meta, kvMeta, detailRaw, hidden] = await Promise.all([
     fetchCollectionMeta(address),
     getKvCollectionMeta(address),
     fetchCollectionDetail(address),
     isCollectionHidden(address),
   ])
+  // Null a hidden-identity deployer's @handle (creator/default_admin username)
+  // before it seeds the header: CollectionView keeps the SSR seed over the
+  // gated client resolver, so it must be stripped server-side. Address is
+  // preserved, so the isCreator owner check below still resolves.
+  const detail = await stripHiddenDeployerIdentity(detailRaw)
 
   // Resolve the collection's admin EOA. PREFER the KV-stored deployer EOA
   // (written at deploy time = the wallet that actually controls the contract
