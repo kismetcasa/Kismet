@@ -23,6 +23,7 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
+import { useMomentEditPermission } from '@/hooks/useMomentEditPermission'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
@@ -380,6 +381,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!connectedAddress &&
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
+
+  // On-chain edit authorization — the client mirror of update-uri's
+  // `canUpdateUri`. Lets moment co-admins (collection defaultAdmin +
+  // authorized creators, who hold ADMIN/METADATA but aren't the resolved
+  // creator) see the edit affordance, matching what the backend already
+  // authorizes. Skipped for the creator, whose pencil shows regardless.
+  const canEditMeta = useMomentEditPermission(address, tokenId, { skip: isCreator })
 
   // Moment admin per inprocess's momentAdmins (unordered; may include the
   // operator smart wallet — harmless, the distribute API's signature gate is
@@ -1188,12 +1196,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 )}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
-                {/* Edit metadata — admin-only. Pencil icon expands into a
+                {/* Edit metadata — any address the update-uri backend will
+                    authorize: the resolved creator, plus moment co-admins
+                    (collection defaultAdmin / authorized creators) surfaced
+                    by the on-chain `canEditMeta` read. Pencil expands into a
                     full inline panel below the title to preserve spatial
                     locality (you edit what you're looking at). Share +
                     send moved to a single row beneath the action panel
                     so secondary actions group together visually. */}
-                {isCreator && !editing && detail && (
+                {(isCreator || canEditMeta) && !editing && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
