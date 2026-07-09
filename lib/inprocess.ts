@@ -22,6 +22,12 @@ export function inprocessUrl(
 // them on notifications. Defined here so frontend and backend share one source.
 export const DEFAULT_COLLECT_COMMENT = 'collected on kismet'
 
+// Label for airdrop rows folded into the moment activity feed. An airdrop is
+// a gift, not a purchase, so it reads "invited to kismet" (the recipient) —
+// the transparent parallel to a collector's "collected on kismet". The
+// comments route stamps this as the `comment` of any `kind: 'airdrop'` row.
+export const AIRDROP_INVITE_COMMENT = 'invited to kismet'
+
 // Legacy default-comment strings still present in historical on-chain data
 // and the upstream comments feed: pre-rename ("collected via Kismet Art") and
 // the post-brand-rename interim ("collected via Kismet"). Used by the activity
@@ -161,6 +167,11 @@ export interface MomentComment {
   sender: string
   comment: string
   timestamp: number // may be ms or seconds — normalize before use
+  // 'airdrop' marks a synthetic activity row the comments route folds in from
+  // a Kismet airdrop record: `sender` is the RECIPIENT (the invited artist)
+  // and the UI renders it as "invited to kismet". Absent/'collect' = an
+  // on-chain collect comment from the inprocess feed.
+  kind?: 'collect' | 'airdrop'
 }
 
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */
@@ -275,6 +286,16 @@ export function formatPrice(
 export function shortAddress(address: string): string {
   if (!address) return ''
   return `${address.slice(0, 6)}…${address.slice(-4)}`
+}
+
+/**
+ * Normalize a timestamp that may be in seconds or milliseconds to milliseconds.
+ * Activity rows mix sources — inprocess collect comments (seconds or ms) and
+ * Kismet airdrop rows (ms from Date.now) — so a merged feed must compare them
+ * on one scale. Same >1e12 heuristic formatRelativeTime uses internally.
+ */
+export function normalizeTimestampMs(timestamp: number): number {
+  return timestamp > 1e12 ? timestamp : timestamp * 1000
 }
 
 export function formatRelativeTime(timestamp: number): string {
