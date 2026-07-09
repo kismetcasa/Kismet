@@ -25,7 +25,7 @@ export const maxDuration = 300
 // the large GIFs the in-browser path can't take); two controls keep that spike
 // from OOM-killing the single box: (1) MAX_CONCURRENT=1 below serializes
 // transcodes so only ONE buffer is ever live, and (2) the Coolify container
-// memory limit + swap (AVAILABILITY_RUNBOOK.md) bounds total RSS. The proper
+// memory limit + swap (OPS_RUNBOOK.md) bounds total RSS. The proper
 // follow-up that would let the cap rise safely is streaming source→tempfile→
 // ffmpeg→output so the GIF is never fully buffered. (OWASP API4:2023.)
 const MAX_GIF_BYTES = 300 * 1024 * 1024

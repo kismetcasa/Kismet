@@ -244,7 +244,7 @@ export async function GET(req: NextRequest) {
   // MERGE_BUDGET/limit collections: the merge became limit × N, unbounded in
   // N. The floor is now 1: past that width each collection's sample THINS
   // instead of the merge growing — degrade depth, never stability. The durable
-  // fix is a materialized feed (REMEDIATION_PLAYBOOK.md §B1). A single
+  // fix is a materialized feed (SCALING.md §B1). A single
   // collection (N=1) is unchanged until page*limit exceeds the whole budget.
   // (SRE handling-overload / Azure Bulkhead.)
   //
