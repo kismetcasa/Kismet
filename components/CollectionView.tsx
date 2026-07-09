@@ -8,7 +8,7 @@ import { useAccount, usePublicClient, useReadContract, useReadContracts } from '
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
-import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check, Pencil } from 'lucide-react'
+import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check, Pencil, Info, ChevronDown, ChevronUp } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -27,6 +27,14 @@ import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
 import { CollectAllAction } from './CollectAllAction'
 import { EditCollectionForm, type EditedMeta } from './EditCollectionForm'
+import { PatronArtworkShowcase } from './PatronArtworkShowcase'
+import { PatronInfoModal } from './PatronInfoModal'
+import {
+  isPatronCollection,
+  deriveArtistsFromRecipients,
+} from '@/lib/patronCollection'
+import { CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
+import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -113,9 +121,20 @@ export function CollectionView({
   // data, and hidden-moment filtering is applied via the session-aware
   // /api/timeline route (creator sees their own hidden moments; others don't).
   const [moments, setMoments] = useState<Moment[] | null>(null)
+  // Patron Collection only: artist addresses derived from the moments' on-chain
+  // split recipients (null = loading, [] = resolved with no artist payee → the
+  // artist section is omitted). See the splits effect below.
+  const [patronArtists, setPatronArtists] = useState<string[] | null>(null)
   const [hidePending, setHidePending] = useState(false)
   const [editing, setEditing] = useState(false)
   const [metaOverride, setMetaOverride] = useState<EditedMeta | null>(null)
+  // Patron-only "Mint Pass Ruleset" modal, opened from the header Information button.
+  const [showInfo, setShowInfo] = useState(false)
+  // Header description expand/collapse — the copy is clamped to 3 lines and a
+  // "show more" toggle reveals the rest (descRef measures whether it overflows).
+  const [showFullDesc, setShowFullDesc] = useState(false)
+  const [descOverflows, setDescOverflows] = useState(false)
+  const descRef = useRef<HTMLParagraphElement>(null)
   const { ensureSession } = useUploadSession()
 
   const isFeatured = featuredCollectionAddrs.has(address.toLowerCase())
@@ -590,6 +609,59 @@ export function CollectionView({
     }
   }, [authorizedCreators, profiles])
 
+  // Patron Collection only: derive the artist(s) from each moment's on-chain
+  // split recipients (the creator's payout array). The moment "creator"
+  // resolves to the platform treasury, so the split — not the creator — is the
+  // real source of artist attribution here, and it generalizes to future
+  // multi-artist drops. We drop the non-artist payees (treasury / residencies /
+  // referral / collection owner+payout) and hydrate the survivors' profiles so
+  // their chips render names + avatars. Empty result → no artist section.
+  useEffect(() => {
+    if (!isPatronCollection(address)) return
+    let cancelled = false
+    setPatronArtists(null)
+    if (moments === null) return // wait for the moments fetch
+    const ms = moments
+    const exclude = new Set(
+      [
+        PLATFORM_FEE_RECIPIENT,
+        CREATE_REFERRAL,
+        RESIDENCIES_ADDRESS,
+        defaultAdminAddress,
+        payoutRecipient,
+      ]
+        .filter((a): a is string => !!a)
+        .map((a) => a.toLowerCase()),
+    )
+    Promise.all(
+      ms.map((m) =>
+        fetch(`/api/moment/splits?collectionAddress=${m.address}&tokenId=${m.token_id}`)
+          .then((r) => (r.ok ? r.json() : { hasSplits: false, recipients: [] }))
+          .then((d) =>
+            d?.hasSplits && Array.isArray(d.recipients)
+              ? (d.recipients as { address: string }[])
+              : [],
+          )
+          .catch(() => [] as { address: string }[]),
+      ),
+    ).then((lists) => {
+      if (cancelled) return
+      const artists = deriveArtistsFromRecipients(lists, exclude)
+      setPatronArtists(artists)
+      artists.forEach((addr) => {
+        fetchCreatorProfile(addr).then(({ name, avatarUrl }) => {
+          if (!cancelled)
+            setProfiles((prev) =>
+              prev[addr] ? prev : { ...prev, [addr]: { name, avatarUrl } },
+            )
+        })
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [address, moments, defaultAdminAddress, payoutRecipient])
+
   // Resolve the collection creator's display name from our platform profile
   // cache. Inprocess only returns a username when one is set in their system;
   // our Redis cache may have a name the user registered with us. Always
@@ -622,6 +694,22 @@ export function CollectionView({
   // when the cover falls back to firstMoment, use its thumbhash too.
   const coverThumbhash = effImage ? effThumbhash : firstMoment?.metadata?.kismet_thumbhash
   const description = metaOverride?.description ?? collectionDescription
+
+  // Measure whether the clamped header description overflows so the "show more"
+  // toggle only appears when there's hidden copy. Only measure while collapsed —
+  // expanded, the clamp is off so scrollHeight === clientHeight; descOverflows
+  // keeps its last collapsed value and the toggle persists via `|| showFullDesc`.
+  // Re-measures on resize since the line count is width-dependent (mobile clamps
+  // more lines than desktop).
+  useEffect(() => {
+    if (showFullDesc) return
+    const el = descRef.current
+    if (!el) return
+    const measure = () => setDescOverflows(el.scrollHeight > el.clientHeight)
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [description, showFullDesc])
 
   // Total collects: sum on-chain totalMinted per token — no aggregated count
   // exists upstream. Batched into one multicall by wagmi.
@@ -681,15 +769,38 @@ export function CollectionView({
 
   const indexing = isTracked && moments !== null && loadedMoments.length === 0
 
+  // Patron Collection gets a bespoke presentation: the single artwork is shown
+  // via PatronArtworkShowcase instead of the generic grid, and the artist
+  // credit is derived from the moments' on-chain splits (see the effect above).
+  const isPatron = isPatronCollection(address)
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      <button
-        onClick={() => router.back()}
-        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors mb-8"
-      >
-        <ArrowLeft size={12} />
-        back
-      </button>
+      <div className="flex items-center justify-between mb-8">
+        <button
+          onClick={() => router.back()}
+          className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors"
+        >
+          <ArrowLeft size={12} />
+          back
+        </button>
+        {/* Patron Collection only: opens the Mint Pass Ruleset modal. Full
+            "Information" label on desktop; bare info glyph on mobile (the
+            label is hidden, the icon keeps a 44px tap target). */}
+        {isPatron && (
+          <button
+            onClick={() => setShowInfo(true)}
+            className="flex items-center gap-1.5 min-h-[44px] sm:min-h-0 px-1 -mr-1 text-xs font-mono text-muted hover:text-dim transition-colors"
+            aria-label="Mint Pass Ruleset information"
+            title="Mint Pass Ruleset"
+          >
+            <Info size={14} />
+            <span className="hidden sm:inline">Information</span>
+          </button>
+        )}
+      </div>
+
+      {showInfo && <PatronInfoModal onClose={() => setShowInfo(false)} />}
 
       {editing && isCreator && (
         <EditCollectionForm
@@ -820,7 +931,26 @@ export function CollectionView({
             </Link>
           )}
           {description && (
-            <p className="text-xs font-mono text-muted mt-1 line-clamp-3">{description}</p>
+            <div className="mt-1">
+              <p
+                ref={descRef}
+                className={`text-xs font-mono text-muted ${showFullDesc ? '' : 'line-clamp-3'}`}
+              >
+                {description}
+              </p>
+              {(descOverflows || showFullDesc) && (
+                <button
+                  onClick={() => setShowFullDesc((v) => !v)}
+                  className="flex items-center gap-1 text-[10px] font-mono text-dim hover:text-ink transition-colors mt-1.5"
+                >
+                  {showFullDesc ? (
+                    <><ChevronUp size={10} /> show less</>
+                  ) : (
+                    <><ChevronDown size={10} /> show more</>
+                  )}
+                </button>
+              )}
+            </div>
           )}
           <div className="flex items-center gap-3 mt-2">
             {isAdmin && (
@@ -884,7 +1014,7 @@ export function CollectionView({
                 Minting requires an inprocess account
               </p>
               <p className="text-[11px] font-mono text-dim mt-0.5">
-                Create a free account at inprocess.world, then return here to authorize minting.
+                Set up your inprocess account to issue your smart wallet — mint your first moment (we’ll create a collection for you), or sign in at inprocess.world. Then return here to authorize.
               </p>
             </div>
           </div>
@@ -1047,18 +1177,49 @@ export function CollectionView({
         </div>
       )}
 
-      {/* Artists */}
-      {uniqueCreators.length > 0 && (
-        <section className="mb-10">
-          <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
-            {uniqueCreators.length === 1 ? 'artist' : 'artists'}
-          </h2>
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
-            {uniqueCreators.map((addr) => (
-              <AvatarRow key={addr} addr={addr} profiles={profiles} />
-            ))}
-          </div>
-        </section>
+      {/* Artists — for the Patron Collection the credit is derived from each
+          moment's on-chain split recipients (the moment creator resolves to the
+          platform treasury, so the split is the real attribution); every artist
+          shows their own resolved profile, no hardcoded label. Other
+          collections list the moment creators. */}
+      {isPatron ? (
+        patronArtists === null ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              artist
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              <div className="flex items-center gap-2 sm:gap-2.5 border border-line px-2.5 sm:px-3 py-2 w-full sm:w-auto animate-pulse">
+                <span className="w-6 h-6 bg-raised shrink-0" />
+                <span className="h-3 w-16 bg-raised" />
+              </div>
+            </div>
+          </section>
+        ) : patronArtists.length > 0 ? (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {patronArtists.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {patronArtists.map((a) => (
+                <AvatarRow key={a} addr={a} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        ) : null
+      ) : (
+        uniqueCreators.length > 0 && (
+          <section className="mb-10">
+            <h2 className="text-xs font-mono text-muted uppercase tracking-widest mb-4">
+              {uniqueCreators.length === 1 ? 'artist' : 'artists'}
+            </h2>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              {uniqueCreators.map((addr) => (
+                <AvatarRow key={addr} addr={addr} profiles={profiles} />
+              ))}
+            </div>
+          </section>
+        )
       )}
 
       {/* NFT grid */}
@@ -1090,6 +1251,8 @@ export function CollectionView({
           ) : (
             <p className="text-xs font-mono text-muted">no moments in this collection yet</p>
           )
+        ) : isPatron ? (
+          <PatronArtworkShowcase moments={loadedMoments} isMobile={isMobile} />
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {loadedMoments.map((m, i) => {

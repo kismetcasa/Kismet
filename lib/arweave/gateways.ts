@@ -11,9 +11,13 @@
 // propagation lag on fresh Turbo uploads, was sinking pre-mint verification.
 // Verify newly-added entries with `curl -I https://<host>/<known-txid>` —
 // dead gateways stall the fallback chain rather than failing fast.
+// Pruned 2026-06 (b): arweave.dev went NXDOMAIN (ERR_NAME_NOT_RESOLVED in the
+// browser) - it was the only fallback, so its DNS death meant every verify and
+// every render-fallback walk hit a dead host first. Removing it leaves
+// arweave.net (Turbo's optimistic-cache host) as the sole gateway; re-add a
+// curl-verified AR.IO gateway here to restore fallback redundancy.
 const ARWEAVE_GATEWAYS = [
   'https://arweave.net',
-  'https://arweave.dev',
 ] as const
 
 const IPFS_GATEWAYS = [

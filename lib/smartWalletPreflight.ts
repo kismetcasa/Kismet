@@ -23,13 +23,19 @@ const COLLECTION_PERMISSIONS_ABI = [
  *     scopes. Caller should let the request through.
  *   - `'unauthorized'` — both reads succeeded and neither row holds
  *     ADMIN. Caller should return AUTHORIZE_REQUIRED.
- *   - `'unknown'` — RPC, smart-wallet lookup, or upstream call failed
+ *   - `'unknown'` — RPC or a TRANSIENT smart-wallet lookup failure (null)
  *     before we could form a definitive answer. Caller should fall
  *     through and let inprocess be the source of truth — a flaky
  *     RPC shouldn't deny a user whose state on chain is actually
  *     fine. Inprocess's own gas estimation will catch a real failure.
+ *   - `'no_account'` — the EOA has NO inprocess account (a DEFINITIVE
+ *     notFound from /smartwallet). There is no smart wallet to hold
+ *     ADMIN, so a relayed mint into an EXISTING collection is doomed to
+ *     revert at gas estimation. Caller should surface a clean, actionable
+ *     NO_ACCOUNT instead of forwarding. (Auto-deploy is unaffected — it
+ *     has no existing-collection scope, so this preflight isn't run for it.)
  */
-type PreflightStatus = 'authorized' | 'unauthorized' | 'unknown'
+type PreflightStatus = 'authorized' | 'unauthorized' | 'unknown' | 'no_account'
 
 interface PreflightDiagnostic {
   status: PreflightStatus
@@ -98,12 +104,19 @@ export async function checkSmartWalletAdmin(
   let smartWallet: string | undefined
   try {
     const resolved = await resolveSmartWallet(callerEoa)
-    // Both the transient (null) and no-account (notFound) cases leave us
-    // without a smart wallet to read ADMIN on. Return 'unknown' for both —
-    // the caller falls through and lets inprocess's gas estimation be the
-    // source of truth, exactly as before the result type was discriminated.
-    if (!resolved || 'notFound' in resolved) {
-      return { status: 'unknown', reason: 'could not resolve smart wallet' }
+    // Distinguish the two no-smart-wallet cases. A DEFINITIVE notFound (the
+    // EOA has no inprocess account) is permanent: there's no smart wallet to
+    // hold ADMIN, so a relayed mint into THIS existing collection will revert
+    // — surface a clean no_account so the caller returns an actionable error
+    // instead of forwarding a doomed userOp. A TRANSIENT null (network/5xx/
+    // timeout) returns 'unknown' so the caller falls through and lets inprocess
+    // be the source of truth — a flaky read must not strand a user whose
+    // on-chain state is actually fine.
+    if (resolved && 'notFound' in resolved) {
+      return { status: 'no_account', reason: 'no inprocess account for this EOA' }
+    }
+    if (!resolved) {
+      return { status: 'unknown', reason: 'transient smart-wallet lookup failure' }
     }
     smartWallet = resolved.address
 

@@ -81,21 +81,25 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
         </div>
       </div>
       {/* Close button rendered OUTSIDE the backdrop wrapper so it stacks
-          in body, above the shared video element. Dark pill behind the
-          X keeps it visible on bright media. */}
+          in body, above the shared video element. No background pill —
+          just the bare X — so the close affordance reads lighter and
+          doesn't crowd the media on mobile / Mini App. */}
       <button
         onClick={dismiss}
         title="Close (Esc)"
         aria-label="Close"
-        // backdrop-blur dropped (main also dropped this): same iOS
-        // WebKit GPU-jank issue SearchModal had. Solid /70→/85 on
-        // hover is plenty visible over the underlying video.
-        // min-w/h=44 enforces the iOS HIG touch target — the 18px X
-        // inside p-2 alone gave a ~34×34 hit area that missed often.
+        // min-w/h=44 keeps the iOS HIG touch target — the 18px X alone
+        // gave a ~34×34 hit area that missed often. The hit area stays
+        // 44×44 even though the visible glyph is now bare, so dropping
+        // the pill doesn't shrink the tap target.
+        // The dark bg-black pill was removed (felt invasive over the
+        // media); a tight drop-shadow replaces it as the legibility
+        // floor so the light glyph still reads over bright content
+        // where a flat icon would wash out.
         // transition-colors (not transition-all) per main's button
         // perf pass; active:scale-95 snaps synchronously without a
         // transform transition, which is the right press feedback.
-        className="fixed top-4 right-4 min-w-[44px] min-h-[44px] flex items-center justify-center text-[#bbb] hover:text-white bg-black/70 hover:bg-black/85 transition-colors active:scale-95 rounded-full"
+        className="fixed top-4 right-4 min-w-[44px] min-h-[44px] flex items-center justify-center text-[#bbb] hover:text-white transition-colors active:scale-95 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
         style={{ zIndex: Z_CHROME }}
       >
         <X size={18} />

@@ -102,6 +102,9 @@ export async function POST(req: NextRequest) {
   // fallback path (for callers that haven't migrated) sees the same
   // value. Cheap; safe to drop once we're confident no caller reads
   // the legacy key directly.
+  // (No earnings-pin migration needed here: visibility is keyed by FID for
+  // FC users — see lib/earningsVisibility.ts — so the pin follows the
+  // identity across every canonical-address change, including this one.)
   await setKismetIdentityAddress(session.fid, lower)
   return NextResponse.json(
     { address: lower },

@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback, startTransition } from 'react'
 import { useAccount } from 'wagmi'
 import { useQueryClient } from '@tanstack/react-query'
-import { prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
+import { feedPageLimit, prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
 import { FeaturedFeed } from '@/components/FeaturedFeed'
@@ -46,13 +46,13 @@ const ACTIVE_KEY = 'kismetart:active-tab'
 // 1-2s wait on the Mini App webview's constrained pool) into an instant
 // cache hit. Must match the apiUrl each tab's feed passes to PaginatedGrid
 // verbatim, or the prefetched entry won't dedupe against the live query:
-//   trending → MomentFeed apiUrl below
+//   trending → TrendingFeed's default sort (latest-sales)
 //   main     → MainFeed's mints sub-tab default (no `following=`)
 // featured (raw fetch, not react-query) and roster (depends on an async
 // creator-lists fetch) are intentionally excluded; featured is also the
 // default landing tab, so it loads on first paint regardless.
 const PREFETCH_URL: Partial<Record<TabId, string>> = {
-  trending: '/api/timeline?sort=trending&scope=standalone',
+  trending: '/api/timeline?sort=latest-sales&scope=standalone',
   main: '/api/timeline?scope=standalone',
 }
 
@@ -207,10 +207,15 @@ function MomentFeed({
       getKey={(m) => `${m.address}-${m.token_id}`}
       viewMode={viewMode}
       lazy={lazy}
-      // Smaller page on mobile: fewer cards mounted per fetch means
-      // less initial fiber/decode/multicall work on the iframe's
-      // constrained connection pool. Desktop has capacity for 18.
-      pageLimit={lazy ? 12 : 18}
+      // Smaller page on mobile/miniapp: 10 ≈ two viewports of the 2-col
+      // grid (five rows) before "load more", and every unit off the limit
+      // compounds server-side — /api/timeline's per-collection sample is
+      // page×limit, so page 1 pulls ~17% less upstream JSON + merge heap
+      // than the previous 12 and each deeper page widens the gap. Client
+      // cost is already bounded elsewhere (LazyMount eager-mounts 4, the
+      // video coordinator caps play/buffer slots), so payload + fan-out is
+      // the lever the limit actually controls. Desktop has capacity for 18.
+      pageLimit={feedPageLimit(lazy)}
       renderItem={(m, { index }) => (
         <MomentCard
           key={`${m.address}-${m.token_id}`}
@@ -261,7 +266,7 @@ function CollectionsFeed({
       getKey={(c) => c.contractAddress}
       viewMode={viewMode}
       lazy={lazy}
-      pageLimit={lazy ? 12 : 18}
+      pageLimit={feedPageLimit(lazy)}
       renderItem={(c, { index }) => (
         <CollectionCard
           key={c.contractAddress}
@@ -278,6 +283,85 @@ function CollectionsFeed({
           <p className="text-sm font-mono text-muted">no collections yet</p>
         </div>
       }
+    />
+  )
+}
+
+// ─── filter pill ─────────────────────────────────────────────────────────────
+
+// The accent-bordered toggle pill shared by the main feed's "following"
+// button and the trending feed's sort buttons — one source so the two
+// surfaces can't drift visually. (The roster list buttons keep their own
+// ink-bordered variant deliberately: they're content selectors, not filters.)
+function FilterPill({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={on}
+      className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
+        on
+          ? 'border-accent text-accent'
+          : 'border-line text-muted hover:border-[#444] hover:text-dim'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// ─── trending feed with sort buttons ─────────────────────────────────────────
+
+type TrendingSort = 'latest-sales' | 'trending' | 'ending-soon'
+
+// Per-sort config, in display order: API sort value, button label, empty-state
+// copy. 'trending' is the original all-time collect-count sort, relabeled
+// "most sales" now that it has siblings; the API value stays 'trending' so
+// the roster feed and any cached clients keep working unchanged.
+const TRENDING_SORTS: { id: TrendingSort; label: string; empty: string }[] = [
+  {
+    id: 'latest-sales',
+    label: 'latest sales',
+    empty: 'no collects recorded yet — latest sales appear as mints are collected',
+  },
+  {
+    id: 'trending',
+    label: 'most sales',
+    empty: 'no collects recorded yet — trending appears as mints are collected',
+  },
+  { id: 'ending-soon', label: 'ending soon', empty: 'no mints to show yet' },
+]
+
+function TrendingFeed() {
+  const [sort, setSort] = useState<TrendingSort>('latest-sales')
+  const active = TRENDING_SORTS.find((s) => s.id === sort) ?? TRENDING_SORTS[0]
+
+  // Radio-style row of FilterPills: exactly one sort active at a time.
+  // Switching sorts swaps the PaginatedGrid apiUrl — react-query keeps each
+  // sort's pages cached, so flipping back is instant.
+  const sortButtons = (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {TRENDING_SORTS.map(({ id, label }) => (
+        <FilterPill key={id} on={sort === id} onClick={() => setSort(id)}>
+          {label}
+        </FilterPill>
+      ))}
+    </div>
+  )
+
+  return (
+    <MomentFeed
+      apiUrl={`/api/timeline?sort=${sort}&scope=standalone`}
+      emptyMessage={active.empty}
+      header={sortButtons}
+      withViewToggle
     />
   )
 }
@@ -333,16 +417,9 @@ function MainFeed() {
         </button>
       </div>
       {address && (
-        <button
-          onClick={() => setFollowingOn((v) => !v)}
-          className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
-            followingOn
-              ? 'border-accent text-accent'
-              : 'border-line text-muted hover:border-[#444] hover:text-dim'
-          }`}
-        >
+        <FilterPill on={followingOn} onClick={() => setFollowingOn((v) => !v)}>
           following
-        </button>
+        </FilterPill>
       )}
     </div>
   )
@@ -370,9 +447,10 @@ function MainFeed() {
 export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredRevision } = useAdmin()
   const queryClient = useQueryClient()
-  // Mirror MomentFeed's page size (lazy=isMobile → 12 mobile / 18 desktop)
-  // so a warmed entry shares the live grid's exact query key.
-  const pageLimit = isMobile ? 12 : 18
+  // Mirror MomentFeed's page size so a warmed entry shares the live grid's
+  // exact query key — feedPageLimit is the single source (10 on mobile AND
+  // in any iframe/miniapp context, 18 on standalone desktop).
+  const pageLimit = feedPageLimit(isMobile)
   const [order, setOrder] = useState<TabId[]>(DRAGGABLE)
   const [active, setActive] = useState<TabId>(DRAGGABLE[0])
   // Defer the first tab-content render until we've reconciled with
@@ -511,11 +589,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
 
         {hydrated && visitedTabs.has('trending') && (
           <div hidden={active !== 'trending'}>
-            <MomentFeed
-              apiUrl="/api/timeline?sort=trending&scope=standalone"
-              emptyMessage="no collects recorded yet — trending appears as mints are collected"
-              withViewToggle
-            />
+            <TrendingFeed />
           </div>
         )}
 
@@ -693,7 +767,7 @@ function ArtistsFeed() {
       itemsKey="moments"
       getKey={(m) => `${m.address}-${m.token_id}`}
       lazy={lazy}
-      pageLimit={lazy ? 12 : 18}
+      pageLimit={feedPageLimit(lazy)}
       filter={filterToArtists}
       header={header}
       renderItem={(m, { index }) => (

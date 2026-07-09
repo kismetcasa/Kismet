@@ -1,8 +1,9 @@
 /**
  * Drop coordinator (Phase 3) — the cross-user, fair-distribution half of agentic
- * collecting. Fired the instant a watched artist drops on our platform (the
- * markCreatedMint / addTrackedCollection hooks are our internal "as soon as it
- * drops" signal, so no external indexer is needed). It gathers every live agent
+ * collecting. Fired the instant a watched artist drops on our platform: it runs
+ * from the post-mint / cover-mint hooks (lib/mint-proxy.ts and the
+ * app/api/collections cover-mint), adjacent to markCreatedMint — our internal
+ * "as soon as it drops" signal, so no external indexer is needed. It gathers every live agent
  * watching that artist, computes what each can take (their per-drop target +
  * budget + the per-wallet cap), then allocates the drop's supply ROUND-ROBIN
  * (everyone gets 1, then a 2nd, … — see allocate.ts) so a scarce drop spreads

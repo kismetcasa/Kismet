@@ -1,0 +1,25 @@
+# Dependency-update automation. The audit posture drifted unnoticed (recorded
+# 4-high in the remediation playbook → 7-high live) because nothing proposes
+# the parent bumps that clear transitive advisories. Grouped, weekly PRs keep
+# the tree moving without one-PR-per-package noise; CI (build + check + the
+# blocking critical audit + the patch-applied assertion) gates each one.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine minor/patch churn.
+      minor-and-patch:
+        update-types: [minor, patch]
+      # Majors separately — they need manual review (breaking changes), and the
+      # security-relevant parents (turbo-sdk, wagmi/reown, undici, ws) live here.
+      majors:
+        update-types: [major]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

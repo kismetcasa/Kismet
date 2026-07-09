@@ -82,7 +82,9 @@ async function fetchMomentDetail(
       tokenId,
       chainId: '8453',
     })
-    const res = await fetch(url, { next: { revalidate: 60 } })
+    // Per-call timeout — this runs inside the timeline fan-out, so a hung
+    // inprocess here would pin a feed request. Degrades to null on timeout.
+    const res = await fetch(url, { next: { revalidate: 60 }, signal: AbortSignal.timeout(8_000) })
     if (!res.ok) return null
     const text = await res.text()
     return text ? (JSON.parse(text) as MomentDetail) : null
@@ -99,7 +101,8 @@ async function fetchCollectionCreatedAt(
       collectionAddress: address,
       chainId: '8453',
     })
-    const res = await fetch(url, { next: { revalidate: 60 } })
+    // Per-call timeout — see fetchMomentDetail; runs inside the timeline fan-out.
+    const res = await fetch(url, { next: { revalidate: 60 }, signal: AbortSignal.timeout(8_000) })
     if (!res.ok) return null
     const text = await res.text()
     return text ? (JSON.parse(text) as { created_at?: string }) : null

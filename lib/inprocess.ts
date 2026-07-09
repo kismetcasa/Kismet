@@ -286,6 +286,133 @@ export function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diff / 86400)}d`
 }
 
+// Max-uint64 "never expires" sentinel the mint form writes for an open-ended
+// sale (components/MintForm.tsx). Any saleEnd at or above this is not a real
+// deadline — it must never render as a countdown ("closes in 5e11 years").
+const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
+
+/**
+ * Parse a saleConfig.saleEnd string to a real deadline in unix seconds, or
+ * null when it names no deadline ("0" / the sentinel / non-numeric / absent).
+ * THE single "is this a real deadline" classifier — getSaleWindow (countdown
+ * display) and lib/saleEnds (the ending-soon feed index) both apply it, so
+ * the two surfaces can't silently disagree about what counts as a deadline.
+ * BigInt-parses first so the sentinel can't overflow Number precision and
+ * read as a real (astronomically distant) deadline.
+ */
+export function parseRealSaleEnd(saleEnd: string | undefined | null): number | null {
+  if (!saleEnd) return null
+  try {
+    const end = BigInt(saleEnd)
+    if (end > 0n && end < OPEN_ENDED_SALE_SENTINEL) return Number(end)
+  } catch {
+    // non-numeric → no deadline
+  }
+  return null
+}
+
+export type SaleWindowState = 'scheduled' | 'closing' | 'live' | 'ended'
+
+export interface SaleWindowInfo {
+  /** Where the (collection, token) sits in its sale window right now. */
+  state: SaleWindowState
+  /** Unix-second timestamp of the edge this state hinges on — saleStart for
+   *  `scheduled`, saleEnd for `closing` / `ended`. null for `live` (an
+   *  open-ended sale in progress has no date to surface). */
+  atSec: number | null
+}
+
+/**
+ * Classify a moment's sale window for display — the structured companion to the
+ * saleStart/saleEnd gating MomentCard + MomentDetailView already do, so
+ * collectors can see WHEN a scheduled drop opens or a live one closes instead
+ * of just a disabled "not started" / "mint ended" button. Returns null when
+ * there's no saleConfig at all (nothing to say). Pair with formatSaleWindowLabel
+ * to render an absolute, viewer-local date.
+ *
+ * saleStart/saleEnd are unix-second strings. saleStart "0"/absent = opens-now;
+ * saleEnd "0"/absent or the max-uint64 sentinel = open-ended (per
+ * parseRealSaleEnd, the shared deadline classifier).
+ */
+export function getSaleWindow(
+  saleConfig: { saleStart?: string; saleEnd?: string } | null | undefined,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): SaleWindowInfo | null {
+  if (!saleConfig) return null
+
+  const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
+
+  // Resolve a real end (in seconds) or treat as open-ended.
+  const realEnd = parseRealSaleEnd(saleConfig.saleEnd)
+  const openEnded = realEnd === null
+  const endNum = realEnd ?? 0
+
+  // Not opened yet → scheduled (the start date is what matters).
+  if (Number.isFinite(startNum) && startNum > nowSec) {
+    return { state: 'scheduled', atSec: startNum }
+  }
+  // Real end already passed → ended.
+  if (!openEnded && endNum <= nowSec) {
+    return { state: 'ended', atSec: endNum }
+  }
+  // Live with a real upcoming close → closing.
+  if (!openEnded) {
+    return { state: 'closing', atSec: endNum }
+  }
+  // Live and open-ended → no date to surface.
+  return { state: 'live', atSec: null }
+}
+
+/**
+ * Format a unix-second instant as a short, absolute, VIEWER-LOCAL date —
+ * "Jul 3, 3:00 PM" (or "Jul 3, 3:00 PM EDT" with the zone, or "Jul 3" date-only
+ * for space-constrained surfaces). The year is appended only when the instant
+ * isn't in the current year, so near-term drops stay terse while a far-future
+ * (or far-past) one reads unambiguously. Locale + timezone come from the
+ * runtime, so this MUST run client-side (see components/SaleWindow) or the SSR
+ * pass would format in the server's timezone and mismatch on hydration.
+ * Internal — callers go through formatSaleWindowLabel.
+ */
+function formatSaleDate(
+  unixSec: number,
+  { withTime = true, withTimeZone = false }: { withTime?: boolean; withTimeZone?: boolean } = {},
+): string {
+  const d = new Date(unixSec * 1000)
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric'
+  if (withTime) {
+    opts.hour = 'numeric'
+    opts.minute = '2-digit'
+    if (withTimeZone) opts.timeZoneName = 'short'
+  }
+  return d.toLocaleString(undefined, opts)
+}
+
+// Verb fronting the absolute date per state. `live` has no date, so no verb.
+const SALE_STATE_VERB: Record<SaleWindowState, string | null> = {
+  scheduled: 'Opens',
+  closing: 'Sale ends',
+  ended: 'Ended',
+  live: null,
+}
+
+/**
+ * Build the display label for a sale window — "Opens Jul 3, 3:00 PM",
+ * "Sale ends Jul 8, 5:00 PM", "Ended Jun 25". Returns null when there's no dated
+ * edge to show (no saleConfig, or a live open-ended sale). Formatting opts
+ * (time, timezone) are forwarded to formatSaleDate so a roomy surface can show
+ * the zone while a compact card shows date-only.
+ */
+export function formatSaleWindowLabel(
+  info: SaleWindowInfo | null,
+  opts?: { withTime?: boolean; withTimeZone?: boolean },
+): string | null {
+  if (!info || info.atSec == null) return null
+  const verb = SALE_STATE_VERB[info.state]
+  if (!verb) return null
+  return `${verb} ${formatSaleDate(info.atSec, opts)}`
+}
+
 /**
  * Fetch the moments inside a single collection from inprocess's timeline API.
  * Returns [] on any error (network, non-2xx, malformed JSON, timeout) so

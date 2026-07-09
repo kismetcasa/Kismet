@@ -14,7 +14,8 @@
  * `getPermissionStatus(permission)`, `prepareSpendCallData(permission, amount)`.
  * The latest Base docs show a newer OBJECT form (`prepareSpendCallData({
  * permission, amount })`); adopting it is a one-line change here on an SDK bump
- * (2.4.0 is pinned — a 2.5.x bump was previously reverted for transitive churn).
+ * (ranged at ^2.4.0 — a 2.5.x bump was previously reverted for transitive churn,
+ * so bump deliberately).
  * The flow + semantics are identical: status-check → prepare [approveWithSignature?,
  * spend] → submit FROM the spender (the spender executes both, per the docs).
  */

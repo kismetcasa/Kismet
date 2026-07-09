@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Image, { type ImageProps } from 'next/image'
 import { useFallbackUrl, isProxiable, proxyUrl, isWebKitOnly, isInIframe } from '@/lib/media/gateway'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { trackPerf } from '@/lib/telemetry'
 
@@ -24,6 +25,16 @@ function isGifUri(url: string): boolean {
   return url.split(/[?#]/, 1)[0].toLowerCase().endsWith('.gif')
 }
 
+// Any time MomentImage delivers a still image through the /api/img proxy — the
+// optimizer→proxy fallback on a 413, OR a preferProxy caller that skips the
+// optimizer outright — ask the proxy to downscale to this width instead of
+// streaming the full-res original (which stalls mobile + the miniapp's shared
+// HTTP/2 pool). 2048 covers the largest display we render (a retina desktop
+// hero) while turning a multi-MB source into a small WebP. Only GIFs are exempt
+// — they pass through untouched so animation is preserved (the route also
+// re-checks the real content-type, so a mislabeled gif stays safe).
+const PROXY_DISPLAY_MAX_WIDTH = 2048
+
 type DeliveryMode = 'optimized' | 'proxy' | 'direct'
 
 type NextImageProps = CommonProps & {
@@ -32,10 +43,11 @@ type NextImageProps = CommonProps & {
   /**
    * Skip the optimizer attempt and go straight to the proxy. For cover-style
    * contexts where the source is typically heavy enough that the optimizer
-   * 413's anyway — saves the failed-optimizer round-trip and replaces a
-   * single-source arweave.net fetch with the proxy's parallel-gateway race.
-   * Tradeoff: forgoes AVIF/WebP transcode + downscaling, so apply only for
-   * medium-or-larger display sizes where unoptimized bytes are acceptable.
+   * 413's anyway — saves the failed-optimizer round-trip (and the
+   * optimized→proxy remount it triggers) and replaces a single-source
+   * arweave.net fetch with the proxy's parallel-gateway race. The proxy still
+   * downscales to PROXY_DISPLAY_MAX_WIDTH (WebP), so bytes stay small; it only
+   * forgoes the optimizer's AVIF + per-breakpoint sizing.
    */
   preferProxy?: boolean
   /**
@@ -72,7 +84,8 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   const blurDataURL = useMemo(() => thumbhashToBlurDataURL(thumbhash), [thumbhash])
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
-  const skipOptimizer = preferProxy || isGifMime(mime) || isGifUri(src)
+  const isGif = isGifMime(mime) || isGifUri(src)
+  const skipOptimizer = preferProxy || isGif
   // Memoized once at mount — sniffing UA on every error would be wasteful.
   // Skip the direct-gateway-walk fallback on:
   //   - WebKit (Safari + iOS Mini App webview): stalls Safari's connection
@@ -87,7 +100,7 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // Top-level Chrome (kismet.art opened directly) is neither WebKit
   // nor in an iframe — `skipDirectWalk` is false and the existing
   // direct-walk fallback runs unchanged.
-  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
+  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe() || isReactNativeWebView(), [])
 
   const initialMode: DeliveryMode = skipOptimizer
     ? (proxiable ? 'proxy' : 'direct')
@@ -97,8 +110,12 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // 'direct' rather than restarting the state machine.
   useEffect(() => { setMode(initialMode) }, [src, initialMode])
 
-  // 'proxy' uses one stable URL — the proxy fans out internally.
-  const renderUrl = mode === 'proxy' ? proxyUrl(src) : url
+  // 'proxy' uses one stable URL — the proxy fans out internally. Request a
+  // downscale for any still image (the 413 fallback OR a preferProxy caller) so
+  // we never ship the full-res original; only GIFs pass through untouched
+  // (animation preserved).
+  const renderUrl =
+    mode === 'proxy' ? proxyUrl(src, isGif ? undefined : PROXY_DISPLAY_MAX_WIDTH) : url
   const unoptimized = mode !== 'optimized'
 
   const [loaded, setLoaded] = useState(false)
@@ -217,34 +234,46 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
  * resilience benefit.
  */
 export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: ImgProps) {
-  const { url: walkedUrl, onError: walkGateway } = useFallbackUrl(src, onAllError)
+  // skipProxy paths get ONE last-resort proxy attempt after the direct walk
+  // exhausts, instead of failing outright. The skipProxy economics hold in
+  // the healthy case (posters stream from the gateway, zero proxy egress);
+  // this only spends proxy bandwidth when direct delivery is already broken
+  // — which on WebKit/iframe surfaces is the norm whenever the gateway's
+  // direct path degrades (the Mini App "no preview" class: the video fails
+  // AND its direct-only poster died with it, leaving nothing on screen).
+  // Hydration-safe: the first render is still the direct URL.
+  const [directExhausted, setDirectExhausted] = useState(false)
+  useEffect(() => { setDirectExhausted(false) }, [src])
+  const { url: walkedUrl, onError: walkGateway } = useFallbackUrl(src, () => {
+    if (skipProxy && isProxiable(src)) setDirectExhausted(true)
+    else onAllError?.()
+  })
   const proxiable = isProxiable(src) && !skipProxy
   const [proxyFailed, setProxyFailed] = useState(false)
   useEffect(() => { setProxyFailed(false) }, [src])
   // Same gateway-walk short-circuit as MomentImage's proxy→direct
   // transition. Skip on WebKit OR in any iframe context — both share
   // the connection-pool-stall failure mode. See lib/media/gateway.ts.
-  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe(), [])
+  const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe() || isReactNativeWebView(), [])
 
   const useProxy = proxiable && !proxyFailed
-  const renderUrl = useProxy ? proxyUrl(src) : walkedUrl
+  const renderUrl = directExhausted ? proxyUrl(src) : useProxy ? proxyUrl(src) : walkedUrl
   if (!renderUrl) return null
 
-  const handleError = useProxy
-    ? () => {
-        // Proxy failed: on WebKit, surrender to the poster fallback
-        // instead of starting a direct-mode gateway walk that's likely
-        // to stall the browser's connection pool. See gateway.ts.
-        // skipProxy=true paths intentionally bypass proxy entirely and
-        // walk directly — those callers (video posters etc.) accept
-        // the trade-off knowingly and we don't override them.
-        if (skipDirectWalk) {
-          onAllError?.()
-          return
+  const handleError = directExhausted
+    ? () => onAllError?.()
+    : useProxy
+      ? () => {
+          // Proxy failed: on WebKit, surrender to the poster fallback
+          // instead of starting a direct-mode gateway walk that's likely
+          // to stall the browser's connection pool. See gateway.ts.
+          if (skipDirectWalk) {
+            onAllError?.()
+            return
+          }
+          setProxyFailed(true)
         }
-        setProxyFailed(true)
-      }
-    : walkGateway
+      : walkGateway
 
   // alt comes through ...rest.
   return (

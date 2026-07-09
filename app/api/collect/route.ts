@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { decodeEventLog, parseAbi, type Address, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { isPlatformCollectComment } from '@/lib/inprocess'
-import { redis, TRENDING_KEY } from '@/lib/redis'
+import { redis, TRENDING_KEY, TRENDING_LATEST_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { recordCollected } from '@/lib/collected'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
@@ -246,10 +246,16 @@ export async function POST(req: NextRequest) {
     // The trim is a no-op when the zset is under cap (cheap) and is
     // amortized across every collect event — vastly fewer than 288/day
     // background-task fires.
+    // Latest-sales rides the same multi: zadd overwrites the member's score
+    // with this collect's timestamp (last sale wins), trimmed identically.
+    // Rank 0 is the LOWEST score in both zsets — fewest collects / oldest
+    // sale — so both trims evict the least-feed-worthy members first.
     redis
       .multi()
       .zincrby(TRENDING_KEY, 1, `${collectionLower}:${tokenId}`)
       .zremrangebyrank(TRENDING_KEY, 0, -10_001)
+      .zadd(TRENDING_LATEST_KEY, { score: Date.now(), member: `${collectionLower}:${tokenId}` })
+      .zremrangebyrank(TRENDING_LATEST_KEY, 0, -10_001)
       .exec()
       .catch(() => {}),
     recordCollected(account, collectionLower, tokenId).catch(() => {}),

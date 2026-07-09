@@ -1,5 +1,6 @@
 import { type NextRequest } from 'next/server'
 import { redis } from './redis'
+import { markRedisSuccess } from './redisHealth'
 
 export function getClientIp(req: NextRequest): string {
   // `cf-connecting-ip` is set by Cloudflare to the real client's IP and is
@@ -35,6 +36,9 @@ export async function checkRateLimit(
   try {
     const k = `kismetart:rl:${key}`
     const count = (await redis.eval(RATELIMIT_LUA, [k], [windowSecs])) as number
+    // This EVAL runs on ~every request, so it's the broadest "Redis is alive"
+    // signal — feeds the passive readiness check so the probe can skip its PING.
+    markRedisSuccess()
     return count <= limit
   } catch {
     return true

@@ -3,11 +3,19 @@
  * most-recently-used; `set` evicts the least-recently-used at capacity.
  * Used by the browser-side caches in lib/momentCache, lib/textCache,
  * lib/profileCache, lib/collectionCache — bare `new Map()` versions
- * leaked memory in long sessions.
+ * leaked memory in long sessions — and by the server-side
+ * lib/resolveSmartWallet cache, where the same unbounded-Map leak applies
+ * to the long-lived Node process.
  */
 export class LRUCache<K, V> {
   private store = new Map<K, V>()
-  constructor(private readonly max: number) {}
+  // Assigned explicitly (not a constructor parameter property) so the module
+  // loads under Node's strip-only TypeScript mode — the verify scripts
+  // (scripts/verify-img-range.ts) import server modules that use this cache.
+  private readonly max: number
+  constructor(max: number) {
+    this.max = max
+  }
 
   get(key: K): V | undefined {
     const value = this.store.get(key)

@@ -4,7 +4,7 @@
  * server-side, with NO per-collect approval (that's the whole point of a Spend
  * Permission). Bounded by the on-chain allowance + the engine policy; revocable.
  *
- * Two implementations behind one seam (see AGENT_SCOUT_MODE_B_DESIGN.md):
+ * Two implementations behind one seam:
  *   - cdpSpender  — CANONICAL: a CDP Server Wallet smart account. Gasless via a
  *     CDP paymaster, atomic `sendUserOperation` (spend+approve+mint in one user
  *     op, so funds never rest in the spender), policy controls. Requires CDP creds.
@@ -95,7 +95,7 @@ export function ownKeySpender(privateKey: Hex): ScoutSpender {
  *
  * The @coinbase/cdp-sdk import is dynamic so the heavy SDK stays out of the
  * bundle graph until a CDP spender is actually resolved (mirrors grantBudget's
- * lazy @base-org import). Typechecked against the installed SDK (1.51.0); a live
+ * lazy @base-org import). Typechecked against the installed SDK (^1.51.0); a live
  * Base-mainnet smoke (real creds + one sponsored op) is the remaining gate.
  */
 export async function cdpSpender(): Promise<ScoutSpender> {

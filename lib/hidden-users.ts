@@ -25,7 +25,7 @@ import { ADMIN_ADDRESS } from './config'
  * Admin is exempt at both read and write so an accidental self-listing
  * can't hide admin's content from the admin's own views.
  *
- * Memoization mirrors lib/hiddenCollections — 60s TTL with own-pod
+ * Memoization mirrors lib/hiddenCollections — 15-min TTL with own-pod
  * invalidate() on every write so the next read after a hide/unhide
  * reflects the change immediately on the same pod.
  */
@@ -58,7 +58,7 @@ export async function listHiddenUsers(): Promise<string[]> {
 /**
  * Bulk lookup for filtering a feed. Single Redis call; returns a Set
  * of lowercase addresses for O(1) membership checks. Same pattern as
- * getHiddenCollectionsSet — 60s memoized, own-pod invalidates on every
+ * getHiddenCollectionsSet — 15-min memoized, own-pod invalidates on every
  * hide/unhide.
  */
 async function _getHiddenUsersSet(): Promise<Set<string>> {
@@ -71,4 +71,6 @@ async function _getHiddenUsersSet(): Promise<Set<string>> {
     return new Set()
   }
 }
-export const getHiddenUsersSet = memoize(_getHiddenUsersSet, 5 * 60_000)
+// 15-min memo: admin hide/unhide invalidate immediately, so the longer TTL
+// only trims redundant SMEMBERS of an unchanged set (single instance → free).
+export const getHiddenUsersSet = memoize(_getHiddenUsersSet, 15 * 60_000)

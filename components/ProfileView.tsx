@@ -14,6 +14,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import type { ProfileTheme } from '@/lib/profileTheme'
+import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import { CuratePanel } from './CuratePanel'
@@ -244,7 +245,14 @@ interface Profile {
   // Server-computed: collapses the username → farcaster → ens fallback
   // chain into a single field. See app/api/profile/[address]/route.ts.
   displayName?: string | null
-  earnings?: { eth: number; usdc: number; usd: number; mints: number } | null
+  earnings?: {
+    eth: number
+    usdc: number
+    usd: number
+    mints: number
+    primary?: EarningsAmounts
+    secondary?: EarningsAmounts
+  } | null
   updatedAt: number
 }
 

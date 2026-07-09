@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { getListing } from '@/lib/listings'
@@ -23,7 +23,7 @@ export const runtime = 'nodejs'
  * "filled" afterward stays on the existing /api/listings/[id] PATCH, which
  * re-decodes the Seaport OrderFulfilled event from the txHash (matched to the
  * listing's orderHash) and derives the buyer from it — so no buyer signature is
- * needed. See AGENT_COMMERCE_DESIGN.md.
+ * needed.
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-buy:${getClientIp(req)}`, 60, 60))) {
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
         args: [account as Address, SEAPORT_ADDRESS],
       })) as bigint
     } catch (err) {
-      return errorResponse(502, err instanceof Error ? err.message : 'Chain read failed — try again')
+      return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-buy')
     }
   }
 

@@ -15,12 +15,15 @@ import { errorResponse } from '@/lib/apiResponse'
  *     creator's smart wallet, check if it already has ADMIN, surface a
  *     one-click banner if not)
  *
- * Per inprocess docs (GET /api/smartwallet) the lookup is keyed off
- * `artist_wallet` and requires no API key — it's a public read. We
- * proxy through our server so we can normalize the response (multiple
- * historical shape variants — see lib/resolveSmartWallet.ts) and
- * cache via Next.js's fetch deduplication (1h; the address is per-EOA
- * and effectively immutable).
+ * This route's own `artist_wallet` query param is the client→server
+ * contract (used by useInprocessSmartWallet + the deploy handler). The
+ * UPSTREAM inprocess call (GET /api/smartwallet) is keyed off
+ * `walletAddress` per their OpenAPI spec — see lib/resolveSmartWallet.ts,
+ * which owns that param and the defensive response parsing. The upstream
+ * read requires no API key. We proxy through our server so we can
+ * normalize the response (multiple historical shape variants) and cache
+ * via Next.js's fetch deduplication (1h; the address is per-EOA and
+ * effectively immutable).
  *
  * Defensive parsing lives in lib/resolveSmartWallet.ts so the
  * server-side audit endpoint and this proxy can never drift on which

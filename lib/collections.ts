@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Address } from 'viem'
+import { encodeFunctionData, type Address, type PublicClient } from 'viem'
 import { OPEN_EDITION_MINT_SIZE, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
 
 // inprocess's Base Mainnet ZORA 1155 Contract Factory.
@@ -324,3 +324,60 @@ export const FACTORY_ABI = [
     type: 'event',
   },
 ] as const
+
+// SetupNewContract event, pulled off FACTORY_ABI for getLogs-based recovery.
+const SETUP_NEW_CONTRACT_EVENT = FACTORY_ABI.find(
+  (item) => item.type === 'event' && item.name === 'SetupNewContract',
+) as Extract<(typeof FACTORY_ABI)[number], { type: 'event'; name: 'SetupNewContract' }>
+
+// Lookback window for the recover-landed-deploy probe. Base mints a block
+// ~every 2s, so ~300 blocks ≈ 10 min — comfortably covers a slow-confirming
+// deploy whose wallet request expired AFTER it broadcast, while staying within
+// the eth_getLogs block-range caps non-paid RPCs enforce.
+const DEPLOY_LOOKBACK_BLOCKS = 300n
+
+export interface LandedDeploy {
+  address: Address
+  txHash: `0x${string}`
+}
+
+/**
+ * Probe the factory for a SetupNewContract that THIS deployer already landed
+ * for THIS exact contractURI. Recovers a create-collection deploy that
+ * broadcast but whose wallet request then surfaced "Request expired" / an RPC
+ * error (Base Account / EIP-5792 request TTLs can expire AFTER broadcast) —
+ * re-signing would duplicate the collection and re-spend gas. Matching on the
+ * (indexed) defaultAdmin AND the exact contractURI is a zero-false-positive
+ * dedup key: only THIS metadata, deployed by THIS wallet, matches. Returns the
+ * landed collection + its tx hash to adopt, or null when none landed (safe to
+ * deploy fresh). Never throws — a probe failure resolves to null so the caller
+ * just falls back to a normal retry.
+ */
+export async function findLandedDeploy(
+  client: PublicClient,
+  deployer: Address,
+  contractURI: string,
+  lookbackBlocks: bigint = DEPLOY_LOOKBACK_BLOCKS,
+): Promise<LandedDeploy | null> {
+  try {
+    const head = await client.getBlockNumber()
+    const fromBlock = head > lookbackBlocks ? head - lookbackBlocks : 0n
+    const logs = await client.getLogs({
+      address: FACTORY_ADDRESS,
+      event: SETUP_NEW_CONTRACT_EVENT,
+      args: { defaultAdmin: deployer },
+      fromBlock,
+      toBlock: 'latest',
+    })
+    // Newest first: adopt the most recent matching deploy.
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const l = logs[i]
+      if (l.args.contractURI === contractURI && l.args.newContract && l.transactionHash) {
+        return { address: l.args.newContract, txHash: l.transactionHash }
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}

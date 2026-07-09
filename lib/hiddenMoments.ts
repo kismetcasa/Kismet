@@ -43,11 +43,14 @@ export async function unhideMoment(
 /**
  * Bulk lookup for filtering a feed of moments. Single Redis call; returns
  * a Set keyed on `<lowercaseAddr>:<tokenId>` for O(1) membership checks.
- * Memoized 5 min; the underlying set changes only on hide/unhide writes,
+ * Memoized 15 min; the underlying set changes only on hide/unhide writes,
  * which invalidate own-pod immediately.
  */
 async function _getHiddenMomentsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
-export const getHiddenMomentsSet = memoize(_getHiddenMomentsSet, 5 * 60_000)
+// 15-min memo: every hide/unhide calls .invalidate() so own-pod reads are
+// already fresh; the TTL only bounds redundant SMEMBERS of an unchanged set
+// (single instance → no cross-pod staleness, so this is a free command saving).
+export const getHiddenMomentsSet = memoize(_getHiddenMomentsSet, 15 * 60_000)

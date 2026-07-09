@@ -5,7 +5,7 @@
  * and/or EIP-712 typed data — that an AI assistant hands to Base MCP
  * (`send_calls` / `sign`) for the user to approve in their Base Account. The
  * artifacts move no funds until the user signs them, so the prepare endpoints
- * are safe to expose without auth. See AGENT_COMMERCE_DESIGN.md.
+ * are safe to expose without auth.
  */
 
 export type AgentChain = 'base'

@@ -34,6 +34,19 @@ export const redis = new Redis({
   // unchanged; explicit `multi()`/`eval` (rate limit, graph writes) are atomic
   // and unaffected.
   enableAutoPipelining: true,
+  // Cap retries at 2 (SDK default is 5). The default's exponential backoff
+  // (~exp(n)·50ms) stacks toward multiple seconds per failed command, and the
+  // hot paths (ratelimit/session/quota) have no per-call timeout — so an
+  // Upstash blip turned into a site-wide latency BROWNOUT on the single box.
+  // Two jittered retries bound the worst case to a few hundred ms; jitter
+  // prevents synchronized retry storms across concurrent requests. This also
+  // REDUCES the blind-retry double-count exposure on non-idempotent INCR/EVAL
+  // that lib/redisRead.ts warns about (fewer retries = fewer duplicate writes),
+  // and double-counting here only ever over-counts spend/rate (fail-safe).
+  retry: {
+    retries: 2,
+    backoff: (n) => 2 ** n * 50 + Math.floor(Math.random() * 50),
+  },
 })
 
 export const FEATURED_KEY = 'kismetart:featured'
@@ -46,6 +59,42 @@ export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 // set first (see /api/featured POST).
 export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'
+// Latest-sales feed: member = "collection:tokenId", score = timestamp (ms) of
+// the most recent verified collect. Written alongside TRENDING_KEY's zincrby
+// in /api/collect (zadd overwrites — last collect wins) with the same 10k
+// write-side rank trim, so the two feed zsets stay cost-identical.
+export const TRENDING_LATEST_KEY = 'kismetart:trending-latest'
+// Ending-soon feed: member = "collection:tokenId", score = on-chain saleEnd
+// (unix seconds). Populated write-through by /api/moments — the batch
+// sale-config endpoint every feed card already hits for its price badge — so
+// it self-backfills as users browse, with zero new upstream fan-out. Reads
+// take only future ends (ZRANGE BYSCORE now→+inf); see lib/saleEnds.ts.
+export const SALE_ENDS_KEY = 'kismetart:sale-ends'
+
+/**
+ * Build a member → score Map from a `zrange(..., { withScores: true })` reply
+ * (a flat alternating [member, score, member, score, …] array). Map insertion
+ * order preserves the zrange order, so callers can also rely on iteration
+ * order (e.g. ascending BYSCORE reads). One place encodes the flat-pair shape
+ * instead of a hand-rolled loop per read site.
+ */
+export function zpairsToMap(raw: (string | number)[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    map.set(String(raw[i]), Number(raw[i + 1]))
+  }
+  return map
+}
+
+// Ceiling for the featured zsets — trimmed on every write (mirroring the
+// TRENDING 10k cap in /api/collect) and used to bound every read. Featuring is
+// a manual curator action so growth is slow, but these keys were the only
+// zsets with neither a write trim nor a bounded read: each unbounded
+// `zrange(0, -1)` grows toward Upstash's 10MB per-request cap and an O(N)
+// read forever. Far above anything the UI shows, so the cap never bites a
+// legitimate curation.
+export const MAX_FEATURED = 1000
+
 // Per-moment raffle enablement. A zset of `<addr>:<tokenId>` members (score =
 // enabledAt) marking which mints have a raffle (active or ended). The moment's
 // creator/admin toggles it per moment via the signed /api/raffle/manage route;

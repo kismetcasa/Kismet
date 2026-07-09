@@ -41,11 +41,13 @@ export async function unhideCollection(address: string): Promise<void> {
 
 /**
  * Bulk lookup for filtering a collections feed. Single Redis call; returns
- * a Set of lowercase addresses for O(1) membership checks. Memoized 5 min;
+ * a Set of lowercase addresses for O(1) membership checks. Memoized 15 min;
  * the set changes only on hide/unhide writes which invalidate own-pod.
  */
 async function _getHiddenCollectionsSet(): Promise<Set<string>> {
   const members = (await redis.smembers(HIDDEN_KEY)) as string[]
   return new Set(members.map((m) => m.toLowerCase()))
 }
-export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 5 * 60_000)
+// 15-min memo: hide/unhide invalidate immediately, so the longer TTL only
+// trims redundant SMEMBERS of an unchanged set (single instance → free).
+export const getHiddenCollectionsSet = memoize(_getHiddenCollectionsSet, 15 * 60_000)

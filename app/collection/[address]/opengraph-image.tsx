@@ -35,7 +35,7 @@ async function fetchCollection(address: string): Promise<CollectionRow | null> {
     // 24h cache — see opengraph-image.tsx in moment route for rationale.
     // Collection metadata is similarly long-lived; the extra freshness of
     // a 5min TTL isn't worth the inprocess fetch traffic.
-    const res = await fetch(url, { next: { revalidate: 86400 } })
+    const res = await fetch(url, { next: { revalidate: 86400 }, signal: AbortSignal.timeout(8_000) })
     if (!res.ok) return null
     return (await res.json()) as CollectionRow
   } catch {

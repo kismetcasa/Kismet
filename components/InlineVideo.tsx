@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { videoGatewayUrls, isWebKitOnly } from '@/lib/media/gateway'
 import { isMobileDevice } from '@/lib/deviceUA'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 import { getVideoDuration } from '@/lib/media/durationCache'
 import { acquireCommitted, committedActive } from '@/lib/media/videoFocus'
 import { registerFeedVideo, type FeedVideoSlot } from '@/lib/media/feedPlayback'
@@ -80,9 +81,11 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   // preload on its own, so a poster-less detail video shows a black box until
   // playback starts. Gated to iOS (mobile × WebKit): Chromium and desktop Safari
   // preload fine, and the forced seek can stall a non-faststart file there, so
-  // they skip it. The engine×device split for the detail seek.
+  // they skip it. The engine×device split for the detail seek. The RN WebView
+  // (mobile Mini App host) IS iOS WebKit underneath but its custom UA can miss
+  // both tokens — include it explicitly.
   const seekToFirstFrame = useMemo(
-    () => controls && isMobileDevice() && isWebKitOnly(),
+    () => controls && (isReactNativeWebView() || (isMobileDevice() && isWebKitOnly())),
     [controls],
   )
 
@@ -90,11 +93,67 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   // manual mute via the native controls isn't overridden on a later event.
   const unmuteTriedRef = useRef(false)
 
+  // Resume seeks CLAMP on length-less progressive streams (arweave's direct
+  // sandbox responses carry no Content-Length and ignore ranges): at
+  // loadedmetadata the seekable range only covers what's buffered, so a
+  // one-shot `currentTime = saved` lands near 0 and the video appears to
+  // restart from the beginning. (It "works" when the file is already in the
+  // browser HTTP cache — fully buffered ⇒ fully seekable — which is why the
+  // symptom comes and goes with cache warmth.) Keep the target and re-apply
+  // as buffering extends `seekable` (progress/canplay/timeupdate) until it
+  // lands, playback reaches it naturally, or the viewer is clearly watching
+  // from elsewhere. Engages ONLY when the initial seek clamped — warm-cache
+  // and range-capable (proxy) sources land on the first attempt as before.
+  const pendingResumeRef = useRef<number | null>(null)
+  const resumeAttemptsRef = useRef(0)
+  const MAX_RESUME_ATTEMPTS = 20
+
+  function attemptResume(el: HTMLVideoElement, target: number) {
+    try {
+      el.currentTime = target
+    } catch {
+      /* not seekable yet — the retry path below picks it up */
+    }
+    pendingResumeRef.current = Math.abs(el.currentTime - target) > 1 ? target : null
+  }
+
+  function retryPendingResume() {
+    const el = ref.current
+    const target = pendingResumeRef.current
+    if (!el || target == null) return
+    // Reached (or passed) the target — either a retry landed or the viewer
+    // watched/seeked their way there. Done.
+    if (el.currentTime >= target - 1) {
+      pendingResumeRef.current = null
+      return
+    }
+    // The viewer is clearly watching from an earlier position on purpose
+    // (several seconds in, still far from the target): stop fighting them.
+    if (el.currentTime > 5) {
+      pendingResumeRef.current = null
+      return
+    }
+    if (resumeAttemptsRef.current >= MAX_RESUME_ATTEMPTS) {
+      pendingResumeRef.current = null
+      return
+    }
+    const s = el.seekable
+    for (let i = 0; i < s.length; i++) {
+      if (s.start(i) <= target && target <= s.end(i)) {
+        resumeAttemptsRef.current += 1
+        attemptResume(el, target)
+        return
+      }
+    }
+  }
+
   // Reset the gateway walk + fade when the src changes.
   useEffect(() => {
     setGatewayIndex(0)
     setLoaded(false)
     unmuteTriedRef.current = false
+    pendingResumeRef.current = null
+    resumeAttemptsRef.current = 0
   }, [src])
 
   // Feed playback is governed centrally by lib/media/feedPlayback: one
@@ -260,22 +319,39 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
   function handleLoadedMetadata() {
     const el = ref.current
     if (!el) return
+    // FEED cards only: no video track (an audio file, or a non-video asset
+    // reaching the ambiguous-animation fallback in resolveMomentMedia) would
+    // fade in as a silent black box over the poster — muted, it presents
+    // nothing. Dimensions are known by loadedmetadata, and no other gateway
+    // will serve different bytes for a content-addressed URI — skip the walk
+    // and fail straight to the parent's poster fallback. Committed (detail)
+    // playback is exempt: there the native controls make an audio-only
+    // "video" (a mislabeled video/mp4 music file) fully usable, and killing
+    // it would strand the owner with an unplayable moment.
+    if (!controls && el.videoWidth === 0) {
+      onErrorRef.current?.()
+      return
+    }
     const saved = currentTimeMemory.get(src)
+    // Resume guard: skip only when we KNOW the position is at/past the end.
+    // duration can be Infinity/NaN at loadedmetadata when the source is a
+    // chunked, length-less stream (arweave's sandbox hosts serve exactly
+    // that on the direct path) — requiring a finite duration silently
+    // disabled resume for those, so the detail restarted from 0 instead of
+    // continuing where the feed card left off. Seek best-effort instead:
+    // the browser clamps to the seekable range, and the try/catch keeps a
+    // not-yet-seekable element from throwing.
     if (
       saved !== undefined &&
       saved > 0 &&
-      Number.isFinite(el.duration) &&
-      saved < el.duration - 0.5
+      !(Number.isFinite(el.duration) && saved >= el.duration - 0.5)
     ) {
-      try {
-        el.currentTime = saved
-      } catch {
-        /* seek can throw before the element is seekable; ignore */
-      }
+      attemptResume(el, saved)
     }
   }
 
   function handleTimeUpdate() {
+    retryPendingResume()
     const el = ref.current
     if (el && Number.isFinite(el.currentTime) && el.currentTime > 0) {
       currentTimeMemory.set(src, el.currentTime)
@@ -300,7 +376,15 @@ export function InlineVideo({ src, controls = false, className, onError }: Inlin
       onError={handleError}
       onLoadedMetadata={handleLoadedMetadata}
       onLoadedData={() => setLoaded(true)}
-      onCanPlay={tryPlay}
+      // Retry the deferred resume BEFORE starting playback so the video
+      // begins at the restored position when the seek is already possible.
+      onCanPlay={() => {
+        retryPendingResume()
+        tryPlay()
+      }}
+      // progress fires while buffering even when paused (autoplay-blocked
+      // detail) — the retry path for a not-yet-playing element.
+      onProgress={retryPendingResume}
       onTimeUpdate={handleTimeUpdate}
     />
   )

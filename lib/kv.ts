@@ -8,10 +8,15 @@ import { memoize } from './memoCache'
 // In-memory TTL for the hot collection-set getters below. These read
 // SMEMBERS on every request from a wide range of routes (timeline,
 // search, featured, collections feed) but the underlying sets change
-// rarely — a new collection deploy is once-a-day at most. 5 min is short
-// enough to be invisible to users (cross-pod, worst case) and the
-// per-write invalidators below make own-pod consistency immediate.
-const SET_CACHE_TTL_MS = 5 * 60_000
+// rarely — a new collection deploy is once-a-day at most. Every write path
+// calls the matching .invalidate() below, so own-pod consistency is
+// IMMEDIATE regardless of this TTL; the TTL only governs how often an
+// UNCHANGED set is re-read from Upstash. On the current single instance
+// that makes a longer window a pure command-cost saving with no staleness
+// (there is no other pod to be stale against). 15 min trims the steady-state
+// SMEMBERS rate 3× vs the old 5 min. (If this ever runs multi-pod, this is
+// also the worst-case cross-pod staleness window — revisit then.)
+const SET_CACHE_TTL_MS = 15 * 60_000
 
 // Per-collection set of "authorized creators": addresses an admin
 // granted ADMIN to via the post-deploy panel. Stored as JSON-encoded
@@ -49,6 +54,12 @@ export interface CollectionMeta {
   // mint card). Not used by /collection/[address] — the full
   // collection page is the moment's actual home, so it stays there.
   coverTokenId?: string
+  // Deploy-time creation timestamp (ms epoch), stamped by
+  // addTrackedCollection. The collection page reads this as a fallback for
+  // the "created <date>" chip when inprocess's /collection endpoint doesn't
+  // return `created_at`, so the chip survives indexer gaps. Preserved across
+  // metadata edits in updateCollectionMeta.
+  createdAt?: number
 }
 
 export type CollectionSource = 'create-form' | 'auto-deploy'
@@ -94,8 +105,8 @@ export const getUserCollections = memoize(_getUserCollections, SET_CACHE_TTL_MS)
 // Note: NO try/catch wrapping the SMEMBERS. The earlier `catch { return new Set() }`
 // silently turned every Redis failure into "no created mints", which the
 // timeline's scope=standalone filter then read as "filter everything out" —
-// blanking the mints/trending feeds for a full 60s after recovery (memoize
-// cached the empty result as a successful read). Letting the throw propagate
+// blanking the mints/trending feeds for a full cache-TTL window after recovery
+// (memoize cached the empty result as a successful read). Letting the throw propagate
 // means memoize won't cache the failure, the next call retries, and the
 // caller in app/api/timeline/route.ts handles the throw by skipping the
 // filter for THIS request (showing unfiltered moments — safer degradation
@@ -111,7 +122,7 @@ export async function markCreatedMint(address: string, tokenId: string): Promise
     await redis.sadd(CREATED_MINTS_KEY, `${address.toLowerCase()}:${tokenId}`)
     // Own-pod consistency: a creator who just minted should see their
     // moment on the next Mints-feed read from the same pod immediately,
-    // not 60s later. Other pods will catch up on their own TTL expiry.
+    // not after the cache-TTL window. Other pods catch up on their own TTL expiry.
     getCreatedMintsSet.invalidate()
   } catch (err) {
     console.error('[kv] markCreatedMint failed', { address, tokenId, err })
@@ -131,7 +142,17 @@ export async function addTrackedCollection(
       ops.push(redis.sadd(CREATED_COLLECTIONS_KEY, address))
     }
     if (meta?.name) {
-      const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
+      // Stamp a creation timestamp so the collection page can show
+      // "created <date>" even before — or without — inprocess indexing the
+      // contract's created_at. Preserve any existing stamp so re-registering
+      // the same collection never resets its original creation date.
+      const existing = await getCollectionMeta(address)
+      const createdAt = existing?.createdAt ?? meta.createdAt ?? Date.now()
+      const data: CollectionMeta = {
+        ...meta,
+        address: address.toLowerCase(),
+        createdAt,
+      }
       ops.push(redis.set(keyCollectionMeta(address), JSON.stringify(data)))
     }
     await Promise.all(ops)
@@ -163,8 +184,47 @@ export async function updateCollectionMeta(
   address: string,
   meta: Omit<CollectionMeta, 'address'>,
 ): Promise<void> {
-  const data: CollectionMeta = { ...meta, address: address.toLowerCase() }
+  // Preserve the immutable deploy-time creation timestamp across metadata
+  // edits — the edit form never sends one, so without this an edit would wipe
+  // the "created <date>" the collection page reads back from KV.
+  const existing = await getCollectionMeta(address)
+  const createdAt = meta.createdAt ?? existing?.createdAt
+  const data: CollectionMeta = {
+    ...meta,
+    address: address.toLowerCase(),
+    ...(createdAt ? { createdAt } : {}),
+  }
   await redis.set(keyCollectionMeta(address), JSON.stringify(data))
+}
+
+/**
+ * Backfill a creation timestamp onto an EXISTING tracked collection's meta
+ * record, preserving every other field and never touching set membership.
+ * For collections deployed before the deploy-time stamp shipped, whose
+ * `created_at` the collection page can no longer source from inprocess's
+ * (removed) singular endpoint.
+ *
+ * Returns:
+ *  - 'set'        wrote the timestamp
+ *  - 'skipped'    a stamp already exists and force was not set (idempotent)
+ *  - 'no-record'  no KV meta to merge into — we don't synthesize a partial
+ *                 record here, so the caller can report it instead
+ */
+export async function setCollectionCreatedAt(
+  address: string,
+  createdAt: number,
+  force = false,
+): Promise<'set' | 'skipped' | 'no-record'> {
+  const existing = await getCollectionMeta(address)
+  if (!existing) return 'no-record'
+  if (existing.createdAt && !force) return 'skipped'
+  const data: CollectionMeta = {
+    ...existing,
+    address: address.toLowerCase(),
+    createdAt,
+  }
+  await redis.set(keyCollectionMeta(address), JSON.stringify(data))
+  return 'set'
 }
 
 // Inprocess-indexer-lag fallback for the collection page.
@@ -236,6 +296,7 @@ async function fetchInprocessCollectionImage(address: string): Promise<string | 
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       next: { revalidate: 300 },
+      signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return undefined
     const text = await res.text()

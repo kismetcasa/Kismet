@@ -15,7 +15,12 @@
 # Resolve dependencies in isolation so a source-only change reuses this
 # layer. We need `scripts/` present here because package.json's
 # postinstall hook (copy-ffmpeg-core.mjs) runs as part of `npm ci`.
-FROM node:22-alpine AS deps
+# Minor-pinned base (not bare `node:22-alpine`): Node's DEFAULT V8 heap sizing
+# is undocumented and has CHANGED across 22.x releases (measured: ~2 GB default
+# on the build that OOM'd prod at ~2030 MB; ~8 GB default on node 22.22 on a
+# 15.7 GB host). An unpinned tag lets runtime memory behavior drift between
+# rebuilds. Keep all three stages on the same pin.
+FROM node:22.22-alpine AS deps
 WORKDIR /app
 
 # Build toolchain for native modules. `bufferutil` (transitive via ws →
@@ -32,7 +37,7 @@ RUN npm ci --no-audit --no-fund
 # ─── builder stage ───────────────────────────────────────────────────
 # Bring in deps, overlay source, re-run the postinstall (deps stage's
 # public/ffmpeg-core/ is dropped by the source COPY above), then build.
-FROM node:22-alpine AS builder
+FROM node:22.22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -44,17 +49,23 @@ COPY . .
 RUN node scripts/copy-ffmpeg-core.mjs
 
 ENV NEXT_TELEMETRY_DISABLED=1
-# Headroom for the type-checker and compilation passes — sharp's
-# extensive type definitions plus next build's bundler push memory
-# usage well above the default ~2 GB Node heap on a typical
-# resource-constrained Coolify host.
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+# Bound the V8 heap so `next build` stays under the Coolify host's
+# available RAM and isn't reaped by the kernel OOM-killer mid-compile.
+# That failure mode is an abrupt SIGKILL with NO V8 "heap out of memory"
+# message — `next build` dies right at "Creating an optimized production
+# build" and the deploy reports a bare non-zero exit (see the 2026 deploy
+# post-mortem). Type-check/lint are already disabled in next.config, so
+# this heap covers webpack/SWC compilation only. Measured cold-build peak
+# node RSS: ~4.1 GB at 4096, ~3.5 GB at 3072 — both build cleanly, so 3072
+# buys ~640 MB of headroom for the out-of-heap SWC Rust workers + the OS
+# on a constrained host. If it still OOMs, the host needs more RAM/swap.
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN npm run build
 
 # ─── runtime stage ───────────────────────────────────────────────────
 # Final image. Only the standalone bundle + static + public assets +
 # the cache dir Coolify mounts a volume onto.
-FROM node:22-alpine AS runner
+FROM node:22.22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -63,6 +74,31 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # port mapper. PORT is overridable at deploy time by Coolify.
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
+
+# ─── Runtime V8 heap cap (keep this flag — never rely on defaults) ────
+# Production was crashing every ~45 min with `FATAL ERROR: ... JavaScript heap
+# out of memory` at ~2030 MB — a V8 HEAP OOM (not a kernel/cgroup OOM, so
+# Docker's OOMKilled stayed false and `dmesg` was clean, which masked it). That
+# build's Node sized the default old-space at ~2 GB on the 11 GB host (no
+# cgroup limit set).
+#
+# The default heap is UNDOCUMENTED and version-dependent — measured ~2 GB on
+# the build that crashed vs ~8 GB default on node 22.22 (15.7 GB host) — so the
+# explicit flag is the only version-stable behavior; hence the pinned base
+# image above. 4096 MB leaves headroom under an 11 GB host even alongside a
+# concurrent `next build` (~3.5 GB). A Coolify runtime NODE_OPTIONS env var
+# overrides this ENV without a rebuild.
+#
+# Setting a Coolify container --memory limit is ALSO recommended (host
+# protection + OOMKilled=true observability) but it is NOT a substitute for
+# this flag: auto-derived heaps vary by Node version (~50%-of-limit heuristics,
+# historical 2 GB caps) and can come out LOWER than 4096, reintroducing the
+# crash. Size flag ≈ ⅔–¾ of the container limit (4096 with a 6 GB limit) so
+# off-heap allocations (undici, sharp, ffmpeg, /api/img) fit underneath. The
+# growth drivers are bounded in code (timeline MERGE_BUDGET, bounded /api/img
+# reads, patched next clone-response — scripts/patch-next-clone-response.mjs);
+# this cap is the backstop, those bounds stop the climb.
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # ffmpeg powers the server-side GIF→MP4 transcode (/api/transcode-gif),
 # the no-wasm-cap fallback for GIFs too large for the in-browser path.

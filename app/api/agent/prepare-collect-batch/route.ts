@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
@@ -24,7 +24,7 @@ const MAX_BATCH = 20
  * Propose mode. Read-only and inert. Resolves each item's live sale (currency +
  * price + eligibility) on-chain so it never builds a mint that would revert,
  * then returns a single EIP-5792 batch plus one /api/collect record per item
- * (all keyed to the shared txHash). See AGENT_COMMERCE_DESIGN.md.
+ * (all keyed to the shared txHash).
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-collect-batch:${getClientIp(req)}`, 30, 60))) {
@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
       items.push({ collection: ref.collection, tokenId: ref.tokenId, quantity: 1n, currency, pricePerToken, mintFee, comment })
     }
   } catch (err) {
-    return errorResponse(502, err instanceof Error ? err.message : 'Chain read failed — try again')
+    return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-collect-batch')
   }
 
   if (items.length === 0) {
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         args: [account as Address, ZORA_ERC20_MINTER],
       })) as bigint
     } catch (err) {
-      return errorResponse(502, err instanceof Error ? err.message : 'Chain read failed — try again')
+      return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-collect-batch')
     }
   }
 

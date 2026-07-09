@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { gatewayUrls } from '@/lib/arweave/gateways'
+import { isWebKitOnlyUaString } from '@/lib/deviceUA'
+import { isReactNativeWebView } from '@/lib/miniAppEnv'
 
 /**
  * Walk the AR.IO / IPFS gateway pool for `uri` on render error. Resets when
@@ -28,8 +30,16 @@ export function isProxiable(uri: string): boolean {
   return uri.startsWith('ar://') || uri.startsWith('ipfs://')
 }
 
-export function proxyUrl(uri: string): string {
-  return `/api/img?u=${encodeURIComponent(uri)}`
+/**
+ * URL for the `/api/img` proxy. Pass `width` to request a server-side downscale
+ * — the NextImage optimizer→proxy fallback uses this so a source too large for
+ * next/image (it 413s) still degrades to a small image instead of streaming the
+ * full-res original. Omit it (video, the lightbox, posters, the detail prefetch)
+ * to stream the bytes untouched.
+ */
+export function proxyUrl(uri: string, width?: number): string {
+  const w = width && width > 0 ? `&w=${Math.round(width)}` : ''
+  return `/api/img?u=${encodeURIComponent(uri)}${w}`
 }
 
 /**
@@ -51,7 +61,10 @@ export function proxyUrl(uri: string): string {
  */
 export function videoGatewayUrls(uri: string): string[] {
   const direct = gatewayUrls(uri)
-  if (isProxiable(uri) && (isInIframe() || isWebKitOnly())) {
+  // RN WebView (the mobile Mini App host) shares the constrained-pool
+  // failure mode with iframes and its UA may carry neither WebKit nor
+  // mobile tokens — include it explicitly so its video rides the proxy.
+  if (isProxiable(uri) && (isInIframe() || isWebKitOnly() || isReactNativeWebView())) {
     return [proxyUrl(uri), ...direct]
   }
   return direct
@@ -80,8 +93,10 @@ export function videoGatewayUrls(uri: string): string[] {
  */
 export function isWebKitOnly(): boolean {
   if (typeof navigator === 'undefined') return false
-  const ua = navigator.userAgent
-  return ua.includes('AppleWebKit') && !ua.includes('Chrome') && !ua.includes('Chromium')
+  // Shared with the server's isWebKitOnlyUA (lib/serverDevice) via
+  // lib/deviceUA so SSR predictions (video preload target) and this runtime
+  // decision can never disagree.
+  return isWebKitOnlyUaString(navigator.userAgent)
 }
 
 /**

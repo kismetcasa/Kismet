@@ -38,13 +38,22 @@ export async function GET(req: NextRequest) {
     offset: offset !== '0' ? offset : undefined,
   })
 
-  const [res, hiddenUsers] = await Promise.all([
-    fetch(url, {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 30 },
-    }),
-    getHiddenUsersSet(),
-  ])
+  // try/caught so an upstream timeout (the 8s signal) or network failure
+  // degrades to the route's 502 shape instead of an unhandled rejection.
+  let res: Response
+  let hiddenUsers: Set<string>
+  try {
+    ;[res, hiddenUsers] = await Promise.all([
+      fetch(url, {
+        headers: { Accept: 'application/json' },
+        next: { revalidate: 30 },
+        signal: AbortSignal.timeout(8_000),
+      }),
+      getHiddenUsersSet(),
+    ])
+  } catch {
+    return errorResponse(502, 'upstream unreachable')
+  }
 
   const text = await res.text()
   let data: unknown

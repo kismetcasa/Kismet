@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
@@ -28,7 +28,6 @@ const MAX_AGENT_COLLECT_QUANTITY = 50
  * a mint that would revert (inactive sale, sold out, or per-wallet cap hit).
  *
  * Settlement recording stays on the existing, on-chain-verified /api/collect.
- * See AGENT_COMMERCE_DESIGN.md.
  */
 export async function POST(req: NextRequest) {
   if (!(await checkRateLimit(`agent-prepare-collect:${getClientIp(req)}`, 60, 60))) {
@@ -107,7 +106,7 @@ export async function POST(req: NextRequest) {
       })) as bigint
     }
   } catch (err) {
-    return errorResponse(502, err instanceof Error ? err.message : 'Chain read failed — try again')
+    return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-collect')
   }
 
   const plan = buildCollectPlan({

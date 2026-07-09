@@ -7,15 +7,27 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
+import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { transcodeGifToMp4Node } from '@/lib/media/transcodeGifNode'
 
 export const runtime = 'nodejs'
 // Encoding a large GIF takes longer than the default function budget.
 export const maxDuration = 300
 
-// Hard cap on the source GIF. Way past the client's 100MB ffmpeg.wasm
-// limit (this route exists precisely for the GIFs that exceed it) but
-// bounded so a single request can't pull an unbounded blob onto the box.
+// Hard cap on the source GIF. Way past the client's 100MB ffmpeg.wasm limit
+// (this route exists precisely for the GIFs that exceed it) but bounded so a
+// single request can't pull an unbounded blob onto the box.
+//
+// Memory note: the whole GIF is buffered into one Node Buffer
+// (Buffer.from(arrayBuffer)) alongside the ffmpeg working set + sharp decode +
+// the output buffers, so a near-max transcode is an off-heap RSS spike. The
+// cap stays at 300MB (lowering it would narrow this route's whole purpose —
+// the large GIFs the in-browser path can't take); two controls keep that spike
+// from OOM-killing the single box: (1) MAX_CONCURRENT=1 below serializes
+// transcodes so only ONE buffer is ever live, and (2) the Coolify container
+// memory limit + swap (AVAILABILITY_RUNBOOK.md) bounds total RSS. The proper
+// follow-up that would let the cap rise safely is streaming source→tempfile→
+// ffmpeg→output so the GIF is never fully buffered. (OWASP API4:2023.)
 const MAX_GIF_BYTES = 300 * 1024 * 1024
 
 // One transcode at a time per process. ffmpeg is CPU- and memory-heavy;
@@ -34,10 +46,17 @@ function getTurbo() {
 
 async function fetchGif(gifUri: string): Promise<Buffer> {
   const urls = gatewayUrls(gifUri)
+  // ONE overall budget across all gateway attempts — generous because this
+  // pulls up to MAX_GIF_BYTES of media, but shared, so N stalled gateways
+  // can't hold the single transcode slot (MAX_CONCURRENT=1) for N×120s and
+  // starve every queued request behind it.
+  const deadline = Date.now() + 120_000
   let lastErr: unknown
   for (const url of urls) {
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) break
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { signal: AbortSignal.timeout(remainingMs) })
       if (!res.ok) {
         lastErr = new Error(`${res.status} ${url}`)
         continue
@@ -89,6 +108,23 @@ export async function POST(req: NextRequest) {
   if (!gifUri || (!gifUri.startsWith('ar://') && !gifUri.startsWith('ipfs://') && !gifUri.startsWith('https://'))) {
     return errorResponse(400, 'gifUri must be ar://, ipfs://, or https://')
   }
+  // SSRF: ar:// and ipfs:// resolve to the fixed gateway pool (gatewayUrls),
+  // but a raw https:// is fetched verbatim — gate it through the same
+  // public-only guard every other server-fetch sink uses (blocks localhost,
+  // IP literals, cloud-metadata). The app only ever passes ar:// here, so
+  // this closes the hole with no functional change to real usage.
+  if (gifUri.startsWith('https://') && !isSafePublicHttpsUrl(gifUri)) {
+    return errorResponse(400, 'gifUri must be a public https URL')
+  }
+
+  // Bound per-identity transcode COUNT before any expensive work. fetchGif
+  // (up to MAX_GIF_BYTES) + the ffmpeg encode run through the single
+  // MAX_CONCURRENT slot, so the IP rate limit alone (trivially rotated) lets
+  // one authed user monopolize it. Debited up front; the upload-bytes debit
+  // below still meters the stored Arweave bytes after the encode.
+  if (!(await consumeUserQuota('transcode', address, 1))) {
+    return errorResponse(429, 'Daily transcode limit reached — try again tomorrow')
+  }
 
   if (active >= MAX_CONCURRENT) {
     return errorResponse(503, 'Transcoder busy — try again shortly')
@@ -123,9 +159,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ animationUri, posterUri, thumbhash })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Transcode failed'
-    console.error(`[transcode-gif] ${message} | gifUri: ${gifUri}`)
-    return errorResponse(500, message)
+    // Log detail server-side; return a GENERIC message so the response can't
+    // be used as a status/URL oracle to probe gateways or internal hosts.
+    console.error(`[transcode-gif] ${err instanceof Error ? err.message : String(err)} | gifUri: ${gifUri}`)
+    return errorResponse(500, 'Transcode failed')
   } finally {
     active--
   }

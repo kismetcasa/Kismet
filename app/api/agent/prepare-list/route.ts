@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress } from '@/lib/address'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, ERC1155_ABI, EIP2981_ABI } from '@/lib/seaport'
@@ -18,7 +18,7 @@ export const runtime = 'nodejs'
  * Read-only and inert: returns the EIP-712 typed data to sign, an optional
  * one-time setApprovalForAll batch, and the /api/listings POST body. No funds
  * move; the listing is created only after the user signs and the order is
- * posted (where it is independently re-validated). See AGENT_COMMERCE_DESIGN.md.
+ * posted (where it is independently re-validated).
  *
  * Inputs: a moment ref ({ collection, tokenId } or a pasted url), the seller's
  * Base Account, a human `price`, and `currency` ('eth' | 'usdc').
@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
     isApprovedForAll = approved as boolean
     counter = ctr as bigint
   } catch (err) {
-    return errorResponse(502, err instanceof Error ? err.message : 'Chain read failed — try again')
+    return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-list')
   }
   if (balance <= 0n) {
     return errorResponse(403, "You don't hold this token, so you can't list it")

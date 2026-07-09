@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 /**
  * Sink for client-side diagnostic reports (see lib/clientError.ts). The app
@@ -14,6 +15,12 @@ export const dynamic = 'force-dynamic'
 const MAX_BODY_BYTES = 16 * 1024
 
 export async function POST(req: NextRequest) {
+  // Rate-limit the anonymous sink so it can't be used to flood server logs
+  // (storage/observability cost). Over-limit reports are dropped with the same
+  // 204 the route always returns — logging must never become an error path.
+  if (!(await checkRateLimit(`client-error:${getClientIp(req)}`, 30, 60))) {
+    return new NextResponse(null, { status: 204 })
+  }
   try {
     const text = await req.text()
     if (text.length > MAX_BODY_BYTES) {

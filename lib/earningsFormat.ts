@@ -1,15 +1,25 @@
 // Pure earnings helpers — NO server imports, so client components (the profile
 // toggle) can use them without dragging redis / rpc into the browser bundle.
-// lib/stats.ts re-exports EarningsMetric for server callers.
+// The shared EarningsMetric / EarningsAmounts types live here too, so server
+// reads (lib/stats.ts) and client components share one definition.
 
 export type EarningsMetric = 'eth' | 'usdc' | 'usd'
+
+// An earnings figure as amounts per denomination — what every formatter here
+// consumes, the shape of ArtistEarnings' primary/secondary breakdowns
+// (lib/stats.ts), and the profile card's state.
+export interface EarningsAmounts {
+  eth: number
+  usdc: number
+  usd: number
+}
 
 // Display precision per denomination — the SINGLE source for both the rendered
 // string and the "is this non-zero at display precision?" test, so the two can't
 // drift (a figure that renders as "$0.01" must also pass rendersNonZero).
 const FRACTION_DIGITS: Record<EarningsMetric, number> = { eth: 4, usdc: 2, usd: 2 }
 
-const valueFor = (denom: EarningsMetric, e: { eth: number; usdc: number; usd: number }) =>
+const valueFor = (denom: EarningsMetric, e: EarningsAmounts) =>
   denom === 'eth' ? e.eth : denom === 'usdc' ? e.usdc : e.usd
 
 const trimNum = (n: number, max: number) =>
@@ -23,7 +33,7 @@ const trimNum = (n: number, max: number) =>
  */
 export function formatEarningsValue(
   denom: EarningsMetric,
-  e: { eth: number; usdc: number; usd: number },
+  e: EarningsAmounts,
 ): string {
   const v = trimNum(valueFor(denom, e), FRACTION_DIGITS[denom])
   if (denom === 'eth') return `${v} ETH`
@@ -40,7 +50,7 @@ export function formatEarningsValue(
  */
 export function rendersNonZero(
   denom: EarningsMetric,
-  e: { eth: number; usdc: number; usd: number },
+  e: EarningsAmounts,
 ): boolean {
   return valueFor(denom, e) >= 0.5 * 10 ** -FRACTION_DIGITS[denom]
 }

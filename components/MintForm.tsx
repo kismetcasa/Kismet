@@ -18,6 +18,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
+import { loadPersistedUpload, savePersistedUpload, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { reportClientError } from '@/lib/clientError'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
@@ -27,11 +28,13 @@ import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { MAX_SPLITS } from '@/lib/splits'
+import { computeFinalSplits } from '@/lib/splitsMath'
 import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { toastError } from '@/lib/toast'
+import { toastError, toastChainStalled } from '@/lib/toast'
+import { isChainStalled } from '@/lib/chainHealth'
 import { performRaffleManage } from '@/hooks/useRaffleManage'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -45,66 +48,6 @@ const KISMET_CHANNEL_KEY = 'kismet'
 type PriceCurrency = 'eth' | 'usdc'
 
 type MintMode = 'media' | 'text'
-
-// 0xSplits' SplitMain requires `accounts` sorted ascending by address.
-// Lowercase-compare on the hex string gives the same ordering as numeric
-// ascending for properly-formed addresses.
-function sortSplits(s: Split[]): Split[] {
-  return [...s].sort((a, b) => {
-    const al = a.address.toLowerCase()
-    const bl = b.address.toLowerCase()
-    return al < bl ? -1 : al > bl ? 1 : 0
-  })
-}
-
-// Inprocess docs (moment/create/splits): every example uses integer
-// `percentAllocation` and "must sum to exactly 100%" — no decimal tolerance.
-// Decimal values (like the 47.5 we used to emit when scaling 50/50 to make
-// room for residencies) get mis-parsed downstream and revert the on-chain
-// splits-contract setup.
-//
-// Convert fractional `values` (which by construction sum to ~`target`) into
-// integers that sum to EXACTLY `target`, with every entry ≥ 1. Largest-
-// remainder method: floor (min 1), then hand out / claw back the leftover by
-// fractional remainder. Exact and order-stable — unlike a bounded ±1 drift
-// loop, it can't leave the sum off-target for skewed allocations (e.g. many
-// tiny recipients plus one large one). Precondition: target ≥ values.length,
-// which callers guarantee via the recipient cap + residenciesOverCap, so a
-// min-1 solution always exists; the guards below just prevent a spin if it
-// is ever violated (handleMint's sum check is the final backstop).
-function roundToIntegerAllocations(values: number[], target: number): number[] {
-  const n = values.length
-  if (n === 0) return []
-  const ints = values.map((v) => Math.max(1, Math.floor(v)))
-  let sum = ints.reduce((a, b) => a + b, 0)
-  if (sum === target) return ints
-  // Indices ordered by fractional remainder: add to the largest first,
-  // remove from the smallest first, so the integer split best tracks intent.
-  const byRemainder = values
-    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-    .sort((a, b) => a.frac - b.frac)
-  if (sum < target) {
-    let k = n - 1
-    while (sum < target) {
-      ints[byRemainder[((k % n) + n) % n].i] += 1
-      sum += 1
-      k -= 1
-    }
-  } else {
-    let k = 0
-    let guard = 0
-    const maxGuard = sum * n + n
-    while (sum > target && guard++ < maxGuard) {
-      const { i } = byRemainder[k % n]
-      if (ints[i] > 1) {
-        ints[i] -= 1
-        sum -= 1
-      }
-      k += 1
-    }
-  }
-  return ints
-}
 
 interface MintFormProps {
   collectionAddress?: string
@@ -590,8 +533,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   async function uploadJsonCached(json: Record<string, unknown>, key: string): Promise<string> {
     const hit = jsonUploadRef.current.get(key)
     if (hit) return hit.uri
+    // Cross-reload resume: identical metadata uploaded on a prior attempt is
+    // reused from localStorage, so a page reload (to escape a failed/stuck
+    // mint) doesn't re-bill the same small JSON under a fresh Turbo txid.
+    // Mirrors the media resume; the mint soft-gates propagation (mints anyway),
+    // so reusing a durable-but-not-yet-propagated URI is safe and self-heals at
+    // display time. Retired once its strikes hit the cap (genuinely lost → fresh).
+    const persisted = loadPersistedJson(key)
+    if (persisted && persisted.failures < MAX_REUSE_FAILURES) {
+      jsonUploadRef.current.set(key, persisted)
+      return persisted.uri
+    }
     const uri = await uploadJson(json)
     jsonUploadRef.current.set(key, { uri, failures: 0 })
+    savePersistedJson(key, { uri, failures: 0 })
     return uri
   }
 
@@ -599,6 +554,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     const entry = jsonUploadRef.current.get(key)
     if (!entry) return
     entry.failures += 1
+    // Persist the strike so retire-after-N survives a reload (otherwise each
+    // reload resets it and a genuinely lost upload would loop forever).
+    savePersistedJson(key, { uri: entry.uri, failures: entry.failures })
     if (entry.failures >= MAX_REUSE_FAILURES) jsonUploadRef.current.delete(key)
   }
 
@@ -638,51 +596,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     setResidenciesInput(String(clamped))
   }
 
-  // Builds the final splits array to send to the API. Inprocess docs require
-  // integer `percentAllocation` summing to exactly 100% — every code path
-  // here emits integers via roundToIntegerAllocations + appends the
-  // residencies cut when the toggle is on.
-  //
-  // `p` = residenciesPercent (creator-chosen whole percent, 1..residenciesMax).
-  //
-  //   residencies OFF + 0/1 splits  → undefined (caller uses payoutRecipient)
-  //   residencies OFF + 2+ splits   → sorted user splits (rounded to integers)
-  //   residencies ON  + 0/1 splits  → [creator 100−p, residencies p] (sorted)
-  //   residencies ON  + 2+ splits   → user splits scaled ×(100−p)/100 to
-  //                                   integers summing to 100−p, plus residencies p
-  //
-  // residenciesMax guarantees 100−p ≥ recipientCount, so roundToIntegerAllocations
-  // (which floors each recipient at 1%) can always hit its target and the final
-  // array sums to exactly 100 — re-checked by validateSplitsArray server-side.
-  //
-  // 0xSplits' SplitMain requires `accounts` sorted ascending — sort
-  // defensively in case inprocess forwards our array as-is.
+  // Build the final splits array to send to inprocess: integer `percentAllocation`
+  // summing to exactly 100% (or undefined when there's no split to make), with the
+  // residencies cut appended when the toggle is on. The pure math lives in
+  // lib/splitsMath (unit-verified by scripts/verify-mint.ts).
   function buildFinalSplits(): Split[] | undefined {
-    if (!residenciesEnabled) {
-      if (splits.length < 2) return undefined
-      const rounded = roundToIntegerAllocations(
-        splits.map((s) => s.percentAllocation),
-        100,
-      )
-      return sortSplits(
-        splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
-      )
-    }
-    const p = residenciesPercent
-    if (splits.length < 2) {
-      return sortSplits([
-        { address: address!, percentAllocation: 100 - p },
-        { address: RESIDENCIES_ADDRESS, percentAllocation: p },
-      ])
-    }
-    const rounded = roundToIntegerAllocations(
-      splits.map((s) => (s.percentAllocation * (100 - p)) / 100),
-      100 - p,
-    )
-    return sortSplits([
-      ...splits.map((s, i) => ({ address: s.address, percentAllocation: rounded[i] })),
-      { address: RESIDENCIES_ADDRESS, percentAllocation: p },
-    ])
+    return computeFinalSplits(splits, residenciesEnabled, residenciesPercent, address!, RESIDENCIES_ADDRESS)
   }
 
   async function handleMint(e: React.FormEvent) {
@@ -702,6 +621,27 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           "This collection hasn't authorized Kismet for minting. Tap Authorize on the banner above to grant ADMIN.",
       })
       return
+    }
+    // No inprocess smart wallet for this creator → the relay has nothing to
+    // execute the mint as, so it WILL revert at gas estimation ("simulation
+    // failed"). Bail BEFORE any Arweave upload so a structurally-doomed mint
+    // can't burn turbo credits. Only a DEFINITIVE notFound blocks — a transient
+    // null falls through (inprocess stays the source of truth, as on the deploy
+    // path). Auto-deploy is EXEMPT: that path (contract:{name,uri}) is exactly
+    // how inprocess provisions a first-time creator's smart wallet, so blocking
+    // it would prevent the very bootstrap it performs. We only pay the lookup
+    // when the reactive smartWalletForCaller hasn't already resolved an address
+    // (cached → instant; null → disambiguate notFound vs a still-pending read).
+    if (!isAutoDeploy && !smartWalletForCaller) {
+      const swResult = await fetchInprocessSmartWallet(address)
+      if (swResult && 'notFound' in swResult) {
+        toast.error('Set up your account to mint', {
+          id: 'mint',
+          description:
+            'This wallet has no inprocess account yet. Mint your first moment WITHOUT picking a collection (we create one for you) — that provisions your account — then you can mint into existing collections.',
+        })
+        return
+      }
     }
     if (!name.trim()) { toast.error('Please enter a title'); return }
     // Auto-deploy uses the moment title as the collection name. Users
@@ -967,6 +907,42 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // media mode — ensure session once (cookie cached, no re-prompt)
         await ensureSession()
 
+        // Cross-reload resume: the in-memory bank below is wiped on a page
+        // reload / remount, so a creator who reloads after a failed mint would
+        // re-upload this (often very large) file under a fresh txid for nothing.
+        // If we uploaded THIS exact file in a prior session, restore that bank
+        // from localStorage. We rehydrate UNCONDITIONALLY — identical to the
+        // in-memory resume path — and do NOT gate on a propagation verify:
+        //   - the bytes are PERMANENT on Arweave (Turbo confirmed the upload
+        //     when it first returned this txid), so re-uploading only mints a
+        //     duplicate under a fresh txid and burns Turbo credits;
+        //   - the file-identity key (name|size|lastModified) guarantees this is
+        //     THIS file's media, so there is no wrong-content risk;
+        //   - the mint is non-blocking, so a not-yet-propagated URI self-heals
+        //     at display time rather than wasting a fresh upload.
+        // The cachedUpload branch below still runs the non-blocking propagation
+        // verify for the spinner, exactly as it does for an in-memory session.
+        if (file && (!mediaUploadRef.current || mediaUploadRef.current.source !== file)) {
+          const persisted = loadPersistedUpload(file)
+          if (persisted) {
+            mediaUploadRef.current = {
+              source: file,
+              // Placeholder File: after a resume the media File is read only
+              // for its `.type` (the video animation_url binding), so the
+              // bytes are irrelevant — we persisted the effective type.
+              mediaFile: new File([], file.name, { type: persisted.mediaType }),
+              posterFile: null,
+              needsServerTranscode: persisted.needsServerTranscode,
+              serverTranscode: persisted.serverTranscode,
+              mediaUri: persisted.mediaUri,
+              posterUri: persisted.posterUri,
+              thumbhash: persisted.thumbhash,
+              durationSec: persisted.durationSec,
+              verifyFailures: 0,
+            }
+          }
+        }
+
         // Resume path: reuse the verified-upload session from a previous
         // attempt on this same file (see UploadedMediaSession). Skips the
         // prepare + upload work entirely and goes straight to verifying
@@ -1113,6 +1089,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             durationSec,
             verifyFailures: 0,
           }
+          // Mirror the bank to localStorage so a reload resumes these txids
+          // instead of re-uploading (uploadPersistence). serverTranscode is
+          // null here — it hasn't run yet; when it completes below we re-persist
+          // with its outputs so a reload resumes the transcoded MP4+poster too
+          // instead of re-running the transcode (which re-uploads them).
+          savePersistedUpload(file!, {
+            mediaUri,
+            posterUri,
+            thumbhash,
+            durationSec,
+            needsServerTranscode,
+            serverTranscode: null,
+            mediaType: mediaFile.type,
+          })
         }
         // The session this attempt runs against, for failure accounting at
         // the verification gate (the ref itself can be nulled mid-flight if
@@ -1130,6 +1120,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // moment points animation_url at the uploaded MP4 and image at the
         // poster; everything else uses the media itself as the image.
         let animationUri: string | undefined = mediaFile.type.startsWith('video/') ? mediaUri : undefined
+        // Mime for the metadata `content` field below — tracks animationUri
+        // through the server-transcode swaps (whose output is always mp4).
+        let animationMime: string | undefined = animationUri ? mediaFile.type : undefined
         let finalImageUri = animationUri ? posterUri : (posterUri ?? mediaUri)
         let finalThumbhash = thumbhash
         // Oversized / wasm-failed GIF: `mediaUri` is the raw GIF we just
@@ -1142,6 +1135,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // reuse its outputs (the transcode route verified their
           // propagation server-side before returning them).
           animationUri = cachedUpload.serverTranscode.animationUri
+          animationMime = 'video/mp4'
           finalImageUri = cachedUpload.serverTranscode.posterUri
           finalThumbhash = cachedUpload.serverTranscode.thumbhash ?? finalThumbhash
         } else if (needsServerTranscode) {
@@ -1153,9 +1147,23 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             if (!rawOk) throw new Error('source GIF not yet propagated')
             const r = await serverTranscodeGif(mediaUri)
             animationUri = r.animationUri
+            animationMime = 'video/mp4'
             finalImageUri = r.posterUri
             finalThumbhash = r.thumbhash ?? finalThumbhash
             if (uploadSession) uploadSession.serverTranscode = r
+            // Re-persist with the transcode outputs so a reload resumes them
+            // instead of re-running serverTranscodeGif (which re-uploads the
+            // derived MP4 + poster under fresh txids — the media itself is
+            // already banked, but the transcode result was not until now).
+            if (file) savePersistedUpload(file, {
+              mediaUri,
+              posterUri,
+              thumbhash,
+              durationSec,
+              needsServerTranscode,
+              serverTranscode: r,
+              mediaType: mediaFile.type,
+            })
           } catch (err) {
             console.warn('[MintForm] server GIF transcode failed; shipping original', err)
           }
@@ -1166,6 +1174,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           description: description.trim(),
           ...(imageUri ? { image: imageUri } : {}),
           ...(animationUri ? { animation_url: animationUri } : {}),
+          // Zora-convention mime hint. ar:// URIs carry no extension, so
+          // without this every surface's video classification (isVideoMoment)
+          // depends on the inprocess indexer attaching content.mime — the
+          // dependency that left mime-less /timeline rows rendering as
+          // stills in the feed (VIDEO_PLAYBACK_RCA.md). Self-carried mime
+          // removes it for all future mints; the resolveMomentMedia fallback
+          // covers legacy ones.
+          ...(animationUri
+            ? { content: { uri: animationUri, mime: animationMime ?? 'video/mp4' } }
+            : {}),
           ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
         }
         const metadataKey = JSON.stringify(metadata)
@@ -1342,6 +1360,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       })
       setStep('idle')
       setUploadProgress(0)
+      // Parity with the create flow: if Base block production has halted, the
+      // relay couldn't sequence the mint — surface "Base isn't responding"
+      // (status link, wait) instead of a generic failure + Authorize CTA, since
+      // the cause is the chain, not auth. Brief liveness sample (~4s).
+      toast.loading('Checking network…', { id: 'mint' })
+      const stalled = publicClient ? await isChainStalled(publicClient) : false
+      if (stalled) {
+        toastChainStalled({
+          id: 'mint',
+          description:
+            'Base’s network looks stalled, so your mint couldn’t be submitted. Check the status page and try again once it recovers.',
+        })
+        return
+      }
       toastError('Mint', err, { id: 'mint' })
       // Last-resort authorization hint (non-blocking). The generic toast is
       // already up; if this was a mint into an existing collection and the

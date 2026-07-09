@@ -17,6 +17,19 @@ export function isMobileUaString(ua: string): boolean {
 }
 
 /**
+ * Pure UA test for "WebKit-only" — Safari (desktop + iOS) and every iOS
+ * webview/browser shell (CriOS, Mini App WKWebView), i.e. the AVFoundation
+ * media stack. Chromium-based browsers all include "Chrome" and test false.
+ * Shared by the client (lib/media/gateway isWebKitOnly — proxy-first video
+ * sourcing) and the server (lib/serverDevice isWebKitOnlyUA — the detail
+ * page's video preload target) so the two can never disagree about which
+ * URL a WebKit viewer will actually play.
+ */
+export function isWebKitOnlyUaString(ua: string): boolean {
+  return ua.includes('AppleWebKit') && !ua.includes('Chrome') && !ua.includes('Chromium')
+}
+
+/**
  * Client-side device class. SSR-safe: returns false when navigator is absent
  * (the server path uses isMobileUA() on the request header instead). Safe to
  * call after mount (effects, imperative coordinators); calling it during render
