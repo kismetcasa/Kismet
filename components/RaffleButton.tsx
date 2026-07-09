@@ -19,8 +19,8 @@ interface RaffleButtonProps {
   stacked?: boolean
   // Full ListButton props, so the button can fall through to "list" for a
   // released non-winner (ended, didn't win) or a holder who never entered once
-  // entries close. Omitted at call sites with no listing affordance (e.g.
-  // PatronArtwork) — there those cases just render nothing.
+  // entries close. Optional: a call site with no listing affordance can omit it,
+  // and those fall-through cases then render nothing.
   listProps?: ListButtonProps
 }
 
