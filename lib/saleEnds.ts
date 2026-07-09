@@ -1,17 +1,22 @@
-import { redis, SALE_ENDS_KEY, zpairsToMap } from './redis'
-import { parseRealSaleEnd } from './inprocess'
+import { redis, SALE_ENDS_KEY, SALE_FREE_KEY, zpairsToMap } from './redis'
+import { parseRealSaleEnd, isZeroPrice } from './inprocess'
 
 // Sale-end index for the ending-soon feed. One zset: member "collection:tokenId"
 // (tokenId in BigInt-canonical decimal, matching /api/collect's trending
 // members and the timeline's token_id lookup keys), score = saleEnd in unix
 // SECONDS (on-chain saleEnd is already seconds, and float64 zset scores hold
-// them exactly). Only REAL deadlines are stored — open-ended sales are
-// removed — so a BYSCORE read over [now, +inf) is exactly "live-or-scheduled
-// sales with a deadline, soonest first" with no post-filtering.
+// them exactly). Only ACTIVE window sales are stored — a member is indexed only
+// when it has a REAL deadline AND has already started (saleStart <= now); an
+// open-ended, ended, or not-yet-started (scheduled) sale is removed — so a
+// BYSCORE read over [now, +inf) is exactly "sales inside their window right now,
+// soonest close first" with no post-filtering.
 
 // Same ceiling as the trending zsets: far above what any feed page shows,
 // bounds the zset against unbounded growth.
 const MAX_SALE_ENDS = 10_000
+// Free-mint index shares the same ceiling. Scored by index time (ms) so the
+// cardinality trim evicts the least-recently-indexed free mint first.
+const MAX_FREE = 10_000
 
 // How long an ended sale lingers before the write-side sweep removes it.
 // Reads never see ended entries regardless (BYSCORE starts at `now`); the
@@ -36,41 +41,85 @@ let lastSweepAt = 0
 // indexed the member.
 const MAX_SEEN = 20_000
 const seenEnds = new Map<string, number>()
+// Per-pod memory of the free/priced verdict (key → isFree) — same purpose as
+// seenEnds: skip re-writing a member whose verdict is unchanged. Unlike the
+// ends index we also cache the PRICED verdict (false), so the common priced
+// moment isn't zrem'd on every batch. Correctness still holds: every pod, on
+// its FIRST priced sighting of a member (verdict absent → zrem), clears any
+// stale free entry another pod (since restarted) may have written, and reads
+// always hit Redis so a stale write-cache can only cost a redundant write.
+const seenFree = new Map<string, boolean>()
 
 /**
  * Write-through from resolved sale configs (the /api/moments and /api/moment
- * price paths): index every real deadline, and un-index members whose
- * saleEnd field EXPLICITLY names no deadline ("0" / the open-ended sentinel /
- * non-numeric). Two shapes are deliberately left untouched:
- *   - config === null (upstream blip / unknown) — a transient error must
- *     never erase live index entries;
- *   - config without a saleEnd field (partial upstream data) — ambiguous,
- *     and an entry only ever enters the index with a real end, so a sale
- *     that later becomes genuinely open-ended arrives with the sentinel
- *     present and still gets removed.
+ * price paths): maintain two indexes in one atomic pipeline.
  *
- * Housekeeping sweeps piggyback on the same pipeline, throttled per pod.
- * The whole write is one atomic multi() — a single Upstash REST round trip
- * (multi() is not merged by auto-pipelining; see lib/redis.ts) — and callers
- * fire-and-forget via after(), so it never adds request latency.
+ * Ending-soon (SALE_ENDS_KEY): index a member's real deadline only while the
+ * sale is ACTIVE — it has a real close date AND has already started
+ * (saleStart <= now; absent/"0" saleStart = opens-now). A member is un-indexed
+ * when its saleEnd EXPLICITLY names no deadline ("0" / the open-ended sentinel /
+ * non-numeric) OR the sale hasn't started yet (scheduled) — neither is inside a
+ * window right now. A scheduled sale re-indexes once it opens and is browsed
+ * again. Left untouched: config without a saleEnd field (ambiguous partial data).
+ *
+ * Free-mint (SALE_FREE_KEY): a member with pricePerToken == 0 is a free mint,
+ * not a sale — index it so the Latest/Most Sales feeds can filter it out; a
+ * priced member (> 0) is un-indexed. An absent/non-numeric price is left
+ * untouched (ambiguous).
+ *
+ * Both indexes leave config === null untouched — a transient upstream blip must
+ * never erase a live entry. Housekeeping sweeps piggyback on the same pipeline,
+ * throttled per pod. The whole write is one atomic multi() — a single Upstash
+ * REST round trip (multi() is not merged by auto-pipelining; see lib/redis.ts) —
+ * and callers fire-and-forget via after(), so it never adds request latency.
  */
 export async function recordSaleEnds(
-  entries: { key: string; config: { saleEnd?: string } | null }[],
+  entries: {
+    key: string
+    config: { saleStart?: string; saleEnd?: string; pricePerToken?: string } | null
+  }[],
 ): Promise<void> {
+  const nowMs = Date.now()
+  const nowSec = Math.floor(nowMs / 1000)
   const toAdd: { score: number; member: string }[] = []
   const toRemove: string[] = []
+  const toAddFree: { score: number; member: string }[] = []
+  const toRemoveFree: string[] = []
   for (const e of entries) {
-    if (!e.config || e.config.saleEnd === undefined) continue
-    const end = parseRealSaleEnd(e.config.saleEnd)
-    if (end !== null) {
-      if (seenEnds.get(e.key) !== end) toAdd.push({ score: end, member: e.key })
-    } else {
-      toRemove.push(e.key)
+    if (!e.config) continue
+
+    // Ending-soon index — active window sales only.
+    if (e.config.saleEnd !== undefined) {
+      const end = parseRealSaleEnd(e.config.saleEnd)
+      const startNum = e.config.saleStart ? Number(e.config.saleStart) : 0
+      const started = Number.isFinite(startNum) && startNum <= nowSec
+      if (end !== null && started) {
+        if (seenEnds.get(e.key) !== end) toAdd.push({ score: end, member: e.key })
+      } else {
+        // Open-ended, or scheduled (not started) — not an active window sale.
+        toRemove.push(e.key)
+      }
+    }
+
+    // Free-mint index — price 0 in, priced out, unknown left untouched.
+    const free = isZeroPrice(e.config.pricePerToken)
+    if (free === true) {
+      if (seenFree.get(e.key) !== true) toAddFree.push({ score: nowMs, member: e.key })
+    } else if (free === false) {
+      if (seenFree.get(e.key) !== false) toRemoveFree.push(e.key)
     }
   }
 
   const sweepDue = Date.now() - lastSweepAt > SWEEP_INTERVAL_MS
-  if (toAdd.length === 0 && toRemove.length === 0 && !sweepDue) return
+  if (
+    toAdd.length === 0 &&
+    toRemove.length === 0 &&
+    toAddFree.length === 0 &&
+    toRemoveFree.length === 0 &&
+    !sweepDue
+  ) {
+    return
+  }
 
   const pipeline = redis.multi()
   if (toAdd.length > 0) {
@@ -78,6 +127,12 @@ export async function recordSaleEnds(
   }
   if (toRemove.length > 0) {
     pipeline.zrem(SALE_ENDS_KEY, ...toRemove)
+  }
+  if (toAddFree.length > 0) {
+    pipeline.zadd(SALE_FREE_KEY, toAddFree[0], ...toAddFree.slice(1))
+  }
+  if (toRemoveFree.length > 0) {
+    pipeline.zrem(SALE_FREE_KEY, ...toRemoveFree)
   }
   if (sweepDue) {
     lastSweepAt = Date.now()
@@ -89,6 +144,9 @@ export async function recordSaleEnds(
     // Rank 0 is the LOWEST score (soonest end) — trim from the top so the
     // cap evicts the farthest-future deadlines, the least urgent to show.
     pipeline.zremrangebyrank(SALE_ENDS_KEY, MAX_SALE_ENDS, -1)
+    // Free index has no time dimension — cap cardinality by evicting the
+    // lowest scores (least-recently-indexed) beyond the ceiling.
+    pipeline.zremrangebyrank(SALE_FREE_KEY, 0, -MAX_FREE - 1)
   }
   await pipeline.exec()
 
@@ -97,6 +155,10 @@ export async function recordSaleEnds(
   if (seenEnds.size + toAdd.length > MAX_SEEN) seenEnds.clear()
   for (const a of toAdd) seenEnds.set(a.member, a.score)
   for (const k of toRemove) seenEnds.delete(k)
+
+  if (seenFree.size + toAddFree.length + toRemoveFree.length > MAX_SEEN) seenFree.clear()
+  for (const a of toAddFree) seenFree.set(a.member, true)
+  for (const k of toRemoveFree) seenFree.set(k, false)
 }
 
 /**
@@ -117,5 +179,20 @@ export async function getUpcomingSaleEnds(nowSec: number): Promise<Map<string, n
   } catch {
     // degrade to empty — caller falls back to newest-first
     return new Map()
+  }
+}
+
+/**
+ * The set of currently-free moments ("collection:tokenId"), for filtering free
+ * mints out of the Latest/Most Sales feeds. Members only (no scores) — bounded
+ * by the write-side cap. Empty set on any Redis failure, so the filter degrades
+ * to a no-op (show everything) rather than emptying the feed.
+ */
+export async function getFreeMoments(): Promise<Set<string>> {
+  try {
+    const members = (await redis.zrange(SALE_FREE_KEY, 0, -1)) as string[]
+    return new Set(members)
+  } catch {
+    return new Set()
   }
 }

@@ -332,6 +332,24 @@ export function parseRealSaleEnd(saleEnd: string | undefined | null): number | n
   return null
 }
 
+/**
+ * Classify a saleConfig.pricePerToken as free (true), priced (false), or
+ * unknown (null). pricePerToken is base units — an integer string (wei for ETH,
+ * 6-dp for USDC) — so a zero value is a free mint, which is not a "sale" and is
+ * filtered out of the Latest/Most Sales feeds via the write-through free index
+ * (lib/saleEnds). Absent / non-numeric input returns null so an ambiguous
+ * value is never classified either way — the same "leave untouched" contract
+ * parseRealSaleEnd uses for an absent saleEnd.
+ */
+export function isZeroPrice(pricePerToken: string | undefined | null): boolean | null {
+  if (pricePerToken == null || pricePerToken === '') return null
+  try {
+    return BigInt(pricePerToken) === 0n
+  } catch {
+    return null
+  }
+}
+
 export type SaleWindowState = 'scheduled' | 'closing' | 'live' | 'ended'
 
 export interface SaleWindowInfo {

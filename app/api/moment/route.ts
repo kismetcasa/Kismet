@@ -99,13 +99,16 @@ export async function GET(req: NextRequest) {
     creator = { ...creator, username: null }
   }
 
-  // Same ending-soon index write-through as /api/moments, for the detail-view
-  // price path — widens the index's coverage to moments reached by direct
-  // link (shared URLs, notifications) that may never render in a feed batch.
-  // Only on a successfully priced response: an upstream error returned above
-  // never reaches this line, so a blip can't erase a live entry.
+  // Same sale-index write-through as /api/moments (ending-soon + free-mint),
+  // for the detail-view price path — widens coverage to moments reached by
+  // direct link (shared URLs, notifications) that may never render in a feed
+  // batch. Only on a successfully priced response: an upstream error returned
+  // above never reaches this line, so a blip can't erase a live entry.
   if (upstream.ok) {
-    const saleConfig = data.saleConfig as { saleEnd?: string } | null | undefined
+    const saleConfig = data.saleConfig as
+      | { saleStart?: string; saleEnd?: string; pricePerToken?: string }
+      | null
+      | undefined
     after(() =>
       recordSaleEnds([
         {

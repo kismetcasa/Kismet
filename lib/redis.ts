@@ -67,9 +67,17 @@ export const TRENDING_LATEST_KEY = 'kismetart:trending-latest'
 // Ending-soon feed: member = "collection:tokenId", score = on-chain saleEnd
 // (unix seconds). Populated write-through by /api/moments — the batch
 // sale-config endpoint every feed card already hits for its price badge — so
-// it self-backfills as users browse, with zero new upstream fan-out. Reads
+// it self-backfills as users browse, with zero new upstream fan-out. Only
+// ACTIVE window sales are indexed (real close date AND already started); reads
 // take only future ends (ZRANGE BYSCORE now→+inf); see lib/saleEnds.ts.
 export const SALE_ENDS_KEY = 'kismetart:sale-ends'
+// Free-mint index: members = "collection:tokenId" whose sale price is 0 (free
+// mints, not sales). Written through the SAME /api/moments + /api/moment
+// sale-config path as SALE_ENDS_KEY (one shared pipeline), so it self-backfills
+// as users browse. score = index time (ms) so the cardinality trim evicts the
+// least-recently-indexed entry first. Read as a plain member set to filter free
+// mints out of the Latest/Most Sales feeds; see lib/saleEnds.ts.
+export const SALE_FREE_KEY = 'kismetart:sale-free'
 
 /**
  * Build a member → score Map from a `zrange(..., { withScores: true })` reply

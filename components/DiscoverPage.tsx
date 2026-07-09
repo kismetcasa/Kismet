@@ -336,7 +336,7 @@ const TRENDING_SORTS: { id: TrendingSort; label: string; empty: string }[] = [
     label: 'most sales',
     empty: 'no collects recorded yet — trending appears as mints are collected',
   },
-  { id: 'ending-soon', label: 'ending soon', empty: 'no mints to show yet' },
+  { id: 'ending-soon', label: 'ending soon', empty: 'no active timed sales right now' },
 ]
 
 function TrendingFeed() {

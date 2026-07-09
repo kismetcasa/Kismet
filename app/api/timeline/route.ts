@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
-import { getUpcomingSaleEnds } from '@/lib/saleEnds'
+import { getUpcomingSaleEnds, getFreeMoments } from '@/lib/saleEnds'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -550,12 +550,24 @@ export async function GET(req: NextRequest) {
     // Moments past the cap (or never collected) fall back to score 0 via
     // scoreMap.get's undefined → 0 coalesce below, putting them at the
     // bottom of the sort ordered newest-first by the created_at tiebreak.
+    // The free-mint index rides the same round trip (auto-pipelined): these
+    // are SALES feeds, so free mints (price 0) are dropped entirely — a free
+    // mint is not a sale regardless of how many times it's been collected.
     const zsetKey = sort === 'trending' ? TRENDING_KEY : TRENDING_LATEST_KEY
-    const raw = (await redis.zrange(zsetKey, 0, 9999, {
-      rev: true,
-      withScores: true,
-    })) as (string | number)[]
+    const [raw, freeSet] = await Promise.all([
+      redis.zrange(zsetKey, 0, 9999, { rev: true, withScores: true }) as Promise<
+        (string | number)[]
+      >,
+      getFreeMoments(),
+    ])
     const scoreMap = zpairsToMap(raw)
+
+    if (freeSet.size > 0) {
+      merged = merged.filter((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string }
+        return !freeSet.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+      })
+    }
 
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
@@ -566,19 +578,25 @@ export async function GET(req: NextRequest) {
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
     })
   } else if (sort === 'ending-soon') {
-    // Upcoming sale deadlines from the write-through index (lib/saleEnds.ts):
-    // moments with a live/scheduled sale that actually ends sort soonest-
-    // first; everything else (open-ended, ended, not yet indexed) follows
-    // newest-first so the feed stays full instead of emptying out. Index
-    // read failure degrades the whole feed to newest-first (empty map).
+    // Active window sales from the write-through index (lib/saleEnds.ts): the
+    // index holds only moments whose sale has a real close date AND has already
+    // started, and getUpcomingSaleEnds keeps only those whose close date is
+    // still in the future — i.e. exactly "sales inside their window right now".
+    // FILTER to that set (no padding with non-sale moments) and order soonest-
+    // close first. Empty index (nothing active, or a Redis blip) → empty feed,
+    // which is the honest result: there are no active timed sales to show.
     const endsMap = await getUpcomingSaleEnds(Math.floor(Date.now() / 1000))
 
-    // No-deadline moments coalesce to Infinity: any real end sorts before
-    // them, and equal values (including Infinity vs Infinity) fall through
-    // to the created_at tiebreak — the `?? 0` shape of the branch above.
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return endsMap.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+    })
+
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
       const mb = b as { address?: string; token_id?: string; created_at: string }
+      // Every survivor has a real end after the filter; the created_at tiebreak
+      // still orders sales that close at the same instant.
       const endA = endsMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? Infinity
       const endB = endsMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? Infinity
       if (endA !== endB) return endA - endB
