@@ -22,11 +22,15 @@ export function inprocessUrl(
 // them on notifications. Defined here so frontend and backend share one source.
 export const DEFAULT_COLLECT_COMMENT = 'collected on kismet'
 
-// Label for airdrop rows folded into the moment activity feed. An airdrop is
-// a gift, not a purchase, so it reads "invited to kismet" (the recipient) —
-// the transparent parallel to a collector's "collected on kismet". The
-// comments route stamps this as the `comment` of any `kind: 'airdrop'` row.
+// Labels for airdrop rows folded into the moment activity feed. An airdrop is
+// a gift, not a purchase, so the copy differs from a collector's "collected on
+// kismet". The comments route picks one per moment by collection and stamps it
+// as the `comment` of each `kind: 'airdrop'` row:
+//   - patron / mint-pass collection → "invited to kismet" (the recipient is
+//     being invited to the platform via the pass), else
+//   - any other collection → "airdropped on kismet".
 export const AIRDROP_INVITE_COMMENT = 'invited to kismet'
+export const AIRDROP_GENERIC_COMMENT = 'airdropped on kismet'
 
 // Legacy default-comment strings still present in historical on-chain data
 // and the upstream comments feed: pre-rename ("collected via Kismet Art") and
