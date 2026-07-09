@@ -18,6 +18,7 @@ import { removeHiddenProfile } from '@/lib/hidden-profiles'
 import { deleteAirdropsBySender } from '@/lib/airdrops'
 import { clearKismetIdentityAddress } from '@/lib/farcasterAuth'
 import { clearFarcasterPushState } from '@/lib/farcasterNotifications'
+import { deleteListingsBySeller } from '@/lib/listings'
 
 /**
  * POST — HARD, IRREVERSIBLE erase of a profile identity and everything the
@@ -48,6 +49,9 @@ import { clearFarcasterPushState } from '@/lib/farcasterNotifications'
  *   - profile row + FID row + search-index membership + auth nonce
  *   - profile theme, showcase pins, collected ZSET, earnings-public pin
  *   - airdrops-SENT log (send-side mirror of the collected/received ZSET)
+ *   - marketplace listings the wallet authored (all seller-indexed orders +
+ *     their slot locks / hide tombstones / Pass markers). Redis-only, like the
+ *     seller's own cancel — the signed Seaport order just lapses at its endTime
  *   - notification inbox + prefs, AND (FID-scoped) the Farcaster push state —
  *     tokens + push-type/master/seeded prefs — so an erased FC identity stops
  *     receiving native push and its settings don't resurface on rebuild
@@ -142,6 +146,7 @@ export async function POST(req: NextRequest) {
       clearAllPins(addr).catch(() => {}),
       deleteCollected(addr).catch(() => {}),
       deleteAirdropsBySender(addr).catch(() => {}),
+      deleteListingsBySeller(addr).catch(() => {}),
       deleteNotificationData(addr).catch(() => {}),
       clearEarningsVisibility(addr, fid).catch(() => {}),
       purgeFollowEdges(addr).catch(() => {}),
