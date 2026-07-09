@@ -147,6 +147,10 @@ reads; move list-shaped truth off Redis).
 - **`kismetart:trending-latest`** rides the same collect MULTI with the same 10k trim.
 - **`kismetart:sale-ends`** written through via `after()` (`lib/saleEnds.ts`):
   per-pod seen-cache, throttled sweeps, bounded `ZRANGE BYSCORE now→+inf LIMIT 0 10000`.
+  Holds only ACTIVE window sales (real close date AND started) for the Ending-Soon feed.
+- **`kismetart:sale-free`** rides the same `lib/saleEnds.ts` write-through pipeline (free
+  mints, price 0): per-pod seen-cache, 10k rank-trim on the shared throttled sweep,
+  read as a bounded member set to drop free mints from the Latest/Most Sales feeds.
 - Notifications capped 200; pass-validity flags 30–90-day TTLs; rate-limit/nonce/session/
   quota/leader-lock keys all TTL'd; showcase 4/category; airdrops 500/sender.
 
