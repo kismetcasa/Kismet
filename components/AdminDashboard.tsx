@@ -113,7 +113,88 @@ export function AdminDashboard() {
       <HideContentCard />
       <TokenGateCard />
       <AirdropQuotaCard />
+      <AirdropActivityCard />
     </div>
+  )
+}
+
+/** One-time backfill: index existing airdrops by moment so airdrops sent
+ *  before the per-moment index existed surface their recipients as "invited
+ *  to kismet" rows in each moment's activity feed. New airdrops are indexed
+ *  automatically by recordAirdrop; this only covers the historical backlog.
+ *  Idempotent (zadd overwrites) — safe to click more than once. */
+function AirdropActivityCard() {
+  const { withSession, hasSession, startSession } = useAdmin()
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ sendersScanned: number; recordsReindexed: number } | null>(
+    null,
+  )
+
+  async function handleReindex() {
+    setBusy(true)
+    try {
+      const res = await withSession(async () => {
+        const r = await fetch('/api/admin/airdrop-reindex', { method: 'POST' })
+        const json = (await r.json().catch(() => ({}))) as {
+          ok?: boolean
+          error?: string
+          sendersScanned?: number
+          recordsReindexed?: number
+        }
+        if (!r.ok || !json.ok) throw new Error(json.error ?? 'Request failed')
+        return {
+          sendersScanned: json.sendersScanned ?? 0,
+          recordsReindexed: json.recordsReindexed ?? 0,
+        }
+      })
+      if (!res) return // user cancelled signing
+      setResult(res)
+      toast.success(
+        `Reindexed ${res.recordsReindexed} airdrop${res.recordsReindexed === 1 ? '' : 's'} across ${res.sendersScanned} sender${res.sendersScanned === 1 ? '' : 's'}`,
+        { id: 'admin-airdrop-reindex' },
+      )
+    } catch (err) {
+      toastError('Reindex airdrops', err, { id: 'admin-airdrop-reindex' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="border border-line bg-[#161616] p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-ink font-mono text-sm">Airdrop activity backfill</h2>
+        <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
+          One-time: index past airdrops by moment so their recipients show as
+          “invited to kismet” in each moment’s activity feed. New airdrops are
+          indexed automatically. Idempotent — safe to run more than once.
+        </p>
+      </div>
+      {!hasSession ? (
+        <button
+          type="button"
+          onClick={() => void startSession()}
+          className="text-[10px] font-mono uppercase tracking-widest px-3 py-2 border border-line text-dim hover:text-ink hover:border-muted transition-colors w-fit"
+        >
+          sign in to run
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void handleReindex()}
+          disabled={busy}
+          className="text-[10px] font-mono uppercase tracking-widest px-3 py-2 border border-line text-dim hover:text-ink hover:border-muted transition-colors w-fit disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {busy ? 'reindexing…' : 'reindex airdrop activity'}
+        </button>
+      )}
+      {result && (
+        <p className="text-[10px] font-mono text-muted">
+          reindexed {result.recordsReindexed} airdrop{result.recordsReindexed === 1 ? '' : 's'}{' '}
+          across {result.sendersScanned} sender{result.sendersScanned === 1 ? '' : 's'}.
+        </p>
+      )}
+    </section>
   )
 }
 
