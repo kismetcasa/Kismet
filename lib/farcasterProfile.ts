@@ -20,6 +20,12 @@ export type FarcasterProfile = {
   username: string | null
   displayName: string | null
   pfpUrl: string | null
+  // X/Twitter handle the FID has PROVEN it owns via a Farcaster connected
+  // account — the only social Farcaster verifies today. Surfaced as a verified
+  // link on the Kismet profile (outranks a manually-claimed `x` handle).
+  // Optional: entries cached before this field existed simply omit it (they
+  // refresh within PROFILE_TTL); read it as `?? null`.
+  verifiedTwitter?: string | null
 }
 
 const PROFILE_TTL = 60 * 60          // 1h on hit — pfp/name change rarely
@@ -93,16 +99,27 @@ async function getFarcasterProfileByFid(
             username?: string
             displayName?: string
             pfp?: { url?: string }
+            // Verified/connected off-platform accounts. Field name has varied
+            // across API versions; read both defensively (best-effort — a shape
+            // change just drops the inherited X handle, manual entry still works).
+            connectedAccounts?: { platform?: string; username?: string; expired?: boolean }[]
+            verifiedAccounts?: { platform?: string; username?: string; expired?: boolean }[]
           }
         }
       }
       const user = body.result?.user
       if (user?.fid) {
+        const accounts = user.connectedAccounts ?? user.verifiedAccounts ?? []
+        const x = accounts.find((a) => {
+          const p = (a?.platform ?? '').toLowerCase()
+          return (p === 'x' || p === 'twitter') && a?.expired !== true && typeof a?.username === 'string' && a.username.trim().length > 0
+        })
         profile = {
           fid: user.fid,
           username: user.username ?? null,
           displayName: user.displayName ?? null,
           pfpUrl: user.pfp?.url ?? null,
+          verifiedTwitter: x?.username ? x.username.trim().replace(/^@+/, '') : null,
         }
       }
     } else if (res.status !== 404) {

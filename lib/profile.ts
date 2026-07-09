@@ -3,11 +3,14 @@ import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
 import { getHiddenProfilesSet } from './hidden-profiles'
 import { randomHex } from './random'
+import type { ProfileSocials } from './socials'
 
 export interface Profile {
   address: string
   username?: string
   avatarUrl?: string
+  /** User-claimed social links (X, Farcaster, Instagram, website). See lib/socials.ts. */
+  socials?: ProfileSocials
   updatedAt: number
 }
 
@@ -28,6 +31,7 @@ export interface FidProfile {
   currentAddress: string
   username?: string
   avatarUrl?: string
+  socials?: ProfileSocials
   updatedAt: number
 }
 
@@ -95,7 +99,7 @@ export async function getProfileBatch(
 
 export async function upsertProfile(
   address: string,
-  data: Partial<Pick<Profile, 'username' | 'avatarUrl'>>
+  data: Partial<Pick<Profile, 'username' | 'avatarUrl' | 'socials'>>
 ): Promise<Profile> {
   const existing = await getProfile(address)
   const updated: Profile = { ...existing, ...data, address: address.toLowerCase(), updatedAt: Date.now() }
@@ -116,7 +120,7 @@ export async function getFidProfile(fid: number): Promise<FidProfile | null> {
 export async function upsertFidProfile(
   fid: number,
   currentAddress: string,
-  data: Partial<Pick<FidProfile, 'username' | 'avatarUrl'>>,
+  data: Partial<Pick<FidProfile, 'username' | 'avatarUrl' | 'socials'>>,
 ): Promise<FidProfile> {
   const existing = await getFidProfile(fid)
   const updated: FidProfile = {
@@ -124,6 +128,9 @@ export async function upsertFidProfile(
     currentAddress: currentAddress.toLowerCase(),
     username: data.username ?? existing?.username,
     avatarUrl: data.avatarUrl ?? existing?.avatarUrl,
+    // socials replace wholesale (the form submits the complete set); undefined
+    // means the caller didn't touch them, so preserve what's stored.
+    socials: data.socials ?? existing?.socials,
     updatedAt: Date.now(),
   }
   await Promise.all([

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
-import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce } from '@/lib/profile'
+import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce, type Profile } from '@/lib/profile'
 import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getSessionAddress } from '@/lib/session'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
@@ -9,6 +9,7 @@ import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { normalizeSocials, type ProfileSocials } from '@/lib/socials'
 import { getArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 
@@ -118,6 +119,13 @@ export async function GET(
   // nullable contract: '' (nothing resolved) collapses to null as before.
   const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, cachedEns)
   const displayName = name || null
+  // Proof-of-ownership socials inherited from Farcaster. Only X is verifiable
+  // on FC today; when present it outranks any manually-claimed `x` and the
+  // client renders it with a verified badge. `...profile` already carries the
+  // user's own (unverified) `socials`.
+  const verifiedSocials = farcaster?.verifiedTwitter
+    ? { x: farcaster.verifiedTwitter }
+    : undefined
   return NextResponse.json({
     profile: {
       ...profile,
@@ -128,6 +136,7 @@ export async function GET(
       farcaster: farcaster ?? undefined,
       earnings,
       ...(fcWallets.length ? { fcWallets } : {}),
+      ...(verifiedSocials ? { verifiedSocials } : {}),
     },
   })
 }
@@ -141,7 +150,7 @@ export async function PUT(
     return errorResponse(400, 'Invalid address')
   }
 
-  let body: { username?: string; avatarUrl?: string; signature?: string; nonce?: string }
+  let body: { username?: string; avatarUrl?: string; socials?: unknown; signature?: string; nonce?: string }
   try {
     body = await req.json()
   } catch {
@@ -160,6 +169,16 @@ export async function PUT(
   // just the scheme.
   if (body.avatarUrl && !isSafePublicHttpsUrl(body.avatarUrl)) {
     return errorResponse(400, 'avatarUrl must be a public https URL')
+  }
+
+  // Only touch socials when the client actually sent the key (older callers
+  // that PUT just username/avatar must not wipe stored links). Handles are
+  // stored bare and normalized; website is host-guarded like avatarUrl.
+  let socials: ProfileSocials | undefined
+  if (body.socials !== undefined) {
+    const res = normalizeSocials(body.socials)
+    if ('error' in res) return errorResponse(400, res.error)
+    socials = res.socials
   }
 
   // Verify the signature proves ownership of the address
@@ -181,6 +200,11 @@ export async function PUT(
   }
 
   const username = body.username?.trim().slice(0, 30) || undefined
+  const writeData: Partial<Pick<Profile, 'username' | 'avatarUrl' | 'socials'>> = {
+    username,
+    avatarUrl: body.avatarUrl,
+  }
+  if (socials !== undefined) writeData.socials = socials
 
   // Route the write to the right store based on the user's identity
   // model. Signature already proved ownership of `address`, so we
@@ -200,19 +224,17 @@ export async function PUT(
   const fcProfile = await getFarcasterProfileByAddress(address)
   let profile
   if (!fcProfile) {
-    profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+    profile = await upsertProfile(address, writeData)
   } else {
     const fid = fcProfile.fid
     const existingFid = await getFidProfile(fid)
     if (existingFid) {
-      const updated = await upsertFidProfile(fid, existingFid.currentAddress, {
-        username,
-        avatarUrl: body.avatarUrl,
-      })
+      const updated = await upsertFidProfile(fid, existingFid.currentAddress, writeData)
       profile = {
         address: updated.currentAddress,
         username: updated.username,
         avatarUrl: updated.avatarUrl,
+        socials: updated.socials,
         updatedAt: updated.updatedAt,
       }
     } else {
@@ -232,16 +254,14 @@ export async function PUT(
             { status: 409 },
           )
         }
-        profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+        profile = await upsertProfile(address, writeData)
       } else {
-        const updated = await upsertFidProfile(fid, address, {
-          username,
-          avatarUrl: body.avatarUrl,
-        })
+        const updated = await upsertFidProfile(fid, address, writeData)
         profile = {
           address: updated.currentAddress,
           username: updated.username,
           avatarUrl: updated.avatarUrl,
+          socials: updated.socials,
           updatedAt: updated.updatedAt,
         }
       }

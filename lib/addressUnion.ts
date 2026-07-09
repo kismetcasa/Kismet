@@ -247,6 +247,7 @@ export const resolveCanonicalProfile = cache(async (
         address: fidProfile.currentAddress,
         username: fidProfile.username,
         avatarUrl: fidProfile.avatarUrl,
+        socials: fidProfile.socials,
         updatedAt: fidProfile.updatedAt,
       },
       canonicalAddress: fidProfile.currentAddress,
@@ -316,6 +317,9 @@ export async function resolveProfileWithSiblings(
       ...profile,
       username: profile.username || best.username,
       avatarUrl: profile.avatarUrl || best.avatarUrl,
+      // Socials follow the same anchor as name/avatar so a web-first multi-
+      // wallet identity shows one coherent link set.
+      socials: profile.socials ?? best.socials,
     },
     farcaster,
     inheritedFromSibling: true,
