@@ -293,7 +293,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     }
   }
   const hasCollected = collected || owned > 0
-  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // Wait for both reads before flagging — otherwise we'd flash "sold out"
   // before tokenInfo lands.
   const mintedOut =
     maxSupply !== undefined &&
@@ -318,7 +318,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       : saleEnded
         ? 'mint ended'
         : mintedOut
-          ? hasCollected ? 'collected' : 'minted out'
+          ? 'sold out'
           : hasCollected ? 'collect+' : 'collect'
 
   // Artists/roster tab: steer the primary action to the creator's profile.

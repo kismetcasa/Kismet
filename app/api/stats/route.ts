@@ -12,6 +12,19 @@ import { errorResponse } from '@/lib/apiResponse'
 // by default: return the figures only when the artist pinned them public, or to
 // the owner themselves (session). Otherwise return just the visibility flag, so
 // the owner's own card knows its pin state without leaking amounts to visitors.
+//
+// The private-path response carries `authRequired: true` — the card renders a
+// sign-in affordance instead of silently unmounting, which left session-less
+// owners with no card, no error, and no way to reach the pin (the only opt-in
+// surface). A flag on the 200 rather than a 401 status because this GET is a
+// mixed public/private resource: the pin state IS served, only the figures are
+// withheld. The flag rides BOTH non-owner legs (no credentials AND a session
+// for a different identity), keeping every non-owner response byte-identical —
+// no oracle — while covering the stale-cookie case: a viewer whose cookie
+// belongs to another wallet gets the sign-in card, whose flow deletes the
+// mismatched cookie and re-auths as the connected wallet (see
+// useUploadSession). Only the owner's own card ever consumes this flag —
+// visitors read pinned earnings from the profile payload and never call here.
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`stats:${ip}`, 120, 60))) {
@@ -31,7 +44,7 @@ export async function GET(req: NextRequest) {
   const auth = await authorizeProfileOwner(req, artist)
   const isOwner = !('error' in auth)
   if (!isPublic && !isOwner) {
-    return NextResponse.json({ public: false })
+    return NextResponse.json({ public: false, authRequired: true })
   }
 
   // Earnings and pending both union over the artist's earnings wallets (FC

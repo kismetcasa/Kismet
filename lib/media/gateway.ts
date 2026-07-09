@@ -59,12 +59,24 @@ export function proxyUrl(uri: string, width?: number): string {
  * Top-level browsing keeps the original direct-gateway list (no proxy
  * egress cost): standalone Chrome/Safari fetch video direct without stalls.
  */
-export function videoGatewayUrls(uri: string): string[] {
+export function videoGatewayUrls(uri: string, forceProxy = false): string[] {
   const direct = gatewayUrls(uri)
-  // RN WebView (the mobile Mini App host) shares the constrained-pool
-  // failure mode with iframes and its UA may carry neither WebKit nor
-  // mobile tokens — include it explicitly so its video rides the proxy.
-  if (isProxiable(uri) && (isInIframe() || isWebKitOnly() || isReactNativeWebView())) {
+  // `forceProxy` is the SSR escape hatch: the iframe/WebKit/RN checks below
+  // are all client-only (window/navigator are undefined on the server), so a
+  // server-rendered committed <video> — the detail page — would otherwise
+  // emit the DIRECT url for every proxy-first surface and only flip to the
+  // proxy on hydration, wasting a doomed direct fetch (aborted when the src
+  // flips) on exactly the constrained surfaces the proxy protects. The detail
+  // page threads its server-computed isWebKitOnlyUA() here so the SSR src
+  // already matches what the client will play (iOS Safari, and the warpcast
+  // RN host whose UA is WebKit-only) — no wasted fetch, no hydration src
+  // divergence. Desktop Mini App (iframe, desktop UA) isn't server-detectable
+  // and keeps the client-side flip; it's Chromium, which tolerates it.
+  //
+  // RN WebView (the mobile Mini App host) shares the constrained-pool failure
+  // mode with iframes and its UA may carry neither WebKit nor mobile tokens —
+  // include it explicitly so its video rides the proxy.
+  if (isProxiable(uri) && (forceProxy || isInIframe() || isWebKitOnly() || isReactNativeWebView())) {
     return [proxyUrl(uri), ...direct]
   }
   return direct

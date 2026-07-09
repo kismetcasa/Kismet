@@ -178,6 +178,24 @@ export async function clearTokens(fid: number): Promise<void> {
   await redis.del(keyTokens(fid))
 }
 
+/**
+ * Purge ALL Farcaster push state for an FID — tokens AND the push-pref keys
+ * (types / master / seeded). Used by admin profile-erase: clearTokens alone
+ * leaves the prefs behind, so the erased identity's push settings would
+ * resurface on a rebuilt profile, and until the tokens' TTL lapses it would
+ * keep receiving native FC push for notifications fired by its retained
+ * on-chain content. This is the FC-transport half of the "notification inbox +
+ * prefs" that deleteNotificationData clears on the address side.
+ */
+export async function clearFarcasterPushState(fid: number): Promise<void> {
+  await Promise.all([
+    redis.del(keyTokens(fid)),
+    redis.del(keyPushTypes(fid)),
+    redis.del(keyPushMaster(fid)),
+    redis.del(keyPushSeeded(fid)),
+  ])
+}
+
 async function getTokens(fid: number): Promise<NotificationToken[]> {
   let raws: string[] = []
   try {

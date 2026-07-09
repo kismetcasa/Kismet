@@ -2,7 +2,8 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce } from '@/lib/profile'
-import { resolveCanonicalProfile } from '@/lib/addressUnion'
+import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
+import { getSessionAddress } from '@/lib/session'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
@@ -12,7 +13,7 @@ import { getArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 
 export async function GET(
-  _: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ address: string }> }
 ) {
   const { address } = await params
@@ -33,12 +34,68 @@ export async function GET(
     getCachedEns(address),
   ])
   const { profile, canonicalAddress } = canonical
+  // Admin-hidden profile → non-owners get the EMPTY-PROFILE STUB a wallet
+  // that never touched Kismet gets (200, no username/avatar, no FC/ENS
+  // enrichment, canonicalAddress = the queried address so sibling links
+  // don't leak). NOT a 404: this route never 404s any other valid address
+  // (profiles are wallet-keyed), so a 404 here would be a public oracle
+  // uniquely fingerprinting "admin-hidden" — returning the natural void
+  // state makes hidden indistinguishable from unused. The owner (any
+  // FID-sibling wallet, via session cookie or Farcaster bearer) still gets
+  // the full payload so their own profile page hydrates normally.
+  if (await isProfileIdentityHidden(address, canonicalAddress)) {
+    const viewer = await getSessionAddress(req)
+    if (!(await isViewerFidSibling(viewer, canonicalAddress))) {
+      const lower = address.toLowerCase()
+      return NextResponse.json({
+        profile: {
+          address: lower,
+          updatedAt: 0,
+          displayName: null,
+          canonicalAddress: lower,
+          earnings: null,
+        },
+      })
+    }
+  }
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private
   // figures come from /api/stats only when an owner views their own unpinned
   // profile). Passing the already-resolved fid skips the visibility check's
   // internal FC lookup. Memoized set read here, +reads only when public.
-  const earnings = (await isEarningsPublic({ address: canonicalAddress, fid: canonical.fid }))
+  //
+  // fcWallets: the identity's FC-verified sibling wallets (public data on
+  // Farcaster; the canonical 307 redirect already implies the linkage). The
+  // client-side owner check needs it: on web there is no FC identity context,
+  // so after the canonical redirect an owner connected with a non-canonical
+  // sibling wallet was rendered the VISITOR view of their own profile —
+  // including a silently absent earnings card.
+  //
+  // Shipped ONLY when the identity actually UNIFIES under this canonical —
+  // a FidProfile exists, or an anchor profile holds data — because that is
+  // when authorizeProfileOwner resolves every sibling's session to this
+  // address. For a data-less FC identity ('empty') each sibling canonicalizes
+  // to ITSELF, so a sibling-keyed client owner check would render owner UI
+  // whose every server call 403s; omitting the field keeps those viewers on
+  // the visitor view, exactly as before this field existed. (Accepted edge:
+  // two data-bearing web-first anchors on one FID can still diverge — rare,
+  // and bounded to error toasts on writes.)
+  //
+  // Redis-cached (1h) and passed into isEarningsPublic as its pre-resolved
+  // sibling list, so the unpinned default path pays the SAME single
+  // verifications read it always did — the payload field adds no command.
+  const identityUnifies =
+    canonical.fid != null &&
+    (canonical.source === 'fid' || !!profile.username || !!profile.avatarUrl)
+  const fcWallets =
+    identityUnifies && canonical.fid != null
+      ? await getVerifiedAddressesByFid(canonical.fid)
+      : []
+  const earnings = (await isEarningsPublic({
+    address: canonicalAddress,
+    fid: canonical.fid,
+    siblings: fcWallets.length ? fcWallets : undefined,
+  }))
     ? await getArtistEarnings(canonicalAddress)
     : null
   if (!profile.username && cachedEns === undefined) {
@@ -70,6 +127,7 @@ export async function GET(
       canonicalAddress,
       farcaster: farcaster ?? undefined,
       earnings,
+      ...(fcWallets.length ? { fcWallets } : {}),
     },
   })
 }

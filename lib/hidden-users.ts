@@ -22,6 +22,13 @@ import { ADMIN_ADDRESS } from './config'
  *   - This list HIDES their existing content but doesn't block new
  *     actions. Blacklist + hide together = full ban.
  *
+ * Distinct from lib/hidden-profiles:
+ *   - This list hides the CONTENT an address authored; their profile
+ *     page stays reachable.
+ *   - hidden-profiles hides the PROFILE (identity surfaces: page, API,
+ *     search, share card) but leaves their content's visibility alone.
+ *   - Combine both to make a user fully invisible.
+ *
  * Admin is exempt at both read and write so an accidental self-listing
  * can't hide admin's content from the admin's own views.
  *

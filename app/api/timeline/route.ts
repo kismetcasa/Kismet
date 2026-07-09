@@ -3,7 +3,6 @@ import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope 
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds } from '@/lib/saleEnds'
-import { bestEffort } from '@/lib/bestEffort'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -15,6 +14,10 @@ import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
+import { getRecipientSplits } from '@/lib/splits'
+import { getDelegatedMoments } from '@/lib/airdropDelegates'
+import { serverBaseClient } from '@/lib/rpc'
+import { hasAdminBit, hasMinterBit, readPermissions } from '@/lib/permissions'
 
 // Bounded-concurrency map: cap how many inprocess /timeline fetches are in
 // flight at once. A plain Promise.all over the full tracked-collection set
@@ -42,17 +45,6 @@ async function mapWithConcurrency<T, R>(
 }
 
 const FANOUT_CONCURRENCY = 10
-
-// One-shot-per-UA diagnostic: the mobile Mini App host's WebView sends a
-// custom User-Agent that server-side surface detection cannot currently
-// recognize (VIDEO_PLAYBACK_RCA.md open items) and phones offer no
-// inspector — record each distinct UA once, to the app log AND to a Redis
-// set so an operator can read it from anywhere with the Upstash REST creds
-// (SMEMBERS debug:ua-seen) without shelling into the box. The in-process
-// set bounds writes per process; UA variety bounds the Redis set itself.
-// Remove once the UA is captured and encoded into verify-surfaces.
-const UA_SEEN_KEY = 'debug:ua-seen'
-const seenUAs = new Set<string>()
 
 // Throttle for the fan-out-thinning warning below — it fires on every request
 // once the tracked set is large enough, and one line a minute is signal while
@@ -99,17 +91,6 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const ua = req.headers.get('user-agent') ?? ''
-  if (!seenUAs.has(ua) && seenUAs.size < 100) {
-    seenUAs.add(ua)
-    const limitParam = searchParams.get('limit')
-    console.log('[timeline] ua-seen', { ua, limit: limitParam })
-    // Stamp the requested limit alongside the UA so one SMEMBERS read shows
-    // both which client string arrived and which page size it was served.
-    void redis
-      .sadd(UA_SEEN_KEY, `limit=${limitParam ?? '?'} :: ${ua}`)
-      .catch(bestEffort('timeline.uaSeen'))
-  }
   // page is capped: fetchLimit below is `page * limit`, sent verbatim as the
   // upstream /timeline `limit` for EVERY tracked collection in parallel. An
   // uncapped page (e.g. 1e8) would fan out billions-sized upstream requests —
@@ -405,25 +386,130 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Airdroppable filter — moments this address has admin authority over.
-  // Inprocess populates `admins[]` from on-chain ADMIN holders at each
-  // moment's tokenId, so delegated admins appear here even though they
-  // aren't the creator. Match on either `creator.address` or any entry
-  // in `admins[]` so the creator's own moments still surface (some
-  // inprocess responses don't include the creator in admins[] when they
-  // hold the bit only via tokenId 0).
+  // Airdroppable filter — moments this address can mint an airdrop of.
+  // Signals, cheapest first:
+  //   1. creator.address === wallet — their own mint.
+  //   2. wallet ∈ admins[] — inprocess indexes on-chain ADMIN holders at each
+  //      moment's tokenId, so per-token ADMIN delegates surface here even
+  //      though they aren't the creator.
+  // Neither covers two real cases: (a) the Patron model attributes the moment
+  // creator to the platform treasury and the artist holds ADMIN only via the
+  // collection-wide tokenId-0 row, which inprocess's per-token admins[] omits;
+  // (b) a per-piece MINTER delegate (kismetart.eth authorizing someone to
+  // airdrop one piece at least privilege) — inprocess's admins[] is ADMIN-only
+  // so a MINTER grant never appears there. adminMint would let both airdrop
+  // (Zora ORs the tokenId-0 row into its gate and accepts ADMIN or MINTER).
+  //   3. wallet is a split payee OR a recorded per-piece delegate on the
+  //      moment, AND actually holds ADMIN/MINTER for it on-chain. Both
+  //      candidate sets come from one reverse-index SMEMBERS each; authority
+  //      is then confirmed exactly the way adminMint gates it —
+  //      permissions[tokenId][wallet] | permissions[0][wallet], ADMIN|MINTER —
+  //      so the picker keeps its invariant: it only lists pieces the airdrop
+  //      tx can actually mint.
   if (airdroppable) {
-    merged = merged.filter((m: unknown) => {
+    const wallet = airdroppable as `0x${string}`
+    const cheapMatch = (m: unknown): boolean => {
       const moment = m as {
         creator?: { address?: string }
         admins?: { address?: string }[]
       }
       if (moment.creator?.address?.toLowerCase() === airdroppable) return true
       return (
-        moment.admins?.some(
-          (a) => a.address?.toLowerCase() === airdroppable,
-        ) ?? false
+        moment.admins?.some((a) => a.address?.toLowerCase() === airdroppable) ??
+        false
       )
+    }
+    const momentKey = (m: unknown): string => {
+      const moment = m as { address?: string; token_id?: string }
+      return `${moment.address?.toLowerCase() ?? ''}:${moment.token_id ?? ''}`
+    }
+
+    // Candidate pieces: split payee (getRecipientSplits) ∪ per-piece delegate
+    // (getDelegatedMoments). One SMEMBERS each, both empty for wallets with
+    // neither — so this stays a no-op read for the common request.
+    const [splitList, delegateList] = await Promise.all([
+      getRecipientSplits(airdroppable).catch(() => []),
+      getDelegatedMoments(airdroppable).catch(() => []),
+    ])
+    const candidateKeys = new Set<string>([
+      ...splitList.map((s) => `${s.collection}:${s.tokenId}`),
+      ...delegateList.map((d) => `${d.collection}:${d.tokenId}`),
+    ])
+
+    // Only candidates that appear in this merge and weren't already matched by
+    // the cheap signals need an on-chain read.
+    const toVerify: { collection: string; tokenId: string; key: string }[] = []
+    if (candidateKeys.size > 0) {
+      for (const m of merged) {
+        if (cheapMatch(m)) continue
+        const key = momentKey(m)
+        if (!candidateKeys.has(key)) continue
+        const mm = m as { address?: string; token_id?: string }
+        const collection = mm.address?.toLowerCase()
+        if (collection && mm.token_id != null) {
+          toVerify.push({ collection, tokenId: String(mm.token_id), key })
+        }
+      }
+    }
+
+    // Confirm authority the way adminMint does: ADMIN|MINTER at the per-token
+    // row OR the collection-wide tokenId-0 row. Read collection-wide once per
+    // collection (promise-cached so concurrent workers don't double-read), and
+    // fall through to the per-token row only when it doesn't already grant —
+    // that covers collection-wide split artists in one read and per-piece
+    // MINTER delegates in one more. Any read failure falls OPEN (keep the
+    // candidate): the wallet is a named payee/delegate and adminMint
+    // independently gates the real airdrop on-chain, so a transient RPC blip
+    // shows an artist their own work rather than hiding it. Fail-open can never
+    // enable an unauthorized airdrop; the chain is the gate, not this read.
+    const authorizedKeys = new Set<string>()
+    if (toVerify.length > 0) {
+      const client = serverBaseClient()
+      const collWide = new Map<string, Promise<bigint | null>>()
+      const readCollWide = (collection: string): Promise<bigint | null> => {
+        let p = collWide.get(collection)
+        if (!p) {
+          p = readPermissions(client, collection as `0x${string}`, 0n, wallet).catch(
+            () => null,
+          )
+          collWide.set(collection, p)
+        }
+        return p
+      }
+      // Bounded concurrency (the same window the collection fan-out uses) so a
+      // wallet delegated/paid across many pieces can't fire an unbounded burst
+      // of eth_calls.
+      await mapWithConcurrency(
+        toVerify,
+        FANOUT_CONCURRENCY,
+        async ({ collection, tokenId, key }) => {
+          const cw = await readCollWide(collection)
+          if (cw === null) {
+            authorizedKeys.add(key) // fail-open: collection-wide read failed
+            return
+          }
+          if (hasAdminBit(cw) || hasMinterBit(cw)) {
+            authorizedKeys.add(key)
+            return
+          }
+          try {
+            const pt = await readPermissions(
+              client,
+              collection as `0x${string}`,
+              BigInt(tokenId),
+              wallet,
+            )
+            if (hasAdminBit(pt) || hasMinterBit(pt)) authorizedKeys.add(key)
+          } catch {
+            authorizedKeys.add(key) // fail-open: per-token read failed
+          }
+        },
+      )
+    }
+
+    merged = merged.filter((m: unknown) => {
+      if (cheapMatch(m)) return true
+      return authorizedKeys.has(momentKey(m))
     })
   }
 
@@ -559,6 +645,12 @@ export async function GET(req: NextRequest) {
         return m
       })
   }
+
+  // Hidden-PROFILE (identity) NAME suppression is applied downstream in
+  // enrichMomentsWithKismetMeta (the single creator-chip choke point), not
+  // here: an earlier strip at this spot was silently re-populated by the
+  // enrichment overlay that runs after it (username AND avatar). See
+  // lib/momentEnrichment.ts.
 
   // Following priority: bubble followed creators to the top, preserve internal order
   if (followingSet && followingSet.size > 0) {

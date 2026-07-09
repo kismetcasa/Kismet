@@ -1,9 +1,6 @@
 'use client'
 
-import { useState } from 'react'
-import { toast } from 'sonner'
-import { useUploadSession } from '@/hooks/useUploadSession'
-import { humanError } from '@/lib/toast'
+import { useSignIn } from '@/hooks/useSignIn'
 
 interface SignInPromptProps {
   /** Helper text shown above the button. */
@@ -18,36 +15,22 @@ interface SignInPromptProps {
 
 /**
  * Sign-in CTA for wallet-connected users who hit 401 on a session-
- * cookie-required endpoint. Wraps useUploadSession.ensureSession plus
- * in-flight + error-toast boilerplate. In a Mini App ensureSession is
- * a no-op (Quick Auth's JWT IS the session) so clicking resolves
- * without a wallet prompt.
+ * cookie-required endpoint. Layout wrapper over useSignIn, which owns
+ * the ensureSession + in-flight + error-toast flow (shared with the
+ * profile earnings card's compact variant). In a Mini App the click
+ * resolves without a wallet prompt (Quick Auth's JWT IS the session).
  */
 export function SignInPrompt({
   message,
   onSignedIn,
 }: SignInPromptProps) {
-  const { ensureSession } = useUploadSession()
-  const [signingIn, setSigningIn] = useState(false)
-
-  async function handleClick() {
-    if (signingIn) return
-    setSigningIn(true)
-    try {
-      await ensureSession()
-      onSignedIn()
-    } catch (err) {
-      toast.error('Sign in failed', { description: humanError(err) })
-    } finally {
-      setSigningIn(false)
-    }
-  }
+  const { signIn, signingIn } = useSignIn(onSignedIn)
 
   return (
     <div className="flex flex-col items-center gap-3 py-12">
       <p className="text-xs font-mono text-muted">{message}</p>
       <button
-        onClick={handleClick}
+        onClick={signIn}
         disabled={signingIn}
         className="px-4 py-1.5 text-xs font-mono border border-line text-dim hover:text-ink hover:border-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >

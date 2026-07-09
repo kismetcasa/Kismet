@@ -73,8 +73,14 @@ const UA_MATRIX: Array<[string, string, boolean, boolean]> = [
     false,
   ],
   [
-    'RN WebView custom UA (the mobile Mini App gap: NO mobile tokens)',
-    'Warpcast/1.92 CFNetwork/1494.0.7 Darwin/23.4.0',
+    'Warpcast mobile Mini App (real UA captured from production)',
+    'warpcast',
+    true,
+    true,
+  ],
+  [
+    'hypothetical unknown app-shell UA (why the RN-WebView leg still exists)',
+    'SomeNewHost/1.0 CFNetwork/1494.0.7 Darwin/23.4.0',
     false,
     false,
   ],
@@ -123,13 +129,19 @@ setContext({ iframe: true })
 check('iframe (desktop Mini App): potential Mini App env', isPotentialMiniAppEnv() === true)
 check('iframe (desktop Mini App): not RN WebView', isReactNativeWebView() === false)
 
-// Mobile Mini App: RN WebView leg — THE case that fell through before.
+// Mobile Mini App (Warpcast): BOTH legs now agree — the captured UA is
+// classified mobile server-side AND the RN bridge marks it client-side.
 setContext({ rnWebView: true, ua: UA_MATRIX[7][1] })
-check('RN WebView (mobile Mini App): isReactNativeWebView', isReactNativeWebView() === true)
-check('RN WebView (mobile Mini App): potential Mini App env', isPotentialMiniAppEnv() === true)
+check('Warpcast RN WebView: isReactNativeWebView', isReactNativeWebView() === true)
+check('Warpcast RN WebView: potential Mini App env', isPotentialMiniAppEnv() === true)
+check('Warpcast UA is classified mobile server-side', isMobileUaString(UA_MATRIX[7][1]) === true)
+// An UNKNOWN future shell still falls through the UA layer — the RN-WebView
+// leg is what catches it at runtime until its UA gets pinned here.
+setContext({ rnWebView: true, ua: UA_MATRIX[8][1] })
+check('unknown shell: RN leg still catches it', isReactNativeWebView() === true)
 check(
-  'RN WebView UA alone would NOT be classified mobile (why the third leg exists)',
-  isMobileUaString(UA_MATRIX[7][1]) === false,
+  'unknown shell UA alone would NOT be classified mobile (why the RN leg exists)',
+  isMobileUaString(UA_MATRIX[8][1]) === false,
 )
 
 // Coinbase/Base mobile in-app browser: excluded from the FC bootstrap but

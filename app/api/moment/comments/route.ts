@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { inprocessUrl } from '@/lib/inprocess'
+import { AIRDROP_INVITE_COMMENT, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
+import { getAirdropsByMoment } from '@/lib/airdrops'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -38,18 +39,29 @@ export async function GET(req: NextRequest) {
     offset: offset !== '0' ? offset : undefined,
   })
 
+  // Kismet airdrops (adminMints) never leave a collect comment on the
+  // inprocess feed, so without this fold the recipients are invisible — the
+  // supply count includes them but the activity list doesn't. Merge them in
+  // as "invited to kismet" rows on the FIRST page only (the UI fetches offset
+  // 0 and scrolls); paginating gifts alongside comments isn't worth it.
+  const isFirstPage = offset === '0'
+
   // try/caught so an upstream timeout (the 8s signal) or network failure
   // degrades to the route's 502 shape instead of an unhandled rejection.
   let res: Response
   let hiddenUsers: Set<string>
+  let airdrops: Awaited<ReturnType<typeof getAirdropsByMoment>>
   try {
-    ;[res, hiddenUsers] = await Promise.all([
+    ;[res, hiddenUsers, airdrops] = await Promise.all([
       fetch(url, {
         headers: { Accept: 'application/json' },
         next: { revalidate: 30 },
         signal: AbortSignal.timeout(8_000),
       }),
       getHiddenUsersSet(),
+      // getAirdropsByMoment swallows its own errors (returns []), so this
+      // can't reject the Promise.all and mask a real upstream failure.
+      isFirstPage ? getAirdropsByMoment(collectionAddress, tokenId) : Promise.resolve([]),
     ])
   } catch {
     return errorResponse(502, 'upstream unreachable')
@@ -74,6 +86,33 @@ export async function GET(req: NextRequest) {
         const sender = typeof c.sender === 'string' ? c.sender.toLowerCase() : ''
         return !hiddenUsers.has(sender)
       })
+    }
+  }
+
+  // Fold airdrop "invited to kismet" rows into the first page and re-sort the
+  // whole page newest-first so gifts land in the right temporal spot next to
+  // collects. Only touch a well-formed 2xx body; an upstream error passes
+  // through untouched (so its status/shape is preserved for the client).
+  if (isFirstPage && airdrops.length > 0 && res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>
+    const existing = Array.isArray(obj.comments) ? (obj.comments as MomentComment[]) : []
+    const airdropRows: MomentComment[] = airdrops
+      // The recipient is the shown party here, so mirror the comment filter
+      // and drop rows whose recipient is an admin-hidden user.
+      .filter((a) => !hiddenUsers.has(a.recipient.address.toLowerCase()))
+      .map((a) => ({
+        sender: a.recipient.address,
+        comment: AIRDROP_INVITE_COMMENT,
+        timestamp: a.timestamp,
+        kind: 'airdrop' as const,
+      }))
+    if (airdropRows.length > 0) {
+      // `|| 0` guards a missing/NaN upstream timestamp from scrambling the
+      // sort (NaN comparisons are undefined) — such a row just sinks to the
+      // bottom instead of randomizing the whole page.
+      obj.comments = [...existing, ...airdropRows].sort(
+        (x, y) => (normalizeTimestampMs(y.timestamp) || 0) - (normalizeTimestampMs(x.timestamp) || 0),
+      )
     }
   }
 

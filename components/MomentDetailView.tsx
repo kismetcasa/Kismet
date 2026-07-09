@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, AIRDROP_INVITE_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -92,9 +92,17 @@ interface Props {
   // backdrop click) and the in-page link would navigate to "/" instead
   // of closing the overlay.
   inOverlay?: boolean
+  // Server-computed isWebKitOnlyUA(), passed only by the canonical
+  // (hard-navigation / share-link) page — the one path that SSRs this view
+  // with data. Threaded to the video so its SSR <video src> is proxy-first
+  // for WebKit-only surfaces (iOS Safari, the warpcast RN host) instead of
+  // emitting the direct url and wasting a doomed fetch on hydration. The IR
+  // overlay mounts client-side (soft nav), where client detection already
+  // handles it, so it leaves this false.
+  ssrWebKit?: boolean
 }
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay }: Props) {
+export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay, ssrWebKit }: Props) {
   const router = useRouter()
   const { address: connectedAddress } = useAccount()
 
@@ -553,7 +561,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   const hasCollected = alreadyOwned || collected
-  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // Wait for both reads before flagging — otherwise we'd flash "sold out"
   // before tokenInfo lands.
   const mintedOut =
     maxSupply !== undefined &&
@@ -577,7 +585,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       : saleEnded
         ? 'mint ended'
         : mintedOut
-          ? hasCollected ? 'collected' : 'minted out'
+          ? 'sold out'
           : hasCollected ? 'collect+' : 'collect'
 
   async function handleDistribute() {
@@ -1118,6 +1126,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   thumbhash={meta.kismet_thumbhash}
                   showPosterLayer
                   controls
+                  ssrProxyHint={ssrWebKit}
                   className="w-full h-full object-contain"
                   onAllError={() => setVideoError(true)}
                 />
@@ -1460,6 +1469,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {comments.map((c, i) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
                     const displayName = profile?.name ?? shortAddress(c.sender)
+                    // Airdrop rows are gifts the recipient didn't buy — label
+                    // them "invited to kismet" (the transparent parallel to a
+                    // collector's "collected on kismet"). `sender` here is the
+                    // recipient the comments route stamped on the row.
+                    const isAirdrop = c.kind === 'airdrop'
                     const isDefault = isPlatformCollectComment(c.comment)
                     return (
                       <div key={i} className="flex gap-2 items-center">
@@ -1478,7 +1492,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                           {displayName}
                         </Link>
                         <span className="text-xs font-mono text-dim flex-1 break-words leading-relaxed">
-                          {isDefault ? 'collected on kismet' : c.comment}
+                          {isAirdrop
+                            ? AIRDROP_INVITE_COMMENT
+                            : isDefault
+                              ? 'collected on kismet'
+                              : c.comment}
                         </span>
                         <span className="text-[10px] font-mono text-faint flex-shrink-0">
                           {formatRelativeTime(c.timestamp)}

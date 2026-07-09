@@ -271,19 +271,33 @@ avoid killing slow-but-alive loads.
   UA carries no mobile tokens) is now detected via `isReactNativeWebView()`
   (`lib/miniAppEnv.ts`, the host-injected `window.ReactNativeWebView` marker) and wired
   through the feed cap, decoder caps, proxy-first sourcing, and the detail first-frame seek.
+  The Warpcast RN-WebView UA (literally `warpcast`) is additionally matched at SSR by
+  `MOBILE_APP_SHELL_RE` (`lib/deviceUA.ts`) so the mobile treatment is baked server-side
+  (the runtime RN-WebView leg remains as the catch-all); the transitional `debug:ua-seen`
+  logger has been removed.
 
 ### Still open (ops / upstream)
 
-1. **CDN in front of `/api/img`** (`OPS_RUNBOOK.md §3`) — the biggest remaining lever and
-   the systemic answer to the box streaming every constrained-surface byte; must forward
-   `Range` / preserve `206` (the runbook's probes verify it).
-2. **Second gateway in the pool** — `lib/arweave/gateways.ts` is down to arweave.net
-   alone; re-add a curl-verified AR.IO gateway (file comment documents the steps +
-   `next.config` allowlist coupling).
-3. **Monitoring** — an external `/api/img?u=ar://<known-txid>` probe with
-   `Range: bytes=0-1` alerting on anything but `206` turns this outage class into an alert
-   instead of artist reports.
-4. **Upstream / product:** inprocess `content:null` timeline rows; mint-side 100 MB
+1. **CDN in front of `/api/img` — now URGENT (`OPS_RUNBOOK.md §3`).** With real totals
+   live, AVFoundation seeks straight to resume offsets, and on a rangeless upstream every
+   mid-file range is served by reading-and-discarding from byte 0 (observed: the 186 MB
+   "gargoyle cat" produced `bytes=30867456-…` / `bytes=112066560-…` seeks = 30–112 MB of
+   discarded origin reads each, plus ~155 MB tail transfers per resume-view — the "clicking
+   into moments is slower on Mini Apps" report). A CDN-cached full object serves those
+   ranges instantly at the edge and removes the origin egress. Must forward `Range` /
+   preserve `206` (the runbook's probes verify it). App-side interim rejected: refusing
+   mid-file ranges breaks resume, and capping skip depth breaks playback.
+2. **Second gateway in the pool** — `lib/arweave/gateways.ts` is down to arweave.net alone;
+   re-add a curl-verified AR.IO gateway (file comment documents the steps + `next.config`
+   allowlist coupling).
+3. **Desktop Mini App autoplay** — if feed videos still don't autoplay there after the
+   delivery fixes, check `document.permissionsPolicy?.allowsFeature('autoplay')` in the
+   console; `false` means the host iframe lacks `allow="autoplay"` and no delivery fix
+   changes it (detail playback via tap still works).
+4. **Monitoring** — an external `/api/img?u=ar://<known-txid>` probe with `Range: bytes=0-1`
+   alerting on anything but `206` turns this outage class into an alert instead of artist
+   reports.
+5. **Upstream / product:** inprocess `content:null` timeline rows; mint-side 100 MB
    faststart/duration caps for large Kismet uploads; non-image collection-chip covers
    (`_next/image` 400 at w=32).
 
