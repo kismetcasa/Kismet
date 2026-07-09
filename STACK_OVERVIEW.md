@@ -48,7 +48,7 @@ those are the operational *verdicts*.
    ┌───────────────────────────── Next.js 15 (standalone) — ONE container ─────────────────────────────┐
    │  App Router pages + ~80 API routes + instrumentation boot + next/image optimizer                  │
    │                                                                                                   │
-   │  Auth: SIWE cookie · FC Quick-Auth JWT · EIP-712 intent · admin/curator SIWE                      │
+   │  Auth: SIWE cookie · FC Quick-Auth JWT · EIP-712 intent                                           │
    │  Guards: IP rate-limit · per-identity day/week quota · SSRF (safeUrl) · blacklist · pass-gate     │
    └───────┬───────────┬────────────┬────────────┬───────────┬────────────┬──────────────┬────────────┘
            │           │            │            │           │            │              │
@@ -112,13 +112,12 @@ production defaults in `lib/config.ts`):
 
 | Constant | Address | Role |
 |---|---|---|
-| `PLATFORM_COLLECTION` | `0x349D3DA472BDD2FBeebf8e0bBAF4220160A62526` | Kismet Casa admin-mint collection; Discover filter |
+| `PLATFORM_COLLECTION` | `0x349D3DA472BDD2FBeebf8e0bBAF4220160A62526` | Kismet Casa platform collection; Discover filter |
 | `CREATE_REFERRAL` / `KISMET_REFERRAL` | `0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75` | Zora create/mint-referral treasury (**treasury-critical**) |
 | `RESIDENCIES_ADDRESS` | `0x58f19e55058057B04feAe2EEA88F90B84b7714Eb` | Kismet Casa residencies cut (default 5%) |
 | `PLATFORM_FEE_RECIPIENT` | `0x099B9BBe0937428e145a3003dDf58e7E0CF69801` | 1% secondary fee (`PLATFORM_FEE_BPS = 100n`, **treasury-critical**) |
-| Pass/Patron collection | `0x80ce7bd430f34792490a22ee0fd479e7333715c9` | Token-gate Pass (admin-configurable) |
-| `ADMIN_ADDRESS` / `CURATOR_ADDRESSES` default | `0x3D140B892437dD7857701098415deB2daaE03A40` | Admin + curator (self-seeded default) |
-| `OPERATOR_SMART_WALLET` | env-set | Platform CDP wallet for admin-mint/airdrop routing |
+| Pass/Patron collection | `0x80ce7bd430f34792490a22ee0fd479e7333715c9` | Token-gate Pass |
+| `OPERATOR_SMART_WALLET` | env-set | Platform CDP wallet for relayed mint/airdrop routing |
 
 ### 1.3 Managed third-party services
 
@@ -172,11 +171,11 @@ Kismet is best understood as **eight layers**, each of which is a review unit in
 4. **Storage & media** — Arweave/Turbo for permanence; a heavy client+server media pipeline to make onchain art actually play on iOS/WebKit and inside Mini Apps.
 5. **Identity & social** — Farcaster Mini App, three auth paths, ENS/FC identity unification, notifications.
 6. **Data & platform infra** — Upstash Redis (the whole datastore), rate-limit/quota/abuse guards, telemetry/health, config, Next.js/Docker/Coolify.
-7. **Product subsystems** — Agent Collect (autonomous), Pass gate (provenance), airdrops, feeds/curation/stats, moments/collections domain.
+7. **Product subsystems** — Agent Collect (autonomous), Pass gate (provenance), airdrops, feeds/stats, moments/collections domain.
 
 **Two invariants that thread through everything:**
 
-- **The three-smart-wallet separation** (never conflated in code): (a) the Kismet-controlled **CDP "scout spender"** that draws users' Spend Permissions; (b) each creator's **per-creator inprocess smart wallet** that holds Zora ADMIN and executes `/moment/create`; (c) the **operator smart wallet** for admin-mint/airdrop routing. A live collection mints with `permissions(0, operator) = 0` — misreading this repeatedly misdirected debugging (`29660ed`).
+- **The three-smart-wallet separation** (never conflated in code): (a) the Kismet-controlled **CDP "scout spender"** that draws users' Spend Permissions; (b) each creator's **per-creator inprocess smart wallet** that holds Zora ADMIN and executes `/moment/create`; (c) the **operator smart wallet** for relayed mint/airdrop routing. A live collection mints with `permissions(0, operator) = 0` — misreading this repeatedly misdirected debugging (`29660ed`).
 - **Redis is the single datastore and a coordination primitive.** No SQL. Every session, quota, ledger, feed index, lock, and cache lives in Upstash. Two structural pressures — per-command billing (~1M/mo vs a 500K free cap) and single-container availability — shape most of the hardening you see.
 
 **The recurring theme across the whole codebase is "scar tissue":** an unusually
@@ -470,17 +469,15 @@ invalidated by a domain change; Quick-Auth JWTs (~1 h) have no server-side
 revocation.
 
 #### E2. Auth & session (`auth-session`)
-**What.** Four deliberately-separated auth paths: **user SIWE** cookie sessions
+**What.** Three deliberately-separated auth paths: **user SIWE** cookie sessions
 (EIP-4361, 7-day sliding, `__Host-` opaque token), **Farcaster Quick-Auth** JWTs
 (the Bearer fallback for cookie-hostile iframes), **intent-auth** (per-action EIP-712
-signatures binding every economic field for mint/write actions), and a separate
-**admin/curator SIWE** session (`SameSite=Strict`, 4 h, gated on
-`ADMIN_ADDRESS`/`CURATOR_ADDRESSES`).
+signatures binding every economic field for mint/write actions).
 
 **Why.** Authenticate wallet users across a browser and a cookie-hostile Mini App
 without ever handing the client a forgeable credential, and authorize high-value
 economic actions at finer grain than a login session. Docblocks record a hardening
-migration from a prior scheme that replayed a raw SIWE signature in every admin
+migration from a prior scheme that replayed a raw SIWE signature in every
 request body (4 h replay window) to single-use nonces + domain-bound signatures +
 opaque httpOnly tokens. `83767c1` bounded the signal-less `api.farcaster.xyz` fetch
 that runs on every authed Mini App request (a hung upstream drove OOM).
@@ -488,15 +485,13 @@ that runs on every authed Mini App request (a hung upstream drove OOM).
 **Key mechanisms.** Verify-then-consume nonce ordering everywhere (signature checked
 before atomic Redis `GETDEL`/`DEL`, so a bogus-signature flood can't burn a
 legitimate nonce); **domain==Host** binding (anti-phishing); ERC-1271 support free
-via viem `verifyHash`; strict separation of five Redis nonce/session namespaces
-(`nonce` / `auth-nonce` / `intent-nonce` / `session` / `auth-session`) and
-two cookie names; intent-auth is what makes `body.account` trustworthy for the
+via viem `verifyHash`; strict separation of the Redis nonce/session namespaces per
+auth flow; intent-auth is what makes `body.account` trustworthy for the
 downstream gate/blacklist/pause policy layer.
 
 **Risks.** Redis is a hard dependency for every auth decision (degrades to
 logged-out, safe, but an outage logs everyone out); a user session grants *only*
-"this address is authenticated" — authorization is a separate check; `ADMIN_ADDRESS`
-self-seeds a default (a fork forgetting to override inherits Kismet's admin identity).
+"this address is authenticated" — authorization is a separate check.
 
 #### E3. Profiles & identity (`profiles-identity`)
 **What.** Resolves a raw address into one coherent display identity (Kismet
@@ -681,13 +676,11 @@ dollars + off-chain policy); on-chain truth authoritative (period + spend from
 spend (`usdcAllowance:0n` forces a fresh per-collect approve so funds rest only
 transiently); layered concurrency safety (per-(recipient,drop) `SET NX` lock,
 shared-spender Redis mutex, per-owner run lock, on-chain `balanceOf` self-healing
-dedup); **kill switch** (one Redis flag halts all autonomous spending without a
-deploy); fair round-robin allocation across watchers for scarce drops; FID sibling
+dedup); fair round-robin allocation across watchers for scarce drops; FID sibling
 expansion.
 
 **Risks.** Users grant to a **server-controlled** spender (compromise bounded but
-not eliminated by the on-chain cap; the kill switch is the only server-side emergency
-stop); non-atomic EOA fallback has a strand-funds window (capped to 1 edition/run);
+not eliminated by the on-chain cap); non-atomic EOA fallback has a strand-funds window (capped to 1 edition/run);
 paymaster loss hard-fails every collect; public prepare routes are unauthenticated
 (IP-limited only); the live path is unverified in CI.
 
@@ -718,8 +711,8 @@ the collector is stranded at `validBalance=0`); timing-safe HMAC webhook
 verification; fail-closed at credit time / fail-open on read.
 
 **Risks.** The webhook is single-point-critical for the *off-platform* half (no
-active replay/backfill — it only warns); taint is permanent and irreversible except
-by manual admin `removeTaint`; `creditValidityOnce` trusts its caller (correctness
+active replay/backfill — it only warns); taint is permanent and irreversible;
+`creditValidityOnce` trusts its caller (correctness
 depends on every path flagging only on-chain-proven pairs).
 
 #### G3. Airdrops (`airdrops`)
@@ -745,9 +738,8 @@ synchronous per-recipient `creditValidityOnce`; single-source `MAX_AIRDROP_RECIP
 cap on client and server.
 
 **Risks.** Quota is **soft** (direct mint bypasses `/api/airdrop/notify`); off-chain
-record can be lost if all retries fail after the mint lands (recovery via the admin
-`airdrop-record` endpoint); operator-wallet ADMIN coupling (a missing grant reverts
-curated/admin-mint flows).
+record can be lost if all retries fail after the mint lands; operator-wallet ADMIN
+coupling (a missing grant reverts curated mint flows).
 
 #### G4. Notifications (`notifications`)
 **What.** Two transports over one event model: an address-keyed in-app bell/feed
@@ -773,9 +765,9 @@ signed inbound webhook (ed25519 + Hub app-key).
 loads all entries on every page (in-memory pagination); push delivery is best-effort
 and unobservable.
 
-#### G5. Feeds: Discover / Featured / Search / Timeline / Stats / Curation (`feeds-discover`)
+#### G5. Feeds: Discover / Featured / Search / Timeline / Stats (`feeds-discover`)
 **What.** The content-surface layer: cross-collection Discover/Trending/Mints feeds,
-admin curation (Featured + creator lists), multi-entity search, and per-artist
+multi-entity search, and per-artist
 earnings stats rebuilt from the inprocess `/transfers` feed (USD-valued via the
 Chainlink read).
 
@@ -874,7 +866,7 @@ Eligibility gate (EIP-5792 capability / `eth_getCode`) → user signs **one** bo
 Spend Permission to the scout spender (the only user-signed money-moving step) → the
 config PUT is owner-scoped by the SIWE session and **F3-validated** (permission's
 `account`===owner AND `spender`===`NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS`) → on app-open
-/ "Run now", `runScoutServer` checks the **kill switch**, anchors budget to
+/ "Run now", `runScoutServer` anchors budget to
 `getPermissionStatus`, discovers watched artists' drops, plans against the pure
 engine, and for each approved collect: re-resolves price on-chain, per-(recipient,drop)
 `SET NX` lock + TOCTOU re-clamp, composes `[spend()][mint]` and submits through the
@@ -911,12 +903,11 @@ and `bytes 0-1/*`), and re-serves with 1-year immutable caching. Trust boundarie
 (ar/ipfs-only SSRF guard + per-hop redirect domain-pinning).
 
 ### 4.6 Auth & session
-Three keyspaces, deliberately separated: **user** (nonce keyed by address, 7-day
-sliding `__Host-` Lax cookie, gates resource-spend via `getSessionAddress`), **admin**
-(nonce keyed by value, 4 h `SameSite=Strict` cookie, authz on
-`ADMIN_ADDRESS`/`CURATOR_ADDRESSES` re-checked per request), and **intent** (per-action
-EIP-712 bound to the exact economic body + chainId 8453, verified in mint-proxy
-independent of session). All three signature verifications route through viem against
+Two keyspaces, deliberately separated: **user** (nonce keyed by address, 7-day
+sliding `__Host-` Lax cookie, gates resource-spend via `getSessionAddress`) and
+**intent** (per-action EIP-712 bound to the exact economic body + chainId 8453,
+verified in mint-proxy
+independent of session). Both signature verifications route through viem against
 Base RPC and support ERC-1271 smart wallets. The session cookie and Farcaster Bearer
 JWT are unified behind one `getSessionAddress` so every endpoint accepts either.
 
@@ -962,7 +953,7 @@ Next 15's built-in shutdown does it).
   credit drain is bounded by sign-call quotas but ultimately by keeping the wallet a
   bounded float (balance alerting is recommended in `.env.example` but not yet
   automated — see Finding 5); autonomous agent spend is bounded on-chain by
-  the Spend Permission and operationally by the kill switch.
+  the Spend Permission.
 
 ---
 
@@ -983,12 +974,10 @@ they are flagged for follow-up.
    `<link rel="dns-prefetch" href="https://permagate.io" />` — a gateway
    `lib/arweave/gateways.ts` explicitly pruned as non-functional (TLS outage). The
    two files have drifted.
-3. **Four env vars are read in code but absent from `.env.example`** (verified: grep
-   count 0 in `.env.example`): `UPSTASH_REDIS_REST_URL` and
-   `UPSTASH_REDIS_REST_TOKEN` (the **core datastore** — an operator following the
-   example alone ships a non-functional app), `NEXT_PUBLIC_RESIDENCIES_ADDRESS`
-   (`lib/config.ts:19`, a revenue recipient), and `CURATOR_ADDRESSES`
-   (`lib/config.ts:81`, a privilege-granting allowlist).
+3. **Env vars read in code but previously absent from `.env.example`** — now
+   documented there: `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the
+   **core datastore** — an operator following the example alone shipped a
+   non-functional app) plus two platform-address defaults (`lib/config.ts`).
 4. **`lib/safeUrl.ts` is an unowned cross-cutting security control.** The
    `isSafePublicHttpsUrl()` SSRF guard gates five server-fetch sinks (OG/share
    render, ENS-avatar fetch, transcode-gif, Farcaster notification POSTs,
@@ -1021,7 +1010,7 @@ they are flagged for follow-up.
 | D1 | Arweave storage via ArDrive Turbo | external-service | `lib/arweave/*`, `app/api/sign` |
 | D2 | Media pipeline | internal | `lib/media/*`, `app/api/img` |
 | E1 | Farcaster Mini App integration | external-service | `providers/FarcasterProvider.tsx`, `lib/farcaster*` |
-| E2 | Auth & session | internal | `lib/session.ts`, `lib/intentAuth.ts`, `lib/curator.ts` |
+| E2 | Auth & session | internal | `lib/session.ts`, `lib/intentAuth.ts` |
 | E3 | Profiles & identity | internal | `lib/addressUnion.ts`, `lib/ensCache.ts` |
 | F1 | Redis / KV / caching | infrastructure | `lib/redis.ts`, `lib/kv.ts` |
 | F2 | Rate limiting, quotas & abuse | internal | `lib/ratelimit.ts`, `lib/userQuota.ts`, `lib/safeUrl.ts` |
@@ -1032,7 +1021,7 @@ they are flagged for follow-up.
 | G2 | Pass gate / token gating | internal | `lib/pass-validity.ts`, `app/api/webhooks/pass-transfer` |
 | G3 | Airdrops | internal | `lib/airdrops.ts`, `app/api/airdrop/notify` |
 | G4 | Notifications | internal | `lib/notifications.ts`, `lib/farcasterNotifications.ts` |
-| G5 | Feeds / Discover / Stats / Curation | internal | `app/api/timeline`, `lib/stats.ts` |
+| G5 | Feeds / Discover / Stats | internal | `app/api/timeline`, `lib/stats.ts` |
 | G6 | Moments & collections domain | internal | `lib/momentDetail.ts`, `lib/collections.ts` |
 
 _Generated from a full multi-agent read of the codebase + git history, validated

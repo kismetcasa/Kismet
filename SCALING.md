@@ -133,7 +133,7 @@ rate limits and quotas **fail open** (`lib/ratelimit.ts`, `lib/userQuota.ts:145`
 | `kismetart:followers:<addr>` / `following:<addr>` | `lib/follows.ts:38,35` | +1 per edge | High for popular nodes (drives §3) |
 | `kismetart:collected:<addr>` (ZSET, `ZRANGE 0 -1`) | `lib/collected.ts`, timeline | +1 per collect | Med-High for heavy collectors |
 | `hidden-moments`/`hidden-collections`/`hidden-users` | `lib/hidden*.ts` | +1 per hide | Med (memoized 5 min); read on most feeds |
-| `kismetart:featured` (ZSET) | `app/api/featured/route.ts` | +1 per curate | Med (admin-bounded; **now trimmed** to `MAX_FEATURED=1000` on write, `lib/redis.ts`) |
+| `kismetart:featured` (ZSET) | `app/api/featured/route.ts` | +1 per featured write | Med (low write volume; **now trimmed** to `MAX_FEATURED=1000` on write, `lib/redis.ts`) |
 
 `memoize()` (`lib/memoCache.ts`, process-local TTL + single-flight) cuts read
 **frequency** but not **payload size**, and is **per-pod**. **Fix → B3** (bound the
@@ -293,7 +293,7 @@ current; engines pin `node >=22.11`.
 
 Layered: intent-signature verification on mint/write (`lib/intentAuth.ts`), httpOnly
 session + FC JWT fallback, per-identity quotas (`lib/userQuota.ts`), IP rate limits on
-~40 endpoints, action + pass blacklists, gate/pause kill switch, on-chain verification
+~40 endpoints, action + pass blacklists, gate/pause controls, on-chain verification
 before crediting collects, idempotency keys, SSRF guards on the proxy + push URLs,
 `__Host-` cookie prefix, timing-safe webhook HMAC.
 
