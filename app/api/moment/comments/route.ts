@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { AIRDROP_INVITE_COMMENT, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
+import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
 import { getAirdropsByMoment } from '@/lib/airdrops'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -89,20 +90,27 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Fold airdrop "invited to kismet" rows into the first page and re-sort the
+  // Fold airdrop rows (labeled below) into the first page and re-sort the
   // whole page newest-first so gifts land in the right temporal spot next to
   // collects. Only touch a well-formed 2xx body; an upstream error passes
   // through untouched (so its status/shape is preserved for the client).
   if (isFirstPage && airdrops.length > 0 && res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>
     const existing = Array.isArray(obj.comments) ? (obj.comments as MomentComment[]) : []
+    // The patron collection acts as the mint pass, so an airdrop of it is an
+    // invitation to the platform ("invited to kismet"); every other collection
+    // is a plain gift ("airdropped on kismet"). One moment = one collection, so
+    // the label is the same for every row on this page — decide it once.
+    const airdropLabel = isPatronCollection(collectionAddress)
+      ? AIRDROP_INVITE_COMMENT
+      : AIRDROP_GENERIC_COMMENT
     const airdropRows: MomentComment[] = airdrops
       // The recipient is the shown party here, so mirror the comment filter
       // and drop rows whose recipient is an admin-hidden user.
       .filter((a) => !hiddenUsers.has(a.recipient.address.toLowerCase()))
       .map((a) => ({
         sender: a.recipient.address,
-        comment: AIRDROP_INVITE_COMMENT,
+        comment: airdropLabel,
         timestamp: a.timestamp,
         kind: 'airdrop' as const,
       }))

@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, AIRDROP_INVITE_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -1480,10 +1480,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {comments.map((c, i) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
                     const displayName = profile?.name ?? shortAddress(c.sender)
-                    // Airdrop rows are gifts the recipient didn't buy — label
-                    // them "invited to kismet" (the transparent parallel to a
-                    // collector's "collected on kismet"). `sender` here is the
-                    // recipient the comments route stamped on the row.
+                    // Airdrop rows are gifts the recipient didn't buy. The
+                    // comments route already stamped the right label into
+                    // `comment` per collection — "invited to kismet" for the
+                    // patron/mint-pass collection, "airdropped on kismet"
+                    // otherwise — so just render it. `sender` is the recipient.
                     const isAirdrop = c.kind === 'airdrop'
                     const isDefault = isPlatformCollectComment(c.comment)
                     return (
@@ -1504,7 +1505,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                         </Link>
                         <span className="text-xs font-mono text-dim flex-1 break-words leading-relaxed">
                           {isAirdrop
-                            ? AIRDROP_INVITE_COMMENT
+                            ? c.comment
                             : isDefault
                               ? 'collected on kismet'
                               : c.comment}
