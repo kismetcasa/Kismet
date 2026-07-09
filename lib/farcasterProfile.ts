@@ -99,21 +99,23 @@ async function getFarcasterProfileByFid(
             username?: string
             displayName?: string
             pfp?: { url?: string }
-            // Verified/connected off-platform accounts. Field name has varied
-            // across API versions; read both defensively (best-effort — a shape
-            // change just drops the inherited X handle, manual entry still works).
+            // Verified off-platform accounts on the Warpcast/Farcaster user
+            // object. `platform` is a lowercase enum ("x" for Twitter/X),
+            // `username` the handle, `expired` set once a link is revoked.
+            // Best-effort: if the field is absent we just don't inherit an X link.
             connectedAccounts?: { platform?: string; username?: string; expired?: boolean }[]
-            verifiedAccounts?: { platform?: string; username?: string; expired?: boolean }[]
           }
         }
       }
       const user = body.result?.user
       if (user?.fid) {
-        const accounts = user.connectedAccounts ?? user.verifiedAccounts ?? []
-        const x = accounts.find((a) => {
-          const p = (a?.platform ?? '').toLowerCase()
-          return (p === 'x' || p === 'twitter') && a?.expired !== true && typeof a?.username === 'string' && a.username.trim().length > 0
-        })
+        const x = (user.connectedAccounts ?? []).find(
+          (a) =>
+            (a?.platform ?? '').toLowerCase() === 'x' &&
+            a?.expired !== true &&
+            typeof a?.username === 'string' &&
+            a.username.trim().length > 0,
+        )
         profile = {
           fid: user.fid,
           username: user.username ?? null,

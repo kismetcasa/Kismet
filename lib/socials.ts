@@ -75,6 +75,9 @@ function handlePlatform(
   hosts: string[],
   handleRe: RegExp,
   placeholder: string,
+  // Lowercase before validating — for platforms whose handles are canonically
+  // lowercase (Farcaster). X/Instagram preserve entered case.
+  lower = false,
 ): SocialPlatformDef {
   return {
     key,
@@ -82,7 +85,8 @@ function handlePlatform(
     short,
     placeholder,
     normalize(raw) {
-      const h = extractHandle(raw, hosts)
+      const extracted = extractHandle(raw, hosts)
+      const h = lower ? extracted.toLowerCase() : extracted
       return handleRe.test(h) ? h : null
     },
     url(value) {
@@ -97,13 +101,16 @@ function handlePlatform(
 // Order here is the display + form order.
 export const SOCIAL_PLATFORMS: SocialPlatformDef[] = [
   handlePlatform('x', 'X', 'x', ['x.com', 'twitter.com'], /^[A-Za-z0-9_]{1,15}$/, '@handle or x.com/…'),
+  // Farcaster: fname or onchain ENS name. Real rule — label is <=16 chars of
+  // lowercase [a-z0-9-], optionally suffixed `.eth` (onchain names only).
   handlePlatform(
     'farcaster',
     'Farcaster',
     'fc',
     ['farcaster.xyz', 'warpcast.com'],
-    /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/,
+    /^[a-z0-9][a-z0-9-]{0,15}(?:\.eth)?$/,
     '@handle or farcaster.xyz/…',
+    true,
   ),
   handlePlatform('instagram', 'Instagram', 'ig', ['instagram.com'], /^[A-Za-z0-9._]{1,30}$/, '@handle or instagram.com/…'),
   {
@@ -113,8 +120,22 @@ export const SOCIAL_PLATFORMS: SocialPlatformDef[] = [
     placeholder: 'https://your-site.com',
     normalize(raw) {
       let s = raw.trim()
+      // Reject path-only / protocol-relative input (`/x`, `//evil.com`): a
+      // website is `scheme://host…` or `host…`, never leading-slash. Also stops
+      // `//host` from being mangled into `https:////host`.
+      if (!s || s.startsWith('/')) return null
       if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `https://${s}`
-      return isSafePublicHttpsUrl(s) ? s : null
+      if (!isSafePublicHttpsUrl(s)) return null
+      // Reject embedded credentials (https://trusted.com@evil.com): the real
+      // host is evil.com, so userinfo exists only to deceive. isSafePublicHttpsUrl
+      // already parsed s, so this re-parse won't throw — the catch is belt-only.
+      try {
+        const u = new URL(s)
+        if (u.username || u.password) return null
+      } catch {
+        return null
+      }
+      return s
     },
     url(value) {
       return value
