@@ -4,7 +4,7 @@ import { isAddress } from '@/lib/address'
 import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce, type Profile } from '@/lib/profile'
 import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getSessionAddress } from '@/lib/session'
-import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
+import { getFarcasterProfileByAddress, getVerifiedAddressesByFid, getVerifiedTwitterByFid } from '@/lib/farcasterProfile'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
@@ -88,10 +88,16 @@ export async function GET(
   const identityUnifies =
     canonical.fid != null &&
     (canonical.source === 'fid' || !!profile.username || !!profile.avatarUrl)
-  const fcWallets =
+  // fcWallets + the verified-X handle are both canonical.fid reads and
+  // independent, so fetch them together (both Redis-cached, ~1h).
+  const [fcWallets, verifiedTwitter] = await Promise.all([
     identityUnifies && canonical.fid != null
-      ? await getVerifiedAddressesByFid(canonical.fid)
-      : []
+      ? getVerifiedAddressesByFid(canonical.fid)
+      : Promise.resolve<string[]>([]),
+    canonical.fid != null
+      ? getVerifiedTwitterByFid(canonical.fid)
+      : Promise.resolve<string | null>(null),
+  ])
   const earnings = (await isEarningsPublic({
     address: canonicalAddress,
     fid: canonical.fid,
@@ -123,9 +129,7 @@ export async function GET(
   // on FC today; when present it outranks any manually-claimed `x` and the
   // client renders it with a verified badge. `...profile` already carries the
   // user's own (unverified) `socials`.
-  const verifiedSocials = farcaster?.verifiedTwitter
-    ? { x: farcaster.verifiedTwitter }
-    : undefined
+  const verifiedSocials = verifiedTwitter ? { x: verifiedTwitter } : undefined
   return NextResponse.json({
     profile: {
       ...profile,

@@ -11,9 +11,9 @@ import { isSafePublicHttpsUrl } from './safeUrl'
  * https-only host guard the avatar uses.
  *
  * These links are user-CLAIMED, not proven. The one exception is X, which we
- * can inherit as VERIFIED from a user's Farcaster connected accounts (see
- * verifiedTwitter in lib/farcasterProfile.ts) — that always wins over a manual
- * `x` handle in the UI and carries a verified badge.
+ * can inherit as VERIFIED from a user's Farcaster account-verifications (see
+ * getVerifiedTwitterByFid in lib/farcasterProfile.ts) — that always wins over a
+ * manual `x` handle in the UI and carries a verified badge.
  */
 export type SocialPlatformKey = 'x' | 'farcaster' | 'instagram' | 'website'
 
