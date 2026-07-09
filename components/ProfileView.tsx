@@ -6,7 +6,8 @@ import dynamic from 'next/dynamic'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin, BadgeCheck } from 'lucide-react'
+import { SOCIAL_PLATFORMS, socialLink, type SocialPlatformKey } from '@/lib/socials'
 import { ProfileAvatar } from './ProfileAvatar'
 import { ProfileStats } from './ProfileStats'
 import { PaletteRing } from './PaletteRing'
@@ -242,6 +243,11 @@ interface Profile {
   username?: string
   ensName?: string
   avatarUrl?: string
+  // User-claimed social handles/links (X, Farcaster, Instagram, website).
+  socials?: Partial<Record<SocialPlatformKey, string>>
+  // Proof-of-ownership socials inherited from Farcaster (X only today);
+  // outranks the claimed `socials.x` and renders with a verified badge.
+  verifiedSocials?: { x?: string }
   // Server-computed: collapses the username → farcaster → ens fallback
   // chain into a single field. See app/api/profile/[address]/route.ts.
   displayName?: string | null
@@ -317,6 +323,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const [editing, setEditing] = useState(false)
   const [usernameInput, setUsernameInput] = useState('')
   const [avatarInput, setAvatarInput] = useState('')
+  const [socialsInput, setSocialsInput] = useState<Record<SocialPlatformKey, string>>({
+    x: '',
+    farcaster: '',
+    instagram: '',
+    website: '',
+  })
   const [saving, setSaving] = useState(false)
   const [collectionsMode, setCollectionsMode] = useState(false)
   const [following, setFollowing] = useState(false)
@@ -616,6 +628,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   function openEdit() {
     setUsernameInput(profile?.username ?? '')
     setAvatarInput(profile?.avatarUrl ?? '')
+    setSocialsInput({
+      x: profile?.socials?.x ?? '',
+      farcaster: profile?.socials?.farcaster ?? '',
+      instagram: profile?.socials?.instagram ?? '',
+      website: profile?.socials?.website ?? '',
+    })
     setEditing(true)
   }
 
@@ -630,7 +648,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       const res = await fetch(`/api/profile/${address}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: usernameInput.trim() || undefined, avatarUrl: avatarInput.trim() || undefined, signature, nonce }),
+        body: JSON.stringify({ username: usernameInput.trim() || undefined, avatarUrl: avatarInput.trim() || undefined, socials: socialsInput, signature, nonce }),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d.error ?? 'Failed to save') }
       const { profile: updated } = await res.json()
@@ -1163,6 +1181,37 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
+            {/* Social links. X prefers the Farcaster-verified handle (badged);
+                every entry is re-validated by socialLink() before it reaches an
+                href, and rendered with rel="noopener noreferrer nofollow ugc". */}
+            {!loadingProfile && (() => {
+              const items = SOCIAL_PLATFORMS.flatMap((p) => {
+                const verified = p.key === 'x' ? profile?.verifiedSocials?.x : undefined
+                const value = verified ?? profile?.socials?.[p.key]
+                if (!value) return []
+                const link = socialLink(p.key, value)
+                return link ? [{ ...link, key: p.key, verified: !!verified }] : []
+              })
+              if (!items.length) return null
+              return (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+                  {items.map((it) => (
+                    <a
+                      key={it.key}
+                      href={it.url}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow ugc"
+                      title={`${it.label}: ${it.display}${it.verified ? ' (verified via Farcaster)' : ''}`}
+                      className="inline-flex items-center gap-1 text-xs font-mono text-muted hover:text-ink transition-colors"
+                    >
+                      <span className="text-faint uppercase tracking-wider">{it.short}</span>
+                      <span className="truncate max-w-[11rem]">{it.display}</span>
+                      {it.verified && <BadgeCheck size={11} className="text-accent flex-shrink-0" />}
+                    </a>
+                  ))}
+                </div>
+              )
+            })()}
             {theme && <ProvenanceChip theme={theme} />}
             {/* Owner-only "public view" toggle — always under the follower
                 count. Flips to the exit control while previewing: the one piece
@@ -1325,6 +1374,40 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               placeholder="https://… (leave blank for gradient avatar)"
               className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-mono text-muted uppercase tracking-wider">Social Links</label>
+            {SOCIAL_PLATFORMS.map((p) => {
+              // X proven-owned via Farcaster is shown read-only + badged — a
+              // manual handle can't outrank a verified one, so don't offer the field.
+              const verifiedX = p.key === 'x' ? profile?.verifiedSocials?.x : undefined
+              if (verifiedX) {
+                return (
+                  <div key={p.key} className="flex items-center gap-2 text-xs font-mono">
+                    <span className="w-16 flex-shrink-0 text-faint uppercase tracking-wider">{p.label}</span>
+                    <span className="text-ink truncate">@{verifiedX}</span>
+                    <BadgeCheck size={12} className="text-accent flex-shrink-0" />
+                    <span className="text-faint">verified via Farcaster</span>
+                  </div>
+                )
+              }
+              return (
+                <div key={p.key} className="flex items-center gap-2">
+                  <span className="w-16 flex-shrink-0 text-xs font-mono text-faint uppercase tracking-wider">{p.label}</span>
+                  <input
+                    type="text"
+                    value={socialsInput[p.key]}
+                    onChange={(e) => setSocialsInput((s) => ({ ...s, [p.key]: e.target.value }))}
+                    placeholder={p.placeholder}
+                    maxLength={200}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+                  />
+                </div>
+              )
+            })}
           </div>
           <div className="flex gap-3">
             <button onClick={saveProfile} disabled={saving} className="px-4 py-2.5 text-xs font-mono btn-accent">
