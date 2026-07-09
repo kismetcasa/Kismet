@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, AIRDROP_INVITE_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -1469,6 +1469,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {comments.map((c, i) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
                     const displayName = profile?.name ?? shortAddress(c.sender)
+                    // Airdrop rows are gifts the recipient didn't buy — label
+                    // them "invited to kismet" (the transparent parallel to a
+                    // collector's "collected on kismet"). `sender` here is the
+                    // recipient the comments route stamped on the row.
+                    const isAirdrop = c.kind === 'airdrop'
                     const isDefault = isPlatformCollectComment(c.comment)
                     return (
                       <div key={i} className="flex gap-2 items-center">
@@ -1487,7 +1492,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                           {displayName}
                         </Link>
                         <span className="text-xs font-mono text-dim flex-1 break-words leading-relaxed">
-                          {isDefault ? 'collected on kismet' : c.comment}
+                          {isAirdrop
+                            ? AIRDROP_INVITE_COMMENT
+                            : isDefault
+                              ? 'collected on kismet'
+                              : c.comment}
                         </span>
                         <span className="text-[10px] font-mono text-faint flex-shrink-0">
                           {formatRelativeTime(c.timestamp)}
