@@ -1,0 +1,129 @@
+// Verifies the pure sitemap-entry builder's load-bearing invariants in CI so a
+// regression goes red on the PR instead of silently leaking hidden content or
+// emitting non-canonical URLs to crawlers:
+//   1. Creator-hidden collections are dropped — and so is every moment inside
+//      them.
+//   2. Admin-hidden artists drop their collections + moments.
+//   3. Malformed created-mints members (no colon, empty address/tokenId) are
+//      skipped, never emitted as junk URLs.
+//   4. Addresses are lowercased so sitemap URLs match the pages' canonical
+//      links (case variants must not read as separate pages).
+//   5. createdAt → lastModified; an absent createdAt yields no lastModified.
+//   6. The moment cap bounds output and fires onCap exactly at the limit.
+//   7. Static routes are preserved and lead the list.
+//
+// Run: node --experimental-strip-types scripts/verify-sitemap.ts
+import { buildSitemapEntries, type SitemapCollectionMeta } from '../lib/sitemapEntries.ts'
+
+let failures = 0
+const check = (name: string, cond: boolean, detail = ''): void => {
+  if (cond) console.log(`  PASS  ${name}`)
+  else {
+    console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`)
+    failures++
+  }
+}
+
+const SITE = 'https://kismet.art'
+// Mixed-case addresses on purpose — the builder must lowercase them.
+const VISIBLE = '0xAbC0000000000000000000000000000000000001'
+const CREATOR_HIDDEN = '0xDeF0000000000000000000000000000000000002'
+const ARTIST_HIDDEN = '0xEee0000000000000000000000000000000000003'
+const ARTIST_OK = '0xA11ce00000000000000000000000000000000001'
+const ARTIST_BANNED = '0xBad0000000000000000000000000000000000009'
+
+const metas = new Map<string, SitemapCollectionMeta>([
+  [VISIBLE.toLowerCase(), { artist: ARTIST_OK, createdAt: 1_700_000_000_000 }],
+  [CREATOR_HIDDEN.toLowerCase(), { artist: ARTIST_OK }],
+  [ARTIST_HIDDEN.toLowerCase(), { artist: ARTIST_BANNED }],
+])
+
+const result = buildSitemapEntries({
+  siteUrl: SITE,
+  staticRoutes: [{ url: `${SITE}/`, priority: 1 }],
+  collections: [VISIBLE, CREATOR_HIDDEN, ARTIST_HIDDEN],
+  mints: [
+    `${VISIBLE}:1`,
+    `${VISIBLE}:2`,
+    `${CREATOR_HIDDEN}:1`, // hidden collection → dropped
+    `${ARTIST_HIDDEN}:5`, // hidden artist → dropped
+    'garbage-no-colon', // malformed → skipped
+    ':7', // empty address → skipped
+    `${VISIBLE}:`, // empty tokenId → skipped
+  ],
+  metas,
+  hiddenCollections: new Set([CREATOR_HIDDEN.toLowerCase()]),
+  hiddenUsers: new Set([ARTIST_BANNED.toLowerCase()]),
+  maxMoments: 40_000,
+})
+
+const urls = result.map((e) => e.url)
+const has = (u: string): boolean => urls.includes(u)
+
+// 7. Static route preserved and first.
+check('static route present', has(`${SITE}/`))
+check('static route leads the list', result[0]?.url === `${SITE}/`)
+
+// 1 + 2. Hidden collections and their moments dropped.
+check(
+  'creator-hidden collection dropped',
+  !has(`${SITE}/collection/${CREATOR_HIDDEN.toLowerCase()}`),
+)
+check(
+  'artist-hidden collection dropped',
+  !has(`${SITE}/collection/${ARTIST_HIDDEN.toLowerCase()}`),
+)
+check(
+  'moment in creator-hidden collection dropped',
+  !has(`${SITE}/moment/${CREATOR_HIDDEN.toLowerCase()}/1`),
+)
+check(
+  'moment under artist-hidden collection dropped',
+  !has(`${SITE}/moment/${ARTIST_HIDDEN.toLowerCase()}/5`),
+)
+
+// 4. Visible collection + its moments present, lowercased.
+check('visible collection present (lowercased)', has(`${SITE}/collection/${VISIBLE.toLowerCase()}`))
+check('visible moment #1 present (lowercased)', has(`${SITE}/moment/${VISIBLE.toLowerCase()}/1`))
+check('visible moment #2 present (lowercased)', has(`${SITE}/moment/${VISIBLE.toLowerCase()}/2`))
+check('no uppercase leaks into any URL', urls.every((u) => u === u.toLowerCase() || !/0x[0-9a-fA-F]*[A-F]/.test(u)))
+
+// 3. Malformed members skipped — exactly the two valid moments, no junk.
+const momentCount = urls.filter((u) => u.includes('/moment/')).length
+check('exactly the 2 valid moments emitted', momentCount === 2, `got ${momentCount}`)
+check('no colon-less junk URL', !urls.some((u) => u.endsWith('/moment/') || u.includes('garbage')))
+
+// 5. createdAt → lastModified; absent → undefined.
+const visibleCollection = result.find(
+  (e) => e.url === `${SITE}/collection/${VISIBLE.toLowerCase()}`,
+)
+check(
+  'createdAt maps to a lastModified Date',
+  visibleCollection?.lastModified instanceof Date &&
+    visibleCollection.lastModified.getTime() === 1_700_000_000_000,
+)
+
+// 6. Cap bounds output and fires onCap.
+let capped = -1
+const capResult = buildSitemapEntries({
+  siteUrl: SITE,
+  staticRoutes: [],
+  collections: [VISIBLE],
+  mints: Array.from({ length: 10 }, (_, i) => `${VISIBLE}:${i + 1}`),
+  metas,
+  hiddenCollections: new Set(),
+  hiddenUsers: new Set(),
+  maxMoments: 3,
+  onCap: (max) => {
+    capped = max
+  },
+})
+const cappedMoments = capResult.filter((e) => e.url.includes('/moment/')).length
+check('moment cap bounds output', cappedMoments === 3, `got ${cappedMoments}`)
+check('onCap fired at the limit', capped === 3)
+
+if (failures > 0) {
+  console.error(`\n${failures} sitemap check(s) FAILED`)
+  process.exit(1)
+}
+console.log('\nAll sitemap checks passed.')

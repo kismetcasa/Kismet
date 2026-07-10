@@ -144,6 +144,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title: `${name} — Kismet`,
     description,
+    // <link rel="canonical"> — lowercased address so every case variant of
+    // the same collection URL collapses onto one indexable URL, matching
+    // what app/sitemap.ts lists.
+    alternates: { canonical: `${SITE_URL}/collection/${address.toLowerCase()}` },
     openGraph: {
       title: name,
       description,

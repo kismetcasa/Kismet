@@ -1,5 +1,6 @@
 import { DiscoverPage } from '@/components/DiscoverPage'
 import { isMobileUA } from '@/lib/serverDevice'
+import { homeJsonLd } from '@/lib/structuredData'
 
 // Server component. Detects mobile via request UA on the server and
 // bakes the decision into the SSR HTML (and the prop the client
@@ -7,5 +8,15 @@ import { isMobileUA } from '@/lib/serverDevice'
 // mobile tree exists. See lib/serverDevice.ts for the detection.
 export default async function Page() {
   const isMobile = await isMobileUA()
-  return <DiscoverPage isMobile={isMobile} />
+  return (
+    <>
+      {/* Organization + WebSite structured data, server-rendered into the
+          initial HTML so crawlers see the brand entity on first fetch. */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(homeJsonLd()) }}
+      />
+      <DiscoverPage isMobile={isMobile} />
+    </>
+  )
 }
