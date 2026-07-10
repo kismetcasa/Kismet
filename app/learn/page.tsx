@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { JsonLd } from '@/components/JsonLd'
 import { faqJsonLd, breadcrumbNode } from '@/lib/structuredData'
 import { SITE_URL } from '@/lib/siteUrl'
+import { GUIDES } from './guides'
 
 // Static informational hub. This is the page that lets Kismet rank for — and
 // get cited by AI answer engines on — the intent queries ("how to mint
@@ -202,6 +203,23 @@ export default function LearnPage() {
             <div className="space-y-3">{section.body}</div>
           </section>
         ))}
+
+        <section id="guides" className="mb-8">
+          <h2 className="mb-3 text-base text-ink">In-depth guides</h2>
+          <ul className="space-y-3">
+            {GUIDES.map((g) => (
+              <li key={g.slug}>
+                <Link
+                  href={`/learn/${g.slug}`}
+                  className="text-ink underline underline-offset-4"
+                >
+                  {g.title}
+                </Link>
+                <p className="mt-1 text-xs text-muted">{g.description}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
 
         <section id="faq" className="mb-8">
           <h2 className="mb-4 text-base text-ink">Frequently asked questions</h2>

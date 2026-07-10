@@ -254,6 +254,42 @@ export function profileJsonLd(
   }
 }
 
+export interface ArticleJsonLdInput {
+  url: string
+  headline: string
+  description: string
+  datePublished: string // ISO date, e.g. '2026-07-10'
+  dateModified: string // bump on edits — freshness is an AI-ranking signal
+  breadcrumb: { name: string; url: string }[]
+  image?: string
+}
+
+// Article for a guide/informational page, authored + published by the Kismet
+// Organization (included in the graph so the author/publisher @id resolves).
+// Paired on the page with faqJsonLd() for the guide's Q&A.
+export function articleJsonLd(input: ArticleJsonLdInput): Record<string, unknown> {
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Article',
+        '@id': `${input.url}#article`,
+        headline: input.headline,
+        description: input.description,
+        datePublished: input.datePublished,
+        dateModified: input.dateModified,
+        inLanguage: 'en',
+        author: { '@id': ORG_ID },
+        publisher: { '@id': ORG_ID },
+        mainEntityOfPage: input.url,
+        ...(input.image ? { image: input.image } : {}),
+      },
+      organizationNode(),
+      breadcrumbNode(input.breadcrumb),
+    ],
+  }
+}
+
 // FAQPage from Q&A pairs. The highest-leverage type for AI answer engines:
 // each pair is a discrete, machine-readable citation candidate. Answers should
 // be self-contained and declarative (see the /learn content).

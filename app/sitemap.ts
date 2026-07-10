@@ -6,6 +6,7 @@ import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getHiddenIdentityClosure } from '@/lib/addressUnion'
 import { resolveUri } from '@/lib/inprocess'
 import { buildSitemapEntries } from '@/lib/sitemapEntries'
+import { GUIDES } from '@/app/learn/guides'
 
 // Regenerate at most hourly. Crawlers refetch sitemaps on their own cadence,
 // so an hour of staleness on a freshly minted moment/collection is immaterial
@@ -25,6 +26,14 @@ const MAX_MOMENTS = 40_000
 const STATIC_ROUTES: MetadataRoute.Sitemap = [
   { url: `${SITE_URL}/`, changeFrequency: 'hourly', priority: 1 },
   { url: `${SITE_URL}/learn`, changeFrequency: 'monthly', priority: 0.8 },
+  // Each guide's lastModified tracks its own `updated` date, so a content edit
+  // (with the date bumped) resurfaces just that page to crawlers.
+  ...GUIDES.map((g) => ({
+    url: `${SITE_URL}/learn/${g.slug}`,
+    lastModified: new Date(g.updated),
+    changeFrequency: 'monthly' as const,
+    priority: 0.7,
+  })),
   { url: `${SITE_URL}/mint`, changeFrequency: 'monthly', priority: 0.5 },
   { url: `${SITE_URL}/market`, changeFrequency: 'daily', priority: 0.6 },
   { url: `${SITE_URL}/agent`, changeFrequency: 'monthly', priority: 0.5 },

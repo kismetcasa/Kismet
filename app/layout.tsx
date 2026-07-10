@@ -21,6 +21,19 @@ export const metadata: Metadata = {
     title: 'Kismet',
     description: 'Artists and collectors converge on Kismet',
   },
+  // Search-engine ownership verification. Populate GOOGLE_SITE_VERIFICATION
+  // (Google Search Console) and/or BING_SITE_VERIFICATION (Bing Webmaster
+  // Tools) with the token each console gives you; Next renders the matching
+  // <meta> into <head>. Bing coverage matters beyond Bing itself — it's the
+  // index ChatGPT draws most of its citations from. Inert until set: an
+  // undefined env var omits the tag entirely. See SEO.md for the full setup +
+  // sitemap-submission checklist.
+  verification: {
+    google: process.env.GOOGLE_SITE_VERIFICATION,
+    other: process.env.BING_SITE_VERIFICATION
+      ? { 'msvalidate.01': process.env.BING_SITE_VERIFICATION }
+      : undefined,
+  },
   // Farcaster Mini App embed for the homepage. When the apex URL is
   // shared in a cast, this is the rich card that renders + launches the
   // Mini App. Per-route embeds (moment, collection, profile) are added

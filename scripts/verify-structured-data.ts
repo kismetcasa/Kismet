@@ -21,6 +21,7 @@ import {
   offerAmount,
   momentJsonLd,
   faqJsonLd,
+  articleJsonLd,
   breadcrumbNode,
   serializeJsonLd,
 } from '../lib/structuredData.ts'
@@ -100,6 +101,30 @@ const faq = faqJsonLd([
 check('FAQPage type', faq['@type'] === 'FAQPage')
 check('FAQ one entry per pair', faq.mainEntity.length === 2 && faq.mainEntity[0]['@type'] === 'Question')
 check('FAQ answer text preserved', faq.mainEntity[0].acceptedAnswer.text.startsWith('Connect a wallet'))
+
+// 5b. Article carries dates + Organization author/publisher by reference.
+const article = articleJsonLd({
+  url: 'https://kismet.art/learn/how-to-mint-onchain-art',
+  headline: 'How to mint onchain art',
+  description: 'Step by step.',
+  datePublished: '2026-07-10',
+  dateModified: '2026-07-10',
+  breadcrumb: [
+    { name: 'Kismet', url: 'https://kismet.art/' },
+    { name: 'Learn', url: 'https://kismet.art/learn' },
+    { name: 'How to mint', url: 'https://kismet.art/learn/how-to-mint-onchain-art' },
+  ],
+}) as { '@graph': Record<string, unknown>[] }
+const articleNode = article['@graph'][0]
+check('Article carries datePublished + dateModified',
+  articleNode.datePublished === '2026-07-10' && articleNode.dateModified === '2026-07-10')
+check('Article author/publisher reference the Organization @id',
+  (articleNode.author as { '@id': string })?.['@id'] === 'https://kismet.art/#organization' &&
+  (articleNode.publisher as { '@id': string })?.['@id'] === 'https://kismet.art/#organization')
+check('Article graph includes the Organization node + a 3-level breadcrumb',
+  article['@graph'].some((n) => n['@type'] === 'Organization') &&
+  article['@graph'].some((n) => n['@type'] === 'BreadcrumbList' &&
+    (n.itemListElement as unknown[]).length === 3))
 
 // 6. Serializer escapes `<`.
 const serialized = serializeJsonLd({ name: 'a</script><b>x' })
