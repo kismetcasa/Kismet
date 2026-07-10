@@ -11,6 +11,9 @@
 //   5. createdAt → lastModified; an absent createdAt yields no lastModified.
 //   6. The moment cap bounds output and fires onCap exactly at the limit.
 //   7. Static routes are preserved and lead the list.
+//   8. Artist profiles are derived from visible collections, deduped, and
+//      filtered through the hidden-identity closure.
+//   9. Collection covers become image-sitemap entries via resolveImage.
 //
 // Run: node --experimental-strip-types scripts/verify-sitemap.ts
 import { buildSitemapEntries, type SitemapCollectionMeta } from '../lib/sitemapEntries.ts'
@@ -27,21 +30,26 @@ const check = (name: string, cond: boolean, detail = ''): void => {
 const SITE = 'https://kismet.art'
 // Mixed-case addresses on purpose — the builder must lowercase them.
 const VISIBLE = '0xAbC0000000000000000000000000000000000001'
+const VISIBLE2 = '0xAbC0000000000000000000000000000000000011' // same artist as VISIBLE (dedup)
 const CREATOR_HIDDEN = '0xDeF0000000000000000000000000000000000002'
 const ARTIST_HIDDEN = '0xEee0000000000000000000000000000000000003'
+const PROFILE_HIDDEN_COL = '0xC010000000000000000000000000000000000004' // visible, artist hidden
 const ARTIST_OK = '0xA11ce00000000000000000000000000000000001'
+const ARTIST_OK2 = '0xA11ce00000000000000000000000000000000002' // in hidden-identity closure
 const ARTIST_BANNED = '0xBad0000000000000000000000000000000000009'
 
 const metas = new Map<string, SitemapCollectionMeta>([
-  [VISIBLE.toLowerCase(), { artist: ARTIST_OK, createdAt: 1_700_000_000_000 }],
+  [VISIBLE.toLowerCase(), { artist: ARTIST_OK, createdAt: 1_700_000_000_000, image: 'ar://cover1' }],
+  [VISIBLE2.toLowerCase(), { artist: ARTIST_OK }],
   [CREATOR_HIDDEN.toLowerCase(), { artist: ARTIST_OK }],
   [ARTIST_HIDDEN.toLowerCase(), { artist: ARTIST_BANNED }],
+  [PROFILE_HIDDEN_COL.toLowerCase(), { artist: ARTIST_OK2 }],
 ])
 
 const result = buildSitemapEntries({
   siteUrl: SITE,
   staticRoutes: [{ url: `${SITE}/`, priority: 1 }],
-  collections: [VISIBLE, CREATOR_HIDDEN, ARTIST_HIDDEN],
+  collections: [VISIBLE, VISIBLE2, CREATOR_HIDDEN, ARTIST_HIDDEN, PROFILE_HIDDEN_COL],
   mints: [
     `${VISIBLE}:1`,
     `${VISIBLE}:2`,
@@ -54,6 +62,8 @@ const result = buildSitemapEntries({
   metas,
   hiddenCollections: new Set([CREATOR_HIDDEN.toLowerCase()]),
   hiddenUsers: new Set([ARTIST_BANNED.toLowerCase()]),
+  hiddenIdentities: new Set([ARTIST_OK2.toLowerCase()]),
+  resolveImage: (uri) => uri.replace('ar://', 'https://arweave.net/'),
   maxMoments: 40_000,
 })
 
@@ -93,6 +103,34 @@ const momentCount = urls.filter((u) => u.includes('/moment/')).length
 check('exactly the 2 valid moments emitted', momentCount === 2, `got ${momentCount}`)
 check('no colon-less junk URL', !urls.some((u) => u.endsWith('/moment/') || u.includes('garbage')))
 
+// 8. Artist profiles: visible-collection artists only, deduped, closure-filtered.
+check('visible artist profile present', has(`${SITE}/profile/${ARTIST_OK.toLowerCase()}`))
+check(
+  'artist profile deduped across collections',
+  urls.filter((u) => u === `${SITE}/profile/${ARTIST_OK.toLowerCase()}`).length === 1,
+)
+check('hidden-identity artist profile dropped', !has(`${SITE}/profile/${ARTIST_OK2.toLowerCase()}`))
+check(
+  'banned-artist profile absent (its only collection is hidden)',
+  !has(`${SITE}/profile/${ARTIST_BANNED.toLowerCase()}`),
+)
+check(
+  'collection with hidden-identity artist still listed',
+  has(`${SITE}/collection/${PROFILE_HIDDEN_COL.toLowerCase()}`),
+)
+
+// 9. Collection cover → image-sitemap entry via resolveImage.
+const visibleColEntry = result.find((e) => e.url === `${SITE}/collection/${VISIBLE.toLowerCase()}`)
+check(
+  'collection cover becomes a resolved image entry',
+  Array.isArray(visibleColEntry?.images) &&
+    visibleColEntry?.images?.[0] === 'https://arweave.net/cover1',
+)
+check(
+  'collection without a cover has no images field',
+  !('images' in (result.find((e) => e.url === `${SITE}/collection/${VISIBLE2.toLowerCase()}`) ?? {})),
+)
+
 // 5. createdAt → lastModified; absent → undefined.
 const visibleCollection = result.find(
   (e) => e.url === `${SITE}/collection/${VISIBLE.toLowerCase()}`,
@@ -113,6 +151,7 @@ const capResult = buildSitemapEntries({
   metas,
   hiddenCollections: new Set(),
   hiddenUsers: new Set(),
+  hiddenIdentities: new Set(),
   maxMoments: 3,
   onCap: (max) => {
     capped = max

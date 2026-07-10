@@ -15,9 +15,11 @@ import { SITE_URL } from './siteUrl'
 const ORG_ID = `${SITE_URL}/#organization`
 const WEBSITE_ID = `${SITE_URL}/#website`
 
-// Public brand/social profiles that reinforce the entity for knowledge-panel
-// resolution (sameAs). Kept here so every Organization node stays consistent.
-const SAME_AS = ['https://warpcast.com/kismet', 'https://x.com/kismetdotart']
+// Verified public brand/social profiles for the entity (sameAs) — reinforces
+// knowledge-panel resolution. Left empty deliberately: the official X/Farcaster
+// URLs must be confirmed before shipping outward-facing links (a wrong sameAs
+// misattributes the brand). Fill in with the real profile URLs.
+const SAME_AS: string[] = []
 
 // The Organization node. Shared by reference (@id) from WebSite, breadcrumbs,
 // and product/offer sellers so the whole graph resolves to one entity.
@@ -31,7 +33,7 @@ export function organizationNode(): Record<string, unknown> {
     image: `${SITE_URL}/icon.png`,
     description:
       'Kismet is an onchain art platform on Base where artists mint moments, create collections, and collectors discover, collect, and trade digital art.',
-    sameAs: SAME_AS,
+    ...(SAME_AS.length ? { sameAs: SAME_AS } : {}),
   }
 }
 

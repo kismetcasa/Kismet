@@ -3,6 +3,8 @@ import { SITE_URL } from '@/lib/siteUrl'
 import { getUserCollections, getCreatedMintsSet, getCollectionMetaBatch } from '@/lib/kv'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getHiddenIdentityClosure } from '@/lib/addressUnion'
+import { resolveUri } from '@/lib/inprocess'
 import { buildSitemapEntries } from '@/lib/sitemapEntries'
 
 // Regenerate at most hourly. Crawlers refetch sitemaps on their own cadence,
@@ -22,7 +24,9 @@ const MAX_MOMENTS = 40_000
 // excluded (disallowed in robots.ts / noindex at the route).
 const STATIC_ROUTES: MetadataRoute.Sitemap = [
   { url: `${SITE_URL}/`, changeFrequency: 'hourly', priority: 1 },
+  { url: `${SITE_URL}/learn`, changeFrequency: 'monthly', priority: 0.8 },
   { url: `${SITE_URL}/mint`, changeFrequency: 'monthly', priority: 0.5 },
+  { url: `${SITE_URL}/market`, changeFrequency: 'daily', priority: 0.6 },
   { url: `${SITE_URL}/agent`, changeFrequency: 'monthly', priority: 0.5 },
 ]
 
@@ -37,10 +41,19 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       getHiddenUsersSet(),
     ])
 
-    // getCreatedMintsSet deliberately does NOT catch (see lib/kv.ts) so a
-    // failure isn't memoized as "no mints". Isolate it with its own catch so a
-    // mints-read blip still yields static + collection entries rather than
-    // collapsing the whole sitemap to static-only.
+    // getHiddenIdentityClosure and getCreatedMintsSet can THROW (unlike the
+    // getters above). Isolate each so a blip degrades one facet instead of
+    // collapsing the whole sitemap to static-only:
+    //   • closure failure → profiles emitted unfiltered. Safe: the profile page
+    //     itself returns a real 404 for hidden identities (see its
+    //     generateMetadata), so a leaked URL is crawled and dropped, not indexed.
+    //   • mints failure → moments omitted, collections/profiles still emitted.
+    let hiddenIdentities: Set<string> = new Set()
+    try {
+      hiddenIdentities = await getHiddenIdentityClosure()
+    } catch (err) {
+      console.error('[sitemap] hidden-identity closure read failed; profiles unfiltered', err)
+    }
     let mints: Set<string> = new Set()
     try {
       mints = await getCreatedMintsSet()
@@ -58,6 +71,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       metas,
       hiddenCollections,
       hiddenUsers,
+      hiddenIdentities,
+      resolveImage: resolveUri,
       maxMoments: MAX_MOMENTS,
       onCap: (max) =>
         console.warn(`[sitemap] moment cap ${max} reached — split via generateSitemaps`),

@@ -115,6 +115,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const name = meta.name ?? `#${tokenId}`
   const title = `${name} — Kismet`
   const description = meta.description ?? 'View this moment on Kismet'
+  // A moment with no title, description, AND no image has nothing indexable —
+  // usually indexer lag or a broken token. noindex it so crawl budget goes to
+  // real artworks. Deliberately narrow: a titled or image-bearing moment (the
+  // norm — the artwork itself is content) stays fully indexable, so we don't
+  // exclude legitimate art from web or image search.
+  const isEmpty = !meta.name && !meta.description && !meta.image
   // Single share image for every surface: the /opengraph-image route.
   // og:image + twitter:image are auto-wired to it by Next's file
   // convention (we don't set openGraph.images); the Farcaster embed
@@ -146,6 +152,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title,
     description,
+    ...(isEmpty ? { robots: { index: false } } : {}),
     // <link rel="canonical"> — lowercased address so every case variant of
     // the same moment URL (external links can arrive checksummed) collapses
     // onto one indexable URL, matching what app/sitemap.ts lists.

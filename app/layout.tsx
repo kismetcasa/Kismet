@@ -3,6 +3,7 @@ import { Toaster } from 'sonner'
 import { Providers } from '@/providers/WagmiProvider'
 import { FarcasterProvider } from '@/providers/FarcasterProvider'
 import { Nav } from '@/components/Nav'
+import { SiteFooter } from '@/components/SiteFooter'
 import { TelemetryProvider } from '@/components/TelemetryProvider'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -94,6 +95,10 @@ export default function RootLayout({
                 underneath, scroll position preserved, card videos still
                 playing as the detail opens above. */}
             {modal}
+            {/* Server-rendered footer: site-wide crawlable links (initial
+                HTML) to /learn and the core surfaces. Sits below page
+                content — including under the infinite feed on the homepage. */}
+            <SiteFooter />
             <Toaster
               position="bottom-center"
               offset={{ bottom: 16 }}

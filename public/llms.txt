@@ -1,0 +1,20 @@
+# Kismet
+
+> Kismet is an onchain art platform and marketplace on Base where artists mint digital artworks (called moments) as ERC-1155 tokens, create collections, and set their price, and collectors discover, collect, and trade that art directly from a crypto wallet. Artwork media is stored permanently on Arweave; every mint and sale is recorded onchain.
+
+Kismet also runs as a Farcaster Mini App and can be operated from an AI assistant via Base MCP.
+
+## Start here
+
+- [Learn: how to mint and collect onchain art](https://kismet.art/learn): Guide and FAQs explaining onchain art, how to mint artwork, how collecting and trading work, fees, wallets, and the Base network.
+- [Discover onchain art](https://kismet.art/): The latest moments and collections minted on Kismet.
+
+## Create and collect
+
+- [Mint a moment](https://kismet.art/mint): Mint an image, video, animation, or text as an onchain ERC-1155 token on Base, stored permanently on Arweave.
+- [Market](https://kismet.art/market): Buy and sell listed moments on the secondary market in ETH or USDC.
+- [AI agent](https://kismet.art/agent): Collect, buy, and list moments from an AI assistant connected through Base MCP, approving each action in your own Base Account.
+
+## Reference
+
+- [Sitemap](https://kismet.art/sitemap.xml): All indexable moments, collections, artist profiles, and pages.
