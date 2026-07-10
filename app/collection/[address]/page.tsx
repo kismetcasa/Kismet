@@ -2,8 +2,10 @@ import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
 import { notFound, redirect } from 'next/navigation'
 import { isAddress } from '@/lib/address'
-import { inprocessUrl, shortAddress } from '@/lib/inprocess'
+import { inprocessUrl, resolveUri, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
+import { JsonLd } from '@/components/JsonLd'
+import { collectionJsonLd } from '@/lib/structuredData'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
@@ -282,23 +284,44 @@ export default async function CollectionPage({ params }: Props) {
   // Mobile gets LazyMount on the heavy moments grid; desktop unchanged.
   const isMobile = await isMobileUA()
 
+  // Server-rendered schema.org JSON-LD: a CollectionPage with its creator, plus
+  // a Home › Collection breadcrumb. Only reached on the shown page — the
+  // hidden-collection branch above returns first, and non-curated contracts
+  // have already redirected to their inner moment.
+  const collectionUrl = `${SITE_URL}/collection/${address.toLowerCase()}`
+  const jsonLd = collectionJsonLd({
+    url: collectionUrl,
+    name: displayMeta?.name ?? `Collection ${shortAddress(address)}`,
+    description: displayMeta?.description,
+    image: displayMeta?.image ? resolveUri(displayMeta.image) : undefined,
+    creator: adminAddressRaw
+      ? {
+          name: adminUsername ?? shortAddress(adminAddressRaw),
+          url: `${SITE_URL}/profile/${adminAddressRaw.toLowerCase()}`,
+        }
+      : undefined,
+  })
+
   return (
-    <CollectionView
-      address={address}
-      collectionName={displayMeta?.name}
-      collectionImage={displayMeta?.image}
-      collectionThumbhash={displayMeta?.kismet_thumbhash}
-      collectionDescription={displayMeta?.description}
-      isTracked={!!kvMeta}
-      defaultAdminUsername={adminUsername}
-      defaultAdminAddress={adminAddressRaw}
-      payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
-      createdAt={
-        detail?.created_at ??
-        (kvMeta?.createdAt ? new Date(kvMeta.createdAt).toISOString() : undefined)
-      }
-      initialHidden={hidden}
-      isMobile={isMobile}
-    />
+    <>
+      <JsonLd data={jsonLd} />
+      <CollectionView
+        address={address}
+        collectionName={displayMeta?.name}
+        collectionImage={displayMeta?.image}
+        collectionThumbhash={displayMeta?.kismet_thumbhash}
+        collectionDescription={displayMeta?.description}
+        isTracked={!!kvMeta}
+        defaultAdminUsername={adminUsername}
+        defaultAdminAddress={adminAddressRaw}
+        payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
+        createdAt={
+          detail?.created_at ??
+          (kvMeta?.createdAt ? new Date(kvMeta.createdAt).toISOString() : undefined)
+        }
+        initialHidden={hidden}
+        isMobile={isMobile}
+      />
+    </>
   )
 }

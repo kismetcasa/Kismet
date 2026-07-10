@@ -1,5 +1,6 @@
 import { DiscoverPage } from '@/components/DiscoverPage'
 import { isMobileUA } from '@/lib/serverDevice'
+import { JsonLd } from '@/components/JsonLd'
 import { homeJsonLd } from '@/lib/structuredData'
 
 // Server component. Detects mobile via request UA on the server and
@@ -12,10 +13,7 @@ export default async function Page() {
     <>
       {/* Organization + WebSite structured data, server-rendered into the
           initial HTML so crawlers see the brand entity on first fetch. */}
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(homeJsonLd()) }}
-      />
+      <JsonLd data={homeJsonLd()} />
       <DiscoverPage isMobile={isMobile} />
     </>
   )
