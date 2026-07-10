@@ -5,6 +5,7 @@ import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useSignIn } from '@/hooks/useSignIn'
+import { useAdmin } from '@/contexts/AdminContext'
 import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
 
 interface Pending {
@@ -35,10 +36,16 @@ interface Stats {
 export function ProfileStats({
   address,
   asVisitor,
+  adminView = false,
   initialEarnings,
 }: {
   address: string
   asVisitor: boolean
+  // Read-only privileged view: the platform admin looking at another artist's
+  // card. Fetches and shows the figures (incl. private) like the owner does,
+  // but never the pin — curation chrome stays owner-only. Distinct from
+  // `asVisitor`, which stays true for the admin so no write affordances render.
+  adminView?: boolean
   initialEarnings: {
     eth: number
     usdc: number
@@ -50,10 +57,14 @@ export function ProfileStats({
 }) {
   const { isInMiniApp } = useFarcaster()
   const { ensureSession } = useUploadSession()
+  // Admin SIWE session (kismetart-admin cookie), shared with curation — the
+  // same session that unlocks /api/stats for the admin's read-only view.
+  const { startSession } = useAdmin()
   const [stats, setStats] = useState<Stats | null>(null)
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [adminSigningIn, setAdminSigningIn] = useState(false)
   // Server withheld the figures on the owner path (see /api/stats
   // authRequired: no session, or a session for a different identity).
   // Renders a sign-in card in place of silence — without it a session-less
@@ -77,7 +88,11 @@ export function ProfileStats({
   // — so the owner fetches even when earnings are already public.
   useEffect(() => {
     if (initialEarnings) setStats({ ...initialEarnings, public: true })
-    if (asVisitor) {
+    // A plain visitor stops at the public figures. The owner AND the admin
+    // (read-only) fetch /api/stats for the authoritative figures — the admin
+    // to see private earnings for verification; the server releases them to
+    // the admin cookie exactly as it does to the owner's session.
+    if (asVisitor && !adminView) {
       if (!initialEarnings) setStats(null)
       return
     }
@@ -108,7 +123,7 @@ export function ProfileStats({
     return () => {
       cancelled = true
     }
-  }, [address, asVisitor, initialEarnings, reloadTick])
+  }, [address, asVisitor, adminView, initialEarnings, reloadTick])
 
   // Collapse the breakdown when switching profiles, so it never carries an
   // expanded (or stuck mouse-hover) state over from another artist's card.
@@ -137,16 +152,36 @@ export function ProfileStats({
   // authRequired, so visitors never see this.
   const { signIn, signingIn } = useSignIn(() => setReloadTick((t) => t + 1))
 
-  if (!asVisitor && authRequired) {
+  // Admin sign-in for the read-only view: establishes the admin session, then
+  // refetches. The response handler (not this click) clears authRequired, so a
+  // cancelled/failed signature keeps the card up for a retry.
+  const signInAdmin = async () => {
+    if (adminSigningIn) return
+    setAdminSigningIn(true)
+    try {
+      await startSession()
+    } finally {
+      setAdminSigningIn(false)
+      setReloadTick((t) => t + 1)
+    }
+  }
+
+  if ((!asVisitor || adminView) && authRequired) {
+    // Same card, two flows: the admin authenticates its own SIWE session
+    // (shared with curation), the owner authenticates the user session.
+    const onSignIn = adminView ? signInAdmin : signIn
+    const busy = adminView ? adminSigningIn : signingIn
     return (
       <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
-        <p className="text-muted text-xs">sign in to view your earnings</p>
+        <p className="text-muted text-xs">
+          {adminView ? 'sign in as admin to view earnings' : 'sign in to view your earnings'}
+        </p>
         <button
-          onClick={signIn}
-          disabled={signingIn}
+          onClick={onSignIn}
+          disabled={busy}
           className="text-accent text-xs mt-1 hover:underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {signingIn ? 'signing in…' : 'sign in'}
+          {busy ? 'signing in…' : 'sign in'}
         </button>
       </div>
     )
@@ -170,7 +205,7 @@ export function ProfileStats({
   // to collaborators) still gets their mint count and the pin, instead of a card
   // that silently disappears. Visitors are unchanged: they only ever see a
   // pinned-public earnings figure.
-  if (asVisitor) {
+  if (asVisitor && !adminView) {
     if (!stats.public || !hasEarnings) return null
   } else if (!hasEarnings && stats.mints <= 0 && !stats.public) {
     // stats.public keeps the card mounted for a pinned owner whose figures
@@ -366,6 +401,14 @@ export function ProfileStats({
         </div>
       </div>
       {!asVisitor && !stats.public && hasEarnings && <p className="text-faint text-[10px] mt-1.5">private · tap the pin to show</p>}
+      {/* Read-only visibility state for the admin — confirms at a glance
+          whether the artist has published earnings (what a visitor would see)
+          vs. kept them private, without exposing the owner's pin control. */}
+      {adminView && hasEarnings && (
+        <p className="text-faint text-[10px] mt-1.5">
+          {stats.public ? 'public · visible to visitors' : 'private · hidden from visitors'}
+        </p>
+      )}
     </div>
   )
 }

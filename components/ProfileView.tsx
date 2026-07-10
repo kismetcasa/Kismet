@@ -1278,8 +1278,16 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           </div>
           {/* Earnings card — right of the identity block (wraps below on
               mobile). Private by default: the owner sees it with a pin toggle,
-              visitors only once pinned public. Renders nothing otherwise. */}
-          <ProfileStats address={address} asVisitor={asVisitor} initialEarnings={profile?.earnings ?? null} />
+              visitors only once pinned public. Admins get a read-only view of
+              any artist's figures (incl. private) for verification — but not
+              while previewing the public view, where they should see exactly
+              what a visitor sees. Renders nothing otherwise. */}
+          <ProfileStats
+            address={address}
+            asVisitor={asVisitor}
+            adminView={isAdmin && !isOwner && !previewPublic}
+            initialEarnings={profile?.earnings ?? null}
+          />
         </div>
 
       </div>
