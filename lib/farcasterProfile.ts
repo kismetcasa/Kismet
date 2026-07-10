@@ -20,6 +20,12 @@ export type FarcasterProfile = {
   username: string | null
   displayName: string | null
   pfpUrl: string | null
+  // X/Twitter handle from the legacy `connectedAccounts` OAuth surface on the
+  // /v2/user response (parsed for free — we already fetch that response). Used
+  // as a FALLBACK to the documented /fc/account-verifications endpoint
+  // (getVerifiedTwitterByFid): same underlying X OAuth, but the two surfaces can
+  // drift, so merging catches links the beta verifications endpoint misses.
+  connectedTwitter?: string | null
 }
 
 const PROFILE_TTL = 60 * 60          // 1h on hit — pfp/name change rarely
@@ -100,16 +106,29 @@ async function getFarcasterProfileByFid(
             username?: string
             displayName?: string
             pfp?: { url?: string }
+            // Legacy OAuth "connected accounts" surface (undocumented but
+            // public). Same X OAuth as /fc/account-verifications, exposed here
+            // too; parsed as a fallback. `expired` = the OAuth token is stale/
+            // revoked, so skip those (the handle may be outdated).
+            connectedAccounts?: { platform?: string; username?: string; expired?: boolean }[]
           }
         }
       }
       const user = body.result?.user
       if (user?.fid) {
+        const connX = (user.connectedAccounts ?? []).find(
+          (a) =>
+            (a?.platform ?? '').toLowerCase() === 'x' &&
+            a?.expired !== true &&
+            typeof a?.username === 'string' &&
+            a.username.trim().length > 0,
+        )
         profile = {
           fid: user.fid,
           username: user.username ?? null,
           displayName: user.displayName ?? null,
           pfpUrl: user.pfp?.url ?? null,
+          connectedTwitter: connX?.username ? connX.username.trim().replace(/^@+/, '') : null,
         }
       }
     } else if (res.status !== 404) {
