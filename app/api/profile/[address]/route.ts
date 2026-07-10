@@ -128,8 +128,11 @@ export async function GET(
   // Proof-of-ownership socials inherited from Farcaster. Only X is verifiable
   // on FC today; when present it outranks any manually-claimed `x` and the
   // client renders it with a verified badge. `...profile` already carries the
-  // user's own (unverified) `socials`.
-  const verifiedSocials = verifiedTwitter ? { x: verifiedTwitter } : undefined
+  // user's own (unverified) `socials`. Prefer the documented account-
+  // verifications endpoint; fall back to the connected-accounts handle already
+  // on `farcaster` (same X OAuth, different surface — the two can drift).
+  const inheritedX = verifiedTwitter ?? farcaster?.connectedTwitter ?? null
+  const verifiedSocials = inheritedX ? { x: inheritedX } : undefined
   return NextResponse.json({
     profile: {
       ...profile,
