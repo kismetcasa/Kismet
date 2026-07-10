@@ -159,16 +159,23 @@ export async function getVerifiedTwitterByFid(
       { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
     )
     if (res.ok) {
+      // Tolerate envelope drift: verifications may sit under `result` (per the
+      // docs example) or at the top level; the handle may be `platformUsername`
+      // (documented) or `username` (the legacy connected-accounts field name).
+      // Can't hit the live beta endpoint from CI, so accept both shapes.
+      type VItem = { platform?: string; platformUsername?: string; username?: string }
       const body = (await res.json()) as {
-        result?: { verifications?: { platform?: string; platformUsername?: string }[] }
+        result?: { verifications?: VItem[] }
+        verifications?: VItem[]
       }
-      const x = (body.result?.verifications ?? []).find(
+      const list = body.result?.verifications ?? body.verifications ?? []
+      const x = list.find(
         (v) =>
           (v?.platform ?? '').toLowerCase() === 'x' &&
-          typeof v?.platformUsername === 'string' &&
-          v.platformUsername.trim().length > 0,
+          (v?.platformUsername ?? v?.username ?? '').trim().length > 0,
       )
-      handle = x?.platformUsername ? x.platformUsername.trim().replace(/^@+/, '') : null
+      const raw = x?.platformUsername ?? x?.username
+      handle = raw ? raw.trim().replace(/^@+/, '') : null
     }
     // Non-OK (incl. a beta-endpoint 4xx/5xx): leave handle null; the short
     // FAIL TTL below throttles retries without hiding the badge for long.
