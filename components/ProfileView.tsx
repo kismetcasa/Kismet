@@ -775,14 +775,15 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     }
   }
 
-  // Pinned-showcase derivations. A visitor (`!isOwner`) sees ONLY the owner's
-  // pinned moments — filtered from the already-loaded arrays, which keeps the
-  // render self-validating (a pin can only show content the owner truly
-  // minted/collected/listed). Owners see their full dashboard so they can
-  // curate — unless they toggle the public-view preview (`asVisitor`), which
-  // renders the visitor path. With no pins, a visitor's view has no sections at
-  // all — just the profile header (identity only). orderByPins runs only on the
-  // visitor path; off it the full arrays pass straight through.
+  // Pinned-showcase derivations. The curated showcase (`pinnedView`) is what a
+  // visitor — or an owner/admin who toggled the public-view preview — sees:
+  // ONLY the owner's pinned moments, filtered from the already-loaded arrays,
+  // which keeps the render self-validating (a pin can only show content the
+  // owner truly minted/collected/listed). Owners AND admins in the full view
+  // (`fullView`) see the whole dashboard instead. With no pins, the showcase
+  // has no sections at all — just the profile header (identity only).
+  // orderByPins runs only on the showcase path; off it the full arrays pass
+  // straight through.
   const pinnedView = !fullView
   const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
