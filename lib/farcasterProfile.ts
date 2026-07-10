@@ -20,12 +20,6 @@ export type FarcasterProfile = {
   username: string | null
   displayName: string | null
   pfpUrl: string | null
-  // X/Twitter handle the FID has PROVEN it owns via a Farcaster connected
-  // account — the only social Farcaster verifies today. Surfaced as a verified
-  // link on the Kismet profile (outranks a manually-claimed `x` handle).
-  // Optional: entries cached before this field existed simply omit it (they
-  // refresh within PROFILE_TTL); read it as `?? null`.
-  verifiedTwitter?: string | null
 }
 
 const PROFILE_TTL = 60 * 60          // 1h on hit — pfp/name change rarely
@@ -45,6 +39,9 @@ const profileKey = (fid: number) => `kismetart:fc:profile:${fid}`
 const verificationsKey = (fid: number) => `kismetart:fc:verifications:${fid}`
 const VERIFICATIONS_TTL = 60 * 60          // 1h on hit
 const VERIFICATIONS_FAIL_TTL = 5 * 60      // 5m on miss
+const verifiedXKey = (fid: number) => `kismetart:fc:verified-x:${fid}`
+const VERIFIED_X_TTL = 60 * 60             // 1h on hit — X verification is rare-write
+const VERIFIED_X_FAIL_TTL = 5 * 60         // 5m on miss / beta-endpoint error (throttles retry)
 // Sentinel value stored in the address→fid cache when an address has no
 // FC user attached. An empty string can't be a valid FID so it's
 // unambiguous. Avoids re-hitting the API for every anonymous address.
@@ -99,29 +96,16 @@ async function getFarcasterProfileByFid(
             username?: string
             displayName?: string
             pfp?: { url?: string }
-            // Verified off-platform accounts on the Warpcast/Farcaster user
-            // object. `platform` is a lowercase enum ("x" for Twitter/X),
-            // `username` the handle, `expired` set once a link is revoked.
-            // Best-effort: if the field is absent we just don't inherit an X link.
-            connectedAccounts?: { platform?: string; username?: string; expired?: boolean }[]
           }
         }
       }
       const user = body.result?.user
       if (user?.fid) {
-        const x = (user.connectedAccounts ?? []).find(
-          (a) =>
-            (a?.platform ?? '').toLowerCase() === 'x' &&
-            a?.expired !== true &&
-            typeof a?.username === 'string' &&
-            a.username.trim().length > 0,
-        )
         profile = {
           fid: user.fid,
           username: user.username ?? null,
           displayName: user.displayName ?? null,
           pfpUrl: user.pfp?.url ?? null,
-          verifiedTwitter: x?.username ? x.username.trim().replace(/^@+/, '') : null,
         }
       }
     } else if (res.status !== 404) {
@@ -141,6 +125,62 @@ async function getFarcasterProfileByFid(
     })
     .catch(() => {})
   return profile
+}
+
+/**
+ * A user's PROVEN X/Twitter handle, from Farcaster's documented
+ * account-verifications endpoint — the only officially-supported source for
+ * off-platform verifications (the `connectedAccounts` field on the legacy
+ * `/v2/user` surface is undocumented). Returns null when the FID has no
+ * verified X, or on any lookup/parse failure, so callers degrade to the
+ * user's manually-claimed handle.
+ *
+ * The endpoint is officially flagged beta ("likely to have breaking changes
+ * or get deprecated"), so this fails closed to null on any non-OK response or
+ * unexpected shape, and there is no `expired` filter — listed entries are the
+ * current attested verifications. Cached 1h on hit / 5m on miss to throttle
+ * retries against a beta endpoint; the badge is cosmetic so brief staleness is
+ * benign. Empty-string sentinel distinguishes "known: none" from a cache miss.
+ */
+export async function getVerifiedTwitterByFid(
+  fid: number,
+  opts: { skipCache?: boolean } = {},
+): Promise<string | null> {
+  const cacheKey = verifiedXKey(fid)
+  if (!opts.skipCache) {
+    const cached = await readCached<string>(cacheKey)
+    if (cached !== undefined) return cached === '' ? null : cached
+  }
+
+  let handle: string | null = null
+  try {
+    const res = await fetch(
+      `https://api.farcaster.xyz/fc/account-verifications?fid=${fid}&platform=x`,
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
+    )
+    if (res.ok) {
+      const body = (await res.json()) as {
+        result?: { verifications?: { platform?: string; platformUsername?: string }[] }
+      }
+      const x = (body.result?.verifications ?? []).find(
+        (v) =>
+          (v?.platform ?? '').toLowerCase() === 'x' &&
+          typeof v?.platformUsername === 'string' &&
+          v.platformUsername.trim().length > 0,
+      )
+      handle = x?.platformUsername ? x.platformUsername.trim().replace(/^@+/, '') : null
+    }
+    // Non-OK (incl. a beta-endpoint 4xx/5xx): leave handle null; the short
+    // FAIL TTL below throttles retries without hiding the badge for long.
+  } catch {
+    // Network blip / timeout — unknown; don't poison the cache.
+    return null
+  }
+
+  await redis
+    .set(cacheKey, handle ?? '', { ex: handle ? VERIFIED_X_TTL : VERIFIED_X_FAIL_TTL })
+    .catch(() => {})
+  return handle
 }
 
 /**
