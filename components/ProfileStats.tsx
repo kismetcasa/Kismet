@@ -173,11 +173,22 @@ export function ProfileStats({
   if (asVisitor) {
     if (!stats.public || !hasEarnings) return null
   } else if (!hasEarnings && stats.mints <= 0 && !stats.public) {
-    // stats.public keeps the card mounted for a pinned owner whose figures
-    // have fallen below display precision (e.g. a 0-mint split collaborator
-    // after re-attribution) — the pin below is the ONLY unpin surface, so
-    // unmounting here would leave them publicly pinned with no way out.
-    return null
+    // Signed-in owner with genuinely nothing yet: render an explicit
+    // $0 / 0 mints card rather than unmounting, so a new artist sees the
+    // earnings surface exists and knows they simply haven't earned. Honest —
+    // these are REAL zeros from an authenticated read; contrast the
+    // signed-out case (authRequired above), where the amount is unknown and a
+    // fabricated $0 would mislead. No pin/share: there's nothing to make
+    // public or share at zero — both appear once real earnings land and the
+    // full card below takes over. (A pinned dust-artist has stats.public, so
+    // this branch is skipped and they fall through to the full card, keeping
+    // the pin — their only unpin surface — reachable.)
+    return (
+      <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+        <p className="text-ink text-xl leading-tight tabular-nums">{formatEarningsValue('usd', stats)}</p>
+        <p className="text-muted text-xs mt-0.5">{stats.mints.toLocaleString('en-US')} mints</p>
+      </div>
+    )
   }
 
   const active: EarningsMetric | null = hasEarnings
