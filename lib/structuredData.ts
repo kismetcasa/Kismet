@@ -84,6 +84,9 @@ export function offerAmount(
   if (!price) return null
   let decimal: string
   if (price.includes('.')) {
+    // Strict numeric check — a malformed decimal ("abc.def", "1.2.3") must
+    // yield NO offer, not a garbage price in the structured data.
+    if (!/^\d+\.\d+$/.test(price)) return null
     decimal = price
   } else {
     let value: bigint

@@ -110,7 +110,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     getFallbackMeta(address, tokenId),
   ])
   const meta = detail?.metadata ?? fallback
-  if (!meta) return { title: 'Moment — Kismet' }
+  // No metadata from either source: the emptiest page of all (indexer lag or a
+  // junk token URL) — noindex for the same crawl-budget reason as the isEmpty
+  // gate below. Transient upstream failure recovers on the next crawl (the
+  // sitemap still lists real moments, and noindex lifts when the tag is gone).
+  // The catch path below deliberately does NOT noindex: a Redis/upstream blip
+  // there is unrelated to whether the moment has content.
+  if (!meta) return { title: 'Moment — Kismet', robots: { index: false } }
 
   const name = meta.name ?? `#${tokenId}`
   const title = `${name} — Kismet`

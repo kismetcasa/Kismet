@@ -19,7 +19,15 @@ export function SiteFooter() {
       <div className="mx-auto max-w-4xl">
         <nav aria-label="Footer" className="flex flex-wrap gap-x-5 gap-y-2">
           {FOOTER_LINKS.map((l) => (
-            <Link key={l.href} href={l.href} className="hover:text-dim transition-colors">
+            // prefetch=false, matching the Nav dropdown's rationale: these are
+            // rarely-followed links on every page, and the prefetch cost on a
+            // slow Mini App connection outweighs the saved navigation.
+            <Link
+              key={l.href}
+              href={l.href}
+              prefetch={false}
+              className="hover:text-dim transition-colors"
+            >
               {l.label}
             </Link>
           ))}

@@ -45,6 +45,12 @@ check('base units → USDC price', usdcOffer?.price === '5' && usdcOffer?.priceC
 check('decimal string passthrough', offerAmount('0.25', 'eth')?.price === '0.25')
 check('zero → no offer', offerAmount('0', 'eth') === null && offerAmount('0.0', 'eth') === null)
 check('missing/garbage → no offer', offerAmount(undefined) === null && offerAmount('abc', 'eth') === null)
+check(
+  'malformed decimal → no offer',
+  offerAmount('abc.def', 'eth') === null &&
+    offerAmount('1.2.3', 'eth') === null &&
+    offerAmount('.5', 'eth') === null,
+)
 
 // 2. No listing → VisualArtwork only.
 const unlisted = momentJsonLd({
