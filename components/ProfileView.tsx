@@ -270,7 +270,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
-  const { isCurator } = useAdmin()
+  const { isAdmin, isCurator } = useAdmin()
 
   const [profile, setProfile] = useState<Profile | null>(null)
 
@@ -301,6 +301,13 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
+  // Full-profile view capability. Owners always see their full dashboard;
+  // admins get that same full view of ANY profile so they can monitor and
+  // curate the platform — every mint/collect/listing card renders, so the
+  // per-card FeatureStar can feature anything, not just the ≤4 a visitor sees.
+  // This is a READ capability only: edit/pin/curate chrome stays gated on
+  // isOwner / canEditProfile, so an admin viewing someone else is read-only.
+  const canViewFull = isOwner || isAdmin
   const [moments, setMoments] = useState<Moment[]>([])
   const [collected, setCollected] = useState<Moment[]>([])
   const [listings, setListings] = useState<Listing[]>([])
@@ -548,29 +555,30 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       .finally(() => setLoadingListings(false))
   }, [address, tier3])
 
-  // Sales + Airdrops are owner-dashboard-only sections — a visitor's curated
-  // view never renders them, so skip the fetches for non-owners. Mark them
-  // resolved (loading=false) on the visitor path so the flags don't stay true
-  // for the component's life (which would leave their section counts null).
+  // Sales + Airdrops are full-dashboard-only sections — a visitor's curated
+  // view never renders them, so skip the fetches unless the viewer can see the
+  // full profile (owner or admin). Mark them resolved (loading=false) on the
+  // curated path so the flags don't stay true for the component's life (which
+  // would leave their section counts null).
   useEffect(() => {
-    if (!isOwner) { setLoadingPayments(false); return }
+    if (!canViewFull) { setLoadingPayments(false); return }
     if (!tier3) return
     fetch(`/api/payments?artist=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
       .catch(() => setPayments([]))
       .finally(() => setLoadingPayments(false))
-  }, [address, tier3, isOwner])
+  }, [address, tier3, canViewFull])
 
   useEffect(() => {
-    if (!isOwner) { setLoadingAirdrops(false); return }
+    if (!canViewFull) { setLoadingAirdrops(false); return }
     if (!tier3) return
     fetch(`/api/airdrops?artist_address=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setAirdrops(Array.isArray(d.airdrops) ? d.airdrops : []))
       .catch(() => setAirdrops([]))
       .finally(() => setLoadingAirdrops(false))
-  }, [address, tier3, isOwner])
+  }, [address, tier3, canViewFull])
 
   // ─── section drag / collapse ──────────────────────────────────────────────
 
@@ -738,11 +746,19 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     }
   }
 
-  // Render-as-a-visitor flag. True for a real visitor OR when the owner has
-  // toggled the public-view preview. Owner-only CHROME (pushpins, edit, curate,
-  // the owner section branch) gates on this so the preview is faithful; the
-  // DATA fetches still key off the real `isOwner`.
+  // Owner-write-chrome gate. True for anyone who isn't the owner (incl. an
+  // admin viewing someone else) OR an owner previewing the public view. Edit /
+  // pin / curate affordances gate on `!asVisitor`, so they only ever show to
+  // the owner in their own full view — an admin's full view stays read-only.
   const asVisitor = !isOwner || previewPublic
+  // Render-mode gate, deliberately separate from write-chrome: show the full
+  // owner-style dashboard (every section incl. Sales/Airdrops, un-curated
+  // lists) vs the curated public showcase. Owners and admins can see full;
+  // `previewPublic` flips either of them to the public view. Everyone else is
+  // locked to the showcase. A future per-artist "default my own profile to the
+  // public view" preference is just a different seed for `previewPublic` — the
+  // machinery here doesn't change.
+  const fullView = canViewFull && !previewPublic
 
   // Owner-only pin props for a card; {} for visitors so MomentCard/MarketCard
   // render no toggle and keep their memoized identity in every non-owner feed.
@@ -767,7 +783,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // renders the visitor path. With no pins, a visitor's view has no sections at
   // all — just the profile header (identity only). orderByPins runs only on the
   // visitor path; off it the full arrays pass straight through.
-  const pinnedView = asVisitor
+  const pinnedView = !fullView
   const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
   // Un-pinned mints fallback. An artist who hasn't pinned any mints still gets
@@ -1052,6 +1068,20 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12"
       style={theme ? themeCssVars(theme) : undefined}
     >
+      {/* Admin full-view banner — shown only to an admin viewing someone
+          else's profile. Signals that this is the owner-style full profile
+          (all sections incl. Sales/Airdrops), read-only, and NOT the public
+          view — so the extra sections aren't mistaken for what visitors see. */}
+      {isAdmin && !isOwner && (
+        <div className="border border-accent/40 bg-accent/5 px-3 py-2 flex items-center gap-2">
+          <ShieldAlert size={13} className="text-accent flex-shrink-0" />
+          <p className="text-[11px] font-mono text-dim">
+            Admin view — full profile (read-only).
+            {previewPublic ? ' Previewing the public view.' : ' This is not the public view.'}
+          </p>
+        </div>
+      )}
+
       {/* Owner-only permissions banner. Hidden when missingCount is 0
           to keep healthy profiles uncluttered. */}
       {!asVisitor && ownCollectionsMissingAdmin > 0 && (
@@ -1213,10 +1243,13 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               )
             })()}
             {theme && <ProvenanceChip theme={theme} />}
-            {/* Owner-only "public view" toggle — always under the follower
-                count. Flips to the exit control while previewing: the one piece
-                of owner chrome kept visible so the preview stays escapable. */}
-            {isOwner &&
+            {/* "Public view" toggle — always under the follower count. Shown to
+                anyone who can see the full profile (owner or admin) so they can
+                flip between the full view and the curated public view. Flips to
+                the exit control while previewing: the one piece of chrome kept
+                visible so the preview stays escapable. Customize is owner-only
+                (it writes the profile theme). */}
+            {canViewFull &&
               (previewPublic ? (
                 <button
                   onClick={() => setPreviewPublic(false)}
@@ -1232,12 +1265,14 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                   >
                     public view
                   </button>
-                  <button
-                    onClick={() => setCustomizing(true)}
-                    className="text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
-                  >
-                    ✦ customize
-                  </button>
+                  {isOwner && (
+                    <button
+                      onClick={() => setCustomizing(true)}
+                      className="text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+                    >
+                      ✦ customize
+                    </button>
+                  )}
                 </div>
               ))}
           </div>
