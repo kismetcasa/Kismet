@@ -269,6 +269,19 @@ export function buildEthMintCall(params: {
  * ZORA_ERC20_MINTER before invoking. The strategy itself enforces
  * totalValue === quantity * sale.pricePerToken on-chain.
  *
+ * NATIVE-VALUE=0 ASSUMPTION: every caller sends this call with value 0x0. The
+ * deployed ERC20Minter (ZORA_ERC20_MINTER) is v2.0.0 — PAYABLE — and its mint()
+ * requires `msg.value === ethReward * quantity`. value 0x0 is correct only
+ * because ethReward is 0 (verified on-chain 2026-07: ethRewardAmount() == 0).
+ * This is inprocess's own minter deployment, so inprocess owns that knob. If it
+ * is ever set > 0, EVERY USDC collect — web (useDirectCollect / useCollectAll)
+ * AND agent (buildCollectPlan / buildCollectBatchPlan) — reverts with
+ * InvalidETHValue until `value = ethReward * quantity` is threaded through here
+ * (the same shape buildEthMintCall already uses for mintFee). Left as a REACTIVE
+ * fix, not a standing per-collect read: it fails safe (atomic revert, no funds
+ * at risk), the web path shares the identical assumption, and the read would sit
+ * on the hot collect path. If it turns out non-zero, fix it in this one builder.
+ *
  * TREASURY-CRITICAL: same warning as buildEthMintCall — this is the only
  * sanctioned way to construct the args, including the hardcoded
  * KISMET_REFERRAL recipient and the USDC_BASE currency.
