@@ -6,6 +6,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
+import { FeedSkeleton } from './FeedSkeleton'
 import { MaybeLazy } from './LazyMount'
 import { isPatronCollection } from '@/lib/patronCollection'
 
@@ -43,9 +44,20 @@ interface FeaturedFeedProps {
    *  render eagerly — they're a single row with their own internal grid
    *  and don't multiply mount cost the way MomentCard cards do. */
   isMobile?: boolean
+  /** SSR-fetched payload (app/page.tsx) so the landing tab paints content in
+   *  the server HTML instead of "loading…". The fetch effect below still runs
+   *  and overwrites (stale-while-revalidate) — which also keeps the
+   *  featuredRevision remount fresh when an admin edits curation. */
+  initialFeatured?: InitialFeatured | null
 }
 
-export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedProps) {
+/** The featured tab's two payloads, as fetched server-side by app/page.tsx. */
+export interface InitialFeatured {
+  moments: Moment[]
+  collections: FeaturedCollectionRow[]
+}
+
+export function FeaturedFeed({ emptyMessage, isMobile = false, initialFeatured = null }: FeaturedFeedProps) {
   // Which featured mints are Mint Pass Displays — sourced from AdminContext
   // (already fetched for the feature stars), so picking the display mint costs
   // no extra /api/featured round-trip here. FeaturedMoment self-fetches that
@@ -53,8 +65,12 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   const { mintPassKeys } = useAdmin()
   // Per-endpoint state so the moments grid paints when /api/timeline
   // returns, not when both endpoints have. null = pending, [] = empty.
-  const [moments, setMoments] = useState<Moment[] | null>(null)
-  const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(null)
+  // Seeded from the SSR payload when provided — instant content, then the
+  // effect below revalidates.
+  const [moments, setMoments] = useState<Moment[] | null>(initialFeatured?.moments ?? null)
+  const [collections, setCollections] = useState<FeaturedCollectionRow[] | null>(
+    initialFeatured?.collections ?? null,
+  )
   // Whether the hero (if one is configured) actually paints — FeaturedMoment
   // reports false when its mint is hidden or the fetch fails. Starts true so the
   // empty message stays suppressed while the hero loads (no flash), then
@@ -81,7 +97,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false }: FeaturedFeedPro
   }, [])
 
   if (moments === null) {
-    return <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
+    return <FeedSkeleton count={8} />
   }
 
   // The curated Mint Pass Display — one at a time, always leading the tab.

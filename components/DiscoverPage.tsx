@@ -6,7 +6,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { feedPageLimit, prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
-import { FeaturedFeed } from '@/components/FeaturedFeed'
+import { FeaturedFeed, type InitialFeatured } from '@/components/FeaturedFeed'
+import { FeedSkeleton } from '@/components/FeedSkeleton'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
 import { ViewModeToggle } from '@/components/ViewModeToggle'
 import { useViewMode } from '@/hooks/useViewMode'
@@ -444,7 +445,18 @@ function MainFeed() {
 
 // ─── discover page ────────────────────────────────────────────────────────────
 
-export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
+export function DiscoverPage({
+  isMobile,
+  initialFeatured = null,
+}: {
+  isMobile: boolean
+  /** Featured-tab payload fetched during SSR (app/page.tsx). When present the
+   *  featured tab renders real content in the server HTML and through the
+   *  hydration gate below — with NO client fetch, so it cannot race a saved
+   *  non-default tab (the race the gate exists to prevent). null = SSR fetch
+   *  failed/skipped; behavior is exactly as before. */
+  initialFeatured?: InitialFeatured | null
+}) {
   const { isAdmin, hasSession, startSession, featuredRevision } = useAdmin()
   const queryClient = useQueryClient()
   // Mirror MomentFeed's page size so a warmed entry shares the live grid's
@@ -554,10 +566,12 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
       />
 
       <div className="mt-2">
-        {!hydrated && (
-          <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
-        )}
-        {hydrated && visitedTabs.has('featured') && (
+        {/* Pre-hydration: a pulse skeleton instead of bare "loading…" text.
+            With SSR featured data the real featured branch below renders
+            through the gate instead (zero fetches — initial data only), so
+            the landing HTML carries content, not a placeholder. */}
+        {!hydrated && !initialFeatured && <FeedSkeleton count={8} />}
+        {(hydrated || !!initialFeatured) && visitedTabs.has('featured') && (
           <div hidden={active !== 'featured'}>
             {isAdmin && !hasSession && (
               <div className="flex items-center justify-between py-4 border-b border-line mb-2">
@@ -583,6 +597,7 @@ export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
               key={`featured-${featuredRevision}`}
               emptyMessage={isAdmin ? 'no featured mints or collections yet — click ★ on any mint or collection to feature it' : 'no featured mints or collections yet'}
               isMobile={isMobile}
+              initialFeatured={initialFeatured}
             />
           </div>
         )}
