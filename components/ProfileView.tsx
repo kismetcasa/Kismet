@@ -827,7 +827,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // cap below in sync with that cap (and the hint copy). The dense dashboard
   // grid (GRID_CLASSES) still drives the owner's full mint/collected lists.
   const SHOWCASE_ROW_CLASSES =
-    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:overflow-visible'
+    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:gap-4 lg:overflow-visible'
   // grid grid-rows-1 makes the card fill the cell so every box in a section
   // row is the same height regardless of content (price loaded, owned, text
   // moment): the row stretches items to the tallest, this stretches the card
@@ -1066,7 +1066,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
   return (
     <div
-      className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12"
+      className="max-w-6xl mx-auto px-4 py-12 flex flex-col gap-12"
       style={theme ? themeCssVars(theme) : undefined}
     >
       {/* Admin full-view banner — shown only to an admin viewing someone
