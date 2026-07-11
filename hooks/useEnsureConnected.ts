@@ -35,7 +35,12 @@ export function useEnsureConnected(): () => Promise<Address | null> {
       try {
         return (await connectAsync({ connector })).accounts[0] ?? null
       } catch {
-        // Host wallet declined / unavailable — caller stays put.
+        // Host wallet declined / unavailable (Base App and other hosts where
+        // the eth_accounts handoff doesn't fire). Swallowing this used to make
+        // the collect/mint tap a silent no-op — the only escape was knowing to
+        // tap your own name in the nav. Fall through to the picker instead, so
+        // recovery happens at the moment of intent.
+        openConnectModal?.()
         return null
       }
     }
