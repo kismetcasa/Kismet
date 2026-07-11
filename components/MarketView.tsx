@@ -45,7 +45,7 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
             <div>
               <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Market</h1>
               <p className="text-xs font-mono text-faint mt-1">
-                creator royalties enforced on every sale
+                creator royalties enforced on every sale · 1% platform fee
               </p>
             </div>
           </div>

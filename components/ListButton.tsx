@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAccount, useReadContract, useWriteContract, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
@@ -21,7 +21,8 @@ import {
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
-import { computePlatformFee, isBelowListingFloor, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
+import { computePlatformFee, isBelowListingFloor, MIN_LISTING_PRICE_BASE_UNITS, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
+import { formatPrice } from '@/lib/inprocess'
 
 type ListCurrency = 'eth' | 'usdc'
 
@@ -65,6 +66,58 @@ export function ListButton({
   const [inputFocused, setInputFocused] = useState(false)
   const [currency, setCurrency] = useState<ListCurrency>('eth')
   const [step, setStep] = useState<'idle' | 'approving' | 'signing' | 'submitting'>('idle')
+  // Live net-proceeds preview for the typed price: price − royalty − 1% fee.
+  // The seller signs an order netting exactly this; without the preview they
+  // never see the number until the funds arrive. `belowFloor` short-circuits
+  // to the minimum-price notice. null = no valid price typed yet.
+  const [breakdown, setBreakdown] = useState<
+    { proceeds: bigint; royalty: bigint; fee: bigint; belowFloor: boolean } | null
+  >(null)
+
+  useEffect(() => {
+    const parsed = parseFloat(priceInput)
+    if (!priceInput || isNaN(parsed) || parsed <= 0) {
+      setBreakdown(null)
+      return
+    }
+    let priceTotal: bigint
+    try {
+      priceTotal = currency === 'usdc' ? parseUnits(priceInput, 6) : parseEther(priceInput)
+    } catch {
+      setBreakdown(null)
+      return
+    }
+    if (isBelowListingFloor(priceTotal)) {
+      setBreakdown({ proceeds: 0n, royalty: 0n, fee: 0n, belowFloor: true })
+      return
+    }
+    // Debounce the royalty read so we don't fire a view call per keystroke.
+    let cancelled = false
+    const handle = setTimeout(async () => {
+      const fee = computePlatformFee(priceTotal)
+      let royalty = 0n
+      try {
+        if (publicClient) {
+          const r = (await publicClient.readContract({
+            address: collectionAddress as Address,
+            abi: EIP2981_ABI,
+            functionName: 'royaltyInfo',
+            args: [BigInt(tokenId), priceTotal],
+          })) as [Address, bigint]
+          royalty = r[1]
+        }
+      } catch {
+        // No EIP-2981 — preview as fee-only; handleList applies the same rule.
+      }
+      if (!cancelled) {
+        setBreakdown({ proceeds: priceTotal - royalty - fee, royalty, fee, belowFloor: false })
+      }
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [priceInput, currency, publicClient, collectionAddress, tokenId])
 
   const { data: balance } = useReadContract({
     address: collectionAddress as Address,
@@ -111,7 +164,9 @@ export function ListButton({
     // Check BEFORE the marketplace approval + signature so a dust price fails
     // here instead of after the user has paid gas and signed.
     if (isBelowListingFloor(priceTotal)) {
-      toast.error('Price is too low to list')
+      toast.error(
+        `Minimum listing price is ${formatPrice(MIN_LISTING_PRICE_BASE_UNITS.toString(), currency)} — below it the 1% fee rounds to zero`,
+      )
       return
     }
 
@@ -283,6 +338,7 @@ export function ListButton({
   const showToggle = !stacked && priceInput === '' && !inputFocused
 
   return (
+    <div className="w-full">
     <div className={stacked ? 'flex flex-col gap-1.5 w-full' : 'flex gap-1.5 items-center w-full'}>
       <div className={`flex bg-surface border border-line focus-within:border-muted ${stacked ? '' : 'flex-1 min-w-0'}`}>
         {showToggle && currencyToggle}
@@ -320,6 +376,16 @@ export function ListButton({
           ✕
         </button>
       </div>
+    </div>
+    {breakdown && (
+      <p className={`mt-1 text-[10px] font-mono ${breakdown.belowFloor ? 'text-red-400' : 'text-muted'}`}>
+        {breakdown.belowFloor
+          ? `minimum ${formatPrice(MIN_LISTING_PRICE_BASE_UNITS.toString(), currency)} — below it the 1% fee rounds to zero`
+          : breakdown.royalty > 0n
+            ? `you'll receive ≈ ${formatPrice(breakdown.proceeds.toString(), currency)} — after ${formatPrice(breakdown.royalty.toString(), currency)} royalty + ${formatPrice(breakdown.fee.toString(), currency)} platform fee (1%)`
+            : `you'll receive ≈ ${formatPrice(breakdown.proceeds.toString(), currency)} — after the 1% platform fee`}
+      </p>
+    )}
     </div>
   )
 }
