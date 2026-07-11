@@ -15,11 +15,15 @@ import { SITE_URL } from './siteUrl'
 const ORG_ID = `${SITE_URL}/#organization`
 const WEBSITE_ID = `${SITE_URL}/#website`
 
-// Verified public brand/social profiles for the entity (sameAs) — reinforces
-// knowledge-panel resolution. Left empty deliberately: the official X/Farcaster
-// URLs must be confirmed before shipping outward-facing links (a wrong sameAs
-// misattributes the brand). Fill in with the real profile URLs.
-const SAME_AS: string[] = []
+// Verified public brand profiles for the entity (sameAs) — reinforces
+// knowledge-panel / entity resolution. Owner-confirmed URLs only (a wrong
+// sameAs misattributes the brand): the platform's X and Farcaster profiles,
+// plus the Kismet Casa site — the organization behind the platform.
+const SAME_AS: string[] = [
+  'https://x.com/kismetdotart',
+  'https://farcaster.xyz/kismet',
+  'https://www.kismetcasa.xyz',
+]
 
 // The Organization node. Shared by reference (@id) from WebSite, breadcrumbs,
 // and product/offer sellers so the whole graph resolves to one entity.

@@ -56,9 +56,11 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
    through the [Rich Results Test](https://search.google.com/test/rich-results)
    and the [Schema Validator](https://validator.schema.org/). Fix any error
    before it becomes a manual action.
-4. **Fill in socials.** Set `SAME_AS` in `lib/structuredData.ts` to the official
-   X / Farcaster / Instagram URLs, and add them to `SiteFooter`. (Left empty on
-   purpose — a wrong `sameAs` misattributes the brand.)
+4. **Socials — done.** `SAME_AS` (lib/structuredData.ts) and the footer carry
+   the owner-confirmed profiles: x.com/kismetdotart, farcaster.xyz/kismet, and
+   www.kismetcasa.xyz. Keep the two lists in sync if they ever change. The
+   reciprocal link — kismetcasa.xyz linking to kismet.art — is the
+   highest-authority backlink the team controls; add it on that site.
 5. **Monitor.** Watch Search Console Coverage/Indexing (how many moments get
    indexed — the thin-content signal), Core Web Vitals, and the queries you
    surface for. Track AI visibility separately (share-of-answer tools).

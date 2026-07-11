@@ -23,6 +23,7 @@ import {
   faqJsonLd,
   articleJsonLd,
   breadcrumbNode,
+  organizationNode,
   serializeJsonLd,
 } from '../lib/structuredData.ts'
 
@@ -131,6 +132,20 @@ check('Article graph includes the Organization node + a 3-level breadcrumb',
   article['@graph'].some((n) => n['@type'] === 'Organization') &&
   article['@graph'].some((n) => n['@type'] === 'BreadcrumbList' &&
     (n.itemListElement as unknown[]).length === 3))
+
+// 5c. Organization sameAs carries the three owner-confirmed profiles — https
+// only, and present at all (an empty sameAs silently weakens entity
+// resolution; a wrong one misattributes the brand, so pin the exact set).
+const org = organizationNode() as { sameAs?: string[] }
+check(
+  'Organization sameAs = X + Farcaster + Kismet Casa',
+  Array.isArray(org.sameAs) &&
+    org.sameAs.length === 3 &&
+    org.sameAs.includes('https://x.com/kismetdotart') &&
+    org.sameAs.includes('https://farcaster.xyz/kismet') &&
+    org.sameAs.includes('https://www.kismetcasa.xyz') &&
+    org.sameAs.every((u) => u.startsWith('https://')),
+)
 
 // 6. Serializer escapes `<`.
 const serialized = serializeJsonLd({ name: 'a</script><b>x' })

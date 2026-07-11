@@ -13,6 +13,14 @@ const FOOTER_LINKS = [
   { href: '/agent', label: 'AI agent' },
 ] as const
 
+// Official external profiles — mirrors the Organization sameAs list in
+// lib/structuredData.ts so the visible links and the entity markup agree.
+const SOCIAL_LINKS = [
+  { href: 'https://x.com/kismetdotart', label: 'X' },
+  { href: 'https://farcaster.xyz/kismet', label: 'Farcaster' },
+  { href: 'https://www.kismetcasa.xyz', label: 'Kismet Casa' },
+] as const
+
 export function SiteFooter() {
   return (
     <footer className="border-t border-line px-4 py-8 font-mono text-xs text-muted">
@@ -30,6 +38,19 @@ export function SiteFooter() {
             >
               {l.label}
             </Link>
+          ))}
+        </nav>
+        <nav aria-label="Social" className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+          {SOCIAL_LINKS.map((l) => (
+            <a
+              key={l.href}
+              href={l.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-dim transition-colors"
+            >
+              {l.label}
+            </a>
           ))}
         </nav>
         <p className="mt-4">
