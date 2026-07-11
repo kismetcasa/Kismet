@@ -1970,39 +1970,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         )}
       </div>
 
-      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
-          enabled and the wallet holds no valid Pass, but not while a mint is
-          in flight (isBusy) so a late-resolving pass probe can't replace the
-          progress button mid-mint. */}
-      {gatedOut && !isBusy ? (
-        <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() => router.push(passCollectionHref)}
-            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
-          >
-            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
-          </button>
-          <p className="text-[10px] font-mono text-muted text-center">
-            minting requires an artwork from {passCollectionName ?? 'the collection'}
-          </p>
-        </div>
-      ) : (
-        <button
-          type="submit"
-          disabled={isBusy}
-          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
-        >
-          {!isConnected
-            ? 'connect wallet to mint'
-            : isBusy
-            ? stepLabel(step, uploadProgress)
-            : 'mint'}
-        </button>
-      )}
-
-      {/* Residencies toggle */}
-      <div className="flex items-center gap-2.5 w-fit mx-auto -mt-2">
+      {/* Residencies toggle — deliberately ABOVE the mint button. It's a
+          default-on, revenue-affecting opt-out (5% of splits), so it must sit
+          before the CTA in reading order: a creator filling the form
+          top-to-bottom sees and can change it before committing, instead of
+          discovering it below the button they already pressed. */}
+      <div className="flex items-center gap-2.5 w-fit mx-auto">
         <button
           type="button"
           onClick={() => {
@@ -2089,6 +2062,38 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           {residenciesMax}% max with {splits.length} recipients — lower the % or remove one
         </p>
       )}
+
+      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
+          enabled and the wallet holds no valid Pass, but not while a mint is
+          in flight (isBusy) so a late-resolving pass probe can't replace the
+          progress button mid-mint. */}
+      {gatedOut && !isBusy ? (
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => router.push(passCollectionHref)}
+            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+          >
+            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
+          </button>
+          <p className="text-[10px] font-mono text-muted text-center">
+            minting requires an artwork from {passCollectionName ?? 'the collection'}
+          </p>
+        </div>
+      ) : (
+        <button
+          type="submit"
+          disabled={isBusy}
+          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+        >
+          {!isConnected
+            ? 'connect wallet to mint'
+            : isBusy
+            ? stepLabel(step, uploadProgress)
+            : 'mint'}
+        </button>
+      )}
+
     </form>
   )
 }
