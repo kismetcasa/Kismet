@@ -28,8 +28,11 @@ gates and quotas). Full inventory in Part II.
 1. **The workload is GET-dominated and latency-bound, not cost-bound.** Session
    validation (1 GET/authed request, uncached) + the notification badge poll
    (2 GETs/120s/visible tab) + the rate-limit EVAL (every request, ~54 routes)
-   dominate command volume (`OPS_RUNBOOK.md:82`). At observed volume (~1M
-   commands/mo) the pay-as-you-go bill is ≈ **$2/month**. Meanwhile every
+   dominate command volume (`OPS_RUNBOOK.md:82`). **Confirmed from the Upstash
+   console (2026-07-11): 579K commands this month — 500,124 reads vs 78,746
+   writes (86% reads) — costing $1.16; total data size 336KB; bandwidth
+   227MB of the free 200GB.** The database is PAYG, Global type, primary in
+   AWS `us-east-1`, and also exposes the native Redis protocol (port 6379/TLS). Meanwhile every
    command pays a **cross-cloud round trip** (app on Oracle, Upstash in AWS
    `us-east-1`), and the worst paths are *dependent chains* — profile identity
    resolution is 4–6 sequential GETs — which auto-pipelining cannot collapse.
@@ -532,10 +535,13 @@ Classes B and C — which include the entire per-request hot path — do not.
 | Fixed 1GB | **$20/mo, unlimited commands** | 100GB bw/mo |
 | Fixed 5GB | $100/mo | 500GB bw/mo |
 
-At observed ~1M cmds/mo: PAYG ≈ **$2/mo**. At 10×: ≈ $20/mo, or flat $10–20
-fixed. **Bandwidth, not commands, is the number to watch** if traffic grows:
-the listings feed's ~1–2MB MGET and the timeline's merged-set MGET are the
-movers; the Fixed-250MB plan's 50GB/mo would be the first ceiling hit. Sources:
+**Observed (console, 2026-07-11): 579K cmds → $1.16/mo; 336KB data; 227MB
+bandwidth.** PAYG is therefore optimal today and stays cheaper than the
+Fixed-250MB plan until ~5M cmds/mo; **set the PAYG budget cap (currently
+unset) rather than switching plans.** Bandwidth becomes the number to watch
+only if market/feed traffic grows ~100×: the listings feed's ~1–2MB MGET and
+the timeline's merged-set MGET are the movers, and a later move to
+Fixed-250MB would hit its 50GB/mo ceiling first. Sources:
 [Upstash pricing](https://upstash.com/pricing/redis),
 [docs](https://upstash.com/docs/redis/overall/pricing), request-size limit
 verified against
@@ -566,11 +572,26 @@ Zero effort. Keeps paying r-ms per command on guards and 4–6r on identity
 chains; keeps 10MB cliff exposure; cost trivial. Fine at today's traffic,
 increasingly felt as DAU grows.
 
-**Option 2 — Upstash fixed plan + code-level fixes only.**
-$10–20/mo retires command anxiety; §5.2 fixes remove the worst O(N) reads and
-redundant GETs. Latency floor unchanged (cross-cloud). The right move **if**
-operational simplicity outweighs latency (one managed store, no new moving
-parts). Choose Fixed-1GB over 250MB for the 100GB bandwidth headroom.
+**Option 2 — Upstash-only + code-level fixes.**
+Stay PAYG with a budget cap (at observed $1.16/mo, a fixed plan costs more
+until ~5M cmds/mo); §5.2 fixes remove the worst O(N) reads and redundant GETs.
+Latency floor unchanged (cross-cloud). The right move **if** operational
+simplicity outweighs latency (one managed store, no new moving parts).
+
+**Option 2b — Upstash Global read region near the box (zero infra, zero code).**
+The database is already Global-type; adding a read region in the Upstash
+region closest to the Oracle VM makes the REST endpoint route reads (86% of
+traffic) to the nearby replica automatically. Costs: +$? per-region flat on
+some plans, and every write bills once per region (writes are 14% ≈ 79K/mo →
+trivial). **Caveats:** (a) only worth it if an Upstash-supported region is
+materially closer to the box than `us-east-1` — needs the box's region + a
+measured RTT first; (b) replica reads are eventually consistent, which breaks
+read-your-write flows — `createSession` → immediate `verifySession` on the
+login redirect, scout `getScout`→`saveScout` read-modify-write cycles, and
+listing create → immediate feed read could observe pre-write state for
+~ms–100ms. Those specific flows would need to pin to the primary (REST header)
+or tolerate the lag. Evaluate after the RTT measurement; skip if Option 4 is
+taken.
 
 **Option 3 — full co-location (move everything to Redis-on-box).**
 Kills all cross-cloud latency and all Upstash cost, but makes the single box a
@@ -631,9 +652,11 @@ Redis to cache/counters/locks and unlocks N stateless pods. It is a
 re-platforming, not a Redis optimization — sequenced after the hybrid split
 (which is also its preparation: the Class A inventory above is the table list).
 
-**Recommendation: Option 4 + Option 2's fixed plan + §5.2 code fixes.**
+**Recommendation: Option 4 + stay PAYG with a budget cap + §5.2 code fixes.**
 If adding any infrastructure is unacceptable right now, Option 2 alone
-captures the O(N) and redundant-read wins and is strictly worthwhile.
+captures the O(N) and redundant-read wins and is strictly worthwhile, and
+Option 2b is the no-infra latency lever to evaluate once the box's region and
+RTT are known.
 
 ## 5.2 Code-level fixes (no topology change; ranked by impact/effort)
 
@@ -695,8 +718,9 @@ captures the O(N) and redundant-read wins and is strictly worthwhile.
 4. `SCARD kismetart:created-mints` / `collections` / `ZCARD` featured — cliff
    headroom (runbook §Verify already prescribes this).
 
-**Phase 1 (days):** fixes #1 #2 #5 #6 #7 #9 #10 #13 (all small); switch Upstash
-to Fixed-1GB ($20/mo) or set a PAYG budget cap.
+**Phase 1 (days):** fixes #1 #2 #5 #6 #7 #9 #10 #13 (all small); set the PAYG
+budget cap in the Upstash console (currently unset — the only spend guard is
+the wallet); revisit a fixed plan only past ~5M cmds/mo.
 
 **Phase 2 (a week):** local Redis + SRH on Coolify; move keyspaces in the §5.1
 order behind `lib/redisHot.ts`; readiness treats it as non-gating; AOF +
