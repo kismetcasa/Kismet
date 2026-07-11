@@ -17,7 +17,8 @@
     "verify:agent": "node --experimental-strip-types scripts/verify-agent-collect.ts && node --experimental-strip-types scripts/verify-agent-buy.ts && node --experimental-strip-types scripts/verify-agent-list.ts && node --experimental-strip-types scripts/verify-agent-collect-batch.ts && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-agent-collect-builders.ts && node scripts/verify-agent-skill.mjs && node --experimental-strip-types scripts/verify-agent-scout.ts && node --experimental-strip-types scripts/verify-agent-scout-server.ts",
     "verify:chunk-guard": "node --experimental-strip-types scripts/verify-chunk-reload-guard.ts",
     "verify:flows": "node --experimental-strip-types scripts/verify-mint.ts && node --experimental-strip-types scripts/verify-gateways.ts && node --experimental-strip-types scripts/verify-img-range.ts && node --experimental-strip-types scripts/verify-surfaces.ts && node --experimental-strip-types scripts/verify-persistence.ts && node --experimental-strip-types scripts/verify-chain-health.ts && node --experimental-strip-types scripts/verify-smartwallet.ts && node --experimental-strip-types scripts/verify-gate-flags.ts && node --experimental-strip-types scripts/verify-stats.ts",
-    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent && npm run verify:chunk-guard && npm run verify:flows",
+    "verify:a11y": "node scripts/verify-a11y-text.mjs",
+    "check": "npm run typecheck && npm run lint && npm run check:resource-hints && npm run check:bundle && npm run verify:agent && npm run verify:chunk-guard && npm run verify:flows && npm run verify:a11y",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs && node scripts/patch-next-clone-response.mjs"
   },
   "dependencies": {

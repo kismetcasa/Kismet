@@ -5,6 +5,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useFocusTrap } from '@/hooks/useFocusTrap'
 
 // Stacking invariant: BACKDROP < CHROME. The detail video is now an inline
 // element inside the backdrop's content, so it stacks naturally above the
@@ -41,6 +42,13 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
 
   useEscapeKey(dismiss, !stale)
   useBodyScrollLock(!stale)
+  // Keyboard focus must not wander into the still-mounted feed behind the
+  // overlay. The trap wraps BOTH the dialog and the close button (siblings
+  // for stacking reasons) via a display:contents wrapper, so Tab cycles
+  // through the overlay's links, actions, and the X — and focus returns to
+  // the opening card on dismiss.
+  const trapRef = useRef<HTMLDivElement>(null)
+  useFocusTrap(trapRef, !stale)
 
   // Defensive: ensure the modal scrolls into view on mount. Without
   // this, opening the modal from a scrolled-down feed could leave the
@@ -53,7 +61,7 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
   if (stale) return null
 
   return (
-    <>
+    <div ref={trapRef} style={{ display: 'contents' }}>
       <div
         role="dialog"
         aria-modal="true"
@@ -104,6 +112,6 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
       >
         <X size={18} />
       </button>
-    </>
+    </div>
   )
 }

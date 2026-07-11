@@ -1105,7 +1105,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           </div>
         )}
         <div className="flex flex-col items-center justify-center gap-3 py-24 px-6">
-          <EyeOff size={20} className="text-[#444]" />
+          <EyeOff size={20} className="text-subtle" />
           <p className="text-sm font-mono text-dim">this moment has been hidden by the creator</p>
         </div>
       </div>
@@ -1202,7 +1202,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       </button>
                     </>
                   ) : (
-                    <span className="text-faint font-mono text-xs">loading…</span>
+                    <span className="text-subtle font-mono text-xs">loading…</span>
                   )}
                 </div>
               ) : (
@@ -1301,7 +1301,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     onChange={(e) => setEditName(e.target.value)}
                     disabled={savingMeta}
                     placeholder="title"
-                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -1312,7 +1312,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     disabled={savingMeta}
                     rows={3}
                     placeholder="description"
-                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
                   />
                 </div>
                 {/* Change media — upload a new file, or re-point at content
@@ -1381,10 +1381,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                         }}
                         disabled={savingMeta}
                         placeholder="ar://… or https://arweave.net/…"
-                        className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                        className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                       />
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-mono uppercase tracking-widest text-faint">type</span>
+                        <span className="text-[10px] font-mono uppercase tracking-widest text-subtle">type</span>
                         {(['video', 'gif', 'image'] as const).map((t) => (
                           <button
                             key={t}
@@ -1397,7 +1397,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                           </button>
                         ))}
                       </div>
-                      <p className="text-[10px] font-mono text-faint leading-relaxed">
+                      <p className="text-[10px] font-mono text-subtle leading-relaxed">
                         re-points to content already on arweave — no re-upload. the cover/poster is kept unless you also change it below.
                       </p>
                     </div>
@@ -1501,7 +1501,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
             {meta.description && (
               <div className="flex flex-col gap-1.5">
-                <p className="text-[10px] font-mono text-faint uppercase tracking-wider">description</p>
+                <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">description</p>
                 <p
                   ref={descRef}
                   className={`text-xs font-mono text-dim leading-relaxed ${showFullDesc ? '' : 'line-clamp-4'}`}
@@ -1521,7 +1521,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             {hasSplits && <SplitsPanel recipients={splitRecipients} />}
             {!commentsLoading && comments.length > 0 && (
               <div className="flex flex-col gap-2">
-                <p className="text-[10px] font-mono text-faint uppercase tracking-wider">activity</p>
+                <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">activity</p>
                 <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
                   {comments.map((c, i) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
@@ -1546,7 +1546,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                         <span className="text-xs font-mono text-dim flex-1 break-words leading-relaxed">
                           {isDefault ? 'collected on kismet' : c.comment}
                         </span>
-                        <span className="text-[10px] font-mono text-faint flex-shrink-0">
+                        <span className="text-[10px] font-mono text-subtle flex-shrink-0">
                           {formatRelativeTime(c.timestamp)}
                         </span>
                       </div>
@@ -1565,7 +1565,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 placeholder="leave a comment… (optional)"
                 rows={2}
                 disabled={collecting}
-                className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none disabled:opacity-50"
+                className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-none disabled:opacity-50"
               />
             )}
           </div>
@@ -1579,7 +1579,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               plus the viewer's cut. */}
           {canDistribute && (
             <div className="px-5 pb-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">
+              <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">
                 distribute earnings
                 {adminDistributeOverride && <span className="text-accent"> · admin override</span>}
               </p>
@@ -1623,7 +1623,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               count sits next to it when the viewer holds any. */}
           {totalMinted !== undefined && (
             <div className="px-5 pb-1 flex items-center gap-3">
-              <p className="text-[10px] font-mono text-[#444] uppercase tracking-widest">
+              <p className="text-[10px] font-mono text-subtle uppercase tracking-widest">
                 {Number(totalMinted).toLocaleString()}{' '}
                 {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
               </p>
@@ -1642,7 +1642,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-[#444]">
+                <span className="text-[11px] font-mono text-subtle">
                   {maxSupply === undefined
                     ? '…'
                     : isOpenEdition(maxSupply)
@@ -1739,7 +1739,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     autoComplete="off"
                     autoCapitalize="off"
                     spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted"
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
                   />
                   <button
                     onClick={handleSend}
@@ -1758,7 +1758,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     ) : sendToError ? (
                       <span className="text-red-400">{sendToError}</span>
                     ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
+                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
                     ) : null}
                   </div>
                 )}

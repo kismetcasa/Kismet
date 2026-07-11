@@ -342,6 +342,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
             <span aria-hidden className="h-5 w-2/3 bg-black/15 animate-pulse" />
           ) : (
             <>
+              {/* a11y-ok: dark text on the light hero panel (DISPLAY_BG), not the #111 surface */}
               <span className="font-mono text-[#0d0d0d] text-lg xl:text-xl leading-snug line-clamp-3">
                 {title}
               </span>
@@ -352,11 +353,13 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
                     <Link
                       href={profileHref}
                       onClick={(e) => e.stopPropagation()}
+                      // a11y-ok: dark text on the light hero panel, not the #111 surface
                       className="font-mono text-[#0d0d0d] text-sm truncate max-w-full hover:underline"
                     >
                       {artist}
                     </Link>
                   ) : (
+                    // a11y-ok: dark text on the light hero panel, not the #111 surface
                     <span className="font-mono text-[#0d0d0d] text-sm truncate max-w-full">{artist}</span>
                   )}
                 </>
@@ -409,6 +412,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
           ) : isTextMoment ? (
             <div className="w-full h-full flex flex-col p-8 overflow-hidden">
               <span className="text-[10px] font-mono text-black/60 uppercase tracking-widest mb-3">writing</span>
+              {/* a11y-ok: dark text on the light hero panel (DISPLAY_BG), not the #111 surface */}
               {meta.name && <p className="text-xl font-mono text-[#0d0d0d] mb-3 truncate">{meta.name}</p>}
               {textSnippet && (
                 <p className="text-sm font-mono text-black/80 leading-relaxed whitespace-pre-wrap">{textSnippet}</p>
@@ -437,6 +441,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
           {loading ? (
             <span aria-hidden className="h-4 w-1/2 bg-black/15 animate-pulse" />
           ) : collection ? (
+            // a11y-ok: dark text on the light hero panel (DISPLAY_BG), not the #111 surface
             <span className="font-mono text-[#0d0d0d] text-base xl:text-lg leading-snug line-clamp-3 hover:underline">
               {collection}
             </span>

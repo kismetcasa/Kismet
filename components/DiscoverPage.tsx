@@ -153,7 +153,7 @@ function TabBar({
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
               transition-colors select-none touch-pan-y
-              ${isActive ? 'text-ink' : 'text-[#444] hover:text-dim'}
+              ${isActive ? 'text-ink' : 'text-subtle hover:text-dim'}
               ${isDragging ? 'opacity-70 cursor-grabbing' : 'cursor-grab'}
             `}
           >
@@ -310,7 +310,7 @@ function FilterPill({
       className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
         on
           ? 'border-accent text-accent'
-          : 'border-line text-muted hover:border-[#444] hover:text-dim'
+          : 'border-line text-muted hover:border-subtle hover:text-dim'
       }`}
     >
       {children}
@@ -402,7 +402,7 @@ function MainFeed() {
         <button
           onClick={() => setSubTab('mints')}
           className={`text-xs font-mono tracking-wider transition-colors ${
-            subTab === 'mints' ? 'text-ink' : 'text-[#444] hover:text-dim'
+            subTab === 'mints' ? 'text-ink' : 'text-subtle hover:text-dim'
           }`}
         >
           mints
@@ -411,7 +411,7 @@ function MainFeed() {
         <button
           onClick={() => setSubTab('collections')}
           className={`text-xs font-mono tracking-wider transition-colors ${
-            subTab === 'collections' ? 'text-ink' : 'text-[#444] hover:text-dim'
+            subTab === 'collections' ? 'text-ink' : 'text-subtle hover:text-dim'
           }`}
         >
           collections
@@ -681,7 +681,7 @@ function ArtistsFeed() {
     return (
       <div className="border border-line p-8 sm:p-16 text-center mt-4">
         <p className="text-sm font-mono text-muted">no artist lists yet</p>
-        <p className="text-xs font-mono text-[#444] mt-2">
+        <p className="text-xs font-mono text-subtle mt-2">
           a curator can create one from their profile
         </p>
       </div>
@@ -755,7 +755,7 @@ function ArtistsFeed() {
               }`}
             >
               {l.name}
-              <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
+              <span className="ml-1.5 text-subtle">{l.addresses.length}</span>
             </button>
           )
         })}

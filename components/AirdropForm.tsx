@@ -402,7 +402,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               </span>
             </>
           ) : (
-            <span className="text-sm text-faint font-mono flex-1">
+            <span className="text-sm text-subtle font-mono flex-1">
               {loadingMoments ? 'loading your artworks…' : 'select an artwork'}
             </span>
           )}
@@ -450,7 +450,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                         </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-faint font-mono text-[10px]">#{m.token_id}</span>
+                          <span className="text-subtle font-mono text-[10px]">#{m.token_id}</span>
                         </div>
                       )}
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
@@ -483,7 +483,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRecipient() } }}
             placeholder="0x… wallet address"
             aria-label="Recipient wallet address"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <button
             type="button"
@@ -587,7 +587,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         )
       })()}
 
-      <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
+      <p className="text-[10px] font-mono text-subtle text-center -mt-2">
         airdrop freshly minted supply to recipients · paid from your wallet
       </p>
 
@@ -613,7 +613,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           <p className="text-[10px] font-mono text-muted uppercase tracking-wider">
             delegate airdrop
           </p>
-          <p className="text-[10px] font-mono text-[#444]">
+          <p className="text-[10px] font-mono text-subtle">
             let another wallet airdrop this specific artwork
           </p>
           <div className="flex gap-2">
@@ -630,7 +630,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               }}
               placeholder="0x… wallet address"
               aria-label="Delegate wallet address"
-              className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+              className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
             <button
               type="button"

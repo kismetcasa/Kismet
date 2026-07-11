@@ -351,7 +351,7 @@ export function ListButton({
           onBlur={() => setInputFocused(false)}
           placeholder={stacked ? '0.00' : (showToggle ? '' : (currency === 'usdc' ? 'USDC' : 'ETH'))}
           disabled={isBusy}
-          className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-ink font-mono placeholder-faint focus:outline-none disabled:opacity-50"
+          className="flex-1 min-w-0 bg-transparent px-2 py-2.5 text-xs text-ink font-mono placeholder-subtle focus:outline-none disabled:opacity-50"
         />
         {stacked && currencyToggle}
       </div>

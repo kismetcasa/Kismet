@@ -594,7 +594,7 @@ function HideContentCard() {
           value={link}
           onChange={(e) => setLink(e.target.value)}
           placeholder="https://kismet.art/moment/0x…/1"
-          className="bg-[#0a0a0a] border border-line focus:border-muted outline-none px-2 py-1.5 text-xs font-mono text-ink placeholder:text-[#444]"
+          className="bg-[#0a0a0a] border border-line focus:border-muted outline-none px-2 py-1.5 text-xs font-mono text-ink placeholder:text-subtle"
         />
       </div>
 

@@ -167,7 +167,7 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
               onTogglePin()
             }}
             className={`absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center transition-colors ${
-              pinned ? 'text-accent' : 'text-faint hover:text-dim'
+              pinned ? 'text-accent' : 'text-subtle hover:text-dim'
             }`}
             title={pinned ? 'Unpin from profile' : 'Pin to profile'}
             aria-label={pinned ? 'Unpin from profile' : 'Pin to profile'}
@@ -254,7 +254,7 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
               </div>
               <div className="flex items-center justify-between mt-0.5">
                 {Number(listing.royaltyAmount) > 0 ? (
-                  <p className="text-xs font-mono text-faint">{royaltyPct}% royalty</p>
+                  <p className="text-xs font-mono text-subtle">{royaltyPct}% royalty</p>
                 ) : <span />}
                 <p className="text-xs font-mono accent-grad">{priceLabel}</p>
               </div>

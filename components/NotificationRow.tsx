@@ -236,7 +236,7 @@ export function NotificationRow({ notification, actorName, onClick, onMute }: No
             e.stopPropagation()
             onMute(notification.actor!)
           }}
-          className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-mono uppercase tracking-widest text-faint hover:text-dim px-1 py-0.5"
+          className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-mono uppercase tracking-widest text-subtle hover:text-dim px-1 py-0.5"
           title={`Mute ${notification.actor}`}
         >
           mute

@@ -325,7 +325,7 @@ export function ProfileStats({
             <p
               id="earnings-source-split"
               hidden={showSplitToggle && !splitOpen}
-              className="text-faint text-xs mt-0.5 tabular-nums"
+              className="text-subtle text-xs mt-0.5 tabular-nums"
               title="Resales counted are those sold through Kismet listings"
             >
               {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
@@ -365,7 +365,7 @@ export function ProfileStats({
           )}
         </div>
       </div>
-      {!asVisitor && !stats.public && hasEarnings && <p className="text-faint text-[10px] mt-1.5">private · tap the pin to show</p>}
+      {!asVisitor && !stats.public && hasEarnings && <p className="text-subtle text-[10px] mt-1.5">private · tap the pin to show</p>}
     </div>
   )
 }
