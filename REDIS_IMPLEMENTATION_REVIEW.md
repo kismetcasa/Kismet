@@ -31,8 +31,10 @@ gates and quotas). Full inventory in Part II.
    dominate command volume (`OPS_RUNBOOK.md:82`). **Confirmed from the Upstash
    console (2026-07-11): 579K commands this month — 500,124 reads vs 78,746
    writes (86% reads) — costing $1.16; total data size 336KB; bandwidth
-   227MB of the free 200GB.** The database is PAYG, Global type, primary in
-   AWS `us-east-1`, and also exposes the native Redis protocol (port 6379/TLS). Meanwhile every
+   227MB of the free 200GB.** The Usage charts put the steady run rate at
+   ~50–70K commands/day (≈1.5–2M/mo pace ≈ $3–4/mo) and ~20MB/day bandwidth.
+   The database is PAYG, Global type, primary in AWS `us-east-1`, and also
+   exposes the native Redis protocol (port 6379/TLS). Meanwhile every
    command pays a **cross-cloud round trip** (app on Oracle, Upstash in AWS
    `us-east-1`), and the worst paths are *dependent chains* — profile identity
    resolution is 4–6 sequential GETs — which auto-pipelining cannot collapse.
@@ -425,7 +427,10 @@ from network RTT to ~0.1ms loopback.
    per request for near-static curated data; `s-maxage=30` matches the
    timeline's posture.
 8. **`verify:*` and `img:total:*` lack the `kismetart:` namespace** — cosmetic,
-   but matters the day anything else shares the database.
+   but matters the day anything else shares the database. The production Data
+   Browser also shows a leftover **`debug:ua-seen`** SET (8 UA strings, no
+   TTL) written by an earlier `lib/deviceUA.ts` debugging pass — delete it or
+   give it a TTL.
 
 ## 3.4 Write amplification map
 
@@ -535,8 +540,9 @@ Classes B and C — which include the entire per-request hot path — do not.
 | Fixed 1GB | **$20/mo, unlimited commands** | 100GB bw/mo |
 | Fixed 5GB | $100/mo | 500GB bw/mo |
 
-**Observed (console, 2026-07-11): 579K cmds → $1.16/mo; 336KB data; 227MB
-bandwidth.** PAYG is therefore optimal today and stays cheaper than the
+**Observed (console, 2026-07-11): 579K cmds month-to-date → $1.16; 336KB data
+(matches the 335.74KB manual backup taken the same day); run rate ~50–70K
+cmds/day (~1.5–2M/mo ≈ $3–4/mo); ~20MB/day bandwidth.** PAYG is therefore optimal today and stays cheaper than the
 Fixed-250MB plan until ~5M cmds/mo; **set the PAYG budget cap (currently
 unset) rather than switching plans.** Bandwidth becomes the number to watch
 only if market/feed traffic grows ~100×: the listings feed's ~1–2MB MGET and
@@ -720,7 +726,11 @@ RTT are known.
 
 **Phase 1 (days):** fixes #1 #2 #5 #6 #7 #9 #10 #13 (all small); set the PAYG
 budget cap in the Upstash console (currently unset — the only spend guard is
-the wallet); revisit a fixed plan only past ~5M cmds/mo.
+the wallet); **enable Daily Backup** (console shows the toggle OFF as of
+2026-07-11; only manual restore points exist — `k-backup1` 335.74KB from that
+day and a 2-month-old export. At 336KB the storage cost is nil, and it is the
+cheapest possible durability upgrade for every Class A keyspace); revisit a
+fixed plan only past ~5M cmds/mo.
 
 **Phase 2 (a week):** local Redis + SRH on Coolify; move keyspaces in the §5.1
 order behind `lib/redisHot.ts`; readiness treats it as non-gating; AOF +
