@@ -65,6 +65,38 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
    indexed — the thin-content signal), Core Web Vitals, and the queries you
    surface for. Track AI visibility separately (share-of-answer tools).
 
+## Host & crawl-policy decisions (validated, with rationale)
+
+- **www → apex**: DNS resolves `www.kismet.art` to the same box as the apex, so
+  next.config.mjs carries a permanent host-based redirect (www → apex) —
+  versioned in-repo, active regardless of proxy config. **http → https stays at
+  the proxy**; post-deploy, from any normal network, verify both:
+  `curl -sI https://www.kismet.art | head -3` and
+  `curl -sI http://kismet.art | head -3` → each should 301/308 to
+  `https://kismet.art`. If http doesn't redirect, enable force-HTTPS in
+  Coolify/Traefik.
+- **Non-canonical hosts are noindexed at the header level** (next.config.mjs):
+  any request whose Host isn't the canonical one — staging domains, direct-IP,
+  previews — gets `X-Robots-Tag: noindex, nofollow` on every route. No
+  per-host Coolify config to remember.
+- **/permissions**: noindex only, NOT robots-disallowed — Google can only obey
+  a noindex it can crawl; disallowing would allow "indexed without content"
+  stubs if the URL is ever linked.
+- **/admin**: robots-disallowed (crawl prevention first) AND subtree-noindexed
+  via app/admin/layout.tsx (defense in depth).
+- **AI crawlers are admitted deliberately** (GPTBot, ClaudeBot, PerplexityBot,
+  Google-Extended…): the goal is AI findability, including training corpora so
+  future models know Kismet natively. To later split answer-engines-yes /
+  training-no, add per-agent groups in app/robots.ts: block `GPTBot` (OpenAI
+  training) while `OAI-SearchBot` (ChatGPT search) stays allowed; block
+  `Google-Extended` (Gemini training) without affecting Googlebot ranking;
+  `ClaudeBot` respects the standard rules.
+- **Farcaster embeds are page-scoped on /learn** (hub + guides): each carries
+  its own embed whose button opens THAT page in the Mini App, with a dedicated
+  share card (`…/opengraph-image`). Other unscoped routes (e.g. /mint,
+  /market) still inherit the homepage embed — acceptable, and fixable the same
+  way if ever desired.
+
 ## Realistic timelines
 
 Rich results appear ~2–4 weeks after Google recrawls. AI citation: Perplexity

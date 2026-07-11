@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { JsonLd } from '@/components/JsonLd'
 import { articleJsonLd, faqJsonLd } from '@/lib/structuredData'
+import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 import { GUIDES, getGuide } from '../guides'
 
@@ -32,6 +33,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       url,
       type: 'article',
     },
+    // Page-scoped Farcaster embed — otherwise the layout's homepage embed
+    // inherits and a cast's button opens the app at the homepage instead of
+    // this guide. Image is this guide's opengraph-image route.
+    other: buildFarcasterEmbed({
+      imageUrl: `${url}/opengraph-image`,
+      buttonTitle: 'Read on Kismet',
+      action: { url },
+    }),
   }
 }
 
@@ -60,6 +69,9 @@ export default async function GuidePage({ params }: Props) {
           datePublished: guide.published,
           dateModified: guide.updated,
           breadcrumb,
+          // The guide's share card — satisfies Article rich-result eligibility
+          // (Google wants an image) without a misleading stock/logo image.
+          image: `${url}/opengraph-image`,
         })}
       />
       <JsonLd data={faqJsonLd(guide.faqs)} />

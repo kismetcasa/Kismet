@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { JsonLd } from '@/components/JsonLd'
 import { faqJsonLd, breadcrumbNode } from '@/lib/structuredData'
+import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 import { GUIDES } from './guides'
 
@@ -27,6 +28,16 @@ export const metadata: Metadata = {
     url: CANONICAL,
     type: 'article',
   },
+  // Page-scoped Farcaster embed. Without this, the root layout's `other`
+  // inherits — meaning a cast of this URL would show the homepage card whose
+  // button opens the app at the HOMEPAGE, dropping the reader's destination.
+  // Same idiom as the moment/collection/profile pages: image is this page's
+  // opengraph-image route, action.url is this page.
+  other: buildFarcasterEmbed({
+    imageUrl: `${CANONICAL}/opengraph-image`,
+    buttonTitle: 'Learn on Kismet',
+    action: { url: CANONICAL },
+  }),
 }
 
 // Single source of truth for the FAQ: rendered visibly below AND emitted as

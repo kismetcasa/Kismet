@@ -29,6 +29,9 @@
     "/learn/page": 364266,
     "/learn/[slug]/page": 364266,
     "/robots.txt/route": 356093,
-    "/sitemap.xml/route": 356093
+    "/sitemap.xml/route": 356093,
+    "/learn/opengraph-image/route": 356108,
+    "/learn/[slug]/opengraph-image/route": 356108,
+    "/admin/layout": 356108
   }
 }
