@@ -543,8 +543,10 @@ Classes B and C — which include the entire per-request hot path — do not.
 **Observed (console, 2026-07-11): 579K cmds month-to-date → $1.16; 336KB data
 (matches the 335.74KB manual backup taken the same day); run rate ~50–70K
 cmds/day (~1.5–2M/mo ≈ $3–4/mo); ~20MB/day bandwidth.** PAYG is therefore optimal today and stays cheaper than the
-Fixed-250MB plan until ~5M cmds/mo; **set the PAYG budget cap (currently
-unset) rather than switching plans.** Bandwidth becomes the number to watch
+Fixed-250MB plan until ~5M cmds/mo; **budget cap set 2026-07-11 at the $20
+console minimum rather than switching plans** — note the cap **hard-stops the
+database** when reached (runaway protection with ~5–6× headroom; recovery =
+raise the cap in the console). Bandwidth becomes the number to watch
 only if market/feed traffic grows ~100×: the listings feed's ~1–2MB MGET and
 the timeline's merged-set MGET are the movers, and a later move to
 Fixed-250MB would hit its 50GB/mo ceiling first. Sources:
@@ -724,12 +726,12 @@ RTT are known.
 4. `SCARD kismetart:created-mints` / `collections` / `ZCARD` featured — cliff
    headroom (runbook §Verify already prescribes this).
 
-**Phase 1 (days):** fixes #1 #2 #5 #6 #7 #9 #10 #13 (all small); set the PAYG
-budget cap in the Upstash console (currently unset — the only spend guard is
-the wallet); **enable Daily Backup** (console shows the toggle OFF as of
-2026-07-11; only manual restore points exist — `k-backup1` 335.74KB from that
-day and a 2-month-old export. At 336KB the storage cost is nil, and it is the
-cheapest possible durability upgrade for every Class A keyspace); revisit a
+**Phase 1 (days):** fixes #1 #2 #5 #6 #7 #9 #10 #13 (all small).
+✅ **Done 2026-07-11:** PAYG budget cap set ($20, the console minimum —
+Upstash stops the database at the cap, so this is runaway-bug/attack
+protection with ~5–6× headroom over the run rate; recovery = raise the cap)
+and **Daily Backup enabled** (was OFF; until then the only restore points
+were the manual `k-backup1`, 335.74KB, and a 2-month-old export). Revisit a
 fixed plan only past ~5M cmds/mo.
 
 **Phase 2 (a week):** local Redis + SRH on Coolify; move keyspaces in the §5.1
