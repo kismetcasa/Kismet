@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { redis } from './redis'
+import { redis, zpairsToMap } from './redis'
 import { getEthUsd } from './ethPrice'
 import { fetchTransfersPage } from './inprocessTransfers'
 import { expandToEarningsWallets } from './addressUnion'
@@ -11,6 +11,7 @@ import { USDC_BASE } from './zoraMint'
 import {
   accumulateTransfer,
   newAccumulateCounters,
+  newPlatformTotals,
   remapEntries,
   transferDedupKey,
   transferMomentRef,
@@ -45,6 +46,13 @@ const USDC_KEY = 'kismetart:stats:earned:usdc'
 const ROYALTY_ETH_KEY = 'kismetart:stats:royalty:eth'
 const ROYALTY_USDC_KEY = 'kismetart:stats:royalty:usdc'
 const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
+
+// Platform-wide primary-sale roll-up, snapshotted by the SAME rebuild scan
+// that writes the per-artist sets (one pass, one row-gating rule — see
+// PlatformTotals in lib/statsMath.ts), so /api/stats/platform and the artist
+// cards can never disagree about what counted as a sale. Single JSON value,
+// absolute overwrite per successful rebuild; read by getPlatformSalesSnapshot.
+const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
 // One-time idempotency claim per filled listing so a retried/concurrent fill
 // credits exactly once. Committed ATOMICALLY with the credit (see the Lua
 // script below) — claiming first and crediting after left a swallowed credit
@@ -133,6 +141,42 @@ export interface RebuildResult {
   recoveredCreators: number
   /** Members whose scores were folded onto their owner EOA (smart wallets). */
   remappedWallets: number
+  /** Editions sold platform-wide (Σ quantity over counted rows). */
+  editionsSold: number
+  /** Unique buyer wallets after the smart-wallet→EOA fold. */
+  collectors: number
+  /** Counted rows with no recognizable buyer field — the direct read on how
+   *  much of the collector count the feed's row shape actually supports. */
+  buyerMissing: number
+}
+
+/**
+ * The platform-wide primary-sale snapshot the rebuild persists — everything
+ * /api/stats/platform serves except the read-time USD derivation and the
+ * separately-accrued listing royalties. Coverage counters ride along so the
+ * public figures can be qualified (a large buyerMissing means `collectors`
+ * undercounts; unknownCurrency/droppedMints qualify the value/edition sums).
+ */
+export interface PlatformSalesSnapshot {
+  updatedAt: number
+  /** Paid transfers folded. */
+  transactions: number
+  /** Editions sold (Σ quantity, incl. creator-unresolvable rows). */
+  editions: number
+  /** Gross ETH paid (human units). */
+  eth: number
+  /** Gross USDC paid (human units). */
+  usdc: number
+  /** Unique buyer wallets (smart wallets folded onto their owner EOA). */
+  collectors: number
+  /** Artists credited with ≥1 paid sale (post smart-wallet fold). */
+  artists: number
+  /** Coverage: counted rows with no recognizable buyer field. */
+  buyerMissing: number
+  /** Coverage: rows whose value was skipped (unrecognized ERC20). */
+  unknownCurrency: number
+  /** Coverage: editions with no resolvable creator (still in `editions`). */
+  droppedMints: number
 }
 
 // Absolute swap of all three sets: chunked ZADDs into per-key STAGING keys,
@@ -214,6 +258,9 @@ const EMPTY_REBUILD_RESULT: RebuildResult = {
   collectionFallbacks: 0,
   recoveredCreators: 0,
   remappedWallets: 0,
+  editionsSold: 0,
+  collectors: 0,
+  buyerMissing: 0,
 }
 
 async function runRebuild(): Promise<RebuildResult> {
@@ -221,6 +268,7 @@ async function runRebuild(): Promise<RebuildResult> {
   const eth = new Map<string, number>()
   const usdc = new Map<string, number>()
   const counters = newAccumulateCounters()
+  const platform = newPlatformTotals()
   // Dedup across page reads: the live feed is offset-paged, so rows shift
   // across page boundaries as new sales land mid-scan; a row with a stable
   // identifier is folded at most once. Rows without one pass through (no
@@ -270,6 +318,7 @@ async function runRebuild(): Promise<RebuildResult> {
         eth,
         usdc,
         counters,
+        platform,
       )
     })
     page++
@@ -342,6 +391,14 @@ async function runRebuild(): Promise<RebuildResult> {
   const ethFinal = remapEntries(eth, remap)
   const usdcFinal = remapEntries(usdc, remap)
 
+  // Same fold for BUYERS: a collector whose purchase the feed attributes to
+  // their inprocess smart wallet is the same person as the owning EOA, so
+  // counting both would double-count them. Separate lookup from the artist
+  // remap above so `remappedWallets` keeps meaning "artist scores folded".
+  const buyerRemap = await getSmartWalletOwners([...platform.buyers])
+  const collectors = new Set<string>()
+  for (const b of platform.buyers) collectors.add(buyerRemap.get(b) ?? b)
+
   await writeStatsAtomically(mintsFinal, ethFinal, usdcFinal)
   // Advance the guard baseline only after the swap committed, so an aborted
   // or crashed write never moves it — and only to a POSITIVE count, so a
@@ -352,9 +409,37 @@ async function runRebuild(): Promise<RebuildResult> {
       .set(LAST_REBUILD_KEY, { counted: counters.counted, at: Date.now() } satisfies LastRebuild)
       .catch(() => {})
   }
+
+  const artists = new Set([
+    ...mintsFinal.keys(),
+    ...ethFinal.keys(),
+    ...usdcFinal.keys(),
+  ]).size
+
+  // Persist the platform roll-up only after the per-artist swap committed, so
+  // the snapshot can never reflect a scan the guards rejected. Best-effort but
+  // LOUD on failure: a silently-stale snapshot serves hour-old public totals
+  // with no trace, and the next hourly run heals it either way.
+  await redis
+    .set(PLATFORM_SALES_KEY, {
+      updatedAt: Date.now(),
+      transactions: platform.transactions,
+      editions: platform.editions,
+      eth: platform.eth,
+      usdc: platform.usdc,
+      collectors: collectors.size,
+      artists,
+      buyerMissing: platform.buyerMissing,
+      unknownCurrency: counters.unknownCurrency,
+      droppedMints: counters.droppedMints,
+    } satisfies PlatformSalesSnapshot)
+    .catch((err) =>
+      console.error('[stats] platform snapshot write failed (stale until next run)', err),
+    )
+
   return {
     skipped: false,
-    artists: new Set([...mintsFinal.keys(), ...ethFinal.keys(), ...usdcFinal.keys()]).size,
+    artists,
     transfers: counters.counted,
     pages: page - 1,
     duplicates,
@@ -366,6 +451,9 @@ async function runRebuild(): Promise<RebuildResult> {
     collectionFallbacks: counters.collectionFallbacks,
     recoveredCreators: counters.recoveredCreators,
     remappedWallets: remap.size,
+    editionsSold: platform.editions,
+    collectors: collectors.size,
+    buyerMissing: platform.buyerMissing,
   }
 }
 
@@ -437,6 +525,44 @@ export async function getArtistEarnings(artist: string, wallets?: string[]): Pro
   } catch {
     const zero = (): EarningsAmounts => ({ eth: 0, usdc: 0, usd: 0 })
     return { address: lower, eth: 0, usdc: 0, usd: 0, mints: 0, primary: zero(), secondary: zero() }
+  }
+}
+
+// The rebuild-persisted platform roll-up, or null before the first successful
+// rebuild (or on a Redis blip) — callers surface "not computed yet" rather
+// than a fabricated zero. Accepts both string and auto-parsed object shapes,
+// like every other JSON read against the Upstash REST SDK.
+export async function getPlatformSalesSnapshot(): Promise<PlatformSalesSnapshot | null> {
+  try {
+    const raw = await redis.get<PlatformSalesSnapshot | string | null>(PLATFORM_SALES_KEY)
+    if (!raw) return null
+    const parsed = typeof raw === 'string' ? (JSON.parse(raw) as PlatformSalesSnapshot) : raw
+    return typeof parsed?.updatedAt === 'number' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+// Platform-wide secondary-royalty totals — the Σ over the per-artist royalty
+// zsets, which accrue event-driven (creditListingRoyalty) rather than via the
+// rebuild. Small sets (one member per credited artist wallet), so a full
+// ZRANGE is a couple of commands, and both reads ride one auto-pipelined
+// round trip. Scope limit inherited from the credit path: Kismet-listing
+// fills only — off-platform (OpenSea/Blur/Zora) resales are invisible here.
+export async function getRoyaltyTotals(): Promise<{ eth: number; usdc: number }> {
+  try {
+    const [rawEth, rawUsdc] = await Promise.all([
+      redis.zrange(ROYALTY_ETH_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+      redis.zrange(ROYALTY_USDC_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+    ])
+    const sum = (raw: (string | number)[]) => {
+      let total = 0
+      for (const v of zpairsToMap(raw).values()) total += v
+      return total
+    }
+    return { eth: sum(rawEth), usdc: sum(rawUsdc) }
+  } catch {
+    return { eth: 0, usdc: 0 }
   }
 }
 
