@@ -10,7 +10,7 @@
 // page doesn't shift when the real content lands.
 export default function ProfileLoading() {
   return (
-    <div className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12 animate-pulse">
+    <div className="max-w-6xl mx-auto px-4 py-12 flex flex-col gap-12 animate-pulse">
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-6">
           <div className="w-20 h-20 rounded-full bg-raised" />
