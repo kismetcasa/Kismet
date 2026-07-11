@@ -214,8 +214,9 @@ export async function getVerifiedTwitterByFid(
 }
 
 /**
- * Verifications lookup with an honest three-way answer, mirroring
- * getFidByAddress:
+ * Verifications lookup with an honest three-way answer (getFidByAddress is now
+ * index-only and two-way — see its note; this one still distinguishes transient
+ * failure because it does a live fetch):
  *
  *   { addresses: [...] } — fetched/cached successfully (POSSIBLY EMPTY: an
  *                          FID genuinely holds zero verifications after a

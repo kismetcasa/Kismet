@@ -95,16 +95,18 @@ export async function POST(req: NextRequest) {
   }
   const queried = body.address.toLowerCase()
 
-  // Resolve the identity's full wallet footprint through the CHECKED FC path.
-  // getFidByAddress returns null on transient failure (vs { fid: null } for a
-  // definitive non-FC address); getVerifiedAddressesByFidChecked returns null
-  // on transient failure (vs { addresses } definitively). We DON'T 503 on
-  // either — see the header: FC is best-effort, and fcResolved reports whether
-  // the sibling footprint is trustworthy. The queried wallet is always erased;
-  // siblings are only added when definitively resolved.
+  // Resolve the identity's full wallet footprint. getFidByAddress now reads a
+  // self-built reverse index (Farcaster gated the live address→FID endpoint):
+  // { fid } for a seeded wallet, else { fid: null }. It no longer signals a
+  // transient failure, so an UNSEEDED FC wallet reads as { fid: null } here and
+  // its FID row/siblings are missed — seed it first by loading the profile
+  // after an FC login. getVerifiedAddressesByFidChecked still returns null on
+  // transient failure (vs { addresses }); fcResolved tracks that. We DON'T 503:
+  // FC is best-effort. The queried wallet is always erased; siblings only when
+  // definitively resolved.
   let fcResolved = true
   const lookup = await getFidByAddress(queried)
-  if (lookup === null) fcResolved = false
+  if (lookup === null) fcResolved = false // defensive; the index-only lookup never returns null today
   const fid = lookup?.fid ?? null
   const wallets = new Set<string>([queried])
   if (fid != null) {
