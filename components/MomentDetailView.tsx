@@ -19,6 +19,7 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -120,6 +121,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       }
     : undefined
   const ensureConnected = useEnsureConnected()
+  const armPendingAction = usePendingAction()
   const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { isInMiniApp } = useFarcaster()
@@ -573,7 +575,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
-    if (!account) return
+    if (!account) {
+      // Picker is open — resume this collect once the user connects, so the
+      // first tap carries through (see usePendingAction).
+      armPendingAction(() => { void handleCollect() })
+      return
+    }
     // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: address as `0x${string}`,

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { usePendingAction } from '@/hooks/usePendingAction'
 import {
   resolveUri,
   formatPrice,
@@ -144,6 +145,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [linkCopied, setLinkCopied] = useState(false)
   const { address: connectedAddress } = useAccount()
   const ensureConnected = useEnsureConnected()
+  const armPendingAction = usePendingAction()
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
   // The "hidden" badge is a creator-self affordance — only the creator viewing
@@ -278,7 +280,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
-    if (!account) return
+    if (!account) {
+      // The picker is open — resume this collect once the user connects, so
+      // the first tap carries through instead of requiring a second hunt for
+      // the button (see usePendingAction).
+      armPendingAction(() => { void handleCollect() })
+      return
+    }
     // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
