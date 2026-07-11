@@ -127,6 +127,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [detail, setDetail] = useState<MomentDetail | null>(
     initialDetail ?? getCachedDetail(address, tokenId) ?? null
   )
+  // Set when the indexer-lag poll below exhausts its attempts without data —
+  // drives the "couldn't load — retry" pane. Bumping the nonce restarts the poll.
+  const [detailExhausted, setDetailExhausted] = useState(false)
+  const [detailRetryNonce, setDetailRetryNonce] = useState(0)
   const textContentUri =
     detail?.metadata?.content?.mime === 'text/plain'
       ? detail.metadata.content.uri
@@ -433,7 +437,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
     let cancelled = false
     let attempt = 0
+    let visHandler: (() => void) | null = null
     const MAX_ATTEMPTS = 12 // 12 × 5s = 60s of polling
+
+    // Schedule the next attempt — deferred while the tab is hidden. The
+    // common share-link pattern is open-then-switch-away; without this the
+    // 12 attempts burn out in a background tab and the user comes back to
+    // the exhausted state having never really "waited" at all.
+    const schedule = () => {
+      if (cancelled) return
+      if (document.visibilityState === 'hidden') {
+        visHandler = () => {
+          if (visHandler) document.removeEventListener('visibilitychange', visHandler)
+          visHandler = null
+          if (!cancelled) void tryFetch()
+        }
+        document.addEventListener('visibilitychange', visHandler)
+        return
+      }
+      setTimeout(tryFetch, 5000)
+    }
 
     const tryFetch = async () => {
       if (cancelled) return
@@ -452,12 +475,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       }
       attempt += 1
       if (attempt < MAX_ATTEMPTS && !cancelled) {
-        setTimeout(tryFetch, 5000)
+        schedule()
+      } else if (!cancelled) {
+        // Terminal: surface a retry affordance instead of an indefinite
+        // "loading…" with collect dead — the frozen page hits exactly the
+        // freshly-minted URLs people share.
+        setDetailExhausted(true)
       }
     }
+    setDetailExhausted(false)
     tryFetch()
-    return () => { cancelled = true }
-  }, [address, tokenId, initialDetail])
+    return () => {
+      cancelled = true
+      if (visHandler) document.removeEventListener('visibilitychange', visHandler)
+    }
+  }, [address, tokenId, initialDetail, detailRetryNonce])
 
   // Fetch creator profile via shared cache
   useEffect(() => {
@@ -1145,8 +1177,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   onAllError={() => setImgError(true)}
                 />
               ) : !detail ? (
-                <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-faint font-mono text-xs">loading…</span>
+                <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+                  {detailExhausted ? (
+                    <>
+                      <span className="text-muted font-mono text-xs text-center px-6">
+                        this moment hasn&rsquo;t loaded — it may still be indexing
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDetailExhausted(false)
+                          setDetailRetryNonce((n) => n + 1)
+                        }}
+                        className="px-4 py-1.5 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors"
+                      >
+                        retry
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-faint font-mono text-xs">loading…</span>
+                  )}
                 </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
