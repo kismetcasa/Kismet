@@ -1,16 +1,18 @@
 // Persistent disk cache + request coalescing for /api/img's ?w= resize
 // variants — the storage half of the route's optimizer-fallback path.
 //
-// WHY THIS EXISTS: sources past the next/image optimizer's ~4MB limit (the
-// Patron Collection's physical-artwork scans are the live class) 413 the
-// optimizer and land on /api/img?w=, which used to re-download the FULL
-// multi-MB source from the gateway and re-run the sharp resize on EVERY
-// request — the only caches were the viewer's browser and an optional CDN
-// that isn't in front today. The featured mint pass paid a 2-3s first paint
-// per viewer while every optimizer-eligible card beside it served from
-// next/image's on-disk cache in milliseconds. These helpers give the >4MB
-// class the same economics: compute a variant once, serve it from local disk
-// forever (content-addressed source ⇒ the variant never goes stale).
+// WHY THIS EXISTS: sources past the next/image optimizer's body cap
+// (images.maximumResponseBody — 50MB default, and the optimizer streams the
+// full cap from the gateway before rejecting) 413 the optimizer and land on
+// /api/img?w=, which used to re-download the FULL multi-MB source from the
+// gateway and re-run the sharp resize on EVERY request — the only caches
+// were the viewer's browser and an optional CDN that isn't in front today.
+// The featured Patron mint pass (a physical-artwork scan, the live instance
+// of the class) paid a 2-3s first paint per viewer while every optimizer-
+// eligible card beside it served from next/image's on-disk cache in
+// milliseconds. These helpers give the over-cap class the same economics:
+// compute a variant once, serve it from local disk forever
+// (content-addressed source ⇒ the variant never goes stale).
 //
 // Disk, not Redis: Upstash REST is base64-framed and billed per byte — the
 // wrong medium for media buffers. `.next/cache` is the Coolify-mounted

@@ -7,6 +7,7 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress } from '@/lib/inprocess'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { isOperatorAddress } from '@/lib/config'
 import type { Profile } from '@/lib/profile'
@@ -238,7 +239,11 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
                 >
                   {mint.image ? (
                     <div className="relative w-7 h-7 flex-shrink-0 overflow-hidden">
-                      <MomentImage src={mint.image} alt={mint.name} fill className="object-cover" sizes="28px" />
+                      {/* Patron scans exceed the optimizer's 50MB body cap —
+                          without preferProxy even this 28px thumb costs a
+                          full-cap doomed optimizer fetch before falling back.
+                          Same detection as MomentCard/MarketCard. */}
+                      <MomentImage src={mint.image} alt={mint.name} fill className="object-cover" sizes="28px" preferProxy={isPatronCollection(mint.address)} />
                     </div>
                   ) : (
                     <div className="w-7 h-7 bg-line flex-shrink-0" />

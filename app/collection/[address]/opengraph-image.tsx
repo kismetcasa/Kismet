@@ -15,7 +15,8 @@ import {
 // back to a branded card with name + creator. Satori rasterizes any-size
 // source into the bounded 1200x800 PNG, which is why crawlers point here
 // instead of at the raw cover: X drops images >5MB and the next/image
-// optimizer 413's on sources >4MB (see MomentImage proxy mode).
+// optimizer 413's on sources past its 50MB body cap (see MomentImage
+// proxy mode).
 
 export const size = SHARE_CARD_SIZE
 export const contentType = SHARE_CARD_CONTENT_TYPE

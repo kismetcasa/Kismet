@@ -260,6 +260,7 @@ const resizeFlight = new SingleFlight<ResizeOutcome>()
  * budget bounds how long a hung upstream can pin the single-flight slot.
  */
 async function computeResizedVariant(u: string, width: number): Promise<ResizeOutcome> {
+  const started = Date.now()
   const budget = AbortSignal.timeout(RESIZE_COMPUTE_BUDGET_MS)
   const upstream = await raceFetchGateways(u, RACE_TIMEOUT_MS, budget, undefined)
   if (!upstream?.body) return { kind: 'unavailable' }
@@ -314,6 +315,16 @@ async function computeResizedVariant(u: string, width: number): Promise<ResizeOu
     // Write-behind: never blocks the response. The variant is immutable, so
     // a lost write only means one more cold compute later.
     void writeVariant(VARIANT_CACHE_DIR, variantFileName(u, width), resized)
+    // Once per (asset, width) EVER by design — same rare-learning-event class
+    // as the '[img] counted total' log. Its absence on repeat views is the
+    // in-prod signal that the disk cache is doing its job.
+    console.log('[img] resized variant computed', {
+      u,
+      width,
+      srcBytes: original.length,
+      outBytes: resized.length,
+      ms: Date.now() - started,
+    })
     return { kind: 'webp', buffer: resized }
   } catch {
     return {

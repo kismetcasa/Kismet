@@ -99,7 +99,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // size, with the animation_url guard applied there so a video moment
   // falls back to a branded card rather than rasterizing an MP4. Pointing
   // crawlers at the raw poster instead breaks on heavy stills: X drops
-  // images >5MB and the next/image optimizer 413's on sources >4MB.
+  // images >5MB and the next/image optimizer 413's on sources past its
+  // 50MB body cap.
   const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
   // Active marketplace listing → embed button reads "View Listing"

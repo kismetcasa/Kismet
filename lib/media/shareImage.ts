@@ -7,7 +7,8 @@ import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
  * <img>. Satori rasterizes whatever it fetches into the bounded 1200x800
  * card PNG, so this is the right sink for heavy originals — unlike a raw
  * crawler tag (X drops images >5MB) or the next/image optimizer (413's on
- * sources >4MB; see MomentImage's proxy mode). Three guard rails:
+ * sources past its 50MB body cap; see MomentImage's proxy mode). Three
+ * guard rails:
  *
  *   1. Skip when no image is set — the card falls back to the branded
  *      text-only layout rather than rendering a broken <img>.
