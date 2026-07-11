@@ -1,7 +1,8 @@
 import { after, type NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from './apiResponse'
-import { INPROCESS_API } from './inprocess'
+import { INPROCESS_API, parseRealSaleEnd } from './inprocess'
+import { setEntriesCloseAt, setRaffleEnabled } from './raffle'
 import { CREATE_REFERRAL } from './config'
 import { trackWallet } from './profile'
 import { checkRateLimit, getClientIp } from './ratelimit'
@@ -198,12 +199,14 @@ export async function proxyMintRequest(
   // `durationSec` is the same class of private hint: MintForm sends it for
   // video moments and we read it from `body` below for setMomentMeta, but
   // it isn't part of inprocess's /moment/create schema, so it must not be
-  // forwarded either (same reasoning as `name` and `intent`).
+  // forwarded either (same reasoning as `name` and `intent`). `enableRaffle`
+  // likewise: consumed in the post-mint hooks below, never forwarded.
   const {
     name: bodyName,
     splits: _droppedSplits,
     intent: _droppedIntent,
     durationSec: _droppedDurationSec,
+    enableRaffle: _droppedEnableRaffle,
     ...rest
   } = body
   const sanitizedToken = {
@@ -429,6 +432,28 @@ export async function proxyMintRequest(
         )
         if (tokenContent) {
           tasks.push(setMomentContent(contractAddress, tokenId, tokenContent).catch(bestEffort('mint-proxy.setMomentContent', { contractAddress, tokenId })))
+        }
+        // Creator opted this mint into the raffle (MintForm's "Enable raffle"
+        // toggle). Enabling here — beside the setMomentMeta that records the
+        // creator — instead of a client follow-up /api/raffle/manage call
+        // removes both the extra wallet signature and the race against that
+        // KV creator record (which manage-route auth reads). entriesCloseAt
+        // snapshots the intent-bound sale end, sentinel-aware via
+        // parseRealSaleEnd: an open-ended sale gets no auto-close.
+        if (body.enableRaffle === true) {
+          const saleEnd = ((tokenObj as { salesConfig?: { saleEnd?: unknown } }).salesConfig ?? {})
+            .saleEnd
+          tasks.push(
+            setRaffleEnabled(contractAddress, tokenId)
+              .then(() =>
+                setEntriesCloseAt(
+                  contractAddress,
+                  tokenId,
+                  parseRealSaleEnd(typeof saleEnd === 'string' ? saleEnd : null),
+                ),
+              )
+              .catch(bestEffort('mint-proxy.enableRaffle', { contractAddress, tokenId })),
+          )
         }
         if (splitsValidation.kind === 'ok' && splitsValidation.splits.length >= 2) {
           tasks.push(

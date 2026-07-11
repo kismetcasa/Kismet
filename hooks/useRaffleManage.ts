@@ -22,14 +22,15 @@ interface ManageParams {
 }
 
 /**
- * Perform one signed raffle-management call against /api/raffle/manage. Standalone
- * (no React) so both useRaffleManage and the mint form — which only learns the
- * minted (collection, tokenId) after the tx — can reuse it. Throws on failure.
+ * Perform one signed raffle-management call against /api/raffle/manage:
+ * fetch a single-use nonce, sign the manage message, POST. Throws on failure.
+ * (Mint-time enabling doesn't come through here — the mint body carries
+ * `enableRaffle` and lib/mint-proxy enables server-side, signature-free.)
  *
  * The route authorizes the caller per-moment (creator / moment admin / platform
  * admin) via the signed, nonce'd message — the same model as /api/distribute.
  */
-export async function performRaffleManage({
+async function performRaffleManage({
   collection,
   tokenId,
   address,

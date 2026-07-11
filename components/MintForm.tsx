@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
-import { useAccount, useReadContract, usePublicClient, useSignMessage } from 'wagmi'
+import { useAccount, useReadContract, usePublicClient } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
@@ -35,7 +35,6 @@ import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError, toastChainStalled } from '@/lib/toast'
 import { isChainStalled } from '@/lib/chainHealth'
-import { performRaffleManage } from '@/hooks/useRaffleManage'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
@@ -265,11 +264,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // lib/mint-proxy runs the authoritative hasGateAccess on every request.
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
-  // A creator can flag their own mint to host the off-chain raffle. Enabling is
-  // a signed, self-serve manage call after the mint lands (the minter is the
-  // creator, so they're authorized); applyRaffleEnabled syncs the local set.
+  // A creator can flag their own mint to host the off-chain raffle. The flag
+  // rides the mint request itself (`enableRaffle` in the body) and the server
+  // enables it in the post-mint hooks (lib/mint-proxy, beside the setMomentMeta
+  // that records the creator) — no extra wallet signature and no race against
+  // that KV record. applyRaffleEnabled just syncs the local set on success.
   const { applyRaffleEnabled } = useAdmin()
-  const { signMessageAsync } = useSignMessage()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
@@ -342,9 +342,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [residenciesPercent, setResidenciesPercent] = useState(DEFAULT_RESIDENCIES_PERCENT)
   const [editingResidencies, setEditingResidencies] = useState(false)
   const [residenciesInput, setResidenciesInput] = useState(String(DEFAULT_RESIDENCIES_PERCENT))
-  // Self-serve: flag this mint to host the raffle. Written after the mint
-  // succeeds (once its contractAddress + tokenId are known) via a signed manage
-  // call — the minter is the creator, so they're authorized.
+  // Self-serve: flag this mint to host the raffle. Rides the mint body; the
+  // server enables it in the post-mint hooks (lib/mint-proxy) once the new
+  // (contractAddress, tokenId) exists — no extra signature.
   const [enableRaffle, setEnableRaffle] = useState(false)
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -855,7 +855,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         const res = await fetch('/api/write', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, intent }),
+          body: JSON.stringify({ ...payload, intent, enableRaffle }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -869,26 +869,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
-        if (enableRaffle && address && data.contractAddress && data.tokenId) {
-          // Creator opted this mint into the raffle: enable it now its address +
-          // tokenId are known. One signed manage call (the minter IS the creator
-          // → authorized); snapshots the sale end as the entries-close time and
-          // syncs the local set so the raffle shows without a reload.
-          const closeAt = saleEndInput
-            ? Math.floor(new Date(saleEndInput).getTime() / 1000)
-            : null
-          const raffleCollection = data.contractAddress
-          const raffleTokenId = data.tokenId
-          performRaffleManage({
-            collection: raffleCollection,
-            tokenId: raffleTokenId,
-            address,
-            action: 'enable',
-            signMessage: (m) => signMessageAsync({ message: m }),
-            closeAt: closeAt != null && Number.isFinite(closeAt) ? closeAt : null,
-          })
-            .then(() => applyRaffleEnabled(raffleCollection, raffleTokenId, true))
-            .catch((err) => toastError('Raffle', err))
+        if (enableRaffle && data.contractAddress && data.tokenId) {
+          // The mint request carried enableRaffle — the server enabled it in the
+          // post-mint hooks (lib/mint-proxy). Sync the local set so the new
+          // moment shows its raffle without a reload.
+          applyRaffleEnabled(data.contractAddress, data.tokenId, true)
         }
         if (isAutoDeploy && data.contractAddress) {
           // Text moments don't have a media file, so the new
@@ -1290,7 +1275,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         const res = await fetch('/api/mint', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, intent }),
+          body: JSON.stringify({ ...payload, intent, enableRaffle }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -1304,26 +1289,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
-        if (enableRaffle && address && data.contractAddress && data.tokenId) {
-          // Creator opted this mint into the raffle: enable it now its address +
-          // tokenId are known. One signed manage call (the minter IS the creator
-          // → authorized); snapshots the sale end as the entries-close time and
-          // syncs the local set so the raffle shows without a reload.
-          const closeAt = saleEndInput
-            ? Math.floor(new Date(saleEndInput).getTime() / 1000)
-            : null
-          const raffleCollection = data.contractAddress
-          const raffleTokenId = data.tokenId
-          performRaffleManage({
-            collection: raffleCollection,
-            tokenId: raffleTokenId,
-            address,
-            action: 'enable',
-            signMessage: (m) => signMessageAsync({ message: m }),
-            closeAt: closeAt != null && Number.isFinite(closeAt) ? closeAt : null,
-          })
-            .then(() => applyRaffleEnabled(raffleCollection, raffleTokenId, true))
-            .catch((err) => toastError('Raffle', err))
+        if (enableRaffle && data.contractAddress && data.tokenId) {
+          // The mint request carried enableRaffle — the server enabled it in the
+          // post-mint hooks (lib/mint-proxy). Sync the local set so the new
+          // moment shows its raffle without a reload.
+          applyRaffleEnabled(data.contractAddress, data.tokenId, true)
         }
         if (isAutoDeploy && data.contractAddress) {
           // The moment's media doubles as the collection cover for
@@ -2145,10 +2115,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         </p>
       )}
 
-      {/* Flag this mint to host the off-chain raffle. Self-serve: after the mint
-          lands, a signed manage call (authorized because the minter is the
-          creator) enables it. You can also turn it on/off later from the
-          moment's page. Entries auto-close at the sale end if one is set. */}
+      {/* Flag this mint to host the off-chain raffle. The flag rides the mint
+          request and the server enables it in the post-mint hooks — no extra
+          signature. It can also be turned on/off later from the moment's page.
+          Entries auto-close at the sale end if one is set. */}
       <div className="flex items-start justify-between gap-3 border border-line px-3 py-2.5">
         <div className="min-w-0">
           <label className="block text-xs font-mono text-dim uppercase tracking-wider">

@@ -13,15 +13,14 @@ import { ListButton, type ListButtonProps } from './ListButton'
 interface RaffleButtonProps {
   collectionAddress: string
   tokenId: string
-  // Layout knobs mirrored from ListButton so the swap is drop-in at the
+  // Layout knob mirrored from ListButton so the swap is drop-in at the
   // existing owned-edition call sites.
   buttonClassName?: string
-  stacked?: boolean
   // Full ListButton props, so the button can fall through to "list" for a
   // released non-winner (ended, didn't win) or a holder who never entered once
-  // entries close. Optional: a call site with no listing affordance can omit it,
-  // and those fall-through cases then render nothing.
-  listProps?: ListButtonProps
+  // entries close. Required: every raffle surface must keep the listing action
+  // reachable, or ending a raffle would strand holders with no action at all.
+  listProps: ListButtonProps
 }
 
 interface RaffleStatus {
@@ -56,7 +55,6 @@ export function RaffleButton({
   collectionAddress,
   tokenId,
   buttonClassName,
-  stacked: _stacked = false,
   listProps,
 }: RaffleButtonProps) {
   const { address, isConnected } = useAccount()
@@ -94,8 +92,8 @@ export function RaffleButton({
 
   const entered = status?.entered ?? false
   const className = `${BASE_BTN} ${buttonClassName ?? ''}`
-  // Fall-through to the marketplace "list" action where one is available.
-  const renderList = () => (listProps ? <ListButton {...listProps} /> : null)
+  // Fall-through to the marketplace "list" action.
+  const renderList = () => <ListButton {...listProps} />
 
   async function enterRaffle() {
     if (!isConnected || !address) {
