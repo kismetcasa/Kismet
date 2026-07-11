@@ -22,7 +22,7 @@ interface Stats {
   usd: number
   mints: number
   public: boolean
-  // Source split of the totals, so the card can show "mints vs resales".
+  // Source split of the totals, so the card can show "sales vs resales".
   primary?: EarningsAmounts
   secondary?: EarningsAmounts
   // Undistributed earnings sitting on the artist's splits. Owner-only; absent
@@ -209,7 +209,7 @@ export function ProfileStats({
     if (!stats.public || !hasEarnings) return null
   } else if (!hasEarnings && stats.mints <= 0 && !stats.public) {
     // Signed-in owner with genuinely nothing yet: render an explicit
-    // $0 / 0 mints card rather than unmounting, so a new artist sees the
+    // $0 / 0 sales card rather than unmounting, so a new artist sees the
     // earnings surface exists and knows they simply haven't earned. Honest —
     // these are REAL zeros from an authenticated read; contrast the
     // signed-out case (authRequired above), where the amount is unknown and a
@@ -221,7 +221,7 @@ export function ProfileStats({
     return (
       <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
         <p className="text-ink text-xl leading-tight tabular-nums">{formatEarningsValue('usd', stats)}</p>
-        <p className="text-muted text-xs mt-0.5">{stats.mints.toLocaleString('en-US')} mints</p>
+        <p className="text-muted text-xs mt-0.5">{stats.mints.toLocaleString('en-US')} sales</p>
       </div>
     )
   }
@@ -280,8 +280,8 @@ export function ProfileStats({
   const share = async () => {
     if (!active) return
     const url = `${window.location.origin}/profile/${address}`
-    const mintPart = stats.mints > 0 ? ` · ${stats.mints} ${stats.mints === 1 ? 'mint' : 'mints'}` : ''
-    const text = `${formatEarningsValue(active, stats)} earned${mintPart} on Kismet`
+    const salePart = stats.mints > 0 ? ` · ${stats.mints} ${stats.mints === 1 ? 'sale' : 'sales'}` : ''
+    const text = `${formatEarningsValue(active, stats)} earned${salePart} on Kismet`
     if (isInMiniApp) {
       try {
         const { sdk } = await import('@farcaster/miniapp-sdk')
@@ -322,17 +322,17 @@ export function ProfileStats({
               {formatEarningsValue(active, stats)}
             </button>
           ) : (
-            // No attributed earnings — surface the mint count as the headline so
+            // No attributed earnings — surface the sale count as the headline so
             // the owner still sees their sales and the card doesn't disappear.
             stats.mints > 0 && (
               <p className="text-ink text-xl leading-tight tabular-nums">
-                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'sale' : 'sales'}
               </p>
             )
           )}
           {active && stats.mints > 0 &&
             (showSplitToggle ? (
-              // Mint count doubles as a tap-to-expand toggle. Click pins it
+              // Sale count doubles as a tap-to-expand toggle. Click pins it
               // (touch-safe); mouse hover previews it (desktop only, gated to a
               // mouse pointer so a tap on mobile can't get stuck open via a
               // synthetic hover).
@@ -351,7 +351,7 @@ export function ProfileStats({
                 className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
               >
                 <span>
-                  {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                  {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'sale' : 'sales'}
                 </span>
                 <ChevronDown
                   size={11}
@@ -361,7 +361,7 @@ export function ProfileStats({
               </button>
             ) : (
               <p className="text-muted text-xs mt-0.5">
-                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'sale' : 'sales'}
               </p>
             ))}
           {/* Always mounted when both sources exist so the toggle's aria-controls
@@ -374,7 +374,7 @@ export function ProfileStats({
               className="text-faint text-xs mt-0.5 tabular-nums"
               title="Resales counted are those sold through Kismet listings"
             >
-              {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
+              {formatEarningsValue(active, stats.primary)} sales · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
           {pending && pendingDenom && (

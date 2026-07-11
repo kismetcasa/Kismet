@@ -283,7 +283,7 @@ export default async function Image({ params }: Props) {
                     ...(cardDenom ? { marginLeft: 18 } : {}),
                   }}
                 >
-                  {`${earnings.mints} mints`}
+                  {`${earnings.mints} ${earnings.mints === 1 ? 'sale' : 'sales'}`}
                 </div>
               )}
             </div>
