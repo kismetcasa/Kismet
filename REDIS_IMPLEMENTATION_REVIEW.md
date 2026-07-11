@@ -34,12 +34,16 @@ gates and quotas). Full inventory in Part II.
    227MB of the free 200GB.** The Usage charts put the steady run rate at
    ~50–70K commands/day (≈1.5–2M/mo pace ≈ $3–4/mo) and ~20MB/day bandwidth.
    The database is PAYG, Global type, primary in AWS `us-east-1`, and also
-   exposes the native Redis protocol (port 6379/TLS). Meanwhile every
-   command pays a **cross-cloud round trip** (app on Oracle, Upstash in AWS
-   `us-east-1`), and the worst paths are *dependent chains* — profile identity
-   resolution is 4–6 sequential GETs — which auto-pipelining cannot collapse.
-   The optimization target is therefore **round-trip elimination**, not
-   command-count shaving for its own sake.
+   exposes the native Redis protocol (port 6379/TLS). **Measured 2026-07-11
+   from inside the app container (Coolify web terminal, 10 timed PINGs):
+   steady-state RTT ≈ 4.4ms median (3.7–7.9ms); cold first-connection 162ms.**
+   The box is effectively in the same Virginia metro as `us-east-1` — the
+   cross-cloud latency the runbook feared is NOT material at steady state
+   (the cold number explains the boot-time observations; the warmup already
+   pre-warms the pool). Dependent chains — profile identity resolution is
+   4–6 sequential GETs auto-pipelining cannot collapse — cost ~18–27ms, real
+   but not user-visible next to upstream fetches. The optimization target is
+   therefore the **robustness and O(N) fixes**, not round-trip elimination.
 2. **Redis holds three very different kinds of data under one client:**
    irreplaceable platform state (pass-validity ledger, signed Seaport listings,
    profiles, follows, splits — Class A), rebuildable caches/indexes (ENS,
@@ -68,19 +72,20 @@ gates and quotas). Full inventory in Part II.
    drive design decisions; latency, the 10MB cliff, and durability classes
    should.
 
-**Recommendation (detail in Part V):** keep Upstash as the durable system of
-record for Class A/B state; add a **co-located Redis on the Oracle box** (via
-[SRH](https://github.com/hiett/serverless-redis-http), which speaks the Upstash
-REST protocol, so the `@upstash/redis` SDK and its load-bearing
-auto-serialization semantics are unchanged) and move **Class C ephemera + hot
-rebuildable caches** onto it keyspace-by-keyspace. This removes the cross-cloud
-RTT from every hot-path command and ~70–90% of Upstash command volume, at zero
-dollar cost, with no loss of durable state if the box dies, and it is
-incremental and reversible per keyspace. Upgrade Upstash to the $10–20/mo fixed
-plan to retire command-count anxiety. Land the specific code-level fixes in
-§5.2 (SMISMEMBER for created-mints, listings record split, session/gate
-micro-caches, splitaddr batch fix, notification trim amortization) regardless
-of topology.
+**Recommendation (LOCKED 2026-07-11, after measurement):** **stay
+Upstash-only.** The measured steady-state RTT (~4.4ms) removed the case for a
+co-located Redis tier — Option 4 (hybrid via
+[SRH](https://github.com/hiett/serverless-redis-http)) is documented in §5.1
+but **shelved**; revisit only if the app leaves the US-East metro, Upstash
+moves, or a measured p99 regression says otherwise. The Global read-region
+option is moot (already in the nearest region). The design is therefore:
+PAYG + budget cap ($20, set) + Daily Backup (enabled) + the **robustness and
+O(N) fixes in §5.2** — led by the `created-mints` cliff fix (SMISMEMBER),
+listings record split, gate single-flight, `splitaddr` batch fix, profile
+search index, bounded `collected` reads, and the fan-out ceiling. The
+latency-motivated fixes (in-process rate limiter, session micro-cache,
+identity-chain coalescing, notification trim amortization) drop to optional
+at ~4ms RTT — they buy single-digit milliseconds and modest command savings.
 
 ---
 
@@ -392,9 +397,15 @@ What it **cannot** collapse:
   awaited layers in most routes).
 
 At a cross-cloud RTT of r ms, a profile page pays ≈ (4–6)·r before content
-work; every authed API call pays ≥2·r of pure guard latency. This is the
-strongest argument for co-locating the hot keyspaces (Part V) — it converts r
-from network RTT to ~0.1ms loopback.
+work; every authed API call pays ≥2·r of pure guard latency. **Measured
+2026-07-11 (10 timed PINGs from inside the app container): r ≈ 4.4ms median
+steady-state (3.7–7.9ms spread; 162ms cold first-connection).** So today:
+guard latency ≈ 9ms/request, worst identity chain ≈ 18–27ms, bell poll ≈ 9ms —
+real numbers, but an order of magnitude below the upstream inprocess fetches
+on the same pages. This measurement is what shelved the co-location option
+(§5.1): converting 4.4ms to loopback isn't worth owning another stateful
+service on a zero-redundancy box. Dependent-chain *coalescing* (§5.2 #12)
+remains the cheap way to claw back the profile-chain milliseconds if wanted.
 
 ## 3.3 Redundant-read findings (code-level, all cheap fixes)
 
@@ -560,8 +571,10 @@ before quoting.)
 ## 4.5 Topology & future constraints
 
 - Single Oracle Ampere box (ARM64, ~11GB RAM, 200GB disk), Coolify, zero
-  redundancy; Upstash in AWS us-east-1 → **cross-cloud RTT on every command**
-  (`OPS_RUNBOOK.md:83`).
+  redundancy; Upstash in AWS us-east-1. The runbook's cross-cloud-latency
+  concern (`OPS_RUNBOOK.md:83`) is now **measured: ~4.4ms steady-state,
+  162ms cold** (2026-07-11, from inside the app container) — same-metro
+  adjacency, not a constraint at steady state.
 - Code is multi-pod-aware (Redis locks, sessions in Redis) but memoize tiers
   are per-pod (15-min cross-pod staleness if pods are added) — any redesign
   should not worsen the path to 2+ pods.
@@ -598,8 +611,9 @@ read-your-write flows — `createSession` → immediate `verifySession` on the
 login redirect, scout `getScout`→`saveScout` read-modify-write cycles, and
 listing create → immediate feed read could observe pre-write state for
 ~ms–100ms. Those specific flows would need to pin to the primary (REST header)
-or tolerate the lag. Evaluate after the RTT measurement; skip if Option 4 is
-taken.
+or tolerate the lag. **Resolved 2026-07-11: moot** — the measured 4.4ms RTT
+means the app is already effectively adjacent to the primary region; no
+Upstash region is meaningfully closer.
 
 **Option 3 — full co-location (move everything to Redis-on-box).**
 Kills all cross-cloud latency and all Upstash cost, but makes the single box a
@@ -609,8 +623,15 @@ Storage) bounds RPO to ~1h for disaster — still a real regression vs a managed
 replicated store, on a box the runbook itself calls zero-redundancy. **Not
 recommended while Redis is the only datastore.**
 
-**Option 4 — hybrid tiering (recommended): Upstash = durable Class A/B-slow;
-box-local Redis = Class C + hot Class B.**
+**Option 4 — hybrid tiering: Upstash = durable Class A/B-slow; box-local
+Redis = Class C + hot Class B. — SHELVED 2026-07-11 after measurement.**
+This was the working recommendation while cross-cloud RTT was presumed to be
+tens of milliseconds; the measured ~4.4ms steady-state removed its payoff
+(each command saved ≈4ms, at the price of owning a second stateful service on
+a zero-redundancy box). Kept in full below as the ready-to-execute playbook
+for the conditions that would revive it: the app relocating out of the
+US-East metro, Upstash moving/regressing, or a sustained measured p99
+problem attributable to Redis round trips.
 
 Mechanics:
 - Run `redis:7-alpine` (or Valkey) as a Coolify service on the box +
@@ -660,11 +681,13 @@ Redis to cache/counters/locks and unlocks N stateless pods. It is a
 re-platforming, not a Redis optimization — sequenced after the hybrid split
 (which is also its preparation: the Class A inventory above is the table list).
 
-**Recommendation: Option 4 + stay PAYG with a budget cap + §5.2 code fixes.**
-If adding any infrastructure is unacceptable right now, Option 2 alone
-captures the O(N) and redundant-read wins and is strictly worthwhile, and
-Option 2b is the no-infra latency lever to evaluate once the box's region and
-RTT are known.
+**Recommendation (locked 2026-07-11): Option 2 — Upstash-only, PAYG + $20
+budget cap (set) + Daily Backup (enabled) + the §5.2 fixes, robustness-first.**
+The RTT measurement (~4.4ms steady-state from inside the app container)
+resolved the topology question: Options 2b, 3, and 4 are all shelved/moot.
+Priority within §5.2 shifts accordingly — the cliff/O(N)/robustness fixes
+(#3 #4 #5 #6 #8 #9 #13 #14) carry the plan; the latency/cost-motivated ones
+(#1 #2 #7 #12) become optional nice-to-haves at ~4ms RTT and ~$3–4/mo.
 
 ## 5.2 Code-level fixes (no topology change; ranked by impact/effort)
 
@@ -715,36 +738,50 @@ RTT are known.
 
 # Part VI — Rollout & measurement
 
-**Measure first (1–2 days):**
-1. RTT: time `redis.ping()` p50/p99 from the box (quantifies r; the whole
-   Option-4 case rests on it).
-2. Wrap the client with a per-command counter tagged by key-prefix + route
-   (a 20-line proxy) → 48h of real per-keyspace volume, to validate the §3.1
-   ranking before moving anything.
-3. `DBSIZE` + `MEMORY USAGE` sampling per prefix (or Upstash console) → real
-   dataset size for fixed-plan selection.
-4. `SCARD kismetart:created-mints` / `collections` / `ZCARD` featured — cliff
-   headroom (runbook §Verify already prescribes this).
+**Measure first:**
+1. ✅ **RTT — done 2026-07-11** via Coolify web terminal, 10 timed PINGs from
+   inside the app container: **~4.4ms median steady-state (3.7–7.9ms), 162ms
+   cold first-connection.** This resolved the topology question (Option 2;
+   Options 2b/3/4 shelved). The `app/api/debug/redis-rtt` route on this
+   branch re-measures on demand and also reports cardinalities/region/memory;
+   **remove it once merged and run once.**
+2. ✅ **Run rate / bandwidth / dataset — done 2026-07-11** from the console:
+   ~50–70K cmds/day, ~20MB/day, 336KB data (backup-confirmed).
+3. Still open (non-blocking): baseline cardinalities — one visit to the debug
+   route, or the `DBSIZE`/`SCARD`/`ZCARD` block in the Upstash console CLI
+   tab; log `created-mints` headroom (runbook §Verify prescribes rechecking
+   periodically). Optional: the 20-line per-command counter proxy if a future
+   regression ever needs per-keyspace attribution.
 
-**Phase 1 (days):** fixes #1 #2 #5 #6 #7 #9 #10 #13 (all small).
-✅ **Done 2026-07-11:** PAYG budget cap set ($20, the console minimum —
+**Ops (done 2026-07-11):** PAYG budget cap set ($20, the console minimum —
 Upstash stops the database at the cap, so this is runaway-bug/attack
 protection with ~5–6× headroom over the run rate; recovery = raise the cap)
 and **Daily Backup enabled** (was OFF; until then the only restore points
 were the manual `k-backup1`, 335.74KB, and a 2-month-old export). Revisit a
 fixed plan only past ~5M cmds/mo.
 
-**Phase 2 (a week):** local Redis + SRH on Coolify; move keyspaces in the §5.1
-order behind `lib/redisHot.ts`; readiness treats it as non-gating; AOF +
-nightly RDB copy off-box.
+**Phase 1 — robustness (the plan):** #3 `created-mints` SMISMEMBER (kills the
+one availability cliff), #5 gate single-flight, #6 `splitaddr` batch fix,
+#9 bounded `collected` reads, #10 featured cache header, #13 namespace
+hygiene + delete the `debug:ua-seen` leftover, #14 fan-out ceiling.
 
-**Phase 3 (with B1/B2 work):** `created-mints` ZSET + SMISMEMBER cutover (#3),
-listings split (#4), timeline stitch narrowing (#11), profile search index
-(#8), fan-out ceiling (#14) → queue.
+**Phase 2 — scale-shaped (with B1/B2 work, as traffic warrants):** listings
+record split (#4), timeline stitch narrowing (#11), profile search index
+(#8), `created-mints` ZSET index cutover, notification fan-out → queue past
+~5k-follower creators.
 
-**Exit criteria:** p99 authed-request guard overhead < 2ms; profile SSR Redis
-time < 5ms; Upstash commands < 300K/mo (back under free tier); zero unbounded
-full-set reads on any per-request path; no Class A data on the box.
+**Optional (latency polish, ~4ms-scale wins):** #1 in-process rate limiter,
+#2 session micro-cache, #7 notification trim amortization, #12 identity-chain
+coalescing.
+
+**Shelved:** local Redis + SRH hybrid (§5.1 Option 4) — revive only on
+relocation out of US-East, an Upstash regression, or measured Redis-attributed
+p99 pain.
+
+**Exit criteria:** zero unbounded full-set reads on any per-request path
+(created-mints, collected, profile search all bounded); fan-out capped;
+baseline cardinalities recorded; debug route removed; budget cap + Daily
+Backup verified on (✅).
 
 ---
 
