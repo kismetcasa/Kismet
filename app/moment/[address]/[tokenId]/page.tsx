@@ -3,7 +3,7 @@ import { cache } from 'react'
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { resolveUri } from '@/lib/inprocess'
+import { resolveUri, shortAddress } from '@/lib/inprocess'
 import { isVideoMoment } from '@/lib/media/isVideo'
 import { getCollectionMeta as getKvCollectionMeta, getUserCollections } from '@/lib/kv'
 import { getMomentContent } from '@/lib/momentContent'
@@ -19,10 +19,34 @@ import { getListingVisibility } from '@/lib/hiddenListings'
 import { safeRead } from '@/lib/redisRead'
 import { SITE_URL } from '@/lib/siteUrl'
 import { MomentDetailView } from '@/components/MomentDetailView'
+import { JsonLd } from '@/components/JsonLd'
+import { momentJsonLd } from '@/lib/structuredData'
 
 interface Props {
   params: Promise<{ address: string; tokenId: string }>
 }
+
+// Resolve THIS token's live, visible listing (or null). Wrapped in React cache
+// so generateMetadata (button text) and the page render (Offer JSON-LD) share
+// one evaluation per request — one listings read, and the "View Listing" button
+// and the schema.org Offer can never disagree about whether it's for sale.
+// limit: 500 matches getListings' internal scan cap; safeRead degrades to
+// "no listing" on a Redis blip (losing a non-essential SEO/label refinement,
+// never throwing).
+const getActiveListing = cache(async (address: string, tokenId: string) => {
+  // Independent reads — run them in parallel (the pre-refactor code awaited
+  // them sequentially; visibility is memoized so this mostly matters on a
+  // cold TTL window).
+  const [{ listings }, visibility] = await Promise.all([
+    safeRead(
+      'getListings:moment',
+      () => getListings({ collection: address, limit: 500 }),
+      { listings: [], total: 0 },
+    ),
+    safeRead('getListingVisibility:moment', () => getListingVisibility(), null),
+  ])
+  return listings.find((l) => l.tokenId === tokenId && !visibility?.feedHidden(l)) ?? null
+})
 
 // For the cover token (tokenId='1') of a kismet-tracked collection we have
 // the same metadata in KV that we wrote at deploy time. Synthesize a minimal
@@ -86,12 +110,32 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
   ])
+  // Creator-hidden moment: generic metadata + noindex for EVERYONE, mirroring
+  // the page body's placeholder (which returns before any content renders).
+  // Without this gate the real name/description leaked into <title>/OG tags
+  // even while the page itself was withheld — and the 200 placeholder was an
+  // indexable stub under the hidden work's name. Same trade-off the profile
+  // page documents: the creator viewing their own hidden moment also gets
+  // generic metadata; only the page body is viewer-aware.
+  if (detail?.hidden) return { title: 'Moment — Kismet', robots: { index: false } }
   const meta = detail?.metadata ?? fallback
-  if (!meta) return { title: 'Moment — Kismet' }
+  // No metadata from either source: the emptiest page of all (indexer lag or a
+  // junk token URL) — noindex for the same crawl-budget reason as the isEmpty
+  // gate below. Transient upstream failure recovers on the next crawl (the
+  // sitemap still lists real moments, and noindex lifts when the tag is gone).
+  // The catch path below deliberately does NOT noindex: a Redis/upstream blip
+  // there is unrelated to whether the moment has content.
+  if (!meta) return { title: 'Moment — Kismet', robots: { index: false } }
 
   const name = meta.name ?? `#${tokenId}`
   const title = `${name} — Kismet`
   const description = meta.description ?? 'View this moment on Kismet'
+  // A moment with no title, description, AND no image has nothing indexable —
+  // usually indexer lag or a broken token. noindex it so crawl budget goes to
+  // real artworks. Deliberately narrow: a titled or image-bearing moment (the
+  // norm — the artwork itself is content) stays fully indexable, so we don't
+  // exclude legitimate art from web or image search.
+  const isEmpty = !meta.name && !meta.description && !meta.image
   // Single share image for every surface: the /opengraph-image route.
   // og:image + twitter:image are auto-wired to it by Next's file
   // convention (we don't set openGraph.images); the Farcaster embed
@@ -107,28 +151,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // instead of "Collect <name>", since the destination conceptually
   // moves from primary-sale collect to secondary-market purchase. Same
   // action.url either way — the moment page is where the listing is
-  // surfaced for purchase. limit: 500 matches getListings' internal scan
-  // cap — the scan + MGET run over the full window regardless, so this
-  // only widens the returned page (the default 18 silently missed
-  // listings older than the collection's 18 newest). On Redis failure,
-  // degrade to "Collect" — losing the button-text refinement is invisible
-  // compared to throwing on a non-essential SSR read.
-  const { listings: collectionListings } = await safeRead(
-    'getListings:moment-metadata',
-    () => getListings({ collection: address, limit: 500 }),
-    { listings: [], total: 0 },
-  )
-  // Visibility mirrors the market feed: a hidden listing shouldn't flip the
-  // embed button to "View Listing". Same safeRead degradation — on failure
-  // treat everything as visible; this only styles a button label.
-  const visibility = await safeRead(
-    'getListingVisibility:moment-metadata',
-    () => getListingVisibility(),
-    null,
-  )
-  const hasActiveListing = collectionListings.some(
-    (l) => l.tokenId === tokenId && !visibility?.feedHidden(l),
-  )
+  // surfaced for purchase. Shared (React-cached) with the page's Offer
+  // JSON-LD so the button label and the structured price agree.
+  const hasActiveListing = !!(await getActiveListing(address, tokenId))
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
     // buildFarcasterEmbed truncates at 32 chars per the FC spec, so a
@@ -142,9 +167,17 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title,
     description,
+    ...(isEmpty ? { robots: { index: false } } : {}),
+    // <link rel="canonical"> — lowercased address so every case variant of
+    // the same moment URL (external links can arrive checksummed) collapses
+    // onto one indexable URL, matching what app/sitemap.ts lists.
+    alternates: { canonical: `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}` },
     openGraph: {
       title: name,
       description,
+      // og:url — share-aggregation key for FB/X scrapers; matches the
+      // canonical (profile-page precedent).
+      url: `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}`,
     },
     twitter: {
       // summary_large_image + the opengraph-image file convention →
@@ -238,8 +271,39 @@ export default async function MomentPage({ params }: Props) {
     }
   }
 
+  // Server-rendered schema.org JSON-LD: types the moment as a VisualArtwork
+  // (and, when it carries a live listing, a Product with an InStock Offer at
+  // the listed price) plus a Home › Collection › Moment breadcrumb. Only
+  // reached on the shown page — the hidden-moment branch above returns first,
+  // so we never describe a moment we're withholding. The Offer price comes from
+  // the same React-cached listing the "View Listing" button uses, so schema and
+  // UI can't disagree.
+  const canonicalUrl = `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}`
+  const displayName = detail?.metadata?.name ?? fallbackMeta?.name ?? `#${tokenId}`
+  const rawImage = detail?.metadata?.image ?? fallbackMeta?.image
+  const activeListing = await getActiveListing(address, tokenId)
+  const jsonLd = momentJsonLd({
+    url: canonicalUrl,
+    name: displayName,
+    description: detail?.metadata?.description ?? fallbackMeta?.description,
+    image: rawImage ? resolveUri(rawImage) : `${canonicalUrl}/opengraph-image`,
+    creator: creator
+      ? {
+          name: detail?.creator?.username ?? shortAddress(creator),
+          url: `${SITE_URL}/profile/${creator}`,
+        }
+      : undefined,
+    collection: initialCollectionMeta?.name
+      ? { name: initialCollectionMeta.name, url: `${SITE_URL}/collection/${address.toLowerCase()}` }
+      : undefined,
+    listing: activeListing
+      ? { price: activeListing.price, currency: activeListing.currency ?? 'eth' }
+      : null,
+  })
+
   return (
     <>
+      <JsonLd data={jsonLd} />
       {/* Above-fold LCP hint for video moments — kicks the first Range
           request off during HTML parse instead of waiting until the
           <video> element mounts post-hydration. Cuts ~150-400ms of TTFF

@@ -3,6 +3,7 @@ import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
 import { shareImageUrl } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
+import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import {
   shareCard,
@@ -52,24 +53,39 @@ export default async function Image({ params }: Props) {
   let imageUrl: string | undefined
 
   if (isAddress(address)) {
-    // Resolve name + cover the same way the page header does: KV (written
-    // at deploy time, fast, canonical for collections we deployed) wins,
-    // inprocess is the fallback for collections we didn't. Keeps the card
-    // in sync with what the page shows.
-    const [rowRaw, kv] = await Promise.all([
-      fetchCollection(address),
-      getKvCollectionMeta(address),
-    ])
-    // Null a hidden-identity deployer's @handle before the share card renders it.
-    const row = await stripHiddenDeployerIdentity(rowRaw)
-    title = kv?.name ?? row?.metadata?.name ?? title
-    if (row?.creator) {
-      creator = row.creator.username || shortAddress(row.creator.address)
+    // Fail CLOSED to the bare default card: isCollectionHidden deliberately
+    // throws on a Redis blip (a blip must never briefly reveal hidden
+    // content), and a bare card is a better degradation than a 500'd image.
+    // The other two fetches catch internally, so the hidden check is the
+    // only thrower this catch sees.
+    try {
+      // Resolve name + cover the same way the page header does: KV (written
+      // at deploy time, fast, canonical for collections we deployed) wins,
+      // inprocess is the fallback for collections we didn't. Keeps the card
+      // in sync with what the page shows.
+      const [rowRaw, kv, hidden] = await Promise.all([
+        fetchCollection(address),
+        getKvCollectionMeta(address),
+        isCollectionHidden(address),
+      ])
+      // Creator-hidden collection → default card only (shortAddress title,
+      // already in the URL): no name, no creator, no cover. Mirrors the
+      // profile opengraph-image's hidden handling.
+      if (!hidden) {
+        // Null a hidden-identity deployer's @handle before the share card renders it.
+        const row = await stripHiddenDeployerIdentity(rowRaw)
+        title = kv?.name ?? row?.metadata?.name ?? title
+        if (row?.creator) {
+          creator = row.creator.username || shortAddress(row.creator.address)
+        }
+        // Full-bleed cover when one resolves; shareImageUrl drops data: URIs
+        // and SSRF-guards the host. No cover → shareCard renders the branded
+        // fallback with the title + creator below.
+        imageUrl = shareImageUrl(kv?.image ?? row?.metadata?.image)
+      }
+    } catch {
+      // Bare card (shortAddress title, no cover) — never a leak, never a 500.
     }
-    // Full-bleed cover when one resolves; shareImageUrl drops data: URIs
-    // and SSRF-guards the host. No cover → shareCard renders the branded
-    // fallback with the title + creator below.
-    imageUrl = shareImageUrl(kv?.image ?? row?.metadata?.image)
   }
 
   return new ImageResponse(shareCard({ label: 'COLLECTION', title, creator, imageUrl }), {

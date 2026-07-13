@@ -4,6 +4,10 @@ export const metadata = {
   title: 'permissions — Kismet',
   description:
     'View permission status for every collection you have deployed and authorize legacy collections that need a one-time grant before they can mint via Kismet.',
+  // Per-wallet dashboard: renders empty without a connected wallet, so there's
+  // nothing worth indexing. `follow` stays on so crawlers still traverse any
+  // collection links a rendered instance exposes. Also disallowed in robots.ts.
+  robots: { index: false },
 }
 
 // Permission-management page. Lets a creator see at a glance which of
