@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAccount, useReadContract, useWriteContract, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
@@ -21,7 +21,7 @@ import {
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
-import { computePlatformFee, isBelowListingFloor, MIN_LISTING_PRICE_BASE_UNITS, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
+import { computeSellerProceeds, isBelowListingFloor, MIN_LISTING_PRICE_BASE_UNITS, PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { formatPrice } from '@/lib/inprocess'
 
 type ListCurrency = 'eth' | 'usdc'
@@ -59,42 +59,47 @@ export function ListButton({
   const { signTypedDataAsync } = useSignTypedData()
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
-  const publicClient = usePublicClient()
+  // Pinned to Base: wagmi's config includes mainnet (ENS), so the unpinned
+  // client follows the WALLET's current chain — a seller connected to
+  // mainnet would read royaltyInfo/getCounter against the wrong chain (the
+  // preview would silently show royalty as 0, and handleList's reads capture
+  // this client BEFORE ensureBase() switches the wallet).
+  const publicClient = usePublicClient({ chainId: base.id })
 
   const [showForm, setShowForm] = useState(false)
   const [priceInput, setPriceInput] = useState('')
   const [inputFocused, setInputFocused] = useState(false)
   const [currency, setCurrency] = useState<ListCurrency>('eth')
   const [step, setStep] = useState<'idle' | 'approving' | 'signing' | 'submitting'>('idle')
-  // Live net-proceeds preview for the typed price: price − royalty − 1% fee.
-  // The seller signs an order netting exactly this; without the preview they
-  // never see the number until the funds arrive. `belowFloor` short-circuits
-  // to the minimum-price notice. null = no valid price typed yet.
+  // The typed price in base units, or null while empty/invalid. Derived at
+  // render (not stored) so the synchronous checks below — the listing floor
+  // in particular — react to every keystroke instead of lagging the 400ms
+  // royalty debounce.
+  const priceTotalTyped = useMemo<bigint | null>(() => {
+    const parsed = parseFloat(priceInput)
+    if (!priceInput || isNaN(parsed) || parsed <= 0) return null
+    try {
+      return currency === 'usdc' ? parseUnits(priceInput, 6) : parseEther(priceInput)
+    } catch {
+      return null
+    }
+  }, [priceInput, currency])
+  const typedBelowFloor = priceTotalTyped !== null && isBelowListingFloor(priceTotalTyped)
+
+  // Live net-proceeds preview for the typed price: price − royalty − 1% fee,
+  // via the same computeSellerProceeds handleList encodes into the signed
+  // order — one arithmetic, so the preview cannot drift from what the seller
+  // actually signs. Only the royalty read is async; null = nothing to show.
   const [breakdown, setBreakdown] = useState<
-    { proceeds: bigint; royalty: bigint; fee: bigint; belowFloor: boolean } | null
+    { proceeds: bigint; royalty: bigint; fee: bigint } | null
   >(null)
 
   useEffect(() => {
-    const parsed = parseFloat(priceInput)
-    if (!priceInput || isNaN(parsed) || parsed <= 0) {
-      setBreakdown(null)
-      return
-    }
-    let priceTotal: bigint
-    try {
-      priceTotal = currency === 'usdc' ? parseUnits(priceInput, 6) : parseEther(priceInput)
-    } catch {
-      setBreakdown(null)
-      return
-    }
-    if (isBelowListingFloor(priceTotal)) {
-      setBreakdown({ proceeds: 0n, royalty: 0n, fee: 0n, belowFloor: true })
-      return
-    }
+    setBreakdown(null)
+    if (priceTotalTyped === null || isBelowListingFloor(priceTotalTyped)) return
     // Debounce the royalty read so we don't fire a view call per keystroke.
     let cancelled = false
     const handle = setTimeout(async () => {
-      const fee = computePlatformFee(priceTotal)
       let royalty = 0n
       try {
         if (publicClient) {
@@ -102,7 +107,7 @@ export function ListButton({
             address: collectionAddress as Address,
             abi: EIP2981_ABI,
             functionName: 'royaltyInfo',
-            args: [BigInt(tokenId), priceTotal],
+            args: [BigInt(tokenId), priceTotalTyped],
           })) as [Address, bigint]
           royalty = r[1]
         }
@@ -110,14 +115,15 @@ export function ListButton({
         // No EIP-2981 — preview as fee-only; handleList applies the same rule.
       }
       if (!cancelled) {
-        setBreakdown({ proceeds: priceTotal - royalty - fee, royalty, fee, belowFloor: false })
+        const { fee, proceeds } = computeSellerProceeds(priceTotalTyped, royalty)
+        setBreakdown({ proceeds, royalty, fee })
       }
     }, 400)
     return () => {
       cancelled = true
       clearTimeout(handle)
     }
-  }, [priceInput, currency, publicClient, collectionAddress, tokenId])
+  }, [priceTotalTyped, publicClient, collectionAddress, tokenId])
 
   const { data: balance } = useReadContract({
     address: collectionAddress as Address,
@@ -212,8 +218,12 @@ export function ListButton({
         // Collection doesn't implement EIP-2981 — no royalty
       }
 
-      const platformFee = computePlatformFee(priceTotal)
-      const sellerProceeds = priceTotal - royaltyAmount - platformFee
+      // Same arithmetic the preview shows (computeSellerProceeds) — one source
+      // so the signed order can never net differently than the preview said.
+      const { fee: platformFee, proceeds: sellerProceeds } = computeSellerProceeds(
+        priceTotal,
+        royaltyAmount,
+      )
 
       // 3. Fetch current Seaport counter for the offerer
       const counter = await publicClient.readContract({
@@ -377,10 +387,19 @@ export function ListButton({
         </button>
       </div>
     </div>
-    {breakdown && (
-      <p className={`mt-1 text-[10px] font-mono ${breakdown.belowFloor ? 'text-red-400' : 'text-muted'}`}>
-        {breakdown.belowFloor
-          ? `minimum ${formatPrice(MIN_LISTING_PRICE_BASE_UNITS.toString(), currency)} — below it the 1% fee rounds to zero`
+    {/* Floor notice renders synchronously from the typed price (no debounce
+        lag); the proceeds line waits on the debounced royalty read. A
+        royalty that meets/exceeds the price (misconfigured or adversarial
+        EIP-2981) gets an explicit warning — never a negative or "free"
+        payout presented as the seller's net. */}
+    {typedBelowFloor ? (
+      <p className="mt-1 text-[10px] font-mono text-red-400">
+        {`minimum ${formatPrice(MIN_LISTING_PRICE_BASE_UNITS.toString(), currency)} — below it the 1% fee rounds to zero`}
+      </p>
+    ) : breakdown && (
+      <p className={`mt-1 text-[10px] font-mono ${breakdown.proceeds <= 0n ? 'text-red-400' : 'text-muted'}`}>
+        {breakdown.proceeds <= 0n
+          ? `royalty + fees meet or exceed this price — you'd receive nothing; raise the price`
           : breakdown.royalty > 0n
             ? `you'll receive ≈ ${formatPrice(breakdown.proceeds.toString(), currency)} — after ${formatPrice(breakdown.royalty.toString(), currency)} royalty + ${formatPrice(breakdown.fee.toString(), currency)} platform fee (1%)`
             : `you'll receive ≈ ${formatPrice(breakdown.proceeds.toString(), currency)} — after the 1% platform fee`}
