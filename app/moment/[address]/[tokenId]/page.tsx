@@ -34,16 +34,17 @@ interface Props {
 // "no listing" on a Redis blip (losing a non-essential SEO/label refinement,
 // never throwing).
 const getActiveListing = cache(async (address: string, tokenId: string) => {
-  const { listings } = await safeRead(
-    'getListings:moment',
-    () => getListings({ collection: address, limit: 500 }),
-    { listings: [], total: 0 },
-  )
-  const visibility = await safeRead(
-    'getListingVisibility:moment',
-    () => getListingVisibility(),
-    null,
-  )
+  // Independent reads — run them in parallel (the pre-refactor code awaited
+  // them sequentially; visibility is memoized so this mostly matters on a
+  // cold TTL window).
+  const [{ listings }, visibility] = await Promise.all([
+    safeRead(
+      'getListings:moment',
+      () => getListings({ collection: address, limit: 500 }),
+      { listings: [], total: 0 },
+    ),
+    safeRead('getListingVisibility:moment', () => getListingVisibility(), null),
+  ])
   return listings.find((l) => l.tokenId === tokenId && !visibility?.feedHidden(l)) ?? null
 })
 

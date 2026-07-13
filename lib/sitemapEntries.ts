@@ -66,7 +66,16 @@ export function buildSitemapEntries(input: SitemapEntryInputs): MetadataRoute.Si
     return !!artist && hiddenUsers.has(artist)
   }
 
-  const visibleCollections = collections.filter((address) => !isHiddenCollection(address))
+  // Dedupe by lowercase BEFORE filtering: the created-collections Redis set is
+  // written without lowercasing (unlike created-mints), so a case-variant
+  // duplicate member would otherwise emit two identical sitemap URLs.
+  const seenCollections = new Set<string>()
+  const visibleCollections = collections.filter((address) => {
+    const lower = address.toLowerCase()
+    if (seenCollections.has(lower)) return false
+    seenCollections.add(lower)
+    return !isHiddenCollection(address)
+  })
 
   const collectionEntries: MetadataRoute.Sitemap = visibleCollections.map((address) => {
     const meta = metas.get(address.toLowerCase())

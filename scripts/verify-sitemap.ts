@@ -163,6 +163,25 @@ const cappedMoments = capResult.filter((e) => e.url.includes('/moment/')).length
 check('moment cap bounds output', cappedMoments === 3, `got ${cappedMoments}`)
 check('onCap fired at the limit', capped === 3)
 
+// 9b. Case-variant duplicate collection members (the created-collections set
+// is written without lowercasing) must collapse to ONE sitemap entry.
+const dupResult = buildSitemapEntries({
+  siteUrl: SITE,
+  staticRoutes: [],
+  collections: [VISIBLE, VISIBLE.toLowerCase(), VISIBLE.toUpperCase().replace('0X', '0x')],
+  mints: [],
+  metas,
+  hiddenCollections: new Set(),
+  hiddenUsers: new Set(),
+  hiddenIdentities: new Set(),
+  maxMoments: 10,
+})
+check(
+  'case-variant duplicate collections collapse to one entry',
+  dupResult.filter((e) => e.url === `${SITE}/collection/${VISIBLE.toLowerCase()}`).length === 1,
+  `got ${dupResult.length} entries`,
+)
+
 // 10. llms.txt ↔ guides.ts sync — guides auto-flow into the hub and sitemap,
 // but llms.txt is a hand-edited static file; without this pin a new guide
 // silently misses the AI-crawler map.
