@@ -223,6 +223,10 @@ export async function runDropCoordination(
   let recipients = 0
   let failed = 0
   for (const a of allocations) {
+    // Honor an emergency stop BETWEEN allocations, not just at coordination entry:
+    // a large drop fans out to many watchers, and an operator engaging the kill
+    // switch mid-fan-out must halt the remaining spends immediately.
+    if (await isKillSwitchEngaged()) break
     const b = byOwner.get(a.owner)
     if (!b) continue
     const item: BatchCollectItem = {

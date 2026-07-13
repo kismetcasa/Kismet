@@ -10,20 +10,20 @@
  * @base-org/account/spend-permission's node build) + the shared collectBatch
  * builders. No browser provider, no headless wallet SDK.
  *
- * SDK API: calls use the installed @base-org/account@2.4.0 POSITIONAL form —
- * `getPermissionStatus(permission)`, `prepareSpendCallData(permission, amount)`.
- * The latest Base docs show a newer OBJECT form (`prepareSpendCallData({
- * permission, amount })`); adopting it is a one-line change here on an SDK bump
- * (ranged at ^2.4.0 — a 2.5.x bump was previously reverted for transitive churn,
- * so bump deliberately).
- * The flow + semantics are identical: status-check → prepare [approveWithSignature?,
- * spend] → submit FROM the spender (the spender executes both, per the docs).
+ * SDK API: calls use the installed @base-org/account@2.5.7 POSITIONAL form —
+ * `getPermissionStatus(permission)`, `prepareSpendCallData(permission, amount)`
+ * (verified against the installed d.ts signature
+ * `(permission, amount, recipient?, options?)`). Some Base docs show an object
+ * form; the installed package is positional, so the positional calls below are
+ * correct for this version — re-verify on any SDK bump. The flow + semantics:
+ * status-check → prepare [approveWithSignature?, spend] → submit FROM the spender
+ * (the spender executes both, per the docs).
  */
 
 import { getPermissionStatus, prepareSpendCallData } from '@base-org/account/spend-permission'
 import type { Address, Hex } from 'viem'
 import { redis } from '@/lib/redis'
-import { readMintFeeWithBound } from '@/lib/zoraMint'
+import { readMintFeeWithBound, USDC_BASE } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
@@ -42,6 +42,10 @@ const toSpenderCall = (c: SdkSpendCall): SpenderCall => ({
   data: c.data as Hex,
   value: BigInt(c.value),
 })
+
+/** ERC-7528 native-asset sentinel — the `token` an ETH-budget Spend Permission
+ *  carries (mirrors grantBudget's NATIVE_ETH). USDC budgets carry USDC_BASE. */
+const NATIVE_ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 
 const ERC1155_BALANCE_ABI = [
   {
@@ -93,6 +97,24 @@ export async function collectViaSpendPermission(params: {
 }): Promise<{ txHash: Hex }> {
   const { permission, spender, recipient, editionTarget } = params
   let item = params.item
+
+  // Defense-in-depth at the SINGLE spend choke-point (both the on-open executor
+  // and the drop coordinator funnel through here). By construction the permission
+  // was granted BY this recipient FOR this currency — but a wiring bug or a future
+  // refactor must never (a) pull from a permission whose granting account isn't the
+  // mint recipient (would move a DIFFERENT user's funds) or (b) pull in a token that
+  // doesn't match what the mint consumes (would pull the wrong asset — and on the
+  // non-atomic EOA path strand it after a mint revert). Assert both, fail-closed.
+  const grant = permission.permission
+  if (grant.account && grant.account.toLowerCase() !== recipient.toLowerCase()) {
+    throw new Error('Spend permission account does not match the mint recipient — refusing to spend')
+  }
+  const expectedToken = item.currency === 'eth' ? NATIVE_ETH_SENTINEL : USDC_BASE
+  if (grant.token && grant.token.toLowerCase() !== expectedToken.toLowerCase()) {
+    throw new Error(
+      `Spend permission token (${grant.token}) does not match the drop currency (${item.currency}) — refusing to spend`,
+    )
+  }
 
   // Per (recipient, drop) lock: the drop coordinator and the on-open run loop can
   // both target the SAME user + token at once; without this each reads balance 0

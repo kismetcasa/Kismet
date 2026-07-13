@@ -259,6 +259,19 @@ export function getScoutSpender(): Promise<ScoutSpender> {
   if (!cachedSpender) {
     cachedSpender = (async () => {
       const pk = process.env.SCOUT_SPENDER_PRIVATE_KEY
+      // The EOA fallback is NON-ATOMIC: it submits spend()→approve→mint as separate
+      // txs, so a mint revert AFTER spend() strands the pulled funds in the EOA (the
+      // user's money left their wallet, no NFT minted). The canonical CDP smart-
+      // account spender is atomic — one user op, a revert rolls back the pull. In
+      // production that stranding risk must be a CONSCIOUS choice, not a silent
+      // consequence of a key sitting in the env, so require an explicit opt-in.
+      if (pk && process.env.NODE_ENV === 'production' && process.env.SCOUT_ALLOW_EOA_SPENDER !== '1') {
+        throw new Error(
+          'Refusing the non-atomic EOA scout spender in production: a mint revert after spend() would strand user funds. ' +
+            'Use the atomic CDP smart-account spender (unset SCOUT_SPENDER_PRIVATE_KEY and set CDP_API_KEY_ID + CDP_API_KEY_SECRET + CDP_WALLET_SECRET), ' +
+            'or set SCOUT_ALLOW_EOA_SPENDER=1 to accept the stranding risk explicitly.',
+        )
+      }
       const spender = pk ? ownKeySpender(pk as Hex) : await cdpSpender()
       return serialized(spender)
     })()
