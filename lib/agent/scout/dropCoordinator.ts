@@ -24,10 +24,12 @@ import { readMintFeeWithBound } from '@/lib/zoraMint'
 import { writeNotification } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import type { BatchCollectItem } from '@/lib/agent/collectBatch'
+import { isValidTokenId } from '@/lib/address'
 import { getWatchers, getScoutsBatch, getScout, saveScout, type ScoutRecord } from './store'
 import { evaluateCandidate, type Candidate } from './engine'
 import { allocateRoundRobin, fairOrder, OPEN_EDITION_SUPPLY, type DropWatcher } from './allocate'
 import { collectViaSpendPermission } from './serverExecutor'
+import { drainSupersededPermissions } from './revoke'
 import { getScoutSpender, type ScoutSpender } from './spender'
 import { isKillSwitchEngaged } from './killSwitch'
 
@@ -78,6 +80,11 @@ export async function runDropCoordination(
   baseUrl: string,
 ): Promise<DropCoordinationSummary> {
   const collection = drop.collection as Address
+  // Guard the entry parse: `BigInt(drop.tokenId)` throws on a non-numeric id, and
+  // this runs OUTSIDE any per-watcher try/catch, so a bad id would reject the whole
+  // coordination (every watcher gets nothing) rather than fail one collect. Fail
+  // closed with a clear reason instead of a raw throw.
+  if (!isValidTokenId(drop.tokenId)) return empty(0, 'invalid tokenId')
   const tokenId = BigInt(drop.tokenId)
   const creator = lc(drop.creator)
 
@@ -265,6 +272,14 @@ export async function runDropCoordination(
       })
     }
   }
+  // Opportunistically retire any budget-superseded permissions for the watchers we
+  // just processed. The coordinator is the ONLY server-driven spend path, so for a
+  // set-and-forget user who never reopens the app (never triggers the on-open run
+  // that normally drains) this is the sole place an old, still-active,
+  // never-expiring grant to our spender gets revoked. Best-effort and a no-op when
+  // the queue is empty (the common case), so it can't delay or fail a collect.
+  await Promise.all(bidders.map((b) => drainSupersededPermissions(b.record, spender).catch(() => {})))
+
   // Failure-only summary (mirrors runScoutServer). `allFailed` = every allocated
   // collect threw — the systemic-breakage signal for this drop.
   if (failed > 0) {

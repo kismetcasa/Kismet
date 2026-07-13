@@ -15,11 +15,9 @@
 import type { ProviderInterface } from '@base-org/account'
 import { getAccount } from '@wagmi/core'
 import { wagmiConfig } from '@/lib/wagmi'
-import { USDC_BASE } from '@/lib/zoraMint'
+import { USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import type { StoredSpendPermission } from './serverExecutor'
 
-/** ERC-7528 native-asset sentinel (ETH budget); USDC budgets use USDC_BASE. */
-const NATIVE_ETH = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as const
 const BASE_CHAIN_ID = 8453
 
 /** The Kismet autonomous spender address (a server-controlled key / CDP wallet).
@@ -48,7 +46,7 @@ export async function grantScoutBudget(p: {
   if (!SCOUT_SPENDER) throw new Error('Agent Collect is not available yet')
   const { requestSpendPermission, fetchPermissions, getPermissionStatus } = await spendPerm()
   const { provider, account } = await connected()
-  const token = p.currency === 'eth' ? NATIVE_ETH : USDC_BASE
+  const token = p.currency === 'eth' ? NATIVE_ETH_SENTINEL : USDC_BASE
   const periodSeconds = Math.max(1, Math.floor(p.periodInDays * 86_400))
 
   // Idempotent: reuse an existing ACTIVE permission to this spender matching the

@@ -1,11 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { getSessionAddress } from '@/lib/session'
 import { checkRateLimit } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
+import { USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
 import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
+import { getScoutSpender } from '@/lib/agent/scout/spender'
+import { revokePermissionsAsSpender } from '@/lib/agent/scout/revoke'
 import type { StoredSpendPermission } from '@/lib/agent/scout/serverExecutor'
 
 export const runtime = 'nodejs'
@@ -39,7 +42,32 @@ export async function GET(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
+  // Capture the grants BEFORE deleting the record so we can retire them. Turning
+  // the agent off must revoke EVERY live permission to our spender — the current
+  // one AND any budget-superseded ones still queued — not just the current (which
+  // the client attempts, user-signed and cancellable). Grants are created without
+  // an `end`, so an un-revoked permission never expires and stays a spendable,
+  // UI-invisible authorization to our spender forever. Revoke server-side via the
+  // spender (revokeAsSpender — no user signature), post-response + best-effort so
+  // the turn-off stays fast and a revoke hiccup can't fail it.
+  const record = await getScout(owner)
   await deleteScout(owner)
+  const toRevoke = [record?.permission, ...(record?.supersededPermissions ?? [])].filter(
+    (p): p is StoredSpendPermission => !!p,
+  )
+  if (toRevoke.length > 0) {
+    after(async () => {
+      try {
+        const spender = await getScoutSpender()
+        await revokePermissionsAsSpender(toRevoke, spender)
+      } catch (err) {
+        console.error('[scout] revoke-on-delete failed', {
+          owner,
+          err: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+  }
   return NextResponse.json({ ok: true })
 }
 
@@ -67,7 +95,8 @@ export async function PUT(req: NextRequest) {
 
   let body: {
     scout?: Partial<Scout>
-    usage?: { periodStart?: number; spentThisPeriod?: string; itemsThisPeriod?: number }
+    // No `usage`: the server run loop is the sole writer of item-count/spend usage
+    // (see the usage block below). A client-supplied usage is ignored by design.
     artistLabels?: Record<string, unknown>
     /** Phase 2: the granted Spend Permission + the unattended opt-in. */
     permission?: StoredSpendPermission
@@ -134,32 +163,20 @@ export async function PUT(req: NextRequest) {
     createdAt: now,
   }
 
-  // Usage: a run reports updated usage (item count + on-chain-reconciled spend);
-  // accept it when well-formed (the common path after a run). Otherwise preserve
-  // existing usage across config edits (so editing policy mid-period doesn't
-  // reset the item count), starting fresh on first create or a new period. The
-  // on-chain Spend Permission is the authoritative dollar cap regardless.
+  // Usage (item count + on-chain-reconciled spend) is written ONLY by the server
+  // run loop (runScoutServer / dropCoordinator, via saveScout) — never by the
+  // client, which does not send it. We MUST NOT accept a client `usage`: doing so
+  // let an owner reset their own maxItemsPerPeriod counter by submitting a usage
+  // with a different periodStart (the anti-spoof clamp only caught a same-period
+  // decrease), and the run loop then re-anchors to the on-chain period and collects
+  // the full item cap again — defeating the cap (sharpest for free drops, where the
+  // dollar allowance doesn't bind). So here we only PRESERVE existing usage across
+  // config edits (editing policy mid-period must not reset the item count), starting
+  // fresh on first create or once the stored period predates a new budget window.
+  // The on-chain Spend Permission is the authoritative dollar cap regardless.
   const existing = await getScout(owner)
-  const u = body.usage
-  let usage: BudgetUsage
-  if (
-    u &&
-    Number.isInteger(u.periodStart) &&
-    Number.isInteger(u.itemsThisPeriod) &&
-    (u.itemsThisPeriod as number) >= 0 &&
-    isNonNegIntStr(u.spentThisPeriod)
-  ) {
-    // Anti-spoof: the item count must not DECREASE within the same period (a
-    // client can't reset its self-imposed item cap mid-period; legit rollover
-    // advances periodStart). The dollar cap is enforced on-chain regardless.
-    let items = u.itemsThisPeriod as number
-    if (existing && existing.usage.periodStart === u.periodStart && items < existing.usage.itemsThisPeriod) {
-      items = existing.usage.itemsThisPeriod
-    }
-    usage = { periodStart: u.periodStart as number, spentThisPeriod: u.spentThisPeriod as string, itemsThisPeriod: items }
-  } else {
-    usage = existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
-  }
+  const usage: BudgetUsage =
+    existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
 
   // Display-only labels: keep only entries whose key is a watched creator, with
   // a short string value. Falls back to the existing labels on a usage-only PUT.
@@ -189,6 +206,14 @@ export async function PUT(req: NextRequest) {
     if (configuredSpender && pd.spender?.toLowerCase() !== configuredSpender.toLowerCase()) {
       return errorResponse(400, 'Permission spender does not match the configured spender')
     }
+    // Token must match the budget currency, or a run would pull the WRONG asset
+    // (e.g. an ETH permission funding a USDC mint) — reverting atomically, or
+    // stranding funds on the non-atomic spender. The executor asserts this too;
+    // reject at the source so a divergent (currency, token) pair can't be stored.
+    const expectedToken = scout.budget.currency === 'eth' ? NATIVE_ETH_SENTINEL : USDC_BASE
+    if (pd.token && pd.token.toLowerCase() !== expectedToken.toLowerCase()) {
+      return errorResponse(400, 'Permission token does not match your budget currency')
+    }
   }
 
   const away = typeof body.away === 'boolean' ? body.away : (existing?.away ?? false)
@@ -203,7 +228,11 @@ export async function PUT(req: NextRequest) {
   if (prevPerm && permission && permKey(prevPerm) !== permKey(permission)) {
     const list = (existing?.supersededPermissions ?? []).filter((x) => permKey(x) !== permKey(permission))
     if (!list.some((x) => permKey(x) === permKey(prevPerm))) list.push(prevPerm)
-    supersededPermissions = list.slice(-5)
+    // Cap the queue, but keep it generous: an evicted entry is dropped WITHOUT being
+    // revoked (the drain only sees queued entries), leaving a live never-expiring
+    // grant. 20 far exceeds any realistic number of budget changes before a run or
+    // the coordinator drains it, so eviction can't strand a grant in practice.
+    supersededPermissions = list.slice(-20)
   }
 
   const record: ScoutRecord = {
@@ -221,10 +250,6 @@ export async function PUT(req: NextRequest) {
 
 function isPositiveIntStr(v: unknown): v is string {
   return typeof v === 'string' && /^[0-9]+$/.test(v) && BigInt(v) > 0n
-}
-
-function isNonNegIntStr(v: unknown): v is string {
-  return typeof v === 'string' && /^[0-9]+$/.test(v)
 }
 
 /** Stable identity for a stored permission (token+allowance+period+start). A fresh

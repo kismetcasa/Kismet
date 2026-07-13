@@ -10,14 +10,15 @@
  *   - the executor re-resolves each price on-chain before spending.
  */
 
-import { getPermissionStatus, prepareRevokeCallData } from '@base-org/account/spend-permission'
+import { getPermissionStatus } from '@base-org/account/spend-permission'
 import type { Address, Hex } from 'viem'
 import { isKillSwitchEngaged } from './killSwitch'
 import { writeNotification } from '@/lib/notifications'
 import { planRun, type BudgetUsage } from './engine'
-import { getScout, saveScout, type ScoutRecord } from './store'
+import { getScout, saveScout } from './store'
 import { discoverCore } from './discoverCore'
-import { createSpendPermissionExecutor, type StoredSpendPermission } from './serverExecutor'
+import { createSpendPermissionExecutor } from './serverExecutor'
+import { drainSupersededPermissions } from './revoke'
 import type { ScoutSpender } from './spender'
 
 export interface ServerRunSummary {
@@ -76,34 +77,6 @@ async function recordCollect(
   } catch {
     /* best-effort: the mint is on-chain regardless; the record/feed is cosmetic */
   }
-}
-
-/**
- * Silently revoke any permissions a budget change superseded, using the spender
- * (revokeAsSpender — no user signature). Best-effort: a transient failure stays
- * queued for the next run; an already-revoked/expired one is just dropped (so the
- * queue can't get stuck). Clears the queue (or the revoked subset) from the record.
- */
-async function drainSupersededPermissions(record: ScoutRecord, spender: ScoutSpender): Promise<void> {
-  const pending = record.supersededPermissions
-  if (!pending || pending.length === 0) return
-  const remaining: StoredSpendPermission[] = []
-  for (const old of pending) {
-    try {
-      const status = await getPermissionStatus(old)
-      if (!status.isRevoked && !status.isExpired) {
-        const call = await prepareRevokeCallData(old)
-        await spender.sendCalls([{ to: call.to as Address, data: call.data as Hex, value: BigInt(call.value) }])
-      }
-      // revoked just now, or already revoked/expired → drop from the queue
-    } catch {
-      remaining.push(old) // transient failure (e.g. RPC) — retry next run
-    }
-  }
-  if (remaining.length === pending.length) return // nothing changed
-  if (remaining.length > 0) record.supersededPermissions = remaining
-  else delete record.supersededPermissions
-  await saveScout(record)
 }
 
 export async function runScoutServer(params: {

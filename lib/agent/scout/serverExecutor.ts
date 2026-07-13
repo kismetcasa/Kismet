@@ -23,7 +23,7 @@
 import { getPermissionStatus, prepareSpendCallData } from '@base-org/account/spend-permission'
 import type { Address, Hex } from 'viem'
 import { redis } from '@/lib/redis'
-import { readMintFeeWithBound, USDC_BASE } from '@/lib/zoraMint'
+import { readMintFeeWithBound, USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
@@ -42,10 +42,6 @@ const toSpenderCall = (c: SdkSpendCall): SpenderCall => ({
   data: c.data as Hex,
   value: BigInt(c.value),
 })
-
-/** ERC-7528 native-asset sentinel — the `token` an ETH-budget Spend Permission
- *  carries (mirrors grantBudget's NATIVE_ETH). USDC budgets carry USDC_BASE. */
-const NATIVE_ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 
 const ERC1155_BALANCE_ABI = [
   {
@@ -116,59 +112,60 @@ export async function collectViaSpendPermission(params: {
     )
   }
 
-  // Per (recipient, drop) lock: the drop coordinator and the on-open run loop can
-  // both target the SAME user + token at once; without this each reads balance 0
-  // and double-collects (no on-chain backstop for an open edition with no
-  // per-wallet cap). The loser skips and self-heals on the next run (balance-
-  // deduped). SET-NX, released in finally; the TTL is just the crash-safety net.
+  // Per (recipient, drop) lock. The drop coordinator and the on-open run loop can
+  // both target the SAME user + token at once; and — critically — the ONLY
+  // cross-run dedup is an on-chain balanceOf read, which is BLIND to a spender op
+  // that has been broadcast but not yet mined. So a submit still in flight (or a
+  // CDP wait that timed out "may still land") would let a concurrent/next run read
+  // balance 0 and double-spend an open edition (no per-wallet cap to backstop it).
+  // We therefore HOLD this lock for its full TTL and NEVER release it early: the
+  // TTL must comfortably exceed the worst-case submit+confirm time (spender-mutex
+  // wait + user-op wait), so the lock outlives the op's landing, by which point
+  // balanceOf dedups the retry. A completed OR failed collect keeps the lock only
+  // until expiry — harmless: the same (recipient, drop) is by then already
+  // collected (balance-deduped) or self-heals on a later run once the lock lapses.
+  // SET-NX; on lock-store failure we proceed unlocked (the on-chain allowance still
+  // bounds spend). Expiry is the sole release — there is deliberately no finally.
   const lockKey = `kismetart:scout-collect:${recipient.toLowerCase()}:${item.collection.toLowerCase()}:${item.tokenId}`
   let acquired: unknown
   let storeUp = true
   try {
-    acquired = await redis.set(lockKey, '1', { nx: true, ex: 120 })
+    acquired = await redis.set(lockKey, '1', { nx: true, ex: 300 })
   } catch {
     storeUp = false // lock store down → proceed; the on-chain allowance still bounds spend
   }
   if (storeUp && acquired !== 'OK') throw new Error('A collect for this drop is already in progress')
 
-  try {
-    // TOCTOU clamp: re-read the recipient's balance INSIDE the lock and trim the
-    // mint to the remaining edition headroom. The caller sized `quantity` from a
-    // balance read taken BEFORE this lock; a concurrent run could have minted since.
-    // A failed read (null) proceeds on the caller's quantity — the on-chain per-wallet
-    // cap + allowance still bound it.
-    if (editionTarget !== undefined) {
-      const owned = await readOwnedBalance(recipient, item.collection, item.tokenId)
-      if (owned !== null) {
-        const headroom = editionTarget - owned
-        if (headroom <= 0n) throw new Error('Recipient already at the edition target for this drop')
-        if (item.quantity > headroom) item = { ...item, quantity: headroom }
-      }
-    }
-
-    const plan = buildCollectBatchPlan({ account: spender.address, recipient, items: [item], usdcAllowance: 0n })
-    const cost = item.currency === 'eth' ? plan.totalNativeValue : plan.totalUsdcCost
-    if (cost < 0n) throw new Error('Invalid negative cost')
-
-    // A FREE drop (cost 0) needs no spend — just mint (the spender pays only gas).
-    // A PAID drop pulls EXACTLY the cost from the bounded permission first, within
-    // the live on-chain allowance (fail-closed). The run loop already bailed if the
-    // permission was inactive, so we only re-check the allowance headroom here.
-    let spendCalls: SpenderCall[] = []
-    if (cost > 0n) {
-      const status = await getPermissionStatus(permission)
-      if (!status.isActive) throw new Error('Spend permission is not active')
-      if (status.remainingSpend < cost) throw new Error('Spend permission allowance exhausted this period')
-      spendCalls = (await prepareSpendCallData(permission, cost)).map(toSpenderCall)
-    }
-    return await spender.sendCalls(composeScoutCollect(spendCalls, plan.calls))
-  } finally {
-    if (storeUp && acquired === 'OK') {
-      try {
-        await redis.del(lockKey)
-      } catch {}
+  // TOCTOU clamp: re-read the recipient's balance INSIDE the lock and trim the
+  // mint to the remaining edition headroom. The caller sized `quantity` from a
+  // balance read taken BEFORE this lock; a concurrent run could have minted since.
+  // A failed read (null) proceeds on the caller's quantity — the on-chain per-wallet
+  // cap + allowance still bound it.
+  if (editionTarget !== undefined) {
+    const owned = await readOwnedBalance(recipient, item.collection, item.tokenId)
+    if (owned !== null) {
+      const headroom = editionTarget - owned
+      if (headroom <= 0n) throw new Error('Recipient already at the edition target for this drop')
+      if (item.quantity > headroom) item = { ...item, quantity: headroom }
     }
   }
+
+  const plan = buildCollectBatchPlan({ account: spender.address, recipient, items: [item], usdcAllowance: 0n })
+  const cost = item.currency === 'eth' ? plan.totalNativeValue : plan.totalUsdcCost
+  if (cost < 0n) throw new Error('Invalid negative cost')
+
+  // A FREE drop (cost 0) needs no spend — just mint (the spender pays only gas).
+  // A PAID drop pulls EXACTLY the cost from the bounded permission first, within
+  // the live on-chain allowance (fail-closed). The run loop already bailed if the
+  // permission was inactive, so we only re-check the allowance headroom here.
+  let spendCalls: SpenderCall[] = []
+  if (cost > 0n) {
+    const status = await getPermissionStatus(permission)
+    if (!status.isActive) throw new Error('Spend permission is not active')
+    if (status.remainingSpend < cost) throw new Error('Spend permission allowance exhausted this period')
+    spendCalls = (await prepareSpendCallData(permission, cost)).map(toSpenderCall)
+  }
+  return await spender.sendCalls(composeScoutCollect(spendCalls, plan.calls))
 }
 
 /**
@@ -207,13 +204,16 @@ export function createSpendPermissionExecutor(cfg: {
       // cap must be re-checked here or it's bypassable on the on-open run path
       // (the drop-coordinator path already gates on the on-chain price). Mirrors
       // engine.ts evaluateCandidate: compare pricePerToken (excl. mint fee).
-      let maxItemPrice: bigint | null = null
+      let maxItemPrice: bigint
       try {
         maxItemPrice = BigInt(scout.policy.maxItemPrice)
       } catch {
-        maxItemPrice = null // unparseable cap → don't block (the engine already gated the hint)
+        // Unparseable cap → fail CLOSED (refuse) rather than spend uncapped. The
+        // PUT route validates maxItemPrice as a positive integer string, so this
+        // is a defense-in-depth backstop that should never fire in practice.
+        throw new Error('Invalid per-item price cap')
       }
-      if (maxItemPrice !== null && token.pricePerToken > maxItemPrice) {
+      if (token.pricePerToken > maxItemPrice) {
         throw new Error('Drop price exceeds your per-item price cap')
       }
 

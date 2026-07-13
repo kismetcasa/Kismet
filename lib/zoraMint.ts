@@ -34,6 +34,13 @@ export const ZORA_ERC20_MINTER: Address = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0C
 // Native USDC on Base (Circle).
 export const USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 
+// ERC-7528 native-asset sentinel — the `token` a native-ETH Spend Permission
+// carries. Single source of truth: the client grant (grantBudget), the server
+// spend choke-point (serverExecutor), and the PUT validator (scout route) all
+// compare against THIS constant, so a divergent copy can't slip a wrong-token
+// permission past one check but not another.
+export const NATIVE_ETH_SENTINEL: Address = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
+
 // Single recipient for ALL Kismet platform rewards: Zora's mint-referral split,
 // createReferral on collection deploy, etc. Hardcoded so we can't typo it
 // across files. Keep this in sync with createReferral set during deploy.

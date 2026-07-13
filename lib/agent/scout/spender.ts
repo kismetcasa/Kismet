@@ -9,8 +9,11 @@
  *     CDP paymaster, atomic `sendUserOperation` (spend+approve+mint in one user
  *     op, so funds never rest in the spender), policy controls. Requires CDP creds.
  *   - ownKeySpender — LEAN fallback: a plain EOA (viem). Sequential txs (an EOA
- *     can't batch), pays its own gas; a brief window where pulled funds rest in
- *     the EOA between spend and mint.
+ *     can't batch), pays its own gas; pulled funds rest in the EOA between spend
+ *     and mint — and if the mint REVERTS after spend() lands (e.g. sold out
+ *     mid-run) they are stranded there with NO automatic recovery, indefinitely,
+ *     not just briefly. This is why it's prod-gated (SCOUT_ALLOW_EOA_SPENDER) and
+ *     forced to one edition per run; the atomic CDP path closes the window.
  */
 
 import 'server-only'
@@ -46,7 +49,8 @@ export interface ScoutSpender {
  * An EOA can't batch, so calls run SEQUENTIALLY, each awaited to a receipt so
  * spend() lands before the mint pulls the funds. The mint is last, so its hash
  * is returned. Trade-off vs the CDP smart account: pays its own gas and leaves a
- * brief custody window between spend and mint.
+ * custody window between spend and mint — brief on success, but INDEFINITE if the
+ * mint reverts after spend() (funds stranded in the EOA, no auto-recovery).
  */
 export function ownKeySpender(privateKey: Hex): ScoutSpender {
   const account = privateKeyToAccount(privateKey)
