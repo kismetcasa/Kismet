@@ -1,7 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useAccount } from 'wagmi'
+import { useCallback, useEffect, useRef } from 'react'
+import { useAccount, useAccountEffect } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 
 // How long an armed action stays valid. Long enough to pick a wallet and
@@ -9,75 +9,96 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 // surprise wallet prompt minutes later.
 const TTL_MS = 90_000
 
-// Grace between "connect modal closed while still disconnected" and actually
-// cancelling. On a successful connect RainbowKit's modal-close and wagmi's
-// isConnected flip land in either order — cancelling on the first signal
-// would eat the resume when the close arrives first.
-const CANCEL_GRACE_MS = 1_000
+interface PendingIntent {
+  /** Identity of the hook instance that armed it — unmount clears only its own. */
+  owner: symbol
+  fn: () => void
+  expiresAt: number
+}
+
+// MODULE-LEVEL single slot, deliberately shared across every hook instance:
+// each feed card owns its own usePendingAction, but a user has exactly ONE
+// most-recent intent. Arming replaces any prior intent (last tap wins), and
+// the consumer nulls the slot BEFORE firing — so one connect resumes exactly
+// one action no matter how many cards armed while disconnected. (A per-
+// instance slot let N cards each fire a collect off a single connect —
+// stacked wallet prompts for purchases the user thought had failed.)
+let pendingIntent: PendingIntent | null = null
+
+/** Consume-and-fire, exactly once. Every instance's onConnect calls this;
+ *  the first one in nulls the slot, the rest see null and no-op. */
+function firePendingIntent(): void {
+  const p = pendingIntent
+  pendingIntent = null
+  if (p && Date.now() < p.expiresAt) p.fn()
+}
 
 /**
  * Resume a user action after a connect round-trip. The web collect tap used
  * to be a dead end: useEnsureConnected opens the RainbowKit picker and
  * returns null, so the handler bailed and the user had to find and tap the
  * button again after connecting. RainbowKit's openConnectModal has no
- * promise, so resumption watches wagmi state instead:
+ * promise, so resumption rides wagmi's own connect event:
  *
- *   arm(fn) → user connects  → fn() fires once (the action re-runs; its own
- *                              ensureConnected now resolves the address)
- *          → user closes the → intent is cancelled silently — no nagging
- *            picker instead
+ *   arm(fn) → wallet connects   → fn() fires once (the action re-runs; its
+ *                                 ensureConnected now resolves the address)
+ *          → picker closed      → intent cancelled immediately — safe with
+ *            still disconnected   no grace window, because on a SUCCESSFUL
+ *                                 connect wagmi's onConnect callback fires on
+ *                                 the connector event itself (the very thing
+ *                                 that makes RainbowKit close the modal), so
+ *                                 the resume has already consumed the intent
+ *                                 by the time the close is observed.
  *
- * Guard rails: single-shot (cleared before firing), TTL-bounded, cleared on
- * unmount, never persisted. Safe to re-run the full handler: the prepare
- * paths re-read sale state on-chain, and the collect hook's re-entrance
- * latch prevents double submission.
+ * Guard rails: one module-wide intent (last arm wins, consumed-before-fire =
+ * exactly once across all instances), TTL-bounded, cleared on unmount of the
+ * arming instance, never persisted. Re-running the handler is safe: the
+ * prepare paths re-read sale state on-chain and the collect hook's
+ * re-entrance latch prevents double submission.
  */
 export function usePendingAction(): (fn: () => void) => void {
   const { isConnected } = useAccount()
   const { connectModalOpen } = useConnectModal()
-  const pendingRef = useRef<{ fn: () => void; expiresAt: number } | null>(null)
+  const owner = useRef<symbol | null>(null)
+  if (owner.current === null) owner.current = Symbol('pending-action-owner')
   const sawModalOpenRef = useRef(false)
-  // Bump to re-run the effect immediately after arming (refs don't re-render).
-  const [armNonce, setArmNonce] = useState(0)
 
   const arm = useCallback((fn: () => void) => {
-    pendingRef.current = { fn, expiresAt: Date.now() + TTL_MS }
+    pendingIntent = { owner: owner.current!, fn, expiresAt: Date.now() + TTL_MS }
     sawModalOpenRef.current = false
-    setArmNonce((n) => n + 1)
   }, [])
 
+  // Fires on the wagmi connector event (fresh connects AND completed
+  // auto-reconnects — the miniapp mid-reconnect arm must resume on either).
+  useAccountEffect({
+    onConnect() {
+      firePendingIntent()
+    },
+  })
+
+  // Decisive cancel: the picker was open and is now closed while still
+  // disconnected → the user changed their mind. No timer, no grace window
+  // (see the doc comment for why the successful-connect ordering makes this
+  // race-free) — which also closes the resurrection hole where a cleared
+  // grace timer let an abandoned intent fire on a later unrelated connect.
   useEffect(() => {
-    const pending = pendingRef.current
-    if (!pending) return
-    if (Date.now() > pending.expiresAt) {
-      pendingRef.current = null
-      return
-    }
-    if (isConnected) {
-      // Clear BEFORE firing — single-shot even if fn re-arms.
-      pendingRef.current = null
-      pending.fn()
-      return
-    }
     if (connectModalOpen) {
       sawModalOpenRef.current = true
       return
     }
-    if (sawModalOpenRef.current) {
-      // Modal closed while still disconnected: either the user changed their
-      // mind, or the connect succeeded and isConnected hasn't flipped yet.
-      // Cancel after a grace window; a connect arriving inside it re-runs
-      // this effect, clears the timer, and fires the action above.
-      const timer = setTimeout(() => {
-        pendingRef.current = null
-      }, CANCEL_GRACE_MS)
-      return () => clearTimeout(timer)
+    if (sawModalOpenRef.current && !isConnected) {
+      sawModalOpenRef.current = false
+      pendingIntent = null
     }
-  }, [isConnected, connectModalOpen, armNonce])
+  }, [connectModalOpen, isConnected])
 
-  // Never let an intent outlive the surface that armed it.
-  useEffect(() => () => {
-    pendingRef.current = null
+  // Never let an intent outlive the surface that armed it — but only clear
+  // our own (another card may have legitimately re-armed since).
+  useEffect(() => {
+    const mine = owner.current
+    return () => {
+      if (pendingIntent?.owner === mine) pendingIntent = null
+    }
   }, [])
 
   return arm
