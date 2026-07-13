@@ -589,7 +589,10 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           ),
         ])
         if (cancelled) return
-        if (capabilities) {
+        // Array.isArray, not truthiness: the value crosses the host bridge,
+        // and a malformed (non-array) answer must read as unknown rather
+        // than throw at .includes and knock out the rest of bootstrap.
+        if (Array.isArray(capabilities)) {
           canAddMiniAppRef.current = capabilities.includes('actions.addMiniApp')
         }
 
