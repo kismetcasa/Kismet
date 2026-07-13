@@ -4,18 +4,27 @@ import { LRUCache } from './lruCache'
 // Shape of /api/profile/[address] responses (subset we actually read).
 // `displayName` is server-computed: collapses username → farcaster.username
 // → ensName so consumers don't have to repeat that precedence chain.
+// `farcaster.username` is kept raw (uncollapsed) because cast composition
+// needs the real FC handle for an @mention — the collapsed displayName may
+// be a Kismet username or ENS name that mentions nobody (or the wrong one).
 type ProfileResponse = {
   profile?: {
     username?: string
     avatarUrl?: string
     ensName?: string
     displayName?: string | null
+    farcaster?: { username?: string | null }
   }
 }
 
 interface ProfileEntry {
   name: string
   avatarUrl: string | undefined
+  // Raw FC username when the address is FC-verified; null otherwise. Entries
+  // seeded by the batch route (which doesn't return the farcaster block) also
+  // read null — consumers degrade to the display name, which is the documented
+  // fallback anyway.
+  fcUsername: string | null
   ts: number
   resolved: boolean
 }
@@ -28,7 +37,7 @@ const TTL_FALLBACK = 30 * 1000
 
 export async function fetchCreatorProfile(
   address: string,
-): Promise<{ name: string; avatarUrl: string | undefined }> {
+): Promise<{ name: string; avatarUrl: string | undefined; fcUsername: string | null }> {
   // Lowercase the cache key so callers passing mixed-case addresses
   // (e.g. from on-chain reads) don't fan out into duplicate cache
   // entries that miss each other and cause repeated /api/profile calls.
@@ -36,7 +45,9 @@ export async function fetchCreatorProfile(
   const cached = cache.get(key)
   if (cached) {
     const ttl = cached.resolved ? TTL_RESOLVED : TTL_FALLBACK
-    if (Date.now() - cached.ts < ttl) return { name: cached.name, avatarUrl: cached.avatarUrl }
+    if (Date.now() - cached.ts < ttl) {
+      return { name: cached.name, avatarUrl: cached.avatarUrl, fcUsername: cached.fcUsername }
+    }
   }
   try {
     const res = await fetch(`/api/profile/${key}`)
@@ -47,12 +58,13 @@ export async function fetchCreatorProfile(
     const name: string =
       d.profile?.displayName || d.profile?.username || d.profile?.ensName || ''
     const avatarUrl: string | undefined = d.profile?.avatarUrl
+    const fcUsername = d.profile?.farcaster?.username || null
     const resolved = !!name
-    const entry = { name: name || shortAddress(address), avatarUrl, ts: Date.now(), resolved }
+    const entry = { name: name || shortAddress(address), avatarUrl, fcUsername, ts: Date.now(), resolved }
     cache.set(key, entry)
-    return { name: entry.name, avatarUrl }
+    return { name: entry.name, avatarUrl, fcUsername }
   } catch {
-    return { name: shortAddress(address), avatarUrl: undefined }
+    return { name: shortAddress(address), avatarUrl: undefined, fcUsername: null }
   }
 }
 
@@ -94,7 +106,9 @@ export async function fetchCreatorProfilesBatch(
         const name = profiles[key]?.name || ''
         // Mirror fetchCreatorProfile: shortAddress is the displayed fallback,
         // resolved=false so an unresolved entry re-checks on the short TTL.
-        const entry = { name: name || shortAddress(key), avatarUrl: profiles[key]?.avatarUrl, ts: Date.now(), resolved: !!name }
+        // fcUsername: null — the batch route doesn't return the farcaster
+        // block (see ProfileEntry note).
+        const entry = { name: name || shortAddress(key), avatarUrl: profiles[key]?.avatarUrl, fcUsername: null, ts: Date.now(), resolved: !!name }
         cache.set(key, entry)
         out[key] = { name: entry.name, avatarUrl: entry.avatarUrl }
       }
