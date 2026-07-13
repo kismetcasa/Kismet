@@ -245,6 +245,13 @@ export async function POST(req: NextRequest) {
   if (isPassAirdrop) {
     const quota = await consumeQuota(sender, finalRecipients.length)
     if (!quota.ok) {
+      // Release the idempotency lock claimed above: this airdrop was NOT
+      // recorded/credited (quota rejected), so a later retry — once the
+      // sender's quota window rolls over — must be free to proceed and credit
+      // the recipients, rather than being permanently short-circuited as a dup
+      // (the on-chain Pass transfer already happened; the recipients need the
+      // validity credit or they can't mint).
+      await redis.del(idemKey).catch(() => {})
       return NextResponse.json(
         {
           error:

@@ -29,6 +29,7 @@ import { evaluateCandidate, type Candidate } from './engine'
 import { allocateRoundRobin, fairOrder, OPEN_EDITION_SUPPLY, type DropWatcher } from './allocate'
 import { collectViaSpendPermission } from './serverExecutor'
 import { getScoutSpender, type ScoutSpender } from './spender'
+import { isKillSwitchEngaged } from './killSwitch'
 
 const lc = (s: string) => s.toLowerCase()
 
@@ -80,12 +81,8 @@ export async function runDropCoordination(
   const tokenId = BigInt(drop.tokenId)
   const creator = lc(drop.creator)
 
-  // Kill switch — halt ALL autonomous spending instantly by setting the flag.
-  try {
-    if (await redis.get('kismetart:scout-killswitch')) return empty(0, 'kill switch engaged')
-  } catch {
-    /* flag store unreachable — proceed (the per-collect guards still bound spend) */
-  }
+  // Emergency stop — fail CLOSED (lib/agent/scout/killSwitch).
+  if (await isKillSwitchEngaged()) return empty(0, 'kill switch engaged')
 
   // 0. Coordinate each drop ONCE — a double markCreatedMint trigger must not
   //    double-collect. A SET-NX lock is the one-shot guard; any watcher this run

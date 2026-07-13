@@ -15,6 +15,14 @@ export async function POST() {
     await redis.del(adminSessionKey(token)).catch(() => {})
   }
   const res = NextResponse.json({ ok: true })
-  res.cookies.delete(ADMIN_SESSION_COOKIE)
+  // Clear with explicit attributes: a `__Host-`-prefixed cookie is only
+  // overwritten by a Set-Cookie that itself satisfies Secure + Path=/.
+  res.cookies.set(ADMIN_SESSION_COOKIE, '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 0,
+  })
   return res
 }

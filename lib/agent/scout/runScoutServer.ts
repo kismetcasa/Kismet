@@ -12,7 +12,7 @@
 
 import { getPermissionStatus, prepareRevokeCallData } from '@base-org/account/spend-permission'
 import type { Address, Hex } from 'viem'
-import { redis } from '@/lib/redis'
+import { isKillSwitchEngaged } from './killSwitch'
 import { writeNotification } from '@/lib/notifications'
 import { planRun, type BudgetUsage } from './engine'
 import { getScout, saveScout, type ScoutRecord } from './store'
@@ -115,12 +115,9 @@ export async function runScoutServer(params: {
   const { owner, baseUrl, spender } = params
   const now = params.now ?? Math.floor(Date.now() / 1000)
 
-  // Kill switch — halt all autonomous spending instantly (set the Redis flag).
-  try {
-    if (await redis.get('kismetart:scout-killswitch')) return { collected: 0, skipped: 0, reason: 'kill switch engaged' }
-  } catch {
-    /* flag store unreachable — proceed; per-collect guards still bound spend */
-  }
+  // Emergency stop — fail CLOSED (lib/agent/scout/killSwitch): a Redis blip
+  // during an incident must not resume autonomous spending.
+  if (await isKillSwitchEngaged()) return { collected: 0, skipped: 0, reason: 'kill switch engaged' }
 
   const record = await getScout(owner)
   if (!record?.scout || !record.permission) return { collected: 0, skipped: 0, reason: 'no agent' }

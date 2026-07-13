@@ -178,6 +178,23 @@ export function createSpendPermissionExecutor(cfg: {
       const [token] = await fetchEligibleTokens(client, collection, [tokenId], candidate.currency, cfg.recipient, editions)
       if (!token) throw new Error('Sold out, not mintable, or already at your edition cap')
 
+      // Re-enforce the user's per-item price cap against the ON-CHAIN price. The
+      // engine's earlier gate (evaluateCandidate) ran against the cached
+      // discovery price, which a watched artist can raise AFTER it's indexed;
+      // this executor then spends the freshly-resolved on-chain price, so the
+      // cap must be re-checked here or it's bypassable on the on-open run path
+      // (the drop-coordinator path already gates on the on-chain price). Mirrors
+      // engine.ts evaluateCandidate: compare pricePerToken (excl. mint fee).
+      let maxItemPrice: bigint | null = null
+      try {
+        maxItemPrice = BigInt(scout.policy.maxItemPrice)
+      } catch {
+        maxItemPrice = null // unparseable cap → don't block (the engine already gated the hint)
+      }
+      if (maxItemPrice !== null && token.pricePerToken > maxItemPrice) {
+        throw new Error('Drop price exceeds your per-item price cap')
+      }
+
       // Same viem PublicClient variance cast the prepare-collect-batch route uses.
       const mintFee =
         candidate.currency === 'eth'

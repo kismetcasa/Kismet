@@ -7,7 +7,6 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
-import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { transcodeGifToMp4Node } from '@/lib/media/transcodeGifNode'
 
 export const runtime = 'nodejs'
@@ -104,17 +103,15 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'Invalid JSON')
   }
   const gifUri = body.gifUri
-  // Restrict to the content URIs we recognize — closes data:/file:/etc.
-  if (!gifUri || (!gifUri.startsWith('ar://') && !gifUri.startsWith('ipfs://') && !gifUri.startsWith('https://'))) {
-    return errorResponse(400, 'gifUri must be ar://, ipfs://, or https://')
-  }
-  // SSRF: ar:// and ipfs:// resolve to the fixed gateway pool (gatewayUrls),
-  // but a raw https:// is fetched verbatim — gate it through the same
-  // public-only guard every other server-fetch sink uses (blocks localhost,
-  // IP literals, cloud-metadata). The app only ever passes ar:// here, so
-  // this closes the hole with no functional change to real usage.
-  if (gifUri.startsWith('https://') && !isSafePublicHttpsUrl(gifUri)) {
-    return errorResponse(400, 'gifUri must be a public https URL')
+  // ar:// and ipfs:// resolve to the FIXED gateway pool (gatewayUrls), so the
+  // fetch destination is always a trusted host and following its redirects is
+  // safe. A raw https:// input was an SSRF vector — an authed caller could pass
+  // a public hostname that 302s to an internal host, which the redirect-following
+  // fetch below would follow. The only caller (lib/media/serverTranscodeGif)
+  // sends ar:// exclusively, so we drop https:// entirely instead of proxying
+  // arbitrary outbound. Also closes data:/file:/etc.
+  if (!gifUri || (!gifUri.startsWith('ar://') && !gifUri.startsWith('ipfs://'))) {
+    return errorResponse(400, 'gifUri must be ar:// or ipfs://')
   }
 
   // Bound per-identity transcode COUNT before any expensive work. fetchGif

@@ -515,11 +515,33 @@ export async function setMomentMeta(
   tokenId: string,
   meta: MomentMeta,
 ): Promise<void> {
-  await redis.set(keyMomentMeta(contractAddress, tokenId), JSON.stringify({
-    creator: meta.creator.toLowerCase(),
-    name: meta.name,
-    ...(typeof meta.durationSec === 'number' && meta.durationSec > 0
-      ? { durationSec: Math.round(meta.durationSec) }
-      : {}),
-  }))
+  const key = keyMomentMeta(contractAddress, tokenId)
+  // MERGE, don't clobber. `creator` is written once at mint and is the
+  // authorization + attribution key: /api/moment/hide gates on it, and
+  // statsMath.resolveMomentCreator treats it as highest precedence for
+  // mint-count + earnings. A later metadata edit (/api/moment/update-uri,
+  // authorized on METADATA|ADMIN — a broader set than the minter) must refresh
+  // the display name WITHOUT reassigning attribution, so preserve an
+  // already-established creator and only take the incoming one on first write.
+  let existing: MomentMeta | null = null
+  try {
+    const raw = await redis.get<string | MomentMeta>(key)
+    existing = raw ? (typeof raw === 'string' ? (JSON.parse(raw) as MomentMeta) : raw) : null
+  } catch {
+    // Unreadable/corrupt prior value → first-write semantics.
+  }
+  const creator = (existing?.creator ?? meta.creator).toLowerCase()
+  const name = meta.name ?? existing?.name
+  const durationSec =
+    typeof meta.durationSec === 'number' && meta.durationSec > 0
+      ? Math.round(meta.durationSec)
+      : existing?.durationSec
+  await redis.set(
+    key,
+    JSON.stringify({
+      creator,
+      name,
+      ...(typeof durationSec === 'number' && durationSec > 0 ? { durationSec } : {}),
+    }),
+  )
 }
