@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Moment } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
-import { FeedSkeleton } from './FeedSkeleton'
+import { FeedSkeleton, FEED_GRID_CLASS } from './FeedSkeleton'
 import { MaybeLazy } from './LazyMount'
 import { isPatronCollection } from '@/lib/patronCollection'
 
@@ -16,7 +16,9 @@ import { isPatronCollection } from '@/lib/patronCollection'
 const STRIDE = 4
 
 // The standard moments grid: grows 1 → 2 → 3 → 4 columns up to lg+.
-const FULL_GRID = 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4'
+// Imported from FeedSkeleton so the loading placeholder and the live grid
+// share one class string (differing column counts = layout jump on load).
+const FULL_GRID = FEED_GRID_CLASS
 
 // When the whole feed is a single short row of standalone mints (a small,
 // curated featured tab — e.g. 3 mints), stretch the cards to fill the width
@@ -45,9 +47,9 @@ interface FeaturedFeedProps {
    *  and don't multiply mount cost the way MomentCard cards do. */
   isMobile?: boolean
   /** SSR-fetched payload (app/page.tsx) so the landing tab paints content in
-   *  the server HTML instead of "loading…". The fetch effect below still runs
-   *  and overwrites (stale-while-revalidate) — which also keeps the
-   *  featuredRevision remount fresh when an admin edits curation. */
+   *  the server HTML instead of "loading…". A seeded instance fires NO
+   *  fetches (see `seeded` below); admin curation freshness comes from the
+   *  featuredRevision remount, which mounts unseeded. */
   initialFeatured?: InitialFeatured | null
 }
 
@@ -77,7 +79,17 @@ export function FeaturedFeed({ emptyMessage, isMobile = false, initialFeatured =
   // corrects if it turns out blank. Resets on each remount (featuredRevision).
   const [heroHasContent, setHeroHasContent] = useState(true)
 
+  // True for the lifetime of an instance that mounted with SSR data. Such an
+  // instance fires NO fetches — the seed is ≤60s old (the server's revalidate
+  // window) and skipping keeps the pre-hydration mount from racing a saved
+  // non-default tab's first-page fetch on the Mini App's constrained pool.
+  // Freshness after admin curation edits is preserved because DiscoverPage
+  // remounts this component keyed by featuredRevision and passes initial data
+  // ONLY for revision 0 — a bumped revision mounts unseeded and fetches.
+  const seeded = useRef(initialFeatured !== null).current
+
   useEffect(() => {
+    if (seeded) return
     let cancelled = false
     fetch('/api/timeline?featured=1')
       .then((r) => (r.ok ? r.json() : { moments: [] }))
@@ -94,7 +106,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false, initialFeatured =
         setCollections(Array.isArray(fc?.collections) ? fc.collections : [])
       })
     return () => { cancelled = true }
-  }, [])
+  }, [seeded])
 
   if (moments === null) {
     return <FeedSkeleton count={8} />

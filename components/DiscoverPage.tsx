@@ -575,8 +575,15 @@ export function DiscoverPage({
       <div className="mt-2">
         {/* Pre-hydration: a pulse skeleton instead of bare "loading…" text.
             With SSR featured data the real featured branch below renders
-            through the gate instead (zero fetches — initial data only), so
-            the landing HTML carries content, not a placeholder. */}
+            through the gate instead — genuinely zero fetches, because a
+            seeded FeaturedFeed skips its fetch effect entirely (see
+            FeaturedFeed's `seeded`), so it cannot race a saved non-default
+            tab's first-page load. Known, accepted trade-off: a user whose
+            SAVED tab differs sees one pre-hydration frame of featured
+            content before the effect flips to their tab — main showed a
+            bare "loading…" frame there instead; comparable disruption,
+            strictly more useful pixels, and only for the customized-tab
+            minority when SSR data is present. */}
         {!hydrated && !initialFeatured && <FeedSkeleton count={8} />}
         {(hydrated || !!initialFeatured) && visitedTabs.has('featured') && (
           <div hidden={active !== 'featured'}>
@@ -604,7 +611,11 @@ export function DiscoverPage({
               key={`featured-${featuredRevision}`}
               emptyMessage={isAdmin ? 'no featured mints or collections yet — click ★ on any mint or collection to feature it' : 'no featured mints or collections yet'}
               isMobile={isMobile}
-              initialFeatured={initialFeatured}
+              // Seed ONLY the initial (revision 0) mount. A curation edit
+              // bumps the revision and remounts; passing the (now-stale) SSR
+              // payload there would pin the admin's fresh edit behind old
+              // data, since a seeded instance deliberately never fetches.
+              initialFeatured={featuredRevision === 0 ? initialFeatured : null}
             />
           </div>
         )}
