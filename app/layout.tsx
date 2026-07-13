@@ -21,6 +21,13 @@ export const metadata: Metadata = {
     title: 'Kismet',
     description: 'Artists and collectors converge on Kismet',
   },
+  // Site-wide default card TYPE for X. Without it, pages that don't declare
+  // their own twitter block (homepage, learn, mint, market, agent) fall back
+  // to X's small summary card even though twitter:image is auto-wired from
+  // the opengraph-image file convention. Detail pages (moment / collection /
+  // profile) define their own twitter objects, which override this per Next's
+  // per-key metadata merge.
+  twitter: { card: 'summary_large_image' },
   // Search-engine ownership verification. Populate GOOGLE_SITE_VERIFICATION
   // (Google Search Console) and/or BING_SITE_VERIFICATION (Bing Webmaster
   // Tools) with the token each console gives you; Next renders the matching

@@ -16,7 +16,9 @@
 //   9. Collection covers become image-sitemap entries via resolveImage.
 //
 // Run: node --experimental-strip-types scripts/verify-sitemap.ts
+import { readFileSync } from 'node:fs'
 import { buildSitemapEntries, type SitemapCollectionMeta } from '../lib/sitemapEntries.ts'
+import { GUIDES } from '../app/learn/guides.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -160,6 +162,14 @@ const capResult = buildSitemapEntries({
 const cappedMoments = capResult.filter((e) => e.url.includes('/moment/')).length
 check('moment cap bounds output', cappedMoments === 3, `got ${cappedMoments}`)
 check('onCap fired at the limit', capped === 3)
+
+// 10. llms.txt ↔ guides.ts sync — guides auto-flow into the hub and sitemap,
+// but llms.txt is a hand-edited static file; without this pin a new guide
+// silently misses the AI-crawler map.
+const llms = readFileSync(new URL('../public/llms.txt', import.meta.url), 'utf8')
+for (const g of GUIDES) {
+  check(`llms.txt lists guide "${g.slug}"`, llms.includes(`/learn/${g.slug}`))
+}
 
 if (failures > 0) {
   console.error(`\n${failures} sitemap check(s) FAILED`)

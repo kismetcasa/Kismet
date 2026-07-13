@@ -174,6 +174,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     openGraph: {
       title: name,
       description,
+      // og:url — share-aggregation key for FB/X scrapers; matches the
+      // canonical (profile-page precedent).
+      url: `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}`,
     },
     twitter: {
       // summary_large_image + the opengraph-image file convention →

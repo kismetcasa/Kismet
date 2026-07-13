@@ -158,6 +158,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     openGraph: {
       title: name,
       description,
+      // og:url — matches the canonical (profile-page precedent).
+      url: `${SITE_URL}/collection/${address.toLowerCase()}`,
     },
     twitter: {
       // summary_large_image + the opengraph-image file convention →

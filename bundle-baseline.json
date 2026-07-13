@@ -32,6 +32,7 @@
     "/sitemap.xml/route": 356093,
     "/learn/opengraph-image/route": 356108,
     "/learn/[slug]/opengraph-image/route": 356108,
-    "/admin/layout": 356108
+    "/admin/layout": 356108,
+    "/opengraph-image/route": 356113
   }
 }
