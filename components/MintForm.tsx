@@ -39,9 +39,8 @@ import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
+import { KISMET_CHANNEL_KEY } from '@/lib/collectShare'
 import { SITE_URL } from '@/lib/siteUrl'
-
-const KISMET_CHANNEL_KEY = 'kismet'
 
 type PriceCurrency = 'eth' | 'usdc'
 

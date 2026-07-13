@@ -285,6 +285,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       tokenId: moment.token_id,
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
+      // Post-collect share prompt (Mini App only — the hook gates). creatorName
+      // is the display fallback; the share flow re-resolves the creator's raw
+      // FC username for a real @mention (see lib/collectShare).
+      share: {
+        momentName: meta.name ?? null,
+        creatorAddress: moment.creator.address,
+        creatorName,
+      },
     })
     if (result) {
       setCollected(true)
