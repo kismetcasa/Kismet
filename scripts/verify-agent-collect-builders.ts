@@ -1,10 +1,12 @@
-// Real-builder oracle for the agent collect path. UNLIKE verify-agent-collect.ts
-// / verify-agent-collect-batch.ts — which independently re-derive the expected
-// calldata by hand — this exercises the ACTUAL production functions
-// buildCollectPlan (lib/agent/collect.ts) and buildCollectBatchPlan
-// (lib/agent/collectBatch.ts), so a regression INSIDE those builders (wrong
-// approve spender, dropped allowance guard, per-item approves, wrong amount,
-// mis-set value, recipient/sender mixups) fails CI instead of slipping through.
+// Real-builder oracle for the agent collect AND buy paths. UNLIKE
+// verify-agent-collect.ts / verify-agent-buy.ts / verify-agent-collect-batch.ts
+// — which independently re-derive the expected calldata by hand — this
+// exercises the ACTUAL production functions buildCollectPlan
+// (lib/agent/collect.ts), buildCollectBatchPlan (lib/agent/collectBatch.ts),
+// and buildBuyPlan (lib/agent/buy.ts), so a regression INSIDE those builders
+// (wrong approve spender, dropped allowance guard, per-item approves, wrong
+// amount, mis-set envelope value, recipient/sender mixups) fails CI instead
+// of slipping through.
 //
 // The two oracles are complementary: the hand-derivation pins the intended
 // SHAPE against production treasury constants; this pins the builders' actual
@@ -39,6 +41,10 @@ import {
 } from './_agent-verify-helpers.ts'
 import { buildCollectPlan } from '@/lib/agent/collect'
 import { buildCollectBatchPlan } from '@/lib/agent/collectBatch'
+import { buildBuyPlan } from '@/lib/agent/buy'
+import { SEAPORT_ADDRESS, buildSellOrder, serializeOrder } from '@/lib/seaport'
+import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
+import type { Listing } from '@/lib/listings'
 
 const ACCOUNT = getAddress('0x71Dc000000000000000000000000000000007244')
 const RECIPIENT = getAddress('0x71dc000000000000000000000000000000009999')
@@ -194,4 +200,76 @@ console.log('\nbuildCollectBatchPlan — Scout: sender pays, recipient receives'
   check('mintTo != the paying account (sender)', !eq(RECIPIENT, ACCOUNT))
 }
 
-report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient all verified')
+// ── Buy: the real buildBuyPlan — USDC fulfill carries NO native value ────────
+// This is the envelope-level invariant the hand-derivation oracle
+// (verify-agent-buy.ts) structurally cannot assert: `value` lives on the call
+// envelope, not in calldata. A regression that copies the ETH path's
+// value-carrying call onto the USDC path would charge the buyer ETH on top of
+// their USDC approval.
+console.log('\nbuildBuyPlan — USDC listing, allowance short')
+{
+  const price = 5_000_000n // 5 USDC
+  const order = buildSellOrder({
+    offerer: ACCOUNT,
+    collectionAddress: COLLECTION,
+    tokenId: '7',
+    sellerProceeds: price - 200_000n - 50_000n,
+    royaltyReceiver: RECIPIENT,
+    royaltyAmount: 200_000n,
+    platformFee: 50_000n,
+    platformFeeRecipient: PLATFORM_FEE_RECIPIENT,
+    counter: 0n,
+    currency: 'usdc',
+  })
+  const listing = {
+    price: price.toString(),
+    currency: 'usdc',
+    orderComponents: serializeOrder(order),
+    signature: `0x${'ab'.repeat(65)}`,
+  } as Listing
+
+  const plan = buildBuyPlan({ listing, seaportUsdcAllowance: 0n })
+  check('two calls (approve + fulfill)', plan.calls.length === 2, plan.calls.length)
+  check('approvalIncluded flag set', plan.approvalIncluded === true)
+  const [approve, fulfill] = plan.calls
+  const da = decodeApprove(approve.data)
+  check('approve targets USDC, spender is Seaport, exact price', eq(approve.to, USDC), da.args[1] === price && eq(da.args[0], SEAPORT_ADDRESS))
+  check('approve carries no native value', approve.value === '0x0', approve.value)
+  check('fulfill targets Seaport', eq(fulfill.to, SEAPORT_ADDRESS), fulfill.to)
+  check('USDC fulfill carries NO native value', fulfill.value === '0x0', fulfill.value)
+  check('totalValue is 0 for USDC', plan.totalValue === 0n, plan.totalValue)
+  check('both calls carry the builder suffix', hasSuffix(approve.data) && hasSuffix(fulfill.data))
+
+  const covered = buildBuyPlan({ listing, seaportUsdcAllowance: price })
+  check('allowance covers price → fulfill only, no approve', covered.calls.length === 1 && covered.approvalIncluded === false)
+}
+
+console.log('\nbuildBuyPlan — ETH listing carries value == price')
+{
+  const price = 50_000_000_000_000_000n // 0.05 ETH
+  const order = buildSellOrder({
+    offerer: ACCOUNT,
+    collectionAddress: COLLECTION,
+    tokenId: '7',
+    sellerProceeds: price - 2_000_000_000_000_000n - 500_000_000_000_000n,
+    royaltyReceiver: RECIPIENT,
+    royaltyAmount: 2_000_000_000_000_000n,
+    platformFee: 500_000_000_000_000n,
+    platformFeeRecipient: PLATFORM_FEE_RECIPIENT,
+    counter: 0n,
+    currency: 'eth',
+  })
+  const listing = {
+    price: price.toString(),
+    currency: 'eth',
+    orderComponents: serializeOrder(order),
+    signature: `0x${'ab'.repeat(65)}`,
+  } as Listing
+
+  const plan = buildBuyPlan({ listing, seaportUsdcAllowance: 0n })
+  check('single fulfill call, no approve', plan.calls.length === 1 && plan.approvalIncluded === false)
+  check('ETH fulfill value == price', hexToBigInt(plan.calls[0].value as Hex) === price)
+  check('totalValue == price', plan.totalValue === price)
+}
+
+report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient, buy envelope all verified')
