@@ -20,7 +20,7 @@ change outside this repo — see `OPS_RUNBOOK.md`).
 | # | Finding | Status | Evidence / note |
 |---|---------|--------|-----------------|
 | §2 | Feed fan-out-on-read | 🔶 | Bounded to `FANOUT_CONCURRENCY=10` + `MERGE_BUDGET` width cap (`timeline/route.ts:44,276,283`); **materialized feed still not built** |
-| §3 | Fan-out-on-write notifications | ⬜ | Still inline `Promise.all` over followers (`notifications.ts:232`); no queue |
+| §3 | Fan-out-on-write notifications | 🔶 | Concurrency bounded to batches of 50 + `large fan-out` warn ≥1k followers (`fanoutToFollowers`, 2026-07-13); **queue (B2) still open** — warn firing is its trigger |
 | §4a | `created-mints` full `SMEMBERS` | ✅ | Bounded `SMISMEMBER` over the request's candidates (`getCreatedMintsMembership`, `lib/kv.ts`; 2026-07-13) — full-set read removed |
 | §4d | 10 MB writing-moment bodies in Redis | ⬜ | `mint-proxy.ts:27` |
 | §5 | Readiness hard-gated on Base RPC | ✅ | RPC is a `degraded` signal, non-gating; only sustained Redis failure gates (`readiness/route.ts:110,121-126`) |
@@ -49,7 +49,7 @@ source of truth for what remains.
 |---|-----------|-------|---------------|--------|
 | 1 | **Feed is fan-out-on-read**: every feed load fetches `/timeline?collection=X` from inprocess for tracked collections, then merges/sorts in memory. Personalized feeds (`profile/following/collected/airdroppable`) are `no-store` → zero cache. | `app/api/timeline/route.ts` | Low hundreds of collections, or a spike on profile pages | 🔶 concurrency + merge budget bounded; arch fix open |
 | 2 | **`created-mints` SMEMBERS pulls one member per mint *ever*** into a JS Set on every Mints-feed cold read. | `lib/kv.ts`, `timeline/route.ts` | ~~hard-fails at 10 MB~~ | ✅ replaced with bounded `SMISMEMBER` membership (2026-07-13) |
-| 3 | **Fan-out-on-write notifications**: one mint by a creator with N followers = N Redis writes + N Farcaster pushes. | `lib/notifications.ts:232`, `lib/follows.ts:38` | First creator with 10k+ followers | ⬜ |
+| 3 | **Fan-out-on-write notifications**: one mint by a creator with N followers = N Redis writes + N Farcaster pushes. | `lib/notifications.ts`, `lib/follows.ts:38` | First creator with 10k+ followers | 🔶 concurrency bounded + warn ≥1k (2026-07-13); queue open |
 | 4 | **inprocess.world is a hard single dependency** for *all* content + the gas-sponsored mint relay (shared API key). | `lib/inprocess.ts:4`, `lib/mint-proxy.ts` | Their rate limits / any outage | 🔶 timeouts added; breaker open |
 | 5 | **Single Upstash Redis is the only datastore** for all platform state; per-command billing + REST round-trips scale with traffic. | `lib/redis.ts` | Command/bandwidth quota under load | ⬜ |
 
@@ -105,10 +105,12 @@ pagination) — or an inprocess-side global cursor timeline — removes both the
 O(collections) fan-out and the full-catalog in-memory sort, and makes personalized
 feeds cacheable.
 
-## 3. Fan-out-on-write — second cliff (notifications / follower graph)  ⬜
+## 3. Fan-out-on-write — second cliff (notifications / follower graph)  🔶
 
-`fanoutToFollowers()` (`lib/notifications.ts:232`) does `getFollowers(source)` →
-`Promise.all(followers.map(writeNotification))`. `getFollowers` is
+`fanoutToFollowers()` (`lib/notifications.ts`) does `getFollowers(source)` →
+chunked `Promise.all` batches of 50 (**bounded concurrency, 2026-07-13** — caps the
+event-loop/memory/push burst; a `[notifications] large fan-out` warn fires at ≥1k
+followers as B2's trigger). `getFollowers` is
 `SMEMBERS kismetart:followers:<addr>` (`lib/follows.ts:38`) — an unbounded set. So one
 mint by a creator with N followers = 1 big SMEMBERS + N notification writes (each a
 ZADD + dedup + `isPriority` lookup) + up to N Farcaster push POSTs
