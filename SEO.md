@@ -55,7 +55,10 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
 3. **Validate rich results.** Run a few moment/collection/profile/learn URLs
    through the [Rich Results Test](https://search.google.com/test/rich-results)
    and the [Schema Validator](https://validator.schema.org/). Fix any error
-   before it becomes a manual action.
+   before it becomes a manual action. Include one moment WITH a live listing:
+   its Offer uses crypto tickers (ETH/USDC) for priceCurrency — explicitly
+   allowed by schema.org, but Google's price display for non-ISO-4217
+   currencies is best-effort, so observe how the test renders it.
 4. **Socials — done.** `SAME_AS` (lib/structuredData.ts) and the footer carry
    the owner-confirmed profiles: x.com/kismetdotart, farcaster.xyz/kismet, and
    www.kismetcasa.xyz. Keep the two lists in sync if they ever change. The

@@ -109,6 +109,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
   ])
+  // Creator-hidden moment: generic metadata + noindex for EVERYONE, mirroring
+  // the page body's placeholder (which returns before any content renders).
+  // Without this gate the real name/description leaked into <title>/OG tags
+  // even while the page itself was withheld — and the 200 placeholder was an
+  // indexable stub under the hidden work's name. Same trade-off the profile
+  // page documents: the creator viewing their own hidden moment also gets
+  // generic metadata; only the page body is viewer-aware.
+  if (detail?.hidden) return { title: 'Moment — Kismet', robots: { index: false } }
   const meta = detail?.metadata ?? fallback
   // No metadata from either source: the emptiest page of all (indexer lag or a
   // junk token URL) — noindex for the same crawl-budget reason as the isEmpty

@@ -118,10 +118,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { address } = await params
   // KV is written at deploy time and is always fast; only fall back to
   // inprocess (fetchCollectionMeta) when KV has nothing.
-  const [kvMeta, inprocessMeta] = await Promise.all([
+  const [kvMeta, inprocessMeta, hidden] = await Promise.all([
     getKvCollectionMeta(address),
     fetchCollectionMeta(address),
+    isCollectionHidden(address),
   ])
+  // Creator-hidden collection: generic metadata + noindex, mirroring the page
+  // body's placeholder — otherwise the real name/description leaked into
+  // <title>/OG tags and the 200 placeholder was indexable under them.
+  if (hidden) return { title: 'Collection — Kismet', robots: { index: false } }
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
   const description = meta?.description || 'View collection on Kismet'
