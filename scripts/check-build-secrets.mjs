@@ -27,6 +27,11 @@ const SERVER_SECRETS = [
   'INPROCESS_API_KEY',
   'UPSTASH_REDIS_REST_TOKEN',
   'ALCHEMY_WEBHOOK_SIGNING_KEY',
+  // EOA private key holding users' bounded Spend Permissions — a leak lets an
+  // attacker submit spend() and drain every granted allowance. Highest impact.
+  'SCOUT_SPENDER_PRIVATE_KEY',
+  // Bearer that authorizes the stats-rebuild cron.
+  'CRON_SECRET',
 ]
 
 const present = SERVER_SECRETS.filter((k) => {

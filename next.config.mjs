@@ -2,19 +2,40 @@ import { createRequire } from 'module'
 
 const require = createRequire(import.meta.url)
 
-// Baseline security headers applied to every response. Deliberately
-// excludes X-Frame-Options / CSP frame-ancestors — Kismet runs as a
-// Farcaster Mini App inside Warpcast's webview, and a blanket frame
-// deny would break that embed. Clickjacking protection for a Mini App
-// requires an allowlisted frame-ancestors list, which is brittle as
-// new Farcaster clients ship; defer to its own focused change.
-// CSP is also intentionally omitted: RainbowKit / WalletConnect inject
-// inline styles and connect to a wide pool of RPC + walletconnect
-// relays, and our AR.IO + IPFS gateway pool rotates hosts on 404.
+// Baseline security headers applied to every response.
+//
+// CSP ships in REPORT-ONLY mode: it BLOCKS NOTHING — browsers only report
+// violations — so it's a zero-risk way to discover exactly what an enforcing
+// policy must allow before flipping it on. Enforcing CSP is genuinely hard here
+// (RainbowKit / WalletConnect inject inline styles and connect to a rotating
+// pool of RPC + WalletConnect relays; our AR.IO + IPFS gateway pool rotates
+// hosts), and `frame-ancestors` must allowlist every Farcaster host that embeds
+// the Mini App (Warpcast, Base, third-party clients) or the embed breaks —
+// which is exactly why we discover the real set in report-only first.
+// FOLLOW-UP to actually close the clickjacking / XSS-defense-in-depth gap:
+// review reported violations, tighten these directives, wire a report
+// collector, then promote to the enforcing `Content-Security-Policy` header
+// (drop `-Report-Only`). Report-only is step 1 of 2 — it does not itself block.
+const CSP_REPORT_ONLY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' https: wss:",
+  "worker-src 'self' blob:",
+  "frame-src 'self' https:",
+  "frame-ancestors 'self' https://warpcast.com https://*.warpcast.com https://farcaster.xyz https://*.farcaster.xyz https://base.org https://*.base.org",
+].join('; ')
+
 const SECURITY_HEADERS = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+  { key: 'Content-Security-Policy-Report-Only', value: CSP_REPORT_ONLY },
 ]
 
 /** @type {import('next').NextConfig} */

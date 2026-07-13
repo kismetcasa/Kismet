@@ -34,6 +34,16 @@ const MAX_RESIZE_WIDTH = 4096
 // through untouched rather than risking an OOM.
 const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
 
+// Cap concurrent buffer-and-resize operations. Each holds up to
+// MAX_RESIZE_SOURCE_BYTES (100MB) in RAM plus a sharp working set, and — unlike
+// the streaming passthrough — there's no memory ceiling across concurrent
+// callers, so N simultaneous resizes ≈ N×100MB resident, the OOM class this
+// route otherwise guards against. At capacity we do NOT error: we fall through
+// to the streaming passthrough (serves the original bytes), so a resize flood
+// degrades to unoptimized images, never a 5xx.
+let activeResizes = 0
+const MAX_CONCURRENT_RESIZES = 4
+
 // Throttle for the range-synthesis warning below: <video> playback through a
 // degraded upstream issues many ranged requests per view, and one line a
 // minute is signal while one per chunk is noise (same pattern as the
@@ -302,7 +312,9 @@ export async function GET(req: NextRequest) {
     !upstreamCt.startsWith('image/gif') &&
     !upstreamCt.startsWith('image/svg') &&
     (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
-  if (canResize) {
+  if (canResize && activeResizes < MAX_CONCURRENT_RESIZES) {
+    activeResizes++
+    try {
     // The buffered read can reject mid-body (observed: an upstream edge that
     // closes the socket ~52MB into a >50MB poster, every attempt). Uncaught,
     // that surfaced as a 500 "failed to pipe response" after wasting the
@@ -359,6 +371,9 @@ export async function GET(req: NextRequest) {
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       })
+    }
+    } finally {
+      activeResizes--
     }
   }
 

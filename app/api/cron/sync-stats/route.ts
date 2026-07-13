@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server'
+import crypto from 'node:crypto'
 import { rebuildStats } from '@/lib/stats'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -21,8 +22,14 @@ export async function GET(req: NextRequest) {
 
   const auth = req.headers.get('authorization')
   const bearer = auth?.startsWith('Bearer ') ? auth.slice(7) : null
-  const provided = bearer ?? new URL(req.url).searchParams.get('secret')
-  if ((provided ?? '').trim() !== secret.trim()) return errorResponse(401, 'Unauthorized')
+  const provided = (bearer ?? new URL(req.url).searchParams.get('secret') ?? '').trim()
+  // Constant-time compare, length-checked so timingSafeEqual can't throw on a
+  // size mismatch (mirrors the Alchemy webhook route, which this one didn't).
+  const providedBuf = Buffer.from(provided)
+  const secretBuf = Buffer.from(secret.trim())
+  if (providedBuf.length !== secretBuf.length || !crypto.timingSafeEqual(providedBuf, secretBuf)) {
+    return errorResponse(401, 'Unauthorized')
+  }
 
   // Respond immediately; run the rebuild in the background. The rebuild is
   // idempotent + self-healing, so an interrupted run is corrected on the next

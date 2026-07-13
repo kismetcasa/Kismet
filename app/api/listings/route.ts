@@ -541,6 +541,14 @@ export async function POST(req: NextRequest) {
       if (bal <= 0n) {
         return errorResponse(403, 'Seller does not hold this token')
       }
+      // Also reject an order offering MORE editions than the seller holds:
+      // structurally unfillable (Seaport reverts at fill), so it only pollutes
+      // the feed and wastes buyer gas — the same class the balance gate above
+      // exists to prevent. offer[0] was validated to exist by validateOrderShape.
+      const offeredAmount = BigInt(orderComponents.offer[0]?.startAmount ?? 0)
+      if (offeredAmount > bal) {
+        return errorResponse(403, 'Listing offers more editions than you hold')
+      }
     } catch {
       return errorResponse(502, 'Could not verify token ownership — try again')
     }

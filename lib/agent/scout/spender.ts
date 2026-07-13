@@ -13,6 +13,7 @@
  *     the EOA between spend and mint.
  */
 
+import 'server-only'
 import { createWalletClient, http, type Address, type Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
