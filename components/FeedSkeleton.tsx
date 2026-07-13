@@ -2,6 +2,12 @@
 // extracted from PaginatedGrid so the featured tab (and the pre-hydration
 // gate on the landing page) render the same perceived-content placeholder
 // instead of a bare "loading…" line. One source so the shapes can't drift.
+
+// The standard 1→2→3→4-column feed grid. Exported as THE single source —
+// FeaturedFeed's live grid imports it, so the skeleton's default and the
+// real grid can't drift into different column counts (a layout jump on load).
+export const FEED_GRID_CLASS = 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4'
+
 interface FeedSkeletonProps {
   count?: number
   gridClass?: string
@@ -11,7 +17,7 @@ interface FeedSkeletonProps {
 
 export function FeedSkeleton({
   count = 12,
-  gridClass = 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4',
+  gridClass = FEED_GRID_CLASS,
   bodyClass = 'p-2 space-y-1.5',
 }: FeedSkeletonProps) {
   return (
