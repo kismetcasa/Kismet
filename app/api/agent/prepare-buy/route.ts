@@ -27,12 +27,25 @@ export const runtime = 'nodejs'
  * needed.
  */
 export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => null)) as { listingId?: unknown; account?: unknown } | null
+  if (!body) return errorResponse(400, 'Invalid body')
+  return prepareBuy(req, body)
+}
+
+/**
+ * GET variant — same parameters in the query string, same envelope back. For
+ * chat-only surfaces where POST to a non-allowlisted host is unreachable (the
+ * Base MCP custom-plugin fallback ladder is GET-only there). A pure read:
+ * chain reads + calldata assembly, no state mutation.
+ */
+export async function GET(req: NextRequest) {
+  return prepareBuy(req, Object.fromEntries(req.nextUrl.searchParams))
+}
+
+async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account?: unknown }) {
   if (!(await checkRateLimit(`agent-prepare-buy:${getClientIp(req)}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
   }
-
-  const body = (await req.json().catch(() => null)) as { listingId?: unknown; account?: unknown } | null
-  if (!body) return errorResponse(400, 'Invalid body')
 
   const listingId = typeof body.listingId === 'string' ? body.listingId : ''
   if (!listingId) return errorResponse(400, 'listingId is required')

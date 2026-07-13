@@ -13,7 +13,11 @@ export interface AgentVerbSpec {
   verb: 'discover' | 'collect' | 'buy' | 'list'
   summary: string
   endpoint: string
-  method: 'GET' | 'POST'
+  /** 'GET or POST': single-action prepares accept the same params in the
+   *  query string, for chat-only surfaces whose only reachable method is a
+   *  user-pasted GET (Base MCP custom-plugin fallback ladder). Batch stays
+   *  POST-only (array input). */
+  method: 'GET' | 'POST' | 'GET or POST'
   executes: 'send_calls' | 'sign' | 'send_calls + sign' | 'none'
   record?: string
   input: Record<string, string>
@@ -74,7 +78,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         verb: 'collect',
         summary: 'Mint a copy of a moment (primary sale).',
         endpoint: '/api/agent/prepare-collect',
-        method: 'POST',
+        method: 'GET or POST',
         executes: 'send_calls',
         record: 'POST /api/collect',
         input: {
@@ -104,7 +108,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         verb: 'buy',
         summary: 'Fulfill a Seaport listing (secondary sale).',
         endpoint: '/api/agent/prepare-buy',
-        method: 'POST',
+        method: 'GET or POST',
         executes: 'send_calls',
         record: 'PATCH /api/listings/{id}',
         input: {
@@ -116,7 +120,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         verb: 'list',
         summary: 'List a held moment for sale (Seaport offer).',
         endpoint: '/api/agent/prepare-list',
-        method: 'POST',
+        method: 'GET or POST',
         executes: 'send_calls + sign',
         record: 'POST /api/listings',
         input: {
