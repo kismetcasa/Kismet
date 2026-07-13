@@ -6,6 +6,7 @@ import { getAccount } from '@wagmi/core'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import type { Address } from 'viem'
 import { isCoinbaseWebView, isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
+import { trackFunnel } from '@/lib/funnel'
 
 /**
  * Resolve a connected wallet address, connecting on demand.
@@ -40,12 +41,14 @@ export function useEnsureConnected(): () => Promise<Address | null> {
         // the collect/mint tap a silent no-op — the only escape was knowing to
         // tap your own name in the nav. Fall through to the picker instead, so
         // recovery happens at the moment of intent.
+        trackFunnel('connect_modal')
         openConnectModal?.()
         return null
       }
     }
 
     // Regular web: hand off to the picker, let the user retry.
+    trackFunnel('connect_modal')
     openConnectModal?.()
     return null
   }, [config, connectAsync, connectors, openConnectModal])

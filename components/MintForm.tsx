@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { trackFunnel } from '@/lib/funnel'
 import { MomentImage } from './MomentImage'
 import { useRouter } from 'next/navigation'
 import { useAccount, useReadContract, usePublicClient } from 'wagmi'
@@ -594,6 +595,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   async function handleMint(e: React.FormEvent) {
     e.preventDefault()
+    // Funnel: a real mint press (connected or not — the drop-off between
+    // attempt and success is exactly what the counter exists to expose).
+    trackFunnel('mint_attempt')
 
     if (!isConnected || !address) { openConnectModal?.(); return }
     // Gated out (no valid Pass) — route to the Pass collection instead of
@@ -863,6 +867,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // can update it later via collection-management UI.
           void trackAutoDeploy(data.contractAddress, undefined)
         }
+        trackFunnel('mint_success')
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
         if (isInMiniApp) {
@@ -1282,6 +1287,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // Minted — drop the banked session so it can't pin the derived
         // Files in memory while the success panel is up.
         mediaUploadRef.current = null
+        trackFunnel('mint_success')
         setStep('done')
         toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
         if (isInMiniApp) {
