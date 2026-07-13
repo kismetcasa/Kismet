@@ -3,7 +3,7 @@
 _A complete catalog of every Redis read and write in the codebase — every key family,
 every command, every caller with `file:line` — followed by a workload characterization
 and researched options for the most optimized design given Kismet's specific
-constraints. Produced 2026-07-11 by a five-agent exhaustive sweep of all 57
+constraints. Produced 2026-07-13 by a five-agent exhaustive sweep of all 57
 Redis-importing modules (~325 direct call sites), cross-checked against
 `SCALING.md`, `STACK_OVERVIEW.md`, and `OPS_RUNBOOK.md`._
 
@@ -29,12 +29,12 @@ gates and quotas). Full inventory in Part II.
    validation (1 GET/authed request, uncached) + the notification badge poll
    (2 GETs/120s/visible tab) + the rate-limit EVAL (every request, ~54 routes)
    dominate command volume (`OPS_RUNBOOK.md:82`). **Confirmed from the Upstash
-   console (2026-07-11): 579K commands this month — 500,124 reads vs 78,746
+   console (2026-07-13): 579K commands this month — 500,124 reads vs 78,746
    writes (86% reads) — costing $1.16; total data size 336KB; bandwidth
    227MB of the free 200GB.** The Usage charts put the steady run rate at
    ~50–70K commands/day (≈1.5–2M/mo pace ≈ $3–4/mo) and ~20MB/day bandwidth.
    The database is PAYG, Global type, primary in AWS `us-east-1`, and also
-   exposes the native Redis protocol (port 6379/TLS). **Measured 2026-07-11
+   exposes the native Redis protocol (port 6379/TLS). **Measured 2026-07-13
    from inside the app container (Coolify web terminal, 10 timed PINGs):
    steady-state RTT ≈ 4.4ms median (3.7–7.9ms); cold first-connection 162ms.**
    The box is effectively in the same Virginia metro as `us-east-1` — the
@@ -72,20 +72,23 @@ gates and quotas). Full inventory in Part II.
    drive design decisions; latency, the 10MB cliff, and durability classes
    should.
 
-**Recommendation (LOCKED 2026-07-11, after measurement):** **stay
+**Recommendation (LOCKED 2026-07-13, after measurement):** **stay
 Upstash-only.** The measured steady-state RTT (~4.4ms) removed the case for a
 co-located Redis tier — Option 4 (hybrid via
 [SRH](https://github.com/hiett/serverless-redis-http)) is documented in §5.1
 but **shelved**; revisit only if the app leaves the US-East metro, Upstash
 moves, or a measured p99 regression says otherwise. The Global read-region
 option is moot (already in the nearest region). The design is therefore:
-PAYG + budget cap ($20, set) + Daily Backup (enabled) + the **robustness and
-O(N) fixes in §5.2** — led by the `created-mints` cliff fix (SMISMEMBER),
-listings record split, gate single-flight, `splitaddr` batch fix, profile
-search index, bounded `collected` reads, and the fan-out ceiling. The
-latency-motivated fixes (in-process rate limiter, session micro-cache,
-identity-chain coalescing, notification trim amortization) drop to optional
-at ~4ms RTT — they buy single-digit milliseconds and modest command savings.
+PAYG + budget cap ($20, set) + Daily Backup (enabled) + the fixes that
+survived the **adversarial revalidation pass (2026-07-13, §5.2.1)** — which
+shrank the original 14-fix list to **two shipped changes** (bounded
+`SMISMEMBER` membership for `created-mints`, closing the one hard
+availability cliff; bounded-concurrency notification fan-out with a B2
+trigger warn) plus one console click (`DEL debug:ua-seen`). One proposed fix
+was **falsified outright** (`splitaddr` "N+1" — bounded at ≤2 by
+construction), several were rejected as solving problems the measurements
+disproved, and the rest are **deferred behind numeric triggers** (§5.2.1
+table) so future work starts when the data says so, not before.
 
 ---
 
@@ -398,7 +401,7 @@ What it **cannot** collapse:
 
 At a cross-cloud RTT of r ms, a profile page pays ≈ (4–6)·r before content
 work; every authed API call pays ≥2·r of pure guard latency. **Measured
-2026-07-11 (10 timed PINGs from inside the app container): r ≈ 4.4ms median
+2026-07-13 (10 timed PINGs from inside the app container): r ≈ 4.4ms median
 steady-state (3.7–7.9ms spread; 162ms cold first-connection).** So today:
 guard latency ≈ 9ms/request, worst identity chain ≈ 18–27ms, bell poll ≈ 9ms —
 real numbers, but an order of magnitude below the upstream inprocess fetches
@@ -407,16 +410,24 @@ on the same pages. This measurement is what shelved the co-location option
 service on a zero-redundancy box. Dependent-chain *coalescing* (§5.2 #12)
 remains the cheap way to claw back the profile-chain milliseconds if wanted.
 
-## 3.3 Redundant-read findings (code-level, all cheap fixes)
+## 3.3 Redundant-read findings (revalidated first-hand 2026-07-13)
+
+_Every item below was re-verified in source during the validation pass; two
+were downgraded and one falsified. Statuses inline._
 
 1. **`getGateConfig` is not single-flight** (`gate.ts:45`): `mint-proxy.ts:148-153`
    calls `isPlatformPausedFor` + `hasGateAccess` + `getGateConfig` concurrently;
    on a cold/expired 15s cache all three fetch → **9 GETs** in one burst.
-   A shared in-flight promise (the `memoize` pattern already in the repo)
-   makes it 3.
-2. **`splitaddr` N+1** (`stats.ts:593`): royalty decomposition GETs one split
-   address per token in a loop, while `pending.ts:105` already has the batched
-   MGET (`resolveSplitAddresses`). Loop path should use the batch.
+   **REJECTED as a fix (2026-07-13):** the burst is same-tick, so
+   auto-pipelining collapses it into ONE round trip — zero latency cost,
+   ~$0.00002 per cold window. Cosmetic only.
+2. ~~**`splitaddr` N+1** (`stats.ts:593`)~~ — **FALSIFIED on revalidation
+   (2026-07-13).** The "loop" in `resolveRoyaltySplitCredits` iterates
+   `[...new Set([tokenId, '1'])]` — **at most 2 candidates by construction** —
+   with stored-splits reads batched in a `Promise.all` and the recipient
+   lookup fired only on a membership hit; the code comment documents the
+   deliberately latency-bounded design. There is no N+1 and nothing to fix;
+   the original sweep mischaracterized it.
 3. **Session slide fires per request** on notification routes
    (`session.ts:121`) — an EXPIRE whose effect only matters at day granularity
    on a 7-day TTL. An in-process "last slid at" map (slide at most hourly per
@@ -435,13 +446,15 @@ remains the cheap way to claw back the profile-chain milliseconds if wanted.
    SMEMBERS all wallets + MGET all profiles per non-address search — O(users)
    per keystroke-ish. Needs an index (see §5.3).
 7. **Featured GET has no cache header** (`featured/route.ts:39`) — three ZRANGEs
-   per request for near-static curated data; `s-maxage=30` matches the
-   timeline's posture.
-8. **`verify:*` and `img:total:*` lack the `kismetart:` namespace** — cosmetic,
-   but matters the day anything else shares the database. The production Data
-   Browser also shows a leftover **`debug:ua-seen`** SET (8 UA strings, no
-   TTL) written by an earlier `lib/deviceUA.ts` debugging pass — delete it or
-   give it a TTL.
+   per request for near-static curated data. **REJECTED as a fix
+   (2026-07-13):** verified the caller is a once-per-app-mount fetch
+   (`AdminContext.tsx:153`) — pennies/day — and route-level caching would make
+   the curator panel ~30s stale after its own edits. Not worth the wrinkle.
+8. **`verify:*` and `img:total:*` lack the `kismetart:` namespace** — cosmetic;
+   **deferred** until those files are touched for other reasons or the
+   database is ever shared. The leftover **`debug:ua-seen`** SET (writer
+   confirmed removed from code; only a comment in `lib/deviceUA.ts` remains)
+   is a dead key — delete via the console Data Browser/CLI: `DEL debug:ua-seen`.
 
 ## 3.4 Write amplification map
 
@@ -551,10 +564,10 @@ Classes B and C — which include the entire per-request hot path — do not.
 | Fixed 1GB | **$20/mo, unlimited commands** | 100GB bw/mo |
 | Fixed 5GB | $100/mo | 500GB bw/mo |
 
-**Observed (console, 2026-07-11): 579K cmds month-to-date → $1.16; 336KB data
+**Observed (console, 2026-07-13): 579K cmds month-to-date → $1.16; 336KB data
 (matches the 335.74KB manual backup taken the same day); run rate ~50–70K
 cmds/day (~1.5–2M/mo ≈ $3–4/mo); ~20MB/day bandwidth.** PAYG is therefore optimal today and stays cheaper than the
-Fixed-250MB plan until ~5M cmds/mo; **budget cap set 2026-07-11 at the $20
+Fixed-250MB plan until ~5M cmds/mo; **budget cap set 2026-07-13 at the $20
 console minimum rather than switching plans** — note the cap **hard-stops the
 database** when reached (runaway protection with ~5–6× headroom; recovery =
 raise the cap in the console). Bandwidth becomes the number to watch
@@ -573,7 +586,7 @@ before quoting.)
 - Single Oracle Ampere box (ARM64, ~11GB RAM, 200GB disk), Coolify, zero
   redundancy; Upstash in AWS us-east-1. The runbook's cross-cloud-latency
   concern (`OPS_RUNBOOK.md:83`) is now **measured: ~4.4ms steady-state,
-  162ms cold** (2026-07-11, from inside the app container) — same-metro
+  162ms cold** (2026-07-13, from inside the app container) — same-metro
   adjacency, not a constraint at steady state.
 - Code is multi-pod-aware (Redis locks, sessions in Redis) but memoize tiers
   are per-pod (15-min cross-pod staleness if pods are added) — any redesign
@@ -611,7 +624,7 @@ read-your-write flows — `createSession` → immediate `verifySession` on the
 login redirect, scout `getScout`→`saveScout` read-modify-write cycles, and
 listing create → immediate feed read could observe pre-write state for
 ~ms–100ms. Those specific flows would need to pin to the primary (REST header)
-or tolerate the lag. **Resolved 2026-07-11: moot** — the measured 4.4ms RTT
+or tolerate the lag. **Resolved 2026-07-13: moot** — the measured 4.4ms RTT
 means the app is already effectively adjacent to the primary region; no
 Upstash region is meaningfully closer.
 
@@ -624,7 +637,7 @@ replicated store, on a box the runbook itself calls zero-redundancy. **Not
 recommended while Redis is the only datastore.**
 
 **Option 4 — hybrid tiering: Upstash = durable Class A/B-slow; box-local
-Redis = Class C + hot Class B. — SHELVED 2026-07-11 after measurement.**
+Redis = Class C + hot Class B. — SHELVED 2026-07-13 after measurement.**
 This was the working recommendation while cross-cloud RTT was presumed to be
 tens of milliseconds; the measured ~4.4ms steady-state removed its payoff
 (each command saved ≈4ms, at the price of owning a second stateful service on
@@ -681,7 +694,7 @@ Redis to cache/counters/locks and unlocks N stateless pods. It is a
 re-platforming, not a Redis optimization — sequenced after the hybrid split
 (which is also its preparation: the Class A inventory above is the table list).
 
-**Recommendation (locked 2026-07-11): Option 2 — Upstash-only, PAYG + $20
+**Recommendation (locked 2026-07-13): Option 2 — Upstash-only, PAYG + $20
 budget cap (set) + Daily Backup (enabled) + the §5.2 fixes, robustness-first.**
 The RTT measurement (~4.4ms steady-state from inside the app container)
 resolved the topology question: Options 2b, 3, and 4 are all shelved/moot.
@@ -707,6 +720,50 @@ Priority within §5.2 shifts accordingly — the cliff/O(N)/robustness fixes
 | 12 | **Identity-chain request coalescing**: extend the React-cache pattern with a 30–60s in-process LRU for `getFidByAddress`/`getFarcasterProfileByAddress` results (they're already Redis-cached; this removes the serial RTTs on hot profiles) | `lib/farcasterProfile.ts` | SSR latency on profile/moment pages | S |
 | 13 | **Namespace hygiene**: prefix `verify:*`, `img:total:*` with `kismetart:` (new writes; read both during TTL window) | 2 files | future-proofing | S |
 | 14 | Fan-out ceiling: cap `fanoutToFollowers` at N most-recent followers (e.g. 5k) with a log line, until B2's queue lands | `notifications.ts:256` | converts the unbounded write storm into a bounded one | S |
+
+### 5.2.1 Validation outcomes (every fix re-verified first-hand, 2026-07-13)
+
+The measurements (4.4ms RTT, 336KB dataset, $1.16/mo, ~50–70K cmds/day)
+invalidated the premises behind half the table. Final disposition:
+
+**SHIPPED (this branch):**
+- **#3** — `getCreatedMintsMembership()` in `lib/kv.ts`: chunked `SMISMEMBER`
+  (1024/chunk, same-tick chunks auto-pipeline) over the request's merged
+  candidates, replacing the memoized full-`SMEMBERS`. Verified exact:
+  single consumer (`timeline` standalone filter, membership-only), SDK
+  support confirmed in typings, write-side lowercasing present since the
+  function's first commit (git `-L` trace) so exact-match semantics hold,
+  and the skip-filter degradation contract preserved verbatim. Consistency
+  improves: no 15-min memo, fresh mints appear immediately on every pod.
+- **#14 (amended)** — bounded **concurrency**, not a drop-cap: `followers` is
+  a plain SET with no recency, so "newest N" was never expressible; dropping
+  arbitrary members would silently un-notify followers. Shipped instead:
+  chunks of 50 concurrent `writeNotification`s (bounds event-loop/memory/push
+  burst; every follower still notified; runs in `after()` so wall-clock is
+  invisible) + a `[notifications] large fan-out` warn at ≥1,000 followers —
+  the concrete observable for B2's queue trigger.
+- `debug:ua-seen`: dead key (writer removed from code) — one-time console
+  `DEL`, no code.
+
+**REJECTED (validated unnecessary — see §3.3 inline statuses):**
+- **#6 falsified** (loop is ≤2 iterations by construction).
+- **#5** (cold burst = one pipelined trip; cosmetic).
+- **#10** (once-per-mount fetch, pennies; adds curator-panel staleness).
+- **#13** namespace renames (churn with no present benefit).
+- **#1, #2, #7, #12** (latency/cost-motivated; solve problems the
+  measurements show don't exist at 4.4ms / $3–4/mo).
+
+**DEFERRED — with numeric triggers (revisit when a trigger fires, not before):**
+
+| Deferred fix | Trigger |
+|---|---|
+| #9 bound `collected` reads (**with** cursor pagination — a bare cap would silently truncate power-collector history) | any `collected` zset > ~1,000 members |
+| #4 listings record split + feed cache | active listings > ~300, or market-feed p95 > 150ms |
+| #8 profile search index | `profiles` set > ~5,000 |
+| #11 timeline stitch narrowing | tracked collections > ~100 |
+| `listings:seller:{s}` bound (same class as #9 — found during revalidation: SMEMBERS + one unchunked MGET per seller view, ids never SREM'd) | any seller > ~500 lifetime listings |
+| B2 fan-out queue (QStash) | `[notifications] large fan-out` warns appear (≥1K followers) |
+| created-mints ZSET index (B1 Mints-feed pagination) | when B1 materialized-feed work starts |
 
 ## 5.3 What deliberately does NOT change
 
@@ -738,50 +795,47 @@ Priority within §5.2 shifts accordingly — the cliff/O(N)/robustness fixes
 
 # Part VI — Rollout & measurement
 
-**Measure first:**
-1. ✅ **RTT — done 2026-07-11** via Coolify web terminal, 10 timed PINGs from
-   inside the app container: **~4.4ms median steady-state (3.7–7.9ms), 162ms
-   cold first-connection.** This resolved the topology question (Option 2;
-   Options 2b/3/4 shelved). The `app/api/debug/redis-rtt` route on this
-   branch re-measures on demand and also reports cardinalities/region/memory;
-   **remove it once merged and run once.**
-2. ✅ **Run rate / bandwidth / dataset — done 2026-07-11** from the console:
-   ~50–70K cmds/day, ~20MB/day, 336KB data (backup-confirmed).
-3. Still open (non-blocking): baseline cardinalities — one visit to the debug
-   route, or the `DBSIZE`/`SCARD`/`ZCARD` block in the Upstash console CLI
-   tab; log `created-mints` headroom (runbook §Verify prescribes rechecking
-   periodically). Optional: the 20-line per-command counter proxy if a future
-   regression ever needs per-keyspace attribution.
+**Measured (all done 2026-07-13):**
+1. ✅ **RTT** via Coolify web terminal, 10 timed PINGs from inside the app
+   container: **~4.4ms median steady-state (3.7–7.9ms), 162ms cold
+   first-connection.** Resolved the topology question (Option 2; Options
+   2b/3/4 shelved). Re-measure anytime with the same one-liner in the
+   Coolify app terminal (documented in the session log); the temporary
+   `/api/debug/redis-rtt` route that also existed on this branch was
+   removed once the measurement landed.
+2. ✅ **Run rate / bandwidth / dataset** from the console: ~50–70K cmds/day,
+   ~20MB/day, 336KB data (backup-confirmed).
+3. Open (non-blocking): baseline cardinalities — the `DBSIZE`/`SCARD`/`ZCARD`
+   block in the Upstash console **CLI tab**; log `created-mints` and
+   top-seller/`collected` counts against the §5.2.1 triggers (the runbook
+   §Verify prescribes rechecking periodically).
 
-**Ops (done 2026-07-11):** PAYG budget cap set ($20, the console minimum —
+**Ops (done 2026-07-13):** PAYG budget cap set ($20, the console minimum —
 Upstash stops the database at the cap, so this is runaway-bug/attack
 protection with ~5–6× headroom over the run rate; recovery = raise the cap)
 and **Daily Backup enabled** (was OFF; until then the only restore points
 were the manual `k-backup1`, 335.74KB, and a 2-month-old export). Revisit a
-fixed plan only past ~5M cmds/mo.
+fixed plan only past ~5M cmds/mo. One console click still open: `DEL
+debug:ua-seen` (dead key).
 
-**Phase 1 — robustness (the plan):** #3 `created-mints` SMISMEMBER (kills the
-one availability cliff), #5 gate single-flight, #6 `splitaddr` batch fix,
-#9 bounded `collected` reads, #10 featured cache header, #13 namespace
-hygiene + delete the `debug:ua-seen` leftover, #14 fan-out ceiling.
+**Shipped (this branch, 2026-07-13):** the two fixes that survived the
+adversarial validation pass — #3 bounded `SMISMEMBER` membership (the one
+hard availability cliff, closed) and #14-as-amended bounded-concurrency
+fan-out with the B2 trigger warn. Everything else was rejected or deferred
+with numeric triggers — full disposition in §5.2.1.
 
-**Phase 2 — scale-shaped (with B1/B2 work, as traffic warrants):** listings
-record split (#4), timeline stitch narrowing (#11), profile search index
-(#8), `created-mints` ZSET index cutover, notification fan-out → queue past
-~5k-follower creators.
-
-**Optional (latency polish, ~4ms-scale wins):** #1 in-process rate limiter,
-#2 session micro-cache, #7 notification trim amortization, #12 identity-chain
-coalescing.
+**Deferred (trigger-gated):** see the §5.2.1 trigger table. Nothing else is
+scheduled; the triggers, not the calendar, start the next piece of work.
 
 **Shelved:** local Redis + SRH hybrid (§5.1 Option 4) — revive only on
 relocation out of US-East, an Upstash regression, or measured Redis-attributed
 p99 pain.
 
-**Exit criteria:** zero unbounded full-set reads on any per-request path
-(created-mints, collected, profile search all bounded); fan-out capped;
-baseline cardinalities recorded; debug route removed; budget cap + Daily
-Backup verified on (✅).
+**Exit criteria (state at ship):** created-mints reads bounded ✅; fan-out
+concurrency bounded + observable ✅; budget cap + Daily Backup on ✅;
+falsified/rejected findings recorded so they aren't re-proposed ✅; remaining
+unbounded reads (`collected`, seller index, profile search) trigger-gated
+with numbers ✅; debug scaffolding removed ✅.
 
 ---
 
@@ -791,5 +845,5 @@ locks/gates, (2) feeds/trending/featured/listings/stats/collected/sale-indexes,
 durable caches/media/splits/boot, (5) pass gate/airdrops/scout. Every `redis.*`
 call site in the 57 importing modules is attributed above with `file:line`.
 External pricing/limit claims were verified against upstash.com and the
-canonical `upstash/docs` GitHub sources on 2026-07-11; per-plan throughput
+canonical `upstash/docs` GitHub sources on 2026-07-13; per-plan throughput
 throttles could not be verified from primary sources and are flagged._

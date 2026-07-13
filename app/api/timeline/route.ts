@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCreatedMintsMembership, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds, getFreeMoments } from '@/lib/saleEnds'
@@ -360,17 +360,23 @@ export async function GET(req: NextRequest) {
   // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
   // remain visible in user-history surfaces.
   //
-  // If the createdMints lookup fails (Upstash blip), skip the filter for
+  // Membership is checked via bounded SMISMEMBER over just this request's
+  // merged candidates (getCreatedMintsMembership) — never a full SMEMBERS
+  // of the ever-growing set, which would hard-fail at Upstash's 10MB
+  // response cap past ~200k mints.
+  //
+  // If the membership lookup fails (Upstash blip), skip the filter for
   // this request rather than serve an empty feed. Showing some unfiltered
   // moments briefly is strictly better UX than "no moments yet" — and the
-  // next request retries the lookup (memoize doesn't cache the throw).
+  // next request simply retries.
   if (scope === 'standalone' && !singleCollection) {
     try {
-      const createdMints = await getCreatedMintsSet()
-      merged = merged.filter((m: unknown) => {
+      const candidateKeys = merged.map((m: unknown) => {
         const moment = m as { address?: string; token_id?: string }
-        return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+        return `${moment.address?.toLowerCase()}:${moment.token_id}`
       })
+      const createdMints = await getCreatedMintsMembership(candidateKeys)
+      merged = merged.filter((_m: unknown, i: number) => createdMints.has(candidateKeys[i]))
     } catch (err) {
       console.warn('[timeline] standalone filter skipped (Redis unavailable):', err)
     }
