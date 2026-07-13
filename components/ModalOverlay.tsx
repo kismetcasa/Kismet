@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter, usePathname } from 'next/navigation'
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -45,10 +45,14 @@ export function ModalOverlay({ children }: { children: ReactNode }) {
   // Keyboard focus must not wander into the still-mounted feed behind the
   // overlay. The trap wraps BOTH the dialog and the close button (siblings
   // for stacking reasons) via a display:contents wrapper, so Tab cycles
-  // through the overlay's links, actions, and the X — and focus returns to
-  // the opening card on dismiss.
+  // through the overlay's links, actions, and the X. Focus returns to the
+  // opening card on DISMISS only — on forward nav (stale) the user is
+  // leaving, and restoring would steal focus from the destination page.
   const trapRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(trapRef, !stale)
+  const staleRef = useRef(stale)
+  staleRef.current = stale
+  const shouldRestoreFocus = useCallback(() => !staleRef.current, [])
+  useFocusTrap(trapRef, !stale, { shouldRestore: shouldRestoreFocus })
 
   // Defensive: ensure the modal scrolls into view on mount. Without
   // this, opening the modal from a scrolled-down feed could leave the
