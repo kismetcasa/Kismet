@@ -15,6 +15,10 @@ import { clearEarningsVisibility } from '@/lib/earningsVisibility'
 import { purgeFollowEdges } from '@/lib/follows'
 import { deleteScout } from '@/lib/agent/scout/store'
 import { removeHiddenProfile } from '@/lib/hidden-profiles'
+import { deleteAirdropsBySender } from '@/lib/airdrops'
+import { clearKismetIdentityAddress } from '@/lib/farcasterAuth'
+import { clearFarcasterPushState } from '@/lib/farcasterNotifications'
+import { deleteListingsBySeller } from '@/lib/listings'
 
 /**
  * POST — HARD, IRREVERSIBLE erase of a profile identity and everything the
@@ -27,17 +31,32 @@ import { removeHiddenProfile } from '@/lib/hidden-profiles'
  * Sibling-aware: a Farcaster identity is one profile across all its verified
  * wallets, so the footprint is the queried address + its FID's verified
  * wallets + the FID's currentAddress (which may have drifted out of the
- * verified set). The footprint is resolved through the CHECKED Farcaster
- * path and FAILS CLOSED: a transient FC outage 503s rather than silently
- * collapsing to the queried wallet and doing a partial erase reported as
- * success.
+ * verified set). FC resolution is BEST-EFFORT, not a gate. Squatters — the
+ * primary erase target — have no FID to resolve, so gating on a reachable
+ * Farcaster (an earlier fail-closed 503) made the tool unusable whenever the
+ * FC API was unreachable/rate-limited. Instead we erase what we can confirm
+ * and FLAG the outcome: when the identity or its verification set is
+ * transiently unresolvable the response carries `fcResolved: false`, meaning
+ * "the queried wallet IS erased, but Farcaster-linked siblings couldn't be
+ * confirmed — re-run when FC is reachable". The rare FC-identity-during-outage
+ * case is a partial erase, but honestly flagged and fully recoverable (every
+ * op is an idempotent delete/srem, so a re-run is a safe no-op on already-
+ * erased data and completes the siblings once FC responds).
  *
  * PURGES (per affected wallet, best-effort so one subsystem failure can't
  * strand the rest; every op is an idempotent delete/srem, so re-running is
  * safe):
  *   - profile row + FID row + search-index membership + auth nonce
  *   - profile theme, showcase pins, collected ZSET, earnings-public pin
- *   - notification inbox + prefs
+ *   - airdrops-SENT log (send-side mirror of the collected/received ZSET)
+ *   - marketplace listings the wallet authored (all seller-indexed orders +
+ *     their slot locks / hide tombstones / Pass markers). Redis-only, like the
+ *     seller's own cancel — the signed Seaport order just lapses at its endTime
+ *   - notification inbox + prefs, AND (FID-scoped) the Farcaster push state —
+ *     tokens + push-type/master/seeded prefs — so an erased FC identity stops
+ *     receiving native push and its settings don't resurface on rebuild
+ *   - the chosen Kismet-identity pointer (FID-scoped, no TTL) so a rebuilt
+ *     identity anchors to a clean default, not the erased user's old choice
  *   - social graph edges (bidirectional — removed from every counterpart)
  *   - the Scout agent record (policy, artist labels, and the stored Spend
  *     Permission signature — so the coordinator can't keep spending), plus
@@ -76,31 +95,43 @@ export async function POST(req: NextRequest) {
   }
   const queried = body.address.toLowerCase()
 
-  // Resolve the identity's full wallet footprint through the CHECKED FC path
-  // so a transient outage fails closed instead of partial-erasing. getFidByAddress
-  // returns null on transient failure (vs { fid: null } for a definitive non-FC
-  // address); getVerifiedAddressesByFidChecked returns null on transient failure
-  // (vs { addresses } definitively).
+  // Resolve the identity's full wallet footprint. getFidByAddress now reads a
+  // self-built reverse index (Farcaster gated the live address→FID endpoint):
+  // { fid } for a seeded wallet, else { fid: null }. It no longer signals a
+  // transient failure, so an UNSEEDED FC wallet reads as { fid: null } here and
+  // its FID row/siblings are missed — seed it first by loading the profile
+  // after an FC login. getVerifiedAddressesByFidChecked still returns null on
+  // transient failure (vs { addresses }); fcResolved tracks that. We DON'T 503:
+  // FC is best-effort. The queried wallet is always erased; siblings only when
+  // definitively resolved.
+  let fcResolved = true
   const lookup = await getFidByAddress(queried)
-  if (lookup === null) {
-    return errorResponse(503, 'Could not resolve the identity right now — retry')
-  }
-  const fid = lookup.fid
+  if (lookup === null) fcResolved = false // defensive; the index-only lookup never returns null today
+  const fid = lookup?.fid ?? null
   const wallets = new Set<string>([queried])
   if (fid != null) {
     const checked = await getVerifiedAddressesByFidChecked(fid)
     if (checked === null) {
-      return errorResponse(503, 'Could not resolve the identity right now — retry')
+      // FID known but its verification set is transiently unresolvable — erase
+      // the FID row + queried wallet, but flag the siblings as unconfirmed.
+      fcResolved = false
+    } else {
+      for (const a of checked.addresses) wallets.add(a.toLowerCase())
     }
-    for (const a of checked.addresses) wallets.add(a.toLowerCase())
     // currentAddress can drift out of the verified set — include it so its
-    // address-keyed row is purged too.
+    // address-keyed row is purged too. (Local Redis read, not an FC call.)
     const fidProfile = await getFidProfile(fid)
     if (fidProfile?.currentAddress) wallets.add(fidProfile.currentAddress.toLowerCase())
   }
 
-  // Self-erase guard, sibling-aware — the admin identity must never be
-  // erasable via any of its wallets.
+  // Self-erase guard. Covers every resolved wallet of the admin identity; when
+  // FC is up that's the full sibling set, so querying ANY admin wallet is
+  // blocked. During an FC outage the set collapses to the queried address, so
+  // the guard still blocks the admin's own address but can't recognize an
+  // unresolved sibling — the blast radius there is only that sibling's address-
+  // keyed residue (the FID row is untouched: deleteFidProfile runs only when
+  // fid resolved), and the caller is already an authenticated admin, so this is
+  // a self-inflicted, recoverable edge, not an escalation.
   if (ADMIN_ADDRESS && wallets.has(ADMIN_ADDRESS)) {
     return errorResponse(400, 'Cannot erase the admin profile')
   }
@@ -116,6 +147,8 @@ export async function POST(req: NextRequest) {
       clearProfileTheme(addr).catch(() => {}),
       clearAllPins(addr).catch(() => {}),
       deleteCollected(addr).catch(() => {}),
+      deleteAirdropsBySender(addr).catch(() => {}),
+      deleteListingsBySeller(addr).catch(() => {}),
       deleteNotificationData(addr).catch(() => {}),
       clearEarningsVisibility(addr, fid).catch(() => {}),
       purgeFollowEdges(addr).catch(() => {}),
@@ -123,11 +156,21 @@ export async function POST(req: NextRequest) {
       removeHiddenProfile(addr).catch(() => {}),
     ]),
   )
-  if (fid != null) await deleteFidProfile(fid).catch(() => {})
+  // FID-scoped cleanup (once, not per-wallet): the FID row, the FC push state
+  // (tokens + prefs), and the chosen-identity pointer. Only when we resolved a
+  // FID — a transient FC failure leaves fid null and these are retried on the
+  // admin's re-run (fcResolved:false).
+  if (fid != null) {
+    await Promise.all([
+      deleteFidProfile(fid).catch(() => {}),
+      clearFarcasterPushState(fid).catch(() => {}),
+      clearKismetIdentityAddress(fid).catch(() => {}),
+    ])
+  }
 
   // We removed entries from hidden-profiles → refresh the sibling-closure
   // memo so search/batch reads reflect the erase on the next request.
   getHiddenIdentityClosure.invalidate()
 
-  return NextResponse.json({ ok: true, erased: { addresses, fid: fid ?? null } })
+  return NextResponse.json({ ok: true, erased: { addresses, fid: fid ?? null }, fcResolved })
 }

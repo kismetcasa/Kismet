@@ -3,11 +3,7 @@ import { verifyMessage, type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import {
-  PERMISSION_BIT_ADMIN,
-  PERMISSION_BIT_METADATA,
-  readPermissions,
-} from '@/lib/permissions'
+import { canEditMomentMetadata, readPermissions } from '@/lib/permissions'
 import { consumeNonce } from '@/lib/profile'
 import { setMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
@@ -20,8 +16,9 @@ import { consumeUserQuota } from '@/lib/userQuota'
  * token-scoped first, then fall back to collection-wide (tokenId 0) so
  * defaultAdmin holders pass regardless of per-token grants.
  *
- * Uses readPermissions for retry + bigint runtime guard; no separate
- * helper for the ADMIN|METADATA mask since this is the only caller.
+ * Uses readPermissions for retry + bigint runtime guard, and the shared
+ * canEditMomentMetadata predicate so the client edit-affordance gate
+ * (useMomentEditPermission) can't drift from this authorization.
  */
 async function canUpdateUri(
   collectionAddress: string,
@@ -30,21 +27,20 @@ async function canUpdateUri(
 ): Promise<boolean> {
   try {
     const client = serverBaseClient()
-    const mask = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
     const tokenPerms = await readPermissions(
       client,
       collectionAddress as Address,
       BigInt(tokenId),
       caller as Address,
     )
-    if ((tokenPerms & mask) !== 0n) return true
+    if (canEditMomentMetadata(tokenPerms)) return true
     const collectionPerms = await readPermissions(
       client,
       collectionAddress as Address,
       0n,
       caller as Address,
     )
-    return (collectionPerms & mask) !== 0n
+    return canEditMomentMetadata(collectionPerms)
   } catch {
     return false
   }

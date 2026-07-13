@@ -6,7 +6,8 @@ import dynamic from 'next/dynamic'
 import { useAccount, useSignMessage } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin } from 'lucide-react'
+import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin, BadgeCheck } from 'lucide-react'
+import { SOCIAL_PLATFORMS, socialLink, type SocialPlatformKey } from '@/lib/socials'
 import { ProfileAvatar } from './ProfileAvatar'
 import { ProfileStats } from './ProfileStats'
 import { PaletteRing } from './PaletteRing'
@@ -242,6 +243,11 @@ interface Profile {
   username?: string
   ensName?: string
   avatarUrl?: string
+  // User-claimed social handles/links (X, Farcaster, Instagram, website).
+  socials?: Partial<Record<SocialPlatformKey, string>>
+  // Proof-of-ownership socials inherited from Farcaster (X only today);
+  // outranks the claimed `socials.x` and renders with a verified badge.
+  verifiedSocials?: { x?: string }
   // Server-computed: collapses the username → farcaster → ens fallback
   // chain into a single field. See app/api/profile/[address]/route.ts.
   displayName?: string | null
@@ -264,7 +270,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const { openConnectModal } = useConnectModal()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
-  const { isCurator } = useAdmin()
+  const { isAdmin, isCurator } = useAdmin()
 
   const [profile, setProfile] = useState<Profile | null>(null)
 
@@ -295,6 +301,13 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
+  // Full-profile view capability. Owners always see their full dashboard;
+  // admins get that same full view of ANY profile so they can monitor and
+  // curate the platform — every mint/collect/listing card renders, so the
+  // per-card FeatureStar can feature anything, not just the ≤4 a visitor sees.
+  // This is a READ capability only: edit/pin/curate chrome stays gated on
+  // isOwner / canEditProfile, so an admin viewing someone else is read-only.
+  const canViewFull = isOwner || isAdmin
   const [moments, setMoments] = useState<Moment[]>([])
   const [collected, setCollected] = useState<Moment[]>([])
   const [listings, setListings] = useState<Listing[]>([])
@@ -317,6 +330,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const [editing, setEditing] = useState(false)
   const [usernameInput, setUsernameInput] = useState('')
   const [avatarInput, setAvatarInput] = useState('')
+  const [socialsInput, setSocialsInput] = useState<Record<SocialPlatformKey, string>>({
+    x: '',
+    farcaster: '',
+    instagram: '',
+    website: '',
+  })
   const [saving, setSaving] = useState(false)
   const [collectionsMode, setCollectionsMode] = useState(false)
   const [following, setFollowing] = useState(false)
@@ -536,29 +555,30 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       .finally(() => setLoadingListings(false))
   }, [address, tier3])
 
-  // Sales + Airdrops are owner-dashboard-only sections — a visitor's curated
-  // view never renders them, so skip the fetches for non-owners. Mark them
-  // resolved (loading=false) on the visitor path so the flags don't stay true
-  // for the component's life (which would leave their section counts null).
+  // Sales + Airdrops are full-dashboard-only sections — a visitor's curated
+  // view never renders them, so skip the fetches unless the viewer can see the
+  // full profile (owner or admin). Mark them resolved (loading=false) on the
+  // curated path so the flags don't stay true for the component's life (which
+  // would leave their section counts null).
   useEffect(() => {
-    if (!isOwner) { setLoadingPayments(false); return }
+    if (!canViewFull) { setLoadingPayments(false); return }
     if (!tier3) return
     fetch(`/api/payments?artist=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setPayments(Array.isArray(d.payments) ? d.payments : []))
       .catch(() => setPayments([]))
       .finally(() => setLoadingPayments(false))
-  }, [address, tier3, isOwner])
+  }, [address, tier3, canViewFull])
 
   useEffect(() => {
-    if (!isOwner) { setLoadingAirdrops(false); return }
+    if (!canViewFull) { setLoadingAirdrops(false); return }
     if (!tier3) return
     fetch(`/api/airdrops?artist_address=${address}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setAirdrops(Array.isArray(d.airdrops) ? d.airdrops : []))
       .catch(() => setAirdrops([]))
       .finally(() => setLoadingAirdrops(false))
-  }, [address, tier3, isOwner])
+  }, [address, tier3, canViewFull])
 
   // ─── section drag / collapse ──────────────────────────────────────────────
 
@@ -616,6 +636,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   function openEdit() {
     setUsernameInput(profile?.username ?? '')
     setAvatarInput(profile?.avatarUrl ?? '')
+    setSocialsInput({
+      x: profile?.socials?.x ?? '',
+      farcaster: profile?.socials?.farcaster ?? '',
+      instagram: profile?.socials?.instagram ?? '',
+      website: profile?.socials?.website ?? '',
+    })
     setEditing(true)
   }
 
@@ -630,7 +656,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       const res = await fetch(`/api/profile/${address}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: usernameInput.trim() || undefined, avatarUrl: avatarInput.trim() || undefined, signature, nonce }),
+        body: JSON.stringify({ username: usernameInput.trim() || undefined, avatarUrl: avatarInput.trim() || undefined, socials: socialsInput, signature, nonce }),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d.error ?? 'Failed to save') }
       const { profile: updated } = await res.json()
@@ -720,11 +746,19 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     }
   }
 
-  // Render-as-a-visitor flag. True for a real visitor OR when the owner has
-  // toggled the public-view preview. Owner-only CHROME (pushpins, edit, curate,
-  // the owner section branch) gates on this so the preview is faithful; the
-  // DATA fetches still key off the real `isOwner`.
+  // Owner-write-chrome gate. True for anyone who isn't the owner (incl. an
+  // admin viewing someone else) OR an owner previewing the public view. Edit /
+  // pin / curate affordances gate on `!asVisitor`, so they only ever show to
+  // the owner in their own full view — an admin's full view stays read-only.
   const asVisitor = !isOwner || previewPublic
+  // Render-mode gate, deliberately separate from write-chrome: show the full
+  // owner-style dashboard (every section incl. Sales/Airdrops, un-curated
+  // lists) vs the curated public showcase. Owners and admins can see full;
+  // `previewPublic` flips either of them to the public view. Everyone else is
+  // locked to the showcase. A future per-artist "default my own profile to the
+  // public view" preference is just a different seed for `previewPublic` — the
+  // machinery here doesn't change.
+  const fullView = canViewFull && !previewPublic
 
   // Owner-only pin props for a card; {} for visitors so MomentCard/MarketCard
   // render no toggle and keep their memoized identity in every non-owner feed.
@@ -741,15 +775,16 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     }
   }
 
-  // Pinned-showcase derivations. A visitor (`!isOwner`) sees ONLY the owner's
-  // pinned moments — filtered from the already-loaded arrays, which keeps the
-  // render self-validating (a pin can only show content the owner truly
-  // minted/collected/listed). Owners see their full dashboard so they can
-  // curate — unless they toggle the public-view preview (`asVisitor`), which
-  // renders the visitor path. With no pins, a visitor's view has no sections at
-  // all — just the profile header (identity only). orderByPins runs only on the
-  // visitor path; off it the full arrays pass straight through.
-  const pinnedView = asVisitor
+  // Pinned-showcase derivations. The curated showcase (`pinnedView`) is what a
+  // visitor — or an owner/admin who toggled the public-view preview — sees:
+  // ONLY the owner's pinned moments, filtered from the already-loaded arrays,
+  // which keeps the render self-validating (a pin can only show content the
+  // owner truly minted/collected/listed). Owners AND admins in the full view
+  // (`fullView`) see the whole dashboard instead. With no pins, the showcase
+  // has no sections at all — just the profile header (identity only).
+  // orderByPins runs only on the showcase path; off it the full arrays pass
+  // straight through.
+  const pinnedView = !fullView
   const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
   // Un-pinned mints fallback. An artist who hasn't pinned any mints still gets
@@ -792,7 +827,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // cap below in sync with that cap (and the hint copy). The dense dashboard
   // grid (GRID_CLASSES) still drives the owner's full mint/collected lists.
   const SHOWCASE_ROW_CLASSES =
-    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:overflow-visible'
+    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:gap-4 lg:overflow-visible'
   // grid grid-rows-1 makes the card fill the cell so every box in a section
   // row is the same height regardless of content (price loaded, owned, text
   // moment): the row stretches items to the tallest, this stretches the card
@@ -1031,9 +1066,23 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
   return (
     <div
-      className="max-w-4xl mx-auto px-4 py-12 flex flex-col gap-12"
+      className="max-w-6xl mx-auto px-4 py-12 flex flex-col gap-12"
       style={theme ? themeCssVars(theme) : undefined}
     >
+      {/* Admin full-view banner — shown only to an admin viewing someone
+          else's profile. Signals that this is the owner-style full profile
+          (all sections incl. Sales/Airdrops), read-only, and NOT the public
+          view — so the extra sections aren't mistaken for what visitors see. */}
+      {isAdmin && !isOwner && (
+        <div className="border border-accent/40 bg-accent/5 px-3 py-2 flex items-center gap-2">
+          <ShieldAlert size={13} className="text-accent flex-shrink-0" />
+          <p className="text-[11px] font-mono text-dim">
+            Admin view — full profile (read-only).
+            {previewPublic ? ' Previewing the public view.' : ' This is not the public view.'}
+          </p>
+        </div>
+      )}
+
       {/* Owner-only permissions banner. Hidden when missingCount is 0
           to keep healthy profiles uncluttered. */}
       {!asVisitor && ownCollectionsMissingAdmin > 0 && (
@@ -1163,11 +1212,45 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 <span className="text-ink">{followerCount ?? '—'}</span>{' '}followers
               </button>
             </div>
+            {/* Social links. X prefers the Farcaster-verified handle (badged);
+                every entry is re-validated by socialLink() before it reaches an
+                href, and rendered with rel="noopener noreferrer nofollow ugc". */}
+            {!loadingProfile && (() => {
+              const items = SOCIAL_PLATFORMS.flatMap((p) => {
+                const verified = p.key === 'x' ? profile?.verifiedSocials?.x : undefined
+                const value = verified ?? profile?.socials?.[p.key]
+                if (!value) return []
+                const link = socialLink(p.key, value)
+                return link ? [{ ...link, key: p.key, verified: !!verified }] : []
+              })
+              if (!items.length) return null
+              return (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+                  {items.map((it) => (
+                    <a
+                      key={it.key}
+                      href={it.url}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow ugc"
+                      title={`${it.label}: ${it.display}${it.verified ? ' (verified via Farcaster)' : ''}`}
+                      className="inline-flex items-center gap-1 text-xs font-mono text-muted hover:text-ink transition-colors"
+                    >
+                      <span className="text-subtle uppercase tracking-wider">{it.short}</span>
+                      <span className="truncate max-w-[11rem]">{it.display}</span>
+                      {it.verified && <BadgeCheck size={11} className="text-accent flex-shrink-0" />}
+                    </a>
+                  ))}
+                </div>
+              )
+            })()}
             {theme && <ProvenanceChip theme={theme} />}
-            {/* Owner-only "public view" toggle — always under the follower
-                count. Flips to the exit control while previewing: the one piece
-                of owner chrome kept visible so the preview stays escapable. */}
-            {isOwner &&
+            {/* "Public view" toggle — always under the follower count. Shown to
+                anyone who can see the full profile (owner or admin) so they can
+                flip between the full view and the curated public view. Flips to
+                the exit control while previewing: the one piece of chrome kept
+                visible so the preview stays escapable. Customize is owner-only
+                (it writes the profile theme). */}
+            {canViewFull &&
               (previewPublic ? (
                 <button
                   onClick={() => setPreviewPublic(false)}
@@ -1183,19 +1266,29 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                   >
                     public view
                   </button>
-                  <button
-                    onClick={() => setCustomizing(true)}
-                    className="text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
-                  >
-                    ✦ customize
-                  </button>
+                  {isOwner && (
+                    <button
+                      onClick={() => setCustomizing(true)}
+                      className="text-xs font-mono px-2.5 py-1 border border-line text-muted hover:border-dim hover:text-dim transition-colors"
+                    >
+                      ✦ customize
+                    </button>
+                  )}
                 </div>
               ))}
           </div>
           {/* Earnings card — right of the identity block (wraps below on
               mobile). Private by default: the owner sees it with a pin toggle,
-              visitors only once pinned public. Renders nothing otherwise. */}
-          <ProfileStats address={address} asVisitor={asVisitor} initialEarnings={profile?.earnings ?? null} />
+              visitors only once pinned public. Admins get a read-only view of
+              any artist's figures (incl. private) for verification — but not
+              while previewing the public view, where they should see exactly
+              what a visitor sees. Renders nothing otherwise. */}
+          <ProfileStats
+            address={address}
+            asVisitor={asVisitor}
+            adminView={isAdmin && !isOwner && !previewPublic}
+            initialEarnings={profile?.earnings ?? null}
+          />
         </div>
 
       </div>
@@ -1325,6 +1418,40 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               placeholder="https://… (leave blank for gradient avatar)"
               className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-mono text-muted uppercase tracking-wider">Social Links</label>
+            {SOCIAL_PLATFORMS.map((p) => {
+              // X proven-owned via Farcaster is shown read-only + badged — a
+              // manual handle can't outrank a verified one, so don't offer the field.
+              const verifiedX = p.key === 'x' ? profile?.verifiedSocials?.x : undefined
+              if (verifiedX) {
+                return (
+                  <div key={p.key} className="flex items-center gap-2 text-xs font-mono">
+                    <span className="w-16 flex-shrink-0 text-subtle uppercase tracking-wider">{p.label}</span>
+                    <span className="text-ink truncate">@{verifiedX}</span>
+                    <BadgeCheck size={12} className="text-accent flex-shrink-0" />
+                    <span className="text-subtle">verified via Farcaster</span>
+                  </div>
+                )
+              }
+              return (
+                <div key={p.key} className="flex items-center gap-2">
+                  <span className="w-16 flex-shrink-0 text-xs font-mono text-subtle uppercase tracking-wider">{p.label}</span>
+                  <input
+                    type="text"
+                    value={socialsInput[p.key]}
+                    onChange={(e) => setSocialsInput((s) => ({ ...s, [p.key]: e.target.value }))}
+                    placeholder={p.placeholder}
+                    maxLength={200}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+                  />
+                </div>
+              )
+            })}
           </div>
           <div className="flex gap-3">
             <button onClick={saveProfile} disabled={saving} className="px-4 py-2.5 text-xs font-mono btn-accent">

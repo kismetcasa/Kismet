@@ -12,6 +12,7 @@ import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getCollectionMeta, getCollectionMetaBatch } from '@/lib/kv'
 import { getMomentMetaBatch } from '@/lib/notifications'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
+import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 
 // Cache for 30s — sale-config eligibility depends on (now), and inner
 // inprocess fetches already cache 60s, so this only batches reads across
@@ -252,6 +253,9 @@ export async function GET() {
           return m
         })
         const displayMoments = await enrichMomentsWithKismetMeta(correctedSlice)
+        // Moment creators are gated inside enrichMomentsWithKismetMeta; the
+        // collection deployer (default_admin) is the remaining identity here.
+        const { default_admin: gatedDefaultAdmin } = await stripHiddenDeployerIdentity(collection)
         const ethEligibleTotalWei = ethEligible
           .reduce((sum, e) => sum + e.pricePerToken, 0n)
           .toString()
@@ -264,7 +268,7 @@ export async function GET() {
           name: collection.name,
           metadata: collection.metadata,
           coverTokenId,
-          default_admin: collection.default_admin,
+          default_admin: gatedDefaultAdmin,
           moments: displayMoments,
           ethEligibleTokenIds: ethEligible.map((e) => e.tokenId.toString()),
           ethEligibleTotalWei,

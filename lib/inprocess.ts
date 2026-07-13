@@ -22,6 +22,16 @@ export function inprocessUrl(
 // them on notifications. Defined here so frontend and backend share one source.
 export const DEFAULT_COLLECT_COMMENT = 'collected on kismet'
 
+// Labels for airdrop rows folded into the moment activity feed. An airdrop is
+// a gift, not a purchase, so the copy differs from a collector's "collected on
+// kismet". The comments route picks one per moment by collection and stamps it
+// as the `comment` of each `kind: 'airdrop'` row:
+//   - patron / mint-pass collection → "invited to kismet" (the recipient is
+//     being invited to the platform via the pass), else
+//   - any other collection → "airdropped on kismet".
+export const AIRDROP_INVITE_COMMENT = 'invited to kismet'
+export const AIRDROP_GENERIC_COMMENT = 'airdropped on kismet'
+
 // Legacy default-comment strings still present in historical on-chain data
 // and the upstream comments feed: pre-rename ("collected via Kismet Art") and
 // the post-brand-rename interim ("collected via Kismet"). Used by the activity
@@ -161,6 +171,11 @@ export interface MomentComment {
   sender: string
   comment: string
   timestamp: number // may be ms or seconds — normalize before use
+  // 'airdrop' marks a synthetic activity row the comments route folds in from
+  // a Kismet airdrop record: `sender` is the RECIPIENT (the invited artist)
+  // and the UI renders it as "invited to kismet". Absent/'collect' = an
+  // on-chain collect comment from the inprocess feed.
+  kind?: 'collect' | 'airdrop'
 }
 
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */
@@ -277,6 +292,16 @@ export function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
+/**
+ * Normalize a timestamp that may be in seconds or milliseconds to milliseconds.
+ * Activity rows mix sources — inprocess collect comments (seconds or ms) and
+ * Kismet airdrop rows (ms from Date.now) — so a merged feed must compare them
+ * on one scale. Same >1e12 heuristic formatRelativeTime uses internally.
+ */
+export function normalizeTimestampMs(timestamp: number): number {
+  return timestamp > 1e12 ? timestamp : timestamp * 1000
+}
+
 export function formatRelativeTime(timestamp: number): string {
   const secs = timestamp > 1e12 ? Math.floor(timestamp / 1000) : timestamp
   const diff = Math.floor(Date.now() / 1000) - secs
@@ -309,6 +334,24 @@ export function parseRealSaleEnd(saleEnd: string | undefined | null): number | n
     // non-numeric → no deadline
   }
   return null
+}
+
+/**
+ * Classify a saleConfig.pricePerToken as free (true), priced (false), or
+ * unknown (null). pricePerToken is base units — an integer string (wei for ETH,
+ * 6-dp for USDC) — so a zero value is a free mint, which is not a "sale" and is
+ * filtered out of the Latest/Most Sales feeds via the write-through free index
+ * (lib/saleEnds). Absent / non-numeric input returns null so an ambiguous
+ * value is never classified either way — the same "leave untouched" contract
+ * parseRealSaleEnd uses for an absent saleEnd.
+ */
+export function isZeroPrice(pricePerToken: string | undefined | null): boolean | null {
+  if (pricePerToken == null || pricePerToken === '') return null
+  try {
+    return BigInt(pricePerToken) === 0n
+  } catch {
+    return null
+  }
 }
 
 export type SaleWindowState = 'scheduled' | 'closing' | 'live' | 'ended'

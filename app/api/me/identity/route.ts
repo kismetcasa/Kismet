@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
     await upsertFidProfile(session.fid, lower, {
       username: anchorProfile?.username,
       avatarUrl: anchorProfile?.avatarUrl,
+      socials: anchorProfile?.socials,
     })
   }
   // Legacy pointer kept in lock-step so getKismetIdentityAddress's

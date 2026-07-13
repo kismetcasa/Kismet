@@ -4,6 +4,7 @@ import { runDropCoordination } from '@/lib/agent/scout/dropCoordinator'
 import { SITE_URL } from '@/lib/siteUrl'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
 import { PLATFORM_COLLECTION } from '@/lib/config'
@@ -54,7 +55,12 @@ async function loadCollectionMeta(address: string): Promise<Record<string, unkno
           !Array.isArray(data) &&
           Object.keys(data).length > 0
         ) {
-          return { ...(data as Record<string, unknown>), contractAddress: address }
+          // Feed rows carry the inprocess deployer (default_admin/creator);
+          // null a hidden identity's @handle before it seeds a CollectionCard.
+          return stripHiddenDeployerIdentity({
+            ...(data as Record<string, unknown>),
+            contractAddress: address,
+          })
         }
       }
     }
@@ -179,7 +185,9 @@ export async function GET(req: NextRequest) {
         if (text) {
           const data = JSON.parse(text) as Record<string, unknown>
           if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-            return NextResponse.json({ contractAddress: singleAddress, ...data })
+            return NextResponse.json(
+              await stripHiddenDeployerIdentity({ contractAddress: singleAddress, ...data }),
+            )
           }
         }
       }
