@@ -20,8 +20,8 @@ change outside this repo — see `OPS_RUNBOOK.md`).
 | # | Finding | Status | Evidence / note |
 |---|---------|--------|-----------------|
 | §2 | Feed fan-out-on-read | 🔶 | Bounded to `FANOUT_CONCURRENCY=10` + `MERGE_BUDGET` width cap (`timeline/route.ts:44,276,283`); **materialized feed still not built** |
-| §3 | Fan-out-on-write notifications | ⬜ | Still inline `Promise.all` over followers (`notifications.ts:232`); no queue |
-| §4a | `created-mints` full `SMEMBERS` | ⬜ | Still `smembers` in full (`kv.ts:115`); hardened for degradation only |
+| §3 | Fan-out-on-write notifications | 🔶 | Concurrency bounded to batches of 50 + `large fan-out` warn ≥1k followers (`fanoutToFollowers`, 2026-07-13); **queue (B2) still open** — warn firing is its trigger |
+| §4a | `created-mints` full `SMEMBERS` | ✅ | Bounded `SMISMEMBER` over the request's candidates (`getCreatedMintsMembership`, `lib/kv.ts`; 2026-07-13) — full-set read removed |
 | §4d | 10 MB writing-moment bodies in Redis | ⬜ | `mint-proxy.ts:27` |
 | §5 | Readiness hard-gated on Base RPC | ✅ | RPC is a `degraded` signal, non-gating; only sustained Redis failure gates (`readiness/route.ts:110,121-126`) |
 | §5 | `/api/img` streams through the box | 🔶🛠 | Origin is CDN-ready; **CDN not yet fronted** → `OPS_RUNBOOK.md` |
@@ -48,8 +48,8 @@ source of truth for what remains.
 | # | Constraint | Where | Breaks around | Status |
 |---|-----------|-------|---------------|--------|
 | 1 | **Feed is fan-out-on-read**: every feed load fetches `/timeline?collection=X` from inprocess for tracked collections, then merges/sorts in memory. Personalized feeds (`profile/following/collected/airdroppable`) are `no-store` → zero cache. | `app/api/timeline/route.ts` | Low hundreds of collections, or a spike on profile pages | 🔶 concurrency + merge budget bounded; arch fix open |
-| 2 | **`created-mints` SMEMBERS pulls one member per mint *ever*** into a JS Set on every Mints-feed cold read. | `lib/kv.ts:115`, `timeline/route.ts` | ~50–100k mints (hard-fails at Upstash's 10 MB request cap) | ⬜ |
-| 3 | **Fan-out-on-write notifications**: one mint by a creator with N followers = N Redis writes + N Farcaster pushes. | `lib/notifications.ts:232`, `lib/follows.ts:38` | First creator with 10k+ followers | ⬜ |
+| 2 | **`created-mints` SMEMBERS pulls one member per mint *ever*** into a JS Set on every Mints-feed cold read. | `lib/kv.ts`, `timeline/route.ts` | ~~hard-fails at 10 MB~~ | ✅ replaced with bounded `SMISMEMBER` membership (2026-07-13) |
+| 3 | **Fan-out-on-write notifications**: one mint by a creator with N followers = N Redis writes + N Farcaster pushes. | `lib/notifications.ts`, `lib/follows.ts:38` | First creator with 10k+ followers | 🔶 concurrency bounded + warn ≥1k (2026-07-13); queue open |
 | 4 | **inprocess.world is a hard single dependency** for *all* content + the gas-sponsored mint relay (shared API key). | `lib/inprocess.ts:4`, `lib/mint-proxy.ts` | Their rate limits / any outage | 🔶 timeouts added; breaker open |
 | 5 | **Single Upstash Redis is the only datastore** for all platform state; per-command billing + REST round-trips scale with traffic. | `lib/redis.ts` | Command/bandwidth quota under load | ⬜ |
 
@@ -105,10 +105,12 @@ pagination) — or an inprocess-side global cursor timeline — removes both the
 O(collections) fan-out and the full-catalog in-memory sort, and makes personalized
 feeds cacheable.
 
-## 3. Fan-out-on-write — second cliff (notifications / follower graph)  ⬜
+## 3. Fan-out-on-write — second cliff (notifications / follower graph)  🔶
 
-`fanoutToFollowers()` (`lib/notifications.ts:232`) does `getFollowers(source)` →
-`Promise.all(followers.map(writeNotification))`. `getFollowers` is
+`fanoutToFollowers()` (`lib/notifications.ts`) does `getFollowers(source)` →
+chunked `Promise.all` batches of 50 (**bounded concurrency, 2026-07-13** — caps the
+event-loop/memory/push burst; a `[notifications] large fan-out` warn fires at ≥1k
+followers as B2's trigger). `getFollowers` is
 `SMEMBERS kismetart:followers:<addr>` (`lib/follows.ts:38`) — an unbounded set. So one
 mint by a creator with N followers = 1 big SMEMBERS + N notification writes (each a
 ZADD + dedup + `isPriority` lookup) + up to N Farcaster push POSTs
@@ -128,7 +130,7 @@ rate limits and quotas **fail open** (`lib/ratelimit.ts`, `lib/userQuota.ts:145`
 
 | Key | Read site | Growth | Risk |
 |-----|-----------|--------|------|
-| `kismetart:created-mints` (`<addr>:<tokenId>` per mint) | `lib/kv.ts:115`, Mints feed | **+1 per mint ever** | **Critical** — full set → JS Set on cold read; **hard-fails** past Upstash's 10 MB request cap (~200k members), not just slow |
+| `kismetart:created-mints` (`<addr>:<tokenId>` per mint) | `lib/kv.ts`, Mints feed | **+1 per mint ever** | ✅ **Resolved 2026-07-13** — read is now a bounded `SMISMEMBER` of the request's candidates (`getCreatedMintsMembership`); the set still grows but is never read in full |
 | `kismetart:collections` / `created-collections` | `lib/kv.ts:73,98` | +1 per collection | High (memoized 5 min mitigates) |
 | `kismetart:followers:<addr>` / `following:<addr>` | `lib/follows.ts:38,35` | +1 per edge | High for popular nodes (drives §3) |
 | `kismetart:collected:<addr>` (ZSET, `ZRANGE 0 -1`) | `lib/collected.ts`, timeline | +1 per collect | Med-High for heavy collectors |
@@ -462,7 +464,9 @@ approved fields rather than trusting a bare hash.
    domain`. The misleading "verifies locally" comment has been corrected in code.
 - **A2. The `created-mints` SMEMBERS hard-fails, not just slows** — Upstash's 10 MB
    max-request-size means the unbounded set throws once past ~200k members, breaking the
-   Mints feed on every read until split. An availability cliff (⬜ B3), not just latency.
+   Mints feed on every read until split. An availability cliff, not just latency.
+   **(✅ Resolved 2026-07-13 — the full-set read was replaced with bounded `SMISMEMBER`
+   membership checks; see `REDIS_IMPLEMENTATION_REVIEW.md` §5.2.1.)**
 - **A3. ⬜ The Farcaster push response has a 4th field the code doesn't parse** —
    `failedTokens` (alongside successful/invalid/rateLimited); transient host failures are
    silently dropped. Also retry `rateLimitedTokens` with backoff (A3/B9).
@@ -515,7 +519,7 @@ Two cautions the frameworks stress: **(1)** overload-induced **health-check casc
    `high`; add a viem `fallback` provider; parse `failedTokens`; balance alerts.
 
 **Next (weeks) — relieve the cliffs without re-platforming:**
-2. Bound the big reads (`created-mints` SCAN/scope-filter; paginate
+2. Bound the big reads (`created-mints` ✅ done via SMISMEMBER 2026-07-13; paginate
    `collected`/`listings`/`featured`); move primary-address resolution to Neynar bulk +
    single-flight (B9); **notification fan-out → QStash** (batch + flow-control +
    idempotent worker, B2); shared Redis `cacheHandler` if/when >1 pod (B4) with CDN purge

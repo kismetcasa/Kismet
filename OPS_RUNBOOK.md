@@ -80,9 +80,11 @@ survival is the framework's job here.
   container must pass before the old is removed), so "no server available" is **not** a
   deploy artifact — it's the lone process being *down*.
 - Redis cost is **GET-dominated** (session validation + unread-count poll dwarf all other
-  commands); Redis lives in AWS `us-east-1` while the app runs on Oracle, so every call
-  pays cross-cloud latency (which also amplified the cold-start block). Co-locating Redis
-  cuts latency on every call.
+  commands); Redis lives in AWS `us-east-1` while the app runs on Oracle. **Measured
+  2026-07-13 from inside the app container: ~4.4ms steady-state RTT (162ms cold
+  first-connection)** — same-metro adjacency, so co-locating Redis was evaluated and
+  **shelved** (`REDIS_IMPLEMENTATION_REVIEW.md` §5.1); the cold number is what amplified
+  the cold-start block, and boot warmup already pre-warms the pool.
 
 ---
 
@@ -127,9 +129,10 @@ docker inspect <c> --format 'exit={{.State.ExitCode}} OOMKilled={{.State.OOMKill
 #   exit 137 / OOMKilled=true  → container limit breached (off-heap — check externalMb/arrayBuffersMb)
 ```
 Also sanity-check the Redis-side caps: `SCARD kismetart:collections` (>250 = timeline
-fan-out is thinning, expected + logged); `SCARD kismetart:created-mints` (Mints filter
-hard-fails past ~10 MB / ~200k members — plan the split before then); `ZCARD
-kismetart:featured` should stay far below `MAX_FEATURED=1000`.
+fan-out is thinning, expected + logged); `SCARD kismetart:created-mints` (growth
+telemetry only since 2026-07-13 — reads are bounded `SMISMEMBER`, no full-set read
+remains); `ZCARD kismetart:featured` should stay far below `MAX_FEATURED=1000`; watch
+logs for `[notifications] large fan-out` (≥1k followers → start SCALING.md B2).
 
 ---
 
