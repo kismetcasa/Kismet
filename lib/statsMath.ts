@@ -24,11 +24,12 @@ export interface StatsFeeRecipient {
 }
 
 // Structural superset of the /transfers row. Only `value`/`currency`/
-// `quantity`/`moment.collection` are known-present today; the identifier and
-// per-moment fields are speculative reads — the upstream docs are thin, so we
-// accept several plausible spellings and use whichever the feed actually
-// sends. Absent fields degrade to the pre-existing behavior, and the rebuild
-// counters make the coverage measurable (see RebuildResult in lib/stats.ts).
+// `quantity`/`moment.collection` are known-present today; the identifier,
+// buyer, and per-moment fields are speculative reads — the upstream docs are
+// thin, so we accept several plausible spellings and use whichever the feed
+// actually sends. Absent fields degrade to the pre-existing behavior, and the
+// rebuild counters make the coverage measurable (see RebuildResult in
+// lib/stats.ts).
 export interface StatsTransfer {
   value?: number | null // amount paid (human units); null for airdrops
   currency?: string | null // currency contract; null = native ETH
@@ -39,6 +40,18 @@ export interface StatsTransfer {
   transaction_hash?: string | null
   tx_hash?: string | null
   log_index?: number | null
+  // Best-effort buyer (paying collector) fields, in preference order — the
+  // inprocess /payments feed exposes `buyer: { address }`, so its transfer
+  // sibling plausibly carries one of these. `from` is deliberately NOT read:
+  // on a primary mint the ERC-1155 `from` is the zero address (or a relayer),
+  // so treating it as the buyer would fabricate collectors.
+  buyer?: { address?: string } | string | null
+  buyer_address?: string | null
+  collector?: { address?: string } | string | null
+  recipient?: { address?: string } | string | null
+  recipient_address?: string | null
+  to_address?: string | null
+  to?: string | null
   moment?: {
     token_id?: string | number | null
     address?: string | null
@@ -112,6 +125,78 @@ export function transferMomentRef(
   if (!collection || tokenId == null || tokenId === '') return null
   return { collection: String(collection).toLowerCase(), tokenId: String(tokenId) }
 }
+
+// Lowercased 40-hex address, or null. Strict shape check so a feed that puts
+// a username / ENS / empty string in a buyer field can't pollute the
+// collector set with non-wallet garbage.
+const asWalletAddress = (v: unknown): string | null => {
+  if (typeof v !== 'string') return null
+  const lower = v.trim().toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(lower)) return null
+  if (lower === ZERO_ADDRESS) return null
+  return lower
+}
+
+/**
+ * The wallet that PAID for this transfer, when the feed exposes one — the
+ * platform "unique collectors" key. Accepts the plausible spellings on
+ * StatsTransfer in preference order (most explicit first) and returns a
+ * validated lowercase wallet address, or null when no field yields one (the
+ * row is then counted in PlatformTotals.buyerMissing so coverage stays
+ * measurable, mirroring how droppedMints exposes attribution gaps).
+ */
+export function transferBuyer(t: StatsTransfer): string | null {
+  const candidates: unknown[] = [
+    typeof t.buyer === 'string' ? t.buyer : t.buyer?.address,
+    t.buyer_address,
+    typeof t.collector === 'string' ? t.collector : t.collector?.address,
+    typeof t.recipient === 'string' ? t.recipient : t.recipient?.address,
+    t.recipient_address,
+    t.to_address,
+    t.to,
+  ]
+  for (const c of candidates) {
+    const addr = asWalletAddress(c)
+    if (addr) return addr
+  }
+  return null
+}
+
+/**
+ * Platform-wide roll-up accumulated alongside the per-artist maps — one pass
+ * over the same gated rows, so the platform totals and every artist's card
+ * are computed from the identical row set and can never disagree about what
+ * counts as a sale.
+ *
+ * `eth`/`usdc` are GROSS sale value (what buyers paid), not the Σ of artist
+ * credits: a sub-100 fee_recipients split credits artists less than the sale
+ * value (the unlisted platform cut), and the platform figure must not shrink
+ * with it. `editions` includes rows whose creator is unresolvable — the sale
+ * still happened platform-wide even when no artist can be credited.
+ */
+export interface PlatformTotals {
+  /** Paid transfers folded (same rows counters.counted counts). */
+  transactions: number
+  /** Editions sold across those transfers (Σ quantity, unknown → 1). */
+  editions: number
+  /** Gross ETH paid across eth-currency rows. */
+  eth: number
+  /** Gross USDC paid across usdc-currency rows. */
+  usdc: number
+  /** Unique buyer wallets (pre smart-wallet→EOA fold — lib/stats.ts remaps). */
+  buyers: Set<string>
+  /** Counted rows exposing no recognizable buyer field. */
+  buyerMissing: number
+}
+
+export const newPlatformTotals = (): PlatformTotals => ({
+  transactions: 0,
+  editions: 0,
+  eth: 0,
+  usdc: 0,
+  buyers: new Set<string>(),
+  buyerMissing: 0,
+})
 
 export interface AccumulateCounters {
   /** Paid transfers folded into the maps (mints and/or earnings). */
@@ -215,6 +300,12 @@ export function resolveMomentCreator(inputs: {
  * creator. An unknown ERC20 currency skips ONLY the value — pricing a foreign
  * token as ETH would fabricate earnings — while the mint count (currency-
  * independent) is still credited, as the pre-statsMath code always did.
+ *
+ * `platform` (optional) receives the platform-wide roll-up for the SAME row,
+ * behind the same free/invalid gates: transactions, editions, and the buyer
+ * fold are currency-independent (an unknown-ERC20 sale still happened); the
+ * gross value lands in the eth/usdc buckets only when the currency is
+ * recognized — the identical fail-closed rule the artist buckets follow.
  */
 export function accumulateTransfer(
   t: StatsTransfer,
@@ -223,6 +314,7 @@ export function accumulateTransfer(
   eth: Map<string, number>,
   usdc: Map<string, number>,
   counters: AccumulateCounters,
+  platform?: PlatformTotals,
 ): void {
   const value = typeof t.value === 'number' ? t.value : 0
   // Corrupt value (NaN/Infinity — both pass `typeof === 'number'` — or an
@@ -277,11 +369,26 @@ export function accumulateTransfer(
   if (creator) bump(mints, creator, qty)
   else counters.droppedMints += qty
 
+  // Platform roll-up for every counted row — including creator-unresolvable
+  // and unknown-currency rows, whose SALE is real even when the artist credit
+  // or the value bucket must be skipped.
+  if (platform) {
+    platform.transactions++
+    platform.editions += qty
+    const buyer = transferBuyer(t)
+    if (buyer) platform.buyers.add(buyer)
+    else platform.buyerMissing++
+  }
+
   const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
   if (currency === 'unknown') {
     counters.unknownCurrency++
     counters.counted++
     return
+  }
+  if (platform) {
+    if (currency === 'usdc') platform.usdc += value
+    else platform.eth += value
   }
   const earned = currency === 'usdc' ? usdc : eth
   if (recipients.length) {
