@@ -38,10 +38,46 @@ const SECURITY_HEADERS = [
   { key: 'Content-Security-Policy-Report-Only', value: CSP_REPORT_ONLY },
 ]
 
+// Canonical host, mirroring lib/siteUrl.ts (can't import TS here). Drives the
+// www→apex redirect and the non-canonical-host noindex header below.
+const CANONICAL_HOST = new URL(
+  (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://kismet.art').replace(/\/$/, ''),
+).host
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // www → apex, permanent. DNS resolves www.kismet.art to the same box as the
+  // apex, so if the proxy ever routes it here, serving identical content on two
+  // hosts would split ranking signals (the classic silent duplicate-site leak).
+  // Handling it in-repo makes the redirect versioned and independent of anyone
+  // remembering a Traefik rule; if the proxy never routes www, this is dormant
+  // insurance. http→https stays at the proxy layer on purpose — Next sits
+  // behind TLS termination and a proto-based redirect risks loops.
+  async redirects() {
+    return [
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: `www.${CANONICAL_HOST}` }],
+        destination: `https://${CANONICAL_HOST}/:path*`,
+        permanent: true,
+      },
+    ]
+  },
+
   async headers() {
-    return [{ source: '/:path*', headers: SECURITY_HEADERS }]
+    return [
+      { source: '/:path*', headers: SECURITY_HEADERS },
+      // Any host that isn't the canonical one (staging domains, direct-IP
+      // hits, preview deploys) is told not to index — header-level, so it
+      // covers every route including static assets, with zero per-page code.
+      // The canonical host never matches `missing`, so production is
+      // untouched. Localhost dev gets the header too, which is harmless.
+      {
+        source: '/:path*',
+        missing: [{ type: 'host', value: CANONICAL_HOST }],
+        headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
+      },
+    ]
   },
 
   // Emit a self-contained `.next/standalone/server.js` plus a traced

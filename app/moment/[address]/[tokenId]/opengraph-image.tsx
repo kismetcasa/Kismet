@@ -52,7 +52,11 @@ export default async function Image({ params }: Props) {
     // "by <creator>" line at the bottom of the share card never
     // renders.
     const detail = await fetchMomentDetail(address, tokenId)
-    if (detail) {
+    // Creator-hidden moment → default card only (label + #tokenId, both
+    // already in the URL): no name, no creator, no artwork. Mirrors the
+    // profile opengraph-image's hidden handling — the URL stays fetchable
+    // for crawlers that cached it, but leaks nothing the page withholds.
+    if (detail && !detail.hidden) {
       if (detail.metadata?.name) title = detail.metadata.name
       if (detail.creator) {
         creator = detail.creator.username || shortAddress(detail.creator.address)

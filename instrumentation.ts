@@ -59,12 +59,9 @@ function startBootTasks(): void {
 
   // Warm the L1 caches every read-side route hits so the first request after
   // boot finds them hot. Fire-and-forget + per-getter try/catch so a transient
-  // Redis blip at boot never delays serving. NOTE: getCreatedMintsSet() is
-  // deliberately NOT warmed here — it is an unbounded SMEMBERS that grows with
-  // every mint ever and hard-fails past Upstash's 10MB request cap; warming it
-  // would spike boot memory and add a failure surface for zero benefit (the
-  // standalone Mints feed lazy-loads it on first read and already degrades
-  // gracefully if the read throws — see app/api/timeline/route.ts).
+  // Redis blip at boot never delays serving. (created-mints needs no warmup:
+  // the Mints-feed filter reads it via bounded per-request SMISMEMBER —
+  // getCreatedMintsMembership in lib/kv.ts — with no cache layer to warm.)
   void (async () => {
     try {
       await Promise.all([

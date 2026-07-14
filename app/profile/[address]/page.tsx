@@ -10,6 +10,8 @@ import { SITE_URL } from '@/lib/siteUrl'
 import { shortAddress } from '@/lib/inprocess'
 import { isMobileUA } from '@/lib/serverDevice'
 import { ProfileView } from '@/components/ProfileView'
+import { JsonLd } from '@/components/JsonLd'
+import { profileJsonLd } from '@/lib/structuredData'
 import { getProfileTheme } from '@/lib/profileTheme'
 
 interface Props {
@@ -162,5 +164,38 @@ export default async function ProfilePage({ params }: Props) {
   if (canonical.canonicalAddress.toLowerCase() !== address.toLowerCase()) {
     redirect(`/profile/${canonical.canonicalAddress}`)
   }
-  return <ProfileView address={address} isMobile={isMobile} theme={theme} />
+
+  // Server-rendered schema.org JSON-LD: a ProfilePage wrapping a Person entity
+  // + a Home › Profile breadcrumb. Suppressed for admin-hidden identities so we
+  // never emit a name/avatar the metadata deliberately withholds — an owner
+  // viewing their own hidden profile still renders the page, just without the
+  // rich entity markup. Mirrors the description generateMetadata uses so the
+  // structured and meta descriptions agree. Built from the already-resolved
+  // canonical profile (no extra fetch).
+  const identityHidden = await isProfileIdentityHidden(address, canonical.canonicalAddress)
+  const displayName =
+    canonical.profile.username ||
+    canonical.farcaster?.username ||
+    canonical.farcaster?.displayName ||
+    shortAddress(canonical.canonicalAddress)
+  const jsonLd = identityHidden
+    ? null
+    : profileJsonLd({
+        url: `${SITE_URL}/profile/${canonical.canonicalAddress}`,
+        name: displayName,
+        description: canonical.farcaster?.username
+          ? `@${canonical.farcaster.username} on Kismet Art`
+          : `${displayName}'s moments and collections on Kismet Art`,
+        image: canonical.profile.avatarUrl || canonical.farcaster?.pfpUrl || undefined,
+        sameAs: canonical.farcaster?.username
+          ? [`https://warpcast.com/${canonical.farcaster.username}`]
+          : undefined,
+      })
+
+  return (
+    <>
+      {jsonLd && <JsonLd data={jsonLd} />}
+      <ProfileView address={address} isMobile={isMobile} theme={theme} />
+    </>
+  )
 }

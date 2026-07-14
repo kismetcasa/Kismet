@@ -595,6 +595,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       tokenId,
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
+      // Post-collect share prompt (Mini App only — the hook gates). creatorName
+      // is the display fallback; the share flow re-resolves the creator's raw
+      // FC username for a real @mention (see lib/collectShare).
+      share: {
+        momentName: detail.metadata?.name ?? null,
+        creatorAddress: creatorAddress || null,
+        creatorName,
+      },
     })
     if (result) {
       setCollected(true)

@@ -540,10 +540,11 @@ single-flight + generation-counter with per-write `.invalidate()`; `withLeaderLo
 (`SET NX EX` + Lua compare-and-delete); passive readiness (skip billed PING when
 real traffic proved Redis healthy within 10 s).
 
-**Risks.** Unbounded `SMEMBERS` sets (`getCreatedMintsSet` grows per-mint-ever and
-hard-fails past 10 MB — deliberately excluded from boot warmup); no fail-fast on
+**Risks.** No fail-fast on
 missing env (boots with placeholder creds); process-local caches are per-pod (tuned
-for a single instance).
+for a single instance). (The former unbounded `created-mints` SMEMBERS risk was
+resolved 2026-07-13 — reads are now bounded `SMISMEMBER` membership checks;
+`REDIS_IMPLEMENTATION_REVIEW.md` §5.2.1.)
 
 #### F2. Rate limiting, quotas & abuse controls (`ratelimit-quota-abuse`)
 **What.** The platform's abuse/DoS/spend firewall: IP fixed-window rate limits,
