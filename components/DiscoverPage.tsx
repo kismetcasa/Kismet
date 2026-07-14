@@ -12,6 +12,7 @@ import { ViewModeToggle } from '@/components/ViewModeToggle'
 import { useViewMode } from '@/hooks/useViewMode'
 import { useLongPressDrag } from '@/hooks/useLongPressDrag'
 import type { Moment } from '@/lib/inprocess'
+import { trackFunnel } from '@/lib/funnel'
 import { useAdmin } from '@/contexts/AdminContext'
 
 // Mobile-mount context. Server-side UA detection (see app/page.tsx)
@@ -376,6 +377,12 @@ function MainFeed() {
   const [followingOn, setFollowingOn] = useState(false)
   const [followingAddrs, setFollowingAddrs] = useState<string[]>([])
   const [viewMode, setViewMode] = useViewMode()
+
+  // Funnel: one landing per session (trackFunnel dedupes via sessionStorage),
+  // fired from the landing surface itself so back-navs don't recount.
+  useEffect(() => {
+    trackFunnel('landing')
+  }, [])
 
   useEffect(() => {
     if (!address || !followingOn) { setFollowingAddrs([]); return }
