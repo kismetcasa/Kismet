@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { redis } from '@/lib/redis'
+import { FUNNEL_EVENTS } from '@/lib/funnel'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 
 /**
@@ -13,15 +14,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
  */
 export const dynamic = 'force-dynamic'
 
-const EVENTS = new Set([
-  'landing',
-  'connect_modal',
-  'connect_success',
-  'collect_attempt',
-  'collect_success',
-  'mint_attempt',
-  'mint_success',
-])
+const EVENTS = new Set<string>(FUNNEL_EVENTS)
 
 const TTL_SECONDS = 90 * 24 * 60 * 60
 
