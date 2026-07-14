@@ -7,14 +7,20 @@
 //
 // Read side: kismetart:funnel:<event>:<YYYY-MM-DD> in Redis (90-day TTL).
 
-export type FunnelEvent =
-  | 'landing'
-  | 'connect_modal'
-  | 'connect_success'
-  | 'collect_attempt'
-  | 'collect_success'
-  | 'mint_attempt'
-  | 'mint_success'
+// The seven events, in funnel order — the single source shared by the client
+// tracker (below), the /api/funnel sink's allowlist, and the admin read
+// (lib/funnelServer.ts), so the three surfaces can never drift.
+export const FUNNEL_EVENTS = [
+  'landing',
+  'connect_modal',
+  'connect_success',
+  'collect_attempt',
+  'collect_success',
+  'mint_attempt',
+  'mint_success',
+] as const
+
+export type FunnelEvent = (typeof FUNNEL_EVENTS)[number]
 
 // De-dupe key for once-per-session events (currently just 'landing' — a
 // back-nav to the feed isn't a new visit).

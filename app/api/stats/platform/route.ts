@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getPlatformSalesSnapshot, getRoyaltyTotals } from '@/lib/stats'
 import { getCatalogCensus } from '@/lib/catalogCensus'
+import { getFunnelCounts } from '@/lib/funnelServer'
 import { getEthUsd } from '@/lib/ethPrice'
+import { verifyAdminSession } from '@/lib/curator'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -20,6 +22,8 @@ import { errorResponse } from '@/lib/apiResponse'
 //              Chainlink ETH/USD price the artist cards use, with the same
 //              honesty rule (usd = 0 when the price is unavailable and the
 //              figure has an ETH leg, never a silently-USDC-only number).
+//   funnel   — last-14-days conversion counters (admin session + ?funnel=1
+//              only; see the gating comment in the handler).
 //
 // PUBLIC on purpose, unlike per-artist earnings (private by default): these
 // are platform aggregates that expose no individual's figures — the same
@@ -33,6 +37,21 @@ export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`stats-platform:${ip}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
+  }
+
+  // Funnel block (conversion counters — lib/funnelServer.ts): ADMIN-ONLY and
+  // opt-in via ?funnel=1. Unlike the aggregates below (derivable from public
+  // feeds + chain), drop-off ratios are internal product data. The query flag
+  // keeps the plain URL's shared-cache behavior untouched and the hot public
+  // path free of session reads; a non-admin ?funnel=1 response stays
+  // byte-identical to the public payload (no oracle), while the admin variant
+  // is no-store and lives at a distinct cache key, so a cached public body
+  // can never mask it (and it can never enter a shared cache).
+  const wantsFunnel = new URL(req.url).searchParams.get('funnel') === '1'
+  let funnel: Awaited<ReturnType<typeof getFunnelCounts>> = null
+  if (wantsFunnel) {
+    const admin = await verifyAdminSession()
+    if (!('error' in admin)) funnel = await getFunnelCounts()
   }
 
   const [sales, catalog, royalties, ethUsd] = await Promise.all([
@@ -105,9 +124,17 @@ export async function GET(req: NextRequest) {
           }
         : null,
       earnings,
+      ...(funnel ? { funnel } : {}),
     },
     // Aggregates identical for every viewer and refreshed hourly — safe for a
     // short shared-cache window (same policy shape as the public timeline).
-    { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
+    // The admin funnel variant is viewer-dependent and must never be shared.
+    {
+      headers: {
+        'Cache-Control': funnel
+          ? 'private, no-store'
+          : 'public, s-maxage=300, stale-while-revalidate=600',
+      },
+    },
   )
 }
