@@ -20,9 +20,13 @@ import { getScout, saveScout, type ScoutRecord } from './store'
 import type { ScoutSpender } from './spender'
 import type { StoredSpendPermission } from './serverExecutor'
 
-/** Stable identity for a stored permission (token+allowance+period+start) — the
- *  same key the scout route uses, so the drain removes exactly what was queued. */
-const permId = (p: StoredSpendPermission): string => {
+/** THE stable identity for a stored permission (token+allowance+period+start).
+ *  Shared by the scout route (which QUEUES superseded permissions by it) and the
+ *  drain below (which REMOVES them by it) — one function, so the two sides can
+ *  never drift and strand a queued grant un-revoked. A fresh grant always differs
+ *  (new start); a reused one matches — so the route never stashes, and the drain
+ *  never revokes, the permission still being spent against. */
+export const permKey = (p: StoredSpendPermission): string => {
   const d = p.permission
   return `${d.token}:${d.allowance}:${d.period}:${d.start}`.toLowerCase()
 }
@@ -64,8 +68,8 @@ export async function drainSupersededPermissions(record: ScoutRecord, spender: S
   const pending = record.supersededPermissions
   if (!pending || pending.length === 0) return
   const failed = await revokePermissionsAsSpender(pending, spender)
-  const failedIds = new Set(failed.map(permId))
-  const retiredIds = new Set(pending.filter((p) => !failedIds.has(permId(p))).map(permId))
+  const failedIds = new Set(failed.map(permKey))
+  const retiredIds = new Set(pending.filter((p) => !failedIds.has(permKey(p))).map(permKey))
   if (retiredIds.size === 0) return // nothing retired → nothing to persist
 
   // Re-read before persisting: this may be called with a snapshot taken earlier in
@@ -74,7 +78,7 @@ export async function drainSupersededPermissions(record: ScoutRecord, spender: S
   // retired, by identity, preserving whatever the fresh record has since queued.
   const fresh = (await getScout(record.scout.owner)) ?? record
   const freshQueue = fresh.supersededPermissions ?? []
-  const remaining = freshQueue.filter((p) => !retiredIds.has(permId(p)))
+  const remaining = freshQueue.filter((p) => !retiredIds.has(permKey(p)))
   if (remaining.length === freshQueue.length) return // fresh queue had none of them
   if (remaining.length > 0) fresh.supersededPermissions = remaining
   else delete fresh.supersededPermissions

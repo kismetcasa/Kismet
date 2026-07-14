@@ -8,7 +8,7 @@ import { USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
 import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 import { getScoutSpender } from '@/lib/agent/scout/spender'
-import { revokePermissionsAsSpender } from '@/lib/agent/scout/revoke'
+import { revokePermissionsAsSpender, permKey } from '@/lib/agent/scout/revoke'
 import type { StoredSpendPermission } from '@/lib/agent/scout/serverExecutor'
 
 export const runtime = 'nodejs'
@@ -250,12 +250,4 @@ export async function PUT(req: NextRequest) {
 
 function isPositiveIntStr(v: unknown): v is string {
   return typeof v === 'string' && /^[0-9]+$/.test(v) && BigInt(v) > 0n
-}
-
-/** Stable identity for a stored permission (token+allowance+period+start). A fresh
- *  grant always differs (new start), a reused one matches — so we never stash, and
- *  the run loop never revokes, the permission we're still spending against. */
-function permKey(p: StoredSpendPermission): string {
-  const d = p.permission
-  return `${d.token}:${d.allowance}:${d.period}:${d.start}`.toLowerCase()
 }
