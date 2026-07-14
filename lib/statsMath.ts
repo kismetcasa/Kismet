@@ -163,6 +163,31 @@ export function transferBuyer(t: StatsTransfer): string | null {
 }
 
 /**
+ * Which universe a transfer belongs to for the PLATFORM roll-up. The
+ * In•Process /transfers feed is network-wide (every client app's sales on the
+ * chain), while "the platform's" totals must mean KISMET's tracked
+ * collections — without this gate the roll-up reported the whole network's
+ * volume as Kismet's (~6× the real editions figure when first measured).
+ *   'in'      — the moment's collection is in Kismet's tracked registry: fold.
+ *   'pass'    — the Patron/Mint-Pass collection: a pass purchase is real
+ *               Kismet revenue but not an ARTWORK sale, so it folds into the
+ *               separate `passes` sub-totals and never inflates the art
+ *               figures (editions/collectors/artists).
+ *   'out'     — resolvable collection, not tracked: exclude, count outOfScope.
+ *   'unknown' — no collection ref resolvable on the row: exclude, count
+ *               scopeUnknown. FAIL-CLOSED — a money figure must never include
+ *               a row we can't place, and the counter keeps the gap visible.
+ * The PER-ARTIST maps are scope-gated the same way ('in' + 'pass' fold;
+ * 'out'/'unknown' are excluded BEFORE attribution): a platform decision
+ * (2026-07-14) — every displayed number on kismet.art, including an artist's
+ * earnings card, means KISMET activity, and no surface shows network-wide
+ * In•Process figures. 'pass' rows run the full per-artist path because pass
+ * revenue reaches real artists through fee_recipients splits (the mint
+ * credit itself lands on the pass's creator — the platform treasury).
+ */
+export type PlatformScope = 'in' | 'pass' | 'out' | 'unknown'
+
+/**
  * Platform-wide roll-up accumulated alongside the per-artist maps — one pass
  * over the same gated rows, so the platform totals and every artist's card
  * are computed from the identical row set and can never disagree about what
@@ -173,9 +198,12 @@ export function transferBuyer(t: StatsTransfer): string | null {
  * value (the unlisted platform cut), and the platform figure must not shrink
  * with it. `editions` includes rows whose creator is unresolvable — the sale
  * still happened platform-wide even when no artist can be credited.
+ *
+ * Invariant: transactions + passes.transactions + outOfScope + scopeUnknown
+ * === counters.counted.
  */
 export interface PlatformTotals {
-  /** Paid transfers folded (same rows counters.counted counts). */
+  /** Paid IN-SCOPE transfers folded. */
   transactions: number
   /** Editions sold across those transfers (Σ quantity, unknown → 1). */
   editions: number
@@ -185,8 +213,21 @@ export interface PlatformTotals {
   usdc: number
   /** Unique buyer wallets (pre smart-wallet→EOA fold — lib/stats.ts remaps). */
   buyers: Set<string>
-  /** Counted rows exposing no recognizable buyer field. */
+  /** Counted in-scope rows exposing no recognizable buyer field. */
   buyerMissing: number
+  /** Unique credited creators on in-scope rows (pre smart-wallet fold). */
+  artists: Set<string>
+  /** In-scope editions whose creator was unresolvable (still in `editions`). */
+  droppedMints: number
+  /** In-scope rows whose value was skipped (unrecognized ERC20). */
+  unknownCurrency: number
+  /** Counted rows excluded: collection resolvable but not Kismet-tracked. */
+  outOfScope: number
+  /** Counted rows excluded: no collection ref resolvable on the row. */
+  scopeUnknown: number
+  /** Paid Patron/Mint-Pass sales — Kismet revenue, kept out of the art
+   *  figures. Same gates and currency rules as the art buckets. */
+  passes: { transactions: number; editions: number; eth: number; usdc: number }
 }
 
 export const newPlatformTotals = (): PlatformTotals => ({
@@ -196,6 +237,12 @@ export const newPlatformTotals = (): PlatformTotals => ({
   usdc: 0,
   buyers: new Set<string>(),
   buyerMissing: 0,
+  artists: new Set<string>(),
+  droppedMints: 0,
+  unknownCurrency: 0,
+  outOfScope: 0,
+  scopeUnknown: 0,
+  passes: { transactions: 0, editions: 0, eth: 0, usdc: 0 },
 })
 
 export interface AccumulateCounters {
@@ -306,6 +353,12 @@ export function resolveMomentCreator(inputs: {
  * fold are currency-independent (an unknown-ERC20 sale still happened); the
  * gross value lands in the eth/usdc buckets only when the currency is
  * recognized — the identical fail-closed rule the artist buckets follow.
+ * `platformScope` gates WHICH rows fold (see PlatformScope): 'in' credits the
+ * per-artist maps AND the platform art roll-up; 'pass' credits the per-artist
+ * maps AND the passes sub-totals; 'out'/'unknown' credit NOTHING and only bump
+ * their exclusion counter (after the free/invalid gates, so a free or corrupt
+ * row is never double-classified). counters.counted stays network-wide across
+ * all scopes — the shrink-guard's feed-completeness signal.
  */
 export function accumulateTransfer(
   t: StatsTransfer,
@@ -315,6 +368,7 @@ export function accumulateTransfer(
   usdc: Map<string, number>,
   counters: AccumulateCounters,
   platform?: PlatformTotals,
+  platformScope: PlatformScope = 'in',
 ): void {
   const value = typeof t.value === 'number' ? t.value : 0
   // Corrupt value (NaN/Infinity — both pass `typeof === 'number'` — or an
@@ -362,49 +416,84 @@ export function accumulateTransfer(
       : null,
   })
   const creator = resolved.address?.toLowerCase()
-  if (resolved.source === 'kv') counters.kvCreatorOverrides++
-  if (resolved.source === 'collection') counters.collectionFallbacks++
-  if (resolved.source === 'recipient') counters.recoveredCreators++
 
-  if (creator) bump(mints, creator, qty)
-  else counters.droppedMints += qty
+  // Per-artist attribution — the maps behind every earnings card — is now
+  // Kismet-scoped exactly like the platform roll-up: only 'in' + 'pass' rows
+  // credit an artist; 'out'/'unknown' rows fold nothing here (no surface on
+  // kismet.art displays network-wide In•Process figures). The attribution
+  // diagnostics move with the credit so they keep describing Kismet credit.
+  // NOTE: counters.counted (below) stays network-wide on purpose — it is the
+  // rebuild shrink-guard's "how much of the append-only feed did we fold"
+  // signal (lib/stats.ts), which must not move with Kismet scoping or the
+  // first scoped run would read as an implausible shrink and abort.
+  const creditArtist = platformScope === 'in' || platformScope === 'pass'
+  if (creditArtist) {
+    if (resolved.source === 'kv') counters.kvCreatorOverrides++
+    if (resolved.source === 'collection') counters.collectionFallbacks++
+    if (resolved.source === 'recipient') counters.recoveredCreators++
+    if (creator) bump(mints, creator, qty)
+    else counters.droppedMints += qty
+  }
 
-  // Platform roll-up for every counted row — including creator-unresolvable
-  // and unknown-currency rows, whose SALE is real even when the artist credit
-  // or the value bucket must be skipped.
-  if (platform) {
-    platform.transactions++
-    platform.editions += qty
+  // Platform roll-up for every counted IN-SCOPE row — including creator-
+  // unresolvable and unknown-currency rows, whose SALE is real even when the
+  // artist credit or the value bucket must be skipped. Rows outside Kismet's
+  // scope bump only their exclusion counter (post-gates, so free/corrupt rows
+  // stay classified by the gate that dropped them, never as scope exclusions).
+  // Pass-collection rows fold into the passes sub-totals instead of the art
+  // figures — same gates, same fail-closed currency rule.
+  const p = platform && platformScope === 'in' ? platform : undefined
+  if (platform && !p) {
+    if (platformScope === 'pass') {
+      platform.passes.transactions++
+      platform.passes.editions += qty
+      const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
+      if (currency === 'usdc') platform.passes.usdc += value
+      else if (currency === 'eth') platform.passes.eth += value
+    } else if (platformScope === 'out') platform.outOfScope++
+    else platform.scopeUnknown++
+  }
+  if (p) {
+    p.transactions++
+    p.editions += qty
     const buyer = transferBuyer(t)
-    if (buyer) platform.buyers.add(buyer)
-    else platform.buyerMissing++
+    if (buyer) p.buyers.add(buyer)
+    else p.buyerMissing++
+    if (creator) p.artists.add(creator)
+    else p.droppedMints += qty
   }
 
   const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
   if (currency === 'unknown') {
     counters.unknownCurrency++
+    if (p) p.unknownCurrency++
     counters.counted++
     return
   }
-  if (platform) {
-    if (currency === 'usdc') platform.usdc += value
-    else platform.eth += value
+  if (p) {
+    if (currency === 'usdc') p.usdc += value
+    else p.eth += value
   }
-  const earned = currency === 'usdc' ? usdc : eth
-  if (recipients.length) {
-    // Divide by max(100, Σpct) so the credited shares can never sum to MORE
-    // than the sale value: a corrupt feed row whose percentages exceed 100
-    // is scaled down instead of over-reporting earnings, while a legitimate
-    // sub-100 split (e.g. an unlisted platform cut) still credits exactly the
-    // listed percentages (divisor stays 100). Over-crediting a money figure
-    // is the worst failure class, so this fails toward under-report.
-    const totalPct = recipients.reduce((s, r) => s + r.percent_allocation, 0)
-    const divisor = Math.max(100, totalPct)
-    for (const r of recipients) {
-      bump(earned, r.artist_address.toLowerCase(), (value * r.percent_allocation) / divisor)
+  // Per-artist earnings credit — scoped to Kismet activity like the mint
+  // credit above (creditArtist). counters.counted still increments for every
+  // in-feed row regardless of scope (the shrink-guard signal).
+  if (creditArtist) {
+    const earned = currency === 'usdc' ? usdc : eth
+    if (recipients.length) {
+      // Divide by max(100, Σpct) so the credited shares can never sum to MORE
+      // than the sale value: a corrupt feed row whose percentages exceed 100
+      // is scaled down instead of over-reporting earnings, while a legitimate
+      // sub-100 split (e.g. an unlisted platform cut) still credits exactly the
+      // listed percentages (divisor stays 100). Over-crediting a money figure
+      // is the worst failure class, so this fails toward under-report.
+      const totalPct = recipients.reduce((s, r) => s + r.percent_allocation, 0)
+      const divisor = Math.max(100, totalPct)
+      for (const r of recipients) {
+        bump(earned, r.artist_address.toLowerCase(), (value * r.percent_allocation) / divisor)
+      }
+    } else if (creator) {
+      bump(earned, creator, value)
     }
-  } else if (creator) {
-    bump(earned, creator, value)
   }
   counters.counted++
 }

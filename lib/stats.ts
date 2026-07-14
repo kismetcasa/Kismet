@@ -7,6 +7,10 @@ import { getMomentMetaBatch } from './notifications'
 import { getStoredSplits } from './splits'
 import { getCachedCreatorRewardRecipient } from './pending'
 import { getSmartWalletOwners } from './smartWalletCache'
+import { getTrackedCollections } from './kv'
+import { PATRON_COLLECTION_ADDRESS } from './patronCollection'
+import { fetchCollectionMoments } from './inprocess'
+import { getAirdropsByMoment } from './airdrops'
 import { USDC_BASE } from './zoraMint'
 import {
   accumulateTransfer,
@@ -15,6 +19,7 @@ import {
   remapEntries,
   transferDedupKey,
   transferMomentRef,
+  type PlatformScope,
 } from './statsMath'
 import type { EarningsAmounts } from './earningsFormat'
 
@@ -50,8 +55,14 @@ const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
 // Platform-wide primary-sale roll-up, snapshotted by the SAME rebuild scan
 // that writes the per-artist sets (one pass, one row-gating rule — see
 // PlatformTotals in lib/statsMath.ts), so /api/stats/platform and the artist
-// cards can never disagree about what counted as a sale. Single JSON value,
-// absolute overwrite per successful rebuild; read by getPlatformSalesSnapshot.
+// cards can never disagree about what counted as a sale. SCOPE differs on
+// purpose: the roll-up folds only rows whose moment lives in a Kismet-tracked
+// collection (the /transfers feed is In•Process-network-wide, and reporting
+// the network's volume as Kismet's overstated editions ~6× when first
+// measured), while the per-artist sets keep their original network-wide
+// semantics — an artist's card has always meant "their In•Process earnings".
+// Single JSON value, absolute overwrite per successful rebuild; read by
+// getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
 // One-time idempotency claim per filled listing so a retried/concurrent fill
 // credits exactly once. Committed ATOMICALLY with the credit (see the Lua
@@ -141,13 +152,21 @@ export interface RebuildResult {
   recoveredCreators: number
   /** Members whose scores were folded onto their owner EOA (smart wallets). */
   remappedWallets: number
-  /** Editions sold platform-wide (Σ quantity over counted rows). */
+  /** Editions sold on Kismet-tracked collections (Σ quantity, in-scope). */
   editionsSold: number
-  /** Unique buyer wallets after the smart-wallet→EOA fold. */
+  /** Unique buyer wallets after the smart-wallet→EOA fold (in-scope). */
   collectors: number
-  /** Counted rows with no recognizable buyer field — the direct read on how
+  /** In-scope rows with no recognizable buyer field — the direct read on how
    *  much of the collector count the feed's row shape actually supports. */
   buyerMissing: number
+  /** Counted rows excluded from the roll-up: other In•Process collections. */
+  outOfScope: number
+  /** Counted rows excluded from the roll-up: no collection ref resolvable. */
+  scopeUnknown: number
+  /** Paid Patron/Mint-Pass editions sold (kept out of editionsSold). */
+  passEditions: number
+  /** Pass editions airdropped as invites (Kismet airdrop records). */
+  passInvited: number
 }
 
 /**
@@ -159,7 +178,7 @@ export interface RebuildResult {
  */
 export interface PlatformSalesSnapshot {
   updatedAt: number
-  /** Paid transfers folded. */
+  /** Paid transfers folded (Kismet-tracked collections only). */
   transactions: number
   /** Editions sold (Σ quantity, incl. creator-unresolvable rows). */
   editions: number
@@ -169,14 +188,30 @@ export interface PlatformSalesSnapshot {
   usdc: number
   /** Unique buyer wallets (smart wallets folded onto their owner EOA). */
   collectors: number
-  /** Artists credited with ≥1 paid sale (post smart-wallet fold). */
+  /** Artists credited with ≥1 in-scope paid sale (post smart-wallet fold). */
   artists: number
-  /** Coverage: counted rows with no recognizable buyer field. */
+  /** Coverage: in-scope rows with no recognizable buyer field. */
   buyerMissing: number
-  /** Coverage: rows whose value was skipped (unrecognized ERC20). */
+  /** Coverage: in-scope rows whose value was skipped (unrecognized ERC20). */
   unknownCurrency: number
-  /** Coverage: editions with no resolvable creator (still in `editions`). */
+  /** Coverage: in-scope editions with no resolvable creator (in `editions`). */
   droppedMints: number
+  /** Coverage: counted rows excluded — other In•Process apps' collections. */
+  outOfScope: number
+  /** Coverage: counted rows excluded — no collection ref resolvable. */
+  scopeUnknown: number
+  /** Patron/Mint-Pass activity, kept out of the art figures above: paid pass
+   *  SALES from the same transfers scan, plus INVITED — editions airdropped
+   *  through Kismet's own airdrop records (lib/airdrops.ts), which is where
+   *  every pass invite lives (Kismet airdrops bypass the inprocess relay, so
+   *  the transfers feed never sees them). */
+  passes: {
+    transactions: number
+    editions: number
+    eth: number
+    usdc: number
+    invited: number
+  }
 }
 
 // Absolute swap of all three sets: chunked ZADDs into per-key STAGING keys,
@@ -261,6 +296,48 @@ const EMPTY_REBUILD_RESULT: RebuildResult = {
   editionsSold: 0,
   collectors: 0,
   buyerMissing: 0,
+  outOfScope: 0,
+  scopeUnknown: 0,
+  passEditions: 0,
+  passInvited: 0,
+}
+
+// Editions airdropped as pass INVITES, from Kismet's own per-moment airdrop
+// records. Token IDs come from the patron collection's timeline (falling back
+// to token '1' — the collection is a single-artwork release — so an upstream
+// blip can't zero the count entirely); each record row is one recipient with
+// an edition `amount`. Records are capped at 500/moment (lib/airdrops.ts),
+// far above the pass's 100-edition supply, so the cap can't truncate this.
+// Best-effort: a Redis/upstream failure undercounts for one run and the next
+// hourly scan heals it.
+async function countPatronInvites(): Promise<number> {
+  try {
+    const moments = await fetchCollectionMoments(PATRON_COLLECTION_ADDRESS, {
+      limit: 200,
+      timeoutMs: 8_000,
+    })
+    const tokenIds = new Set<string>(['1'])
+    for (const m of moments) {
+      if (m.token_id != null) tokenIds.add(String(m.token_id))
+    }
+    const perToken = await Promise.all(
+      [...tokenIds].map((tid) =>
+        getAirdropsByMoment(PATRON_COLLECTION_ADDRESS, tid, { limit: 500 }),
+      ),
+    )
+    let invited = 0
+    for (const records of perToken) {
+      for (const r of records) {
+        const amt = typeof r.amount === 'number' && Number.isFinite(r.amount) && r.amount > 0
+          ? Math.floor(r.amount)
+          : 1
+        invited += amt
+      }
+    }
+    return invited
+  } catch {
+    return 0
+  }
 }
 
 async function runRebuild(): Promise<RebuildResult> {
@@ -269,6 +346,15 @@ async function runRebuild(): Promise<RebuildResult> {
   const usdc = new Map<string, number>()
   const counters = newAccumulateCounters()
   const platform = newPlatformTotals()
+  // Kismet's tracked-collection registry, read ONCE per scan — the platform
+  // roll-up's scope gate (the feed is network-wide; see PLATFORM_SALES_KEY).
+  // On a Redis blip getTrackedCollections degrades to [PLATFORM_COLLECTION],
+  // which would scope one snapshot too narrowly for an hour — but a Redis
+  // outage fails the staging writes below anyway, so the degraded set almost
+  // never survives to a committed overwrite.
+  const tracked = new Set(
+    (await getTrackedCollections()).map((c) => c.toLowerCase()),
+  )
   // Dedup across page reads: the live feed is offset-paged, so rows shift
   // across page boundaries as new sales land mid-scan; a row with a stable
   // identifier is folded at most once. Rows without one pass through (no
@@ -311,6 +397,19 @@ async function runRebuild(): Promise<RebuildResult> {
         }
         seen.add(dedupKey)
       }
+      // Scope from the SAME ref the KV-creator lookup used: the Patron/Pass
+      // collection routes to the passes sub-totals (checked before the
+      // tracked set, which contains it); other tracked collections fold into
+      // the art roll-up; resolvable but untracked → another In•Process app's
+      // sale; no ref → fail closed.
+      const ref = refs[i]
+      const scope: PlatformScope = ref
+        ? ref.collection === PATRON_COLLECTION_ADDRESS
+          ? 'pass'
+          : tracked.has(ref.collection)
+            ? 'in'
+            : 'out'
+        : 'unknown'
       accumulateTransfer(
         t,
         { usdcAddress: USDC_BASE, kvCreator: metas[i]?.creator ?? null },
@@ -319,6 +418,7 @@ async function runRebuild(): Promise<RebuildResult> {
         usdc,
         counters,
         platform,
+        scope,
       )
     })
     page++
@@ -391,13 +491,23 @@ async function runRebuild(): Promise<RebuildResult> {
   const ethFinal = remapEntries(eth, remap)
   const usdcFinal = remapEntries(usdc, remap)
 
-  // Same fold for BUYERS: a collector whose purchase the feed attributes to
-  // their inprocess smart wallet is the same person as the owning EOA, so
-  // counting both would double-count them. Separate lookup from the artist
-  // remap above so `remappedWallets` keeps meaning "artist scores folded".
-  const buyerRemap = await getSmartWalletOwners([...platform.buyers])
+  // Same fold for the roll-up's BUYERS and in-scope ARTISTS: a wallet the
+  // feed credits via its inprocess smart wallet is the same person as the
+  // owning EOA, so counting both would double-count them. One lookup for the
+  // union, separate from the score remap above so `remappedWallets` keeps
+  // meaning "artist scores folded".
+  // Pass invites ride the same run so the snapshot's passes block is one
+  // consistent read — the extra work is one bounded timeline fetch + a few
+  // small ZRANGEs per hour.
+  const passInvited = await countPatronInvites()
+
+  const platRemap = await getSmartWalletOwners([
+    ...new Set([...platform.buyers, ...platform.artists]),
+  ])
   const collectors = new Set<string>()
-  for (const b of platform.buyers) collectors.add(buyerRemap.get(b) ?? b)
+  for (const b of platform.buyers) collectors.add(platRemap.get(b) ?? b)
+  const scopedArtists = new Set<string>()
+  for (const a of platform.artists) scopedArtists.add(platRemap.get(a) ?? a)
 
   await writeStatsAtomically(mintsFinal, ethFinal, usdcFinal)
   // Advance the guard baseline only after the swap committed, so an aborted
@@ -428,10 +538,13 @@ async function runRebuild(): Promise<RebuildResult> {
       eth: platform.eth,
       usdc: platform.usdc,
       collectors: collectors.size,
-      artists,
+      artists: scopedArtists.size,
       buyerMissing: platform.buyerMissing,
-      unknownCurrency: counters.unknownCurrency,
-      droppedMints: counters.droppedMints,
+      unknownCurrency: platform.unknownCurrency,
+      droppedMints: platform.droppedMints,
+      outOfScope: platform.outOfScope,
+      scopeUnknown: platform.scopeUnknown,
+      passes: { ...platform.passes, invited: passInvited },
     } satisfies PlatformSalesSnapshot)
     .catch((err) =>
       console.error('[stats] platform snapshot write failed (stale until next run)', err),
@@ -454,23 +567,30 @@ async function runRebuild(): Promise<RebuildResult> {
     editionsSold: platform.editions,
     collectors: collectors.size,
     buyerMissing: platform.buyerMissing,
+    outOfScope: platform.outOfScope,
+    scopeUnknown: platform.scopeUnknown,
+    passEditions: platform.passes.editions,
+    passInvited,
   }
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
-// Single-artist earnings for the profile card. Unioned across the artist's
-// earnings wallets (expandToEarningsWallets): the FC sibling set the timeline
-// uses for their mints/collects, PLUS each sibling's inprocess smart wallet —
-// the address the feed actually attributes Kismet mints to. Without the union
-// an FC artist who minted from one wallet but whose profile resolves to
-// another reads 0 and the card vanishes despite real sales. A non-FC artist
-// resolves to [self, smart wallet?], so this stays ~one zscore per key for
-// them. Pass `wallets` to reuse a set the caller already resolved (e.g.
-// /api/stats shares one resolution across this and the pending roll-up).
-// Returns primary (mint) and secondary (listing-royalty) earnings both
-// separately and summed into the total. Visibility gating is applied by the
-// callers, not here — this is the raw read.
+// Single-artist earnings for the profile card. Reads the per-artist zsets the
+// rebuild writes — which are now KISMET-SCOPED (rebuildStats folds only 'in' +
+// 'pass' rows into them; see accumulateTransfer's creditArtist gate), so a
+// card shows the artist's Kismet activity, not their network-wide In•Process
+// earnings. Unioned across the artist's earnings wallets
+// (expandToEarningsWallets): the FC sibling set the timeline uses for their
+// mints/collects, PLUS each sibling's inprocess smart wallet — the address the
+// feed attributes Kismet mints to. Without the union an FC artist who minted
+// from one wallet but whose profile resolves to another reads 0 and the card
+// vanishes despite real sales. A non-FC artist resolves to [self, smart
+// wallet?], so this stays ~one zscore per key for them. Pass `wallets` to
+// reuse a set the caller already resolved (e.g. /api/stats shares one
+// resolution across this and the pending roll-up). Returns primary (mint) and
+// secondary (listing-royalty) earnings both separately and summed into the
+// total. Visibility gating is applied by the callers, not here — raw read.
 export async function getArtistEarnings(artist: string, wallets?: string[]): Promise<ArtistEarnings> {
   const lower = artist.toLowerCase()
   try {

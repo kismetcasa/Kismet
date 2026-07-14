@@ -13,15 +13,23 @@ import { errorResponse } from '@/lib/apiResponse'
 //   catalog  — artworks minted + distinct artists, from the hourly catalog
 //              census over every tracked collection (lib/catalogCensus.ts).
 //              Counts creation, so free mints and unsold work are included.
-//   sales    — paid primary-market activity, from the platform roll-up the
-//              hourly stats rebuild snapshots off the In•Process /transfers
-//              feed (lib/stats.ts): editions sold, sale transactions, unique
-//              paying collectors, artists with ≥1 sale.
-//   earnings — gross primary sale volume by currency plus Kismet-listing
-//              secondary royalties; USD derived at read time from the same
-//              Chainlink ETH/USD price the artist cards use, with the same
-//              honesty rule (usd = 0 when the price is unavailable and the
-//              figure has an ETH leg, never a silently-USDC-only number).
+//   sales    — paid primary-market activity ON KISMET-TRACKED COLLECTIONS,
+//              from the platform roll-up the hourly stats rebuild snapshots
+//              off the In•Process /transfers feed (lib/stats.ts): editions
+//              sold, sale transactions, unique paying collectors, artists
+//              with ≥1 sale. The feed itself is network-wide; rows from
+//              other In•Process apps are excluded and surfaced in
+//              coverage.outOfScope (fail-closed: unplaceable rows land in
+//              coverage.scopeUnknown, never in the totals).
+//   passes   — Patron/Mint-Pass activity, split out of the art figures:
+//              paid pass sales (sold/transactions/value) vs editions
+//              airdropped as INVITES (Kismet's own airdrop records).
+//   earnings — gross primary ART sale volume by currency (passes excluded —
+//              see the passes block) plus Kismet-listing secondary
+//              royalties; USD derived at read time from the same Chainlink
+//              ETH/USD price the artist cards use, with the same honesty
+//              rule (usd = 0 when the price is unavailable and the figure
+//              has an ETH leg, never a silently-USDC-only number).
 //   funnel   — last-14-days conversion counters (admin session + ?funnel=1
 //              only; see the gating comment in the handler).
 //
@@ -98,7 +106,10 @@ export async function GET(req: NextRequest) {
     {
       catalog: catalog
         ? {
+            // Total includes hidden work; `hiddenArtworks` breaks it out so
+            // both readings are one subtraction apart. Passes excluded.
             artworksMinted: catalog.artworks,
+            hiddenArtworks: catalog.hidden,
             artistsMinted: catalog.artists,
             collections: catalog.collections,
             coverage: {
@@ -119,10 +130,27 @@ export async function GET(req: NextRequest) {
               buyerMissing: sales.buyerMissing,
               unknownCurrency: sales.unknownCurrency,
               droppedMints: sales.droppedMints,
+              outOfScope: sales.outOfScope,
+              scopeUnknown: sales.scopeUnknown,
             },
             updatedAt: sales.updatedAt,
           }
         : null,
+      // Patron/Mint-Pass activity, deliberately outside the art figures:
+      // `sold` is paid pass editions (from the same scoped transfers scan),
+      // `invited` is editions airdropped as invites (Kismet airdrop records).
+      // Null until the first post-deploy scan writes the extended snapshot.
+      passes:
+        sales?.passes != null
+          ? {
+              sold: sales.passes.editions,
+              transactions: sales.passes.transactions,
+              invited: sales.passes.invited,
+              eth: sales.passes.eth,
+              usdc: sales.passes.usdc,
+              usd: usdOf(sales.passes.eth, sales.passes.usdc),
+            }
+          : null,
       earnings,
       ...(funnel ? { funnel } : {}),
     },
