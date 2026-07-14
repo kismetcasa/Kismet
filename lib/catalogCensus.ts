@@ -60,8 +60,12 @@ export interface CatalogCensus {
    *  inside a hidden collection, or by an admin-hidden creator — the same
    *  three filters the timeline applies. Publicly visible = artworks−hidden. */
   hidden: number
-  /** Distinct creators of those artworks (KV override + smart-wallet fold). */
+  /** Distinct creators of those artworks (KV override + smart-wallet fold),
+   *  INCLUDING makers whose only work is hidden. */
   artists: number
+  /** Distinct creators with ≥1 non-hidden artwork — the public roster.
+   *  `artists − visibleArtists` = makers whose every piece is hidden. */
+  visibleArtists: number
   /** Tracked contracts scanned (after case-dedup; patron excluded). */
   collections: number
   /** Collections whose walk hit the page cap or lost a later page — their
@@ -221,6 +225,11 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
     getHiddenUsersSet(),
   ])
   const creators: string[] = []
+  // Creators with ≥1 VISIBLE (non-hidden) artwork — the "public roster". The
+  // gap between this and `artists` is exactly the makers whose every piece is
+  // hidden, which is what separates artistsMinted (all) from the artist count
+  // an operator sees on the public site.
+  const visibleCreators: string[] = []
   let unattributed = 0
   let hidden = 0
   moments.forEach((m, i) => {
@@ -232,27 +241,30 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
     if (creator) creators.push(creator)
     else unattributed++
     const addr = m.address?.toLowerCase() ?? ''
-    if (
+    const isHidden =
       hiddenSet.has(`${addr}:${m.token_id}`) ||
       hiddenColls.has(addr) ||
       (creator ? hiddenUsers.has(creator) : false)
-    ) {
-      hidden++
-    }
+    if (isHidden) hidden++
+    else if (creator) visibleCreators.push(creator)
   })
 
   // Smart-wallet→EOA fold, mirroring the stats rebuild: inprocess attributes
   // relayed mints to the per-creator smart wallet, which is the same artist
-  // as the owning EOA — counting both would double-count them.
+  // as the owning EOA — counting both would double-count them. visibleCreators
+  // ⊆ creators, so the one remap covers both counts.
   const uniqueCreators = [...new Set(creators)]
   const remap = await getSmartWalletOwners(uniqueCreators)
-  const artists = new Set(uniqueCreators.map((c) => remap.get(c) ?? c)).size
+  const fold = (list: string[]) => new Set(list.map((c) => remap.get(c) ?? c)).size
+  const artists = fold(uniqueCreators)
+  const visibleArtists = fold(visibleCreators)
 
   const census: CatalogCensus = {
     updatedAt: Date.now(),
     artworks: moments.length,
     hidden,
     artists,
+    visibleArtists,
     collections: collections.length,
     possiblyTruncated: walks.reduce(
       (n, w) => n + ((w as CollectionWalk).truncated ? 1 : 0),

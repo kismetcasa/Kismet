@@ -106,11 +106,16 @@ export async function GET(req: NextRequest) {
     {
       catalog: catalog
         ? {
-            // Total includes hidden work; `hiddenArtworks` breaks it out so
-            // both readings are one subtraction apart. Passes excluded.
+            // Total includes hidden work; the `visible*` fields break out the
+            // public-facing counts so both readings are explicit. Passes
+            // excluded. visibleArtworks = artworksMinted − hiddenArtworks;
+            // visibleArtists excludes makers whose every piece is hidden
+            // (artistsMinted − visibleArtists = hidden-only makers).
             artworksMinted: catalog.artworks,
             hiddenArtworks: catalog.hidden,
+            visibleArtworks: catalog.artworks - catalog.hidden,
             artistsMinted: catalog.artists,
+            visibleArtists: catalog.visibleArtists ?? null,
             collections: catalog.collections,
             coverage: {
               possiblyTruncated: catalog.possiblyTruncated,
