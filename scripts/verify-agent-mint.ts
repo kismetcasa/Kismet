@@ -13,6 +13,7 @@
 import { buildMomentMetadata, buildMintBody, buildMintEnvelope, type MintParams } from '@/lib/agent/mint'
 import { buildMintIntent, KISMET_INTENT_DOMAIN, MINT_INTENT_TYPES, type MintBody } from '@/lib/intent'
 import { USDC_BASE } from '@/lib/zoraMint'
+import { isBlockedIp } from '@/lib/agent/mintMedia'
 
 let passed = 0
 let failed = 0
@@ -96,6 +97,29 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(textEnv.record!.url === '/api/write', 'text moment records to /api/write')
   const imgEnv = buildMintEnvelope(p, nonce, expiresAt)
   ok(imgEnv.record!.url === '/api/mint', 'media moment records to /api/mint')
+}
+
+// ── SSRF guard (isBlockedIp): the security boundary for server-side media
+//    fetch. A hole here lets a crafted https:// media URL reach internal /
+//    cloud-metadata addresses, so pin the ranges. ──
+console.log('\nisBlockedIp — SSRF address blocklist')
+{
+  // Blocked: loopback, RFC1918, link-local (incl. 169.254.169.254 metadata),
+  // CGNAT, multicast, "this network", and IPv6 loopback / ULA / link-local /
+  // IPv4-mapped-to-a-private-v4. Plus non-IP-literal garbage.
+  for (const ip of [
+    '127.0.0.1', '127.1.2.3', '10.0.0.1', '172.16.0.1', '172.31.255.255',
+    '192.168.1.1', '169.254.169.254', '100.64.0.1', '100.127.255.255',
+    '0.0.0.0', '224.0.0.1', '255.255.255.255',
+    '::1', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', '::ffff:10.0.0.1', '::ffff:127.0.0.1',
+    'not-an-ip', '', '999.999.999.999',
+  ]) {
+    ok(isBlockedIp(ip) === true, `blocks ${ip || '(empty)'}`)
+  }
+  // Allowed: real public addresses (media CAN legitimately live here).
+  for (const ip of ['8.8.8.8', '1.1.1.1', '104.18.0.1', '172.15.0.1', '172.32.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8']) {
+    ok(isBlockedIp(ip) === false, `allows public ${ip}`)
+  }
 }
 
 console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — agent mint builders: ${passed} passed, ${failed} failed`)

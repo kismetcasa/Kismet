@@ -8,6 +8,7 @@ import { validateSplitsArray } from '@/lib/splits'
 import { isBlacklisted } from '@/lib/blacklist'
 import { getGateConfig, getPassCollectionName, hasGateAccess, isPlatformPausedFor } from '@/lib/gate'
 import { consumeUserQuota } from '@/lib/userQuota'
+import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
 import { issueIntentNonce } from '@/lib/intentAuth'
 import { ingestMintMedia, type MediaKind } from '@/lib/agent/mintMedia'
 import { uploadBytesToArweave, uploadJsonToArweave } from '@/lib/arweave/uploadServer'
@@ -169,6 +170,44 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     return errorResponse(403, `An artwork from ${passName ?? 'the required collection'} is required to mint`)
   }
 
+  // Existing-collection preflight — BEFORE any Arweave spend. Minting into a
+  // collection the artist's inprocess smart wallet doesn't have ADMIN on reverts
+  // at /api/mint's gas estimation, so without this we'd upload the media, hand
+  // back an intent, collect a signature — then dead-end. The app runs this same
+  // guard before it uploads; mirror it (and mint-proxy's structured 403s) so the
+  // assistant gets an actionable answer up front instead of a wasted mint.
+  // Auto-deploy (no collection) skips it — inprocess provisions the wallet on
+  // first mint — exactly as mint-proxy does. 'unknown' (flaky RPC) falls through:
+  // /api/mint re-runs the check and is the authority, so a transient blip never
+  // blocks a legitimately-authorized artist.
+  if (collection) {
+    const preflight = await checkSmartWalletAdmin(account, collection, [0n])
+    if (preflight.status === 'no_account') {
+      return NextResponse.json(
+        {
+          code: 'NO_ACCOUNT',
+          error:
+            "This wallet has no Kismet creator account yet, so it can't mint into an existing collection. Mint your first moment without a collection (we'll create one) to set up your account, then mint into existing collections.",
+          collectionAddress: collection,
+        },
+        { status: 403, headers: { 'Cache-Control': 'private, no-store' } },
+      )
+    }
+    if (preflight.status === 'unauthorized') {
+      return NextResponse.json(
+        {
+          code: 'AUTHORIZE_REQUIRED',
+          error:
+            "This collection hasn't authorized Kismet for minting. Grant Kismet minter access to this collection once (from the Kismet app), then mint here.",
+          collectionAddress: collection,
+          smartWallet: preflight.smartWallet,
+          perms: preflight.perms,
+        },
+        { status: 403, headers: { 'Cache-Control': 'private, no-store' } },
+      )
+    }
+  }
+
   // ── ingest media (bounded, SSRF-guarded) — now behind the gate ──
   const kind: MintMediaKind = isText ? 'text' : (explicitKind === 'image' || explicitKind === 'video' ? explicitKind : 'image')
   let mediaUri: string | undefined
@@ -190,12 +229,13 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     // reproducible server-side, so the poster is caller-supplied (optional).
     const poster = firstString(body.poster, body.posterUri)
     let posterBytesBuf: Buffer | undefined
+    let posterMime = 'image/png'
     if (resolvedKind === 'video' && poster) {
       const ip = await ingestMintMedia(poster, 'image')
       if ('error' in ip) return errorResponse(400, `poster: ${ip.error}`)
       if (ip.kind !== 'image') return errorResponse(400, 'poster must be an image')
       if (ip.passthroughUri) posterUri = ip.passthroughUri
-      else if (ip.bytes) { posterBytesBuf = ip.bytes; mediaBytes += ip.bytes.length }
+      else if (ip.bytes) { posterBytesBuf = ip.bytes; posterMime = ip.mime; mediaBytes += ip.bytes.length }
     }
 
     // Debit the Arweave spend BEFORE uploading. Media bytes + a flat JSON
@@ -206,7 +246,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
 
     try {
       mediaUri = ingested.passthroughUri ?? (await uploadBytesToArweave(ingested.bytes!, mediaMime))
-      if (posterBytesBuf) posterUri = await uploadBytesToArweave(posterBytesBuf, 'image/png')
+      if (posterBytesBuf) posterUri = await uploadBytesToArweave(posterBytesBuf, posterMime)
     } catch (err) {
       return upstreamError(502, 'Media upload to Arweave failed — try again', err, 'agent-prepare-mint')
     }
