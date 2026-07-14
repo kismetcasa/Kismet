@@ -40,8 +40,11 @@ import { WalletsPanel } from './WalletsPanel'
 // Account spend-permission utils, so it's code-split via next/dynamic (ssr:false)
 // to keep it off the profile route's initial JS; it loads on the client only when
 // an owner views their own profile and self-gates via useAgent.
-const AgentCollectPanel = dynamic(
-  () => import('./AgentCollectPanel').then((m) => m.AgentCollectPanel),
+// Compact status card that opens the full setup/management panel in a modal
+// (bottom sheet on mobile / Base app, centered on desktop) — progressive
+// disclosure instead of an always-open form. Self-gates via useAgent.
+const AgentCollectEntry = dynamic(
+  () => import('./AgentCollectEntry').then((m) => m.AgentCollectEntry),
   { ssr: false },
 )
 
@@ -1474,7 +1477,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           self-gate on smart-wallet eligibility, so an EOA owner sees neither. */}
       {isOwner && !previewPublic && (
         <div className="mb-4 flex flex-col gap-3">
-          <AgentCollectPanel />
+          <AgentCollectEntry />
           <AgentSkillCard />
         </div>
       )}

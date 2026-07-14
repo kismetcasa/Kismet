@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react'
+import { X } from 'lucide-react'
 import { formatUnits, isAddress } from 'viem'
 import { useAgent, type AgentConfigInput, type WatchedArtist } from '@/hooks/useAgent'
 
@@ -32,8 +33,18 @@ function Shell({ children }: { children: ReactNode }) {
   )
 }
 
-export function AgentCollectPanel() {
-  const ag = useAgent()
+export function AgentCollectPanel({
+  ag,
+  onRequestClose,
+}: {
+  /** Shared agent state, owned by the caller (AgentCollectEntry) so the profile
+   *  summary and this panel never desync — a pause/save here reflects instantly
+   *  in the entry that launched it. */
+  ag: ReturnType<typeof useAgent>
+  /** When set, the panel renders in modal mode: no outer border (the modal frame
+   *  provides it) and a close affordance in the header. */
+  onRequestClose?: () => void
+}) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -169,18 +180,29 @@ export function AgentCollectPanel() {
     : ''
 
   return (
-    <div className="border border-line p-4 space-y-3">
+    <div className={onRequestClose ? 'p-5 space-y-3' : 'border border-line p-4 space-y-3'}>
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Agent Collect</h3>
-        {ag.scout && !editing && (
-          <button
-            onClick={() => void ag.setActive(!active)}
-            disabled={busy}
-            className="text-[10px] font-mono uppercase tracking-wider text-dim hover:text-accent transition-colors disabled:opacity-50"
-          >
-            {active ? 'pause' : 'resume'}
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {ag.scout && !editing && (
+            <button
+              onClick={() => void ag.setActive(!active)}
+              disabled={busy}
+              className="text-[10px] font-mono uppercase tracking-wider text-dim hover:text-accent transition-colors disabled:opacity-50"
+            >
+              {active ? 'pause' : 'resume'}
+            </button>
+          )}
+          {onRequestClose && (
+            <button
+              onClick={onRequestClose}
+              aria-label="Close"
+              className="text-muted hover:text-dim transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Active status ───────────────────────────────────────────── */}
