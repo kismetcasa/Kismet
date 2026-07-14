@@ -53,7 +53,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 moments in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
 | GET or POST | `/api/agent/prepare-list` | List a held moment. Params: `collection`+`tokenId` (or `url`), `account`, `price`, `currency` |
-| GET or POST | `/api/agent/prepare-mint` | Create a new moment (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. Params: `account`, `name`, `media` (or `text`), `price?`, `currency?`, `editions?`, `collection?` |
+| POST | `/api/agent/prepare-mint` | Create a new moment (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `price?`, `currency?`, `editions?`, `collection?` |
 
 Every prepare returns an envelope:
 
@@ -92,12 +92,14 @@ from elsewhere. `caps` is a per-action ceiling (`maxValueEth` in wei,
 includes `typedData`: sign it with `sign` (EIP-712), then POST the record
 body with the `<signature>` placeholder filled.
 
-**Mint** (create a new moment) — **requires a Kismet Pass** (`403` if absent).
-Unlike the others it moves no funds: pass the media to
-`prepare-mint` (which hosts it on Arweave), `sign` the returned `typedData`
-(EIP-712 `MintIntent` — no `send_calls`, no `caps`), then POST the record body
-to `/api/mint` (media) or `/api/write` (text) with `intent.signature` filled.
-Kismet sponsors the on-chain mint. See the skill's `references/mint.md`.
+**Mint** (create a new moment) — **requires a Kismet Pass** (`403` if absent),
+and is **POST-only** (it spends, hosting the media on Arweave; a GET that spends
+is passively triggerable cross-site). Unlike the others it moves no funds: POST
+the media as a `data:` URI (or an `ar://`/`ipfs://` reference — no remote URL
+fetch) to `prepare-mint` (which hosts it on Arweave), `sign` the returned
+`typedData` (EIP-712 `MintIntent` — no `send_calls`, no `caps`), then POST the
+record body to `/api/mint` (media) or `/api/write` (text) with `intent.signature`
+filled. Kismet sponsors the on-chain mint. See the skill's `references/mint.md`.
 
 ## Submission
 

@@ -135,19 +135,19 @@ export function getAgentManifest(origin: string): AgentManifest {
       {
         verb: 'mint',
         summary:
-          'Create a new moment (requires a Kismet Pass). Signs an EIP-712 MintIntent — no wallet payment; prepare hosts the media + metadata on Arweave.',
+          'Create a new moment (requires a Kismet Pass). Signs an EIP-712 MintIntent — no wallet payment; prepare hosts the media + metadata on Arweave. POST-only (it spends, so it is not on the GET-paste rung).',
         endpoint: '/api/agent/prepare-mint',
-        method: 'GET or POST',
+        method: 'POST',
         executes: 'sign',
         record: 'POST /api/mint (media) or /api/write (text)',
         input: {
           account: 'Base Account address (the artist; must hold a Pass)',
           name: 'moment title',
           description: 'optional',
-          media: 'image/video: data: URI, ar://|ipfs:// URI, or https:// URL (GET: URL only)',
+          media: 'image/video as a data: URI (the bytes) or an ar://|ipfs:// URI — no remote URL fetch',
           text: 'writing moment body — pass instead of media for a text moment',
           mediaType: '"image" | "video" | "text" (optional; inferred from media)',
-          poster: 'optional video poster image URI/URL',
+          poster: 'optional video poster: a data: URI or ar://|ipfs:// URI',
           price: 'human decimal string; "0" = free (default)',
           currency: '"eth" | "usdc" (optional, default eth)',
           editions: 'positive integer (optional; omit for an open edition)',

@@ -27,12 +27,21 @@ export const runtime = 'nodejs'
  *   - Pass gate  (hasGateAccess) — only eligible artists can mint
  *   - blacklist / platform-pause — same emergency stops as /api/mint
  *   - per-address upload-bytes quota — bounds Arweave spend per identity
+ *   - a platform-wide daily ceiling — the Sybil backstop the per-identity quota
+ *     structurally can't provide (mirrors /api/sign's PLATFORM_SIGN_DAILY_CAP)
  * The returned envelope is still inert in the money sense: it's an unsigned
  * EIP-712 `MintIntent`. Nothing is minted until the artist signs it and the
  * signed body is POSTed to /api/mint (media) or /api/write (text), where the
  * signature is re-verified against the exact body and every gate/quota runs
  * again. This endpoint just does the one thing a server must do for an assistant
  * that a browser does for the app: ingest the media and upload it.
+ *
+ * POST-only, on purpose: unlike the inert read-prepares (collect/buy/list), which
+ * expose a GET variant for Base MCP's chat-only GET-paste rung, this endpoint
+ * SPENDS. A GET that spends is passively triggerable cross-site (an `<img>`/
+ * prefetch on any page could fire it from a victim's browser to burn platform
+ * Arweave credit), so mint is not on the GET rung — a minting assistant already
+ * holds the media locally and POSTs it as a data: URI.
  *
  * The mint reuses the app's builders verbatim (lib/agent/mint) — same
  * salesConfig, metadata shape, CREATE_REFERRAL, MintIntent typed data — so there
@@ -45,24 +54,20 @@ export async function POST(req: NextRequest) {
   return prepareMint(req, body)
 }
 
-/**
- * GET variant — same params in the query string, for chat-only surfaces where a
- * POST to a non-allowlisted host is unreachable (Base MCP custom-plugin fallback
- * ladder is GET-only there). Media must be an https:// / ar:// / ipfs:// URL in
- * that mode (a data: URI won't fit a query string); the POST body accepts data:
- * / base64 media directly. It DOES spend on Arweave, but only behind the same
- * Pass gate + quota as POST — the "read-only" note on the other GET prepares
- * does not apply here.
- */
-export async function GET(req: NextRequest) {
-  return prepareMint(req, Object.fromEntries(req.nextUrl.searchParams))
-}
-
 // Fixed byte overhead debited on top of the media bytes to cover the metadata
-// JSON (and, on auto-deploy, the collection JSON) we upload — both are small
-// (name/description/URIs), so a flat allowance is simpler than debiting each
-// upload separately and never under-counts a real spend.
+// JSON (and, on auto-deploy, the collection JSON) we upload. Both are small
+// (name/description/URIs) but a maximal text auto-deploy uploads two docs each
+// carrying the description + an inline SVG cover, so this is a flat approximation,
+// not a hard ceiling — the per-identity byte quota and the platform-wide daily
+// cap are the real spend bounds; this just keeps the byte meter honest.
 const JSON_OVERHEAD_BYTES = 16 * 1024
+// Platform-wide daily ceiling on prepare-mint operations — the durable Sybil
+// backstop the per-identity upload-bytes quota can't provide (each identity gets
+// its own bucket, so N addresses multiply the per-user cap). Bounds TOTAL
+// Arweave spend from this unauthenticated endpoint regardless of address/IP
+// rotation. Day-bucketed, fail-open on Redis error (same policy as the limiter),
+// tuned via PLATFORM_MINT_DAILY_CAP. Mirrors /api/sign's sign-global ceiling.
+const PLATFORM_MINT_DAILY_CAP = Number(process.env.PLATFORM_MINT_DAILY_CAP) || 2000
 // Match the app's writing-moment character cap (MintForm TEXT_MAX); mint-proxy's
 // 10 MB byte cap is the backstop, this is the friendlier front-line limit.
 const TEXT_MAX = 5000
@@ -94,14 +99,17 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   const description = firstString(body.description).slice(0, DESCRIPTION_MAX)
 
   const explicitKind = normalizeKind(body.mediaType ?? body.kind)
-  const media = firstString(body.media, body.mediaUri, body.mediaUrl)
-  const text = firstString(body.text, body.content, body.tokenContent)
+  const media = firstString(body.media, body.mediaUri)
+  // `text`/`tokenContent` only — no `content` alias (it collides with media
+  // "content" and MomentMetadata.content, and would silently route a media
+  // caller who forgot `media` into a text moment).
+  const text = firstString(body.text, body.tokenContent)
   const isText = explicitKind === 'text' || (!media && !!text)
   if (isText) {
     if (!text) return errorResponse(400, 'text is required for a writing moment')
     if (text.length > TEXT_MAX) return errorResponse(400, `text exceeds the ${TEXT_MAX}-character limit`)
   } else if (!media) {
-    return errorResponse(400, 'media is required — a data: URI, an ar://|ipfs:// URI, or an https:// URL (or pass text for a writing moment)')
+    return errorResponse(400, 'media is required — a data: URI or an ar://|ipfs:// URI (or pass text for a writing moment)')
   }
 
   const price = firstString(body.price) || '0'
@@ -208,7 +216,16 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     }
   }
 
-  // ── ingest media (bounded, SSRF-guarded) — now behind the gate ──
+  // Platform-wide daily cap — the Sybil backstop, checked right before we spend.
+  // The per-identity byte quota below can't bound aggregate abuse (each address
+  // is its own bucket); this ceiling bounds TOTAL platform Arweave spend from
+  // this unauthenticated endpoint. Fails open on Redis error, same as the limiter.
+  const dayBucket = new Date().toISOString().slice(0, 10)
+  if (!(await checkRateLimit(`agent-mint-global:${dayBucket}`, PLATFORM_MINT_DAILY_CAP, 24 * 60 * 60))) {
+    return errorResponse(429, 'Daily platform mint capacity reached — please try again later')
+  }
+
+  // ── ingest media (data: bytes or ar://|ipfs:// passthrough — no remote fetch) ──
   const kind: MintMediaKind = isText ? 'text' : (explicitKind === 'image' || explicitKind === 'video' ? explicitKind : 'image')
   let mediaUri: string | undefined
   let posterUri: string | undefined
@@ -218,20 +235,20 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
 
   if (!isText) {
     const declared: MediaKind | undefined = kind === 'video' ? 'video' : kind === 'image' ? 'image' : undefined
-    const ingested = await ingestMintMedia(media, declared)
+    const ingested = ingestMintMedia(media, declared)
     if ('error' in ingested) return errorResponse(400, ingested.error)
     resolvedKind = ingested.kind // authoritative kind from the actual mime
     mediaMime = ingested.mime
     if (ingested.bytes) mediaBytes += ingested.bytes.length
 
-    // Optional video poster: an already-permanent URI, a data: URI, or an
-    // https:// image we can re-host. Browser-canvas poster extraction isn't
-    // reproducible server-side, so the poster is caller-supplied (optional).
+    // Optional video poster: an already-permanent URI or a data: URI. Browser-
+    // canvas poster extraction isn't reproducible server-side, so the poster is
+    // caller-supplied (optional).
     const poster = firstString(body.poster, body.posterUri)
     let posterBytesBuf: Buffer | undefined
     let posterMime = 'image/png'
     if (resolvedKind === 'video' && poster) {
-      const ip = await ingestMintMedia(poster, 'image')
+      const ip = ingestMintMedia(poster, 'image')
       if ('error' in ip) return errorResponse(400, `poster: ${ip.error}`)
       if (ip.kind !== 'image') return errorResponse(400, 'poster must be an image')
       if (ip.passthroughUri) posterUri = ip.passthroughUri
@@ -294,8 +311,9 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   }
 
   // ── issue the single-use nonce + assemble the signed intent envelope ──
-  const { nonce, expiresAt } = await issueIntentNonce()
-
+  // Wrapped like the uploads above: issueIntentNonce is a Redis write and runs
+  // AFTER the spend, so a blip here must surface as a 502 (spend already
+  // incurred) rather than a bare 500.
   const params: MintParams = {
     account: account as `0x${string}`,
     kind: resolvedKind,
@@ -311,7 +329,13 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     ...(splits ? { splits } : {}),
   }
 
-  const envelope: AgentActionEnvelope = buildMintEnvelope(params, nonce, expiresAt)
+  let envelope: AgentActionEnvelope
+  try {
+    const { nonce, expiresAt } = await issueIntentNonce()
+    envelope = buildMintEnvelope(params, nonce, expiresAt)
+  } catch (err) {
+    return upstreamError(502, 'Could not finalize the mint intent — try again', err, 'agent-prepare-mint')
+  }
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }
 

@@ -13,7 +13,7 @@
 import { buildMomentMetadata, buildMintBody, buildMintEnvelope, type MintParams } from '@/lib/agent/mint'
 import { buildMintIntent, KISMET_INTENT_DOMAIN, MINT_INTENT_TYPES, type MintBody } from '@/lib/intent'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { isBlockedIp } from '@/lib/agent/mintMedia'
+import { ingestMintMedia } from '@/lib/agent/mintMedia'
 
 let passed = 0
 let failed = 0
@@ -99,27 +99,20 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(imgEnv.record!.url === '/api/mint', 'media moment records to /api/mint')
 }
 
-// ── SSRF guard (isBlockedIp): the security boundary for server-side media
-//    fetch. A hole here lets a crafted https:// media URL reach internal /
-//    cloud-metadata addresses, so pin the ranges. ──
-console.log('\nisBlockedIp — SSRF address blocklist')
+// ── media ingest: data:/passthrough only, no remote fetch ──
+console.log('\ningestMintMedia — accepts data: + ar://|ipfs://, rejects remote URLs')
 {
-  // Blocked: loopback, RFC1918, link-local (incl. 169.254.169.254 metadata),
-  // CGNAT, multicast, "this network", and IPv6 loopback / ULA / link-local /
-  // IPv4-mapped-to-a-private-v4. Plus non-IP-literal garbage.
-  for (const ip of [
-    '127.0.0.1', '127.1.2.3', '10.0.0.1', '172.16.0.1', '172.31.255.255',
-    '192.168.1.1', '169.254.169.254', '100.64.0.1', '100.127.255.255',
-    '0.0.0.0', '224.0.0.1', '255.255.255.255',
-    '::1', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', '::ffff:10.0.0.1', '::ffff:127.0.0.1',
-    'not-an-ip', '', '999.999.999.999',
-  ]) {
-    ok(isBlockedIp(ip) === true, `blocks ${ip || '(empty)'}`)
-  }
-  // Allowed: real public addresses (media CAN legitimately live here).
-  for (const ip of ['8.8.8.8', '1.1.1.1', '104.18.0.1', '172.15.0.1', '172.32.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8']) {
-    ok(isBlockedIp(ip) === false, `allows public ${ip}`)
-  }
+  const png = ingestMintMedia(`data:image/png;base64,${Buffer.from('x').toString('base64')}`)
+  ok(!('error' in png) && png.kind === 'image' && !!png.bytes, 'data:image → bytes + image kind')
+
+  const pass = ingestMintMedia('ar://abc', 'video')
+  ok(!('error' in pass) && pass.passthroughUri === 'ar://abc' && pass.kind === 'video', 'ar:// → passthrough (declared kind honored)')
+
+  const https = ingestMintMedia('https://example.com/art.png')
+  ok('error' in https, 'https:// URL → rejected (no server-side fetch / SSRF surface)')
+
+  const bad = ingestMintMedia('data:text/plain;base64,aGk=')
+  ok('error' in bad, 'unsupported mime → rejected')
 }
 
 console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — agent mint builders: ${passed} passed, ${failed} failed`)

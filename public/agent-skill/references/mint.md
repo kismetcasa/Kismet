@@ -25,7 +25,7 @@ POST BASE/api/agent/prepare-mint
   "account": "0xYourBaseAccount",   // the artist; must hold a Kismet Pass
   "name": "My Moment",              // required — the title
   "description": "…",               // optional
-  "media": "data:image/png;base64,…",  // image/video: a data: URI, ar://|ipfs:// URI, or https:// URL
+  "media": "data:image/png;base64,…",  // image/video: a data: URI (the bytes) or an ar://|ipfs:// URI
   "mediaType": "image",             // "image" | "video" | "text" (optional; inferred from the media)
   "price": "0",                     // human decimal string; "0" = free (default)
   "currency": "eth",                // "eth" | "usdc" (default eth)
@@ -43,17 +43,16 @@ For a **writing moment**, omit `media` and pass the text instead:
 }
 ```
 
-For a **video**, you may pass an optional `poster` (an image URI/URL) — Kismet
-can't extract a poster frame server-side the way the app does, so feeds show a
-placeholder without one.
+For a **video**, you may pass an optional `poster` (a `data:` or `ar://|ipfs://`
+image) — Kismet can't extract a poster frame server-side the way the app does, so
+feeds show a placeholder without one.
 
-GET works too, for surfaces where POST can't reach Kismet (SKILL.md "Reaching
-the endpoints"). In GET mode `media` must be an `https://` / `ar://` / `ipfs://`
-URL — a data: URI won't fit a query string:
-
-```
-GET BASE/api/agent/prepare-mint?account=0x…&name=My%20Moment&media=https://…/art.png&price=0&currency=eth
-```
+> **POST-only, and no remote URLs.** Unlike collect/buy/list, mint is not on the
+> GET-paste rung: it spends (it hosts the media on Arweave), and a GET that
+> spends is passively triggerable cross-site. And it never fetches a remote
+> `https://` URL server-side — pass the media as a `data:` URI (fetch it with
+> your own tools first if you only have a URL) or reference an already-permanent
+> `ar://`/`ipfs://` asset.
 
 The response is the standard envelope, containing:
 - `typedData` — the EIP-712 `MintIntent` to sign (this is **not** a transaction).

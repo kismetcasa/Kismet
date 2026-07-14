@@ -116,8 +116,10 @@ export function buildMintBody(p: MintParams): MintBody & { name: string } {
 
   const token: Record<string, unknown> = {
     tokenMetadataURI: p.tokenMetadataURI,
-    // Server-overwritten by mint-proxy regardless, but included for parity with
-    // the app payload (and so the signed body matches what the app would sign).
+    // Cosmetic payload parity with MintForm only: createReferral is NOT part of
+    // MINT_INTENT_TYPES (so it doesn't affect the signature), and mint-proxy
+    // overwrites token.createReferral with CREATE_REFERRAL unconditionally on the
+    // way to inprocess. Kept so the emitted body matches what the app posts.
     createReferral: CREATE_REFERRAL,
     salesConfig,
     mintToCreatorCount: p.artistMint ? 1 : 0,

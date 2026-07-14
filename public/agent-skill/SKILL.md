@@ -95,13 +95,15 @@ Every verb follows the same five steps:
 | Collect | `GET or POST BASE/api/agent/prepare-collect` | `send_calls` | `POST /api/collect` | `references/collect.md` |
 | Buy | `GET or POST BASE/api/agent/prepare-buy` | `send_calls` | `PATCH /api/listings/{id}` | `references/buy.md` |
 | List | `GET or POST BASE/api/agent/prepare-list` | `send_calls` + `sign` | `POST /api/listings` | `references/list.md` |
-| Mint | `GET or POST BASE/api/agent/prepare-mint` | `sign` | `POST /api/mint` or `/api/write` | `references/mint.md` |
+| Mint | `POST BASE/api/agent/prepare-mint` | `sign` | `POST /api/mint` or `/api/write` | `references/mint.md` |
 | Discover | `GET BASE/api/agent/discover` | — | — | `references/discover.md` |
 
-Every prepare above accepts the same parameters as a GET query string
-(`?collection=0x…&tokenId=42&account=0x…`) — use GET on surfaces where POST
-can't reach Kismet (below). The batch endpoint (`prepare-collect-batch`,
-`references/collect.md`) is POST-only: array input.
+The three inert read-prepares (collect, buy, list) also accept the same
+parameters as a GET query string (`?collection=0x…&tokenId=42&account=0x…`) —
+use GET on surfaces where POST can't reach Kismet (below). **Mint** and the batch
+endpoint (`prepare-collect-batch`, `references/collect.md`) are **POST-only**:
+mint because it spends (a GET that spends is passively triggerable cross-site),
+batch because it takes array input.
 
 > **Mint/create** (making a new moment) is covered — see `references/mint.md`. It
 > is the only verb that requires a **Kismet Pass** and signs an EIP-712 intent
