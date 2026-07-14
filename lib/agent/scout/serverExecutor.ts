@@ -25,7 +25,7 @@ import type { Address, Hex } from 'viem'
 import { redis } from '@/lib/redis'
 import { readMintFeeWithBound, USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverBaseClient, sdkRpcOptions } from '@/lib/rpc'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
 import { composeScoutCollect } from './serverCollect'
 import type { ScoutSpender, SpenderCall } from './spender'
@@ -160,10 +160,15 @@ export async function collectViaSpendPermission(params: {
   // permission was inactive, so we only re-check the allowance headroom here.
   let spendCalls: SpenderCall[] = []
   if (cost > 0n) {
-    const status = await getPermissionStatus(permission)
+    // Both SDK calls take our configured RPC (sdkRpcOptions) — never the SDK's
+    // default public endpoint, which rate-limits under load and would fail
+    // collects during exactly the contended drops that matter most.
+    const status = await getPermissionStatus(permission, sdkRpcOptions())
     if (!status.isActive) throw new Error('Spend permission is not active')
     if (status.remainingSpend < cost) throw new Error('Spend permission allowance exhausted this period')
-    spendCalls = (await prepareSpendCallData(permission, cost)).map(toSpenderCall)
+    // 3rd positional arg (recipient) stays undefined → funds pull to the spender
+    // (the default), which the composed mint immediately consumes.
+    spendCalls = (await prepareSpendCallData(permission, cost, undefined, sdkRpcOptions())).map(toSpenderCall)
   }
   return await spender.sendCalls(composeScoutCollect(spendCalls, plan.calls))
 }
@@ -238,7 +243,7 @@ export function createSpendPermissionExecutor(cfg: {
       if (quantity > 1n) {
         const perEdition = token.pricePerToken + (candidate.currency === 'eth' ? mintFee : 0n)
         if (perEdition > 0n) {
-          const affordable = (await getPermissionStatus(cfg.permission)).remainingSpend / perEdition
+          const affordable = (await getPermissionStatus(cfg.permission, sdkRpcOptions())).remainingSpend / perEdition
           if (affordable < quantity) quantity = affordable
         }
       }

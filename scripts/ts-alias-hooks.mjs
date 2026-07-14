@@ -17,6 +17,16 @@ import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '..')
 
 export async function resolve(specifier, context, nextResolve) {
+  // `server-only` is a build-time poison pill: under Next's react-server
+  // condition it resolves to an empty module, and under any other condition it
+  // throws at import. The verify scripts ARE server-side code running on bare
+  // Node (no react-server condition), so give them the same empty module the
+  // real server build gets — otherwise importing production modules that guard
+  // themselves with `import 'server-only'` (e.g. the scout spender) is impossible.
+  if (specifier === 'server-only') {
+    return { url: 'data:text/javascript,', shortCircuit: true }
+  }
+
   // Map the `@/` alias to an absolute file URL under the repo root.
   const mapped = specifier.startsWith('@/')
     ? pathToFileURL(path.join(root, specifier.slice(2))).href

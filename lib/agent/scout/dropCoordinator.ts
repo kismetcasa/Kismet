@@ -18,7 +18,7 @@
 import { getPermissionStatus } from '@base-org/account/spend-permission'
 import type { Address, Hex } from 'viem'
 import { redis } from '@/lib/redis'
-import { serverBaseClient } from '@/lib/rpc'
+import { serverBaseClient, sdkRpcOptions } from '@/lib/rpc'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { readMintFeeWithBound } from '@/lib/zoraMint'
 import { writeNotification } from '@/lib/notifications'
@@ -192,7 +192,7 @@ export async function runDropCoordination(
         let periodStart: number
         let budgetEditions = target
         try {
-          const status = await getPermissionStatus(r.permission!)
+          const status = await getPermissionStatus(r.permission!, sdkRpcOptions())
           if (!status.isActive) return
           periodStart = status.currentPeriod.start
           // Keep the division in bigint and clamp to `target` (≤10) BEFORE Number,

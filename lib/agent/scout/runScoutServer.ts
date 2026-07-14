@@ -11,6 +11,7 @@
  */
 
 import { getPermissionStatus } from '@base-org/account/spend-permission'
+import { sdkRpcOptions } from '@/lib/rpc'
 import type { Address, Hex } from 'viem'
 import { isKillSwitchEngaged } from './killSwitch'
 import { writeNotification } from '@/lib/notifications'
@@ -106,7 +107,7 @@ export async function runScoutServer(params: {
   const recipient = owner as Address
 
   // 1. Anchor the budget window + spend to the on-chain permission.
-  const status = await getPermissionStatus(permission)
+  const status = await getPermissionStatus(permission, sdkRpcOptions())
   if (!status.isActive) return { collected: 0, skipped: 0, reason: 'permission inactive' }
   const periodStart = status.currentPeriod.start
   const items = record.usage.periodStart === periodStart ? record.usage.itemsThisPeriod : 0
@@ -189,7 +190,7 @@ export async function runScoutServer(params: {
 
   // 4. Persist usage from on-chain truth; notify the user.
   try {
-    const end = await getPermissionStatus(permission)
+    const end = await getPermissionStatus(permission, sdkRpcOptions())
     const endUsage: BudgetUsage = {
       periodStart,
       spentThisPeriod: end.currentPeriod.spend.toString(),

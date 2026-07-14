@@ -14,6 +14,7 @@
  */
 
 import { getPermissionStatus, prepareRevokeCallData } from '@base-org/account/spend-permission'
+import { sdkRpcOptions } from '@/lib/rpc'
 import type { Address, Hex } from 'viem'
 import { getScout, saveScout, type ScoutRecord } from './store'
 import type { ScoutSpender } from './spender'
@@ -41,7 +42,7 @@ export async function revokePermissionsAsSpender(
   const failed: StoredSpendPermission[] = []
   for (const perm of perms) {
     try {
-      const status = await getPermissionStatus(perm)
+      const status = await getPermissionStatus(perm, sdkRpcOptions())
       if (status.isRevoked || status.isExpired) continue // already inert → drop from any queue
       const call = await prepareRevokeCallData(perm)
       await spender.sendCalls([{ to: call.to as Address, data: call.data as Hex, value: BigInt(call.value) }])
