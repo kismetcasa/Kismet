@@ -376,10 +376,12 @@ const sOut = runScoped([{
   t: { value: 1, quantity: 3, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: ARTIST } } } },
   scope: 'out',
 }])
-check('scope: out-of-scope sale still credits the ARTIST maps (network-wide cards unchanged)',
-  sOut.maps[0].get(ARTIST.toLowerCase()) === 3 &&
-    Math.abs((sOut.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 1) < 1e-12,
-  JSON.stringify([...sOut.maps[0], ...sOut.maps[1]]))
+check('scope: out-of-scope sale credits NOTHING to the ARTIST maps (cards are Kismet-only)',
+  sOut.maps[0].size === 0 && sOut.maps[1].size === 0 && sOut.maps[2].size === 0 &&
+    sOut.counters.droppedMints === 0,
+  JSON.stringify([...sOut.maps[0], ...sOut.maps[1], ...sOut.maps[2]]))
+check('scope: out-of-scope row STILL increments counted (feed-completeness / shrink guard)',
+  sOut.counters.counted === 1, JSON.stringify(sOut.counters))
 check('scope: out-of-scope sale folds NOTHING into the platform roll-up, counts outOfScope',
   sOut.platform.transactions === 0 && sOut.platform.editions === 0 &&
     sOut.platform.eth === 0 && sOut.platform.buyers.size === 0 &&
@@ -409,8 +411,10 @@ check('scope: pass sale folds into passes sub-totals ONLY (art figures untouched
     sPass.platform.eth === 0 && sPass.platform.buyers.size === 0 &&
     sPass.platform.artists.size === 0 && sPass.platform.outOfScope === 0,
   JSON.stringify({ ...sPass.platform, buyers: [], artists: [] }))
-check('scope: pass sale still credits the ARTIST maps (network-wide cards unchanged)',
-  sPass.maps[0].get(OWNER.toLowerCase()) === 2, JSON.stringify([...sPass.maps[0]]))
+check('scope: pass sale DOES credit the ARTIST maps (split artists earn from pass sales)',
+  sPass.maps[0].get(OWNER.toLowerCase()) === 2 &&
+    Math.abs((sPass.maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.04) < 1e-12,
+  JSON.stringify([...sPass.maps[0], ...sPass.maps[1]]))
 const sPassUsdc = runScoped([{
   t: { value: 50, currency: USDC, moment: { collection: { artist: { address: OWNER } } } },
   scope: 'pass',
@@ -436,6 +440,16 @@ check('scope: invariant — transactions + passes.transactions + outOfScope + sc
     sIn.platform.outOfScope + sIn.platform.scopeUnknown ===
     sIn.counters.counted && sIn.counters.counted === 5,
   JSON.stringify({ tx: sIn.platform.transactions, pass: sIn.platform.passes.transactions, out: sIn.platform.outOfScope, unk: sIn.platform.scopeUnknown, counted: sIn.counters.counted }))
+check('scope: per-artist MAPS reflect in+pass only — out-scope OWNER sale is absent',
+  // mints: ARTIST=2 (in), COLLAB=1 (in, unknown-currency still mints), OWNER=1 (pass);
+  // the OWNER out-scope sale (value 9) credits NOTHING. eth: ARTIST=0.5 + OWNER=0.02 (pass).
+  sIn.maps[0].get(ARTIST.toLowerCase()) === 2 &&
+    sIn.maps[0].get(COLLAB.toLowerCase()) === 1 &&
+    sIn.maps[0].get(OWNER.toLowerCase()) === 1 &&
+    Math.abs((sIn.maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.02) < 1e-12 &&
+    Math.abs((sIn.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.5) < 1e-12 &&
+    sIn.counters.droppedMints === 4,
+  JSON.stringify({ mints: [...sIn.maps[0]], eth: [...sIn.maps[1]], droppedMints: sIn.counters.droppedMints }))
 check('scope: default scope is in — pre-scope callers keep folding (back-compat)',
   (() => {
     const maps: Maps = [new Map(), new Map(), new Map()]

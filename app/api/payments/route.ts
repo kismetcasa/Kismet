@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { getTrackedCollections } from '@/lib/kv'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
@@ -48,6 +49,22 @@ export async function GET(req: NextRequest) {
       data = JSON.parse(text)
     } catch {
       return NextResponse.json({ payments: [] }, { status: 200 })
+    }
+    // Kismet-scope the panel: the inprocess /payments feed is network-wide
+    // (every In•Process app's sales), but the profile card above it reads
+    // Kismet-scoped earnings (lib/stats.ts) — so an unfiltered list would show
+    // sales the card doesn't count, and the two would visibly disagree. Keep
+    // only rows whose token contract is a Kismet-tracked collection. A
+    // non-array/absent `payments` (error envelope) passes through untouched so
+    // this never turns a valid upstream error into a silent empty list.
+    if (data && typeof data === 'object' && Array.isArray((data as { payments?: unknown }).payments)) {
+      const tracked = new Set((await getTrackedCollections()).map((c) => c.toLowerCase()))
+      const rows = (data as { payments: Array<{ token?: { contractAddress?: string } }> }).payments
+      const scoped = rows.filter((p) => {
+        const c = p?.token?.contractAddress?.toLowerCase()
+        return c ? tracked.has(c) : false
+      })
+      return NextResponse.json({ ...data, payments: scoped }, { status: res.status })
     }
     return NextResponse.json(data, { status: res.status })
   } catch {

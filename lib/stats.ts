@@ -576,18 +576,21 @@ async function runRebuild(): Promise<RebuildResult> {
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
-// Single-artist earnings for the profile card. Unioned across the artist's
-// earnings wallets (expandToEarningsWallets): the FC sibling set the timeline
-// uses for their mints/collects, PLUS each sibling's inprocess smart wallet —
-// the address the feed actually attributes Kismet mints to. Without the union
-// an FC artist who minted from one wallet but whose profile resolves to
-// another reads 0 and the card vanishes despite real sales. A non-FC artist
-// resolves to [self, smart wallet?], so this stays ~one zscore per key for
-// them. Pass `wallets` to reuse a set the caller already resolved (e.g.
-// /api/stats shares one resolution across this and the pending roll-up).
-// Returns primary (mint) and secondary (listing-royalty) earnings both
-// separately and summed into the total. Visibility gating is applied by the
-// callers, not here — this is the raw read.
+// Single-artist earnings for the profile card. Reads the per-artist zsets the
+// rebuild writes — which are now KISMET-SCOPED (rebuildStats folds only 'in' +
+// 'pass' rows into them; see accumulateTransfer's creditArtist gate), so a
+// card shows the artist's Kismet activity, not their network-wide In•Process
+// earnings. Unioned across the artist's earnings wallets
+// (expandToEarningsWallets): the FC sibling set the timeline uses for their
+// mints/collects, PLUS each sibling's inprocess smart wallet — the address the
+// feed attributes Kismet mints to. Without the union an FC artist who minted
+// from one wallet but whose profile resolves to another reads 0 and the card
+// vanishes despite real sales. A non-FC artist resolves to [self, smart
+// wallet?], so this stays ~one zscore per key for them. Pass `wallets` to
+// reuse a set the caller already resolved (e.g. /api/stats shares one
+// resolution across this and the pending roll-up). Returns primary (mint) and
+// secondary (listing-royalty) earnings both separately and summed into the
+// total. Visibility gating is applied by the callers, not here — raw read.
 export async function getArtistEarnings(artist: string, wallets?: string[]): Promise<ArtistEarnings> {
   const lower = artist.toLowerCase()
   try {
