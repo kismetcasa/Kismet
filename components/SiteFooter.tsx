@@ -13,10 +13,10 @@ import Link from 'next/link'
 // manipulative — the links carry weight precisely because they're real
 // navigation.
 const FOOTER_LINKS = [
+  { href: '/learn', label: 'Learn' },
   { href: '/', label: 'Discover' },
   { href: '/mint', label: 'Mint' },
   { href: '/market', label: 'Market' },
-  { href: '/learn', label: 'Learn' },
   // Label "Agent" for nav brevity; the /agent URL and its page title ("AI
   // agent — Kismet") stay as-is — the title keeps the query-bearing phrase
   // for search while the anchor stays concise. No redirect needed.
