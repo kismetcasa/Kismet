@@ -8,6 +8,9 @@ import { getStoredSplits } from './splits'
 import { getCachedCreatorRewardRecipient } from './pending'
 import { getSmartWalletOwners } from './smartWalletCache'
 import { getTrackedCollections } from './kv'
+import { PATRON_COLLECTION_ADDRESS } from './patronCollection'
+import { fetchCollectionMoments } from './inprocess'
+import { getAirdropsByMoment } from './airdrops'
 import { USDC_BASE } from './zoraMint'
 import {
   accumulateTransfer,
@@ -160,6 +163,10 @@ export interface RebuildResult {
   outOfScope: number
   /** Counted rows excluded from the roll-up: no collection ref resolvable. */
   scopeUnknown: number
+  /** Paid Patron/Mint-Pass editions sold (kept out of editionsSold). */
+  passEditions: number
+  /** Pass editions airdropped as invites (Kismet airdrop records). */
+  passInvited: number
 }
 
 /**
@@ -193,6 +200,18 @@ export interface PlatformSalesSnapshot {
   outOfScope: number
   /** Coverage: counted rows excluded — no collection ref resolvable. */
   scopeUnknown: number
+  /** Patron/Mint-Pass activity, kept out of the art figures above: paid pass
+   *  SALES from the same transfers scan, plus INVITED — editions airdropped
+   *  through Kismet's own airdrop records (lib/airdrops.ts), which is where
+   *  every pass invite lives (Kismet airdrops bypass the inprocess relay, so
+   *  the transfers feed never sees them). */
+  passes: {
+    transactions: number
+    editions: number
+    eth: number
+    usdc: number
+    invited: number
+  }
 }
 
 // Absolute swap of all three sets: chunked ZADDs into per-key STAGING keys,
@@ -279,6 +298,46 @@ const EMPTY_REBUILD_RESULT: RebuildResult = {
   buyerMissing: 0,
   outOfScope: 0,
   scopeUnknown: 0,
+  passEditions: 0,
+  passInvited: 0,
+}
+
+// Editions airdropped as pass INVITES, from Kismet's own per-moment airdrop
+// records. Token IDs come from the patron collection's timeline (falling back
+// to token '1' — the collection is a single-artwork release — so an upstream
+// blip can't zero the count entirely); each record row is one recipient with
+// an edition `amount`. Records are capped at 500/moment (lib/airdrops.ts),
+// far above the pass's 100-edition supply, so the cap can't truncate this.
+// Best-effort: a Redis/upstream failure undercounts for one run and the next
+// hourly scan heals it.
+async function countPatronInvites(): Promise<number> {
+  try {
+    const moments = await fetchCollectionMoments(PATRON_COLLECTION_ADDRESS, {
+      limit: 200,
+      timeoutMs: 8_000,
+    })
+    const tokenIds = new Set<string>(['1'])
+    for (const m of moments) {
+      if (m.token_id != null) tokenIds.add(String(m.token_id))
+    }
+    const perToken = await Promise.all(
+      [...tokenIds].map((tid) =>
+        getAirdropsByMoment(PATRON_COLLECTION_ADDRESS, tid, { limit: 500 }),
+      ),
+    )
+    let invited = 0
+    for (const records of perToken) {
+      for (const r of records) {
+        const amt = typeof r.amount === 'number' && Number.isFinite(r.amount) && r.amount > 0
+          ? Math.floor(r.amount)
+          : 1
+        invited += amt
+      }
+    }
+    return invited
+  } catch {
+    return 0
+  }
 }
 
 async function runRebuild(): Promise<RebuildResult> {
@@ -338,14 +397,18 @@ async function runRebuild(): Promise<RebuildResult> {
         }
         seen.add(dedupKey)
       }
-      // Scope from the SAME ref the KV-creator lookup used: in Kismet's
-      // tracked registry → fold into the platform roll-up; resolvable but
-      // untracked → another In•Process app's sale; no ref → fail closed.
+      // Scope from the SAME ref the KV-creator lookup used: the Patron/Pass
+      // collection routes to the passes sub-totals (checked before the
+      // tracked set, which contains it); other tracked collections fold into
+      // the art roll-up; resolvable but untracked → another In•Process app's
+      // sale; no ref → fail closed.
       const ref = refs[i]
       const scope: PlatformScope = ref
-        ? tracked.has(ref.collection)
-          ? 'in'
-          : 'out'
+        ? ref.collection === PATRON_COLLECTION_ADDRESS
+          ? 'pass'
+          : tracked.has(ref.collection)
+            ? 'in'
+            : 'out'
         : 'unknown'
       accumulateTransfer(
         t,
@@ -433,6 +496,11 @@ async function runRebuild(): Promise<RebuildResult> {
   // owning EOA, so counting both would double-count them. One lookup for the
   // union, separate from the score remap above so `remappedWallets` keeps
   // meaning "artist scores folded".
+  // Pass invites ride the same run so the snapshot's passes block is one
+  // consistent read — the extra work is one bounded timeline fetch + a few
+  // small ZRANGEs per hour.
+  const passInvited = await countPatronInvites()
+
   const platRemap = await getSmartWalletOwners([
     ...new Set([...platform.buyers, ...platform.artists]),
   ])
@@ -476,6 +544,7 @@ async function runRebuild(): Promise<RebuildResult> {
       droppedMints: platform.droppedMints,
       outOfScope: platform.outOfScope,
       scopeUnknown: platform.scopeUnknown,
+      passes: { ...platform.passes, invited: passInvited },
     } satisfies PlatformSalesSnapshot)
     .catch((err) =>
       console.error('[stats] platform snapshot write failed (stale until next run)', err),
@@ -500,6 +569,8 @@ async function runRebuild(): Promise<RebuildResult> {
     buyerMissing: platform.buyerMissing,
     outOfScope: platform.outOfScope,
     scopeUnknown: platform.scopeUnknown,
+    passEditions: platform.passes.editions,
+    passInvited,
   }
 }
 

@@ -357,7 +357,7 @@ check('platform: omitted accumulator is a no-op (existing callers unchanged)', (
 
 // ── 6. Platform scope gate: only Kismet-tracked rows fold into the roll-up ──
 const runScoped = (
-  rows: Array<{ t: StatsTransfer; scope: 'in' | 'out' | 'unknown' }>,
+  rows: Array<{ t: StatsTransfer; scope: 'in' | 'pass' | 'out' | 'unknown' }>,
 ): {
   maps: Maps
   platform: ReturnType<typeof newPlatformTotals>
@@ -398,11 +398,32 @@ check('scope: gates classify first — a free out-of-scope row is skippedFree, N
   sFreeOut.counters.skippedFree === 1 && sFreeOut.platform.outOfScope === 0,
   JSON.stringify({ counters: sFreeOut.counters, outOfScope: sFreeOut.platform.outOfScope }))
 
+const sPass = runScoped([{
+  t: { value: 0.04, quantity: 2, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: OWNER } } } },
+  scope: 'pass',
+}])
+check('scope: pass sale folds into passes sub-totals ONLY (art figures untouched)',
+  sPass.platform.passes.transactions === 1 && sPass.platform.passes.editions === 2 &&
+    Math.abs(sPass.platform.passes.eth - 0.04) < 1e-12 && sPass.platform.passes.usdc === 0 &&
+    sPass.platform.transactions === 0 && sPass.platform.editions === 0 &&
+    sPass.platform.eth === 0 && sPass.platform.buyers.size === 0 &&
+    sPass.platform.artists.size === 0 && sPass.platform.outOfScope === 0,
+  JSON.stringify({ ...sPass.platform, buyers: [], artists: [] }))
+check('scope: pass sale still credits the ARTIST maps (network-wide cards unchanged)',
+  sPass.maps[0].get(OWNER.toLowerCase()) === 2, JSON.stringify([...sPass.maps[0]]))
+const sPassUsdc = runScoped([{
+  t: { value: 50, currency: USDC, moment: { collection: { artist: { address: OWNER } } } },
+  scope: 'pass',
+}])
+check('scope: pass USDC sale lands in passes.usdc; unknown ERC20 would be skipped fail-closed',
+  sPassUsdc.platform.passes.usdc === 50 && sPassUsdc.platform.passes.eth === 0)
+
 const sIn = runScoped([
   { t: { value: 0.5, quantity: 2, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: ARTIST } } } }, scope: 'in' },
   { t: { value: 0.25, quantity: 4, moment: {} }, scope: 'in' }, // creator unresolvable
   { t: { value: 5, currency: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed', moment: { collection: { artist: { address: COLLAB } } } }, scope: 'in' },
   { t: { value: 9, buyer: { address: BUYER_B }, moment: { collection: { artist: { address: OWNER } } } }, scope: 'out' },
+  { t: { value: 0.02, moment: { collection: { artist: { address: OWNER } } } }, scope: 'pass' },
 ])
 check('scope: in-scope rows fold artists/dropped/unknownCurrency into the roll-up',
   sIn.platform.artists.has(ARTIST.toLowerCase()) && sIn.platform.artists.has(COLLAB.toLowerCase()) &&
@@ -410,10 +431,11 @@ check('scope: in-scope rows fold artists/dropped/unknownCurrency into the roll-u
     sIn.platform.unknownCurrency === 1 && sIn.platform.editions === 7 &&
     Math.abs(sIn.platform.eth - 0.75) < 1e-12 && !sIn.platform.buyers.has(BUYER_B),
   JSON.stringify({ ...sIn.platform, buyers: [...sIn.platform.buyers], artists: [...sIn.platform.artists] }))
-check('scope: invariant — transactions + outOfScope + scopeUnknown === counted',
-  sIn.platform.transactions + sIn.platform.outOfScope + sIn.platform.scopeUnknown ===
-    sIn.counters.counted && sIn.counters.counted === 4,
-  JSON.stringify({ tx: sIn.platform.transactions, out: sIn.platform.outOfScope, unk: sIn.platform.scopeUnknown, counted: sIn.counters.counted }))
+check('scope: invariant — transactions + passes.transactions + outOfScope + scopeUnknown === counted',
+  sIn.platform.transactions + sIn.platform.passes.transactions +
+    sIn.platform.outOfScope + sIn.platform.scopeUnknown ===
+    sIn.counters.counted && sIn.counters.counted === 5,
+  JSON.stringify({ tx: sIn.platform.transactions, pass: sIn.platform.passes.transactions, out: sIn.platform.outOfScope, unk: sIn.platform.scopeUnknown, counted: sIn.counters.counted }))
 check('scope: default scope is in — pre-scope callers keep folding (back-compat)',
   (() => {
     const maps: Maps = [new Map(), new Map(), new Map()]

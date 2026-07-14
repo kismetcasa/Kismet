@@ -169,6 +169,10 @@ export function transferBuyer(t: StatsTransfer): string | null {
  * collections — without this gate the roll-up reported the whole network's
  * volume as Kismet's (~6× the real editions figure when first measured).
  *   'in'      — the moment's collection is in Kismet's tracked registry: fold.
+ *   'pass'    — the Patron/Mint-Pass collection: a pass purchase is real
+ *               Kismet revenue but not an ARTWORK sale, so it folds into the
+ *               separate `passes` sub-totals and never inflates the art
+ *               figures (editions/collectors/artists).
  *   'out'     — resolvable collection, not tracked: exclude, count outOfScope.
  *   'unknown' — no collection ref resolvable on the row: exclude, count
  *               scopeUnknown. FAIL-CLOSED — a money figure must never include
@@ -177,7 +181,7 @@ export function transferBuyer(t: StatsTransfer): string | null {
  * always shown their network-wide In•Process earnings, and narrowing that is
  * a product decision, not a roll-up bugfix.
  */
-export type PlatformScope = 'in' | 'out' | 'unknown'
+export type PlatformScope = 'in' | 'pass' | 'out' | 'unknown'
 
 /**
  * Platform-wide roll-up accumulated alongside the per-artist maps — one pass
@@ -191,7 +195,8 @@ export type PlatformScope = 'in' | 'out' | 'unknown'
  * with it. `editions` includes rows whose creator is unresolvable — the sale
  * still happened platform-wide even when no artist can be credited.
  *
- * Invariant: transactions + outOfScope + scopeUnknown === counters.counted.
+ * Invariant: transactions + passes.transactions + outOfScope + scopeUnknown
+ * === counters.counted.
  */
 export interface PlatformTotals {
   /** Paid IN-SCOPE transfers folded. */
@@ -216,6 +221,9 @@ export interface PlatformTotals {
   outOfScope: number
   /** Counted rows excluded: no collection ref resolvable on the row. */
   scopeUnknown: number
+  /** Paid Patron/Mint-Pass sales — Kismet revenue, kept out of the art
+   *  figures. Same gates and currency rules as the art buckets. */
+  passes: { transactions: number; editions: number; eth: number; usdc: number }
 }
 
 export const newPlatformTotals = (): PlatformTotals => ({
@@ -230,6 +238,7 @@ export const newPlatformTotals = (): PlatformTotals => ({
   unknownCurrency: 0,
   outOfScope: 0,
   scopeUnknown: 0,
+  passes: { transactions: 0, editions: 0, eth: 0, usdc: 0 },
 })
 
 export interface AccumulateCounters {
@@ -413,9 +422,17 @@ export function accumulateTransfer(
   // artist credit or the value bucket must be skipped. Rows outside Kismet's
   // scope bump only their exclusion counter (post-gates, so free/corrupt rows
   // stay classified by the gate that dropped them, never as scope exclusions).
+  // Pass-collection rows fold into the passes sub-totals instead of the art
+  // figures — same gates, same fail-closed currency rule.
   const p = platform && platformScope === 'in' ? platform : undefined
   if (platform && !p) {
-    if (platformScope === 'out') platform.outOfScope++
+    if (platformScope === 'pass') {
+      platform.passes.transactions++
+      platform.passes.editions += qty
+      const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
+      if (currency === 'usdc') platform.passes.usdc += value
+      else if (currency === 'eth') platform.passes.eth += value
+    } else if (platformScope === 'out') platform.outOfScope++
     else platform.scopeUnknown++
   }
   if (p) {

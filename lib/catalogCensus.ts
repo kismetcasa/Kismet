@@ -4,6 +4,10 @@ import { getMomentMetaBatch } from './notifications'
 import { resolveMomentCreator } from './statsMath'
 import { synthesizeMissingCoverMoment } from './coverMomentSynthesis'
 import { getSmartWalletOwners } from './smartWalletCache'
+import { getHiddenMomentsSet } from './hiddenMoments'
+import { getHiddenCollectionsSet } from './hiddenCollections'
+import { getHiddenUsersSet } from './hidden-users'
+import { PATRON_COLLECTION_ADDRESS } from './patronCollection'
 import { redis } from './redis'
 
 // Platform catalog census: how many distinct ARTWORKS have been minted and by
@@ -19,8 +23,11 @@ import { redis } from './redis'
 // (resolveMomentCreator — so a delegated mint into a curated collection is
 // credited to the ARTIST, not the collection owner), and the same
 // smart-wallet→EOA fold the stats rebuild applies. HIDDEN moments/collections/
-// users are deliberately INCLUDED: hiding is a display concern; the census
-// counts what was minted, not what is currently shown.
+// users are deliberately INCLUDED in the totals — hiding is a display
+// concern; the census counts what was minted — and separately COUNTED in
+// `hidden`, so both readings are available (public-visible = artworks−hidden).
+// The Patron/Mint-Pass collection is excluded: passes are not artworks (pass
+// activity has its own block in the sales snapshot).
 //
 // Failure semantics: a collection whose FIRST page can't be read aborts the
 // whole census (throw) — an absolute counter must not silently shrink because
@@ -44,11 +51,18 @@ const CENSUS_CONCURRENCY = 6
 
 export interface CatalogCensus {
   updatedAt: number
-  /** Distinct artworks (collection:tokenId pairs) across tracked contracts. */
+  /** Distinct ARTWORKS (collection:tokenId pairs) across tracked contracts.
+   *  TOTAL including hidden work; excludes the Patron/Mint-Pass collection —
+   *  passes are not artworks (they get their own block in the sales
+   *  snapshot). */
   artworks: number
+  /** Artworks in `artworks` that are hidden from public feeds: moment-hidden,
+   *  inside a hidden collection, or by an admin-hidden creator — the same
+   *  three filters the timeline applies. Publicly visible = artworks−hidden. */
+  hidden: number
   /** Distinct creators of those artworks (KV override + smart-wallet fold). */
   artists: number
-  /** Tracked contracts scanned (after case-dedup). */
+  /** Tracked contracts scanned (after case-dedup; patron excluded). */
   collections: number
   /** Collections whose walk hit the page cap or lost a later page — their
    *  moment counts are lower bounds. */
@@ -161,8 +175,13 @@ async function walkCollection(collection: string): Promise<CollectionWalk | null
  */
 export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
   // Case-dedup so a checksummed and lowercased registration of the same
-  // contract can't be walked (and counted) twice.
-  const collections = [...new Set((await getTrackedCollections()).map((c) => c.toLowerCase()))]
+  // contract can't be walked (and counted) twice. The Patron/Mint-Pass
+  // collection is excluded up front: passes are not artworks (its side
+  // conveniently also keeps the platform treasury — the pass "creator" —
+  // out of the artist count).
+  const collections = [
+    ...new Set((await getTrackedCollections()).map((c) => c.toLowerCase())),
+  ].filter((c) => c !== PATRON_COLLECTION_ADDRESS)
 
   const walks = await mapWithConcurrency(collections, CENSUS_CONCURRENCY, walkCollection)
   const failed = walks.reduce((n, w) => n + (w === null ? 1 : 0), 0)
@@ -190,19 +209,36 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
   // (lib/statsMath resolveMomentCreator): the KV minter EOA persisted at mint
   // time beats inprocess's attribution (which reports the platform smart
   // wallet / collection defaultAdmin for delegated and cover mints). One
-  // internally-chunked MGET for the whole set.
-  const metas = await getMomentMetaBatch(
-    moments.map((m) => ({ address: m.address, tokenId: m.token_id })),
-  )
+  // internally-chunked MGET for the whole set. The hidden sets ride the same
+  // round trip: `hidden` counts artworks the public feeds suppress, using the
+  // timeline's exact three filters (moment-hidden, hidden collection,
+  // admin-hidden creator) against the SAME resolved creator, so "visible on
+  // the feed" and "artworks − hidden" can't disagree.
+  const [metas, hiddenSet, hiddenColls, hiddenUsers] = await Promise.all([
+    getMomentMetaBatch(moments.map((m) => ({ address: m.address, tokenId: m.token_id }))),
+    getHiddenMomentsSet(),
+    getHiddenCollectionsSet(),
+    getHiddenUsersSet(),
+  ])
   const creators: string[] = []
   let unattributed = 0
+  let hidden = 0
   moments.forEach((m, i) => {
     const resolved = resolveMomentCreator({
       kvCreator: metas[i]?.creator ?? null,
       feedCreator: m.creator?.address,
     })
-    if (resolved.address) creators.push(resolved.address.toLowerCase())
+    const creator = resolved.address?.toLowerCase()
+    if (creator) creators.push(creator)
     else unattributed++
+    const addr = m.address?.toLowerCase() ?? ''
+    if (
+      hiddenSet.has(`${addr}:${m.token_id}`) ||
+      hiddenColls.has(addr) ||
+      (creator ? hiddenUsers.has(creator) : false)
+    ) {
+      hidden++
+    }
   })
 
   // Smart-wallet→EOA fold, mirroring the stats rebuild: inprocess attributes
@@ -215,6 +251,7 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
   const census: CatalogCensus = {
     updatedAt: Date.now(),
     artworks: moments.length,
+    hidden,
     artists,
     collections: collections.length,
     possiblyTruncated: walks.reduce(
