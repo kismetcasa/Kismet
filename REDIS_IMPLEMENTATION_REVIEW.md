@@ -327,7 +327,7 @@ This is the single largest bandwidth consumer per request in the app.
 | `kismetart:pending:{addr}` | string JSON | SET EX 60 (`pending.ts:262`) | GET owner stats (`:248`) | 60s; compute capped 100 moments/4s | O |
 | `kismetart:ethusd` | string | SET EX 60 (`ethPrice.ts:38`) | GET per earnings view (`:28`) | 60s | O→null |
 | `kismetart:royalty-audit:wallet/contract` + `royalty-split-audit` | ctr ×2 + list | INCR / INCR+LPUSH+LTRIM(500) per royalty fill (`royaltyAudit.ts:56,80-81`) | manual inspection only | 500 | S |
-| `kismetart:stats:platform:sales` | string JSON snapshot | ⏱ SET after the rebuild's staging swap commits — same scan, same guards (`stats.ts:424`) | GET per `/api/stats/platform` view (`stats.ts:537`) | hourly absolute overwrite; 1 key | O→null |
+| `kismetart:stats:platform:sales` | string JSON snapshot | ⏱ SET after the rebuild's staging swap commits — same scan, same guards, scope-gated to Kismet-tracked collections (feed is network-wide; exclusions surface as outOfScope/scopeUnknown) (`stats.ts:466`) | GET per `/api/stats/platform` view (`stats.ts:583`) | hourly absolute overwrite; 1 key | O→null |
 | `kismetart:stats:platform:catalog` | string JSON snapshot | ⏱ SET by the catalog census; abort-don't-overwrite on any unreadable collection (`catalogCensus.ts:229`) | GET same route (`catalogCensus.ts:237`) | hourly; 1 key; last good survives aborts | O→null |
 | `kismetart:funnel:{event}:{YYYY-MM-DD}` | string ctr | ▶ MULTI INCR+EXPIRE per beacon, allowlisted names, RL 60/min/IP (`app/api/funnel/route.ts:42-43`) | MGET events×14d, admin `?funnel=1` only (`funnelServer.ts:33`) | 90d TTL self-expiring; ≤7 new keys/day | O (always 204) |
 
