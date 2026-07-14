@@ -84,7 +84,8 @@ Every verb follows the same five steps:
    confirms — never claim success before. Capture the resulting **txHash** (and/or
    **signature**).
 5. **Record.** Follow `record`: fill the placeholders in `bodyTemplate`
-   (`<REPLACE_WITH_send_calls_txHash>`, and `<signature>` for List) and send the
+   (`<REPLACE_WITH_send_calls_txHash>`, `<signature>` for List, and
+   `intent.signature` = `<REPLACE_WITH_sign_signature>` for Mint) and send the
    `record.method` request to `record.url`.
 
 ## Verbs
@@ -94,6 +95,7 @@ Every verb follows the same five steps:
 | Collect | `GET or POST BASE/api/agent/prepare-collect` | `send_calls` | `POST /api/collect` | `references/collect.md` |
 | Buy | `GET or POST BASE/api/agent/prepare-buy` | `send_calls` | `PATCH /api/listings/{id}` | `references/buy.md` |
 | List | `GET or POST BASE/api/agent/prepare-list` | `send_calls` + `sign` | `POST /api/listings` | `references/list.md` |
+| Mint | `GET or POST BASE/api/agent/prepare-mint` | `sign` | `POST /api/mint` or `/api/write` | `references/mint.md` |
 | Discover | `GET BASE/api/agent/discover` | — | — | `references/discover.md` |
 
 Every prepare above accepts the same parameters as a GET query string
@@ -101,7 +103,10 @@ Every prepare above accepts the same parameters as a GET query string
 can't reach Kismet (below). The batch endpoint (`prepare-collect-batch`,
 `references/collect.md`) is POST-only: array input.
 
-> **Mint/create** (making a new moment) is not covered by this skill.
+> **Mint/create** (making a new moment) is covered — see `references/mint.md`. It
+> is the only verb that requires a **Kismet Pass** and signs an EIP-712 intent
+> (`sign`, no `send_calls`) rather than paying from the wallet; you pass the media
+> to the prepare call, which hosts it before returning the intent to sign.
 
 ## Reaching the endpoints
 
