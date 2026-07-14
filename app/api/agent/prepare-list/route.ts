@@ -24,14 +24,36 @@ export const runtime = 'nodejs'
  * Base Account, a human `price`, and `currency` ('eth' | 'usdc').
  */
 export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => null)) as PrepareListParams | null
+  if (!body) return errorResponse(400, 'Invalid body')
+  return prepareList(req, body)
+}
+
+/**
+ * GET variant — same parameters in the query string, same envelope back. For
+ * chat-only surfaces where POST to a non-allowlisted host is unreachable (the
+ * Base MCP custom-plugin fallback ladder is GET-only there). A pure read:
+ * chain reads + typed-data assembly, no state mutation.
+ */
+export async function GET(req: NextRequest) {
+  return prepareList(req, Object.fromEntries(req.nextUrl.searchParams))
+}
+
+interface PrepareListParams {
+  collection?: unknown
+  tokenId?: unknown
+  url?: unknown
+  account?: unknown
+  price?: unknown
+  currency?: unknown
+  name?: unknown
+  image?: unknown
+}
+
+async function prepareList(req: NextRequest, body: PrepareListParams) {
   if (!(await checkRateLimit(`agent-prepare-list:${getClientIp(req)}`, 30, 60))) {
     return errorResponse(429, 'Too many requests')
   }
-
-  const body = (await req.json().catch(() => null)) as
-    | { collection?: unknown; tokenId?: unknown; url?: unknown; account?: unknown; price?: unknown; currency?: unknown; name?: unknown; image?: unknown }
-    | null
-  if (!body) return errorResponse(400, 'Invalid body')
 
   const ref = parseMomentRef(body)
   if ('error' in ref) return errorResponse(400, ref.error)

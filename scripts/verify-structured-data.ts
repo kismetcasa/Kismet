@@ -12,7 +12,7 @@
 //   5. FAQPage emits one Question/acceptedAnswer per pair.
 //   6. serializeJsonLd escapes `<` so a string can't close the <script> early.
 //
-// Run: node --experimental-strip-types --import ./scripts/_ts-extensionless-loader.mjs scripts/verify-structured-data.ts
+// Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-structured-data.ts
 //
 // offerAmount replicates lib/inprocess.formatPrice's numeric output; the
 // concrete expectations below (0.1, 5) are exactly what formatPrice renders,

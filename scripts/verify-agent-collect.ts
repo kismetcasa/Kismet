@@ -108,7 +108,9 @@ console.log('\nUSDC collect (ERC20Minter)')
   check('mint.totalValue = price * qty', dm.args[4] === total)
   check('mint.currency is USDC', eq(dm.args[5], USDC))
   check('mint.mintReferral is KISMET_REFERRAL (treasury)', eq(dm.args[6], REFERRAL))
-  check('mint carries no native value (paid via allowance)', true)
+  // The USDC mint's `value: 0x0` is a property of the call ENVELOPE, not the
+  // calldata this oracle re-derives, so it can't be asserted here — it's checked
+  // against the real builder in verify-agent-collect-builders.ts.
   check('both calls carry the builder suffix', approve.endsWith(builderSuffix.slice(2)) && mint.endsWith(builderSuffix.slice(2)))
 }
 
