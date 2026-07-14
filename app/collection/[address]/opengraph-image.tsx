@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
-import { shareImageUrl } from '@/lib/media/shareImage'
+import { shareImageSource } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
@@ -79,10 +79,12 @@ export default async function Image({ params }: Props) {
         if (row?.creator) {
           creator = row.creator.username || shortAddress(row.creator.address)
         }
-        // Full-bleed cover when one resolves; shareImageUrl drops data: URIs
-        // and SSRF-guards the host. No cover → shareCard renders the branded
-        // fallback with the title + creator below.
-        imageUrl = shareImageUrl(kv?.image ?? row?.metadata?.image)
+        // Full-bleed cover when one resolves; shareImageSource keeps
+        // shareImageUrl's guards (attacker data:-URI drop, SSRF host check)
+        // and serves the disk-cached downscaled variant inline when one
+        // exists, so a heavy cover can't stall Satori's mid-render fetch.
+        // No cover → shareCard renders the branded fallback below.
+        imageUrl = await shareImageSource(kv?.image ?? row?.metadata?.image)
       }
     } catch {
       // Bare card (shortAddress title, no cover) — never a leak, never a 500.
