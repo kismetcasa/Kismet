@@ -153,7 +153,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
 
           {results && results.users.length > 0 && (
             <section>
-              <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-subtle">Users</p>
+              <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Users</p>
               {results.users.map((user) => (
                 <Link
                   key={user.address}
@@ -172,7 +172,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
 
           {results && results.collections.length > 0 && (
             <section>
-              <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-subtle">Collections</p>
+              <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Collections</p>
               {results.collections.map((col) => (
                 <Link
                   key={col.address}
@@ -189,7 +189,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
 
           {results && results.mints.length > 0 && (
             <section>
-              <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-subtle">Mints</p>
+              <p className="px-3 pt-2.5 pb-1 text-[9px] font-mono uppercase tracking-widest text-[#444]">Mints</p>
               {results.mints.map((mint) => (
                 <Link
                   key={mint.id}

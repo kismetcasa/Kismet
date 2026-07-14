@@ -6,8 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { feedPageLimit, prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
 import { MomentCard } from '@/components/MomentCard'
 import { CollectionCard, type CollectionDisplay } from '@/components/CollectionCard'
-import { FeaturedFeed, type InitialFeatured } from '@/components/FeaturedFeed'
-import { FeedSkeleton } from '@/components/FeedSkeleton'
+import { FeaturedFeed } from '@/components/FeaturedFeed'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
 import { ViewModeToggle } from '@/components/ViewModeToggle'
 import { useViewMode } from '@/hooks/useViewMode'
@@ -153,7 +152,7 @@ function TabBar({
             className={`
               relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
               transition-colors select-none touch-pan-y
-              ${isActive ? 'text-ink' : 'text-subtle hover:text-dim'}
+              ${isActive ? 'text-ink' : 'text-[#444] hover:text-dim'}
               ${isDragging ? 'opacity-70 cursor-grabbing' : 'cursor-grab'}
             `}
           >
@@ -310,7 +309,7 @@ function FilterPill({
       className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border transition-colors ${
         on
           ? 'border-accent text-accent'
-          : 'border-line text-muted hover:border-subtle hover:text-dim'
+          : 'border-line text-muted hover:border-[#444] hover:text-dim'
       }`}
     >
       {children}
@@ -402,7 +401,7 @@ function MainFeed() {
         <button
           onClick={() => setSubTab('mints')}
           className={`text-xs font-mono tracking-wider transition-colors ${
-            subTab === 'mints' ? 'text-ink' : 'text-subtle hover:text-dim'
+            subTab === 'mints' ? 'text-ink' : 'text-[#444] hover:text-dim'
           }`}
         >
           mints
@@ -411,7 +410,7 @@ function MainFeed() {
         <button
           onClick={() => setSubTab('collections')}
           className={`text-xs font-mono tracking-wider transition-colors ${
-            subTab === 'collections' ? 'text-ink' : 'text-subtle hover:text-dim'
+            subTab === 'collections' ? 'text-ink' : 'text-[#444] hover:text-dim'
           }`}
         >
           collections
@@ -445,18 +444,7 @@ function MainFeed() {
 
 // ─── discover page ────────────────────────────────────────────────────────────
 
-export function DiscoverPage({
-  isMobile,
-  initialFeatured = null,
-}: {
-  isMobile: boolean
-  /** Featured-tab payload fetched during SSR (app/page.tsx). When present the
-   *  featured tab renders real content in the server HTML and through the
-   *  hydration gate below — with NO client fetch, so it cannot race a saved
-   *  non-default tab (the race the gate exists to prevent). null = SSR fetch
-   *  failed/skipped; behavior is exactly as before. */
-  initialFeatured?: InitialFeatured | null
-}) {
+export function DiscoverPage({ isMobile }: { isMobile: boolean }) {
   const { isAdmin, hasSession, startSession, featuredRevision } = useAdmin()
   const queryClient = useQueryClient()
   // Mirror MomentFeed's page size so a warmed entry shares the live grid's
@@ -566,19 +554,10 @@ export function DiscoverPage({
       />
 
       <div className="mt-2">
-        {/* Pre-hydration: a pulse skeleton instead of bare "loading…" text.
-            With SSR featured data the real featured branch below renders
-            through the gate instead — genuinely zero fetches, because a
-            seeded FeaturedFeed skips its fetch effect entirely (see
-            FeaturedFeed's `seeded`), so it cannot race a saved non-default
-            tab's first-page load. Known, accepted trade-off: a user whose
-            SAVED tab differs sees one pre-hydration frame of featured
-            content before the effect flips to their tab — main showed a
-            bare "loading…" frame there instead; comparable disruption,
-            strictly more useful pixels, and only for the customized-tab
-            minority when SSR data is present. */}
-        {!hydrated && !initialFeatured && <FeedSkeleton count={8} />}
-        {(hydrated || !!initialFeatured) && visitedTabs.has('featured') && (
+        {!hydrated && (
+          <div className="py-8 text-center text-xs font-mono text-muted">loading…</div>
+        )}
+        {hydrated && visitedTabs.has('featured') && (
           <div hidden={active !== 'featured'}>
             {isAdmin && !hasSession && (
               <div className="flex items-center justify-between py-4 border-b border-line mb-2">
@@ -604,11 +583,6 @@ export function DiscoverPage({
               key={`featured-${featuredRevision}`}
               emptyMessage={isAdmin ? 'no featured mints or collections yet — click ★ on any mint or collection to feature it' : 'no featured mints or collections yet'}
               isMobile={isMobile}
-              // Seed ONLY the initial (revision 0) mount. A curation edit
-              // bumps the revision and remounts; passing the (now-stale) SSR
-              // payload there would pin the admin's fresh edit behind old
-              // data, since a seeded instance deliberately never fetches.
-              initialFeatured={featuredRevision === 0 ? initialFeatured : null}
             />
           </div>
         )}
@@ -692,7 +666,7 @@ function ArtistsFeed() {
     return (
       <div className="border border-line p-8 sm:p-16 text-center mt-4">
         <p className="text-sm font-mono text-muted">no artist lists yet</p>
-        <p className="text-xs font-mono text-subtle mt-2">
+        <p className="text-xs font-mono text-[#444] mt-2">
           a curator can create one from their profile
         </p>
       </div>
@@ -766,7 +740,7 @@ function ArtistsFeed() {
               }`}
             >
               {l.name}
-              <span className="ml-1.5 text-subtle">{l.addresses.length}</span>
+              <span className="ml-1.5 text-[#444]">{l.addresses.length}</span>
             </button>
           )
         })}

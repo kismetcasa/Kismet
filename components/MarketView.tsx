@@ -44,8 +44,8 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
             <ViewModeToggle mode={viewMode} onChange={setViewMode} />
             <div>
               <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Market</h1>
-              <p className="text-xs font-mono text-subtle mt-1">
-                creator royalties enforced on every sale · 1% platform fee
+              <p className="text-xs font-mono text-faint mt-1">
+                creator royalties enforced on every sale
               </p>
             </div>
           </div>
@@ -53,7 +53,7 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
         empty={
           <div className="border border-line p-8 sm:p-16 text-center">
             <p className="text-sm font-mono text-muted">no listings yet</p>
-            <p className="text-xs font-mono text-subtle mt-2">
+            <p className="text-xs font-mono text-faint mt-2">
               collect a moment on{' '}
               <Link href="/" className="accent-grad hover:underline">enjoy</Link>
               {' '}then{' '}

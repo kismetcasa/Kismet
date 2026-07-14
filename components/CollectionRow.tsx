@@ -85,7 +85,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
               toggleFeaturedCollection(c.contractAddress)
             }}
             className={`absolute top-1.5 left-1.5 z-10 min-w-10 min-h-10 flex items-center justify-center transition-colors ${
-              isFeatured ? 'text-yellow-400' : 'text-subtle hover:text-dim'
+              isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
             }`}
             title={isFeatured ? 'Unfeature' : 'Feature'}
           >
@@ -147,7 +147,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
                 toggleFeaturedCollection(c.contractAddress)
               }}
               className={`absolute top-1.5 left-1.5 z-10 min-w-10 min-h-10 flex items-center justify-center transition-colors ${
-                isFeatured ? 'text-yellow-400' : 'text-subtle hover:text-dim'
+                isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
               }`}
               title={isFeatured ? 'Unfeature' : 'Feature'}
             >

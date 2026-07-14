@@ -235,7 +235,7 @@ function ModerationListSection({ config }: { config: ListConfig }) {
             void handleAdd()
           }}
           placeholder="0x…"
-          className="flex-1 bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+          className="flex-1 bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-[#444] focus:outline-none focus:border-muted"
         />
         <button
           onClick={() => void handleAdd()}

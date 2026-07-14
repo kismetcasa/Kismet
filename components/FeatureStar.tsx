@@ -122,7 +122,7 @@ export function FeatureStar({ address, tokenId, className = '' }: FeatureStarPro
       title={title}
       aria-label={title}
       className={`z-10 min-w-10 min-h-10 flex items-center justify-center transition-colors select-none touch-none ${
-        isDisplay ? '' : isFeatured ? 'text-yellow-400' : 'text-subtle hover:text-dim'
+        isDisplay ? '' : isFeatured ? 'text-yellow-400' : 'text-faint hover:text-dim'
       } ${className}`}
       style={isDisplay ? { color: DISPLAY_PURPLE } : undefined}
     >

@@ -46,7 +46,7 @@ export function SaleWindow({ saleConfig, variant = 'card', compact = false, clas
 
   // Ended is spent — render it fainter than an upcoming/active window.
   const ended = info.state === 'ended'
-  const tone = ended ? (variant === 'detail' ? 'text-subtle' : 'text-subtle') : 'text-dim'
+  const tone = ended ? (variant === 'detail' ? 'text-[#444]' : 'text-faint') : 'text-dim'
   const textSize = variant === 'card' && compact ? 'text-[9px]' : 'text-[10px]'
   const iconSize = variant === 'card' && compact ? 9 : 11
   const tracking = variant === 'detail' ? 'tracking-widest' : 'tracking-wider'

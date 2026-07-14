@@ -9,8 +9,8 @@ const compat = new FlatCompat({ baseDirectory: __dirname })
 
 // Block reintroducing hex literals that have a design token in tailwind.config.ts.
 // New rare hex stays allowed; only the tokenized palette is locked.
-const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|444|333|a3a3a3|808080|8b5cf6|c084fc)\\]'
-const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/line/ink/dim/muted/subtle/faint/accent) instead of this hex literal.'
+const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|333|8b5cf6|c084fc)\\]'
+const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/line/ink/dim/muted/faint/accent) instead of this hex literal.'
 
 const config = [
   {

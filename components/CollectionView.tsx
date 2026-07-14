@@ -854,12 +854,12 @@ export function CollectionView({
           {defaultAdminAddress ? (
             <Link
               href={`/profile/${defaultAdminAddress}`}
-              className="text-[10px] font-mono text-subtle hover:text-dim transition-colors w-fit"
+              className="text-[10px] font-mono text-[#444] hover:text-dim transition-colors w-fit"
             >
               {resolvedAdminName ?? shortAddress(defaultAdminAddress)}
             </Link>
           ) : (
-            <p className="text-[10px] font-mono text-subtle">{shortAddress(address)}</p>
+            <p className="text-[10px] font-mono text-[#444]">{shortAddress(address)}</p>
           )}
           {/* Enriched chips: payout transparency (only when it differs from
               the admin — same-address payouts are noise) and creation date. */}
@@ -872,7 +872,7 @@ export function CollectionView({
               )}
               {totalSold !== undefined && totalSold > 0 && (
                 <>
-                  {createdAt && <span className="text-[10px] font-mono text-subtle">|</span>}
+                  {createdAt && <span className="text-[10px] font-mono text-[#444]">|</span>}
                   <span className="text-[10px] font-mono text-muted uppercase tracking-widest">
                     total sold {totalSold.toLocaleString()}
                   </span>
@@ -1083,7 +1083,7 @@ export function CollectionView({
                 void handleAuthorizeCreator()
               }}
               placeholder="0x… or vitalik.eth"
-              className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+              className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
             <button
               type="button"

@@ -1520,7 +1520,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 <Upload size={24} className="text-muted" />
                 <div className="text-center">
                   <p className="text-xs font-mono text-muted">drop file or click to upload</p>
-                  <p className="text-xs font-mono text-subtle mt-1">
+                  <p className="text-xs font-mono text-faint mt-1">
                     image, video, gif,{' '}
                     {/* "text" is a shortcut into the writing-moment mode.
                         stopPropagation so we don't also trigger the parent
@@ -1554,7 +1554,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               onChange={(e) => setTextContent(e.target.value)}
               placeholder="write your moment…"
               rows={12}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-none"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none"
             />
             <div
               className={`mt-1.5 text-right text-[10px] font-mono ${
@@ -1578,7 +1578,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           onChange={(e) => setName(e.target.value)}
           placeholder="untitled"
           required
-          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
         />
       </div>
 
@@ -1594,7 +1594,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             onChange={(e) => setDescription(e.target.value)}
             placeholder="describe your work…"
             rows={3}
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
           />
         </div>
       )}
@@ -1691,7 +1691,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={is11 ? '0' : price}
               disabled={is11}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button
               type="button"
@@ -1719,7 +1719,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={maxSupply}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
               placeholder="unlimited"
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
             />
             {!maxSupply.trim() ? (
               <p className="text-xs text-muted font-mono mt-1">open edition</p>
@@ -1886,7 +1886,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-subtle font-mono text-[10px]">
+                          <span className="text-faint font-mono text-[10px]">
                             {shortAddress(c.address)}
                           </span>
                         </div>
@@ -1923,7 +1923,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             value={splitInput.address}
             onChange={(e) => setSplitInput((s) => ({ ...s, address: e.target.value }))}
             placeholder="0x… address"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
           />
           <input
             type="number"
@@ -1933,7 +1933,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             placeholder="%"
             min="1"
             max="100"
-            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
           />
           <button
             type="button"
@@ -1969,12 +1969,39 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         )}
       </div>
 
-      {/* Residencies toggle — deliberately ABOVE the mint button. It's a
-          default-on, revenue-affecting opt-out (5% of splits), so it must sit
-          before the CTA in reading order: a creator filling the form
-          top-to-bottom sees and can change it before committing, instead of
-          discovering it below the button they already pressed. */}
-      <div className="flex items-center gap-2.5 w-fit mx-auto">
+      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
+          enabled and the wallet holds no valid Pass, but not while a mint is
+          in flight (isBusy) so a late-resolving pass probe can't replace the
+          progress button mid-mint. */}
+      {gatedOut && !isBusy ? (
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => router.push(passCollectionHref)}
+            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+          >
+            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
+          </button>
+          <p className="text-[10px] font-mono text-muted text-center">
+            minting requires an artwork from {passCollectionName ?? 'the collection'}
+          </p>
+        </div>
+      ) : (
+        <button
+          type="submit"
+          disabled={isBusy}
+          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+        >
+          {!isConnected
+            ? 'connect wallet to mint'
+            : isBusy
+            ? stepLabel(step, uploadProgress)
+            : 'mint'}
+        </button>
+      )}
+
+      {/* Residencies toggle */}
+      <div className="flex items-center gap-2.5 w-fit mx-auto -mt-2">
         <button
           type="button"
           onClick={() => {
@@ -2008,7 +2035,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${residenciesEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
           </div>
         </button>
-        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-subtle'}`}>
+        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-[#444]'}`}>
           {residenciesEnabled ? (
             editingResidencies ? (
               <input
@@ -2061,38 +2088,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           {residenciesMax}% max with {splits.length} recipients — lower the % or remove one
         </p>
       )}
-
-      {/* Submit — swaps to a "collect from <name>" CTA when the gate is
-          enabled and the wallet holds no valid Pass, but not while a mint is
-          in flight (isBusy) so a late-resolving pass probe can't replace the
-          progress button mid-mint. */}
-      {gatedOut && !isBusy ? (
-        <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() => router.push(passCollectionHref)}
-            className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
-          >
-            {passCollectionName ? `collect from ${passCollectionName}` : 'collect from the collection'}
-          </button>
-          <p className="text-[10px] font-mono text-muted text-center">
-            minting requires an artwork from {passCollectionName ?? 'the collection'}
-          </p>
-        </div>
-      ) : (
-        <button
-          type="submit"
-          disabled={isBusy}
-          className="w-full py-3 text-xs font-mono tracking-widest uppercase btn-accent"
-        >
-          {!isConnected
-            ? 'connect wallet to mint'
-            : isBusy
-            ? stepLabel(step, uploadProgress)
-            : 'mint'}
-        </button>
-      )}
-
     </form>
   )
 }

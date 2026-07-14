@@ -42,16 +42,3 @@ export const MIN_LISTING_PRICE_BASE_UNITS: bigint =
 export function isBelowListingFloor(price: bigint): boolean {
   return computePlatformFee(price) === 0n
 }
-
-// Single source of truth for the seller's net: the number the proceeds
-// PREVIEW shows and the number the SIGNED Seaport order encodes must come
-// from the same arithmetic, or a rule change in one silently breaks the
-// promise the preview makes. Callers: ListButton's preview effect and its
-// handleList order construction.
-export function computeSellerProceeds(
-  price: bigint,
-  royalty: bigint,
-): { fee: bigint; proceeds: bigint } {
-  const fee = computePlatformFee(price)
-  return { fee, proceeds: price - royalty - fee }
-}

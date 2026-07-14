@@ -143,7 +143,7 @@ export default function AirdropQuotaAdminPage() {
               value={day}
               onChange={(e) => setDay(e.target.value)}
               placeholder="1"
-              className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+              className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-[#444] focus:outline-none focus:border-muted"
             />
             <p className="text-[10px] font-mono text-muted mt-1.5">
               max airdrop mints per artist per UTC calendar day.
@@ -161,7 +161,7 @@ export default function AirdropQuotaAdminPage() {
               value={week}
               onChange={(e) => setWeek(e.target.value)}
               placeholder="5"
-              className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+              className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-[#444] focus:outline-none focus:border-muted"
             />
             <p className="text-[10px] font-mono text-muted mt-1.5">
               max airdrop mints per artist per ISO week (Monday-start, UTC).

@@ -318,7 +318,7 @@ export function NotificationFeed() {
                 className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border flex-shrink-0 select-none transition-colors duration-150 ${
                   isActive
                     ? 'border-accent text-accent'
-                    : 'border-line text-muted hover:border-subtle hover:text-dim'
+                    : 'border-line text-muted hover:border-[#444] hover:text-dim'
                 } ${isDraggable ? 'cursor-grab active:cursor-grabbing' : ''} ${
                   isDragging ? 'opacity-70' : ''
                 }`}

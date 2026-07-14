@@ -142,7 +142,7 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
           onChange={(e) => setName(e.target.value)}
           disabled={busy}
           placeholder="residency 2026"
-          className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
+          className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
         />
       </div>
 
@@ -156,7 +156,7 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
           disabled={busy}
           rows={6}
           placeholder="0xabc...&#10;0xdef..."
-          className="bg-surface border border-line px-2.5 py-2 text-[11px] font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50 resize-none"
+          className="bg-surface border border-line px-2.5 py-2 text-[11px] font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-none"
         />
       </div>
 
@@ -170,11 +170,11 @@ export function CreatorListEditor({ list, onClose, onSaved, onDeleted }: Props) 
           onChange={(e) => setCollection(e.target.value)}
           disabled={busy}
           placeholder="0x… — shows each artist's mint here"
-          className={`bg-surface border px-2.5 py-2 text-[11px] font-mono text-ink placeholder-subtle focus:outline-none disabled:opacity-50 ${
+          className={`bg-surface border px-2.5 py-2 text-[11px] font-mono text-ink placeholder-faint focus:outline-none disabled:opacity-50 ${
             collectionValid ? 'border-line focus:border-muted' : 'border-red-900/60'
           }`}
         />
-        <p className="text-[10px] font-mono text-subtle">
+        <p className="text-[10px] font-mono text-[#444]">
           {collectionValid
             ? 'blank → show each artist’s most-collected mint'
             : 'not a valid address'}

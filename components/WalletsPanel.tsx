@@ -132,7 +132,7 @@ export function WalletsPanel() {
         <label className="text-xs font-mono text-muted uppercase tracking-wider">
           Kismet Address
         </label>
-        <p className="text-[10px] font-mono text-subtle -mt-0.5 mb-1.5">
+        <p className="text-[10px] font-mono text-faint -mt-0.5 mb-1.5">
           Which Farcaster-verified wallet represents you on Kismet.
         </p>
         <div className="flex flex-col">
@@ -179,7 +179,7 @@ export function WalletsPanel() {
         <button
           onClick={refreshWallets}
           disabled={refreshing}
-          className="self-start flex items-center gap-1.5 mt-2 text-[10px] font-mono text-subtle hover:text-muted transition-colors disabled:opacity-50 disabled:cursor-wait"
+          className="self-start flex items-center gap-1.5 mt-2 text-[10px] font-mono text-faint hover:text-muted transition-colors disabled:opacity-50 disabled:cursor-wait"
         >
           <RefreshCw size={10} className={refreshing ? 'animate-spin' : ''} />
           {refreshing ? 'refreshing…' : 'refresh wallets'}
@@ -224,7 +224,7 @@ function ConfirmSwitch({
           <p className="text-sm font-mono text-ink">
             Set <span className="text-accent">{shortAddress(address)}</span> as your primary profile address?
           </p>
-          <p className="text-[10px] font-mono text-subtle">
+          <p className="text-[10px] font-mono text-faint">
             This changes which Farcaster-verified wallet represents you on Kismet — useful if your current address is compromised.
           </p>
         </div>
