@@ -1,6 +1,6 @@
 import type { MetadataRoute } from 'next'
 import { SITE_URL } from '@/lib/siteUrl'
-import { getUserCollections, getCreatedMintsSet, getCollectionMetaBatch } from '@/lib/kv'
+import { getUserCollections, scanCreatedMints, getCollectionMetaBatch } from '@/lib/kv'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getHiddenIdentityClosure } from '@/lib/addressUnion'
@@ -50,13 +50,15 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       getHiddenUsersSet(),
     ])
 
-    // getHiddenIdentityClosure and getCreatedMintsSet can THROW (unlike the
+    // getHiddenIdentityClosure and scanCreatedMints can THROW (unlike the
     // getters above). Isolate each so a blip degrades one facet instead of
     // collapsing the whole sitemap to static-only:
     //   • closure failure → profiles emitted unfiltered. Safe: the profile page
     //     itself returns a real 404 for hidden identities (see its
     //     generateMetadata), so a leaked URL is crawled and dropped, not indexed.
     //   • mints failure → moments omitted, collections/profiles still emitted.
+    // Set-wrap dedupes across SSCAN pages (SCAN can repeat members under
+    // concurrent writes) so a duplicate never yields a duplicate URL.
     let hiddenIdentities: Set<string> = new Set()
     try {
       hiddenIdentities = await getHiddenIdentityClosure()
@@ -65,9 +67,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }
     let mints: Set<string> = new Set()
     try {
-      mints = await getCreatedMintsSet()
+      mints = new Set(await scanCreatedMints(MAX_MOMENTS))
     } catch (err) {
-      console.error('[sitemap] created-mints read failed; omitting moments', err)
+      console.error('[sitemap] created-mints scan failed; omitting moments', err)
     }
 
     const metas = await getCollectionMetaBatch(collections)

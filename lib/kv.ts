@@ -146,6 +146,30 @@ export async function getCreatedMintsMembership(
   return created
 }
 
+// Bounded ENUMERATION of the created-mints registry, for the one consumer
+// that genuinely needs the member list rather than membership checks: the
+// sitemap, which emits every moment URL and has no candidate set to test.
+// SSCAN pages the set in bounded chunks — never the unbounded SMEMBERS the
+// SMISMEMBER refactor removed (each page stays far under Upstash's response
+// cap regardless of set growth) — and `max` bounds the total so the walk
+// stops once the caller's ceiling (the sitemap's 40k URL cap) is reached.
+// Runs at most once per sitemap revalidation (hourly), so the round trips
+// (~1 per 1000 members) are off every hot path. Failure contract matches
+// getCreatedMintsMembership: NO try/catch — the sitemap isolates the throw
+// itself and degrades to omitting moments for that regeneration.
+export async function scanCreatedMints(max: number): Promise<string[]> {
+  const members: string[] = []
+  let cursor: string | number = 0
+  do {
+    const [next, chunk] = (await redis.sscan(CREATED_MINTS_KEY, cursor, {
+      count: 1000,
+    })) as [string | number, string[]]
+    members.push(...chunk)
+    cursor = next
+  } while (String(cursor) !== '0' && members.length < max)
+  return members.slice(0, max)
+}
+
 export async function markCreatedMint(address: string, tokenId: string): Promise<void> {
   try {
     // Lowercased address is load-bearing: getCreatedMintsMembership matches
