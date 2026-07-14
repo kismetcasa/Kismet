@@ -9,7 +9,6 @@ import { wagmiConfig } from '@/lib/wagmi'
 import { AdminProvider } from '@/contexts/AdminContext'
 import { WalletConnectKeepalive } from '@/hooks/useWalletConnectKeepalive'
 import { BaseAppAutoConnect } from '@/hooks/useBaseAppAutoConnect'
-import { FunnelConnectTracker } from '@/components/FunnelConnectTracker'
 
 import '@rainbow-me/rainbowkit/styles.css'
 
@@ -19,7 +18,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <WagmiProvider config={wagmiConfig}>
       <WalletConnectKeepalive />
-      <FunnelConnectTracker />
       <QueryClientProvider client={queryClient}>
         {/* Must be inside QueryClientProvider — connect() is a react-query mutation. */}
         <BaseAppAutoConnect />

@@ -7,7 +7,6 @@ import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
-import { trackFunnel } from '@/lib/funnel'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
@@ -125,9 +124,6 @@ export function useDirectCollect(): UseDirectCollectReturn {
       if (inFlightRef.current) return null
       inFlightRef.current = true
 
-      // Funnel: one real attempt per latch pass (re-entrance and recovery
-      // retries of the same press don't double-count).
-      trackFunnel('collect_attempt')
       setStatus('preparing')
       toast.loading('Switch to Base if prompted…', { id: TOAST_ID })
 
@@ -283,7 +279,6 @@ export function useDirectCollect(): UseDirectCollectReturn {
           console.error('[direct-collect] /api/collect failed', { tokenId, err })
         }
 
-        trackFunnel('collect_success')
         setStatus('done')
         toast.success('Collected!', { id: TOAST_ID })
         ackSuccess()
