@@ -51,6 +51,22 @@ const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
 // no-store 502 and the next request retries fresh.
 const RESIZE_COMPUTE_BUDGET_MS = 60_000
 
+// Cap concurrent buffer-and-resize COMPUTES. Each compute holds up to
+// MAX_RESIZE_SOURCE_BYTES (100MB) in RAM plus a sharp working set, and —
+// unlike the streaming passthrough — there's no memory ceiling across
+// concurrent computes, so N simultaneous DISTINCT-asset resizes ≈ N×100MB
+// resident, the OOM class this route otherwise guards against. Two layers
+// keep that bounded: resizeFlight dedupes same-asset demand into one compute
+// (waiters hold no buffer and are always admitted), and this cap bounds how
+// many distinct computes run at once. At capacity we do NOT error: we fall
+// through to the streaming passthrough (serves the original bytes), so a
+// resize flood degrades to unoptimized images, never a 5xx.
+// computeResizedVariant increments the counter synchronously (before its
+// first await), so GET's has-flight/under-cap check can't race a concurrent
+// request into an over-cap compute on the single-threaded event loop.
+let activeResizes = 0
+const MAX_CONCURRENT_RESIZES = 4
+
 // Throttle for the range-synthesis warning below: <video> playback through a
 // degraded upstream issues many ranged requests per view, and one line a
 // minute is signal while one per chunk is noise (same pattern as the
@@ -260,6 +276,18 @@ const resizeFlight = new SingleFlight<ResizeOutcome>()
  * budget bounds how long a hung upstream can pin the single-flight slot.
  */
 async function computeResizedVariant(u: string, width: number): Promise<ResizeOutcome> {
+  // Synchronous — see the MAX_CONCURRENT_RESIZES comment: the increment must
+  // land before this function's first await so the caller's capacity check
+  // and this reservation are one atomic step on the event loop.
+  activeResizes++
+  try {
+    return await computeResizedVariantInner(u, width)
+  } finally {
+    activeResizes--
+  }
+}
+
+async function computeResizedVariantInner(u: string, width: number): Promise<ResizeOutcome> {
   const started = Date.now()
   const budget = AbortSignal.timeout(RESIZE_COMPUTE_BUDGET_MS)
   const upstream = await raceFetchGateways(u, RACE_TIMEOUT_MS, budget, undefined)
@@ -363,7 +391,7 @@ export async function GET(req: NextRequest) {
   // shared IP) while barely bounding the real resource (egress bytes, not
   // request count). The controls that fit a streaming media proxy are the
   // per-request MAX_DECLARED_BYTES cap below and a CDN in front
-  // (see REMEDIATION_PLAYBOOK.md §B5 for the verdict, CDN_RUNBOOK.md for the
+  // (see SCALING.md §B5 for the verdict, OPS_RUNBOOK.md §3 for the
   // reproducible Cloudflare config + verification).
   const u = req.nextUrl.searchParams.get('u')
   if (!u) return new Response('missing u', { status: 400 })
@@ -423,10 +451,17 @@ export async function GET(req: NextRequest) {
   // viewer. That recompute-per-request was why the featured Patron mint pass
   // paid a multi-second first paint while optimizer-eligible cards beside it
   // served from next/image's own disk cache.
-  if (wantsResize) {
+  //
+  // Admission: joining an ALREADY-in-flight compute is always allowed (waiters
+  // hold no buffer); starting a NEW one is gated by MAX_CONCURRENT_RESIZES —
+  // at capacity the request falls through to the streaming passthrough below
+  // (original bytes, unoptimized, never a 5xx), exactly the pre-coalesce cap
+  // behavior.
+  const flightKey = `${u}|${resizeWidth}`
+  if (wantsResize && (resizeFlight.has(flightKey) || activeResizes < MAX_CONCURRENT_RESIZES)) {
     let outcome: ResizeOutcome
     try {
-      outcome = await resizeFlight.run(`${u}|${resizeWidth}`, () =>
+      outcome = await resizeFlight.run(flightKey, () =>
         computeResizedVariant(u, resizeWidth),
       )
     } catch {

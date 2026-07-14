@@ -81,6 +81,25 @@ const keyMuted = (a: string) => `kismetart:notif-muted:${a.toLowerCase()}`
 const keyMutedTypes = (a: string) => `kismetart:notif-muted-types:${a.toLowerCase()}`
 const keyUnreadCount = (a: string) => `kismetart:notif-unread-count:${a.toLowerCase()}`
 
+/**
+ * Delete an address's entire notification footprint — inbox, read
+ * markers, mute prefs, unread-count cache. Admin profile-erase only.
+ * Note: notifications this address SENT into OTHER users' inboxes are left
+ * as-is (purging them would scan every user's list); they render the actor
+ * as a short address, which is the erased state anyway.
+ */
+export async function deleteNotificationData(address: string): Promise<void> {
+  const a = address.toLowerCase()
+  await Promise.all([
+    redis.del(keyNotif(a)),
+    redis.del(keyLastRead(a)),
+    redis.del(keyReadIds(a)),
+    redis.del(keyMuted(a)),
+    redis.del(keyMutedTypes(a)),
+    redis.del(keyUnreadCount(a)),
+  ])
+}
+
 // Cache window for the precomputed unread count. Every path that can change
 // the priority-unread count (priority writeNotification, markAllRead,
 // markOneRead) calls invalidateUnreadCount which DELs this key immediately,
@@ -225,6 +244,19 @@ export async function writeNotification(input: NotificationInput): Promise<void>
   }
 }
 
+// Bound the fan-out's CONCURRENCY, not its delivery. followers is an
+// unbounded set (kismetart:followers:<addr>, a plain SET with no recency —
+// so "cap to the newest N" is not even expressible); a single Promise.all
+// over all of it holds F in-flight writeNotification chains at once, each
+// ~4-6 Redis commands plus a fire-and-forget Farcaster push dispatch. At
+// celebrity scale that is an event-loop + memory + push-HTTP burst on the
+// single box, landing at the exact moment a big creator posts. Chunks bound
+// the peak while every follower still gets notified; this runs inside
+// after(), so total wall-clock is not user-facing. The threshold warn gives
+// SCALING.md B2's "move fan-out to a queue" decision a concrete observable.
+const FANOUT_BATCH = 50
+const FANOUT_WARN_THRESHOLD = 1000
+
 // Write a notification to every follower of `source`, with actor=source.
 // writeNotification's self-check filters source==follower; burst dedup runs
 // inside writeNotification too. Callers should schedule via `after()` so
@@ -235,15 +267,24 @@ export async function fanoutToFollowers(
 ): Promise<void> {
   try {
     const followers = await getFollowers(source)
-    await Promise.all(
-      followers.map((follower) =>
-        // _forcePriority: recipients are proven followers of source, so
-        // isPriority always returns true via the isFollowing branch. Skip
-        // the 2 Redis calls (isFollowing SISMEMBER + KEY_PROFILES SISMEMBER)
-        // that would otherwise fire per recipient for collect/listing_created.
-        writeNotification({ ...payload, recipient: follower, actor: source, _forcePriority: true }),
-      ),
-    )
+    if (followers.length >= FANOUT_WARN_THRESHOLD) {
+      console.warn('[notifications] large fan-out', {
+        source,
+        type: payload.type,
+        followers: followers.length,
+      })
+    }
+    for (let i = 0; i < followers.length; i += FANOUT_BATCH) {
+      await Promise.all(
+        followers.slice(i, i + FANOUT_BATCH).map((follower) =>
+          // _forcePriority: recipients are proven followers of source, so
+          // isPriority always returns true via the isFollowing branch. Skip
+          // the 2 Redis calls (isFollowing SISMEMBER + KEY_PROFILES SISMEMBER)
+          // that would otherwise fire per recipient for collect/listing_created.
+          writeNotification({ ...payload, recipient: follower, actor: source, _forcePriority: true }),
+        ),
+      )
+    }
   } catch {
     // notifications are non-critical
   }
@@ -496,11 +537,33 @@ export async function setMomentMeta(
   tokenId: string,
   meta: MomentMeta,
 ): Promise<void> {
-  await redis.set(keyMomentMeta(contractAddress, tokenId), JSON.stringify({
-    creator: meta.creator.toLowerCase(),
-    name: meta.name,
-    ...(typeof meta.durationSec === 'number' && meta.durationSec > 0
-      ? { durationSec: Math.round(meta.durationSec) }
-      : {}),
-  }))
+  const key = keyMomentMeta(contractAddress, tokenId)
+  // MERGE, don't clobber. `creator` is written once at mint and is the
+  // authorization + attribution key: /api/moment/hide gates on it, and
+  // statsMath.resolveMomentCreator treats it as highest precedence for
+  // mint-count + earnings. A later metadata edit (/api/moment/update-uri,
+  // authorized on METADATA|ADMIN — a broader set than the minter) must refresh
+  // the display name WITHOUT reassigning attribution, so preserve an
+  // already-established creator and only take the incoming one on first write.
+  let existing: MomentMeta | null = null
+  try {
+    const raw = await redis.get<string | MomentMeta>(key)
+    existing = raw ? (typeof raw === 'string' ? (JSON.parse(raw) as MomentMeta) : raw) : null
+  } catch {
+    // Unreadable/corrupt prior value → first-write semantics.
+  }
+  const creator = (existing?.creator ?? meta.creator).toLowerCase()
+  const name = meta.name ?? existing?.name
+  const durationSec =
+    typeof meta.durationSec === 'number' && meta.durationSec > 0
+      ? Math.round(meta.durationSec)
+      : existing?.durationSec
+  await redis.set(
+    key,
+    JSON.stringify({
+      creator,
+      name,
+      ...(typeof durationSec === 'number' && durationSec > 0 ? { durationSec } : {}),
+    }),
+  )
 }

@@ -102,28 +102,88 @@ async function _getUserCollections(): Promise<string[]> {
 }
 export const getUserCollections = memoize(_getUserCollections, SET_CACHE_TTL_MS)
 
-// Note: NO try/catch wrapping the SMEMBERS. The earlier `catch { return new Set() }`
-// silently turned every Redis failure into "no created mints", which the
-// timeline's scope=standalone filter then read as "filter everything out" —
-// blanking the mints/trending feeds for a full cache-TTL window after recovery
-// (memoize cached the empty result as a successful read). Letting the throw propagate
-// means memoize won't cache the failure, the next call retries, and the
-// caller in app/api/timeline/route.ts handles the throw by skipping the
-// filter for THIS request (showing unfiltered moments — safer degradation
-// than blank).
-async function _getCreatedMintsSet(): Promise<Set<string>> {
-  const members = (await redis.smembers(CREATED_MINTS_KEY)) as string[]
-  return new Set(members.map((m) => m.toLowerCase()))
+// Bounded membership check against the created-mints registry — replaces the
+// previous full-SMEMBERS → in-memory Set (memoized 15 min). That read grew by
+// one member per mint FOREVER and would hard-fail at Upstash's 10MB response
+// cap (~200k members), while its only consumer — the timeline's
+// scope=standalone filter — only ever needs membership of the current merged
+// candidates, never the whole set. SMISMEMBER keeps request AND response
+// sized by the candidate count. Chunked so one command's argv stays small;
+// same-tick chunks auto-pipeline into a single REST round trip. Exact-match
+// caveat: SMISMEMBER does no case normalization server-side, which is safe
+// here because markCreatedMint has lowercased the address since its first
+// commit and the dataset postdates it (verified via git log -L, 2026-07-13).
+//
+// No memo layer anymore: every request reads live membership, so a fresh
+// mint appears in the Mints feed immediately on every pod (the old memo
+// needed an own-pod-only invalidate hook for that).
+//
+// Failure contract preserved: NO try/catch here — a Redis failure must
+// propagate so the caller in app/api/timeline/route.ts skips the filter for
+// THIS request (unfiltered moments beat a blank feed; an earlier
+// swallow-to-empty-set version blanked the Mints feed for a full cache
+// window after every blip).
+const SMISMEMBER_CHUNK = 1024
+export async function getCreatedMintsMembership(
+  candidates: string[],
+): Promise<Set<string>> {
+  const created = new Set<string>()
+  if (candidates.length === 0) return created
+  const chunks: string[][] = []
+  for (let i = 0; i < candidates.length; i += SMISMEMBER_CHUNK) {
+    chunks.push(candidates.slice(i, i + SMISMEMBER_CHUNK))
+  }
+  const flagChunks = await Promise.all(
+    chunks.map((chunk) => redis.smismember(CREATED_MINTS_KEY, chunk)),
+  )
+  for (let ci = 0; ci < chunks.length; ci++) {
+    const chunk = chunks[ci]
+    const flags = flagChunks[ci]
+    for (let i = 0; i < chunk.length; i++) {
+      if (Number(flags[i]) === 1) created.add(chunk[i])
+    }
+  }
+  return created
 }
-export const getCreatedMintsSet = memoize(_getCreatedMintsSet, SET_CACHE_TTL_MS)
+
+// Bounded ENUMERATION of the created-mints registry — the shape the sitemap
+// needs (it builds moment URLs FROM the set, so membership checks can't serve
+// it). Reconciles the two PRs that raced on 2026-07-13: the SEO PR added the
+// sitemap consumer while the Redis PR removed the full-SMEMBERS reader as
+// OOM-/response-cap-unsafe. SSCAN honors that verdict: each page's request
+// and response are bounded (COUNT-sized), and `maxMembers` + a hard page cap
+// bound the whole walk — we never ask Upstash for the set in one reply.
+// Throws on Redis error (no internal swallow), preserving the sitemap's
+// isolate-and-degrade contract: mints read fails → moments omitted, the rest
+// of the sitemap still emits.
+const SSCAN_PAGE_COUNT = 1000
+export async function scanCreatedMints(maxMembers: number): Promise<Set<string>> {
+  const out = new Set<string>()
+  let cursor: string | number = 0
+  // Page cap = ceil(maxMembers / COUNT) with slack for SSCAN's approximate
+  // page sizing — a backstop against cursor pathology, not a tuning knob.
+  const maxPages = Math.ceil(maxMembers / SSCAN_PAGE_COUNT) * 4 + 8
+  for (let page = 0; page < maxPages; page++) {
+    const [next, members]: [string | number, (string | number)[]] = await redis.sscan(
+      CREATED_MINTS_KEY,
+      cursor,
+      { count: SSCAN_PAGE_COUNT },
+    )
+    for (const m of members) {
+      out.add(String(m))
+      if (out.size >= maxMembers) return out
+    }
+    cursor = next
+    if (String(cursor) === '0') break
+  }
+  return out
+}
 
 export async function markCreatedMint(address: string, tokenId: string): Promise<void> {
   try {
+    // Lowercased address is load-bearing: getCreatedMintsMembership matches
+    // members exactly (SMISMEMBER), with candidates built lowercase.
     await redis.sadd(CREATED_MINTS_KEY, `${address.toLowerCase()}:${tokenId}`)
-    // Own-pod consistency: a creator who just minted should see their
-    // moment on the next Mints-feed read from the same pod immediately,
-    // not after the cache-TTL window. Other pods catch up on their own TTL expiry.
-    getCreatedMintsSet.invalidate()
   } catch (err) {
     console.error('[kv] markCreatedMint failed', { address, tokenId, err })
   }

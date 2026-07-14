@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getTrackedCollectionsByScope, getCreatedMintsSet, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCreatedMintsMembership, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
-import { getUpcomingSaleEnds } from '@/lib/saleEnds'
+import { getUpcomingSaleEnds, getFreeMoments } from '@/lib/saleEnds'
 import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
@@ -14,6 +14,10 @@ import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
+import { getRecipientSplits } from '@/lib/splits'
+import { getDelegatedMoments } from '@/lib/airdropDelegates'
+import { serverBaseClient } from '@/lib/rpc'
+import { hasAdminBit, hasMinterBit, readPermissions } from '@/lib/permissions'
 
 // Bounded-concurrency map: cap how many inprocess /timeline fetches are in
 // flight at once. A plain Promise.all over the full tracked-collection set
@@ -240,7 +244,7 @@ export async function GET(req: NextRequest) {
   // MERGE_BUDGET/limit collections: the merge became limit × N, unbounded in
   // N. The floor is now 1: past that width each collection's sample THINS
   // instead of the merge growing — degrade depth, never stability. The durable
-  // fix is a materialized feed (REMEDIATION_PLAYBOOK.md §B1). A single
+  // fix is a materialized feed (SCALING.md §B1). A single
   // collection (N=1) is unchanged until page*limit exceeds the whole budget.
   // (SRE handling-overload / Azure Bulkhead.)
   //
@@ -356,17 +360,23 @@ export async function GET(req: NextRequest) {
   // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
   // remain visible in user-history surfaces.
   //
-  // If the createdMints lookup fails (Upstash blip), skip the filter for
+  // Membership is checked via bounded SMISMEMBER over just this request's
+  // merged candidates (getCreatedMintsMembership) — never a full SMEMBERS
+  // of the ever-growing set, which would hard-fail at Upstash's 10MB
+  // response cap past ~200k mints.
+  //
+  // If the membership lookup fails (Upstash blip), skip the filter for
   // this request rather than serve an empty feed. Showing some unfiltered
   // moments briefly is strictly better UX than "no moments yet" — and the
-  // next request retries the lookup (memoize doesn't cache the throw).
+  // next request simply retries.
   if (scope === 'standalone' && !singleCollection) {
     try {
-      const createdMints = await getCreatedMintsSet()
-      merged = merged.filter((m: unknown) => {
+      const candidateKeys = merged.map((m: unknown) => {
         const moment = m as { address?: string; token_id?: string }
-        return createdMints.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+        return `${moment.address?.toLowerCase()}:${moment.token_id}`
       })
+      const createdMints = await getCreatedMintsMembership(candidateKeys)
+      merged = merged.filter((_m: unknown, i: number) => createdMints.has(candidateKeys[i]))
     } catch (err) {
       console.warn('[timeline] standalone filter skipped (Redis unavailable):', err)
     }
@@ -382,25 +392,130 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Airdroppable filter — moments this address has admin authority over.
-  // Inprocess populates `admins[]` from on-chain ADMIN holders at each
-  // moment's tokenId, so delegated admins appear here even though they
-  // aren't the creator. Match on either `creator.address` or any entry
-  // in `admins[]` so the creator's own moments still surface (some
-  // inprocess responses don't include the creator in admins[] when they
-  // hold the bit only via tokenId 0).
+  // Airdroppable filter — moments this address can mint an airdrop of.
+  // Signals, cheapest first:
+  //   1. creator.address === wallet — their own mint.
+  //   2. wallet ∈ admins[] — inprocess indexes on-chain ADMIN holders at each
+  //      moment's tokenId, so per-token ADMIN delegates surface here even
+  //      though they aren't the creator.
+  // Neither covers two real cases: (a) the Patron model attributes the moment
+  // creator to the platform treasury and the artist holds ADMIN only via the
+  // collection-wide tokenId-0 row, which inprocess's per-token admins[] omits;
+  // (b) a per-piece MINTER delegate (kismetart.eth authorizing someone to
+  // airdrop one piece at least privilege) — inprocess's admins[] is ADMIN-only
+  // so a MINTER grant never appears there. adminMint would let both airdrop
+  // (Zora ORs the tokenId-0 row into its gate and accepts ADMIN or MINTER).
+  //   3. wallet is a split payee OR a recorded per-piece delegate on the
+  //      moment, AND actually holds ADMIN/MINTER for it on-chain. Both
+  //      candidate sets come from one reverse-index SMEMBERS each; authority
+  //      is then confirmed exactly the way adminMint gates it —
+  //      permissions[tokenId][wallet] | permissions[0][wallet], ADMIN|MINTER —
+  //      so the picker keeps its invariant: it only lists pieces the airdrop
+  //      tx can actually mint.
   if (airdroppable) {
-    merged = merged.filter((m: unknown) => {
+    const wallet = airdroppable as `0x${string}`
+    const cheapMatch = (m: unknown): boolean => {
       const moment = m as {
         creator?: { address?: string }
         admins?: { address?: string }[]
       }
       if (moment.creator?.address?.toLowerCase() === airdroppable) return true
       return (
-        moment.admins?.some(
-          (a) => a.address?.toLowerCase() === airdroppable,
-        ) ?? false
+        moment.admins?.some((a) => a.address?.toLowerCase() === airdroppable) ??
+        false
       )
+    }
+    const momentKey = (m: unknown): string => {
+      const moment = m as { address?: string; token_id?: string }
+      return `${moment.address?.toLowerCase() ?? ''}:${moment.token_id ?? ''}`
+    }
+
+    // Candidate pieces: split payee (getRecipientSplits) ∪ per-piece delegate
+    // (getDelegatedMoments). One SMEMBERS each, both empty for wallets with
+    // neither — so this stays a no-op read for the common request.
+    const [splitList, delegateList] = await Promise.all([
+      getRecipientSplits(airdroppable).catch(() => []),
+      getDelegatedMoments(airdroppable).catch(() => []),
+    ])
+    const candidateKeys = new Set<string>([
+      ...splitList.map((s) => `${s.collection}:${s.tokenId}`),
+      ...delegateList.map((d) => `${d.collection}:${d.tokenId}`),
+    ])
+
+    // Only candidates that appear in this merge and weren't already matched by
+    // the cheap signals need an on-chain read.
+    const toVerify: { collection: string; tokenId: string; key: string }[] = []
+    if (candidateKeys.size > 0) {
+      for (const m of merged) {
+        if (cheapMatch(m)) continue
+        const key = momentKey(m)
+        if (!candidateKeys.has(key)) continue
+        const mm = m as { address?: string; token_id?: string }
+        const collection = mm.address?.toLowerCase()
+        if (collection && mm.token_id != null) {
+          toVerify.push({ collection, tokenId: String(mm.token_id), key })
+        }
+      }
+    }
+
+    // Confirm authority the way adminMint does: ADMIN|MINTER at the per-token
+    // row OR the collection-wide tokenId-0 row. Read collection-wide once per
+    // collection (promise-cached so concurrent workers don't double-read), and
+    // fall through to the per-token row only when it doesn't already grant —
+    // that covers collection-wide split artists in one read and per-piece
+    // MINTER delegates in one more. Any read failure falls OPEN (keep the
+    // candidate): the wallet is a named payee/delegate and adminMint
+    // independently gates the real airdrop on-chain, so a transient RPC blip
+    // shows an artist their own work rather than hiding it. Fail-open can never
+    // enable an unauthorized airdrop; the chain is the gate, not this read.
+    const authorizedKeys = new Set<string>()
+    if (toVerify.length > 0) {
+      const client = serverBaseClient()
+      const collWide = new Map<string, Promise<bigint | null>>()
+      const readCollWide = (collection: string): Promise<bigint | null> => {
+        let p = collWide.get(collection)
+        if (!p) {
+          p = readPermissions(client, collection as `0x${string}`, 0n, wallet).catch(
+            () => null,
+          )
+          collWide.set(collection, p)
+        }
+        return p
+      }
+      // Bounded concurrency (the same window the collection fan-out uses) so a
+      // wallet delegated/paid across many pieces can't fire an unbounded burst
+      // of eth_calls.
+      await mapWithConcurrency(
+        toVerify,
+        FANOUT_CONCURRENCY,
+        async ({ collection, tokenId, key }) => {
+          const cw = await readCollWide(collection)
+          if (cw === null) {
+            authorizedKeys.add(key) // fail-open: collection-wide read failed
+            return
+          }
+          if (hasAdminBit(cw) || hasMinterBit(cw)) {
+            authorizedKeys.add(key)
+            return
+          }
+          try {
+            const pt = await readPermissions(
+              client,
+              collection as `0x${string}`,
+              BigInt(tokenId),
+              wallet,
+            )
+            if (hasAdminBit(pt) || hasMinterBit(pt)) authorizedKeys.add(key)
+          } catch {
+            authorizedKeys.add(key) // fail-open: per-token read failed
+          }
+        },
+      )
+    }
+
+    merged = merged.filter((m: unknown) => {
+      if (cheapMatch(m)) return true
+      return authorizedKeys.has(momentKey(m))
     })
   }
 
@@ -441,12 +556,24 @@ export async function GET(req: NextRequest) {
     // Moments past the cap (or never collected) fall back to score 0 via
     // scoreMap.get's undefined → 0 coalesce below, putting them at the
     // bottom of the sort ordered newest-first by the created_at tiebreak.
+    // The free-mint index rides the same round trip (auto-pipelined): these
+    // are SALES feeds, so free mints (price 0) are dropped entirely — a free
+    // mint is not a sale regardless of how many times it's been collected.
     const zsetKey = sort === 'trending' ? TRENDING_KEY : TRENDING_LATEST_KEY
-    const raw = (await redis.zrange(zsetKey, 0, 9999, {
-      rev: true,
-      withScores: true,
-    })) as (string | number)[]
+    const [raw, freeSet] = await Promise.all([
+      redis.zrange(zsetKey, 0, 9999, { rev: true, withScores: true }) as Promise<
+        (string | number)[]
+      >,
+      getFreeMoments(),
+    ])
     const scoreMap = zpairsToMap(raw)
+
+    if (freeSet.size > 0) {
+      merged = merged.filter((m: unknown) => {
+        const moment = m as { address?: string; token_id?: string }
+        return !freeSet.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+      })
+    }
 
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
@@ -457,19 +584,25 @@ export async function GET(req: NextRequest) {
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
     })
   } else if (sort === 'ending-soon') {
-    // Upcoming sale deadlines from the write-through index (lib/saleEnds.ts):
-    // moments with a live/scheduled sale that actually ends sort soonest-
-    // first; everything else (open-ended, ended, not yet indexed) follows
-    // newest-first so the feed stays full instead of emptying out. Index
-    // read failure degrades the whole feed to newest-first (empty map).
+    // Active window sales from the write-through index (lib/saleEnds.ts): the
+    // index holds only moments whose sale has a real close date AND has already
+    // started, and getUpcomingSaleEnds keeps only those whose close date is
+    // still in the future — i.e. exactly "sales inside their window right now".
+    // FILTER to that set (no padding with non-sale moments) and order soonest-
+    // close first. Empty index (nothing active, or a Redis blip) → empty feed,
+    // which is the honest result: there are no active timed sales to show.
     const endsMap = await getUpcomingSaleEnds(Math.floor(Date.now() / 1000))
 
-    // No-deadline moments coalesce to Infinity: any real end sorts before
-    // them, and equal values (including Infinity vs Infinity) fall through
-    // to the created_at tiebreak — the `?? 0` shape of the branch above.
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return endsMap.has(`${moment.address?.toLowerCase()}:${moment.token_id}`)
+    })
+
     merged = merged.sort((a: unknown, b: unknown) => {
       const ma = a as { address?: string; token_id?: string; created_at: string }
       const mb = b as { address?: string; token_id?: string; created_at: string }
+      // Every survivor has a real end after the filter; the created_at tiebreak
+      // still orders sales that close at the same instant.
       const endA = endsMap.get(`${ma.address?.toLowerCase()}:${ma.token_id}`) ?? Infinity
       const endB = endsMap.get(`${mb.address?.toLowerCase()}:${mb.token_id}`) ?? Infinity
       if (endA !== endB) return endA - endB
@@ -536,6 +669,12 @@ export async function GET(req: NextRequest) {
         return m
       })
   }
+
+  // Hidden-PROFILE (identity) NAME suppression is applied downstream in
+  // enrichMomentsWithKismetMeta (the single creator-chip choke point), not
+  // here: an earlier strip at this spot was silently re-populated by the
+  // enrichment overlay that runs after it (username AND avatar). See
+  // lib/momentEnrichment.ts.
 
   // Following priority: bubble followed creators to the top, preserve internal order
   if (followingSet && followingSet.size > 0) {

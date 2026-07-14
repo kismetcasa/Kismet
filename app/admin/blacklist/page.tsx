@@ -11,7 +11,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'
 
 /**
- * Unified moderation surface with three independent lists:
+ * Unified moderation surface with four independent lists:
  *
  *   1. Action blacklist  — blocks the address from minting, writing,
  *                          listing on secondary, and recording airdrops.
@@ -23,18 +23,26 @@ import { toastError } from '@/lib/toast'
  *   3. Hidden users      — strips every public-feed entry authored by
  *                          the address. The user themselves still sees
  *                          their own content on their own profile.
+ *   4. Hidden profiles   — 404s the profile page + identity surfaces
+ *                          (profile API, search, share card) for everyone
+ *                          but the owner. Content visibility unaffected.
  *
  * Each list is independent: an address can be on any subset. Combine
  * #1 + #3 for a full ban (can't create, content gone from feeds);
+ * #3 + #4 to make a user fully invisible (content AND identity);
  * #1 + #2 for a Pass-specific revocation that also prevents creator
  * action; #2 alone for a pure cohort-quality revocation.
+ *
+ * There is intentionally no profile DELETE: profiles are wallet-keyed
+ * and rebuilt by the owner's next signed update, so deletion would be
+ * destructive yet trivially reversible — hiding is the enforceable lever.
  *
  * Path stayed at `/admin/blacklist` so existing dashboard links and
  * bookmarks resolve; the in-page title is "Moderation".
  */
 
 type ListConfig = {
-  id: 'actions' | 'pass' | 'hidden'
+  id: 'actions' | 'pass' | 'hidden' | 'profiles'
   title: string
   desc: string
   endpoint: string
@@ -67,6 +75,15 @@ const LISTS: ListConfig[] = [
     desc:
       "Strips every public-feed entry authored by this address — moments, collections, listings, featured rows, search. The user's own profile still surfaces their content to themselves. Distinct from per-content hiding (under Hide content on the admin dashboard).",
     endpoint: '/api/admin/hidden-users',
+    addLabel: 'hide',
+    removeLabel: 'unhide',
+  },
+  {
+    id: 'profiles',
+    title: 'Hidden profiles',
+    desc:
+      'Hides the profile itself: the profile page 404s for everyone but the owner, and the identity drops out of the profile API, search, and share cards. Sibling-aware — hiding any of a Farcaster user’s verified wallets hides them all. Content visibility is unaffected; combine with Hidden users for full invisibility.',
+    endpoint: '/api/admin/hidden-profiles',
     addLabel: 'hide',
     removeLabel: 'unhide',
   },
@@ -111,8 +128,8 @@ export default function ModerationPage() {
       <div>
         <h1 className="text-ink font-mono text-lg mb-2">Moderation</h1>
         <p className="text-dim font-mono text-xs leading-relaxed">
-          Three independent address lists. An address can appear on any
-          subset; combine for fuller bans. Admin is exempt from all three.
+          Four independent address lists. An address can appear on any
+          subset; combine for fuller bans. Admin is exempt from all four.
           The first action this session will prompt for a wallet signature.
         </p>
       </div>

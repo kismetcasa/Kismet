@@ -2,25 +2,82 @@ import { createRequire } from 'module'
 
 const require = createRequire(import.meta.url)
 
-// Baseline security headers applied to every response. Deliberately
-// excludes X-Frame-Options / CSP frame-ancestors — Kismet runs as a
-// Farcaster Mini App inside Warpcast's webview, and a blanket frame
-// deny would break that embed. Clickjacking protection for a Mini App
-// requires an allowlisted frame-ancestors list, which is brittle as
-// new Farcaster clients ship; defer to its own focused change.
-// CSP is also intentionally omitted: RainbowKit / WalletConnect inject
-// inline styles and connect to a wide pool of RPC + walletconnect
-// relays, and our AR.IO + IPFS gateway pool rotates hosts on 404.
+// Baseline security headers applied to every response.
+//
+// CSP ships in REPORT-ONLY mode: it BLOCKS NOTHING — browsers only report
+// violations — so it's a zero-risk way to discover exactly what an enforcing
+// policy must allow before flipping it on. Enforcing CSP is genuinely hard here
+// (RainbowKit / WalletConnect inject inline styles and connect to a rotating
+// pool of RPC + WalletConnect relays; our AR.IO + IPFS gateway pool rotates
+// hosts), and `frame-ancestors` must allowlist every Farcaster host that embeds
+// the Mini App (Warpcast, Base, third-party clients) or the embed breaks —
+// which is exactly why we discover the real set in report-only first.
+// FOLLOW-UP to actually close the clickjacking / XSS-defense-in-depth gap:
+// review reported violations, tighten these directives, wire a report
+// collector, then promote to the enforcing `Content-Security-Policy` header
+// (drop `-Report-Only`). Report-only is step 1 of 2 — it does not itself block.
+const CSP_REPORT_ONLY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' https: wss:",
+  "worker-src 'self' blob:",
+  "frame-src 'self' https:",
+  "frame-ancestors 'self' https://warpcast.com https://*.warpcast.com https://farcaster.xyz https://*.farcaster.xyz https://base.org https://*.base.org",
+].join('; ')
+
 const SECURITY_HEADERS = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+  { key: 'Content-Security-Policy-Report-Only', value: CSP_REPORT_ONLY },
 ]
+
+// Canonical host, mirroring lib/siteUrl.ts (can't import TS here). Drives the
+// www→apex redirect and the non-canonical-host noindex header below.
+const CANONICAL_HOST = new URL(
+  (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://kismet.art').replace(/\/$/, ''),
+).host
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // www → apex, permanent. DNS resolves www.kismet.art to the same box as the
+  // apex, so if the proxy ever routes it here, serving identical content on two
+  // hosts would split ranking signals (the classic silent duplicate-site leak).
+  // Handling it in-repo makes the redirect versioned and independent of anyone
+  // remembering a Traefik rule; if the proxy never routes www, this is dormant
+  // insurance. http→https stays at the proxy layer on purpose — Next sits
+  // behind TLS termination and a proto-based redirect risks loops.
+  async redirects() {
+    return [
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: `www.${CANONICAL_HOST}` }],
+        destination: `https://${CANONICAL_HOST}/:path*`,
+        permanent: true,
+      },
+    ]
+  },
+
   async headers() {
-    return [{ source: '/:path*', headers: SECURITY_HEADERS }]
+    return [
+      { source: '/:path*', headers: SECURITY_HEADERS },
+      // Any host that isn't the canonical one (staging domains, direct-IP
+      // hits, preview deploys) is told not to index — header-level, so it
+      // covers every route including static assets, with zero per-page code.
+      // The canonical host never matches `missing`, so production is
+      // untouched. Localhost dev gets the header too, which is harmless.
+      {
+        source: '/:path*',
+        missing: [{ type: 'host', value: CANONICAL_HOST }],
+        headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
+      },
+    ]
   },
 
   // Emit a self-contained `.next/standalone/server.js` plus a traced

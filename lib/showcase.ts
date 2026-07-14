@@ -25,6 +25,12 @@ export function isPinCategory(value: unknown): value is PinCategory {
 const key = (category: PinCategory, address: string) =>
   `kismetart:pins:${category}:${address.toLowerCase()}`
 
+/** Delete every pinned-showcase category for an address (all three keys).
+ *  Admin profile-erase only. */
+export async function clearAllPins(address: string): Promise<void> {
+  await Promise.all(CATEGORIES.map((c) => redis.del(key(c, address))))
+}
+
 const member = (collection: string, tokenId: string) =>
   `${collection.toLowerCase()}:${tokenId}`
 

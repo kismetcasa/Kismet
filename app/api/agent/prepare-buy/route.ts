@@ -5,6 +5,7 @@ import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { getListing } from '@/lib/listings'
+import { getListingVisibility } from '@/lib/hiddenListings'
 import { SEAPORT_ADDRESS } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
@@ -41,6 +42,11 @@ export async function POST(req: NextRequest) {
 
   const listing = await getListing(listingId)
   if (!listing) return errorResponse(404, 'Listing not found')
+  // Content-level hides (admin-hidden listing, hidden moment/collection)
+  // pull the item off the market entirely — indistinguishable from a
+  // missing listing so the hide isn't probeable by id.
+  const visibility = await getListingVisibility()
+  if (visibility.contentHidden(listing)) return errorResponse(404, 'Listing not found')
   if (listing.status !== 'active' || listing.expiresAt <= Date.now()) {
     return errorResponse(409, 'Listing is not active (filled, cancelled, or expired)')
   }

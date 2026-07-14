@@ -174,6 +174,15 @@ export class SingleFlight<T> {
     return p
   }
 
+  /**
+   * True while a compute for `key` is in flight. Lets a caller distinguish
+   * "join an existing compute" (free — no new buffer) from "start a new one"
+   * (counted against its own concurrency cap) BEFORE calling run().
+   */
+  has(key: string): boolean {
+    return this.inflight.has(key)
+  }
+
   /** Observability/test hook — number of computes currently in flight. */
   get size(): number {
     return this.inflight.size

@@ -8,7 +8,14 @@ import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from './config'
  * exported as SESSION_COOKIE from lib/session.ts — admin and user surfaces
  * use independent cookies with different TTLs and authorization checks.
  */
-export const ADMIN_SESSION_COOKIE = 'kismetart-admin'
+// `__Host-` prefix (production only — it requires Secure, which localhost http
+// can't set) is browser-enforced integrity: the cookie is only accepted when
+// Secure, Path=/, and Domain-less, so a compromised sibling subdomain can't set
+// a `Domain=`-scoped cookie that shadows the admin one. Mirrors SESSION_COOKIE
+// in lib/session.ts. The rename invalidates existing admin cookies once (a
+// single re-login); the Redis-side token is the real session, so nothing is lost.
+export const ADMIN_SESSION_COOKIE =
+  process.env.NODE_ENV === 'production' ? '__Host-kismetart-admin' : 'kismetart-admin'
 
 export const adminSessionKey = (token: string) => `kismetart:auth-session:${token}`
 export const adminNonceKey = (nonce: string) => `kismetart:auth-nonce:${nonce}`

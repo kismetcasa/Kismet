@@ -3,6 +3,7 @@ import { Toaster } from 'sonner'
 import { Providers } from '@/providers/WagmiProvider'
 import { FarcasterProvider } from '@/providers/FarcasterProvider'
 import { Nav } from '@/components/Nav'
+import { SiteFooter } from '@/components/SiteFooter'
 import { TelemetryProvider } from '@/components/TelemetryProvider'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -19,6 +20,26 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'Kismet',
     description: 'Artists and collectors converge on Kismet',
+  },
+  // Site-wide default card TYPE for X. Without it, pages that don't declare
+  // their own twitter block (homepage, learn, mint, market, agent) fall back
+  // to X's small summary card even though twitter:image is auto-wired from
+  // the opengraph-image file convention. Detail pages (moment / collection /
+  // profile) define their own twitter objects, which override this per Next's
+  // per-key metadata merge.
+  twitter: { card: 'summary_large_image' },
+  // Search-engine ownership verification. Populate GOOGLE_SITE_VERIFICATION
+  // (Google Search Console) and/or BING_SITE_VERIFICATION (Bing Webmaster
+  // Tools) with the token each console gives you; Next renders the matching
+  // <meta> into <head>. Bing coverage matters beyond Bing itself — it's the
+  // index ChatGPT draws most of its citations from. Inert until set: an
+  // undefined env var omits the tag entirely. See SEO.md for the full setup +
+  // sitemap-submission checklist.
+  verification: {
+    google: process.env.GOOGLE_SITE_VERIFICATION,
+    other: process.env.BING_SITE_VERIFICATION
+      ? { 'msvalidate.01': process.env.BING_SITE_VERIFICATION }
+      : undefined,
   },
   // Farcaster Mini App embed for the homepage. When the apex URL is
   // shared in a cast, this is the rich card that renders + launches the
@@ -94,6 +115,10 @@ export default function RootLayout({
                 underneath, scroll position preserved, card videos still
                 playing as the detail opens above. */}
             {modal}
+            {/* Server-rendered footer: site-wide crawlable links (initial
+                HTML) to /learn and the core surfaces. Sits below page
+                content — including under the infinite feed on the homepage. */}
+            <SiteFooter />
             <Toaster
               position="bottom-center"
               offset={{ bottom: 16 }}

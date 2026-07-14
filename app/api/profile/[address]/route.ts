@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
-import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce } from '@/lib/profile'
-import { resolveCanonicalProfile } from '@/lib/addressUnion'
-import { getFarcasterProfileByAddress, getVerifiedAddressesByFid } from '@/lib/farcasterProfile'
+import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonce, type Profile } from '@/lib/profile'
+import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
+import { getSessionAddress } from '@/lib/session'
+import { getFarcasterProfileByAddress, getVerifiedAddressesByFid, getVerifiedTwitterByFid } from '@/lib/farcasterProfile'
 import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { normalizeSocials, type ProfileSocials } from '@/lib/socials'
 import { getArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 
 export async function GET(
-  _: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ address: string }> }
 ) {
   const { address } = await params
@@ -33,12 +35,74 @@ export async function GET(
     getCachedEns(address),
   ])
   const { profile, canonicalAddress } = canonical
+  // Admin-hidden profile → non-owners get the EMPTY-PROFILE STUB a wallet
+  // that never touched Kismet gets (200, no username/avatar, no FC/ENS
+  // enrichment, canonicalAddress = the queried address so sibling links
+  // don't leak). NOT a 404: this route never 404s any other valid address
+  // (profiles are wallet-keyed), so a 404 here would be a public oracle
+  // uniquely fingerprinting "admin-hidden" — returning the natural void
+  // state makes hidden indistinguishable from unused. The owner (any
+  // FID-sibling wallet, via session cookie or Farcaster bearer) still gets
+  // the full payload so their own profile page hydrates normally.
+  if (await isProfileIdentityHidden(address, canonicalAddress)) {
+    const viewer = await getSessionAddress(req)
+    if (!(await isViewerFidSibling(viewer, canonicalAddress))) {
+      const lower = address.toLowerCase()
+      return NextResponse.json({
+        profile: {
+          address: lower,
+          updatedAt: 0,
+          displayName: null,
+          canonicalAddress: lower,
+          earnings: null,
+        },
+      })
+    }
+  }
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private
   // figures come from /api/stats only when an owner views their own unpinned
   // profile). Passing the already-resolved fid skips the visibility check's
   // internal FC lookup. Memoized set read here, +reads only when public.
-  const earnings = (await isEarningsPublic({ address: canonicalAddress, fid: canonical.fid }))
+  //
+  // fcWallets: the identity's FC-verified sibling wallets (public data on
+  // Farcaster; the canonical 307 redirect already implies the linkage). The
+  // client-side owner check needs it: on web there is no FC identity context,
+  // so after the canonical redirect an owner connected with a non-canonical
+  // sibling wallet was rendered the VISITOR view of their own profile —
+  // including a silently absent earnings card.
+  //
+  // Shipped ONLY when the identity actually UNIFIES under this canonical —
+  // a FidProfile exists, or an anchor profile holds data — because that is
+  // when authorizeProfileOwner resolves every sibling's session to this
+  // address. For a data-less FC identity ('empty') each sibling canonicalizes
+  // to ITSELF, so a sibling-keyed client owner check would render owner UI
+  // whose every server call 403s; omitting the field keeps those viewers on
+  // the visitor view, exactly as before this field existed. (Accepted edge:
+  // two data-bearing web-first anchors on one FID can still diverge — rare,
+  // and bounded to error toasts on writes.)
+  //
+  // Redis-cached (1h) and passed into isEarningsPublic as its pre-resolved
+  // sibling list, so the unpinned default path pays the SAME single
+  // verifications read it always did — the payload field adds no command.
+  const identityUnifies =
+    canonical.fid != null &&
+    (canonical.source === 'fid' || !!profile.username || !!profile.avatarUrl)
+  // fcWallets + the verified-X handle are both canonical.fid reads and
+  // independent, so fetch them together (both Redis-cached, ~1h).
+  const [fcWallets, verifiedTwitter] = await Promise.all([
+    identityUnifies && canonical.fid != null
+      ? getVerifiedAddressesByFid(canonical.fid)
+      : Promise.resolve<string[]>([]),
+    canonical.fid != null
+      ? getVerifiedTwitterByFid(canonical.fid)
+      : Promise.resolve<string | null>(null),
+  ])
+  const earnings = (await isEarningsPublic({
+    address: canonicalAddress,
+    fid: canonical.fid,
+    siblings: fcWallets.length ? fcWallets : undefined,
+  }))
     ? await getArtistEarnings(canonicalAddress)
     : null
   if (!profile.username && cachedEns === undefined) {
@@ -61,6 +125,14 @@ export async function GET(
   // nullable contract: '' (nothing resolved) collapses to null as before.
   const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, cachedEns)
   const displayName = name || null
+  // Proof-of-ownership socials inherited from Farcaster. Only X is verifiable
+  // on FC today; when present it outranks any manually-claimed `x` and the
+  // client renders it with a verified badge. `...profile` already carries the
+  // user's own (unverified) `socials`. Prefer the documented account-
+  // verifications endpoint; fall back to the connected-accounts handle already
+  // on `farcaster` (same X OAuth, different surface — the two can drift).
+  const inheritedX = verifiedTwitter ?? farcaster?.connectedTwitter ?? null
+  const verifiedSocials = inheritedX ? { x: inheritedX } : undefined
   return NextResponse.json({
     profile: {
       ...profile,
@@ -70,6 +142,8 @@ export async function GET(
       canonicalAddress,
       farcaster: farcaster ?? undefined,
       earnings,
+      ...(fcWallets.length ? { fcWallets } : {}),
+      ...(verifiedSocials ? { verifiedSocials } : {}),
     },
   })
 }
@@ -83,7 +157,7 @@ export async function PUT(
     return errorResponse(400, 'Invalid address')
   }
 
-  let body: { username?: string; avatarUrl?: string; signature?: string; nonce?: string }
+  let body: { username?: string; avatarUrl?: string; socials?: unknown; signature?: string; nonce?: string }
   try {
     body = await req.json()
   } catch {
@@ -102,6 +176,16 @@ export async function PUT(
   // just the scheme.
   if (body.avatarUrl && !isSafePublicHttpsUrl(body.avatarUrl)) {
     return errorResponse(400, 'avatarUrl must be a public https URL')
+  }
+
+  // Only touch socials when the client actually sent the key (older callers
+  // that PUT just username/avatar must not wipe stored links). Handles are
+  // stored bare and normalized; website is host-guarded like avatarUrl.
+  let socials: ProfileSocials | undefined
+  if (body.socials !== undefined) {
+    const res = normalizeSocials(body.socials)
+    if ('error' in res) return errorResponse(400, res.error)
+    socials = res.socials
   }
 
   // Verify the signature proves ownership of the address
@@ -123,6 +207,11 @@ export async function PUT(
   }
 
   const username = body.username?.trim().slice(0, 30) || undefined
+  const writeData: Partial<Pick<Profile, 'username' | 'avatarUrl' | 'socials'>> = {
+    username,
+    avatarUrl: body.avatarUrl,
+  }
+  if (socials !== undefined) writeData.socials = socials
 
   // Route the write to the right store based on the user's identity
   // model. Signature already proved ownership of `address`, so we
@@ -142,19 +231,17 @@ export async function PUT(
   const fcProfile = await getFarcasterProfileByAddress(address)
   let profile
   if (!fcProfile) {
-    profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+    profile = await upsertProfile(address, writeData)
   } else {
     const fid = fcProfile.fid
     const existingFid = await getFidProfile(fid)
     if (existingFid) {
-      const updated = await upsertFidProfile(fid, existingFid.currentAddress, {
-        username,
-        avatarUrl: body.avatarUrl,
-      })
+      const updated = await upsertFidProfile(fid, existingFid.currentAddress, writeData)
       profile = {
         address: updated.currentAddress,
         username: updated.username,
         avatarUrl: updated.avatarUrl,
+        socials: updated.socials,
         updatedAt: updated.updatedAt,
       }
     } else {
@@ -174,16 +261,14 @@ export async function PUT(
             { status: 409 },
           )
         }
-        profile = await upsertProfile(address, { username, avatarUrl: body.avatarUrl })
+        profile = await upsertProfile(address, writeData)
       } else {
-        const updated = await upsertFidProfile(fid, address, {
-          username,
-          avatarUrl: body.avatarUrl,
-        })
+        const updated = await upsertFidProfile(fid, address, writeData)
         profile = {
           address: updated.currentAddress,
           username: updated.username,
           avatarUrl: updated.avatarUrl,
+          socials: updated.socials,
           updatedAt: updated.updatedAt,
         }
       }

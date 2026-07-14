@@ -1,12 +1,16 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
+import { getHiddenProfilesSet } from './hidden-profiles'
 import { randomHex } from './random'
+import type { ProfileSocials } from './socials'
 
 export interface Profile {
   address: string
   username?: string
   avatarUrl?: string
+  /** User-claimed social links (X, Farcaster, Instagram, website). See lib/socials.ts. */
+  socials?: ProfileSocials
   updatedAt: number
 }
 
@@ -27,6 +31,7 @@ export interface FidProfile {
   currentAddress: string
   username?: string
   avatarUrl?: string
+  socials?: ProfileSocials
   updatedAt: number
 }
 
@@ -37,6 +42,29 @@ const keyByFid = (fid: number) =>
 const keyNonce = (address: string) =>
   `kismetart:nonce:${address.toLowerCase()}`
 export const KEY_PROFILES = 'kismetart:profiles'
+
+/**
+ * Hard-delete the address-keyed profile identity: the row, its search-index
+ * membership, and the auth nonce. After this getProfile returns the empty
+ * stub a never-used wallet gets, so a later signed PUT recreates a fresh
+ * profile — the "erase → reconnect makes a new profile" contract. Admin
+ * profile-erase only; irreversible. Does NOT touch on-chain content meta or
+ * financial ledgers (see the erase route for the full purge boundary).
+ */
+export async function deleteProfileRow(address: string): Promise<void> {
+  const lower = address.toLowerCase()
+  await Promise.all([
+    redis.del(keyByAddress(lower)),
+    redis.srem(KEY_PROFILES, lower),
+    redis.del(keyNonce(lower)),
+  ])
+}
+
+/** Hard-delete a FID-keyed profile row (the miniapp-first identity home).
+ *  Paired with deleteProfileRow for every verified wallet by the erase route. */
+export async function deleteFidProfile(fid: number): Promise<void> {
+  await redis.del(keyByFid(fid))
+}
 
 export async function getProfile(address: string): Promise<Profile> {
   const raw = await redis.get<string | Profile>(keyByAddress(address))
@@ -71,7 +99,7 @@ export async function getProfileBatch(
 
 export async function upsertProfile(
   address: string,
-  data: Partial<Pick<Profile, 'username' | 'avatarUrl'>>
+  data: Partial<Pick<Profile, 'username' | 'avatarUrl' | 'socials'>>
 ): Promise<Profile> {
   const existing = await getProfile(address)
   const updated: Profile = { ...existing, ...data, address: address.toLowerCase(), updatedAt: Date.now() }
@@ -92,7 +120,7 @@ export async function getFidProfile(fid: number): Promise<FidProfile | null> {
 export async function upsertFidProfile(
   fid: number,
   currentAddress: string,
-  data: Partial<Pick<FidProfile, 'username' | 'avatarUrl'>>,
+  data: Partial<Pick<FidProfile, 'username' | 'avatarUrl' | 'socials'>>,
 ): Promise<FidProfile> {
   const existing = await getFidProfile(fid)
   const updated: FidProfile = {
@@ -100,6 +128,9 @@ export async function upsertFidProfile(
     currentAddress: currentAddress.toLowerCase(),
     username: data.username ?? existing?.username,
     avatarUrl: data.avatarUrl ?? existing?.avatarUrl,
+    // socials replace wholesale (the form submits the complete set); undefined
+    // means the caller didn't touch them, so preserve what's stored.
+    socials: data.socials ?? existing?.socials,
     updatedAt: Date.now(),
   }
   await Promise.all([
@@ -144,18 +175,21 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
   const q = query.trim().toLowerCase()
   const isAddressQuery = /^0x[0-9a-fA-F]+$/.test(q)
 
-  // Search is a public feed surface — admin-hidden users are stripped
-  // from results regardless of who's querying. Memoized; cheap to fetch
+  // Search is a public feed surface — admin-hidden users (content hide)
+  // AND admin-hidden profiles (identity hide) are both stripped from
+  // results regardless of who's querying. Memoized; cheap to fetch
   // alongside the profiles smembers.
-  const [addresses, hiddenUsers] = await Promise.all([
+  const [addresses, hiddenUsers, hiddenProfiles] = await Promise.all([
     redis.smembers(KEY_PROFILES) as Promise<string[]>,
     getHiddenUsersSet(),
+    getHiddenProfilesSet(),
   ])
+  const stripped = (a: string) => hiddenUsers.has(a) || hiddenProfiles.has(a)
   const results: Profile[] = []
 
   if (isAddressQuery) {
     // Filter indexed wallets by address prefix
-    const matching = addresses.filter(a => a.startsWith(q) && !hiddenUsers.has(a))
+    const matching = addresses.filter(a => a.startsWith(q) && !stripped(a))
     if (matching.length > 0) {
       const raws = await redis.mget<(string | Profile | null)[]>(...matching.map(keyByAddress))
       for (const raw of raws) {
@@ -167,10 +201,10 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     }
     // If querying a full address and not already found, do a direct lookup
     // so any wallet is discoverable even if they haven't interacted yet.
-    // Still gate on hidden-users — directly typing the address shouldn't
+    // Still gate on the hide lists — directly typing the address shouldn't
     // bypass the filter (matches the listings GET behavior for hidden
     // seller-scoped lookups).
-    if (q.length === 42 && !hiddenUsers.has(q) && !results.some(r => r.address === q)) {
+    if (q.length === 42 && !stripped(q) && !results.some(r => r.address === q)) {
       results.unshift(await getProfile(q))
     }
   } else {
@@ -180,7 +214,7 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     for (let i = 0; i < addresses.length; i++) {
       const raw = raws[i]
       if (!raw) continue
-      if (hiddenUsers.has(addresses[i])) continue
+      if (stripped(addresses[i])) continue
       const p: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
       if ((p.username ?? '').toLowerCase().includes(q)) {
         results.push(p)

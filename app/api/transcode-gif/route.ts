@@ -7,7 +7,6 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
-import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { transcodeGifToMp4Node } from '@/lib/media/transcodeGifNode'
 
 export const runtime = 'nodejs'
@@ -25,7 +24,7 @@ export const maxDuration = 300
 // the large GIFs the in-browser path can't take); two controls keep that spike
 // from OOM-killing the single box: (1) MAX_CONCURRENT=1 below serializes
 // transcodes so only ONE buffer is ever live, and (2) the Coolify container
-// memory limit + swap (AVAILABILITY_RUNBOOK.md) bounds total RSS. The proper
+// memory limit + swap (OPS_RUNBOOK.md) bounds total RSS. The proper
 // follow-up that would let the cap rise safely is streaming source→tempfile→
 // ffmpeg→output so the GIF is never fully buffered. (OWASP API4:2023.)
 const MAX_GIF_BYTES = 300 * 1024 * 1024
@@ -104,17 +103,15 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'Invalid JSON')
   }
   const gifUri = body.gifUri
-  // Restrict to the content URIs we recognize — closes data:/file:/etc.
-  if (!gifUri || (!gifUri.startsWith('ar://') && !gifUri.startsWith('ipfs://') && !gifUri.startsWith('https://'))) {
-    return errorResponse(400, 'gifUri must be ar://, ipfs://, or https://')
-  }
-  // SSRF: ar:// and ipfs:// resolve to the fixed gateway pool (gatewayUrls),
-  // but a raw https:// is fetched verbatim — gate it through the same
-  // public-only guard every other server-fetch sink uses (blocks localhost,
-  // IP literals, cloud-metadata). The app only ever passes ar:// here, so
-  // this closes the hole with no functional change to real usage.
-  if (gifUri.startsWith('https://') && !isSafePublicHttpsUrl(gifUri)) {
-    return errorResponse(400, 'gifUri must be a public https URL')
+  // ar:// and ipfs:// resolve to the FIXED gateway pool (gatewayUrls), so the
+  // fetch destination is always a trusted host and following its redirects is
+  // safe. A raw https:// input was an SSRF vector — an authed caller could pass
+  // a public hostname that 302s to an internal host, which the redirect-following
+  // fetch below would follow. The only caller (lib/media/serverTranscodeGif)
+  // sends ar:// exclusively, so we drop https:// entirely instead of proxying
+  // arbitrary outbound. Also closes data:/file:/etc.
+  if (!gifUri || (!gifUri.startsWith('ar://') && !gifUri.startsWith('ipfs://'))) {
+    return errorResponse(400, 'gifUri must be ar:// or ipfs://')
   }
 
   // Bound per-identity transcode COUNT before any expensive work. fetchGif

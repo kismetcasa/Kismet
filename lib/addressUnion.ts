@@ -6,6 +6,8 @@ import {
 } from './farcasterProfile'
 import { getCachedSmartWallets } from './smartWalletCache'
 import { getFidProfile, getProfile, type FidProfile, type Profile } from './profile'
+import { fetchHiddenProfilesSet } from './hidden-profiles'
+import { memoize } from './memoCache'
 
 /**
  * Expand an Ethereum address into the set of all addresses controlled by
@@ -67,6 +69,88 @@ export async function expandToEarningsWallets(address: string): Promise<string[]
     if (sw) all.add(sw.toLowerCase())
   }
   return Array.from(all)
+}
+
+/**
+ * Sibling-closure of the hidden-profiles set: every hidden address PLUS all
+ * of its FID-verified sibling wallets, lowercased. A Farcaster user is one
+ * identity across all their verified wallets, so hiding ANY of them must
+ * hide the profile at every sibling URL — and because the sibling relation
+ * is symmetric, "any sibling of the viewed address is hidden" is exactly
+ * "viewed address ∈ this closure". Expanding the (near-always-tiny) hidden
+ * set once per memo window replaces the previous per-request expansion of
+ * every VIEWED address, which charged 1-3 Redis GETs to every profile view
+ * on the platform the moment anything was hidden.
+ *
+ * Freshness model: direct-membership checks in isProfileIdentityHidden read
+ * the set fresh per request, so hiding/unhiding an address is instant at
+ * that address's own URLs (and everywhere once the set empties). Sibling
+ * coverage and partial-unhide correction propagate on this memo's TTL in
+ * layers the admin route's invalidate() can't reach (RSC pages); the
+ * admin routes invalidate own-layer on every write.
+ */
+async function _buildHiddenIdentityClosure(): Promise<Set<string>> {
+  const direct = await fetchHiddenProfilesSet()
+  const closure = new Set(direct)
+  if (direct.size === 0) return closure
+  await Promise.all(
+    [...direct].map(async (hiddenAddr) => {
+      for (const s of await expandToFidSiblings(hiddenAddr)) closure.add(s.toLowerCase())
+    }),
+  )
+  return closure
+}
+export const getHiddenIdentityClosure = memoize(_buildHiddenIdentityClosure, 60_000)
+
+/**
+ * True when the profile IDENTITY any of `addresses` belongs to is
+ * admin-hidden (lib/hidden-profiles), sibling-aware via the closure above.
+ *
+ * Lives here rather than in lib/hidden-profiles because this file owns
+ * sibling semantics — and because lib/profile imports hidden-profiles,
+ * so the reverse import would create a cycle.
+ *
+ * The direct set is read FRESH (React-cached per request): this gate runs
+ * in the RSC layer (profile page, OG image) whose module instances the
+ * admin route's own-pod invalidate can't reach, and an admin's hide must
+ * take effect on the hidden URL's next request. The closure lookup adds
+ * sibling coverage at ~zero marginal cost; on a platform with nothing
+ * hidden the size===0 fast path returns before either expansion exists.
+ */
+const requestHiddenProfilesSet = cache(fetchHiddenProfilesSet)
+
+export async function isProfileIdentityHidden(
+  ...addresses: (string | null | undefined)[]
+): Promise<boolean> {
+  const hidden = await requestHiddenProfilesSet()
+  if (hidden.size === 0) return false
+  const seeds = addresses
+    .filter((a): a is string => !!a)
+    .map((a) => a.toLowerCase())
+  if (seeds.length === 0) return false
+  if (seeds.some((a) => hidden.has(a))) return true
+  const closure = await getHiddenIdentityClosure()
+  return seeds.some((a) => closure.has(a))
+}
+
+/**
+ * Shared owner predicate for hidden-profile gates: is `viewer` one of the
+ * FID-sibling wallets of `canonicalAddress`? Extracted so the SSR page
+ * (cookie-resolved viewer) and the profile API (getSessionAddress-resolved
+ * viewer) can never drift on WHO counts as the owner — only viewer
+ * RESOLUTION differs per surface. Distinct from lib/profileOwner's
+ * authorizeProfileOwner, which is NextRequest-bound and compares canonical
+ * equality for WRITE authorization; this is the read-side membership rule.
+ */
+export async function isViewerFidSibling(
+  viewer: string | null | undefined,
+  canonicalAddress: string,
+): Promise<boolean> {
+  if (!viewer) return false
+  const v = viewer.toLowerCase()
+  return (await expandToFidSiblings(canonicalAddress)).some(
+    (s) => s.toLowerCase() === v,
+  )
 }
 
 export interface ResolvedProfile {
@@ -163,6 +247,7 @@ export const resolveCanonicalProfile = cache(async (
         address: fidProfile.currentAddress,
         username: fidProfile.username,
         avatarUrl: fidProfile.avatarUrl,
+        socials: fidProfile.socials,
         updatedAt: fidProfile.updatedAt,
       },
       canonicalAddress: fidProfile.currentAddress,
@@ -232,6 +317,9 @@ export async function resolveProfileWithSiblings(
       ...profile,
       username: profile.username || best.username,
       avatarUrl: profile.avatarUrl || best.avatarUrl,
+      // Socials follow the same anchor as name/avatar so a web-first multi-
+      // wallet identity shows one coherent link set.
+      socials: profile.socials ?? best.socials,
     },
     farcaster,
     inheritedFromSibling: true,

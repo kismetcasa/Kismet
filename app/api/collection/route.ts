@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
 import { errorResponse } from '@/lib/apiResponse'
+import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 
 /**
  * Proxy to inprocess `GET /api/collection` (singular). Returns a single
@@ -37,7 +38,9 @@ export async function GET(req: NextRequest) {
       // the page can fall back to the lightweight /api/collections row + KV.
       return NextResponse.json(null, { status: 200 })
     }
-    return NextResponse.json(data, { status: res.status })
+    // Null a hidden-identity deployer's @handle (creator / default_admin) so
+    // the collection header can't surface it. Address is preserved.
+    return NextResponse.json(await stripHiddenDeployerIdentity(data), { status: res.status })
   } catch {
     return errorResponse(502, 'upstream unreachable')
   }

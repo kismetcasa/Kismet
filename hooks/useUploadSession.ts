@@ -33,7 +33,7 @@ export function useUploadSession() {
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp } = useFarcaster()
 
-  const ensureSession = useCallback(async (): Promise<void> => {
+  const ensureSession = useCallback(async (opts?: { revalidate?: boolean }): Promise<void> => {
     // Mini App users are already authenticated via Quick Auth — the JWT
     // is auto-attached to every same-origin fetch by
     // FarcasterProvider's interceptor (see providers/FarcasterProvider.tsx),
@@ -44,6 +44,12 @@ export function useUploadSession() {
 
     if (!address) throw new Error('Wallet not connected')
     const lower = address.toLowerCase()
+
+    // `revalidate` is for callers reacting to a server-said-401: the module
+    // cache says the cookie is valid but the server just proved otherwise
+    // (expired, revoked, cleared in another tab). Trusting the cache there
+    // made the sign-in affordance a permanent no-op — drop it and re-probe.
+    if (opts?.revalidate) validForAddress = null
 
     if (validForAddress === lower) return
 

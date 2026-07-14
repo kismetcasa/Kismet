@@ -13,7 +13,7 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -44,8 +44,8 @@ jobs:
       - run: npm run check
       # BLOCKING: 0 critical advisories today, so this passes now AND catches
       # any future critical regression at the gate. (high stays report-only
-      # below until the transitive tree is triaged — see REMEDIATION_PLAYBOOK
-      # B13; dependabot now proposes the parent bumps to get there.)
+      # below until the transitive tree is triaged — see SCALING.md
+      # §B13; dependabot now proposes the parent bumps to get there.)
       - name: npm audit (critical — blocking)
         run: npm audit --audit-level=critical
       # NON-blocking report of highs: the dependency tree carries known high

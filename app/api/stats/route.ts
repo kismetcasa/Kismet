@@ -5,6 +5,7 @@ import { getArtistPending } from '@/lib/pending'
 import { expandToEarningsWallets } from '@/lib/addressUnion'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 import { authorizeProfileOwner } from '@/lib/profileOwner'
+import { verifyAdminSession } from '@/lib/curator'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -12,6 +13,20 @@ import { errorResponse } from '@/lib/apiResponse'
 // by default: return the figures only when the artist pinned them public, or to
 // the owner themselves (session). Otherwise return just the visibility flag, so
 // the owner's own card knows its pin state without leaking amounts to visitors.
+//
+// The private-path response carries `authRequired: true` — the card renders a
+// sign-in affordance instead of silently unmounting, which left session-less
+// owners with no card, no error, and no way to reach the pin (the only opt-in
+// surface). A flag on the 200 rather than a 401 status because this GET is a
+// mixed public/private resource: the pin state IS served, only the figures are
+// withheld. The flag rides BOTH non-owner legs (no credentials AND a session
+// for a different identity), keeping every non-owner response byte-identical —
+// no oracle — while covering the stale-cookie case: a viewer whose cookie
+// belongs to another wallet gets the sign-in card, whose flow deletes the
+// mismatched cookie and re-auths as the connected wallet (see
+// useUploadSession). The owner's own card consumes this flag — visitors read
+// pinned earnings from the profile payload and never call here — as does the
+// platform admin's read-only view of another artist's card (see below).
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`stats:${ip}`, 120, 60))) {
@@ -30,16 +45,31 @@ export async function GET(req: NextRequest) {
   // session check isn't on a visitor-hot path.
   const auth = await authorizeProfileOwner(req, artist)
   const isOwner = !('error' in auth)
+  // Platform-admin fast-path: the admin may view any artist's private earnings
+  // for monitoring/verification. Checked only on the branch where it can change
+  // the outcome (private figures + non-owner viewer), so the owner and public
+  // hot paths don't pay an extra session read. Strict admin only —
+  // verifyAdminSession excludes curators — because earnings are sensitive, so
+  // this stays the narrowest privileged set. It reads the separate admin
+  // cookie, so the admin's existing curation session unlocks earnings with no
+  // second sign-in; if absent, the same authRequired card prompts an admin
+  // sign-in. The response stays byte-identical for a non-admin non-owner, so
+  // this adds no oracle.
   if (!isPublic && !isOwner) {
-    return NextResponse.json({ public: false })
+    const admin = await verifyAdminSession()
+    if ('error' in admin) {
+      return NextResponse.json({ public: false, authRequired: true })
+    }
   }
 
   // Earnings and pending both union over the artist's earnings wallets (FC
   // siblings + known inprocess smart wallets). When we compute both (owner
   // path), resolve that set ONCE here and share it so we don't pay the
-  // identity resolution twice. The public/visitor path computes only
-  // earnings, which resolves its own set. The extra smart-wallet members are
-  // harmless to pending (they simply hold no split memberships).
+  // identity resolution twice. The public/visitor AND admin paths compute only
+  // earnings, which resolves its own set — so the admin still gets the exact
+  // figure the owner sees. Pending (undistributed) stays owner-only: it's a
+  // call-to-action to distribute, not a figure to verify, so the admin's
+  // read-only view omits it (and it never rides the public payload either).
   const wallets = isOwner ? await expandToEarningsWallets(artist) : undefined
   const [stats, pending] = await Promise.all([
     getArtistEarnings(artist, wallets),

@@ -143,6 +143,21 @@ check('no .tmp strays after an atomic write', (await readdir(dir)).every((n) => 
     flight.run('k2', async () => 'two'),
   ])
   check('different keys do not coalesce', x === 'one' && y === 'two')
+
+  // has(): the join-vs-start signal the route's concurrency cap reads —
+  // and the synchronous-start contract that makes check-then-run atomic
+  // on the event loop (compute's first statements run inside run()).
+  check('has() is false before any run', flight.has('h') === false)
+  let sawSyncStart = false
+  const hp = flight.run('h', async () => {
+    sawSyncStart = true
+    await new Promise((r) => setTimeout(r, 20))
+    return 'held'
+  })
+  check('compute body starts synchronously inside run()', sawSyncStart)
+  check('has() is true while in flight', flight.has('h') === true)
+  await hp
+  check('has() clears after settle', flight.has('h') === false)
 }
 
 await rm(dir, { recursive: true, force: true })

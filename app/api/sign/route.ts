@@ -48,6 +48,19 @@ export async function POST(req: NextRequest) {
     return errorResponse(429, 'Daily upload signing limit reached — try again tomorrow')
   }
 
+  // Platform-wide daily signing ceiling — the durable backstop the per-identity
+  // quota above structurally can't provide (each Sybil identity gets its own
+  // bucket, so N free identities multiply the per-user cap). This bounds TOTAL
+  // Arweave/Turbo spend across all identities. Day-bucketed key rolls at UTC
+  // midnight; reuses the atomic rate limiter, so — like every other counter here
+  // — it fails OPEN on a Redis error (the wallet balance alarm is the emergency
+  // backstop). Tune the ceiling with PLATFORM_SIGN_DAILY_CAP.
+  const globalCap = Number(process.env.PLATFORM_SIGN_DAILY_CAP) || 5000
+  const dayBucket = new Date().toISOString().slice(0, 10)
+  if (!(await checkRateLimit(`sign-global:${dayBucket}`, globalCap, 24 * 60 * 60))) {
+    return errorResponse(429, 'Daily platform signing capacity reached — please try again later')
+  }
+
   try {
     const jwk = JSON.parse(Buffer.from(key, 'base64').toString())
 

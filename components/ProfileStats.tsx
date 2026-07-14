@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pin, Share2, Check, ChevronDown } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+import { useUploadSession } from '@/hooks/useUploadSession'
+import { useSignIn } from '@/hooks/useSignIn'
+import { useAdmin } from '@/contexts/AdminContext'
 import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
 
 interface Pending {
@@ -19,7 +22,7 @@ interface Stats {
   usd: number
   mints: number
   public: boolean
-  // Source split of the totals, so the card can show "mints vs resales".
+  // Source split of the totals, so the card can show "sales vs resales".
   primary?: EarningsAmounts
   secondary?: EarningsAmounts
   // Undistributed earnings sitting on the artist's splits. Owner-only; absent
@@ -33,10 +36,16 @@ interface Stats {
 export function ProfileStats({
   address,
   asVisitor,
+  adminView = false,
   initialEarnings,
 }: {
   address: string
   asVisitor: boolean
+  // Read-only privileged view: the platform admin looking at another artist's
+  // card. Fetches and shows the figures (incl. private) like the owner does,
+  // but never the pin — curation chrome stays owner-only. Distinct from
+  // `asVisitor`, which stays true for the admin so no write affordances render.
+  adminView?: boolean
   initialEarnings: {
     eth: number
     usdc: number
@@ -47,10 +56,25 @@ export function ProfileStats({
   } | null
 }) {
   const { isInMiniApp } = useFarcaster()
+  const { ensureSession } = useUploadSession()
+  // Admin SIWE session (kismetart-admin cookie), shared with curation — the
+  // same session that unlocks /api/stats for the admin's read-only view.
+  const { startSession } = useAdmin()
   const [stats, setStats] = useState<Stats | null>(null)
   const [denom, setDenom] = useState<EarningsMetric>('usd')
   const [pinning, setPinning] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [adminSigningIn, setAdminSigningIn] = useState(false)
+  // Server withheld the figures on the owner path (see /api/stats
+  // authRequired: no session, or a session for a different identity).
+  // Renders a sign-in card in place of silence — without it a session-less
+  // owner got a 200 shaped exactly like "no activity" and the card
+  // unmounted, hiding real earnings AND the pin (the only opt-in surface)
+  // with no feedback. `reloadTick` re-runs the fetch after sign-in; the
+  // response handler — not the sign-in click — clears the flag, so a failed
+  // refetch keeps the card up for a retry instead of unmounting it.
+  const [authRequired, setAuthRequired] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
   // Mint-vs-resale breakdown disclosure. `splitPinned` is the click toggle (the
   // canonical action, works on touch); `splitHover` is a desktop mouse-only
   // preview. Either opens it.
@@ -64,7 +88,11 @@ export function ProfileStats({
   // — so the owner fetches even when earnings are already public.
   useEffect(() => {
     if (initialEarnings) setStats({ ...initialEarnings, public: true })
-    if (asVisitor) {
+    // A plain visitor stops at the public figures. The owner AND the admin
+    // (read-only) fetch /api/stats for the authoritative figures — the admin
+    // to see private earnings for verification; the server releases them to
+    // the admin cookie exactly as it does to the owner's session.
+    if (asVisitor && !adminView) {
       if (!initialEarnings) setStats(null)
       return
     }
@@ -72,30 +100,37 @@ export function ProfileStats({
     fetch(`/api/stats?artist=${address}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!cancelled && d) {
-          setStats({
-            eth: d.eth ?? 0,
-            usdc: d.usdc ?? 0,
-            usd: d.usd ?? 0,
-            mints: d.mints ?? 0,
-            public: !!d.public,
-            primary: d.primary,
-            secondary: d.secondary,
-            pending: d.pending ?? null,
-          })
+        if (cancelled || !d) return
+        if (d.authRequired) {
+          // No credentials reached the server — figures withheld. Show the
+          // sign-in card instead of zeros (which would unmount the card).
+          setAuthRequired(true)
+          return
         }
+        setAuthRequired(false)
+        setStats({
+          eth: d.eth ?? 0,
+          usdc: d.usdc ?? 0,
+          usd: d.usd ?? 0,
+          mints: d.mints ?? 0,
+          public: !!d.public,
+          primary: d.primary,
+          secondary: d.secondary,
+          pending: d.pending ?? null,
+        })
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [address, asVisitor, initialEarnings])
+  }, [address, asVisitor, adminView, initialEarnings, reloadTick])
 
   // Collapse the breakdown when switching profiles, so it never carries an
   // expanded (or stuck mouse-hover) state over from another artist's card.
   useEffect(() => {
     setSplitPinned(false)
     setSplitHover(false)
+    setAuthRequired(false)
   }, [address])
 
   // Offer only denominations that RENDER as non-zero at the card's display
@@ -111,6 +146,46 @@ export function ProfileStats({
     if (rendersNonZero('usd', stats)) d.push('usd')
     return d
   }, [stats])
+
+  // Point-of-need sign-in (one SIWE signature → 7-day session). Shared flow
+  // with SignInPrompt via useSignIn; only the owner context ever sets
+  // authRequired, so visitors never see this.
+  const { signIn, signingIn } = useSignIn(() => setReloadTick((t) => t + 1))
+
+  // Admin sign-in for the read-only view: establishes the admin session, then
+  // refetches. The response handler (not this click) clears authRequired, so a
+  // cancelled/failed signature keeps the card up for a retry.
+  const signInAdmin = async () => {
+    if (adminSigningIn) return
+    setAdminSigningIn(true)
+    try {
+      await startSession()
+    } finally {
+      setAdminSigningIn(false)
+      setReloadTick((t) => t + 1)
+    }
+  }
+
+  if ((!asVisitor || adminView) && authRequired) {
+    // Same card, two flows: the admin authenticates its own SIWE session
+    // (shared with curation), the owner authenticates the user session.
+    const onSignIn = adminView ? signInAdmin : signIn
+    const busy = adminView ? adminSigningIn : signingIn
+    return (
+      <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+        <p className="text-muted text-xs">
+          {adminView ? 'sign in as admin to view earnings' : 'sign in to view your earnings'}
+        </p>
+        <button
+          onClick={onSignIn}
+          disabled={busy}
+          className="text-accent text-xs mt-1 hover:underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {busy ? 'signing in…' : 'sign in'}
+        </button>
+      </div>
+    )
+  }
 
   if (!stats) return null
   const hasEarnings = denoms.length > 0
@@ -130,14 +205,25 @@ export function ProfileStats({
   // to collaborators) still gets their mint count and the pin, instead of a card
   // that silently disappears. Visitors are unchanged: they only ever see a
   // pinned-public earnings figure.
-  if (asVisitor) {
+  if (asVisitor && !adminView) {
     if (!stats.public || !hasEarnings) return null
   } else if (!hasEarnings && stats.mints <= 0 && !stats.public) {
-    // stats.public keeps the card mounted for a pinned owner whose figures
-    // have fallen below display precision (e.g. a 0-mint split collaborator
-    // after re-attribution) — the pin below is the ONLY unpin surface, so
-    // unmounting here would leave them publicly pinned with no way out.
-    return null
+    // Signed-in owner with genuinely nothing yet: render an explicit
+    // $0 / 0 sales card rather than unmounting, so a new artist sees the
+    // earnings surface exists and knows they simply haven't earned. Honest —
+    // these are REAL zeros from an authenticated read; contrast the
+    // signed-out case (authRequired above), where the amount is unknown and a
+    // fabricated $0 would mislead. No pin/share: there's nothing to make
+    // public or share at zero — both appear once real earnings land and the
+    // full card below takes over. (A pinned dust-artist has stats.public, so
+    // this branch is skipped and they fall through to the full card, keeping
+    // the pin — their only unpin surface — reachable.)
+    return (
+      <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+        <p className="text-ink text-xl leading-tight tabular-nums">{formatEarningsValue('usd', stats)}</p>
+        <p className="text-muted text-xs mt-0.5">{stats.mints.toLocaleString('en-US')} sales</p>
+      </div>
+    )
   }
 
   const active: EarningsMetric | null = hasEarnings
@@ -169,8 +255,19 @@ export function ProfileStats({
     setStats((s) => (s ? { ...s, public: next } : s)) // optimistic
     setPinning(true)
     try {
+      // Same prompt-first idiom as every session-cookie write (MomentDetailView,
+      // CollectionView, MintForm): a cached-valid session is a no-op, a missing
+      // one costs one SIWE signature and the toggle completes in the same
+      // gesture. A rejected wallet prompt throws → the catch reverts the pin.
+      await ensureSession()
       const res = await fetch(`/api/profile/${address}/earnings-visibility`, { method: next ? 'POST' : 'DELETE' })
-      if (!res.ok) setStats((s) => (s ? { ...s, public: !next } : s)) // revert
+      if (!res.ok) {
+        setStats((s) => (s ? { ...s, public: !next } : s)) // revert
+        // Session the cache believed in was actually dead (or belongs to a
+        // different identity): surface the sign-in card rather than a pin
+        // that silently snaps back — its click revalidates the cache.
+        if (res.status === 401 || res.status === 403) setAuthRequired(true)
+      }
     } catch {
       setStats((s) => (s ? { ...s, public: !next } : s))
     } finally {
@@ -183,8 +280,8 @@ export function ProfileStats({
   const share = async () => {
     if (!active) return
     const url = `${window.location.origin}/profile/${address}`
-    const mintPart = stats.mints > 0 ? ` · ${stats.mints} ${stats.mints === 1 ? 'mint' : 'mints'}` : ''
-    const text = `${formatEarningsValue(active, stats)} earned${mintPart} on Kismet`
+    const salePart = stats.mints > 0 ? ` · ${stats.mints} ${stats.mints === 1 ? 'sale' : 'sales'}` : ''
+    const text = `${formatEarningsValue(active, stats)} earned${salePart} on Kismet`
     if (isInMiniApp) {
       try {
         const { sdk } = await import('@farcaster/miniapp-sdk')
@@ -225,17 +322,17 @@ export function ProfileStats({
               {formatEarningsValue(active, stats)}
             </button>
           ) : (
-            // No attributed earnings — surface the mint count as the headline so
+            // No attributed earnings — surface the sale count as the headline so
             // the owner still sees their sales and the card doesn't disappear.
             stats.mints > 0 && (
               <p className="text-ink text-xl leading-tight tabular-nums">
-                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'sale' : 'sales'}
               </p>
             )
           )}
           {active && stats.mints > 0 &&
             (showSplitToggle ? (
-              // Mint count doubles as a tap-to-expand toggle. Click pins it
+              // Sale count doubles as a tap-to-expand toggle. Click pins it
               // (touch-safe); mouse hover previews it (desktop only, gated to a
               // mouse pointer so a tap on mobile can't get stuck open via a
               // synthetic hover).
@@ -254,7 +351,7 @@ export function ProfileStats({
                 className="flex items-center gap-1 text-muted text-xs mt-0.5 hover:text-dim transition-colors"
               >
                 <span>
-                  {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                  {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'sale' : 'sales'}
                 </span>
                 <ChevronDown
                   size={11}
@@ -264,7 +361,7 @@ export function ProfileStats({
               </button>
             ) : (
               <p className="text-muted text-xs mt-0.5">
-                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'mint' : 'mints'}
+                {stats.mints.toLocaleString('en-US')} {stats.mints === 1 ? 'sale' : 'sales'}
               </p>
             ))}
           {/* Always mounted when both sources exist so the toggle's aria-controls
@@ -277,7 +374,7 @@ export function ProfileStats({
               className="text-faint text-xs mt-0.5 tabular-nums"
               title="Resales counted are those sold through Kismet listings"
             >
-              {formatEarningsValue(active, stats.primary)} mints · {formatEarningsValue(active, stats.secondary)} resales
+              {formatEarningsValue(active, stats.primary)} sales · {formatEarningsValue(active, stats.secondary)} resales
             </p>
           )}
           {pending && pendingDenom && (
@@ -315,6 +412,14 @@ export function ProfileStats({
         </div>
       </div>
       {!asVisitor && !stats.public && hasEarnings && <p className="text-faint text-[10px] mt-1.5">private · tap the pin to show</p>}
+      {/* Read-only visibility state for the admin — confirms at a glance
+          whether the artist has published earnings (what a visitor would see)
+          vs. kept them private, without exposing the owner's pin control. */}
+      {adminView && hasEarnings && (
+        <p className="text-faint text-[10px] mt-1.5">
+          {stats.public ? 'public · visible to visitors' : 'private · hidden from visitors'}
+        </p>
+      )}
     </div>
   )
 }

@@ -6,6 +6,7 @@ import { recordSaleEnds } from '@/lib/saleEnds'
 import { bestEffort } from '@/lib/bestEffort'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
+import { isProfileIdentityHidden } from '@/lib/addressUnion'
 import { fetchCreatorFromTimeline, getKvCreatorAddress } from '@/lib/momentDetail'
 import { onchainSaleConfigFallback } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
@@ -87,17 +88,27 @@ export async function GET(req: NextRequest) {
   // operator/defaultAdmin for delegated mints. Username is left null so the
   // client resolves it from the corrected address. Mirrors the moment detail
   // page's creator priority.
-  const creator = kvCreator
+  let creator = kvCreator
     ? { address: kvCreator, username: null }
     : timelineCreator
+  // Hidden-identity strip: a hidden profile's username must not leak on the
+  // detail-view refetch/poll path. The KV branch already nulls it; this
+  // covers the non-Kismet-mint branch that carries the inprocess username.
+  // Sibling-aware via the memoized identity closure.
+  if (creator?.username && creator.address && (await isProfileIdentityHidden(creator.address))) {
+    creator = { ...creator, username: null }
+  }
 
-  // Same ending-soon index write-through as /api/moments, for the detail-view
-  // price path — widens the index's coverage to moments reached by direct
-  // link (shared URLs, notifications) that may never render in a feed batch.
-  // Only on a successfully priced response: an upstream error returned above
-  // never reaches this line, so a blip can't erase a live entry.
+  // Same sale-index write-through as /api/moments (ending-soon + free-mint),
+  // for the detail-view price path — widens coverage to moments reached by
+  // direct link (shared URLs, notifications) that may never render in a feed
+  // batch. Only on a successfully priced response: an upstream error returned
+  // above never reaches this line, so a blip can't erase a live entry.
   if (upstream.ok) {
-    const saleConfig = data.saleConfig as { saleEnd?: string } | null | undefined
+    const saleConfig = data.saleConfig as
+      | { saleStart?: string; saleEnd?: string; pricePerToken?: string }
+      | null
+      | undefined
     after(() =>
       recordSaleEnds([
         {

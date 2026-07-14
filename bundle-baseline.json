@@ -25,6 +25,14 @@
     "/profile/[address]/page": 1203606,
     "/admin/page": 1067770,
     "/permissions/page": 1052726,
-    "/mint/page": 1274698
+    "/mint/page": 1274698,
+    "/learn/page": 364266,
+    "/learn/[slug]/page": 364266,
+    "/robots.txt/route": 356093,
+    "/sitemap.xml/route": 356093,
+    "/learn/opengraph-image/route": 356108,
+    "/learn/[slug]/opengraph-image/route": 356108,
+    "/admin/layout": 356108,
+    "/opengraph-image/route": 356113
   }
 }

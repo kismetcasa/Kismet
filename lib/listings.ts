@@ -5,6 +5,7 @@ import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification } from './notifications'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { clearKismetListed } from './pass-validity'
+import { unhideListing } from './hiddenListings'
 
 export interface Listing {
   id: string
@@ -184,6 +185,10 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
       redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
       redis.zrem(KEY_ALL, listing.id),
       clearKismetListed(listing.collectionAddress, listing.tokenId, listing.seller).catch(() => {}),
+      // GC any admin hide on this now-dead slot so the hidden-listings set
+      // self-prunes instead of accumulating tombstones for gone listings.
+      // Best-effort: a failed prune must never block the expiry write.
+      unhideListing(listing.collectionAddress, listing.tokenId, listing.seller).catch(() => {}),
     ])
 
     await writeNotification({
@@ -282,5 +287,50 @@ export async function updateListingStatus(
     redis.set(keyById(id), JSON.stringify(updated)),
     redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
     redis.zrem(KEY_ALL, id),
+    // GC any admin hide on this now-dead slot (cancel/fill/expire) so the
+    // hidden-listings set self-prunes instead of accumulating tombstones.
+    // Best-effort: the status transition is critical and must not fail on a
+    // prune error.
+    unhideListing(listing.collectionAddress, listing.tokenId, listing.seller).catch(
+      bestEffort('listings.updateStatus.clearHide', { id, status }),
+    ),
   ])
+}
+
+/**
+ * Hard-delete every listing a seller authored, plus all associated keys. Used
+ * by admin profile-erase: a listing is a signed Seaport order the wallet
+ * POSTed into our Redis — authored Kismet content, purged with the rest of the
+ * profile. Iterates the RAW seller set (ALL statuses — updateListingStatus
+ * re-writes keyById and never srem's the index, so terminal-status records the
+ * wallet authored linger there) to reap everything. Redis-only, no on-chain
+ * artifact — identical to the platform's own seller-cancel; the signed Seaport
+ * order simply lapses at its endTime (≤1y). No counterparty harm: a listing
+ * routes only the erased seller's own sale, unlike the earnings/splits ledgers
+ * erase deliberately retains.
+ *
+ * Best-effort per listing so one bad record can't strand the rest; the seller
+ * index is deleted LAST so a partial failure re-runs cleanly.
+ */
+export async function deleteListingsBySeller(seller: string): Promise<void> {
+  const key = keyBySeller(seller.toLowerCase())
+  const ids = (await redis.smembers(key)) as string[]
+  if (ids.length === 0) return
+  const listings = await getListingsBatch(ids)
+  await Promise.all(
+    ids.map((id, i) => {
+      const l = listings[i]
+      return Promise.all([
+        redis.del(keyById(id)), // the authored order record
+        redis.zrem(KEY_ALL, id), // the market-feed source ZSET
+        // Slot lock, hide tombstone, and Pass-listed marker are keyed by
+        // collection+tokenId+seller — only reconstructable from the record,
+        // so skip them for any id whose row is already gone.
+        l ? redis.del(keyByOwned(l.collectionAddress, l.tokenId, l.seller)) : Promise.resolve(),
+        l ? unhideListing(l.collectionAddress, l.tokenId, l.seller) : Promise.resolve(),
+        l ? clearKismetListed(l.collectionAddress, l.tokenId, l.seller) : Promise.resolve(),
+      ]).catch(() => {})
+    }),
+  )
+  await redis.del(key) // seller index last — partial failures re-run cleanly
 }

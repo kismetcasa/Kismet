@@ -10,6 +10,8 @@ import { isValidTokenId } from '@/lib/address'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+import { collectShareToastAction } from '@/lib/collectShare'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
 import {
   ERC20_ABI,
@@ -32,11 +34,26 @@ type CollectStatus =
 
 export type CollectCurrency = 'eth' | 'usdc'
 
+/**
+ * Moment context for the post-collect share prompt. Optional: when provided
+ * AND we're inside a Mini App, the success toast carries a "Share" action
+ * that opens the host cast composer prefilled with
+ * `Collected "<name>" by @creator on @kismet` (see lib/collectShare). On the
+ * web — where there's no host composer — the plain success toast shows as
+ * before, so callers can pass this unconditionally.
+ */
+export interface CollectShareOffer {
+  momentName: string | null
+  creatorAddress: string | null
+  creatorName?: string | null
+}
+
 export interface CollectArgs {
   collectionAddress: Address
   tokenId: string
   amount?: number
   comment?: string
+  share?: CollectShareOffer
 }
 
 interface UseDirectCollectReturn {
@@ -74,6 +91,9 @@ export function useDirectCollect(): UseDirectCollectReturn {
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
+  // Gates the post-collect share offer: composeCast is a host action, so the
+  // Share toast action only renders inside a confirmed Mini App host.
+  const { isInMiniApp } = useFarcaster()
   const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect')
   const [status, setStatus] = useState<CollectStatus>('idle')
   // Lets the recovery flow's post-reconnect retry re-invoke the latest
@@ -280,7 +300,26 @@ export function useDirectCollect(): UseDirectCollectReturn {
         }
 
         setStatus('done')
-        toast.success('Collected!', { id: TOAST_ID })
+        // Success toast — inside a Mini App (and given moment context) it
+        // doubles as the share-to-feed prompt: 8s (matching the Add Kismet
+        // prompt) so the user has time to act, with a Share action that opens
+        // the host cast composer prefilled for /kismet.
+        if (args.share && isInMiniApp) {
+          toast.success('Collected!', {
+            id: TOAST_ID,
+            description: 'Share it to /kismet?',
+            duration: 8000,
+            action: collectShareToastAction({
+              collectionAddress,
+              tokenId,
+              momentName: args.share.momentName,
+              creatorAddress: args.share.creatorAddress,
+              creatorName: args.share.creatorName,
+            }),
+          })
+        } else {
+          toast.success('Collected!', { id: TOAST_ID })
+        }
         ackSuccess()
         return { hash }
       } catch (err) {
@@ -293,7 +332,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         inFlightRef.current = false
       }
     },
-    [config, publicClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [config, publicClient, writeContractAsync, ensureBase, isInMiniApp, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectRef.current = collect

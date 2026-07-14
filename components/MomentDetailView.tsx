@@ -24,6 +24,7 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
+import { useMomentEditPermission } from '@/hooks/useMomentEditPermission'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
@@ -382,6 +383,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
+  // On-chain edit authorization — the client mirror of update-uri's
+  // `canUpdateUri`. Lets moment co-admins (collection defaultAdmin +
+  // authorized creators, who hold ADMIN/METADATA but aren't the resolved
+  // creator) see the edit affordance, matching what the backend already
+  // authorizes. Skipped for the creator, whose pencil shows regardless.
+  const canEditMeta = useMomentEditPermission(address, tokenId, { skip: isCreator })
+
   // Moment admin per inprocess's momentAdmins (unordered; may include the
   // operator smart wallet — harmless, the distribute API's signature gate is
   // authoritative). One of the roles canDistribute admits.
@@ -549,6 +557,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       tokenId,
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
+      // Post-collect share prompt (Mini App only — the hook gates). creatorName
+      // is the display fallback; the share flow re-resolves the creator's raw
+      // FC username for a real @mention (see lib/collectShare).
+      share: {
+        momentName: detail.metadata?.name ?? null,
+        creatorAddress: creatorAddress || null,
+        creatorName,
+      },
     })
     if (result) {
       setCollected(true)
@@ -562,7 +578,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   const hasCollected = alreadyOwned || collected
-  // Wait for both reads before flagging — otherwise we'd flash "minted out"
+  // Wait for both reads before flagging — otherwise we'd flash "sold out"
   // before tokenInfo lands.
   const mintedOut =
     maxSupply !== undefined &&
@@ -586,7 +602,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       : saleEnded
         ? 'mint ended'
         : mintedOut
-          ? hasCollected ? 'collected' : 'minted out'
+          ? 'sold out'
           : hasCollected ? 'collect+' : 'collect'
 
   async function handleDistribute() {
@@ -1194,12 +1210,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 )}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
-                {/* Edit metadata — admin-only. Pencil icon expands into a
+                {/* Edit metadata — any address the update-uri backend will
+                    authorize: the resolved creator, plus moment co-admins
+                    (collection defaultAdmin / authorized creators) surfaced
+                    by the on-chain `canEditMeta` read. Pencil expands into a
                     full inline panel below the title to preserve spatial
                     locality (you edit what you're looking at). Share +
                     send moved to a single row beneath the action panel
                     so secondary actions group together visually. */}
-                {isCreator && !editing && detail && (
+                {(isCreator || canEditMeta) && !editing && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1475,6 +1494,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {comments.map((c, i) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
                     const displayName = profile?.name ?? shortAddress(c.sender)
+                    // Airdrop rows are gifts the recipient didn't buy. The
+                    // comments route already stamped the right label into
+                    // `comment` per collection — "invited to kismet" for the
+                    // patron/mint-pass collection, "airdropped on kismet"
+                    // otherwise — so just render it. `sender` is the recipient.
+                    const isAirdrop = c.kind === 'airdrop'
                     const isDefault = isPlatformCollectComment(c.comment)
                     return (
                       <div key={i} className="flex gap-2 items-center">
@@ -1493,7 +1518,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                           {displayName}
                         </Link>
                         <span className="text-xs font-mono text-dim flex-1 break-words leading-relaxed">
-                          {isDefault ? 'collected on kismet' : c.comment}
+                          {isAirdrop
+                            ? c.comment
+                            : isDefault
+                              ? 'collected on kismet'
+                              : c.comment}
                         </span>
                         <span className="text-[10px] font-mono text-faint flex-shrink-0">
                           {formatRelativeTime(c.timestamp)}

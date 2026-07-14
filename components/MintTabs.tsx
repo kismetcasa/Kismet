@@ -48,12 +48,14 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
       return
     }
     setLoadingMoments(true)
-    // Source: inprocess's /timeline?airdroppable filter (own moments +
-    // per-token ADMIN delegations). Collection-wide MINTER / ADMIN
-    // grants aren't surfaced here — discovery via on-chain log scan
-    // would require unbounded eth_getLogs which most non-paid RPCs
-    // cap out on. Authorized users airdrop by typing the moment URL
-    // or via per-moment "Delegate airdrop" in this same form.
+    // Source: inprocess's /timeline?airdroppable filter — own moments,
+    // per-token ADMIN delegations, and (for split-collab pieces like the
+    // Patron collection) moments where you're a split payee AND hold
+    // collection-wide ADMIN/MINTER, confirmed by an on-chain permissions
+    // read on just those collections. A collection-wide grant where you're
+    // NOT on the split still isn't surfaced — discovering those would need an
+    // unbounded eth_getLogs scan — so those airdrop via the per-moment
+    // "Delegate airdrop" grant in this same form.
     fetch(`/api/timeline?airdroppable=${address}&limit=100`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
