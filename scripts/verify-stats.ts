@@ -355,6 +355,77 @@ check('platform: omitted accumulator is a no-op (existing callers unchanged)', (
   return counters.counted === 1
 })())
 
+// ── 6. Platform scope gate: only Kismet-tracked rows fold into the roll-up ──
+const runScoped = (
+  rows: Array<{ t: StatsTransfer; scope: 'in' | 'out' | 'unknown' }>,
+): {
+  maps: Maps
+  platform: ReturnType<typeof newPlatformTotals>
+  counters: ReturnType<typeof newAccumulateCounters>
+} => {
+  const maps: Maps = [new Map(), new Map(), new Map()]
+  const counters = newAccumulateCounters()
+  const platform = newPlatformTotals()
+  for (const { t, scope } of rows) {
+    accumulateTransfer(t, { usdcAddress: USDC, kvCreator: null }, ...maps, counters, platform, scope)
+  }
+  return { maps, platform, counters }
+}
+
+const sOut = runScoped([{
+  t: { value: 1, quantity: 3, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: ARTIST } } } },
+  scope: 'out',
+}])
+check('scope: out-of-scope sale still credits the ARTIST maps (network-wide cards unchanged)',
+  sOut.maps[0].get(ARTIST.toLowerCase()) === 3 &&
+    Math.abs((sOut.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 1) < 1e-12,
+  JSON.stringify([...sOut.maps[0], ...sOut.maps[1]]))
+check('scope: out-of-scope sale folds NOTHING into the platform roll-up, counts outOfScope',
+  sOut.platform.transactions === 0 && sOut.platform.editions === 0 &&
+    sOut.platform.eth === 0 && sOut.platform.buyers.size === 0 &&
+    sOut.platform.artists.size === 0 && sOut.platform.outOfScope === 1 &&
+    sOut.platform.scopeUnknown === 0,
+  JSON.stringify({ ...sOut.platform, buyers: [], artists: [] }))
+
+const sUnknown = runScoped([{ t: { value: 1, moment: { collection: { creator: ARTIST } } }, scope: 'unknown' }])
+check('scope: unresolvable-collection row fails CLOSED (excluded, scopeUnknown counted)',
+  sUnknown.platform.transactions === 0 && sUnknown.platform.eth === 0 &&
+    sUnknown.platform.scopeUnknown === 1 && sUnknown.platform.outOfScope === 0,
+  JSON.stringify({ ...sUnknown.platform, buyers: [], artists: [] }))
+
+const sFreeOut = runScoped([{ t: { value: 0, moment: { collection: { creator: ARTIST } } }, scope: 'out' }])
+check('scope: gates classify first — a free out-of-scope row is skippedFree, NOT outOfScope',
+  sFreeOut.counters.skippedFree === 1 && sFreeOut.platform.outOfScope === 0,
+  JSON.stringify({ counters: sFreeOut.counters, outOfScope: sFreeOut.platform.outOfScope }))
+
+const sIn = runScoped([
+  { t: { value: 0.5, quantity: 2, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: ARTIST } } } }, scope: 'in' },
+  { t: { value: 0.25, quantity: 4, moment: {} }, scope: 'in' }, // creator unresolvable
+  { t: { value: 5, currency: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed', moment: { collection: { artist: { address: COLLAB } } } }, scope: 'in' },
+  { t: { value: 9, buyer: { address: BUYER_B }, moment: { collection: { artist: { address: OWNER } } } }, scope: 'out' },
+])
+check('scope: in-scope rows fold artists/dropped/unknownCurrency into the roll-up',
+  sIn.platform.artists.has(ARTIST.toLowerCase()) && sIn.platform.artists.has(COLLAB.toLowerCase()) &&
+    sIn.platform.artists.size === 2 && sIn.platform.droppedMints === 4 &&
+    sIn.platform.unknownCurrency === 1 && sIn.platform.editions === 7 &&
+    Math.abs(sIn.platform.eth - 0.75) < 1e-12 && !sIn.platform.buyers.has(BUYER_B),
+  JSON.stringify({ ...sIn.platform, buyers: [...sIn.platform.buyers], artists: [...sIn.platform.artists] }))
+check('scope: invariant — transactions + outOfScope + scopeUnknown === counted',
+  sIn.platform.transactions + sIn.platform.outOfScope + sIn.platform.scopeUnknown ===
+    sIn.counters.counted && sIn.counters.counted === 4,
+  JSON.stringify({ tx: sIn.platform.transactions, out: sIn.platform.outOfScope, unk: sIn.platform.scopeUnknown, counted: sIn.counters.counted }))
+check('scope: default scope is in — pre-scope callers keep folding (back-compat)',
+  (() => {
+    const maps: Maps = [new Map(), new Map(), new Map()]
+    const counters = newAccumulateCounters()
+    const platform = newPlatformTotals()
+    accumulateTransfer(
+      { value: 1, moment: { collection: { creator: ARTIST } } },
+      { usdcAddress: USDC, kvCreator: null }, ...maps, counters, platform,
+    )
+    return platform.transactions === 1 && platform.eth === 1
+  })())
+
 if (failures > 0) {
   console.error(`\n${failures} stats check(s) FAILED`)
   process.exit(1)

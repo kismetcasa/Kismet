@@ -13,10 +13,14 @@ import { errorResponse } from '@/lib/apiResponse'
 //   catalog  — artworks minted + distinct artists, from the hourly catalog
 //              census over every tracked collection (lib/catalogCensus.ts).
 //              Counts creation, so free mints and unsold work are included.
-//   sales    — paid primary-market activity, from the platform roll-up the
-//              hourly stats rebuild snapshots off the In•Process /transfers
-//              feed (lib/stats.ts): editions sold, sale transactions, unique
-//              paying collectors, artists with ≥1 sale.
+//   sales    — paid primary-market activity ON KISMET-TRACKED COLLECTIONS,
+//              from the platform roll-up the hourly stats rebuild snapshots
+//              off the In•Process /transfers feed (lib/stats.ts): editions
+//              sold, sale transactions, unique paying collectors, artists
+//              with ≥1 sale. The feed itself is network-wide; rows from
+//              other In•Process apps are excluded and surfaced in
+//              coverage.outOfScope (fail-closed: unplaceable rows land in
+//              coverage.scopeUnknown, never in the totals).
 //   earnings — gross primary sale volume by currency plus Kismet-listing
 //              secondary royalties; USD derived at read time from the same
 //              Chainlink ETH/USD price the artist cards use, with the same
@@ -119,6 +123,8 @@ export async function GET(req: NextRequest) {
               buyerMissing: sales.buyerMissing,
               unknownCurrency: sales.unknownCurrency,
               droppedMints: sales.droppedMints,
+              outOfScope: sales.outOfScope,
+              scopeUnknown: sales.scopeUnknown,
             },
             updatedAt: sales.updatedAt,
           }

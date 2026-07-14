@@ -163,6 +163,23 @@ export function transferBuyer(t: StatsTransfer): string | null {
 }
 
 /**
+ * Which universe a transfer belongs to for the PLATFORM roll-up. The
+ * In•Process /transfers feed is network-wide (every client app's sales on the
+ * chain), while "the platform's" totals must mean KISMET's tracked
+ * collections — without this gate the roll-up reported the whole network's
+ * volume as Kismet's (~6× the real editions figure when first measured).
+ *   'in'      — the moment's collection is in Kismet's tracked registry: fold.
+ *   'out'     — resolvable collection, not tracked: exclude, count outOfScope.
+ *   'unknown' — no collection ref resolvable on the row: exclude, count
+ *               scopeUnknown. FAIL-CLOSED — a money figure must never include
+ *               a row we can't place, and the counter keeps the gap visible.
+ * The PER-ARTIST maps are deliberately NOT scope-gated: an artist's card has
+ * always shown their network-wide In•Process earnings, and narrowing that is
+ * a product decision, not a roll-up bugfix.
+ */
+export type PlatformScope = 'in' | 'out' | 'unknown'
+
+/**
  * Platform-wide roll-up accumulated alongside the per-artist maps — one pass
  * over the same gated rows, so the platform totals and every artist's card
  * are computed from the identical row set and can never disagree about what
@@ -173,9 +190,11 @@ export function transferBuyer(t: StatsTransfer): string | null {
  * value (the unlisted platform cut), and the platform figure must not shrink
  * with it. `editions` includes rows whose creator is unresolvable — the sale
  * still happened platform-wide even when no artist can be credited.
+ *
+ * Invariant: transactions + outOfScope + scopeUnknown === counters.counted.
  */
 export interface PlatformTotals {
-  /** Paid transfers folded (same rows counters.counted counts). */
+  /** Paid IN-SCOPE transfers folded. */
   transactions: number
   /** Editions sold across those transfers (Σ quantity, unknown → 1). */
   editions: number
@@ -185,8 +204,18 @@ export interface PlatformTotals {
   usdc: number
   /** Unique buyer wallets (pre smart-wallet→EOA fold — lib/stats.ts remaps). */
   buyers: Set<string>
-  /** Counted rows exposing no recognizable buyer field. */
+  /** Counted in-scope rows exposing no recognizable buyer field. */
   buyerMissing: number
+  /** Unique credited creators on in-scope rows (pre smart-wallet fold). */
+  artists: Set<string>
+  /** In-scope editions whose creator was unresolvable (still in `editions`). */
+  droppedMints: number
+  /** In-scope rows whose value was skipped (unrecognized ERC20). */
+  unknownCurrency: number
+  /** Counted rows excluded: collection resolvable but not Kismet-tracked. */
+  outOfScope: number
+  /** Counted rows excluded: no collection ref resolvable on the row. */
+  scopeUnknown: number
 }
 
 export const newPlatformTotals = (): PlatformTotals => ({
@@ -196,6 +225,11 @@ export const newPlatformTotals = (): PlatformTotals => ({
   usdc: 0,
   buyers: new Set<string>(),
   buyerMissing: 0,
+  artists: new Set<string>(),
+  droppedMints: 0,
+  unknownCurrency: 0,
+  outOfScope: 0,
+  scopeUnknown: 0,
 })
 
 export interface AccumulateCounters {
@@ -306,6 +340,10 @@ export function resolveMomentCreator(inputs: {
  * fold are currency-independent (an unknown-ERC20 sale still happened); the
  * gross value lands in the eth/usdc buckets only when the currency is
  * recognized — the identical fail-closed rule the artist buckets follow.
+ * `platformScope` gates WHICH rows the roll-up may fold (see PlatformScope):
+ * out-of-scope / unknown-scope rows only bump their exclusion counter —
+ * after the gates, so a free or corrupt row is never double-classified —
+ * while the per-artist maps process every row exactly as before.
  */
 export function accumulateTransfer(
   t: StatsTransfer,
@@ -315,6 +353,7 @@ export function accumulateTransfer(
   usdc: Map<string, number>,
   counters: AccumulateCounters,
   platform?: PlatformTotals,
+  platformScope: PlatformScope = 'in',
 ): void {
   const value = typeof t.value === 'number' ? t.value : 0
   // Corrupt value (NaN/Infinity — both pass `typeof === 'number'` — or an
@@ -369,26 +408,36 @@ export function accumulateTransfer(
   if (creator) bump(mints, creator, qty)
   else counters.droppedMints += qty
 
-  // Platform roll-up for every counted row — including creator-unresolvable
-  // and unknown-currency rows, whose SALE is real even when the artist credit
-  // or the value bucket must be skipped.
-  if (platform) {
-    platform.transactions++
-    platform.editions += qty
+  // Platform roll-up for every counted IN-SCOPE row — including creator-
+  // unresolvable and unknown-currency rows, whose SALE is real even when the
+  // artist credit or the value bucket must be skipped. Rows outside Kismet's
+  // scope bump only their exclusion counter (post-gates, so free/corrupt rows
+  // stay classified by the gate that dropped them, never as scope exclusions).
+  const p = platform && platformScope === 'in' ? platform : undefined
+  if (platform && !p) {
+    if (platformScope === 'out') platform.outOfScope++
+    else platform.scopeUnknown++
+  }
+  if (p) {
+    p.transactions++
+    p.editions += qty
     const buyer = transferBuyer(t)
-    if (buyer) platform.buyers.add(buyer)
-    else platform.buyerMissing++
+    if (buyer) p.buyers.add(buyer)
+    else p.buyerMissing++
+    if (creator) p.artists.add(creator)
+    else p.droppedMints += qty
   }
 
   const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
   if (currency === 'unknown') {
     counters.unknownCurrency++
+    if (p) p.unknownCurrency++
     counters.counted++
     return
   }
-  if (platform) {
-    if (currency === 'usdc') platform.usdc += value
-    else platform.eth += value
+  if (p) {
+    if (currency === 'usdc') p.usdc += value
+    else p.eth += value
   }
   const earned = currency === 'usdc' ? usdc : eth
   if (recipients.length) {
