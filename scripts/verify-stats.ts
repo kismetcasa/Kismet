@@ -9,6 +9,10 @@
 //      and a missing creator recovers from the dominant fee recipient.
 //   3. Dedup keys — only REAL feed identifiers dedup; no synthetic keys.
 //   4. The smart-wallet→EOA remap MERGES scores (never overwrites).
+//   5. The platform roll-up shares the per-artist gates exactly: gated rows
+//      touch nothing; unknown-currency rows count the SALE but never the
+//      value; gross value ignores split under-allocation; buyers dedup and
+//      only real wallet addresses ever enter the collector set.
 //
 // Run: node --experimental-strip-types scripts/verify-stats.ts
 
@@ -16,8 +20,10 @@ import {
   accumulateTransfer,
   classifyTransferCurrency,
   newAccumulateCounters,
+  newPlatformTotals,
   remapEntries,
   resolveMomentCreator,
+  transferBuyer,
   transferDedupKey,
   transferMomentRef,
   type StatsTransfer,
@@ -261,6 +267,93 @@ check('remap: alias score MERGED onto owner (3 + 2 = 5)',
 check('remap: unmapped members pass through', remapped.get(COLLAB.toLowerCase()) === 5)
 check('remap: empty remap is identity',
   remapEntries(new Map([['a', 1]]), new Map()).get('a') === 1)
+
+// ── 5. Platform roll-up: same gates, gross value, buyer dedup ────────────────
+const BUYER_A = '0x000000000000000000000000000000000000eeee'
+const BUYER_B = '0x000000000000000000000000000000000000ffff'
+
+check('buyer: object shape', transferBuyer({ buyer: { address: BUYER_A } }) === BUYER_A)
+check('buyer: bare string', transferBuyer({ buyer: BUYER_A }) === BUYER_A)
+check('buyer: buyer_address fallback', transferBuyer({ buyer_address: BUYER_A }) === BUYER_A)
+check('buyer: to as last resort', transferBuyer({ to: BUYER_A }) === BUYER_A)
+check('buyer: preference order (buyer beats to)',
+  transferBuyer({ buyer: { address: BUYER_A }, to: BUYER_B }) === BUYER_A)
+check('buyer: lowercased', transferBuyer({ buyer: BUYER_A.toUpperCase().replace('0X', '0x') }) === BUYER_A)
+check('buyer: zero address rejected (falls through to next field)',
+  transferBuyer({ buyer: '0x0000000000000000000000000000000000000000', to: BUYER_B }) === BUYER_B)
+check('buyer: non-address garbage rejected', transferBuyer({ buyer: 'alice.eth' }) === null)
+check('buyer: absent -> null', transferBuyer({}) === null)
+
+const runPlatform = (
+  rows: StatsTransfer[],
+): { platform: ReturnType<typeof newPlatformTotals>; counters: ReturnType<typeof newAccumulateCounters> } => {
+  const maps: Maps = [new Map(), new Map(), new Map()]
+  const counters = newAccumulateCounters()
+  const platform = newPlatformTotals()
+  for (const t of rows) accumulateTransfer(t, { usdcAddress: USDC, kvCreator: null }, ...maps, counters, platform)
+  return { platform, counters }
+}
+
+const pGated = runPlatform([
+  { value: 0, moment: { collection: { creator: ARTIST } } }, // free
+  { value: NaN, moment: { collection: { creator: ARTIST } } }, // invalid
+])
+check('platform: gated rows (free/invalid) touch nothing',
+  pGated.platform.transactions === 0 && pGated.platform.editions === 0 &&
+    pGated.platform.eth === 0 && pGated.platform.buyers.size === 0 &&
+    pGated.platform.buyerMissing === 0,
+  JSON.stringify({ ...pGated.platform, buyers: [...pGated.platform.buyers] }))
+
+const pUnknown = runPlatform([{
+  value: 5,
+  currency: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed',
+  quantity: 3,
+  buyer: { address: BUYER_A },
+  moment: { collection: { artist: { address: ARTIST } } },
+}])
+check('platform: unknown currency counts the sale (tx/editions/buyer), never the value',
+  pUnknown.platform.transactions === 1 && pUnknown.platform.editions === 3 &&
+    pUnknown.platform.buyers.has(BUYER_A) && pUnknown.platform.eth === 0 &&
+    pUnknown.platform.usdc === 0,
+  JSON.stringify({ ...pUnknown.platform, buyers: [...pUnknown.platform.buyers] }))
+
+const pGross = runPlatform([{
+  value: 1,
+  currency: null,
+  buyer: { address: BUYER_A },
+  moment: { fee_recipients: [{ artist_address: ARTIST, percent_allocation: 80 }] },
+}])
+check('platform: gross ETH is the FULL sale value even when the split under-allocates',
+  Math.abs(pGross.platform.eth - 1) < 1e-12, JSON.stringify(pGross.platform.eth))
+
+const pDropped = runPlatform([{ value: 1, quantity: 2, moment: {} }])
+check('platform: creator-unresolvable sale still counts editions + value',
+  pDropped.platform.editions === 2 && Math.abs(pDropped.platform.eth - 1) < 1e-12 &&
+    pDropped.counters.droppedMints === 2,
+  JSON.stringify({ ...pDropped.platform, buyers: [] }))
+
+const pBuyers = runPlatform([
+  { value: 0.1, buyer: { address: BUYER_A }, moment: { collection: { creator: ARTIST } } },
+  { value: 0.2, buyer: { address: BUYER_A.toUpperCase().replace('0X', '0x') }, moment: { collection: { creator: ARTIST } } },
+  { value: 0.3, buyer: { address: BUYER_B }, moment: { collection: { creator: ARTIST } } },
+  { value: 0.4, moment: { collection: { creator: ARTIST } } }, // no buyer field
+])
+check('platform: buyers dedup case-insensitively; rows without one count buyerMissing',
+  pBuyers.platform.buyers.size === 2 && pBuyers.platform.buyerMissing === 1 &&
+    pBuyers.platform.transactions === 4 && pBuyers.platform.editions === 4 &&
+    Math.abs(pBuyers.platform.eth - 1) < 1e-12,
+  JSON.stringify({ ...pBuyers.platform, buyers: [...pBuyers.platform.buyers] }))
+
+const pUsdc = runPlatform([{ value: 25, currency: USDC, buyer: BUYER_B, moment: { collection: { creator: ARTIST } } }])
+check('platform: usdc sale lands in the usdc bucket only',
+  pUsdc.platform.usdc === 25 && pUsdc.platform.eth === 0)
+
+check('platform: omitted accumulator is a no-op (existing callers unchanged)', (() => {
+  const maps: Maps = [new Map(), new Map(), new Map()]
+  const counters = newAccumulateCounters()
+  accumulateTransfer(base, { usdcAddress: USDC, kvCreator: null }, ...maps, counters)
+  return counters.counted === 1
+})())
 
 if (failures > 0) {
   console.error(`\n${failures} stats check(s) FAILED`)
