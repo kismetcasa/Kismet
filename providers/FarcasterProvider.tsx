@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAccount, useConnect } from 'wagmi'
 import { toast } from 'sonner'
 import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
+import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 
 export type FarcasterIdentity = {
   /** Numeric Farcaster ID — from `sdk.context.user.fid` (Mini App) or a /api/profile reverse lookup (web). */
@@ -35,7 +36,8 @@ type FarcasterContextValue = {
   /**
    * Offer the "Add Kismet" prompt so the creator gets push when their
    * work is collected. Self-gating no-op outside a Mini App, when the app
-   * is already added / notifications enabled, once shown this session, or
+   * is already added / notifications enabled, when the host's add-state is
+   * unknown or it lacks addMiniApp support, once shown this session, or
    * after it has fired once on this device. Called from the mint success
    * path so a creator's first mint surfaces the ask.
    */
@@ -144,6 +146,11 @@ const PROMPT_TARGET_OPEN = 2
 const CONTEXT_TIMEOUT_MS = 2500
 const ME_FETCH_TIMEOUT_MS = 3000
 
+// Post-ready() bound on the getCapabilities host round-trip (gates the
+// "Add Kismet" prompt). Runs after the splash is gone so a hang costs
+// nothing visible; timeout just reads as "capabilities unknown".
+const CAPABILITIES_TIMEOUT_MS = 2000
+
 // Hard ceiling on how long the host splash may stay up — the ultimate backstop
 // once the per-await bounds above are exhausted. The normal path dismisses well
 // under this (isInMiniApp <=1s, then context + me raced in parallel <=3s, ~4s
@@ -222,29 +229,68 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   // (2nd open + 1st mint). Set during bootstrap.
   const isInMiniAppRef = useRef(false)
   // Latest host add/notification state, so maybePromptCollectNotifs can
-  // gate without re-querying the SDK.
-  const addEligibilityRef = useRef({ added: false, notificationsEnabled: false })
+  // gate without re-querying the SDK. `known` stays false until the host
+  // context probe actually resolved — a timed-out probe must read as
+  // "unknown", not "not added", or either trigger could prompt a user who
+  // already has the app.
+  const addEligibilityRef = useRef({ known: false, added: false, notificationsEnabled: false })
+  // Host capability gate. Flips false only when the host EXPLICITLY
+  // reports no actions.addMiniApp support — there the consent sheet can
+  // never open, so the prompt would be a dead click (and consuming the
+  // mint one-shot for it would burn the ask forever). Unknown — hosts
+  // predating getCapabilities, or a slow bridge — fails open, preserving
+  // the pre-gate behavior.
+  const canAddMiniAppRef = useRef(true)
   // Session guard: true once the prompt has shown this load, so the two
   // triggers never double-prompt within a single session.
   const addPromptShownRef = useRef(false)
 
   // The single source of truth for the "Add Kismet" toast. Both triggers
-  // route through here so the copy + consent action stay identical and the
-  // session guard is set in one place. The SDK chunk is already resolved
-  // (bootstrap imported it), so the dynamic import in onClick is instant.
-  const showAddKismetPrompt = useCallback(() => {
+  // route through here so the consent action stays identical and the
+  // session guard is set in one place; only the message differs per
+  // trigger (the 2nd-open audience is mostly collectors, the post-mint
+  // audience is by definition a creator). The SDK chunk is already
+  // resolved (bootstrap imported it), so the dynamic import in onClick is
+  // instant.
+  const showAddKismetPrompt = useCallback((message: string) => {
     addPromptShownRef.current = true
-    toast('Get pinged when someone collects your work.', {
+    toast(message, {
       duration: 8000,
       action: {
         label: 'Add Kismet',
         onClick: () => {
-          // Host owns the consent sheet from here. Errors (user-dismissed,
-          // capability missing) are not our concern — they don't add, no
-          // push tokens land.
-          void import('@farcaster/miniapp-sdk').then(({ sdk }) =>
-            sdk.actions.addMiniApp().catch(() => {}),
-          )
+          void (async () => {
+            try {
+              // Host owns the consent sheet from here. On success the
+              // result carries notificationDetails when the host equates
+              // adding with enabling notifications (Farcaster does) — the
+              // webhook registers the token server-side; this just closes
+              // the loop in the UI and refreshes the cached eligibility so
+              // the mint trigger can't re-offer in this or a later check.
+              const { sdk } = await import('@farcaster/miniapp-sdk')
+              const result = await sdk.actions.addMiniApp()
+              addEligibilityRef.current = {
+                known: true,
+                added: true,
+                notificationsEnabled:
+                  !!result?.notificationDetails ||
+                  addEligibilityRef.current.notificationsEnabled,
+              }
+              toast.success(
+                result?.notificationDetails ? 'Notifications on!' : 'Kismet added!',
+                { id: 'add-miniapp' },
+              )
+              hapticNotifySuccess()
+            } catch (err) {
+              // RejectedByUser is an explicit "no" — stay silent. An
+              // invalid-manifest rejection means the kismet.art manifest
+              // regressed: no add can succeed until it's fixed, so log it
+              // loudly. (err.name carries the SDK's error class name.)
+              if (err instanceof Error && err.name === 'AddMiniApp.InvalidDomainManifest') {
+                console.error('[farcaster] addMiniApp rejected: invalid domain manifest')
+              }
+            }
+          })()
         },
       },
     })
@@ -252,8 +298,12 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
 
   const maybePromptCollectNotifs = useCallback(() => {
     if (!isInMiniAppRef.current || addPromptShownRef.current) return
-    const { added, notificationsEnabled } = addEligibilityRef.current
-    if (added || notificationsEnabled) return
+    if (!canAddMiniAppRef.current) return
+    const { known, added, notificationsEnabled } = addEligibilityRef.current
+    // Unknown eligibility (host context probe timed out) skips WITHOUT
+    // consuming the one-shot below, so the ask survives for a later mint
+    // in a session where the host answered.
+    if (!known || added || notificationsEnabled) return
     try {
       if (localStorage.getItem(MINT_PROMPT_KEY) === '1') return
       localStorage.setItem(MINT_PROMPT_KEY, '1')
@@ -262,7 +312,7 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
       // risk re-prompting on every subsequent mint.
       return
     }
-    showAddKismetPrompt()
+    showAddKismetPrompt('Get pinged when someone collects your work.')
   }, [showAddKismetPrompt])
 
   useEffect(() => {
@@ -525,10 +575,38 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // gates the post-first-mint trigger via maybePromptCollectNotifs.
         const added = ctx?.client?.added === true
         const notificationsEnabled = !!ctx?.client?.notificationDetails
-        addEligibilityRef.current = { added, notificationsEnabled }
-        if (!added && !notificationsEnabled) {
+        addEligibilityRef.current = { known: ctx != null, added, notificationsEnabled }
+
+        // Host capability probe — post-paint, so the round-trip costs
+        // nothing visible. Bounded like the other bridge awaits; a timeout
+        // or rejection (hosts predating getCapabilities) reads as unknown
+        // and fails open. Only an explicit capability list WITHOUT
+        // actions.addMiniApp flips the gate closed.
+        const capabilities = await Promise.race([
+          sdk.getCapabilities().catch(() => null),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), CAPABILITIES_TIMEOUT_MS),
+          ),
+        ])
+        if (cancelled) return
+        // Array.isArray, not truthiness: the value crosses the host bridge,
+        // and a malformed (non-array) answer must read as unknown rather
+        // than throw at .includes and knock out the rest of bootstrap.
+        if (Array.isArray(capabilities)) {
+          canAddMiniAppRef.current = capabilities.includes('actions.addMiniApp')
+        }
+
+        // Count only opens where the prompt could actually have been
+        // offered: eligibility confirmed (a null ctx is "unknown", not
+        // "not added") on a host that can open the consent sheet.
+        // Otherwise a flaky bridge or an addMiniApp-less host would
+        // silently consume open #2 and the prompt would never fire
+        // anywhere.
+        if (ctx && canAddMiniAppRef.current && !added && !notificationsEnabled) {
           const opens = bumpAndReadOpenCount()
-          if (opens === PROMPT_TARGET_OPEN) showAddKismetPrompt()
+          if (opens === PROMPT_TARGET_OPEN) {
+            showAddKismetPrompt('Get pinged about collects, follows and more!')
+          }
         }
       } catch (err) {
         // Fail open — but ALWAYS dismiss the splash first. A throw before the
