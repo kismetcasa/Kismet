@@ -80,6 +80,11 @@ export function ProfileStats({
   // preview. Either opens it.
   const [splitPinned, setSplitPinned] = useState(false)
   const [splitHover, setSplitHover] = useState(false)
+  // Currency-composition popover on the headline: shows the EXACT ETH + USDC
+  // behind the blended USD. Desktop mouse-hover / keyboard-focus only — touch
+  // users read each currency via the existing tap-to-cycle, so there's no
+  // pin state to conflict with the headline's click-to-cycle.
+  const [amountsHover, setAmountsHover] = useState(false)
 
   // Public earnings arrive with the profile read (no extra request) — paint them
   // immediately. Visitors stop there. The owner always then fetches /api/stats:
@@ -130,6 +135,7 @@ export function ProfileStats({
   useEffect(() => {
     setSplitPinned(false)
     setSplitHover(false)
+    setAmountsHover(false)
     setAuthRequired(false)
   }, [address])
 
@@ -232,6 +238,12 @@ export function ProfileStats({
       : denoms[0]
     : null
   const multi = denoms.length > 1
+  // Exact crypto composition behind the blended USD headline — the popover
+  // lists each non-zero denomination (ETH / USDC) at full display precision, so
+  // an artist can see what their $ figure is actually made of. Shown only when
+  // there IS crypto to break out (skip a pure-nothing card).
+  const cryptoDenoms = denoms.filter((d): d is 'eth' | 'usdc' => d !== 'usd')
+  const showAmounts = !!active && cryptoDenoms.length > 0
 
   // Owner-only: undistributed earnings sitting on their splits, labelled in the
   // first denomination that renders as non-zero at the card's display precision.
@@ -307,20 +319,54 @@ export function ProfileStats({
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           {active ? (
-            <button
-              onClick={multi ? () => setDenom(denoms[(denoms.indexOf(active) + 1) % denoms.length]) : undefined}
-              className={`text-ink text-xl leading-tight tabular-nums ${multi ? 'cursor-pointer hover:text-accent transition-colors' : 'cursor-default'}`}
-              title={[
-                // The blended USD is lifetime crypto at TODAY'S price, not the
-                // sum of what each sale was worth on its day — say so, or an
-                // artist reconciling against their wallet history reads the
-                // moving figure as a wrong total.
-                active === 'usd' ? 'USD value at the current ETH price' : null,
-                multi ? 'Tap to switch currency' : null,
-              ].filter(Boolean).join(' — ') || undefined}
+            <span
+              className="relative inline-block"
+              // Desktop mouse / keyboard only — touch reads each currency via
+              // the tap-to-cycle below, so no pin state is needed.
+              onPointerEnter={(e) => { if (e.pointerType === 'mouse' && showAmounts) setAmountsHover(true) }}
+              onPointerLeave={(e) => { if (e.pointerType === 'mouse') setAmountsHover(false) }}
             >
-              {formatEarningsValue(active, stats)}
-            </button>
+              <button
+                onClick={multi ? () => setDenom(denoms[(denoms.indexOf(active) + 1) % denoms.length]) : undefined}
+                onFocus={() => { if (showAmounts) setAmountsHover(true) }}
+                onBlur={() => setAmountsHover(false)}
+                aria-describedby={amountsHover && showAmounts ? 'earnings-amounts' : undefined}
+                className={`text-ink text-xl leading-tight tabular-nums ${multi ? 'cursor-pointer hover:text-accent transition-colors' : 'cursor-default'}`}
+                title={[
+                  // The blended USD is lifetime crypto at TODAY'S price, not the
+                  // sum of what each sale was worth on its day — say so, or an
+                  // artist reconciling against their wallet history reads the
+                  // moving figure as a wrong total.
+                  active === 'usd' ? 'USD value at the current ETH price' : null,
+                  multi ? 'Tap to switch currency' : null,
+                ].filter(Boolean).join(' — ') || undefined}
+              >
+                {formatEarningsValue(active, stats)}
+              </button>
+              {/* Currency-composition popover: the exact ETH + USDC behind the
+                  blended USD, at full display precision. Reuses formatEarningsValue
+                  so it can never drift from the headline. */}
+              {amountsHover && showAmounts && (
+                <div
+                  id="earnings-amounts"
+                  role="tooltip"
+                  className="absolute left-0 top-full z-20 mt-1 w-max min-w-[8rem] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg"
+                >
+                  <p className="text-faint text-[10px] uppercase tracking-wide mb-1">accumulated</p>
+                  <div className="flex flex-col gap-0.5 tabular-nums">
+                    {cryptoDenoms.map((d) => (
+                      <p key={d} className="text-ink text-xs">{formatEarningsValue(d, stats)}</p>
+                    ))}
+                    {rendersNonZero('usd', stats) && (
+                      <p className="text-muted text-[11px] mt-0.5 pt-1 border-t border-raised">
+                        ≈ {formatEarningsValue('usd', stats)}
+                        <span className="text-faint"> at today’s ETH price</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </span>
           ) : (
             // No attributed earnings — surface the sale count as the headline so
             // the owner still sees their sales and the card doesn't disappear.
