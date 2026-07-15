@@ -62,7 +62,11 @@ export async function GET(req: NextRequest) {
       const censusStarted = Date.now()
       try {
         const census = await rebuildCatalogCensus()
-        console.log('[sync-stats] census ok', { ...census, ms: Date.now() - censusStarted })
+        if ('skipped' in census) {
+          console.log('[sync-stats] census skipped (already running)')
+        } else {
+          console.log('[sync-stats] census ok', { ...census, ms: Date.now() - censusStarted })
+        }
       } catch (err) {
         console.error('[sync-stats] census failed', err)
       }

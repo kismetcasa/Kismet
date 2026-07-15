@@ -79,6 +79,12 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 // the next scan. A single paid transfer above these is definitionally corrupt.
 const MAX_SANE_VALUE = 1e9 // human units; real ETH/USDC sales are << this
 const MAX_SANE_QTY = 1_000_000 // editions in ONE transfer
+// A fee-recipient percentage. Real values are ≤ 100 (the divisor scales a
+// legitimate >100 SUM down); this ceiling exists only to reject non-finite /
+// astronomically-overflowing garbage (Infinity, NaN, 1e308) that would make
+// the divisor Infinity → NaN credit, poisoning — and, at write time, DELETING
+// — an artist's real total. Same fail-closed stance as MAX_SANE_VALUE/QTY.
+const MAX_SANE_PCT = 1_000_000
 
 /**
  * Bucket a transfer's payment currency. Unlike inferCollectCurrency (which
@@ -402,7 +408,13 @@ export function accumulateTransfer(
       typeof r.artist_address === 'string' &&
       r.artist_address.length > 0 &&
       typeof r.percent_allocation === 'number' &&
-      r.percent_allocation > 0,
+      // Finite + bounded, mirroring the value/quantity guards: an Infinity/NaN
+      // (or 1e308-overflowing) percentage would drive divisor→Infinity and
+      // credit→NaN, which the write-time `v > 0` filter then reads as false and
+      // DELETES the artist's real score. Reject it here instead.
+      Number.isFinite(r.percent_allocation) &&
+      r.percent_allocation > 0 &&
+      r.percent_allocation <= MAX_SANE_PCT,
   )
 
   const resolved = resolveMomentCreator({

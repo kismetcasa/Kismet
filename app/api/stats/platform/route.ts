@@ -52,9 +52,15 @@ export async function GET(req: NextRequest) {
   // feeds + chain), drop-off ratios are internal product data. The query flag
   // keeps the plain URL's shared-cache behavior untouched and the hot public
   // path free of session reads; a non-admin ?funnel=1 response stays
-  // byte-identical to the public payload (no oracle), while the admin variant
-  // is no-store and lives at a distinct cache key, so a cached public body
-  // can never mask it (and it can never enter a shared cache).
+  // byte-identical to the public payload (no oracle).
+  //
+  // Cross-user isolation rests on TWO things, since admin and non-admin
+  // ?funnel=1 share ONE url = one shared-cache key: (1) the admin variant sets
+  // `private, no-store` (a compliant shared cache won't store it), and (2)
+  // `Vary: Cookie` below tells any cache the response depends on the session
+  // cookie, so a public body cached under ?funnel=1 can't be served to the
+  // admin (or vice versa). Body content and Cache-Control are gated on the SAME
+  // `funnel` truthiness, so funnel bytes can never ride a cacheable header.
   const wantsFunnel = new URL(req.url).searchParams.get('funnel') === '1'
   let funnel: Awaited<ReturnType<typeof getFunnelCounts>> = null
   if (wantsFunnel) {
@@ -111,16 +117,24 @@ export async function GET(req: NextRequest) {
             // excluded. visibleArtworks = artworksMinted − hiddenArtworks;
             // visibleArtists excludes makers whose every piece is hidden
             // (artistsMinted − visibleArtists = hidden-only makers).
+            //
+            // Every field a snapshot gained AFTER first ship (`hidden`,
+            // `visibleArtists`) is null-guarded: during a deploy window the
+            // stored snapshot predates them, so `catalog.hidden` is undefined
+            // — ungarded, `artworks - undefined` is NaN (serialized as null,
+            // silently) and `hiddenArtworks` would drop from the payload. Emit
+            // an explicit null instead until the next census writes the fields.
             artworksMinted: catalog.artworks,
-            hiddenArtworks: catalog.hidden,
-            visibleArtworks: catalog.artworks - catalog.hidden,
+            hiddenArtworks: typeof catalog.hidden === 'number' ? catalog.hidden : null,
+            visibleArtworks:
+              typeof catalog.hidden === 'number' ? catalog.artworks - catalog.hidden : null,
             artistsMinted: catalog.artists,
             visibleArtists: catalog.visibleArtists ?? null,
             collections: catalog.collections,
             coverage: {
-              possiblyTruncated: catalog.possiblyTruncated,
-              pageFailures: catalog.pageFailures,
-              unattributed: catalog.unattributed,
+              possiblyTruncated: catalog.possiblyTruncated ?? null,
+              pageFailures: catalog.pageFailures ?? null,
+              unattributed: catalog.unattributed ?? null,
             },
             updatedAt: catalog.updatedAt,
           }
@@ -162,11 +176,14 @@ export async function GET(req: NextRequest) {
     // Aggregates identical for every viewer and refreshed hourly — safe for a
     // short shared-cache window (same policy shape as the public timeline).
     // The admin funnel variant is viewer-dependent and must never be shared.
+    // Vary: Cookie so a cache keys public vs admin (?funnel=1) bodies by
+    // session — the second half of the cross-user guarantee alongside no-store.
     {
       headers: {
         'Cache-Control': funnel
           ? 'private, no-store'
           : 'public, s-maxage=300, stale-while-revalidate=600',
+        Vary: 'Cookie',
       },
     },
   )

@@ -199,6 +199,51 @@ check('accumulate: Σpct<100 (unlisted platform cut) credits EXACTLY the listed 
   Math.abs((under.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.8) < 1e-12,
   JSON.stringify([...under.maps[1]]))
 
+// ── 2e. Corrupt percent_allocation can't poison (and then DELETE) a total ────
+// A non-finite / overflowing percentage would make divisor→Infinity, credit→
+// NaN; the write-time `v > 0` filter then reads NaN as false and drops the
+// artist, deleting their real score on the absolute swap. Reject it at the
+// filter, and fall back to the resolved creator when NO valid recipient remains.
+for (const [label, badPct] of [
+  ['Infinity', Infinity],
+  ['NaN', NaN],
+  ['1e400 (overflows to Infinity)', 1e400],
+  ['beyond MAX_SANE_PCT', 2_000_000],
+] as const) {
+  const r = run({
+    value: 2,
+    currency: null,
+    moment: {
+      creator: ARTIST,
+      fee_recipients: [{ artist_address: COLLAB, percent_allocation: badPct }],
+    },
+  })
+  const collabScore = r.maps[1].get(COLLAB.toLowerCase()) ?? 0
+  const artistScore = r.maps[1].get(ARTIST.toLowerCase()) ?? 0
+  check(`accumulate: corrupt percent (${label}) is rejected — no NaN/Infinity credit`,
+    Number.isFinite(collabScore) && Number.isFinite(artistScore) &&
+      !Number.isNaN(collabScore) && collabScore === 0 &&
+      // With no valid recipient, the whole value credits the resolved creator.
+      Math.abs(artistScore - 2) < 1e-12,
+    JSON.stringify({ eth: [...r.maps[1]] }))
+}
+// A valid recipient alongside a corrupt one: the corrupt row is dropped, the
+// valid one still credits (no poisoning of the surviving recipient).
+const mixedPct = run({
+  value: 1,
+  currency: null,
+  moment: {
+    fee_recipients: [
+      { artist_address: ARTIST, percent_allocation: 50 },
+      { artist_address: COLLAB, percent_allocation: Infinity },
+    ],
+  },
+})
+check('accumulate: corrupt recipient dropped, valid recipient credits cleanly',
+  Math.abs((mixedPct.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.5) < 1e-12 &&
+    (mixedPct.maps[1].get(COLLAB.toLowerCase()) ?? 0) === 0,
+  JSON.stringify([...mixedPct.maps[1]]))
+
 const bareString = run({ value: 1, moment: { creator: ARTIST, collection: { artist: { address: OWNER } } } })
 check('accumulate: per-moment creator (bare string) beats collection level',
   bareString.maps[0].get(ARTIST.toLowerCase()) === 1, JSON.stringify([...bareString.maps[0]]))
