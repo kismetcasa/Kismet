@@ -1,5 +1,6 @@
+import { randomUUID } from 'crypto'
 import { inprocessUrl, type Moment } from './inprocess'
-import { getTrackedCollections } from './kv'
+import { getTrackedCollectionsStrict } from './kv'
 import { getMomentMetaBatch } from './notifications'
 import { resolveMomentCreator } from './statsMath'
 import { synthesizeMissingCoverMoment } from './coverMomentSynthesis'
@@ -37,6 +38,23 @@ import { redis } from './redis'
 // is surfaced in `pageFailures`/`possiblyTruncated`, so a transient blip
 // degrades one collection's depth measurably instead of zeroing the run.
 const CATALOG_KEY = 'kismetart:stats:platform:catalog'
+// Single-flight lock so two overlapping cron/manual triggers can't both fan out
+// over the whole tracked set at once (the rebuild's lock is released before the
+// census phase runs, so it doesn't cover this). TTL > a healthy full census,
+// short enough to free a crashed run before the next hourly cron.
+const CENSUS_LOCK_KEY = 'kismetart:stats:census-lock'
+const CENSUS_LOCK_TTL_S = 600
+const RELEASE_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`
+// Refuse to overwrite when a new census counts dramatically fewer artworks (or
+// collections) than the last successful run. The catalog is monotonic in normal
+// operation (mints only add), so a big shrink means a degraded tracked-set read
+// or an empty-but-valid upstream — the exact silent-wipe the module docstring
+// claims to prevent but previously did not. Same last-successful-baseline +
+// fail-open-on-missing shape as rebuildStats' guards.
+const MIN_CENSUS_RETENTION = 0.8
 
 // Page size matches the per-collection depth the timeline fan-out has
 // historically pulled from inprocess without issue; the page cap bounds a
@@ -60,8 +78,12 @@ export interface CatalogCensus {
    *  inside a hidden collection, or by an admin-hidden creator — the same
    *  three filters the timeline applies. Publicly visible = artworks−hidden. */
   hidden: number
-  /** Distinct creators of those artworks (KV override + smart-wallet fold). */
+  /** Distinct creators of those artworks (KV override + smart-wallet fold),
+   *  INCLUDING makers whose only work is hidden. */
   artists: number
+  /** Distinct creators with ≥1 non-hidden artwork — the public roster.
+   *  `artists − visibleArtists` = makers whose every piece is hidden. */
+  visibleArtists: number
   /** Tracked contracts scanned (after case-dedup; patron excluded). */
   collections: number
   /** Collections whose walk hit the page cap or lost a later page — their
@@ -125,6 +147,11 @@ async function fetchCensusPage(collection: string, page: number): Promise<Moment
 }
 
 interface CollectionWalk {
+  /** The tracked collection this walk was for — carried so the cross-collection
+   *  pass can key moments by the SAME effective address walkCollection used
+   *  (`m.address ?? collection`); without it an address-less moment keys to
+   *  "undefined:<tokenId>" and collapses across collections. */
+  collection: string
   moments: Moment[]
   truncated: boolean
   pageFailures: number
@@ -164,23 +191,41 @@ async function walkCollection(collection: string): Promise<CollectionWalk | null
   // the feed (and the chain) actually contain. Never throws; null = no-op.
   const cover = await synthesizeMissingCoverMoment(collection, moments)
   if (cover) moments.push(cover)
-  return { moments, truncated, pageFailures }
+  return { collection, moments, truncated, pageFailures }
 }
 
 /**
- * Rebuild the catalog census from inprocess and persist it. Throws on an
- * unreadable collection (abort-don't-overwrite); the cron route logs and the
- * previous snapshot stays live. Call from the sync-stats cron, or once to
- * backfill.
+ * Rebuild the catalog census from inprocess and persist it. Single-flight (a
+ * concurrent run returns `{ skipped: true }`). Throws — leaving the previous
+ * snapshot live — on an unreadable collection OR an implausible shrink/zero
+ * (abort-don't-overwrite, the same stance as rebuildStats). Call from the
+ * sync-stats cron, or once to backfill.
  */
-export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
+export async function rebuildCatalogCensus(): Promise<CatalogCensus | { skipped: true }> {
+  const lockToken = randomUUID()
+  const acquired = await redis.set(CENSUS_LOCK_KEY, lockToken, {
+    nx: true,
+    ex: CENSUS_LOCK_TTL_S,
+  })
+  if (acquired !== 'OK') return { skipped: true }
+  try {
+    return await runCensus()
+  } finally {
+    await redis.eval(RELEASE_LOCK_LUA, [CENSUS_LOCK_KEY], [lockToken]).catch(() => {})
+  }
+}
+
+async function runCensus(): Promise<CatalogCensus> {
   // Case-dedup so a checksummed and lowercased registration of the same
   // contract can't be walked (and counted) twice. The Patron/Mint-Pass
   // collection is excluded up front: passes are not artworks (its side
   // conveniently also keeps the platform treasury — the pass "creator" —
-  // out of the artist count).
+  // out of the artist count). Read FAIL-CLOSED (getTrackedCollectionsStrict):
+  // a Redis blip that degraded this to [PLATFORM_COLLECTION] would otherwise
+  // walk one collection, pass `failed===0`, and overwrite the catalog with a
+  // near-zero count marked complete.
   const collections = [
-    ...new Set((await getTrackedCollections()).map((c) => c.toLowerCase())),
+    ...new Set((await getTrackedCollectionsStrict()).map((c) => c.toLowerCase())),
   ].filter((c) => c !== PATRON_COLLECTION_ADDRESS)
 
   const walks = await mapWithConcurrency(collections, CENSUS_CONCURRENCY, walkCollection)
@@ -192,16 +237,23 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
     )
   }
 
-  // Cross-collection dedup: the per-walk sets already dedup within a
-  // collection; this guards a moment surfacing under two tracked entries.
+  // Cross-collection dedup, keyed by the SAME effective address walkCollection
+  // used (`m.address ?? walk.collection`) so an address-less moment can't
+  // collapse across collections into "undefined:<tokenId>". The effective addr
+  // is carried on each item so the attribution/hidden loop below keys
+  // identically. Belt-and-suspenders patron re-check: skip any moment whose
+  // effective address is the pass contract, even though patron was excluded
+  // from the input set — guards an upstream row that mis-reports its address.
   const seen = new Set<string>()
-  const moments: Moment[] = []
+  const items: { m: Moment; addr: string }[] = []
   for (const walk of walks as CollectionWalk[]) {
     for (const m of walk.moments) {
-      const key = `${m.address?.toLowerCase()}:${m.token_id}`
+      const addr = (m.address ?? walk.collection).toLowerCase()
+      if (addr === PATRON_COLLECTION_ADDRESS) continue
+      const key = `${addr}:${m.token_id}`
       if (seen.has(key)) continue
       seen.add(key)
-      moments.push(m)
+      items.push({ m, addr })
     }
   }
 
@@ -215,15 +267,20 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
   // admin-hidden creator) against the SAME resolved creator, so "visible on
   // the feed" and "artworks − hidden" can't disagree.
   const [metas, hiddenSet, hiddenColls, hiddenUsers] = await Promise.all([
-    getMomentMetaBatch(moments.map((m) => ({ address: m.address, tokenId: m.token_id }))),
+    getMomentMetaBatch(items.map(({ m }) => ({ address: m.address, tokenId: m.token_id }))),
     getHiddenMomentsSet(),
     getHiddenCollectionsSet(),
     getHiddenUsersSet(),
   ])
   const creators: string[] = []
+  // Creators with ≥1 VISIBLE (non-hidden) artwork — the "public roster". The
+  // gap between this and `artists` is exactly the makers whose every piece is
+  // hidden, which is what separates artistsMinted (all) from the artist count
+  // an operator sees on the public site.
+  const visibleCreators: string[] = []
   let unattributed = 0
   let hidden = 0
-  moments.forEach((m, i) => {
+  items.forEach(({ m, addr }, i) => {
     const resolved = resolveMomentCreator({
       kvCreator: metas[i]?.creator ?? null,
       feedCreator: m.creator?.address,
@@ -231,28 +288,30 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
     const creator = resolved.address?.toLowerCase()
     if (creator) creators.push(creator)
     else unattributed++
-    const addr = m.address?.toLowerCase() ?? ''
-    if (
+    const isHidden =
       hiddenSet.has(`${addr}:${m.token_id}`) ||
       hiddenColls.has(addr) ||
       (creator ? hiddenUsers.has(creator) : false)
-    ) {
-      hidden++
-    }
+    if (isHidden) hidden++
+    else if (creator) visibleCreators.push(creator)
   })
 
   // Smart-wallet→EOA fold, mirroring the stats rebuild: inprocess attributes
   // relayed mints to the per-creator smart wallet, which is the same artist
-  // as the owning EOA — counting both would double-count them.
+  // as the owning EOA — counting both would double-count them. visibleCreators
+  // ⊆ creators, so the one remap covers both counts.
   const uniqueCreators = [...new Set(creators)]
   const remap = await getSmartWalletOwners(uniqueCreators)
-  const artists = new Set(uniqueCreators.map((c) => remap.get(c) ?? c)).size
+  const fold = (list: string[]) => new Set(list.map((c) => remap.get(c) ?? c)).size
+  const artists = fold(uniqueCreators)
+  const visibleArtists = fold(visibleCreators)
 
   const census: CatalogCensus = {
     updatedAt: Date.now(),
-    artworks: moments.length,
+    artworks: items.length,
     hidden,
     artists,
+    visibleArtists,
     collections: collections.length,
     possiblyTruncated: walks.reduce(
       (n, w) => n + ((w as CollectionWalk).truncated ? 1 : 0),
@@ -261,6 +320,26 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus> {
     pageFailures: walks.reduce((n, w) => n + ((w as CollectionWalk).pageFailures ?? 0), 0),
     unattributed,
   }
+
+  // Shrink/zero guard before the destructive overwrite: the catalog only grows
+  // in normal operation, so a big drop in artworks OR collections means a
+  // degraded read (a one-collection tracked set the fail-closed read couldn't
+  // catch because smembers succeeded-but-empty) or an empty-but-valid upstream.
+  // A zero result when the prior was non-zero trips the same test. Fail OPEN on
+  // a missing/unreadable baseline (first run, Redis blip) so it can't wedge.
+  const prev = await getCatalogCensus()
+  if (
+    prev &&
+    prev.artworks > 0 &&
+    (census.artworks < prev.artworks * MIN_CENSUS_RETENTION ||
+      census.collections < prev.collections * MIN_CENSUS_RETENTION)
+  ) {
+    throw new Error(
+      `catalog census shrank (${census.artworks} artworks / ${census.collections} collections ` +
+        `vs ${prev.artworks} / ${prev.collections} last run) — refusing to overwrite`,
+    )
+  }
+
   // Loud on failure (throw → cron logs it): a swallowed write here would
   // silently serve a stale census for an hour with nothing in the logs.
   await redis.set(CATALOG_KEY, census)

@@ -10,29 +10,30 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const artist = searchParams.get('artist')
 
-  if (artist && !isAddress(artist)) {
+  // `artist` is REQUIRED. The hidden-users suppression gate below only makes
+  // sense per-artist, and the old no-artist branch fetched the network-wide
+  // /payments feed — which, once Kismet-scoped, would return a hidden artist's
+  // own-collection sales in an unauthenticated platform-wide list, defeating
+  // the suppression by simply dropping the query param. The only caller
+  // (ProfileView) always passes an artist, so requiring it loses nothing.
+  if (!artist || !isAddress(artist)) {
     return errorResponse(400, 'Invalid artist address')
   }
 
-  // Hidden-users gate when scoped to a specific artist: short-circuit
-  // before hitting inprocess. We can't filter individual items inside
-  // an inprocess passthrough response cheaply, so we apply the gate at
-  // the query level — admin-hidden artist + non-owner viewer = empty.
-  // Same own-profile exception as the per-content hide system.
-  if (artist) {
-    const [hiddenUsers, viewer] = await Promise.all([
-      getHiddenUsersSet(),
-      getSessionAddress(req),
-    ])
-    const artistLower = artist.toLowerCase()
-    if (hiddenUsers.has(artistLower) && viewer?.toLowerCase() !== artistLower) {
-      return NextResponse.json({ payments: [] }, { status: 200 })
-    }
+  // Hidden-users gate: short-circuit before hitting inprocess. We can't filter
+  // individual items inside an inprocess passthrough response cheaply, so we
+  // apply the gate at the query level — admin-hidden artist + non-owner viewer
+  // = empty. Same own-profile exception as the per-content hide system.
+  const [hiddenUsers, viewer] = await Promise.all([
+    getHiddenUsersSet(),
+    getSessionAddress(req),
+  ])
+  const artistLower = artist.toLowerCase()
+  if (hiddenUsers.has(artistLower) && viewer?.toLowerCase() !== artistLower) {
+    return NextResponse.json({ payments: [] }, { status: 200 })
   }
 
-  // `?artist=` (empty value) and missing param should both omit the upstream
-  // filter, matching the original `if (artist) set(...)` behavior.
-  const url = inprocessUrl('/payments', { artist: artist || undefined })
+  const url = inprocessUrl('/payments', { artist })
 
   try {
     const res = await fetch(url, {
@@ -61,8 +62,12 @@ export async function GET(req: NextRequest) {
       const tracked = new Set((await getTrackedCollections()).map((c) => c.toLowerCase()))
       const rows = (data as { payments: Array<{ token?: { contractAddress?: string } }> }).payments
       const scoped = rows.filter((p) => {
-        const c = p?.token?.contractAddress?.toLowerCase()
-        return c ? tracked.has(c) : false
+        // typeof check, not just optional chaining: a non-string
+        // contractAddress (feed schema drift) would throw on .toLowerCase(),
+        // escape the filter, and 502 the whole panel — the exact fragility the
+        // JSON-parse guard above avoids. One bad row must not fail the request.
+        const c = p?.token?.contractAddress
+        return typeof c === 'string' ? tracked.has(c.toLowerCase()) : false
       })
       return NextResponse.json({ ...data, payments: scoped }, { status: res.status })
     }

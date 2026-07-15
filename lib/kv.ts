@@ -79,6 +79,23 @@ async function _getTrackedCollections(): Promise<string[]> {
 }
 export const getTrackedCollections = memoize(_getTrackedCollections, SET_CACHE_TTL_MS)
 
+// Fail-CLOSED, un-memoized tracked-set read for the stats rebuild's scope gate.
+// getTrackedCollections above fails OPEN to [PLATFORM_COLLECTION] on a Redis
+// error AND memoizes that success for the full TTL — so a transient blip can
+// pin a one-collection scope for 15 min after Redis recovers. That is
+// catastrophic for a rebuild that does an absolute destructive overwrite: every
+// non-platform collection would classify out-of-scope and the swap would wipe
+// those artists' earnings, with none of the row-count guards noticing (they
+// watch the scope-invariant `counted`, not the scoped roll-up). This variant
+// THROWS on a Redis failure so the rebuild aborts and retries next cron instead
+// of committing a collapsed scope, and is un-memoized so it never reads a stale
+// fail-open value. A legitimately-empty registry still yields [PLATFORM_COLLECTION];
+// the rebuild's scoped-shrink guard backstops that case.
+export async function getTrackedCollectionsStrict(): Promise<string[]> {
+  const stored = (await redis.smembers(KEY)) as string[]
+  return Array.from(new Set([PLATFORM_COLLECTION, ...stored]))
+}
+
 // 'collections' returns curated only; 'standalone' and 'all' both
 // fan-out to every tracked contract. The timeline route narrows
 // 'standalone' post-merge by created-mints membership, so moments
