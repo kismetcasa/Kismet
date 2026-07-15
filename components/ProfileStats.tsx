@@ -7,6 +7,7 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useSignIn } from '@/hooks/useSignIn'
 import { useAdmin } from '@/contexts/AdminContext'
 import { formatEarningsValue, rendersNonZero, type EarningsMetric, type EarningsAmounts } from '@/lib/earningsFormat'
+import { useDistributeAll } from '@/hooks/useDistributeAll'
 
 interface Pending {
   eth: number
@@ -157,6 +158,10 @@ export function ProfileStats({
   // with SignInPrompt via useSignIn; only the owner context ever sets
   // authRequired, so visitors never see this.
   const { signIn, signingIn } = useSignIn(() => setReloadTick((t) => t + 1))
+
+  // Owner-only "distribute all": one signature settles the top splits by value;
+  // on completion, refetch so the pending line reflects the drained balances.
+  const { distributeAll, distributing } = useDistributeAll(() => setReloadTick((t) => t + 1))
 
   // Admin sign-in for the read-only view: establishes the admin session, then
   // refetches. The response handler (not this click) clears authRequired, so a
@@ -424,12 +429,17 @@ export function ProfileStats({
             </p>
           )}
           {pending && pendingDenom && (
-            <p
-              className="text-accent text-xs mt-0.5"
-              title="Undistributed across your splits — open a moment to distribute"
+            <button
+              type="button"
+              onClick={distributeAll}
+              disabled={distributing}
+              title="Settle your undistributed split earnings — one signature distributes your highest-value moments; also pays your collaborators on them. Tap again for more."
+              className="flex items-center gap-1 text-accent text-xs mt-0.5 hover:underline transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {formatEarningsValue(pendingDenom, pending)} to distribute
-            </p>
+              {distributing
+                ? 'distributing…'
+                : `${formatEarningsValue(pendingDenom, pending)} to distribute →`}
+            </button>
           )}
         </div>
         <div className="flex items-center gap-0.5 shrink-0 -mr-1 -mt-0.5">

@@ -5,6 +5,7 @@ import { getEthUsd } from './ethPrice'
 import { isAddress } from './address'
 import { getRecipientSplits, type RecipientSplit } from './splits'
 import { expandToFidSiblings } from './addressUnion'
+import type { SplitJob } from './distributePlan'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -152,68 +153,86 @@ function mergeSplitsByMoment(perWallet: RecipientSplit[][]): RecipientSplit[] {
   return [...byMoment.values()]
 }
 
-async function compute(address: string, wallets?: string[]): Promise<ArtistPending> {
-  // Union across the artist's FC sibling wallets (same identity model as
-  // getArtistEarnings) so undistributed balances cover every wallet they're a
-  // payee on, not just the canonical one. The caller (/api/stats) resolves the
-  // set once and shares it with the earnings roll-up; fall back to resolving here
-  // for any direct caller. The MAX_MOMENTS cap is applied to the MERGED set, so
-  // the on-chain fan-out stays bounded regardless of how many wallets union in.
+/**
+ * Resolve every split the artist is a payee on, with the split's LIVE ETH+USDC
+ * balance and the artist's allocation — the shared work-list for both the
+ * pending roll-up (compute, below, which sums the artist's shares) and
+ * distribute-all (which selects the top-CAP by value and fans out). Union across
+ * FC siblings; MAX_MOMENTS-capped on the merged set so the on-chain fan-out
+ * stays bounded. One aggregate3 reads native + USDC for every split (the
+ * irrelevant balance is simply 0, keeping the index currency-agnostic). Returns
+ * [] when the artist is on no splits or none resolve.
+ */
+export async function resolveArtistSplitJobs(
+  address: string,
+  wallets?: string[],
+): Promise<SplitJob[]> {
   const ws = wallets ?? (await expandToFidSiblings(address))
   const perWallet = await Promise.all(ws.map((w) => getRecipientSplits(w)))
   const moments = mergeSplitsByMoment(perWallet).slice(0, MAX_MOMENTS)
-  if (!moments.length) return EMPTY
+  if (!moments.length) return []
 
   const addrs = await resolveSplitAddresses(moments)
-  const resolved = moments
-    .map((m, i) => ({ pct: m.pct, addr: addrs[i] }))
-    .filter((x): x is { pct: number; addr: string } => !!x.addr)
-  if (!resolved.length) return EMPTY
+  const withAddr = moments
+    .map((m, i) => ({ m, addr: addrs[i] }))
+    .filter((x): x is { m: RecipientSplit; addr: string } => !!x.addr)
+  if (!withAddr.length) return []
 
-  // One aggregate3: native + USDC balance for every split. Reading both (rather
-  // than tracking each moment's currency) keeps the index currency-agnostic —
-  // the irrelevant balance is simply 0.
   const balances = await serverBaseClient().multicall({
-    contracts: resolved.flatMap((r) => [
+    contracts: withAddr.flatMap(({ addr }) => [
       {
         address: MULTICALL3_ADDRESS,
         abi: MULTICALL3_BALANCE_ABI,
         functionName: 'getEthBalance' as const,
-        args: [r.addr as `0x${string}`] as const,
+        args: [addr as `0x${string}`] as const,
       },
       {
         address: USDC_BASE,
         abi: ERC20_ABI,
         functionName: 'balanceOf' as const,
-        args: [r.addr as `0x${string}`] as const,
+        args: [addr as `0x${string}`] as const,
       },
     ]),
   })
 
+  return withAddr.map(({ m, addr }, idx) => {
+    const ethRes = balances[idx * 2]
+    const usdcRes = balances[idx * 2 + 1]
+    return {
+      collection: m.collection,
+      tokenId: m.tokenId,
+      splitAddress: addr,
+      pct: m.pct, // getRecipientSplits guarantees a whole 1–100
+      ethWei: ethRes?.status === 'success' ? (ethRes.result as bigint) : 0n,
+      usdcBase: usdcRes?.status === 'success' ? (usdcRes.result as bigint) : 0n,
+    }
+  })
+}
+
+async function compute(address: string, wallets?: string[]): Promise<ArtistPending> {
+  const jobs = await resolveArtistSplitJobs(address, wallets)
+  if (!jobs.length) return EMPTY
+
+  // Sum the artist's SHARE (balance × their pct) across splits. `count` is the
+  // number of splits where they have a non-zero share in either currency.
   let ethWei = 0n
   let usdcBase = 0n
   let count = 0
-  resolved.forEach((r, idx) => {
-    const ethRes = balances[idx * 2]
-    const usdcRes = balances[idx * 2 + 1]
-    const pct = BigInt(r.pct) // getRecipientSplits guarantees a whole 1–100
+  for (const j of jobs) {
+    const pct = BigInt(j.pct)
     let had = false
-    if (ethRes?.status === 'success') {
-      const share = ((ethRes.result as bigint) * pct) / 100n
-      if (share > 0n) {
-        ethWei += share
-        had = true
-      }
+    const ethShare = (j.ethWei * pct) / 100n
+    if (ethShare > 0n) {
+      ethWei += ethShare
+      had = true
     }
-    if (usdcRes?.status === 'success') {
-      const share = ((usdcRes.result as bigint) * pct) / 100n
-      if (share > 0n) {
-        usdcBase += share
-        had = true
-      }
+    const usdcShare = (j.usdcBase * pct) / 100n
+    if (usdcShare > 0n) {
+      usdcBase += usdcShare
+      had = true
     }
     if (had) count++
-  })
+  }
 
   if (ethWei === 0n && usdcBase === 0n) return EMPTY
 
@@ -242,6 +261,13 @@ async function compute(address: string, wallets?: string[]): Promise<ArtistPendi
  * wallets to match getArtistEarnings; pass `wallets` to reuse a set the caller
  * already resolved (the cache key stays the canonical address either way).
  */
+/** Bust the cached pending roll-up so a read right after a distribution
+ *  reflects the drained balances instead of the stale 60s cache. Keyed on the
+ *  canonical address, matching how getArtistPending caches. Best-effort. */
+export async function invalidatePendingCache(address: string): Promise<void> {
+  await redis.del(pendingCacheKey(address.toLowerCase())).catch(() => {})
+}
+
 export async function getArtistPending(address: string, wallets?: string[]): Promise<ArtistPending> {
   const key = address.toLowerCase()
   const cacheKey = pendingCacheKey(key)
