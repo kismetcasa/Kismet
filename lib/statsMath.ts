@@ -86,6 +86,10 @@ const MAX_SANE_QTY = 1_000_000 // editions in ONE transfer
 // — an artist's real total. Same fail-closed stance as MAX_SANE_VALUE/QTY.
 const MAX_SANE_PCT = 1_000_000
 
+// Shared empty exclude set for the pass-artist credit path when a caller
+// doesn't pass platformAddresses — allocated once, never mutated.
+const EMPTY_ADDRESS_SET: ReadonlySet<string> = new Set()
+
 /**
  * Bucket a transfer's payment currency. Unlike inferCollectCurrency (which
  * safe-defaults to ETH for UI display), the stats path must FAIL CLOSED: an
@@ -176,21 +180,22 @@ export function transferBuyer(t: StatsTransfer): string | null {
  * volume as Kismet's (~6× the real editions figure when first measured).
  *   'in'      — the moment's collection is in Kismet's tracked registry: fold
  *               into BOTH the platform art roll-up and the per-artist maps.
- *   'pass'    — the Patron/Mint-Pass collection: a pass purchase is real
- *               Kismet revenue but not an ARTWORK sale, so it folds into the
- *               separate `passes` sub-totals ONLY — never the art figures
- *               (editions/collectors/artists) and never a per-artist card.
+ *   'pass'    — the Patron/Mint-Pass collection: NOT counted in the platform
+ *               ART figures (editions/collectors/artistsWithSales) — it folds
+ *               into the separate `passes` sub-totals — but IS credited to the
+ *               real artists' per-artist cards (see accumulateTransfer), since
+ *               a pass sale is a sale of that artist's artwork.
  *   'out'     — resolvable collection, not tracked: exclude, count outOfScope.
  *   'unknown' — no collection ref resolvable on the row: exclude, count
  *               scopeUnknown. FAIL-CLOSED — a money figure must never include
  *               a row we can't place, and the counter keeps the gap visible.
- * The PER-ARTIST maps are gated to 'in' ONLY (see accumulateTransfer's
+ * The PER-ARTIST maps are credited for 'in' AND 'pass' (see accumulateTransfer's
  * creditArtist): a platform decision (2026-07-14) — every displayed number on
- * kismet.art means KISMET ART activity, no surface shows network-wide
- * In•Process figures, and passes stay a platform-level concept (crediting them
- * to a card misattributed the "sale" to the pass creator = the treasury). Pass
- * revenue to split artists is settled on-chain via the splits, independent of
- * the card.
+ * kismet.art means KISMET activity, no surface shows network-wide In•Process
+ * figures, and a Patron artist sees their split earnings on their own card
+ * (attributed to the real artist in the split, never the platform treasury).
+ * A pass artist's card can therefore exceed the platform ART totals; the
+ * `passes` block accounts for the difference.
  */
 export type PlatformScope = 'in' | 'pass' | 'out' | 'unknown'
 
@@ -342,6 +347,32 @@ export function resolveMomentCreator(inputs: {
 }
 
 /**
+ * The highest-allocation recipient NOT in `exclude` (lowercased), or null when
+ * every recipient is excluded. Credits a PASS sale's COUNT to the primary real
+ * artist named in the split: the Patron moment's `creator` resolves to a
+ * platform payout wallet, so `exclude` drops the known platform addresses (the
+ * same set the Patron page's deriveArtistsFromRecipients uses) and the artist —
+ * holding the dominant share of an artwork they made — wins even if a minor
+ * platform payee isn't in `exclude`. Ties break first-seen (strict >).
+ */
+export function dominantRecipientExcluding(
+  recipients: { artist_address: string; percent_allocation: number }[],
+  exclude: ReadonlySet<string>,
+): string | null {
+  let best: string | null = null
+  let bestPct = -1
+  for (const r of recipients) {
+    const addr = r.artist_address.toLowerCase()
+    if (exclude.has(addr)) continue
+    if (r.percent_allocation > bestPct) {
+      bestPct = r.percent_allocation
+      best = addr
+    }
+  }
+  return best
+}
+
+/**
  * Fold one paid transfer into the aggregates.
  *
  * The mint-credit key comes from resolveMomentCreator above — ONE precedence
@@ -361,15 +392,25 @@ export function resolveMomentCreator(inputs: {
  * gross value lands in the eth/usdc buckets only when the currency is
  * recognized — the identical fail-closed rule the artist buckets follow.
  * `platformScope` gates WHICH rows fold (see PlatformScope): 'in' credits the
- * per-artist maps AND the platform art roll-up; 'pass' credits ONLY the passes
- * sub-totals (never a per-artist card); 'out'/'unknown' credit NOTHING and only
- * bump their exclusion counter (after the free/invalid gates, so a free or
- * corrupt row is never double-classified). counters.counted stays network-wide
- * across all scopes — the shrink-guard's feed-completeness signal.
+ * per-artist maps AND the platform art roll-up; 'pass' credits the passes
+ * sub-totals AND the real split artists' per-artist maps (never the platform
+ * art roll-up); 'out'/'unknown' credit NOTHING and only bump their exclusion
+ * counter (after the free/invalid gates, so a free or corrupt row is never
+ * double-classified). counters.counted stays network-wide across all scopes —
+ * the shrink-guard's feed-completeness signal.
  */
 export function accumulateTransfer(
   t: StatsTransfer,
-  opts: { usdcAddress: string; kvCreator?: string | null },
+  opts: {
+    usdcAddress: string
+    kvCreator?: string | null
+    /** Platform payout wallets excluded when attributing a PASS sale to its
+     *  real artist(s) — treasury / referral / residencies / operator, the same
+     *  known-platform set the Patron page excludes. Only consulted for 'pass'
+     *  rows; absent = no exclusion (the dominant-share pick still favours the
+     *  artist). */
+    platformAddresses?: ReadonlySet<string>
+  },
   mints: Map<string, number>,
   eth: Map<string, number>,
   usdc: Map<string, number>,
@@ -430,24 +471,34 @@ export function accumulateTransfer(
   })
   const creator = resolved.address?.toLowerCase()
 
-  // Per-artist attribution — the maps behind every earnings card — credits
-  // ONLY 'in' (Kismet art) rows. 'pass' rows are platform-only (they feed the
-  // snapshot's passes block, never an artist card — a mint-pass sale is not an
-  // artwork sale, and crediting it misattributed the "sale" to the pass's
-  // creator, the platform treasury); 'out'/'unknown' fold nothing (no surface
-  // on kismet.art shows network-wide In•Process figures). The attribution
-  // diagnostics move with the credit so they keep describing Kismet art credit.
-  // NOTE: counters.counted (below) stays network-wide on purpose — it is the
-  // rebuild shrink-guard's "how much of the append-only feed did we fold"
-  // signal (lib/stats.ts), which must not move with Kismet scoping or the
-  // first scoped run would read as an implausible shrink and abort.
-  const creditArtist = platformScope === 'in'
+  // Per-artist attribution — the maps behind every earnings card. Credits 'in'
+  // (Kismet art) AND 'pass' (Patron/Mint-Pass) rows; 'out'/'unknown' fold
+  // nothing (no surface shows network-wide In•Process figures).
+  //   'in'   — SALE COUNT to the resolved moment creator; EARNINGS split across
+  //            fee_recipients (or whole value to the creator when unsplit).
+  //   'pass' — the moment creator resolves to a PLATFORM payout wallet, so the
+  //            SALE COUNT goes to the primary REAL artist in the split
+  //            (dominantRecipientExcluding over opts.platformAddresses) and
+  //            EARNINGS go to the non-platform recipients by their real share —
+  //            crediting the artist who made the pass artwork, never the
+  //            treasury. Pass rows ALSO feed the platform passes block above;
+  //            the per-artist credit is a separate VIEW, not a double-count.
+  // NOTE: counters.counted (below) stays network-wide — the shrink-guard signal.
+  const creditArtist = platformScope === 'in' || platformScope === 'pass'
+  const isPass = platformScope === 'pass'
+  const passExclude = opts.platformAddresses ?? EMPTY_ADDRESS_SET
   if (creditArtist) {
-    if (resolved.source === 'kv') counters.kvCreatorOverrides++
-    if (resolved.source === 'collection') counters.collectionFallbacks++
-    if (resolved.source === 'recipient') counters.recoveredCreators++
-    if (creator) bump(mints, creator, qty)
-    else counters.droppedMints += qty
+    if (isPass) {
+      const primary = dominantRecipientExcluding(recipients, passExclude)
+      if (primary) bump(mints, primary, qty)
+      else counters.droppedMints += qty
+    } else {
+      if (resolved.source === 'kv') counters.kvCreatorOverrides++
+      if (resolved.source === 'collection') counters.collectionFallbacks++
+      if (resolved.source === 'recipient') counters.recoveredCreators++
+      if (creator) bump(mints, creator, qty)
+      else counters.droppedMints += qty
+    }
   }
 
   // Platform roll-up for every counted IN-SCOPE row — including creator-
@@ -504,9 +555,17 @@ export function accumulateTransfer(
       const totalPct = recipients.reduce((s, r) => s + r.percent_allocation, 0)
       const divisor = Math.max(100, totalPct)
       for (const r of recipients) {
-        bump(earned, r.artist_address.toLowerCase(), (value * r.percent_allocation) / divisor)
+        const addr = r.artist_address.toLowerCase()
+        // Pass earnings skip platform payout wallets so only the real artists'
+        // shares land on a card. The divisor stays over ALL recipients, so each
+        // artist still gets EXACTLY their on-chain proportional share (not an
+        // inflated one) — the platform cut is simply not credited to any card.
+        if (isPass && passExclude.has(addr)) continue
+        bump(earned, addr, (value * r.percent_allocation) / divisor)
       }
-    } else if (creator) {
+    } else if (creator && !isPass) {
+      // Whole value to the resolved creator when there is no split — 'in' only.
+      // Never for a pass: its unsplit creator is the treasury, not an artist.
       bump(earned, creator, value)
     }
   }

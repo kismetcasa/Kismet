@@ -9,6 +9,8 @@ import { getCachedCreatorRewardRecipient } from './pending'
 import { getSmartWalletOwners } from './smartWalletCache'
 import { getTrackedCollectionsStrict } from './kv'
 import { PATRON_COLLECTION_ADDRESS } from './patronCollection'
+import { CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET } from './config'
+import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { fetchCollectionMoments } from './inprocess'
 import { getAirdropsByMoment } from './airdrops'
 import { USDC_BASE } from './zoraMint'
@@ -64,6 +66,21 @@ const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
 // Single JSON value, absolute overwrite per successful rebuild; read by
 // getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
+
+// Platform payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
+// credited to its real artist(s) — the same known-platform set the Patron page
+// uses (lib/patronCollection deriveArtistsFromRecipients + CollectionView). The
+// per-collection defaultAdmin/payout the UI also excludes is omitted here on
+// purpose: the sale-count creditee is the DOMINANT-share recipient, and the
+// artist who made the artwork holds the majority, so they win even if a minor
+// platform payee slips through — while a slipped payee's earnings share is a
+// tiny, un-viewed credit, never the artist's. Empty entries (unset env) are
+// filtered so the set never contains ''.
+const PASS_PLATFORM_ADDRESSES: ReadonlySet<string> = new Set(
+  [PLATFORM_FEE_RECIPIENT, CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET]
+    .filter((a): a is string => typeof a === 'string' && a.length > 0)
+    .map((a) => a.toLowerCase()),
+)
 // One-time idempotency claim per filled listing so a retried/concurrent fill
 // credits exactly once. Committed ATOMICALLY with the credit (see the Lua
 // script below) — claiming first and crediting after left a swallowed credit
@@ -425,7 +442,11 @@ async function runRebuild(): Promise<RebuildResult> {
         : 'unknown'
       accumulateTransfer(
         t,
-        { usdcAddress: USDC_BASE, kvCreator: metas[i]?.creator ?? null },
+        {
+          usdcAddress: USDC_BASE,
+          kvCreator: metas[i]?.creator ?? null,
+          platformAddresses: PASS_PLATFORM_ADDRESSES,
+        },
         mints,
         eth,
         usdc,
@@ -433,6 +454,7 @@ async function runRebuild(): Promise<RebuildResult> {
         platform,
         scope,
       )
+
     })
     page++
   } while (page <= totalPages && page <= MAX_PAGES)
@@ -611,10 +633,11 @@ async function runRebuild(): Promise<RebuildResult> {
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 // Single-artist earnings for the profile card. Reads the per-artist zsets the
-// rebuild writes — which are now KISMET-ART-SCOPED (rebuildStats folds only
-// 'in' rows into them; passes are platform-only and 'out'/'unknown' are
-// excluded — see accumulateTransfer's creditArtist gate), so a card shows the
-// artist's Kismet art activity, not their network-wide In•Process earnings. Unioned across the artist's earnings wallets
+// rebuild writes — which are now KISMET-SCOPED (rebuildStats folds 'in' art
+// rows plus 'pass' rows credited to their real split artists; 'out'/'unknown'
+// are excluded — see accumulateTransfer's creditArtist gate), so a card shows
+// the artist's Kismet activity (art + any Patron split they earned), not their
+// network-wide In•Process earnings. Unioned across the artist's earnings wallets
 // (expandToEarningsWallets): the FC sibling set the timeline uses for their
 // mints/collects, PLUS each sibling's inprocess smart wallet — the address the
 // feed attributes Kismet mints to. Without the union an FC artist who minted

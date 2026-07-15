@@ -19,6 +19,7 @@
 import {
   accumulateTransfer,
   classifyTransferCurrency,
+  dominantRecipientExcluding,
   newAccumulateCounters,
   newPlatformTotals,
   remapEntries,
@@ -43,6 +44,10 @@ const OWNER = '0x000000000000000000000000000000000000aaaa'
 const ARTIST = '0x000000000000000000000000000000000000bbbb'
 const COLLAB = '0x000000000000000000000000000000000000cccc'
 const SW = '0x000000000000000000000000000000000000dddd'
+// Stand-in platform payout wallet for the pass-artist-credit tests, and the
+// exclude set passed to accumulateTransfer for 'pass' rows.
+const PLAT = '0x0000000000000000000000000000000000009999'
+const PLATFORM_SET: ReadonlySet<string> = new Set([PLAT.toLowerCase()])
 
 type Maps = [Map<string, number>, Map<string, number>, Map<string, number>]
 const run = (
@@ -412,7 +417,11 @@ const runScoped = (
   const counters = newAccumulateCounters()
   const platform = newPlatformTotals()
   for (const { t, scope } of rows) {
-    accumulateTransfer(t, { usdcAddress: USDC, kvCreator: null }, ...maps, counters, platform, scope)
+    accumulateTransfer(
+      t,
+      { usdcAddress: USDC, kvCreator: null, platformAddresses: PLATFORM_SET },
+      ...maps, counters, platform, scope,
+    )
   }
   return { maps, platform, counters }
 }
@@ -445,36 +454,70 @@ check('scope: gates classify first — a free out-of-scope row is skippedFree, N
   sFreeOut.counters.skippedFree === 1 && sFreeOut.platform.outOfScope === 0,
   JSON.stringify({ counters: sFreeOut.counters, outOfScope: sFreeOut.platform.outOfScope }))
 
+// Pass sale with a real split: OWNER (artist) 70%, PLAT (platform payout) 30%.
 const sPass = runScoped([{
-  t: { value: 0.04, quantity: 2, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: OWNER } } } },
+  t: { value: 0.04, quantity: 2, buyer: { address: BUYER_A }, moment: { fee_recipients: [
+    { artist_address: OWNER, percent_allocation: 70 },
+    { artist_address: PLAT, percent_allocation: 30 },
+  ] } },
   scope: 'pass',
 }])
-check('scope: pass sale folds into passes sub-totals ONLY (art figures untouched)',
+check('scope: pass sale folds GROSS into the passes block, never the art figures',
   sPass.platform.passes.transactions === 1 && sPass.platform.passes.editions === 2 &&
     Math.abs(sPass.platform.passes.eth - 0.04) < 1e-12 && sPass.platform.passes.usdc === 0 &&
     sPass.platform.transactions === 0 && sPass.platform.editions === 0 &&
-    sPass.platform.eth === 0 && sPass.platform.buyers.size === 0 &&
-    sPass.platform.artists.size === 0 && sPass.platform.outOfScope === 0,
+    sPass.platform.eth === 0 && sPass.platform.artists.size === 0 &&
+    sPass.platform.outOfScope === 0,
   JSON.stringify({ ...sPass.platform, buyers: [], artists: [] }))
-check('scope: pass sale credits NOTHING to the ARTIST maps (passes are platform-only)',
-  sPass.maps[0].size === 0 && sPass.maps[1].size === 0 && sPass.maps[2].size === 0 &&
-    sPass.counters.droppedMints === 0,
-  JSON.stringify([...sPass.maps[0], ...sPass.maps[1], ...sPass.maps[2]]))
+check('scope: pass sale credits the REAL artist — count to dominant non-platform recipient',
+  sPass.maps[0].get(OWNER.toLowerCase()) === 2 && sPass.maps[0].size === 1,
+  JSON.stringify([...sPass.maps[0]]))
+check('scope: pass sale credits the REAL artist their EXACT split share (0.04 × 70%)',
+  Math.abs((sPass.maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.028) < 1e-12 &&
+    sPass.maps[1].size === 1,
+  JSON.stringify([...sPass.maps[1]]))
+check('scope: pass sale does NOT credit the platform payout wallet (count or earnings)',
+  !sPass.maps[0].has(PLAT.toLowerCase()) && !sPass.maps[1].has(PLAT.toLowerCase()),
+  JSON.stringify({ mints: [...sPass.maps[0]], eth: [...sPass.maps[1]] }))
 check('scope: pass row STILL increments counted (feed-completeness / shrink guard)',
   sPass.counters.counted === 1, JSON.stringify(sPass.counters))
-const sPassUsdc = runScoped([{
-  t: { value: 50, currency: USDC, moment: { collection: { artist: { address: OWNER } } } },
+
+// dominantRecipientExcluding: highest non-excluded share wins; all-excluded → null.
+check('dominant: highest non-platform recipient wins the count',
+  dominantRecipientExcluding(
+    [{ artist_address: PLAT, percent_allocation: 60 }, { artist_address: OWNER, percent_allocation: 40 }],
+    PLATFORM_SET,
+  ) === OWNER.toLowerCase())
+check('dominant: all recipients excluded -> null (row drops, never credits treasury)',
+  dominantRecipientExcluding([{ artist_address: PLAT, percent_allocation: 100 }], PLATFORM_SET) === null)
+
+// A pass with NO resolvable real artist (only platform payees) drops the mint
+// credit rather than crediting a platform wallet.
+const sPassNoArtist = runScoped([{
+  t: { value: 1, moment: { fee_recipients: [{ artist_address: PLAT, percent_allocation: 100 }] } },
   scope: 'pass',
 }])
-check('scope: pass USDC sale lands in passes.usdc; unknown ERC20 would be skipped fail-closed',
-  sPassUsdc.platform.passes.usdc === 50 && sPassUsdc.platform.passes.eth === 0)
+check('scope: pass with no real artist drops the count, credits no card, still counts passes',
+  sPassNoArtist.maps[0].size === 0 && sPassNoArtist.maps[1].size === 0 &&
+    sPassNoArtist.counters.droppedMints === 1 &&
+    sPassNoArtist.platform.passes.transactions === 1,
+  JSON.stringify({ mints: [...sPassNoArtist.maps[0]], counters: sPassNoArtist.counters }))
+
+const sPassUsdc = runScoped([{
+  t: { value: 50, currency: USDC, moment: { fee_recipients: [{ artist_address: OWNER, percent_allocation: 100 }] } },
+  scope: 'pass',
+}])
+check('scope: pass USDC sale — passes.usdc gross + artist credited in usdc map',
+  sPassUsdc.platform.passes.usdc === 50 && sPassUsdc.platform.passes.eth === 0 &&
+    sPassUsdc.maps[2].get(OWNER.toLowerCase()) === 50,
+  JSON.stringify({ passes: sPassUsdc.platform.passes, usdc: [...sPassUsdc.maps[2]] }))
 
 const sIn = runScoped([
   { t: { value: 0.5, quantity: 2, buyer: { address: BUYER_A }, moment: { collection: { artist: { address: ARTIST } } } }, scope: 'in' },
   { t: { value: 0.25, quantity: 4, moment: {} }, scope: 'in' }, // creator unresolvable
   { t: { value: 5, currency: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed', moment: { collection: { artist: { address: COLLAB } } } }, scope: 'in' },
   { t: { value: 9, buyer: { address: BUYER_B }, moment: { collection: { artist: { address: OWNER } } } }, scope: 'out' },
-  { t: { value: 0.02, moment: { collection: { artist: { address: OWNER } } } }, scope: 'pass' },
+  { t: { value: 0.02, moment: { fee_recipients: [{ artist_address: OWNER, percent_allocation: 100 }] } }, scope: 'pass' },
 ])
 check('scope: in-scope rows fold artists/dropped/unknownCurrency into the roll-up',
   sIn.platform.artists.has(ARTIST.toLowerCase()) && sIn.platform.artists.has(COLLAB.toLowerCase()) &&
@@ -487,18 +530,18 @@ check('scope: invariant — transactions + passes.transactions + outOfScope + sc
     sIn.platform.outOfScope + sIn.platform.scopeUnknown ===
     sIn.counters.counted && sIn.counters.counted === 5,
   JSON.stringify({ tx: sIn.platform.transactions, pass: sIn.platform.passes.transactions, out: sIn.platform.outOfScope, unk: sIn.platform.scopeUnknown, counted: sIn.counters.counted }))
-check('scope: per-artist MAPS reflect IN-scope art only — pass AND out OWNER sales are absent',
-  // mints: ARTIST=2 (in), COLLAB=1 (in, unknown-currency still mints). OWNER's
-  // pass sale (0.02) and out-scope sale (value 9) BOTH credit nothing — so
-  // OWNER is absent from every map. eth: ARTIST=0.5 only (COLLAB row is
-  // unknown-currency → value skipped).
+check('scope: per-artist MAPS reflect in-art + pass-artist; out-scope OWNER sale is absent',
+  // mints: ARTIST=2 (in), COLLAB=1 (in, unknown-currency still mints), OWNER=1
+  // (pass split → real artist). OWNER's OUT-scope sale (value 9) credits
+  // nothing. eth: ARTIST=0.5 (in) + OWNER=0.02 (pass share); COLLAB's row is
+  // unknown-currency → value skipped.
   sIn.maps[0].get(ARTIST.toLowerCase()) === 2 &&
     sIn.maps[0].get(COLLAB.toLowerCase()) === 1 &&
-    !sIn.maps[0].has(OWNER.toLowerCase()) &&
-    !sIn.maps[1].has(OWNER.toLowerCase()) &&
-    sIn.maps[0].size === 2 &&
+    sIn.maps[0].get(OWNER.toLowerCase()) === 1 &&
+    sIn.maps[0].size === 3 &&
     Math.abs((sIn.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.5) < 1e-12 &&
-    sIn.maps[1].size === 1 &&
+    Math.abs((sIn.maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.02) < 1e-12 &&
+    sIn.maps[1].size === 2 &&
     sIn.counters.droppedMints === 4,
   JSON.stringify({ mints: [...sIn.maps[0]], eth: [...sIn.maps[1]], droppedMints: sIn.counters.droppedMints }))
 check('scope: default scope is in — pre-scope callers keep folding (back-compat)',
