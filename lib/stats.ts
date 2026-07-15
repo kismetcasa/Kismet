@@ -611,10 +611,10 @@ async function runRebuild(): Promise<RebuildResult> {
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 // Single-artist earnings for the profile card. Reads the per-artist zsets the
-// rebuild writes — which are now KISMET-SCOPED (rebuildStats folds only 'in' +
-// 'pass' rows into them; see accumulateTransfer's creditArtist gate), so a
-// card shows the artist's Kismet activity, not their network-wide In•Process
-// earnings. Unioned across the artist's earnings wallets
+// rebuild writes — which are now KISMET-ART-SCOPED (rebuildStats folds only
+// 'in' rows into them; passes are platform-only and 'out'/'unknown' are
+// excluded — see accumulateTransfer's creditArtist gate), so a card shows the
+// artist's Kismet art activity, not their network-wide In•Process earnings. Unioned across the artist's earnings wallets
 // (expandToEarningsWallets): the FC sibling set the timeline uses for their
 // mints/collects, PLUS each sibling's inprocess smart wallet — the address the
 // feed attributes Kismet mints to. Without the union an FC artist who minted

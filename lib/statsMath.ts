@@ -174,22 +174,23 @@ export function transferBuyer(t: StatsTransfer): string | null {
  * chain), while "the platform's" totals must mean KISMET's tracked
  * collections — without this gate the roll-up reported the whole network's
  * volume as Kismet's (~6× the real editions figure when first measured).
- *   'in'      — the moment's collection is in Kismet's tracked registry: fold.
+ *   'in'      — the moment's collection is in Kismet's tracked registry: fold
+ *               into BOTH the platform art roll-up and the per-artist maps.
  *   'pass'    — the Patron/Mint-Pass collection: a pass purchase is real
  *               Kismet revenue but not an ARTWORK sale, so it folds into the
- *               separate `passes` sub-totals and never inflates the art
- *               figures (editions/collectors/artists).
+ *               separate `passes` sub-totals ONLY — never the art figures
+ *               (editions/collectors/artists) and never a per-artist card.
  *   'out'     — resolvable collection, not tracked: exclude, count outOfScope.
  *   'unknown' — no collection ref resolvable on the row: exclude, count
  *               scopeUnknown. FAIL-CLOSED — a money figure must never include
  *               a row we can't place, and the counter keeps the gap visible.
- * The PER-ARTIST maps are scope-gated the same way ('in' + 'pass' fold;
- * 'out'/'unknown' are excluded BEFORE attribution): a platform decision
- * (2026-07-14) — every displayed number on kismet.art, including an artist's
- * earnings card, means KISMET activity, and no surface shows network-wide
- * In•Process figures. 'pass' rows run the full per-artist path because pass
- * revenue reaches real artists through fee_recipients splits (the mint
- * credit itself lands on the pass's creator — the platform treasury).
+ * The PER-ARTIST maps are gated to 'in' ONLY (see accumulateTransfer's
+ * creditArtist): a platform decision (2026-07-14) — every displayed number on
+ * kismet.art means KISMET ART activity, no surface shows network-wide
+ * In•Process figures, and passes stay a platform-level concept (crediting them
+ * to a card misattributed the "sale" to the pass creator = the treasury). Pass
+ * revenue to split artists is settled on-chain via the splits, independent of
+ * the card.
  */
 export type PlatformScope = 'in' | 'pass' | 'out' | 'unknown'
 
@@ -360,11 +361,11 @@ export function resolveMomentCreator(inputs: {
  * gross value lands in the eth/usdc buckets only when the currency is
  * recognized — the identical fail-closed rule the artist buckets follow.
  * `platformScope` gates WHICH rows fold (see PlatformScope): 'in' credits the
- * per-artist maps AND the platform art roll-up; 'pass' credits the per-artist
- * maps AND the passes sub-totals; 'out'/'unknown' credit NOTHING and only bump
- * their exclusion counter (after the free/invalid gates, so a free or corrupt
- * row is never double-classified). counters.counted stays network-wide across
- * all scopes — the shrink-guard's feed-completeness signal.
+ * per-artist maps AND the platform art roll-up; 'pass' credits ONLY the passes
+ * sub-totals (never a per-artist card); 'out'/'unknown' credit NOTHING and only
+ * bump their exclusion counter (after the free/invalid gates, so a free or
+ * corrupt row is never double-classified). counters.counted stays network-wide
+ * across all scopes — the shrink-guard's feed-completeness signal.
  */
 export function accumulateTransfer(
   t: StatsTransfer,
@@ -429,16 +430,18 @@ export function accumulateTransfer(
   })
   const creator = resolved.address?.toLowerCase()
 
-  // Per-artist attribution — the maps behind every earnings card — is now
-  // Kismet-scoped exactly like the platform roll-up: only 'in' + 'pass' rows
-  // credit an artist; 'out'/'unknown' rows fold nothing here (no surface on
-  // kismet.art displays network-wide In•Process figures). The attribution
-  // diagnostics move with the credit so they keep describing Kismet credit.
+  // Per-artist attribution — the maps behind every earnings card — credits
+  // ONLY 'in' (Kismet art) rows. 'pass' rows are platform-only (they feed the
+  // snapshot's passes block, never an artist card — a mint-pass sale is not an
+  // artwork sale, and crediting it misattributed the "sale" to the pass's
+  // creator, the platform treasury); 'out'/'unknown' fold nothing (no surface
+  // on kismet.art shows network-wide In•Process figures). The attribution
+  // diagnostics move with the credit so they keep describing Kismet art credit.
   // NOTE: counters.counted (below) stays network-wide on purpose — it is the
   // rebuild shrink-guard's "how much of the append-only feed did we fold"
   // signal (lib/stats.ts), which must not move with Kismet scoping or the
   // first scoped run would read as an implausible shrink and abort.
-  const creditArtist = platformScope === 'in' || platformScope === 'pass'
+  const creditArtist = platformScope === 'in'
   if (creditArtist) {
     if (resolved.source === 'kv') counters.kvCreatorOverrides++
     if (resolved.source === 'collection') counters.collectionFallbacks++

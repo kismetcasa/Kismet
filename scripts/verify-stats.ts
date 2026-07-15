@@ -456,10 +456,12 @@ check('scope: pass sale folds into passes sub-totals ONLY (art figures untouched
     sPass.platform.eth === 0 && sPass.platform.buyers.size === 0 &&
     sPass.platform.artists.size === 0 && sPass.platform.outOfScope === 0,
   JSON.stringify({ ...sPass.platform, buyers: [], artists: [] }))
-check('scope: pass sale DOES credit the ARTIST maps (split artists earn from pass sales)',
-  sPass.maps[0].get(OWNER.toLowerCase()) === 2 &&
-    Math.abs((sPass.maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.04) < 1e-12,
-  JSON.stringify([...sPass.maps[0], ...sPass.maps[1]]))
+check('scope: pass sale credits NOTHING to the ARTIST maps (passes are platform-only)',
+  sPass.maps[0].size === 0 && sPass.maps[1].size === 0 && sPass.maps[2].size === 0 &&
+    sPass.counters.droppedMints === 0,
+  JSON.stringify([...sPass.maps[0], ...sPass.maps[1], ...sPass.maps[2]]))
+check('scope: pass row STILL increments counted (feed-completeness / shrink guard)',
+  sPass.counters.counted === 1, JSON.stringify(sPass.counters))
 const sPassUsdc = runScoped([{
   t: { value: 50, currency: USDC, moment: { collection: { artist: { address: OWNER } } } },
   scope: 'pass',
@@ -485,14 +487,18 @@ check('scope: invariant — transactions + passes.transactions + outOfScope + sc
     sIn.platform.outOfScope + sIn.platform.scopeUnknown ===
     sIn.counters.counted && sIn.counters.counted === 5,
   JSON.stringify({ tx: sIn.platform.transactions, pass: sIn.platform.passes.transactions, out: sIn.platform.outOfScope, unk: sIn.platform.scopeUnknown, counted: sIn.counters.counted }))
-check('scope: per-artist MAPS reflect in+pass only — out-scope OWNER sale is absent',
-  // mints: ARTIST=2 (in), COLLAB=1 (in, unknown-currency still mints), OWNER=1 (pass);
-  // the OWNER out-scope sale (value 9) credits NOTHING. eth: ARTIST=0.5 + OWNER=0.02 (pass).
+check('scope: per-artist MAPS reflect IN-scope art only — pass AND out OWNER sales are absent',
+  // mints: ARTIST=2 (in), COLLAB=1 (in, unknown-currency still mints). OWNER's
+  // pass sale (0.02) and out-scope sale (value 9) BOTH credit nothing — so
+  // OWNER is absent from every map. eth: ARTIST=0.5 only (COLLAB row is
+  // unknown-currency → value skipped).
   sIn.maps[0].get(ARTIST.toLowerCase()) === 2 &&
     sIn.maps[0].get(COLLAB.toLowerCase()) === 1 &&
-    sIn.maps[0].get(OWNER.toLowerCase()) === 1 &&
-    Math.abs((sIn.maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.02) < 1e-12 &&
+    !sIn.maps[0].has(OWNER.toLowerCase()) &&
+    !sIn.maps[1].has(OWNER.toLowerCase()) &&
+    sIn.maps[0].size === 2 &&
     Math.abs((sIn.maps[1].get(ARTIST.toLowerCase()) ?? 0) - 0.5) < 1e-12 &&
+    sIn.maps[1].size === 1 &&
     sIn.counters.droppedMints === 4,
   JSON.stringify({ mints: [...sIn.maps[0]], eth: [...sIn.maps[1]], droppedMints: sIn.counters.droppedMints }))
 check('scope: default scope is in — pre-scope callers keep folding (back-compat)',
