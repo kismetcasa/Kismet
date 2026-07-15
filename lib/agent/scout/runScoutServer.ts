@@ -10,14 +10,16 @@
  *   - the executor re-resolves each price on-chain before spending.
  */
 
-import { getPermissionStatus, prepareRevokeCallData } from '@base-org/account/spend-permission'
+import { getPermissionStatus } from '@base-org/account/spend-permission'
+import { sdkRpcOptions } from '@/lib/rpc'
 import type { Address, Hex } from 'viem'
 import { isKillSwitchEngaged } from './killSwitch'
 import { writeNotification } from '@/lib/notifications'
 import { planRun, type BudgetUsage } from './engine'
-import { getScout, saveScout, type ScoutRecord } from './store'
+import { getScout, saveScout } from './store'
 import { discoverCore } from './discoverCore'
-import { createSpendPermissionExecutor, type StoredSpendPermission } from './serverExecutor'
+import { createSpendPermissionExecutor } from './serverExecutor'
+import { drainSupersededPermissions } from './revoke'
 import type { ScoutSpender } from './spender'
 
 export interface ServerRunSummary {
@@ -78,34 +80,6 @@ async function recordCollect(
   }
 }
 
-/**
- * Silently revoke any permissions a budget change superseded, using the spender
- * (revokeAsSpender — no user signature). Best-effort: a transient failure stays
- * queued for the next run; an already-revoked/expired one is just dropped (so the
- * queue can't get stuck). Clears the queue (or the revoked subset) from the record.
- */
-async function drainSupersededPermissions(record: ScoutRecord, spender: ScoutSpender): Promise<void> {
-  const pending = record.supersededPermissions
-  if (!pending || pending.length === 0) return
-  const remaining: StoredSpendPermission[] = []
-  for (const old of pending) {
-    try {
-      const status = await getPermissionStatus(old)
-      if (!status.isRevoked && !status.isExpired) {
-        const call = await prepareRevokeCallData(old)
-        await spender.sendCalls([{ to: call.to as Address, data: call.data as Hex, value: BigInt(call.value) }])
-      }
-      // revoked just now, or already revoked/expired → drop from the queue
-    } catch {
-      remaining.push(old) // transient failure (e.g. RPC) — retry next run
-    }
-  }
-  if (remaining.length === pending.length) return // nothing changed
-  if (remaining.length > 0) record.supersededPermissions = remaining
-  else delete record.supersededPermissions
-  await saveScout(record)
-}
-
 export async function runScoutServer(params: {
   owner: string
   baseUrl: string
@@ -133,7 +107,7 @@ export async function runScoutServer(params: {
   const recipient = owner as Address
 
   // 1. Anchor the budget window + spend to the on-chain permission.
-  const status = await getPermissionStatus(permission)
+  const status = await getPermissionStatus(permission, sdkRpcOptions())
   if (!status.isActive) return { collected: 0, skipped: 0, reason: 'permission inactive' }
   const periodStart = status.currentPeriod.start
   const items = record.usage.periodStart === periodStart ? record.usage.itemsThisPeriod : 0
@@ -172,12 +146,23 @@ export async function runScoutServer(params: {
   const executor = createSpendPermissionExecutor({ permission, spender, recipient })
   let collected = 0
   let failed = 0
-  // `skipped` (returned) keeps its meaning — candidates NOT collected = engine
-  // policy-skips + execution failures. We track `failed` SEPARATELY so the logs
-  // below can distinguish a quiet run (all policy-skipped — normal) from a broken
-  // one (collects throwing — paymaster dead / RPC down / contract changed).
-  const policySkipped = plan.decisions.length - plan.toCollect.length
+  // First failure message, surfaced in the run summary so the caller reports a
+  // SPECIFIC reason ("paymaster sponsorship denied") instead of a bare count.
+  let firstFailure: string | undefined
+  // Set when an operator engages the kill switch mid-run — remaining candidates
+  // are left un-attempted (not policy-skipped, not failed).
+  let stoppedByKillSwitch = false
+  // We track `failed` SEPARATELY so the logs below can distinguish a quiet run
+  // (all policy-skipped — normal) from a broken one (collects throwing — paymaster
+  // dead / RPC down / contract changed).
   for (const candidate of plan.toCollect) {
+    // Honor an emergency stop BETWEEN collects, not just at run entry: a long run
+    // must stop spending the moment the kill switch is engaged mid-run (an active
+    // incident — compromised spender, discovered exploit — needs a live brake).
+    if (await isKillSwitchEngaged()) {
+      stoppedByKillSwitch = true
+      break
+    }
     try {
       const { txHash, quantity } = await executor.collect(scout, candidate)
       await recordCollect(baseUrl, owner, candidate, txHash, Number(quantity))
@@ -187,26 +172,38 @@ export async function runScoutServer(params: {
       // Surface WHY a collect failed. Without this the autonomous path is blind:
       // every failure collapses into one integer, indistinguishable from a normal
       // quiet run, while the kill-switch is reactive with no signal to trigger it.
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!firstFailure) firstFailure = msg
       console.error('[scout] collect failed', {
         owner,
         collection: candidate.collection,
         tokenId: candidate.tokenId,
         spender: spender.address,
-        err: err instanceof Error ? err.message : String(err),
+        err: msg,
       })
     }
   }
-  const skipped = policySkipped + failed
+  // "Not collected" = engine policy-skips + execution failures + any candidates
+  // left un-attempted by a mid-run kill-switch stop. Derive it from the total so
+  // the early-stop case is counted honestly rather than under-reported.
+  const skipped = plan.decisions.length - collected
 
   // 4. Persist usage from on-chain truth; notify the user.
   try {
-    const end = await getPermissionStatus(permission)
+    const end = await getPermissionStatus(permission, sdkRpcOptions())
     const endUsage: BudgetUsage = {
       periodStart,
       spentThisPeriod: end.currentPeriod.spend.toString(),
       itemsThisPeriod: items + collected,
     }
-    await saveScout({ ...record, usage: endUsage })
+    // Re-read before persisting so a control change made WHILE this run was in
+    // flight — the user pausing, turning the agent off, coming back (away=false),
+    // or re-granting budget — survives. The top-of-run `record` snapshot is stale
+    // by now; blindly saving it would silently RESUME an agent the user just
+    // stopped mid-run. Persist only the authoritative usage onto the freshest
+    // record (fall back to the snapshot if the re-read fails).
+    const fresh = (await getScout(owner)) ?? record
+    await saveScout({ ...fresh, usage: endUsage })
   } catch {
     /* the on-chain cap is the real guard; a stale stored count is harmless */
   }
@@ -233,5 +230,17 @@ export async function runScoutServer(params: {
     })
   }
 
-  return { collected, skipped }
+  // Specific, actionable reason for the caller (and any surfaced status): the
+  // mid-run stop, or the first concrete failure, over a bare skipped count.
+  let reason: string | undefined
+  if (stoppedByKillSwitch) {
+    reason = 'kill switch engaged mid-run — remaining collects halted'
+  } else if (failed > 0) {
+    reason =
+      collected === 0
+        ? `all ${failed} collect(s) failed: ${firstFailure}`
+        : `${failed} of ${plan.toCollect.length} collect(s) failed: ${firstFailure}`
+  }
+
+  return { collected, skipped, reason }
 }

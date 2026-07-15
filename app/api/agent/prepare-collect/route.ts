@@ -30,14 +30,37 @@ const MAX_AGENT_COLLECT_QUANTITY = 50
  * Settlement recording stays on the existing, on-chain-verified /api/collect.
  */
 export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => null)) as PrepareCollectParams | null
+  if (!body) return errorResponse(400, 'Invalid body')
+  return prepareCollect(req, body)
+}
+
+/**
+ * GET variant — same parameters in the query string, same envelope back.
+ * Exists for chat-only surfaces (Claude.ai / ChatGPT consumer apps): Base
+ * MCP's web_request reaches only allowlisted hosts there, and the documented
+ * fallback ladder's consumer-surface rung is GET-only (the user pastes the
+ * URL/response into chat — see Base's custom-plugins reference). Semantically
+ * this IS a read: on-chain reads + calldata assembly, no state mutation; the
+ * response stays `private, no-store`.
+ */
+export async function GET(req: NextRequest) {
+  return prepareCollect(req, Object.fromEntries(req.nextUrl.searchParams))
+}
+
+interface PrepareCollectParams {
+  collection?: unknown
+  tokenId?: unknown
+  url?: unknown
+  account?: unknown
+  amount?: unknown
+  comment?: unknown
+}
+
+async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
   if (!(await checkRateLimit(`agent-prepare-collect:${getClientIp(req)}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
   }
-
-  const body = (await req.json().catch(() => null)) as
-    | { collection?: unknown; tokenId?: unknown; url?: unknown; account?: unknown; amount?: unknown; comment?: unknown }
-    | null
-  if (!body) return errorResponse(400, 'Invalid body')
 
   const ref = parseMomentRef(body)
   if ('error' in ref) return errorResponse(400, ref.error)

@@ -34,6 +34,13 @@ export const ZORA_ERC20_MINTER: Address = '0xE27d9Dc88dAB82ACa3ebC49895c663C6a0C
 // Native USDC on Base (Circle).
 export const USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 
+// ERC-7528 native-asset sentinel — the `token` a native-ETH Spend Permission
+// carries. Single source of truth: the client grant (grantBudget), the server
+// spend choke-point (serverExecutor), and the PUT validator (scout route) all
+// compare against THIS constant, so a divergent copy can't slip a wrong-token
+// permission past one check but not another.
+export const NATIVE_ETH_SENTINEL: Address = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
+
 // Single recipient for ALL Kismet platform rewards: Zora's mint-referral split,
 // createReferral on collection deploy, etc. Hardcoded so we can't typo it
 // across files. Keep this in sync with createReferral set during deploy.
@@ -268,6 +275,19 @@ export function buildEthMintCall(params: {
  * ERC20Minter, so the caller must hold a sufficient USDC allowance on
  * ZORA_ERC20_MINTER before invoking. The strategy itself enforces
  * totalValue === quantity * sale.pricePerToken on-chain.
+ *
+ * NATIVE-VALUE=0 ASSUMPTION: every caller sends this call with value 0x0. The
+ * deployed ERC20Minter (ZORA_ERC20_MINTER) is v2.0.0 — PAYABLE — and its mint()
+ * requires `msg.value === ethReward * quantity`. value 0x0 is correct only
+ * because ethReward is 0 (verified on-chain 2026-07: ethRewardAmount() == 0).
+ * This is inprocess's own minter deployment, so inprocess owns that knob. If it
+ * is ever set > 0, EVERY USDC collect — web (useDirectCollect / useCollectAll)
+ * AND agent (buildCollectPlan / buildCollectBatchPlan) — reverts with
+ * InvalidETHValue until `value = ethReward * quantity` is threaded through here
+ * (the same shape buildEthMintCall already uses for mintFee). Left as a REACTIVE
+ * fix, not a standing per-collect read: it fails safe (atomic revert, no funds
+ * at risk), the web path shares the identical assumption, and the read would sit
+ * on the hot collect path. If it turns out non-zero, fix it in this one builder.
  *
  * TREASURY-CRITICAL: same warning as buildEthMintCall — this is the only
  * sanctioned way to construct the args, including the hardcoded

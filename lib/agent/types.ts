@@ -10,7 +10,7 @@
 
 export type AgentChain = 'base'
 
-export type AgentVerb = 'collect' | 'buy' | 'list'
+export type AgentVerb = 'collect' | 'buy' | 'list' | 'mint'
 
 /** One call in an EIP-5792 `send_calls` batch. Per Base MCP's batch-calls
  *  contract, `value` is a **hex-encoded wei quantity** (e.g. `"0x0"`), not a

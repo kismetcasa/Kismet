@@ -10,10 +10,14 @@ import { SEAPORT_ADDRESS } from '@/lib/seaport'
  * lib/* constants the prepare endpoints use, so the manifest can't drift.
  */
 export interface AgentVerbSpec {
-  verb: 'discover' | 'collect' | 'buy' | 'list'
+  verb: 'discover' | 'collect' | 'buy' | 'list' | 'mint'
   summary: string
   endpoint: string
-  method: 'GET' | 'POST'
+  /** 'GET or POST': single-action prepares accept the same params in the
+   *  query string, for chat-only surfaces whose only reachable method is a
+   *  user-pasted GET (Base MCP custom-plugin fallback ladder). Batch stays
+   *  POST-only (array input). */
+  method: 'GET' | 'POST' | 'GET or POST'
   executes: 'send_calls' | 'sign' | 'send_calls + sign' | 'none'
   record?: string
   input: Record<string, string>
@@ -37,7 +41,7 @@ export function getAgentManifest(origin: string): AgentManifest {
   return {
     name: 'Kismet Agent Actions',
     description:
-      'Prepare unsigned Base transactions and EIP-712 typed data so an AI agent can collect, buy, and list moments on Kismet through Base MCP. Settlement is recorded on Kismet’s existing on-chain-verified routes.',
+      'Prepare unsigned Base transactions and EIP-712 typed data so an AI agent can collect, buy, list, and mint moments on Kismet through Base MCP. Settlement is recorded on Kismet’s existing on-chain-verified routes.',
     // Public agent docs = the skill itself. The internal AGENT_*.md design notes
     // are intentionally NOT served.
     docs: `${origin}/agent-skill/SKILL.md`,
@@ -52,7 +56,7 @@ export function getAgentManifest(origin: string): AgentManifest {
     },
     walletTools: ['get_wallets', 'get_balance', 'send_calls', 'sign', 'get_request_status'],
     approvalModel:
-      'Every write requires the user to approve in their Base Account. send_calls batches multi-call actions (e.g. approve + mint) into one approval.',
+      'Every write requires the user to approve in their Base Account. send_calls batches multi-call actions (e.g. approve + collect) into one approval; mint is a gasless EIP-712 sign (no wallet payment) that Kismet sponsors on-chain, and requires a Kismet Pass.',
     verbs: [
       {
         verb: 'discover',
@@ -74,7 +78,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         verb: 'collect',
         summary: 'Mint a copy of a moment (primary sale).',
         endpoint: '/api/agent/prepare-collect',
-        method: 'POST',
+        method: 'GET or POST',
         executes: 'send_calls',
         record: 'POST /api/collect',
         input: {
@@ -104,7 +108,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         verb: 'buy',
         summary: 'Fulfill a Seaport listing (secondary sale).',
         endpoint: '/api/agent/prepare-buy',
-        method: 'POST',
+        method: 'GET or POST',
         executes: 'send_calls',
         record: 'PATCH /api/listings/{id}',
         input: {
@@ -116,7 +120,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         verb: 'list',
         summary: 'List a held moment for sale (Seaport offer).',
         endpoint: '/api/agent/prepare-list',
-        method: 'POST',
+        method: 'GET or POST',
         executes: 'send_calls + sign',
         record: 'POST /api/listings',
         input: {
@@ -126,6 +130,30 @@ export function getAgentManifest(origin: string): AgentManifest {
           account: 'Base Account address (seller)',
           price: 'human decimal string, e.g. "0.01"',
           currency: '"eth" | "usdc"',
+        },
+      },
+      {
+        verb: 'mint',
+        summary:
+          'Create a new moment (requires a Kismet Pass). Signs an EIP-712 MintIntent — no wallet payment; prepare hosts the media + metadata on Arweave. POST-only (it spends, so it is not on the GET-paste rung).',
+        endpoint: '/api/agent/prepare-mint',
+        method: 'POST',
+        executes: 'sign',
+        record: 'POST /api/mint (media) or /api/write (text)',
+        input: {
+          account: 'Base Account address (the artist; must hold a Pass)',
+          name: 'moment title',
+          description: 'optional',
+          media: 'image/video as a data: URI (the bytes) or an ar://|ipfs:// URI — no remote URL fetch',
+          text: 'writing moment body — pass instead of media for a text moment',
+          mediaType: '"image" | "video" | "text" (optional; inferred from media)',
+          poster: 'optional video poster: a data: URI or ar://|ipfs:// URI',
+          price: 'human decimal string; "0" = free (default)',
+          currency: '"eth" | "usdc" (optional, default eth)',
+          editions: 'positive integer (optional; omit for an open edition)',
+          collection: 'existing collection address (optional; omit to auto-create)',
+          artistMint: 'boolean (optional, default true — keep a copy for the artist)',
+          splits: 'optional payout splits array',
         },
       },
     ],

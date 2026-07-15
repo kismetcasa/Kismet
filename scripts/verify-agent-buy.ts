@@ -154,7 +154,9 @@ console.log('\nUSDC buy (approve Seaport + fulfillOrder, no native value)')
   check('approve amount equals price', da.args[1] === price && price === 5000000n)
   check('fulfill selector', selector(fulfill) === expSelector)
   check('both calls carry the builder suffix', approve.endsWith(builderSuffix.slice(2)) && fulfill.endsWith(builderSuffix.slice(2)))
-  check('USDC fulfill carries no native value (value 0 in plan)', true)
+  // The `value: 0x0` on both USDC-buy calls is a call-ENVELOPE property, not a
+  // calldata one this oracle re-derives — it is asserted against the REAL
+  // buildBuyPlan in verify-agent-collect-builders.ts ("buy envelope" section).
 }
 
 report('OK — all buy calldata assertions passed')

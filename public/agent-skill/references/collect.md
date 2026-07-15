@@ -17,6 +17,13 @@ POST BASE/api/agent/prepare-collect
 }
 ```
 
+Also available as a GET with the same parameters in the query string — for
+surfaces where POST can't reach Kismet (see SKILL.md "Reaching the endpoints"):
+
+```
+GET BASE/api/agent/prepare-collect?collection=0x…&tokenId=42&account=0x…&amount=1
+```
+
 The server reads the live sale on-chain and decides ETH vs USDC and the price —
 do not pass a price. If there's no active sale, it's sold out, or the wallet hit
 its per-wallet limit, you'll get a `409`; relay that to the user.
