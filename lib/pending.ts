@@ -261,11 +261,19 @@ async function compute(address: string, wallets?: string[]): Promise<ArtistPendi
  * wallets to match getArtistEarnings; pass `wallets` to reuse a set the caller
  * already resolved (the cache key stays the canonical address either way).
  */
-/** Bust the cached pending roll-up so a read right after a distribution
- *  reflects the drained balances instead of the stale 60s cache. Keyed on the
- *  canonical address, matching how getArtistPending caches. Best-effort. */
+/** Bust the cached pending roll-up so a read right after a distribution reflects
+ *  the drained balances instead of the stale 60s cache. Busts the signer's
+ *  WHOLE FC-sibling set, not just their key: /api/stats caches under the PROFILE
+ *  address, which may be a different verified wallet of the same FID than the
+ *  one that signed — expanding the siblings guarantees that key is included.
+ *  Falls back to the signer's own key if the sibling lookup fails. Best-effort. */
 export async function invalidatePendingCache(address: string): Promise<void> {
-  await redis.del(pendingCacheKey(address.toLowerCase())).catch(() => {})
+  try {
+    const wallets = await expandToFidSiblings(address.toLowerCase())
+    await Promise.all(wallets.map((w) => redis.del(pendingCacheKey(w)).catch(() => {})))
+  } catch {
+    await redis.del(pendingCacheKey(address.toLowerCase())).catch(() => {})
+  }
 }
 
 export async function getArtistPending(address: string, wallets?: string[]): Promise<ArtistPending> {

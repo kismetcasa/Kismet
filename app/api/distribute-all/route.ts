@@ -127,9 +127,12 @@ export async function POST(req: NextRequest) {
   // distribute for the same still-funded split. The lock serialises them; the
   // second gets a clean "already running".
   const lockKey = perArtistLockKey(callerAddress)
-  const gotLock = await redis.set(lockKey, '1', { nx: true, ex: LOCK_TTL_S }).catch(() => 'OK')
+  // Fail CLOSED: a Redis error resolves to null → 429, NOT proceed-without-lock.
+  // The lock guards a non-idempotent, gas-spending fan-out; the safe failure is
+  // "make them retry", never "run unguarded". NX-held also returns null here.
+  const gotLock = await redis.set(lockKey, '1', { nx: true, ex: LOCK_TTL_S }).catch(() => null)
   if (gotLock !== 'OK') {
-    return errorResponse(429, 'A distribution is already in progress for this wallet')
+    return errorResponse(429, 'A distribution is already in progress — try again shortly')
   }
 
   // Platform-wide in-flight governor — a burst of artists queues rather than
