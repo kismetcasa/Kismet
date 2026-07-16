@@ -1,5 +1,5 @@
 import { getTrackedCollections } from './kv'
-import { resolveUri, fetchCollectionMoments } from './inprocess'
+import { fetchCollectionMoments } from './inprocess'
 import { getHiddenMomentsSet } from './hiddenMoments'
 import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
@@ -77,7 +77,13 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
         address: moment.address,
         tokenId: moment.token_id,
         name: moment.metadata?.name ?? `#${moment.token_id}`,
-        image: moment.metadata?.image ? resolveUri(moment.metadata.image) : undefined,
+        // Raw ar://|ipfs:// URI, NOT a resolved gateway URL. MomentImage
+        // resolves it internally for the optimizer path (identical render for
+        // light images) but — critically — only a RAW proxiable URI can route
+        // through /api/img's downscale+disk-cache. A pre-resolved https URL is
+        // not proxiable, so a heavy Patron scan fell to 'direct' mode and the
+        // search thumbnail re-downloaded the full >50MB original every time.
+        image: moment.metadata?.image,
         creatorAddress: moment.creator?.address,
       })
     }
