@@ -2,9 +2,14 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { type Moment } from '@/lib/inprocess'
+import { useReadContract } from 'wagmi'
+import { DEFAULT_COLLECT_COMMENT, type Moment } from '@/lib/inprocess'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
+import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
+import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { useMomentSale } from '@/hooks/useMomentSale'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { MaybeLazy } from './LazyMount'
@@ -106,6 +111,86 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
 }
 
 /**
+ * The Patron Pass Description panel's "collect artwork" CTA — an inline collect
+ * for the primary artwork (the same edition tapping the artwork above would
+ * collect), NOT a link to the moment page. Flips to a disabled "sold out" once
+ * the bounded edition is fully minted OR its sale window has closed.
+ *
+ * State sources mirror MomentCard/MomentDetailView so the label agrees with the
+ * rest of the app: supply from the on-chain getTokenInfo read, the sale window
+ * from the moment's saleConfig (fetched lazily via useMomentSale — /api/timeline
+ * doesn't stitch one). Both default to "available" until they resolve, so the
+ * button never flashes "sold out" before the reads land. The collect itself
+ * goes through useDirectCollect, which re-reads the live sale on-chain and
+ * refuses cleanly outside [saleStart, saleEnd] — the authoritative backstop, so
+ * a stale label can never let a bad collect through.
+ */
+function PatronCollectButton({ moment }: { moment: Moment }) {
+  const { collect, status } = useDirectCollect()
+  const ensureConnected = useEnsureConnected()
+
+  // Reads use the public RPC (no wallet needed), so the sold-out/closed state
+  // resolves for signed-out visitors too.
+  const { data: tokenInfo } = useReadContract({
+    address: moment.address as `0x${string}`,
+    abi: ZORA_1155_TOKEN_INFO_ABI,
+    functionName: 'getTokenInfo',
+    args: [BigInt(moment.token_id)],
+  })
+  const { data: saleData } = useMomentSale(moment.address, moment.token_id, !moment.saleConfig)
+
+  const collecting = status !== 'idle' && status !== 'done' && status !== 'error'
+
+  // Sold out: a bounded edition fully minted. Undefined read → not sold out yet.
+  const info = tokenInfo as { maxSupply: bigint; totalMinted: bigint } | undefined
+  const soldOut = !!info && !isOpenEdition(info.maxSupply) && info.totalMinted >= info.maxSupply
+
+  // Window closed: past saleEnd. saleEnd is a unix-second string; "0"/absent/the
+  // max-uint64 sentinel mean "no end", and Number() fails open (NaN/huge → not
+  // closed) so malformed data never wrongly blocks collect. Matches the
+  // saleEnded gate in MomentCard/MomentDetailView.
+  const activeSale = moment.saleConfig ?? saleData ?? null
+  const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
+  const saleClosed =
+    Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= Math.floor(Date.now() / 1000)
+
+  const unavailable = soldOut || saleClosed
+
+  async function handleCollect() {
+    if (unavailable || collecting) return
+    // Host wallet inside a Mini App, RainbowKit picker on web; null = the user
+    // didn't connect, so stay put (see useEnsureConnected).
+    const account = await ensureConnected()
+    if (!account) return
+    // No price passed — useDirectCollect reads the live sale on-chain. No share
+    // offer: the Patron "creator" is the platform treasury, so a post-collect
+    // "by @creator" mention would misattribute the real artist.
+    await collect({
+      collectionAddress: moment.address as `0x${string}`,
+      tokenId: moment.token_id,
+      amount: 1,
+      comment: DEFAULT_COLLECT_COMMENT,
+    })
+  }
+
+  return (
+    <button
+      onClick={handleCollect}
+      disabled={unavailable || collecting}
+      className={`shrink-0 border px-3 py-1.5 text-xs font-mono uppercase tracking-widest transition-colors ${
+        unavailable
+          ? 'border-line text-muted cursor-not-allowed'
+          : collecting
+            ? 'border-accent/40 text-accent opacity-70 cursor-wait'
+            : 'border-accent/40 text-accent hover:border-accent hover:bg-accent/10'
+      }`}
+    >
+      {collecting ? 'collecting…' : unavailable ? 'sold out' : 'collect artwork'}
+    </button>
+  )
+}
+
+/**
  * Patron Collection showcase — the bespoke presentation for the Kismet Patron
  * Collection page: every artwork gets the same large borderless display (the
  * standard for this collection, so there's no per-moment discrepancy), followed
@@ -124,10 +209,9 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
  * Desktop runs lazy=false and mounts every artwork eagerly, unchanged.
  */
 export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: Moment[]; isMobile?: boolean }) {
-  // The "collect artwork" CTA in the description panel points at the primary
-  // artwork's moment page — the canonical collect surface, the same target as
-  // tapping the artwork above. Guarded so the button never renders a dead link
-  // if the showcase is ever handed an empty list.
+  // The description panel's "collect artwork" CTA collects the primary artwork
+  // inline (see PatronCollectButton). Guarded so it never renders without a
+  // moment if the showcase is ever handed an empty list.
   const primaryMoment = moments[0]
   return (
     <div className="flex flex-col gap-6">
@@ -150,14 +234,7 @@ export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: 
           <h3 className="text-xs font-mono text-muted uppercase tracking-widest">
             patron pass description
           </h3>
-          {primaryMoment && (
-            <Link
-              href={`/moment/${primaryMoment.address}/${primaryMoment.token_id}`}
-              className="shrink-0 border border-accent/40 px-3 py-1.5 text-xs font-mono uppercase tracking-widest text-accent transition-colors hover:border-accent hover:bg-accent/10"
-            >
-              collect artwork
-            </Link>
-          )}
+          {primaryMoment && <PatronCollectButton moment={primaryMoment} />}
         </div>
         <p className="text-sm font-mono text-dim leading-relaxed whitespace-pre-line">
           {PATRON_PASS_DESCRIPTION.split('Kismet Casa')[0]}
