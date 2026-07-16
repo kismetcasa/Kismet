@@ -11,7 +11,7 @@ import { formatEarningsValue, rendersNonZero, type EarningsMetric } from '@/lib/
 // Profile share card — branded 1200x800 (3:2) PNG used as both the OG
 // image and the Farcaster Mini App embed image. Matches the styling of
 // the moment / collection opengraph-image routes: dark gradient bg,
-// KISMET ART corner label, large display name. Adds a circular avatar
+// KISMET corner label, large display name. Adds a circular avatar
 // in the center.
 //
 // FC pfp (when verified) preferred over Kismet upload; both fall back
@@ -205,7 +205,7 @@ export default async function Image({ params }: Props) {
           }}
         >
           <div style={{ fontSize: 28, letterSpacing: 6, color: '#666' }}>
-            KISMET ART
+            KISMET
           </div>
           <div style={{ fontSize: 20, letterSpacing: 4, color: theme ? theme.palette.primary : '#444' }}>
             PROFILE
