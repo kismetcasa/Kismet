@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { Plus, X } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
 import { toastError } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
@@ -389,6 +390,10 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                     className="object-cover"
                     sizes="32px"
                     mime={selectedMeta.content?.mime}
+                    // The Patron pass is itself airdroppable, so its heavy
+                    // scan renders here — skip the doomed optimizer, hit the
+                    // warm /api/img variant. Same detection as MomentCard.
+                    preferProxy={isPatronCollection(selected.address)}
                     thumbhash={selectedMeta.kismet_thumbhash}
                   />
                 </div>
@@ -437,6 +442,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                           fill
                           className="object-cover"
                           sizes="120px"
+                          preferProxy={isPatronCollection(m.address)}
                           priority={idx < 6}
                           mime={meta.content?.mime}
                           thumbhash={meta.kismet_thumbhash}

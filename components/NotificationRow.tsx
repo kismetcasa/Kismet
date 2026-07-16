@@ -6,6 +6,7 @@ import { Sparkles, Clock, Coins, Key, Bot } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment } from '@/lib/inprocess'
+import { isPatronCollection } from '@/lib/patronCollection'
 import type { Notification } from '@/lib/notifications'
 
 interface NotificationRowProps {
@@ -199,7 +200,11 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
 
   return (
     <div className="relative flex-shrink-0 bg-raised overflow-hidden" style={{ width: size, height: size }}>
-      <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} />
+      {/* Patron-pass notifications (e.g. a listing of the heavy scan) skip the
+          doomed optimizer and hit the warm /api/img variant. tokenImage is the
+          raw listing image; tokenAddress is the collection. Same detection as
+          MomentCard/MarketCard. */}
+      <MomentImage src={n.tokenImage} alt="" fill className="object-cover" sizes={`${size}px`} preferProxy={isPatronCollection(n.tokenAddress)} />
     </div>
   )
 }
