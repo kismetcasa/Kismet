@@ -136,7 +136,7 @@ check('Article graph includes the Organization node + a 3-level breadcrumb',
 // 5c. Organization sameAs carries the three owner-confirmed profiles — https
 // only, and present at all (an empty sameAs silently weakens entity
 // resolution; a wrong one misattributes the brand, so pin the exact set).
-const org = organizationNode() as { sameAs?: string[] }
+const org = organizationNode() as { name?: string; alternateName?: string[]; sameAs?: string[] }
 check(
   'Organization sameAs = X + Farcaster + Kismet Casa',
   Array.isArray(org.sameAs) &&
@@ -145,6 +145,15 @@ check(
     org.sameAs.includes('https://farcaster.xyz/kismet') &&
     org.sameAs.includes('https://www.kismetcasa.xyz') &&
     org.sameAs.every((u) => u.startsWith('https://')),
+)
+// Primary name "Kismet" + alternateName "Kismet Art" — the pairing that lets
+// the brand read as "Kismet" everywhere while preserving the "kismet art"
+// query association. Pinned so a future brand-cleanup can't drop it.
+check(
+  'Organization name = Kismet, alternateName preserves Kismet Art',
+  org.name === 'Kismet' &&
+    Array.isArray(org.alternateName) &&
+    org.alternateName.includes('Kismet Art'),
 )
 
 // 6. Serializer escapes `<`.

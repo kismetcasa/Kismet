@@ -32,6 +32,14 @@ export function organizationNode(): Record<string, unknown> {
     '@type': 'Organization',
     '@id': ORG_ID,
     name: 'Kismet',
+    // Primary name is "Kismet" (for the bare-"kismet" query + knowledge panel),
+    // but alternateName preserves the "Kismet Art" / "kismet.art" association
+    // WITHOUT splitting the primary entity — so unifying the visible brand to
+    // "Kismet" can't cost the existing "kismet art" ranking. (That ranking is
+    // driven by the kismet.art domain + site-wide "art" content, not by any one
+    // page's literal "Kismet Art" string — this just makes the association
+    // explicit to Google's entity matcher.)
+    alternateName: ['Kismet Art', 'kismet.art'],
     url: SITE_URL,
     logo: `${SITE_URL}/logo.png`,
     image: `${SITE_URL}/icon.png`,
