@@ -99,6 +99,11 @@ export function PaginatedGrid<T>({
     [firstPageUrl],
   )
 
+  // Set for one refetch by the manual refresh button so its queryFn run
+  // force-bypasses the feed's upstream cache; cleared as soon as that run is
+  // dispatched, so background revalidations stay on the fast cached path.
+  const forceFreshRef = useRef(false)
+
   const {
     data: firstPage,
     isPending: firstPending,
@@ -107,7 +112,11 @@ export function PaginatedGrid<T>({
     refetch,
   } = useQuery<PageResponse, Error>({
     queryKey,
-    queryFn: () => fetchPageJson(firstPageUrl),
+    queryFn: () => {
+      const fresh = forceFreshRef.current
+      forceFreshRef.current = false
+      return fetchPageJson(firstPageUrl, fresh)
+    },
     // 30s "fresh" window — re-renders that mount while still fresh
     // skip the network entirely. After 30s, mounts render cached data
     // immediately AND fire a background refresh in parallel.
@@ -213,6 +222,10 @@ export function PaginatedGrid<T>({
   const refresh = useCallback(() => {
     setExtraPages([])
     setCurrentPage(1)
+    // Force-fresh this refetch: the queryFn reads the flag and bypasses the
+    // feed's upstream revalidate window, so a refresh reliably surfaces new
+    // mints instead of re-rendering the ≤30s-cached page.
+    forceFreshRef.current = true
     void refetch()
   }, [refetch])
 
