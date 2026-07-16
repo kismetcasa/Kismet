@@ -1011,7 +1011,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               href={`https://basescan.org/tx/${p.hash}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[10px] font-mono text-[#444] hover:text-dim transition-colors flex-shrink-0"
+              className="text-[10px] font-mono text-subtle hover:text-dim transition-colors flex-shrink-0"
             >
               {p.hash.slice(0, 8)}…
             </a>
@@ -1037,7 +1037,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             </Link>
             <Link
               href={`/moment/${a.collectionAddress}/${a.tokenId}`}
-              className="text-xs font-mono text-[#444] hover:text-dim transition-colors flex-shrink-0"
+              className="text-xs font-mono text-subtle hover:text-dim transition-colors flex-shrink-0"
             >
               token #{a.tokenId}
             </Link>
@@ -1169,7 +1169,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                         setLinkCopied(true)
                         setTimeout(() => setLinkCopied(false), 1500)
                       }}
-                      className="flex-shrink-0 p-1 text-[#444] hover:text-dim transition-colors"
+                      className="flex-shrink-0 p-1 text-subtle hover:text-dim transition-colors"
                       title="Copy profile link"
                     >
                       {linkCopied ? <Check size={12} className="text-[#6ee7b7]" /> : <Copy size={12} />}
@@ -1211,7 +1211,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               >
                 <span className="text-ink">{followingCount ?? '—'}</span>{' '}following
               </button>
-              <span className="text-faint text-xs">·</span>
+              <span className="text-subtle text-xs">·</span>
               <button
                 onClick={() => openList('followers')}
                 className={`text-xs font-mono transition-colors ${activeList === 'followers' ? 'text-ink' : 'text-muted hover:text-dim'}`}
@@ -1242,7 +1242,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                       title={`${it.label}: ${it.display}${it.verified ? ' (verified via Farcaster)' : ''}`}
                       className="inline-flex items-center gap-1 text-xs font-mono text-muted hover:text-ink transition-colors"
                     >
-                      <span className="text-faint uppercase tracking-wider">{it.short}</span>
+                      <span className="text-subtle uppercase tracking-wider">{it.short}</span>
                       <span className="truncate max-w-[11rem]">{it.display}</span>
                       {it.verified && <BadgeCheck size={11} className="text-accent flex-shrink-0" />}
                     </a>
@@ -1354,7 +1354,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="search…"
-                  className="w-full bg-transparent text-xs font-mono text-ink placeholder-faint focus:outline-none"
+                  className="w-full bg-transparent text-xs font-mono text-ink placeholder-subtle focus:outline-none"
                 />
               </div>
             )}
@@ -1414,7 +1414,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               onChange={(e) => setUsernameInput(e.target.value)}
               placeholder={shortAddress(address)}
               maxLength={30}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -1424,7 +1424,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               value={avatarInput}
               onChange={(e) => setAvatarInput(e.target.value)}
               placeholder="https://… (leave blank for gradient avatar)"
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
           </div>
           <div className="flex flex-col gap-2">
@@ -1436,16 +1436,16 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               if (verifiedX) {
                 return (
                   <div key={p.key} className="flex items-center gap-2 text-xs font-mono">
-                    <span className="w-16 flex-shrink-0 text-faint uppercase tracking-wider">{p.label}</span>
+                    <span className="w-16 flex-shrink-0 text-subtle uppercase tracking-wider">{p.label}</span>
                     <span className="text-ink truncate">@{verifiedX}</span>
                     <BadgeCheck size={12} className="text-accent flex-shrink-0" />
-                    <span className="text-faint">verified via Farcaster</span>
+                    <span className="text-subtle">verified via Farcaster</span>
                   </div>
                 )
               }
               return (
                 <div key={p.key} className="flex items-center gap-2">
-                  <span className="w-16 flex-shrink-0 text-xs font-mono text-faint uppercase tracking-wider">{p.label}</span>
+                  <span className="w-16 flex-shrink-0 text-xs font-mono text-subtle uppercase tracking-wider">{p.label}</span>
                   <input
                     type="text"
                     value={socialsInput[p.key]}
@@ -1455,7 +1455,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
                   />
                 </div>
               )

@@ -74,7 +74,7 @@ export default async function ModalMomentPage({ params }: Props) {
     return (
       <ModalOverlay key={overlayKey}>
         <div className="max-w-4xl mx-auto flex flex-col items-center justify-center gap-3 py-24 px-6">
-          <EyeOff size={20} className="text-[#444]" />
+          <EyeOff size={20} className="text-subtle" />
           <p className="text-sm font-mono text-dim">
             this artwork has been hidden by the creator
           </p>

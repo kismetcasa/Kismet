@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { X, Settings, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { NotificationFeed } from './NotificationFeed'
@@ -9,6 +9,7 @@ import { SignInPrompt } from './SignInPrompt'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
+import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { humanError } from '@/lib/toast'
 import { shortAddress } from '@/lib/inprocess'
 import { CopyAddress } from './CopyAddress'
@@ -48,6 +49,10 @@ interface NotificationModalProps {
 
 export function NotificationModal({ onClose }: NotificationModalProps) {
   const { ensureSession } = useUploadSession()
+  // Dialog semantics + focus containment: mounted-only-when-open, so the
+  // trap is unconditionally active; focus returns to the bell on close.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useFocusTrap(panelRef)
   const [tab, setTab] = useState<ModalTab>('feed')
   const [muted, setMuted] = useState<string[] | null>(null)
   const [mutedLoading, setMutedLoading] = useState(false)
@@ -241,6 +246,11 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
 
       {/* Drawer panel */}
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Notifications"
+        tabIndex={-1}
         className="fixed right-0 bottom-0 z-[60] w-full max-w-[440px] bg-[#0d0d0d] border-l border-line flex flex-col"
         style={topOffset}
       >
@@ -255,7 +265,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
               onClick={() => setTab((t) => t === 'settings' ? 'feed' : 'settings')}
               title={tab === 'settings' ? 'back to feed' : 'notification settings'}
               className={`p-1.5 transition-colors rounded ${
-                tab === 'settings' ? 'text-ink' : 'text-[#444] hover:text-dim'
+                tab === 'settings' ? 'text-ink' : 'text-subtle hover:text-dim'
               }`}
             >
               <Settings size={13} />
@@ -263,7 +273,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
             <button
               onClick={onClose}
               title="close"
-              className="p-1.5 text-[#444] hover:text-ink transition-colors"
+              className="p-1.5 text-subtle hover:text-ink transition-colors"
             >
               <X size={13} />
             </button>
@@ -289,7 +299,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                 <p className="text-[10px] font-mono uppercase tracking-widest text-muted mb-1">
                   mobile push (farcaster)
                 </p>
-                <p className="text-[10px] font-mono text-[#444] mb-3">
+                <p className="text-[10px] font-mono text-muted mb-3">
                   {pushHasTokens
                     ? 'native farcaster push. master toggle gates everything below.'
                     : pushHasFid
@@ -309,7 +319,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                       <span className="text-xs font-mono text-ink">
                         All mobile push notifications
                       </span>
-                      <span className="text-[9px] font-mono uppercase tracking-widest text-[#444]">
+                      <span className="text-[9px] font-mono uppercase tracking-widest text-subtle">
                         off
                       </span>
                     </div>
@@ -321,7 +331,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                         <span className="text-xs font-mono text-dim">
                           {PUSH_TYPE_LABELS[type] ?? type}
                         </span>
-                        <span className="text-[9px] font-mono uppercase tracking-widest text-[#444]">
+                        <span className="text-[9px] font-mono uppercase tracking-widest text-subtle">
                           off
                         </span>
                       </div>
@@ -383,7 +393,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                     </div>
                   </div>
                 )}
-                <p className="text-[10px] font-mono text-[#444] mt-2">
+                <p className="text-[10px] font-mono text-muted mt-2">
                   muting a type or account below also silences its push.
                 </p>
               </div>
@@ -421,7 +431,7 @@ export function NotificationModal({ onClose }: NotificationModalProps) {
                     })}
                   </div>
                 )}
-                <p className="text-[10px] font-mono text-[#444] mt-2">
+                <p className="text-[10px] font-mono text-muted mt-2">
                   sales, airdrops and payouts always notify.
                 </p>
               </div>

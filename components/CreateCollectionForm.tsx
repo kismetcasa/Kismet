@@ -983,7 +983,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             >
               <span
                 className={`w-4 h-4 border flex items-center justify-center flex-shrink-0 transition-colors mt-px ${
-                  mintCover ? 'border-accent bg-accent/20' : 'border-[#444]'
+                  mintCover ? 'border-accent bg-accent/20' : 'border-subtle'
                 }`}
               >
                 {mintCover && <Check size={11} className="text-accent" />}
@@ -1009,7 +1009,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
                     value={coverPrice}
                     onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCoverPrice(v) }}
                     placeholder="0"
-                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
                   />
                   <span className="text-[10px] font-mono text-muted">eth</span>
                 </label>
@@ -1021,7 +1021,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
                     value={coverSupply}
                     onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
                     placeholder="∞"
-                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-faint placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-muted"
+                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-subtle placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-muted"
                   />
                 </label>
               </div>
@@ -1056,7 +1056,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             <Upload size={24} className="text-muted" />
             <div className="text-center">
               <p className="text-xs font-mono text-muted">drop image or click to upload</p>
-              <p className="text-xs font-mono text-faint mt-1">image, gif</p>
+              <p className="text-xs font-mono text-subtle mt-1">image, gif</p>
             </div>
           </div>
         )}
@@ -1080,7 +1080,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           onChange={(e) => setName(e.target.value)}
           placeholder="my collection"
           required
-          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
       </div>
 
@@ -1094,7 +1094,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           onChange={(e) => setDescription(e.target.value)}
           placeholder="describe your collection…"
           rows={3}
-          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
         />
       </div>
 
@@ -1115,7 +1115,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             max="100"
             step="0.5"
             placeholder="5"
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-8"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted pr-8"
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted">%</span>
         </div>
@@ -1132,7 +1132,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           value={royaltyRecipient}
           onChange={(e) => setRoyaltyRecipient(e.target.value)}
           placeholder={address ? `${shortAddress(address)} (or vitalik.eth)` : '0x… or vitalik.eth (defaults to your wallet)'}
-          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
       </div>
 
@@ -1152,7 +1152,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
               void addMinter()
             }}
             placeholder="0x… or vitalik.eth"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <button
             type="button"

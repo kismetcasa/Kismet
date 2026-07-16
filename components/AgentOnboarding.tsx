@@ -110,11 +110,11 @@ export function AgentOnboarding() {
       </div>
 
       <div className="border-t border-line pt-4 space-y-2">
-        <p className="text-[10px] font-mono text-faint leading-relaxed">
+        <p className="text-[10px] font-mono text-subtle leading-relaxed">
           Every collect, buy, and list is prepared by the agent and executed only when you approve it in
           your Base Account. The agent can’t move funds without your tap.
         </p>
-        <p className="text-[10px] font-mono text-faint leading-relaxed">
+        <p className="text-[10px] font-mono text-subtle leading-relaxed">
           Advanced: the machine-readable capability manifest is at{' '}
           <a href={MANIFEST_URL} target="_blank" rel="noopener noreferrer" className="text-dim hover:text-accent underline">
             /api/agent/manifest

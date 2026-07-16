@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { usePendingAction } from '@/hooks/usePendingAction'
 import {
   resolveUri,
   formatPrice,
@@ -153,6 +154,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [mounted, setMounted] = useState(false)
   const { address: connectedAddress } = useAccount()
   const ensureConnected = useEnsureConnected()
+  const armPendingAction = usePendingAction()
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
   // The "hidden" badge is a creator-self affordance — only the creator viewing
@@ -289,7 +291,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
-    if (!account) return
+    if (!account) {
+      // The picker is open — resume this collect once the user connects, so
+      // the first tap carries through instead of requiring a second hunt for
+      // the button (see usePendingAction).
+      armPendingAction(() => { void handleCollect() })
+      return
+    }
     // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
@@ -474,7 +482,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               onTogglePin()
             }}
             className={`absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center transition-colors ${
-              pinned ? 'text-accent' : 'text-faint hover:text-dim'
+              pinned ? 'text-accent' : 'text-subtle hover:text-dim'
             }`}
             title={pinned ? 'Unpin from profile' : 'Pin to profile'}
             aria-label={pinned ? 'Unpin from profile' : 'Pin to profile'}
@@ -593,7 +601,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               <button
                 onClick={handleCopyLink}
                 title="copy link"
-                className="text-[#444] hover:text-dim transition-colors flex items-center"
+                className="text-subtle hover:text-dim transition-colors flex items-center"
               >
                 {linkCopied
                   ? <Check size={11} className="text-[#6ee7b7]" />
@@ -606,7 +614,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               <a
                 href={`/moment/${moment.address}/${moment.token_id}`}
                 title="open full details page"
-                className="text-[#444] hover:text-dim transition-colors flex items-center"
+                className="text-subtle hover:text-dim transition-colors flex items-center"
               >
                 <ArrowUpRight size={11} />
               </a>
@@ -694,8 +702,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {!hidePriceSupply && owned === 0 && !collected && (
             <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
               <span className={`text-[10px] font-mono truncate ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
-              <span className="text-[10px] font-mono text-faint">·</span>
-              <span className="text-[10px] font-mono text-[#444] truncate">
+              <span className="text-[10px] font-mono text-subtle">·</span>
+              <span className="text-[10px] font-mono text-subtle truncate">
                 {maxSupply === undefined
                   ? '…'
                   : isOpenEdition(maxSupply)
@@ -741,7 +749,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-[#444]">
+                <span className="text-[11px] font-mono text-subtle">
                   {maxSupply === undefined
                     ? '…'
                     : isOpenEdition(maxSupply)
