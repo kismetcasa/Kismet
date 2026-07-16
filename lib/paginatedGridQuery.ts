@@ -46,8 +46,15 @@ export function paginatedQueryKey(firstPageUrl: string) {
   return ['paginated-grid', firstPageUrl] as const
 }
 
-export async function fetchPageJson(url: string): Promise<PageResponse> {
-  const res = await fetch(url)
+// `fresh` is the manual-refresh path: append `fresh=1` so the feed route
+// bypasses its upstream revalidate window (returning genuinely new mints, not
+// the ≤30s-cached copy the auto-load path is happy with) and set the browser
+// fetch to `no-store` so a private HTTP cache can't shortcut it either. The
+// param rides the URL so it's also the react-query key of the refetch — it
+// never pollutes the normal cached feed's entry.
+export async function fetchPageJson(url: string, fresh = false): Promise<PageResponse> {
+  const target = fresh ? `${url}${url.includes('?') ? '&' : '?'}fresh=1` : url
+  const res = await fetch(target, fresh ? { cache: 'no-store' } : undefined)
   if (!res.ok) throw new Error(`Failed (${res.status})`)
   return res.json()
 }

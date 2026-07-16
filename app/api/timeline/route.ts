@@ -51,7 +51,7 @@ const FANOUT_CONCURRENCY = 10
 // one per request is noise.
 let lastThinningWarnAt = 0
 
-async function fetchCollection(collection: string, limit: number): Promise<unknown[]> {
+async function fetchCollection(collection: string, limit: number, fresh: boolean): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
   let moments: unknown[] = []
   try {
@@ -60,9 +60,14 @@ async function fetchCollection(collection: string, limit: number): Promise<unkno
     // until Node's ~300s request timeout. 8s matches lib/inprocess.ts's
     // fetchCollectionMoments default. On timeout the catch degrades this
     // collection to [] rather than stalling the whole feed request.
+    //
+    // `fresh` is the manual-refresh path (client sends ?fresh=1): bypass the
+    // per-pod revalidate window entirely so the refresh returns brand-new
+    // mints instead of the ≤30s-cached copy. Default browsing keeps
+    // revalidate:30 — the cache is what keeps the fan-out off the hot path.
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
-      next: { revalidate: 30 },
+      ...(fresh ? { cache: 'no-store' as const } : { next: { revalidate: 30 } }),
       signal: AbortSignal.timeout(8_000),
     })
     const text = await res.text()
@@ -128,6 +133,10 @@ export async function GET(req: NextRequest) {
       ? rawSort
       : null
   const featured = searchParams.get('featured') === '1'
+  // Manual-refresh signal (PaginatedGrid's refresh button). Bypasses the
+  // upstream revalidate window AND the shared-response cache below so the
+  // click reliably surfaces new mints; normal browsing never sets it.
+  const fresh = searchParams.get('fresh') === '1'
   const followingParam = searchParams.get('following')
   const followingSet = followingParam
     ? new Set(followingParam.split(',').map((a) => a.toLowerCase()).filter(Boolean))
@@ -279,7 +288,7 @@ export async function GET(req: NextRequest) {
     })
   }
   const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
-    fetchCollection(c, fetchLimit),
+    fetchCollection(c, fetchLimit, fresh),
   )
 
   // Merge and deduplicate
@@ -745,9 +754,10 @@ export async function GET(req: NextRequest) {
   // re-running the cross-collection fan-out + merge on every cold hit.
   const viewerDependent =
     !!creatorRaw || !!collectorRaw || !!airdroppable || !!followingParam
-  const cacheControl = viewerDependent
-    ? 'private, no-store'
-    : 'public, s-maxage=30, stale-while-revalidate=120'
+  const cacheControl =
+    viewerDependent || fresh
+      ? 'private, no-store'
+      : 'public, s-maxage=30, stale-while-revalidate=120'
 
   return NextResponse.json(
     { status: 'success', moments, pagination: { page, limit, total_pages } },

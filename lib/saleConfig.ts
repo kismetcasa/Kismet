@@ -403,3 +403,118 @@ export async function onchainSaleConfigFallback(
     ...(sale.currency === 'usdc' ? { currency: USDC_BASE } : {}),
   }
 }
+
+/**
+ * Batched display-price read — the multicall analog of
+ * onchainSaleConfigFallback for a whole feed page. Reads BOTH strategies'
+ * sale() for every (collection, tokenId) in ONE Multicall3 aggregate, so N
+ * gaps cost ONE eth_call instead of the up-to-2N sequential readContract round
+ * trips the per-token `gaps.map(onchainSaleConfigFallback)` did. That is the
+ * whole point on a rate-limited RPC: /api/moments' Phase-2 fallback can price
+ * an entire batch's gaps without the "over rate limit" storm the sequential
+ * fan-out caused (and it relieves the other on-chain paths sharing that limit).
+ *
+ * Semantics match resolveOnchainSale EXACTLY, just batched: a row counts when
+ * saleEnd !== 0 (so scheduled-but-not-open drops still carry their real
+ * saleStart to the UI's not-started gate), ETH (FixedPriceSaleStrategy) takes
+ * precedence over USDC, and only USDC-denominated ERC20 sales resolve.
+ * allowFailure isolates one reverting/unset row (no sale, non-Zora contract)
+ * to a null for that id — identical to the per-token catch — and a whole-
+ * multicall failure (RPC down/throttled) degrades every id to "no on-chain
+ * price", leaving callers with whatever Phase 1 gave them.
+ *
+ * Keyed `collection.toLowerCase():tokenId` (decimal string) so a caller looks
+ * up by its own id form.
+ */
+export async function resolveOnchainSalesBatch(
+  client: AnyClient,
+  items: { collection: Address; tokenId: bigint }[],
+): Promise<Map<string, OnchainSaleConfig>> {
+  if (items.length === 0) return new Map()
+  // Un-annotated so viem infers the per-contract result union from `contracts`
+  // (an explicit Awaited<ReturnType<typeof multicall>> erases that to `{}`);
+  // the catch returns, so `res` is definitely assigned past the try. Mirrors
+  // fetchEligibleTokens above.
+  let res
+  try {
+    res = await multicall(client, {
+      // Even slot = ETH strategy, odd slot = USDC strategy, per item.
+      contracts: items.flatMap((it) => [
+        {
+          address: ZORA_FIXED_PRICE_STRATEGY,
+          abi: FPSS_SALE_ABI,
+          functionName: 'sale' as const,
+          args: [it.collection, it.tokenId] as const,
+        },
+        {
+          address: ZORA_ERC20_MINTER,
+          abi: ERC20_MINTER_SALE_ABI,
+          functionName: 'sale' as const,
+          args: [it.collection, it.tokenId] as const,
+        },
+      ]),
+      allowFailure: true,
+    })
+  } catch {
+    return new Map()
+  }
+  return saleConfigsFromMulticall(res, items)
+}
+
+/** One multicall slot: viem's allowFailure result shape, loosely typed so the
+ *  pure resolver below is testable with synthetic rows (no RPC). */
+export type SaleReadSlot =
+  | { status: 'success'; result: unknown }
+  | { status: 'failure'; error?: unknown }
+
+/**
+ * Pure resolution half of resolveOnchainSalesBatch (network half above) —
+ * turns the flat multicall result array (even slot = ETH sale, odd = USDC
+ * sale, per item) into the id → OnchainSaleConfig map. Split out on the same
+ * principle as rangeContract's pure math so scripts/verify-moments-batch.ts
+ * can pin the ETH-precedence, USDC-currency, saleEnd==0, and failure-isolation
+ * rules deterministically. Semantics mirror resolveOnchainSale exactly.
+ */
+export function saleConfigsFromMulticall(
+  res: readonly SaleReadSlot[],
+  items: { collection: Address; tokenId: bigint }[],
+): Map<string, OnchainSaleConfig> {
+  const out = new Map<string, OnchainSaleConfig>()
+  for (let i = 0; i < items.length; i++) {
+    const key = `${items[i].collection.toLowerCase()}:${items[i].tokenId.toString()}`
+    const ethRes = res[2 * i]
+    const usdcRes = res[2 * i + 1]
+    // ETH — FixedPriceSaleStrategy takes precedence (matches resolveOnchainSale).
+    if (ethRes?.status === 'success' && ethRes.result) {
+      const sale = ethRes.result as { saleStart: bigint; saleEnd: bigint; pricePerToken: bigint }
+      if (sale.saleEnd !== 0n) {
+        out.set(key, {
+          type: 'fixedPrice',
+          pricePerToken: sale.pricePerToken.toString(),
+          saleStart: sale.saleStart.toString(),
+          saleEnd: sale.saleEnd.toString(),
+        })
+        continue
+      }
+    }
+    // USDC — ERC20Minter, only when the sale's currency is USDC.
+    if (usdcRes?.status === 'success' && usdcRes.result) {
+      const sale = usdcRes.result as {
+        saleStart: bigint
+        saleEnd: bigint
+        pricePerToken: bigint
+        currency?: Address
+      }
+      if (sale.saleEnd !== 0n && sale.currency?.toLowerCase() === USDC_BASE.toLowerCase()) {
+        out.set(key, {
+          type: 'erc20Mint',
+          pricePerToken: sale.pricePerToken.toString(),
+          saleStart: sale.saleStart.toString(),
+          saleEnd: sale.saleEnd.toString(),
+          currency: USDC_BASE,
+        })
+      }
+    }
+  }
+  return out
+}
