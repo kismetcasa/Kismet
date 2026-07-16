@@ -359,7 +359,7 @@ export function ProfileStats({
                   role="tooltip"
                   className="absolute left-0 top-full z-20 mt-1 w-max min-w-[8rem] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg"
                 >
-                  <p className="text-faint text-[10px] uppercase tracking-wide mb-1">accumulated</p>
+                  <p className="text-subtle text-[10px] uppercase tracking-wide mb-1">accumulated</p>
                   <div className="flex flex-col gap-0.5 tabular-nums">
                     {cryptoDenoms.map((d) => (
                       <p key={d} className="text-ink text-xs">{formatEarningsValue(d, stats)}</p>
@@ -367,7 +367,7 @@ export function ProfileStats({
                     {rendersNonZero('usd', stats) && (
                       <p className="text-muted text-[11px] mt-0.5 pt-1 border-t border-raised">
                         ≈ {formatEarningsValue('usd', stats)}
-                        <span className="text-faint"> at today’s ETH price</span>
+                        <span className="text-subtle"> at today’s ETH price</span>
                       </p>
                     )}
                   </div>
