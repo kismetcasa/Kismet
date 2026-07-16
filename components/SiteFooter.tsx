@@ -67,8 +67,8 @@ export function SiteFooter() {
             to near-silence for humans. text-muted (not faint) keeps it within
             reach of accessibility contrast on the near-black background. */}
         <p className="text-[11px] leading-relaxed text-muted/80">
-          Kismet is an onchain art marketplace on Base. Mint, collect and
-          curate artwork.
+          Artists and collectors converge on Kismet, a marketplace for art on
+          Base. Mint, collect and curate onchain artwork.
         </p>
       </div>
     </footer>

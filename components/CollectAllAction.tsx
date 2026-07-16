@@ -107,6 +107,10 @@ export function CollectAllAction({
 
   const inFlight = status !== 'idle' && status !== 'done' && status !== 'error'
   const batchSize = Math.min(totalCount, MAX_COLLECT_ALL_BATCH)
+  // A single eligible artwork isn't a batch, so "collect all" reads wrong —
+  // drop to a plain "collect" (and no count) whenever there's exactly one.
+  const isSingle = totalCount === 1
+  const baseLabel = isSingle ? 'collect' : 'collect all'
 
   function handleClick() {
     if (!isConnected) {
@@ -122,7 +126,9 @@ export function CollectAllAction({
 
   const label = inFlight
     ? statusLabel(status)
-    : `collect all (${batchSize}${totalCount > MAX_COLLECT_ALL_BATCH ? ` of ${totalCount}` : ''})`
+    : isSingle
+      ? baseLabel
+      : `${baseLabel} (${batchSize}${totalCount > MAX_COLLECT_ALL_BATCH ? ` of ${totalCount}` : ''})`
 
   // Plain text-only variant: inline beside a heading, brand gradient on hover.
   if (plain) {
@@ -132,7 +138,7 @@ export function CollectAllAction({
         disabled={inFlight}
         className="text-xs font-mono uppercase tracking-widest text-muted accent-grad-text-hover transition-colors disabled:opacity-60 disabled:cursor-wait whitespace-nowrap"
       >
-        {inFlight ? statusLabel(status) : 'collect all'}
+        {inFlight ? statusLabel(status) : baseLabel}
       </button>
     )
   }
