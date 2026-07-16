@@ -12,6 +12,8 @@ import {
   shortAddress,
   inferCollectCurrency,
   DEFAULT_COLLECT_COMMENT,
+  getSaleWindow,
+  formatSaleWindowLabel,
   type Moment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -145,6 +147,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
+  // Client-mounted flag. Gates the collection-chip ↔ sale-window mutual
+  // exclusivity below on the same client-only timing SaleWindow itself uses,
+  // so the server-rendered card shows the collection chip as its baseline and
+  // only swaps to the sale window once mounted — no hydration mismatch.
+  const [mounted, setMounted] = useState(false)
   const { address: connectedAddress } = useAccount()
   const ensureConnected = useEnsureConnected()
   const { collect, status: collectStatus } = useDirectCollect()
@@ -184,6 +191,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       setCollectionImage(image)
     })
   }, [moment.address, moment.kismetCollection])
+
+  useEffect(() => setMounted(true), [])
 
   // Gate the per-card price read + the two on-chain reads on an in-view dwell:
   // they fire only once the card has settled within ~200px of the viewport for
@@ -322,6 +331,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
+  // Whether the sale-window badge will render a dated label — "Opens …",
+  // "Sale ends …", or "Ended …" (every state except a live open-ended sale,
+  // which has no date). Derived from the same classifier SaleWindow renders
+  // from, so it can't drift, and gated on `mounted` to match SaleWindow's
+  // client-only output. Drives the meta-row mutual exclusivity on curated-
+  // collection cards: while the sale window is showing it owns the single meta
+  // row and the collection chip is suppressed, so a piece that's both in a
+  // collection AND on a timed sale is one row, not two.
+  const hasSaleWindow = mounted && !!formatSaleWindowLabel(getSaleWindow(activeSale))
   const collectLabel = collecting
     ? 'collecting…'
     : saleNotStarted
@@ -602,8 +620,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             collection identity belongs. So those are suppressed entirely
             rather than shown icon-only (the compact variant drops the chip in
             every case). When the chip does render it always carries the name;
-            the icon is shown alongside when we have one. */}
-        {!compact && isCuratedCollection && collectionName && (
+            the icon is shown alongside when we have one.
+
+            Mutually exclusive with the sale-window badge below: while a sale
+            window is showing (hasSaleWindow), it takes the single meta row and
+            the chip yields, so a curated-collection piece on a timed sale is
+            one row rather than two. The chip is the server-rendered baseline;
+            once mounted, an active/scheduled/ended sale swaps it out. */}
+        {!compact && isCuratedCollection && collectionName && !hasSaleWindow && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
