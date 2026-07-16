@@ -12,13 +12,14 @@ import { SITE_URL } from '@/lib/siteUrl'
 // card and Base domain verification are untouched.
 export const metadata: Metadata = {
   title: 'Kismet — Discover, Collect & Mint Onchain Art on Base',
+  // One tagline across the Google snippet, social share cards, and the footer.
   description:
-    'Kismet is an onchain art platform and marketplace on Base. Discover digital art, collect and trade moments, and mint your own artwork onchain.',
+    'Artists and collectors converge on Kismet. Create, collect and curate onchain artwork on Base.',
   alternates: { canonical: SITE_URL },
   openGraph: {
     title: 'Kismet — Onchain Art on Base',
     description:
-      'Discover, collect, and mint onchain art on Kismet, an art marketplace on the Base network.',
+      'Artists and collectors converge on Kismet. Create, collect and curate onchain artwork on Base.',
     url: SITE_URL,
   },
 }
