@@ -592,14 +592,18 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Collection chip. The name shows only for a real collection
-            (isCuratedCollection) — created, or minted into. An individual
-            mint's auto-deploy wrapper shows the icon only, keeping it as a
-            clickable affordance into /collection. The chip is suppressed
-            entirely only when there's nothing left to show (no name to show
-            AND no icon to render), so the slot never becomes an empty
-            clickable sliver. */}
-        {!compact && collectionName && (isCuratedCollection || (collectionImage && !collectionImageFailed)) && (
+        {/* Collection chip — shown only for a REAL curated collection (one
+            created via the Create Collection flow, or an existing collection
+            minted into). An individual mint auto-deploys a wrapper contract
+            named after its single piece; its "collection" is just that one
+            mint, so a chip there would be a 16px duplicate of the cover shown
+            large above, linking to a one-item /collection page — no
+            information value, and the lonely icon reads as noise where a
+            collection identity belongs. So those are suppressed entirely
+            rather than shown icon-only (the compact variant drops the chip in
+            every case). When the chip does render it always carries the name;
+            the icon is shown alongside when we have one. */}
+        {!compact && isCuratedCollection && collectionName && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
@@ -619,11 +623,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 />
               </div>
             )}
-            {isCuratedCollection && (
-              <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
-                {collectionName}
-              </span>
-            )}
+            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
+              {collectionName}
+            </span>
           </Link>
         )}
         {/* Sale-window badge — the absolute date the feed answers WHEN with
