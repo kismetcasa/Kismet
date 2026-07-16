@@ -55,7 +55,7 @@ export function AgentCollectEntry() {
   // the not-yet-set-up pitch stays secondary (text-dim).
   let dotClass = 'bg-muted'
   let statusLabel = 'Set up'
-  let summary = 'Auto-collect new drops from artists you choose — one approval, your budget.'
+  let summary = 'Auto-collect new drops from artists you choose.'
   let summaryClass = 'text-dim'
   if (scout && active) {
     const left = ag.status?.isActive
