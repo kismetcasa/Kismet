@@ -137,15 +137,33 @@ const SECTIONS: Section[] = [
       <>
         <p>
           Kismet is an onchain art platform and marketplace on{' '}
-          <span className="text-ink">Base</span>, an Ethereum Layer 2 network.
-          Artists mint digital artworks as NFTs, organize them into collections,
-          and set their price. Collectors discover, enjoy, and collect that art
-          directly from their crypto wallet.
+          <a
+            href="https://www.base.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            Base
+          </a>
+          , an Ethereum Layer 2 network built by Coinbase. Artists mint digital
+          artworks as NFTs, organize them into collections, and set their price.
+          Collectors discover, enjoy, and collect that art directly from their
+          crypto wallet.
         </p>
         <p>
           Every mint and sale is recorded onchain, and each artwork&apos;s media
-          is stored permanently on Arweave — so provenance and the work itself
-          persist independently of any single company.
+          is stored permanently on{' '}
+          <a
+            href="https://www.arweave.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            Arweave
+          </a>
+          , a network designed to keep data available for at least 200 years — so
+          provenance and the work itself persist independently of any single
+          company.
         </p>
       </>
     ),
@@ -172,7 +190,18 @@ const SECTIONS: Section[] = [
         </li>
         <li>Add a title and description so collectors understand the work.</li>
         <li>Choose a standalone mint or add it to a collection, then set the supply, price, and sale window.</li>
-        <li>Confirm mint! Kismet stores the file on Arweave and mints it as an ERC-1155 token on Base.</li>
+        <li>
+          Confirm mint! Kismet stores the file on Arweave and mints it as an{' '}
+          <a
+            href="https://eips.ethereum.org/EIPS/eip-1155"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            ERC-1155
+          </a>{' '}
+          token on Base.
+        </li>
       </ol>
     ),
   },
@@ -189,9 +218,12 @@ const SECTIONS: Section[] = [
           USDC or ETH on Base.
         </p>
         <p>
-          Artworks you own can be listed for sale at a price you choose. Creators
-          earn from primary collects and from royalties when their work resells
-          on the secondary market.
+          Artworks you own can be{' '}
+          <Link href="/market" className="text-ink underline underline-offset-4">
+            listed for sale
+          </Link>{' '}
+          at a price you choose. Creators earn from primary collects and from
+          royalties when their work resells on the secondary market.
         </p>
       </>
     ),
@@ -233,7 +265,7 @@ export default function LearnPage() {
           <span className="text-dim">Learn</span>
         </nav>
 
-        <h1 className="mb-8 text-xl text-ink">Minting and collecting artwork on Kismet</h1>
+        <h1 className="mb-8 text-xl text-ink">Minting and collecting onchain art on Kismet</h1>
 
         {SECTIONS.map((section) => (
           <section key={section.id} id={section.id} className="mb-8">
