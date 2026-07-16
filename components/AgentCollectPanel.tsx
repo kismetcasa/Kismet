@@ -10,7 +10,8 @@
  * note). Mounted (code-split, ssr:false) in ProfileView's owner section.
  */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
+import { X } from 'lucide-react'
 import { formatUnits, isAddress } from 'viem'
 import { useAgent, type AgentConfigInput, type WatchedArtist } from '@/hooks/useAgent'
 
@@ -23,17 +24,18 @@ const PERIODS = [
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 const label = (a: WatchedArtist) => a.username || short(a.address)
 
-function Shell({ children }: { children: ReactNode }) {
-  return (
-    <div className="border border-line p-4 space-y-2">
-      <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Agent Collect</h3>
-      {children}
-    </div>
-  )
-}
-
-export function AgentCollectPanel() {
-  const ag = useAgent()
+export function AgentCollectPanel({
+  ag,
+  onRequestClose,
+}: {
+  /** Shared agent state, owned by the caller (AgentCollectEntry) so the profile
+   *  summary and this panel never desync — a pause/save here reflects instantly
+   *  in the entry that launched it. */
+  ag: ReturnType<typeof useAgent>
+  /** When set, the panel renders in modal mode: no outer border (the modal frame
+   *  provides it) and a close affordance in the header. */
+  onRequestClose?: () => void
+}) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -95,20 +97,11 @@ export function AgentCollectPanel() {
     }
   }, [artistInput])
 
-  if (ag.loading) return null
-
-  if (!ag.eligible) return null
-
-  if (!ag.configured) {
-    return (
-      <Shell>
-        <p className="text-xs font-mono text-dim leading-relaxed">
-          Agent Collect is coming soon. In the meantime you can collect, buy, and list from your
-          AI assistant — see <a href="/agent" className="text-accent hover:underline">the agent page</a>.
-        </p>
-      </Shell>
-    )
-  }
+  // The caller (AgentCollectEntry) already gates on loading / eligible /
+  // configured before it ever opens the modal that mounts this panel, and both
+  // share one useAgent instance — so this panel only renders in the configured,
+  // eligible, loaded state. The former loading/eligible/configured guards here
+  // were dead relative to that sole render path and were removed.
 
   function addArtist(a: WatchedArtist) {
     if (!isAddress(a.address) || artists.some((x) => x.address === a.address)) return
@@ -169,18 +162,29 @@ export function AgentCollectPanel() {
     : ''
 
   return (
-    <div className="border border-line p-4 space-y-3">
+    <div className={onRequestClose ? 'p-5 space-y-3' : 'border border-line p-4 space-y-3'}>
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-mono uppercase tracking-wider text-ink">Agent Collect</h3>
-        {ag.scout && !editing && (
-          <button
-            onClick={() => void ag.setActive(!active)}
-            disabled={busy}
-            className="text-[10px] font-mono uppercase tracking-wider text-dim hover:text-accent transition-colors disabled:opacity-50"
-          >
-            {active ? 'pause' : 'resume'}
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {ag.scout && !editing && (
+            <button
+              onClick={() => void ag.setActive(!active)}
+              disabled={busy}
+              className="text-[10px] font-mono uppercase tracking-wider text-dim hover:text-accent transition-colors disabled:opacity-50"
+            >
+              {active ? 'pause' : 'resume'}
+            </button>
+          )}
+          {onRequestClose && (
+            <button
+              onClick={onRequestClose}
+              aria-label="Close"
+              className="text-muted hover:text-dim transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Active status ───────────────────────────────────────────── */}

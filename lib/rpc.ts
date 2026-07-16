@@ -30,3 +30,17 @@ export function serverBaseClient() {
   cached = createClient()
   return cached
 }
+
+/**
+ * RPC options for @base-org/account spend-permission calls (getPermissionStatus,
+ * prepareSpendCallData). The SDK's node build defaults to viem's URL-less
+ * `http()` transport — i.e. the public mainnet.base.org endpoint that rate-limits
+ * aggressively under load (the exact failure mode the comment above describes for
+ * our own reads). Autonomous spending must not depend on a shared public RPC, so
+ * every server-side SDK call passes this: the configured paid endpoint when set,
+ * else undefined (SDK default — unchanged dev behavior).
+ */
+export function sdkRpcOptions(): { rpcUrl: string } | undefined {
+  const url = process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL
+  return url ? { rpcUrl: url } : undefined
+}

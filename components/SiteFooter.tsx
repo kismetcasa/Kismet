@@ -13,17 +13,20 @@ import Link from 'next/link'
 // manipulative — the links carry weight precisely because they're real
 // navigation.
 const FOOTER_LINKS = [
+  { href: '/learn', label: 'Learn' },
   { href: '/', label: 'Discover' },
   { href: '/mint', label: 'Mint' },
   { href: '/market', label: 'Market' },
-  { href: '/learn', label: 'Learn' },
-  { href: '/agent', label: 'AI agent' },
+  // Label "Agent" for nav brevity; the /agent URL and its page title ("AI
+  // agent — Kismet") stay as-is — the title keeps the query-bearing phrase
+  // for search while the anchor stays concise. No redirect needed.
+  { href: '/agent', label: 'Agent' },
 ] as const
 
 // Official external profiles — mirrors the Organization sameAs list in
 // lib/structuredData.ts so the visible links and the entity markup agree.
 const SOCIAL_LINKS = [
-  { href: 'https://x.com/kismetdotart', label: 'X' },
+  { href: 'https://x.com/kismetdotart', label: 'Twitter' },
   { href: 'https://farcaster.xyz/kismet', label: 'Farcaster' },
   { href: 'https://www.kismetcasa.xyz', label: 'Kismet Casa' },
 ] as const
@@ -64,8 +67,8 @@ export function SiteFooter() {
             to near-silence for humans. text-muted (not faint) keeps it within
             reach of accessibility contrast on the near-black background. */}
         <p className="text-[11px] leading-relaxed text-muted/80">
-          Kismet — an onchain art platform and marketplace on Base. Mint,
-          collect, and trade digital art.
+          Kismet is an onchain art marketplace on Base. Mint, collect and
+          curate artwork.
         </p>
       </div>
     </footer>

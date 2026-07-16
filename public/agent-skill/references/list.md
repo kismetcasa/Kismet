@@ -17,6 +17,13 @@ POST BASE/api/agent/prepare-list
 }
 ```
 
+Or as a GET (for surfaces where POST can't reach Kismet — SKILL.md
+"Reaching the endpoints"):
+
+```
+GET BASE/api/agent/prepare-list?collection=0x…&tokenId=42&account=0x…&price=0.01&currency=eth
+```
+
 A `403` means the wallet doesn't hold that token. The response contains:
 - `calls` — **only present the first time** you list on this collection: a
   one-time `setApprovalForAll(Seaport, true)`.

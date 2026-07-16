@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import crypto from 'node:crypto'
 import { rebuildStats } from '@/lib/stats'
+import { rebuildCatalogCensus } from '@/lib/catalogCensus'
 import { errorResponse } from '@/lib/apiResponse'
 
 export const dynamic = 'force-dynamic'
@@ -37,17 +38,38 @@ export async function GET(req: NextRequest) {
   // HTTP response returns before it finishes.
   after(async () => {
     const started = Date.now()
+    let rebuildSkipped = false
     try {
       const result = await rebuildStats()
       if (result.skipped) {
         // Another run held the single-flight lock — a benign no-op, not a
         // failure; logged distinctly so it doesn't read as a missed rebuild.
+        rebuildSkipped = true
         console.log('[sync-stats] rebuild skipped (already running)')
       } else {
         console.log('[sync-stats] rebuild ok', { ...result, ms: Date.now() - started })
       }
     } catch (err) {
       console.error('[sync-stats] rebuild failed', err)
+    }
+    // Catalog census (platform artworks/artists) — sequential so the two
+    // scans never hit the single upstream at once, and skipped when the
+    // rebuild lock was held so an overlapping manual trigger doesn't double
+    // the fan-out. Own try/catch: a census abort must not read as a rebuild
+    // failure in the logs, and a failed rebuild (whose data source is the
+    // transfers feed, not the timeline) doesn't block the census either.
+    if (!rebuildSkipped) {
+      const censusStarted = Date.now()
+      try {
+        const census = await rebuildCatalogCensus()
+        if ('skipped' in census) {
+          console.log('[sync-stats] census skipped (already running)')
+        } else {
+          console.log('[sync-stats] census ok', { ...census, ms: Date.now() - censusStarted })
+        }
+      } catch (err) {
+        console.error('[sync-stats] census failed', err)
+      }
     }
   })
 

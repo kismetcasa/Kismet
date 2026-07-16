@@ -14,6 +14,13 @@ POST BASE/api/agent/prepare-buy
 }
 ```
 
+Or as a GET (for surfaces where POST can't reach Kismet — SKILL.md
+"Reaching the endpoints"):
+
+```
+GET BASE/api/agent/prepare-buy?listingId=the-id-from-discover&account=0x…
+```
+
 `calls` is:
 - **ETH** → one `fulfillOrder` call with `value = price`.
 - **USDC** → `[approve, fulfillOrder]` when allowance is short, else just

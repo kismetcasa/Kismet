@@ -57,6 +57,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     //     itself returns a real 404 for hidden identities (see its
     //     generateMetadata), so a leaked URL is crawled and dropped, not indexed.
     //   • mints failure → moments omitted, collections/profiles still emitted.
+    // Set-wrap dedupes across SSCAN pages (SCAN can repeat members under
+    // concurrent writes) so a duplicate never yields a duplicate URL.
     let hiddenIdentities: Set<string> = new Set()
     try {
       hiddenIdentities = await getHiddenIdentityClosure()
@@ -65,12 +67,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }
     let mints: Set<string> = new Set()
     try {
-      // Bounded SSCAN walk (never full SMEMBERS — Upstash response cap); the
-      // MAX_MOMENTS ceiling is the same cap buildSitemapEntries enforces, so
-      // stopping the scan there loses nothing the sitemap would have emitted.
-      mints = await scanCreatedMints(MAX_MOMENTS)
+      mints = new Set(await scanCreatedMints(MAX_MOMENTS))
     } catch (err) {
-      console.error('[sitemap] created-mints read failed; omitting moments', err)
+      console.error('[sitemap] created-mints scan failed; omitting moments', err)
     }
 
     const metas = await getCollectionMetaBatch(collections)

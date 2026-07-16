@@ -79,6 +79,23 @@ async function _getTrackedCollections(): Promise<string[]> {
 }
 export const getTrackedCollections = memoize(_getTrackedCollections, SET_CACHE_TTL_MS)
 
+// Fail-CLOSED, un-memoized tracked-set read for the stats rebuild's scope gate.
+// getTrackedCollections above fails OPEN to [PLATFORM_COLLECTION] on a Redis
+// error AND memoizes that success for the full TTL — so a transient blip can
+// pin a one-collection scope for 15 min after Redis recovers. That is
+// catastrophic for a rebuild that does an absolute destructive overwrite: every
+// non-platform collection would classify out-of-scope and the swap would wipe
+// those artists' earnings, with none of the row-count guards noticing (they
+// watch the scope-invariant `counted`, not the scoped roll-up). This variant
+// THROWS on a Redis failure so the rebuild aborts and retries next cron instead
+// of committing a collapsed scope, and is un-memoized so it never reads a stale
+// fail-open value. A legitimately-empty registry still yields [PLATFORM_COLLECTION];
+// the rebuild's scoped-shrink guard backstops that case.
+export async function getTrackedCollectionsStrict(): Promise<string[]> {
+  const stored = (await redis.smembers(KEY)) as string[]
+  return Array.from(new Set([PLATFORM_COLLECTION, ...stored]))
+}
+
 // 'collections' returns curated only; 'standalone' and 'all' both
 // fan-out to every tracked contract. The timeline route narrows
 // 'standalone' post-merge by created-mints membership, so moments
@@ -146,37 +163,28 @@ export async function getCreatedMintsMembership(
   return created
 }
 
-// Bounded ENUMERATION of the created-mints registry — the shape the sitemap
-// needs (it builds moment URLs FROM the set, so membership checks can't serve
-// it). Reconciles the two PRs that raced on 2026-07-13: the SEO PR added the
-// sitemap consumer while the Redis PR removed the full-SMEMBERS reader as
-// OOM-/response-cap-unsafe. SSCAN honors that verdict: each page's request
-// and response are bounded (COUNT-sized), and `maxMembers` + a hard page cap
-// bound the whole walk — we never ask Upstash for the set in one reply.
-// Throws on Redis error (no internal swallow), preserving the sitemap's
-// isolate-and-degrade contract: mints read fails → moments omitted, the rest
-// of the sitemap still emits.
-const SSCAN_PAGE_COUNT = 1000
-export async function scanCreatedMints(maxMembers: number): Promise<Set<string>> {
-  const out = new Set<string>()
+// Bounded ENUMERATION of the created-mints registry, for the one consumer
+// that genuinely needs the member list rather than membership checks: the
+// sitemap, which emits every moment URL and has no candidate set to test.
+// SSCAN pages the set in bounded chunks — never the unbounded SMEMBERS the
+// SMISMEMBER refactor removed (each page stays far under Upstash's response
+// cap regardless of set growth) — and `max` bounds the total so the walk
+// stops once the caller's ceiling (the sitemap's 40k URL cap) is reached.
+// Runs at most once per sitemap revalidation (hourly), so the round trips
+// (~1 per 1000 members) are off every hot path. Failure contract matches
+// getCreatedMintsMembership: NO try/catch — the sitemap isolates the throw
+// itself and degrades to omitting moments for that regeneration.
+export async function scanCreatedMints(max: number): Promise<string[]> {
+  const members: string[] = []
   let cursor: string | number = 0
-  // Page cap = ceil(maxMembers / COUNT) with slack for SSCAN's approximate
-  // page sizing — a backstop against cursor pathology, not a tuning knob.
-  const maxPages = Math.ceil(maxMembers / SSCAN_PAGE_COUNT) * 4 + 8
-  for (let page = 0; page < maxPages; page++) {
-    const [next, members]: [string | number, (string | number)[]] = await redis.sscan(
-      CREATED_MINTS_KEY,
-      cursor,
-      { count: SSCAN_PAGE_COUNT },
-    )
-    for (const m of members) {
-      out.add(String(m))
-      if (out.size >= maxMembers) return out
-    }
+  do {
+    const [next, chunk] = (await redis.sscan(CREATED_MINTS_KEY, cursor, {
+      count: 1000,
+    })) as [string | number, string[]]
+    members.push(...chunk)
     cursor = next
-    if (String(cursor) === '0') break
-  }
-  return out
+  } while (String(cursor) !== '0' && members.length < max)
+  return members.slice(0, max)
 }
 
 export async function markCreatedMint(address: string, tokenId: string): Promise<void> {
