@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
-import { shareImageUrl } from '@/lib/media/shareImage'
+import { shareImageSource } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
@@ -17,7 +17,8 @@ import {
 // back to a branded card with name + creator. Satori rasterizes any-size
 // source into the bounded 1200x800 PNG, which is why crawlers point here
 // instead of at the raw cover: X drops images >5MB and the next/image
-// optimizer 413's on sources >4MB (see MomentImage proxy mode).
+// optimizer 413's on sources past its 50MB body cap (see MomentImage
+// proxy mode).
 
 export const size = SHARE_CARD_SIZE
 export const contentType = SHARE_CARD_CONTENT_TYPE
@@ -78,10 +79,12 @@ export default async function Image({ params }: Props) {
         if (row?.creator) {
           creator = row.creator.username || shortAddress(row.creator.address)
         }
-        // Full-bleed cover when one resolves; shareImageUrl drops data: URIs
-        // and SSRF-guards the host. No cover → shareCard renders the branded
-        // fallback with the title + creator below.
-        imageUrl = shareImageUrl(kv?.image ?? row?.metadata?.image)
+        // Full-bleed cover when one resolves; shareImageSource keeps
+        // shareImageUrl's guards (attacker data:-URI drop, SSRF host check)
+        // and serves the disk-cached downscaled variant inline when one
+        // exists, so a heavy cover can't stall Satori's mid-render fetch.
+        // No cover → shareCard renders the branded fallback below.
+        imageUrl = await shareImageSource(kv?.image ?? row?.metadata?.image)
       }
     } catch {
       // Bare card (shortAddress title, no cover) — never a leak, never a 500.

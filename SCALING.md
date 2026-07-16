@@ -375,6 +375,12 @@ rate limit is the **wrong tool** here (Range streaming + carrier-NAT would 429 r
 viewers) — keep the 2 GB per-request size cap + a CDN. The `ar://`+`ipfs://` allow-list +
 no-redirect posture is the correct **SSRF** control. **The origin is already CDN-ready;
 the Cloudflare configuration is the remaining step → `OPS_RUNBOOK.md`.**
+Origin-side complement (shipped): `?w=` resize variants persist in the
+`.next/cache/kismet-img` volume with single-flight compute + a concurrent-resize cap
+(`lib/media/imgVariantCache.ts`, `app/api/img/route.ts`), so each variant's gateway
+download + sharp job runs at most once ever — the recompute-per-request behind the
+featured Patron mint pass's multi-second first paint. The CDN verdict stands; this
+bounds what each cache miss costs the box.
 ([API4:2023](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/), [SSRF Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html))
 
 ### B6. RPC key exposure + resilience · **Confirmed, with refinements** · 🔶

@@ -3,6 +3,14 @@ import sharp from 'sharp'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { readBodyBounded } from '@/lib/boundedBody'
 import { fetchGatewayResolved } from '@/lib/media/gatewayFetch'
+import {
+  bucketWidth,
+  readVariant,
+  SingleFlight,
+  VARIANT_CACHE_DIR,
+  variantFileName,
+  writeVariant,
+} from '@/lib/media/imgVariantCache'
 import { LRUCache } from '@/lib/lruCache'
 import { redis } from '@/lib/redis'
 import { bestEffort } from '@/lib/bestEffort'
@@ -26,21 +34,36 @@ const MAX_DECLARED_BYTES = 2 * 1024 * 1024 * 1024
 const RACE_TIMEOUT_MS = 30_000
 
 // Upper clamp for the ?w= downscale width (MomentImage asks for 2048). Bounds
-// what a caller can request; the optimizer-fallback path is the only producer.
+// what a caller can request; the clamped value then snaps UP to a cache bucket
+// (imgVariantCache.bucketWidth) so arbitrary ?w= values share disk variants
+// instead of fragmenting them. The optimizer-fallback path is the only
+// producer and always sends 2048, which buckets to itself.
 const MAX_RESIZE_WIDTH = 4096
 // Only buffer-and-resize sources up to this size — a resize must hold the whole
 // source in RAM, so cap it to bound this route's memory. Comfortably above any
 // real still-image scan; a multi-hundred-MB "image" is pathological and streams
 // through untouched rather than risking an OOM.
 const MAX_RESIZE_SOURCE_BYTES = 100 * 1024 * 1024
+// Wall-clock bound on one coalesced fetch+resize compute (see
+// computeResizedVariant): race-to-headers (≤RACE_TIMEOUT_MS) + full source
+// download (≤MAX_RESIZE_SOURCE_BYTES) + sharp. Generous because the output is
+// cached forever, so finishing slow beats failing; on fire the waiters get a
+// no-store 502 and the next request retries fresh.
+const RESIZE_COMPUTE_BUDGET_MS = 60_000
 
-// Cap concurrent buffer-and-resize operations. Each holds up to
-// MAX_RESIZE_SOURCE_BYTES (100MB) in RAM plus a sharp working set, and — unlike
-// the streaming passthrough — there's no memory ceiling across concurrent
-// callers, so N simultaneous resizes ≈ N×100MB resident, the OOM class this
-// route otherwise guards against. At capacity we do NOT error: we fall through
-// to the streaming passthrough (serves the original bytes), so a resize flood
-// degrades to unoptimized images, never a 5xx.
+// Cap concurrent buffer-and-resize COMPUTES. Each compute holds up to
+// MAX_RESIZE_SOURCE_BYTES (100MB) in RAM plus a sharp working set, and —
+// unlike the streaming passthrough — there's no memory ceiling across
+// concurrent computes, so N simultaneous DISTINCT-asset resizes ≈ N×100MB
+// resident, the OOM class this route otherwise guards against. Two layers
+// keep that bounded: resizeFlight dedupes same-asset demand into one compute
+// (waiters hold no buffer and are always admitted), and this cap bounds how
+// many distinct computes run at once. At capacity we do NOT error: we fall
+// through to the streaming passthrough (serves the original bytes), so a
+// resize flood degrades to unoptimized images, never a 5xx.
+// computeResizedVariant increments the counter synchronously (before its
+// first await), so GET's has-flight/under-cap check can't race a concurrent
+// request into an over-cap compute on the single-threaded event loop.
 let activeResizes = 0
 const MAX_CONCURRENT_RESIZES = 4
 
@@ -227,6 +250,130 @@ async function raceFetchGateways(
   }
 }
 
+type ResizeOutcome =
+  | { kind: 'webp'; buffer: Buffer }
+  // sharp refused the buffered bytes (mislabeled gif/svg, undecodable) —
+  // serve them unchanged. Never disk-cached: only verified webp output
+  // earns a cache slot.
+  | { kind: 'original'; buffer: Buffer; contentType: string }
+  | { kind: 'too-large' }
+  | { kind: 'unavailable' }
+  // Source belongs to the streaming path (video/gif/svg content-type,
+  // declared or actual size past the resize cap) — caller falls through.
+  | { kind: 'stream-class' }
+
+// Coalesces concurrent computes per (uri, width): drop-time armor for the
+// featured mint pass, whose cold burst used to trigger one full source
+// download + sharp job PER VIEWER.
+const resizeFlight = new SingleFlight<ResizeOutcome>()
+
+/**
+ * Fetch + buffer + resize one ?w= variant. Runs behind resizeFlight and a
+ * disk-cache miss (see GET), DETACHED from every client's abort signal: the
+ * output is immutable and disk-cached, so once a download starts we want it
+ * to finish and land in the cache even if the triggering viewer scrolled
+ * away — otherwise the next viewer restarts the same multi-MB read. The
+ * budget bounds how long a hung upstream can pin the single-flight slot.
+ */
+async function computeResizedVariant(u: string, width: number): Promise<ResizeOutcome> {
+  // Synchronous — see the MAX_CONCURRENT_RESIZES comment: the increment must
+  // land before this function's first await so the caller's capacity check
+  // and this reservation are one atomic step on the event loop.
+  activeResizes++
+  try {
+    return await computeResizedVariantInner(u, width)
+  } finally {
+    activeResizes--
+  }
+}
+
+async function computeResizedVariantInner(u: string, width: number): Promise<ResizeOutcome> {
+  const started = Date.now()
+  const budget = AbortSignal.timeout(RESIZE_COMPUTE_BUDGET_MS)
+  const upstream = await raceFetchGateways(u, RACE_TIMEOUT_MS, budget, undefined)
+  if (!upstream?.body) return { kind: 'unavailable' }
+  const declaredLen = upstream.headers.get('content-length')
+  if (declaredLen && Number(declaredLen) > MAX_DECLARED_BYTES) {
+    void upstream.body.cancel().catch(() => {})
+    return { kind: 'too-large' }
+  }
+  const ct = (upstream.headers.get('content-type') ?? '').toLowerCase()
+  const resizable =
+    !ct.startsWith('video/') &&
+    !ct.startsWith('image/gif') &&
+    !ct.startsWith('image/svg') &&
+    (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
+  if (!resizable) {
+    // Costs one headers-only fetch (body cancelled) before the streaming
+    // path re-fetches — only mislabeled sources pay it: the client never
+    // sends ?w= for a known GIF, and video rides the no-w proxy URL.
+    void upstream.body.cancel().catch(() => {})
+    return { kind: 'stream-class' }
+  }
+  let read: Awaited<ReturnType<typeof readBodyBounded>>
+  try {
+    read = await readBodyBounded(upstream.body, MAX_RESIZE_SOURCE_BYTES)
+  } catch (err) {
+    // Same doomed-asset memo as the pre-coalesce code: a source that dies
+    // mid-read will die again. Arm only on a genuine upstream death — not
+    // when our own budget fired (client aborts can't reach this signal).
+    if (!budget.aborted) failedReadMemo.set(u, Date.now())
+    throw err
+  }
+  if (read.kind === 'overflow') {
+    // Body outgrew the resize buffer despite a small/absent declared length.
+    // The pre-coalesce code spliced the read-so-far into a passthrough for
+    // its one requester; a shared compute has no single requester to hand a
+    // live stream to, so surrender the bytes and let each waiter stream
+    // fresh (the gateway edge is warm now). Pathological by definition — a
+    // >100MB "image" — so the extra read is acceptable.
+    void read.reader.cancel().catch(() => {})
+    return { kind: 'stream-class' }
+  }
+  const original = read.buffer
+  // Totals harvest (same doctrine as the streaming paths below): a complete
+  // rangeless 200 read IS the whole file — teach the range-synthesis cache.
+  if (upstream.status === 200) learnTotal(u, original.length)
+  try {
+    const resized = await sharp(original, { failOn: 'none' })
+      .rotate() // honour EXIF orientation (phone/scanner captures)
+      .resize({ width, height: width, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer()
+    // Write-behind: never blocks the response. The variant is immutable, so
+    // a lost write only means one more cold compute later.
+    void writeVariant(VARIANT_CACHE_DIR, variantFileName(u, width), resized)
+    // Once per (asset, width) EVER by design — same rare-learning-event class
+    // as the '[img] counted total' log. Its absence on repeat views is the
+    // in-prod signal that the disk cache is doing its job.
+    console.log('[img] resized variant computed', {
+      u,
+      width,
+      srcBytes: original.length,
+      outBytes: resized.length,
+      ms: Date.now() - started,
+    })
+    return { kind: 'webp', buffer: resized }
+  } catch {
+    return {
+      kind: 'original',
+      buffer: original,
+      contentType: upstream.headers.get('content-type') ?? 'application/octet-stream',
+    }
+  }
+}
+
+function webpResponse(buf: Buffer): Response {
+  return new Response(new Uint8Array(buf), {
+    status: 200,
+    headers: {
+      'Content-Type': 'image/webp',
+      'Content-Length': String(buf.length),
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  })
+}
+
 /**
  * Passthrough proxy for ar:// + ipfs:// content. Races the gateway pool
  * server-side and streams the winner back with an immutable 1-year cache
@@ -258,6 +405,23 @@ export async function GET(req: NextRequest) {
   // without this pass-through the proxy was effectively forcing
   // progressive-only playback even when the upstream gateway supported
   // ranges natively.
+  const range = req.headers.get('range')
+
+  // ?w= downscale request — the NextImage optimizer→proxy fallback (and any
+  // preferProxy caller). Parsed before everything else because a disk-cached
+  // variant answers with ZERO upstream work — even for assets currently
+  // memo'd as doomed (the bytes are already local; upstream health is
+  // irrelevant to serving them).
+  const wParam = req.nextUrl.searchParams.get('w')
+  const resizeWidth = wParam
+    ? bucketWidth(Math.min(MAX_RESIZE_WIDTH, Math.max(1, Math.trunc(Number(wParam)) || 0)))
+    : 0
+  const wantsResize = resizeWidth > 0 && !range
+  if (wantsResize) {
+    const cached = await readVariant(VARIANT_CACHE_DIR, variantFileName(u, resizeWidth))
+    if (cached) return webpResponse(cached)
+  }
+
   // Doomed-asset fast-fail: a source that died mid-read moments ago will
   // die again — don't re-pay a multi-MB buffered read per viewer-scroll.
   const failedAt = failedReadMemo.get(u)
@@ -273,7 +437,66 @@ export async function GET(req: NextRequest) {
   const onUpstreamStreamError = () => {
     if (!req.signal.aborted) failedReadMemo.set(u, Date.now())
   }
-  const range = req.headers.get('range')
+  // Server-side downscale for the NextImage optimizer→proxy fallback (?w=). A
+  // source too large for the next/image optimizer (it 413s) would otherwise
+  // stream here at full resolution — fine on desktop's private pool, but it
+  // stalls mobile + the miniapp's shared, constrained HTTP/2 pool. Resize it to
+  // a small WebP so every surface gets light bytes. Still rasters only, on a
+  // non-range request; GIF (animation), SVG (vector), and video fall through to
+  // the streaming path untouched, and any sharp failure serves the original
+  // bytes. Disk miss ⇒ ONE coalesced fetch+resize shared by every concurrent
+  // request for the variant (computeResizedVariant), whose webp lands in the
+  // persisted .next/cache volume — so each variant is fetched from the gateway
+  // and resized at most once EVER (across restarts and deploys), not once per
+  // viewer. That recompute-per-request was why the featured Patron mint pass
+  // paid a multi-second first paint while optimizer-eligible cards beside it
+  // served from next/image's own disk cache.
+  //
+  // Admission: joining an ALREADY-in-flight compute is always allowed (waiters
+  // hold no buffer); starting a NEW one is gated by MAX_CONCURRENT_RESIZES —
+  // at capacity the request falls through to the streaming passthrough below
+  // (original bytes, unoptimized, never a 5xx), exactly the pre-coalesce cap
+  // behavior.
+  const flightKey = `${u}|${resizeWidth}`
+  if (wantsResize && (resizeFlight.has(flightKey) || activeResizes < MAX_CONCURRENT_RESIZES)) {
+    let outcome: ResizeOutcome
+    try {
+      outcome = await resizeFlight.run(flightKey, () =>
+        computeResizedVariant(u, resizeWidth),
+      )
+    } catch {
+      // Mid-read death inside the compute (memo armed there) — same answer
+      // the pre-coalesce buffered read gave: fail fast, never cacheable.
+      return new Response('upstream stream failed mid-read', {
+        status: 502,
+        headers: { 'Cache-Control': 'no-store' },
+      })
+    }
+    if (outcome.kind === 'webp') return webpResponse(outcome.buffer)
+    if (outcome.kind === 'original') {
+      return new Response(new Uint8Array(outcome.buffer), {
+        status: 200,
+        headers: {
+          'Content-Type': outcome.contentType,
+          'Content-Length': String(outcome.buffer.length),
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      })
+    }
+    if (outcome.kind === 'too-large') {
+      return new Response('too large', { status: 413, headers: { 'Cache-Control': 'no-store' } })
+    }
+    if (outcome.kind === 'unavailable') {
+      // Don't cache outages — the bundle may propagate before the next request.
+      return new Response('upstream unavailable', {
+        status: 502,
+        headers: { 'Cache-Control': 'no-store' },
+      })
+    }
+    // 'stream-class': video/gif/svg or an over-cap body — fall through to the
+    // streaming path below on a fresh, client-signal-bound fetch.
+  }
+
   const forwardHeaders = range ? { range } : undefined
   const upstream = await raceFetchGateways(
     u,
@@ -289,92 +512,6 @@ export async function GET(req: NextRequest) {
   if (declaredLen && Number(declaredLen) > MAX_DECLARED_BYTES) {
     upstream.body.cancel().catch(() => {})
     return new Response('too large', { status: 413, headers: { 'Cache-Control': 'no-store' } })
-  }
-
-  // Server-side downscale for the NextImage optimizer→proxy fallback (?w=). A
-  // source too large for the next/image optimizer (it 413s) would otherwise
-  // stream here at full resolution — fine on desktop's private pool, but it
-  // stalls mobile + the miniapp's shared, constrained HTTP/2 pool. Resize it to
-  // a small WebP so every surface gets light bytes. Still rasters only, on a
-  // non-range request; GIF (animation), SVG (vector), and video pass through
-  // untouched, and any sharp failure falls back to the original bytes. The
-  // result is cached immutably under the distinct ?w= key (content-addressed
-  // source ⇒ safe forever), so each variant is computed at most once.
-  const upstreamCt = (upstream.headers.get('content-type') ?? '').toLowerCase()
-  const wParam = req.nextUrl.searchParams.get('w')
-  const resizeWidth = wParam
-    ? Math.min(MAX_RESIZE_WIDTH, Math.max(1, Math.trunc(Number(wParam)) || 0))
-    : 0
-  const canResize =
-    resizeWidth > 0 &&
-    !range &&
-    !upstreamCt.startsWith('video/') &&
-    !upstreamCt.startsWith('image/gif') &&
-    !upstreamCt.startsWith('image/svg') &&
-    (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
-  if (canResize && activeResizes < MAX_CONCURRENT_RESIZES) {
-    activeResizes++
-    try {
-    // The buffered read can reject mid-body (observed: an upstream edge that
-    // closes the socket ~52MB into a >50MB poster, every attempt). Uncaught,
-    // that surfaced as a 500 "failed to pipe response" after wasting the
-    // whole read — catch it, memo the asset, fail fast and cacheable-never.
-    let read: Awaited<ReturnType<typeof readBodyBounded>>
-    try {
-      read = await readBodyBounded(upstream.body, MAX_RESIZE_SOURCE_BYTES)
-    } catch {
-      if (!req.signal.aborted) failedReadMemo.set(u, Date.now())
-      return new Response('upstream stream failed mid-read', {
-        status: 502,
-        headers: { 'Cache-Control': 'no-store' },
-      })
-    }
-    if (read.kind === 'overflow') {
-      // The header claimed small (or said nothing) but the body is past the
-      // resize cap — give it the exact treatment a truthfully-declared large
-      // source gets: stream through untouched. The bytes already read are
-      // replayed ahead of the live remainder, so nothing re-fetches.
-      return new Response(
-        passthroughStream(read.chunks, read.reader, MAX_DECLARED_BYTES, undefined, onUpstreamStreamError),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-            'Cache-Control': 'public, max-age=31536000, immutable',
-          },
-        },
-      )
-    }
-    const original = read.buffer
-    try {
-      const resized = await sharp(original, { failOn: 'none' })
-        .rotate() // honour EXIF orientation (phone/scanner captures)
-        .resize({ width: resizeWidth, height: resizeWidth, fit: 'inside', withoutEnlargement: true })
-        .webp({ quality: 80 })
-        .toBuffer()
-      return new Response(new Uint8Array(resized), {
-        status: 200,
-        headers: {
-          'Content-Type': 'image/webp',
-          'Content-Length': String(resized.length),
-          'Cache-Control': 'public, max-age=31536000, immutable',
-        },
-      })
-    } catch {
-      // Mislabeled gif/svg or anything sharp can't decode — serve the bytes we
-      // already buffered, unchanged, rather than failing the image.
-      return new Response(new Uint8Array(original), {
-        status: 200,
-        headers: {
-          'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-          'Content-Length': String(original.length),
-          'Cache-Control': 'public, max-age=31536000, immutable',
-        },
-      })
-    }
-    } finally {
-      activeResizes--
-    }
   }
 
   const headers = new Headers({

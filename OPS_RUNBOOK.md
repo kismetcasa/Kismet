@@ -160,6 +160,11 @@ streaming). **The origin is already CDN-ready — this is Cloudflare config, not
   (trending/featured/default) and `/api/moments` emit `public, s-maxage=30,
   stale-while-revalidate=120` (`app/api/timeline/route.ts:634`); viewer-dependent variants
   emit `private, no-store` (line 633).
+- **`?w=` resize variants are also disk-cached at the origin** (persisted
+  `.next/cache/kismet-img` volume + single-flight compute,
+  `lib/media/imgVariantCache.ts`): an edge miss on a resized still costs the origin a
+  local file read, not a full gateway download + sharp job. The CDN stays the
+  edge/egress control; this bounds the origin's share of each miss.
 
 ### Cloudflare configuration (the actual change)
 1. **Cache Rule for `/api/img` — CRITICAL.** Cloudflare does **not** cache `/api/*` or

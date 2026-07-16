@@ -69,7 +69,8 @@ type NextImageProps = CommonProps & {
  * next/image wrapper with three delivery modes:
  *   - 'optimized': next/image's optimizer (AVIF/WebP transcode + 31d edge cache)
  *   - 'proxy':     /api/img streams from the gateway pool with 1y immutable cache;
- *                  used for content the optimizer can't handle (animated GIFs, >4MB)
+ *                  used for content the optimizer can't handle (animated GIFs,
+ *                  sources past its 50MB body cap — images.maximumResponseBody)
  *   - 'direct':    raw gateway URL with unoptimized=true; defense-in-depth fallback
  *
  * Transitions: optimized → proxy (ar:/ipfs:) | direct (else)

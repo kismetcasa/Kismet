@@ -2,7 +2,7 @@ import { ImageResponse } from 'next/og'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchMomentDetail } from '@/lib/momentDetail'
-import { shareImageUrl } from '@/lib/media/shareImage'
+import { shareImageSource } from '@/lib/media/shareImage'
 import {
   shareCard,
   SHARE_CARD_SIZE,
@@ -68,13 +68,14 @@ export default async function Image({ params }: Props) {
         label = 'WRITING'
       }
       // Resolve the moment's poster for the hero side of the card.
-      // shareImageUrl maps ar:// / ipfs:// to public gateways, drops
-      // data: URIs (Satori can't reliably embed them at this scale),
-      // and guards against the legacy bug where animation_url leaked
-      // into meta.image — for video moments that means we get the
-      // separate poster when one exists, and otherwise fall through
-      // to the text-only branded "VIDEO" card.
-      imageUrl = shareImageUrl(detail.metadata?.image, detail.metadata?.animation_url)
+      // shareImageSource applies shareImageUrl's guards (gateway mapping,
+      // attacker data:-URI drop, the legacy animation_url-in-meta.image
+      // bug) and then, when /api/img's disk cache already holds the
+      // cover's downscaled variant — true for every heavy proxy-class
+      // cover like the Patron scans — inlines it as a small jpeg so
+      // Satori never re-downloads a multi-MB original mid-render (the
+      // failure that blanked this class's Farcaster embeds).
+      imageUrl = await shareImageSource(detail.metadata?.image, detail.metadata?.animation_url)
     }
   }
 

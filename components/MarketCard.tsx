@@ -7,6 +7,7 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Pin } from 'lucide-react'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useTextContent } from '@/lib/textCache'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, deserializeOrder } from '@/lib/seaport'
@@ -185,6 +186,10 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
               ? '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
               : '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'}
             priority={priority}
+            // Secondary listings of the Patron pass carry the same
+            // physical-art scan that 413s the optimizer — same detection
+            // as MomentCard, straight to the downscaling proxy.
+            preferProxy={isPatronCollection(listing.collectionAddress)}
           />
         ) : isTextListing ? (
           <div className="w-full h-full flex flex-col p-5 bg-gradient-to-br from-raised to-[#0a0a0a]">

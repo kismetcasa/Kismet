@@ -137,8 +137,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // cover full-bleed via Satori — which rasterizes any-size source into
   // a bounded 1200x800 PNG — and falls back to a branded card. Pointing
   // crawlers at the raw cover instead breaks on heavy originals: X drops
-  // images >5MB and the next/image optimizer 413's on sources >4MB (see
-  // MomentImage proxy mode).
+  // images >5MB and the next/image optimizer 413's on sources past its
+  // 50MB body cap (see MomentImage proxy mode).
   const canonicalUrl = `${SITE_URL}/collection/${address}`
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
   const fcEmbed = buildFarcasterEmbed({

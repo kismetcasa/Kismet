@@ -7,6 +7,7 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress } from '@/lib/inprocess'
+import { isPatronCollection } from '@/lib/patronCollection'
 import type { Profile } from '@/lib/profile'
 import type { CollectionMeta } from '@/lib/kv'
 import type { MomentSearchResult } from '@/lib/search'
@@ -19,7 +20,7 @@ interface SearchResults {
 
 // Walks the gateway pool via MomentImage; on full exhaustion (or missing src),
 // falls back to an initial-letter chip so dropdown rows never render empty.
-function ResultThumb({ src, alt, name }: { src?: string; alt: string; name: string }) {
+function ResultThumb({ src, alt, name, preferProxy }: { src?: string; alt: string; name: string; preferProxy?: boolean }) {
   const [errored, setErrored] = useState(false)
   const showImage = !!src && !errored
   const initial = (name || '?').trim().charAt(0).toUpperCase() || '?'
@@ -32,6 +33,10 @@ function ResultThumb({ src, alt, name }: { src?: string; alt: string; name: stri
           fill
           className="object-cover"
           sizes="20px"
+          // Patron scans 413 the optimizer (50MB body cap); without this even
+          // this 20px thumb pays a full-cap doomed optimizer fetch. With a raw
+          // proxiable src (lib/search.ts) it lands on the warm /api/img variant.
+          preferProxy={preferProxy}
           onAllError={() => setErrored(true)}
         />
       ) : (
@@ -197,7 +202,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
                   onClick={close}
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
-                  <ResultThumb src={mint.image} alt={mint.name} name={mint.name} />
+                  <ResultThumb src={mint.image} alt={mint.name} name={mint.name} preferProxy={isPatronCollection(mint.address)} />
                   <span className="text-xs text-ink font-mono truncate">{mint.name}</span>
                 </Link>
               ))}
