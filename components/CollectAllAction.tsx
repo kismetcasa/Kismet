@@ -107,9 +107,14 @@ export function CollectAllAction({
 
   const inFlight = status !== 'idle' && status !== 'done' && status !== 'error'
   const batchSize = Math.min(totalCount, MAX_COLLECT_ALL_BATCH)
-  // A single eligible artwork isn't a batch, so "collect all" reads wrong —
-  // drop to a plain "collect" (and no count) whenever there's exactly one.
-  const isSingle = totalCount === 1
+  // "collect all" reads wrong for a lone artwork → drop to "collect" (no
+  // count). Detect "one artwork" by DISTINCT token id, not ethCount+usdcCount:
+  // CollectionView feeds the same id list to both legs (each token's currency
+  // is resolved on-chain at click time), so a single token appears in both
+  // lists and would otherwise look like two. The union is the true count; for
+  // callers with disjoint eth/usdc lists (cards, rows) it's just their sum.
+  const isSingle =
+    new Set([...ethEligibleTokenIds, ...usdcEligibleTokenIds]).size === 1
   const baseLabel = isSingle ? 'collect' : 'collect all'
 
   function handleClick() {

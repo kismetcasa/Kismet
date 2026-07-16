@@ -39,7 +39,7 @@ export type CollectCurrency = 'eth' | 'usdc'
  * Moment context for the post-collect share prompt. Optional: when provided
  * AND we're inside a Mini App, the success toast carries a "Share" action
  * that opens the host cast composer prefilled with
- * `Collected "<name>" by @creator on @kismet` (see lib/collectShare). On the
+ * `collected "<name>" by @creator on @kismet` (see lib/collectShare). On the
  * web — where there's no host composer — the plain success toast shows as
  * before, so callers can pass this unconditionally.
  */
