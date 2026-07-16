@@ -107,6 +107,15 @@ export function CollectAllAction({
 
   const inFlight = status !== 'idle' && status !== 'done' && status !== 'error'
   const batchSize = Math.min(totalCount, MAX_COLLECT_ALL_BATCH)
+  // "collect all" reads wrong for a lone artwork → drop to "collect" (no
+  // count). Detect "one artwork" by DISTINCT token id, not ethCount+usdcCount:
+  // CollectionView feeds the same id list to both legs (each token's currency
+  // is resolved on-chain at click time), so a single token appears in both
+  // lists and would otherwise look like two. The union is the true count; for
+  // callers with disjoint eth/usdc lists (cards, rows) it's just their sum.
+  const isSingle =
+    new Set([...ethEligibleTokenIds, ...usdcEligibleTokenIds]).size === 1
+  const baseLabel = isSingle ? 'collect' : 'collect all'
 
   function handleClick() {
     if (!isConnected) {
@@ -122,7 +131,9 @@ export function CollectAllAction({
 
   const label = inFlight
     ? statusLabel(status)
-    : `collect all (${batchSize}${totalCount > MAX_COLLECT_ALL_BATCH ? ` of ${totalCount}` : ''})`
+    : isSingle
+      ? baseLabel
+      : `${baseLabel} (${batchSize}${totalCount > MAX_COLLECT_ALL_BATCH ? ` of ${totalCount}` : ''})`
 
   // Plain text-only variant: inline beside a heading, brand gradient on hover.
   if (plain) {
@@ -132,7 +143,7 @@ export function CollectAllAction({
         disabled={inFlight}
         className="text-xs font-mono uppercase tracking-widest text-muted accent-grad-text-hover transition-colors disabled:opacity-60 disabled:cursor-wait whitespace-nowrap"
       >
-        {inFlight ? statusLabel(status) : 'collect all'}
+        {inFlight ? statusLabel(status) : baseLabel}
       </button>
     )
   }

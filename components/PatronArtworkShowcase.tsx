@@ -124,6 +124,11 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
  * Desktop runs lazy=false and mounts every artwork eagerly, unchanged.
  */
 export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: Moment[]; isMobile?: boolean }) {
+  // The "collect artwork" CTA in the description panel points at the primary
+  // artwork's moment page — the canonical collect surface, the same target as
+  // tapping the artwork above. Guarded so the button never renders a dead link
+  // if the showcase is ever handed an empty list.
+  const primaryMoment = moments[0]
   return (
     <div className="flex flex-col gap-6">
       {moments.map((m, i) => (
@@ -141,9 +146,19 @@ export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: 
 
       {/* Patron Pass Description */}
       <div className="border border-line bg-[#0d0d0d] p-4 sm:p-5">
-        <h3 className="text-xs font-mono text-muted uppercase tracking-widest mb-3">
-          patron pass description
-        </h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-xs font-mono text-muted uppercase tracking-widest">
+            patron pass description
+          </h3>
+          {primaryMoment && (
+            <Link
+              href={`/moment/${primaryMoment.address}/${primaryMoment.token_id}`}
+              className="shrink-0 border border-accent/40 px-3 py-1.5 text-xs font-mono uppercase tracking-widest text-accent transition-colors hover:border-accent hover:bg-accent/10"
+            >
+              collect artwork
+            </Link>
+          )}
+        </div>
         <p className="text-sm font-mono text-dim leading-relaxed whitespace-pre-line">
           {PATRON_PASS_DESCRIPTION.split('Kismet Casa')[0]}
           <a

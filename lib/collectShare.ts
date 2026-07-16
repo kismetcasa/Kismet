@@ -5,20 +5,22 @@ import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { shortAddress } from '@/lib/inprocess'
 import { SITE_URL } from '@/lib/siteUrl'
 
-// Post-collect "share to /kismet" prompt (Mini App only).
+// "share to /kismet" cast composer (Mini App only).
 //
-// useDirectCollect attaches a Share action to its success toast; tapping it
-// opens the host's cast composer prefilled with
+// Two surfaces share one format via composeMomentShareCast:
+//   - Post-collect: useDirectCollect attaches a Share action to its success
+//     toast, prefilling  collected "<artwork>" by @creator on @kismet
+//   - Moment page: the detail view's Share button, prefilling
+//     enjoy "<artwork>" by @creator on @kismet
+// Only the opening verb differs; both attach the moment URL as the embed
+// (preview card) and post to /kismet.
 //
-//   Collected "<artwork>" by @creator on @kismet
+// composeCast is a host action with no web equivalent, so callers offer it
+// only inside a Mini App — the web success toast / copy-link path is unchanged.
 //
-// plus the moment URL as the embed (preview card) and /kismet as the channel.
-// composeCast is a host action with no web equivalent, so the hook offers the
-// action only inside a Mini App — the web success toast is unchanged.
-//
-// Callers must pre-gate on isInMiniApp before invoking the share (the hook
-// does) — same rule as lib/farcasterHaptics: outside a host the dynamic SDK
-// import would pull the @farcaster/miniapp-sdk chunk for regular web users.
+// Callers must pre-gate on isInMiniApp before invoking the share — same rule
+// as lib/farcasterHaptics: outside a host the dynamic SDK import would pull
+// the @farcaster/miniapp-sdk chunk for regular web users.
 
 /** Kismet's Farcaster channel — every composeCast surface posts here. */
 export const KISMET_CHANNEL_KEY = 'kismet'
@@ -41,16 +43,22 @@ export interface CollectShareContext {
  * (the host renders it as a clickable mention), fall back to their display
  * name, and drop the "by" clause entirely rather than casting a raw
  * 0x12…34 fallback. Quotes around the title match the post-mint share copy.
+ *
+ * `verb` opens the sentence and is the only thing that varies between
+ * surfaces: 'collected' for the post-collect prompt, 'enjoy' for the moment
+ * page's Share button. Both share this one format verbatim otherwise.
  */
 export function buildCollectCastText(opts: {
   momentName: string | null
   creatorHandle: string | null
+  verb?: string
 }): string {
+  const verb = opts.verb ?? 'collected'
   const title = opts.momentName?.trim()
   const subject = title ? `"${title}"` : 'a moment'
   return opts.creatorHandle
-    ? `Collected ${subject} by ${opts.creatorHandle} on @kismet`
-    : `Collected ${subject} on @kismet`
+    ? `${verb} ${subject} by ${opts.creatorHandle} on @kismet`
+    : `${verb} ${subject} on @kismet`
 }
 
 /**
@@ -73,18 +81,43 @@ async function resolveCreatorHandle(ctx: CollectShareContext): Promise<string | 
   return name
 }
 
-/** Open the cast composer prefilled for /kismet. Mini App only (see header). */
+/**
+ * Prefill and open the host cast composer for a moment: the shared cast text
+ * (buildCollectCastText), the moment URL as the embed preview card, posted to
+ * /kismet. Mini App only — the dynamic SDK import must not run for web users
+ * (see header), so callers pre-gate on isInMiniApp.
+ *
+ * Resolves with the composeCast result — `{ cast }` on send, `{ cast: null }`
+ * when the user dismisses the sheet. Throws if the SDK import or the host
+ * action fails, so each caller picks its own fallback: the post-collect prompt
+ * surfaces a toast (shareCollectedCast), the moment page copies the link.
+ */
+export async function composeMomentShareCast(
+  ctx: CollectShareContext,
+  opts: { verb?: string } = {},
+) {
+  const { sdk } = await import('@farcaster/miniapp-sdk')
+  const creatorHandle = await resolveCreatorHandle(ctx)
+  const text = buildCollectCastText({
+    momentName: ctx.momentName,
+    creatorHandle,
+    verb: opts.verb,
+  })
+  const momentUrl = `${SITE_URL}/moment/${ctx.collectionAddress}/${ctx.tokenId}`
+  return sdk.actions.composeCast({
+    text,
+    embeds: [momentUrl],
+    channelKey: KISMET_CHANNEL_KEY,
+  })
+}
+
+/**
+ * Post-collect Share prompt: prefill the composer with "collected …" and
+ * confirm (toast + haptic) on send. Mini App only (see header).
+ */
 export async function shareCollectedCast(ctx: CollectShareContext): Promise<void> {
   try {
-    const { sdk } = await import('@farcaster/miniapp-sdk')
-    const creatorHandle = await resolveCreatorHandle(ctx)
-    const text = buildCollectCastText({ momentName: ctx.momentName, creatorHandle })
-    const momentUrl = `${SITE_URL}/moment/${ctx.collectionAddress}/${ctx.tokenId}`
-    const composed = await sdk.actions.composeCast({
-      text,
-      embeds: [momentUrl],
-      channelKey: KISMET_CHANNEL_KEY,
-    })
+    const composed = await composeMomentShareCast(ctx)
     // composeCast resolves with { cast: null } when the user dismisses the
     // compose sheet — an explicit "no", so no success toast (matches the
     // post-mint share in MintForm).

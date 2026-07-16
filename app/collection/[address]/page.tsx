@@ -11,6 +11,7 @@ import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { isPatronCollection } from '@/lib/patronCollection'
 import { SITE_URL } from '@/lib/siteUrl'
 import { isMobileUA } from '@/lib/serverDevice'
 
@@ -143,7 +144,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
-    buttonTitle: 'View Collection',
+    // The Patron Collection's shared card is a call to patronage, not a
+    // generic browse; every other collection keeps the neutral label.
+    buttonTitle: isPatronCollection(address) ? 'become a patron' : 'View Collection',
     action: {
       url: canonicalUrl,
     },
