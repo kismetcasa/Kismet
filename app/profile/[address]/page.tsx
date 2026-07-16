@@ -43,7 +43,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // the page rather than just degrade SEO.
   try {
   const { address } = await params
-  if (!isAddress(address)) return { title: 'Profile — Kismet Art' }
+  if (!isAddress(address)) return { title: 'Profile — Kismet' }
 
   // Canonical resolution drives BOTH the share-card content and the
   // canonical URL we hand back to crawlers. The page itself also
@@ -62,7 +62,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // the crawler payload regardless of who fetches.
   if (await isProfileIdentityHidden(address, canonicalAddress)) {
     if (await isProfileHiddenFromViewer(address, canonicalAddress)) notFound()
-    return { title: 'Profile — Kismet Art' }
+    return { title: 'Profile — Kismet' }
   }
 
   const displayName =
@@ -70,11 +70,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     farcaster?.username ||
     farcaster?.displayName ||
     shortAddress(canonicalAddress)
-  const title = `${displayName} — Kismet Art`
+  const title = `${displayName} — Kismet`
   const description =
     farcaster?.username
-      ? `@${farcaster.username} on Kismet Art`
-      : `${displayName}'s moments and collections on Kismet Art`
+      ? `@${farcaster.username} on Kismet`
+      : `${displayName}'s moments and collections on Kismet`
   const avatarUrl = profile.avatarUrl || farcaster?.pfpUrl || undefined
 
   // Share card image. The profile-specific opengraph-image route renders
@@ -126,7 +126,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     // catch exists only to keep transient Redis blips from crashing SEO.
     unstable_rethrow(err)
     console.error('[generateMetadata] profile', err)
-    return { title: 'Profile — Kismet Art' }
+    return { title: 'Profile — Kismet' }
   }
 }
 
@@ -184,8 +184,8 @@ export default async function ProfilePage({ params }: Props) {
         url: `${SITE_URL}/profile/${canonical.canonicalAddress}`,
         name: displayName,
         description: canonical.farcaster?.username
-          ? `@${canonical.farcaster.username} on Kismet Art`
-          : `${displayName}'s moments and collections on Kismet Art`,
+          ? `@${canonical.farcaster.username} on Kismet`
+          : `${displayName}'s moments and collections on Kismet`,
         image: canonical.profile.avatarUrl || canonical.farcaster?.pfpUrl || undefined,
         sameAs: canonical.farcaster?.username
           ? [`https://warpcast.com/${canonical.farcaster.username}`]
