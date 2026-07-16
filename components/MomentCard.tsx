@@ -12,6 +12,7 @@ import {
   shortAddress,
   inferCollectCurrency,
   DEFAULT_COLLECT_COMMENT,
+  getSaleWindow,
   type Moment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -145,6 +146,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [collectionImageFailed, setCollectionImageFailed] = useState(false)
   const [collected, setCollected] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
+  // Client-mounted flag. Gates the collection-chip ↔ sale-window mutual
+  // exclusivity below on the same client-only timing SaleWindow itself uses,
+  // so the server-rendered card shows the collection chip as its baseline and
+  // only swaps to the sale window once mounted — no hydration mismatch.
+  const [mounted, setMounted] = useState(false)
   const { address: connectedAddress } = useAccount()
   const ensureConnected = useEnsureConnected()
   const { collect, status: collectStatus } = useDirectCollect()
@@ -184,6 +190,8 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       setCollectionImage(image)
     })
   }, [moment.address, moment.kismetCollection])
+
+  useEffect(() => setMounted(true), [])
 
   // Gate the per-card price read + the two on-chain reads on an in-view dwell:
   // they fire only once the card has settled within ~200px of the viewport for
@@ -322,6 +330,23 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
+  // Collection chip and sale-window badge share ONE meta row (never stack).
+  //   • chipAvailable — a curated-collection chip could render here (non-
+  //     compact, curated, named).
+  //   • saleWindowState — mirrors SaleWindow's own classifier, `mounted`-gated
+  //     to match its client-only output, so the server renders the chip
+  //     baseline and swaps on mount (no hydration mismatch).
+  //   • saleWindowTakesRow — the sale window owns the row for an upcoming/
+  //     active sale (scheduled / closing) always; for an ENDED sale it yields
+  //     to the collection chip when one exists, reading "Ended …" only when
+  //     there's no collection to fall back to. A live open-ended sale has no
+  //     date, so it never takes the row.
+  const chipAvailable = !compact && isCuratedCollection && !!collectionName
+  const saleWindowState = mounted ? (getSaleWindow(activeSale)?.state ?? null) : null
+  const saleWindowTakesRow =
+    saleWindowState === 'scheduled' ||
+    saleWindowState === 'closing' ||
+    (saleWindowState === 'ended' && !chipAvailable)
   const collectLabel = collecting
     ? 'collecting…'
     : saleNotStarted
@@ -592,14 +617,24 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Collection chip. The name shows only for a real collection
-            (isCuratedCollection) — created, or minted into. An individual
-            mint's auto-deploy wrapper shows the icon only, keeping it as a
-            clickable affordance into /collection. The chip is suppressed
-            entirely only when there's nothing left to show (no name to show
-            AND no icon to render), so the slot never becomes an empty
-            clickable sliver. */}
-        {!compact && collectionName && (isCuratedCollection || (collectionImage && !collectionImageFailed)) && (
+        {/* Collection chip — shown only for a REAL curated collection (one
+            created via the Create Collection flow, or an existing collection
+            minted into). An individual mint auto-deploys a wrapper contract
+            named after its single piece; its "collection" is just that one
+            mint, so a chip there would be a 16px duplicate of the cover shown
+            large above, linking to a one-item /collection page — no
+            information value, and the lonely icon reads as noise where a
+            collection identity belongs. So those are suppressed entirely
+            rather than shown icon-only (the compact variant drops the chip in
+            every case). When the chip does render it always carries the name;
+            the icon is shown alongside when we have one.
+
+            Mutually exclusive with the sale-window badge below (see
+            saleWindowTakesRow): an upcoming/active sale takes the single meta
+            row and the chip yields; an ENDED sale yields back TO the chip. The
+            chip is the server-rendered baseline; once mounted, a scheduled or
+            active sale swaps it out. */}
+        {chipAvailable && !saleWindowTakesRow && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
@@ -619,19 +654,21 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 />
               </div>
             )}
-            {isCuratedCollection && (
-              <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
-                {collectionName}
-              </span>
-            )}
+            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
+              {collectionName}
+            </span>
           </Link>
         )}
         {/* Sale-window badge — the absolute date the feed answers WHEN with
             (the collect button only gates on it): "Opens Jul 3" for a scheduled
             drop, "Sale ends Jul 8, 5:00 PM" for a live one with an end, "Ended …"
             once closed. Compact cards show date-only; tap through for the time.
-            Hidden for live open-ended sales (no date to show). */}
-        <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
+            Rendered only when it owns the meta row (saleWindowTakesRow), so it
+            never stacks under the collection chip: hidden for live open-ended
+            sales (no date) and for an ended sale that yields to a chip. */}
+        {saleWindowTakesRow && (
+          <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
+        )}
       </div>
 
       {/* Actions row. Default: [price|supply] [list] [collect] in one flex
