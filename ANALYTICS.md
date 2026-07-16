@@ -252,6 +252,39 @@ least one sale was paid in USDC.
 
 ---
 
+## 7b. The artist profile card — datapoint provenance
+
+The owner-facing stats card (`components/ProfileStats.tsx`, fed by
+`/api/stats?artist=…`) shows three figures with **two different sources**:
+
+| Card figure | Source | Why this source |
+| --- | --- | --- |
+| Earned total (e.g. `$178.24`) | `getArtistEarnings` (`lib/stats.ts`): per-artist Redis zsets rebuilt hourly from the In•Process `/transfers` feed, **Kismet-scoped** (`in` + `pass` rows only, per the 2026-07-14 decision in `lib/statsMath.ts`), summed across the artist's earnings-wallet union (FC siblings + inprocess smart wallets), primary + Kismet-listing royalties, USD at the read-time Chainlink price | The feed is the canonical, complete, rebuildable history of paid sales |
+| `N sales` | The mints zset from the same rebuild — Σ edition quantity of paid Kismet sales credited to the artist (split moments credit the artist's own allocation share for value, full quantity for count) | Same scan, same gates as the money figure |
+| `$X to distribute →` | `getArtistPending` (`lib/pending.ts`): **live on-chain balances** of the 0xSplits contracts the artist is a payee on (membership from Kismet's mint-time split records, reverse-indexed in `kismetart:splits:by-recipient:*`), × the artist's stored percent, cached 60 s | No feed exposes undistributed split balances, and distribution is permissionless (can happen outside our `/api/distribute`), so any stored ledger would drift — the chain is the only truth |
+
+Split-moment attribution is exact: an artist credited `pct × sale value` in
+the stats matches what the split later distributes to them (verified against a
+live case: a 0.0014 ETH mint with a 95% allocation both credits and pays
+0.00133 ETH).
+
+### Known issue: pending over-counts shared split contracts
+
+`compute()` in `lib/pending.ts` sums the artist's share **per moment**
+(`SplitJob`), but several moments can resolve to the **same split contract**
+(`getCreatorRewardRecipient` is per token, and 0xSplits deploys deterministic
+addresses — the same recipient set + percentages yields the same contract, so
+every piece a collab mints with one split config shares one pot). The same
+live balance is then counted once per moment: an artist on N moments sharing
+one split sees **N× their real pending**. Observed in production 2026-07-16:
+a card showed $12.49 "to distribute" where the real undistributed share was
+$2.50 (5 moments, one shared split). `distribute-all`
+(`app/api/distribute-all/route.ts`) has the same blind spot — it fires one
+`/distribute` per moment-job, so duplicates waste per-user quota, relay
+capacity, and `DISTRIBUTE_ALL_CAP` slots (payouts themselves stay correct:
+the first call drains the split; 0xSplits can only ever pay the fixed
+recipients). Fix shape: dedupe jobs by `splitAddress` before summing/planning.
+
 ## 8. What is deliberately NOT captured
 
 Blind spots to keep in mind when reading the numbers:
