@@ -18,7 +18,7 @@ Each row: `{ collection, tokenId, name, priceLabel, currency, listingId, seller,
 momentUrl, nextAction }`. To buy a row, follow its `nextAction` (→
 `references/buy.md`).
 
-## Moments to collect in a collection
+## Artworks to collect in a collection
 
 ```
 GET BASE/api/agent/discover?kind=collect&collection=0x…&excludeCollectedBy=0xYourBaseAccount&limit=10&account=0xYourBaseAccount
