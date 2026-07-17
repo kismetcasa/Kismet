@@ -57,12 +57,15 @@ const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
 // Platform-wide primary-sale roll-up, snapshotted by the SAME rebuild scan
 // that writes the per-artist sets (one pass, one row-gating rule — see
 // PlatformTotals in lib/statsMath.ts), so /api/stats/platform and the artist
-// cards can never disagree about what counted as a sale. SCOPE differs on
-// purpose: the roll-up folds only rows whose moment lives in a Kismet-tracked
-// collection (the /transfers feed is In•Process-network-wide, and reporting
-// the network's volume as Kismet's overstated editions ~6× when first
-// measured), while the per-artist sets keep their original network-wide
-// semantics — an artist's card has always meant "their In•Process earnings".
+// cards can never disagree about what counted as a sale. Both are
+// KISMET-SCOPED: the /transfers feed is In•Process-network-wide (reporting the
+// network's volume as Kismet's overstated editions ~6× when first measured),
+// so the roll-up folds only rows whose moment lives in a Kismet-tracked
+// collection, and — per the 2026-07-14 decision documented on PlatformScope
+// (lib/statsMath.ts) — the per-artist sets fold only 'in' + 'pass' rows too:
+// every surfaced number on kismet.art means Kismet activity. They differ only
+// in WHICH scoped rows they take ('pass' rows credit the real split artists'
+// cards but live in the snapshot's passes block, not the art figures).
 // Single JSON value, absolute overwrite per successful rebuild; read by
 // getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
