@@ -70,6 +70,19 @@ updates:
       # no runtime benefit. Revisit when quick-auth relaxes its pin.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
+      # eslint majors move WITH the Next migration, not before it:
+      # eslint-config-next@15.5.19 peer-pins eslint ^7||^8||^9, so an
+      # eslint@10 PR is red from birth while config-next is ignored at 15
+      # (config-next@16 peers >=9, i.e. eslint 10 pairs with next 16).
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+      # @types/node must track the RUNTIME (Dockerfile: node:22.22), not
+      # latest — a types@26 PR would be wrong to merge even when green. The
+      # correct move is a manual bump to ^22 in a routine cycle; majors from
+      # the bot always target latest and are therefore permanently wrong
+      # until the runtime itself moves.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

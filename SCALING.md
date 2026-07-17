@@ -275,12 +275,15 @@ and still flagged; the override was the actual lever, and Dependabot never propo
 override bumps); `form-data` CRLF (3.0.5/4.0.6) and `hono` ≤4.12.24 (4.12.30) via
 in-range bumps; two vulnerable nested `ws` copies (ethers/engine.io) deduped onto the
 fixed 8.21.0. All 8 remaining **high** are transitive, in two families:
-- **`ws`** (7.x + ≤8.20.1 copies in the wallet stack `wagmi → walletconnect → reown`)
-  → fix is `wagmi@3`, currently **blocked upstream**:
-  `@farcaster/miniapp-wagmi-connector` latest (2.0.0) peer-pins `@wagmi/core@^2.14.1`
-  and no wagmi-3-compatible release exists. Take wagmi@3 the week that connector
-  ships (its now-standalone Dependabot PR going green is the signal), with a
-  wallet-connect + mint smoke test. Server exposure is nil meanwhile — server-side
+- **`ws`** — 5 vulnerable copies, split across BOTH families: 4× `8.18.0`
+  (exact-pinned by nested viem copies under `@reown/appkit*` /
+  `@walletconnect/utils`) are the wallet-stack set → fix is `wagmi@3`, currently
+  **blocked upstream**: `@farcaster/miniapp-wagmi-connector` latest (2.0.0)
+  peer-pins `@wagmi/core@^2.14.1` and no wagmi-3-compatible release exists. Take
+  wagmi@3 the week that connector ships (its now-standalone Dependabot PR going
+  green is the signal), with a wallet-connect + mint smoke test. The 5th copy
+  (`7.4.6`, exact-pinned by `@ethersproject/providers`) belongs to the Turbo tree
+  below and **outlives wagmi@3**. Server exposure is nil meanwhile — server-side
   RPC uses viem `http()` transports; `ws` runs in the browser wallet stack.
 - **The Turbo signing tree** — `@ardrive/turbo-sdk` itself, `@dha-team/arbundles`,
   `@ethersproject/providers`, `secp256k1`, `@solana/spl-token`,
@@ -292,9 +295,12 @@ fixed 8.21.0. All 8 remaining **high** are transitive, in two families:
   browser-only — its HTTP client (`undici`) is now patched (above); the signer
   advisories still sit on code paths the RSA upload flow never calls.
 
-**Open:** CI gates on `--audit-level=critical` (0 today); flip the gate to `high`
-once `wagmi@3` lands and is smoke-tested (§B11/§B13) — after that only the
-turbo-signing-tree tail remains, which is VEX-documentable.
+**Open:** CI gates on `--audit-level=critical` (0 today). After `wagmi@3` lands and
+is smoke-tested (§B11/§B13), only the turbo-signing-tree tail remains (including
+its `ws@7.4.6` copy) — note a bare `npm audit --audit-level=high` gate would still
+fail on that tail, so the flip needs an allowlist wrapper (`audit-ci`
+/`better-npm-audit`) carrying the VEX rationale for the documented-unreachable
+signer advisories, or the tail clearing upstream first.
 
 **Version posture (good):** Next 15.5 (16 is a planned manual migration — it retires
 `scripts/patch-next-clone-response.mjs`, whose upstream fix is 16.x-only; checklist
