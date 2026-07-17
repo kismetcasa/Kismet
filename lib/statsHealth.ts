@@ -49,11 +49,25 @@ export async function recordStatsRun(
   try {
     const key = healthKey(phase)
     const now = Date.now()
+    // `ok` is a full write needing no prior state — stamp both fields and clear
+    // any error by omission.
     if (status === 'ok') {
       await redis.set(key, { lastRunAt: now, lastOkAt: now } satisfies StatsPhaseHealth)
       return
     }
-    const prev = await redis.get<StatsPhaseHealth>(key).catch(() => null)
+    // `skipped`/`error` are read-modify-write: they PRESERVE lastOkAt, and
+    // `skipped` preserves a prior lastError. A FAILED prev-read must NOT fall
+    // through to a stripped overwrite — that would erase lastError and flip
+    // `healthy` back to true while the pipeline is still broken, silencing the
+    // alert this exists to raise (and Redis is likeliest to be flaky exactly
+    // when errors are recorded). So distinguish a read FAILURE (bail, preserve
+    // the record) from a genuine ABSENT key (null → proceed, nothing to lose).
+    let prev: StatsPhaseHealth | null
+    try {
+      prev = await redis.get<StatsPhaseHealth>(key)
+    } catch {
+      return
+    }
     if (status === 'skipped') {
       await redis.set(key, { ...(prev ?? {}), lastRunAt: now } satisfies StatsPhaseHealth)
       return

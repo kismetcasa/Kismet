@@ -27,8 +27,10 @@ import { errorResponse } from '@/lib/apiResponse'
 //   volume   — the headline "how much money moved" figure: combined paid
 //              PRIMARY volume (art sales + passes summed — on-chain a pass IS
 //              a primary mint; the split above is reporting semantics).
-//              Secondary resale volume is NOT aggregated anywhere yet — only
-//              its royalty trail (earnings.secondary) is captured.
+//   resales  — secondary (resale) volume: gross buyer payment on Kismet-listing
+//              fills, aggregated event-driven per fill. Distinct from
+//              earnings.secondary, which is only the creator-royalty SLICE of
+//              these same sales.
 //   earnings — gross primary ART sale volume by currency (passes excluded —
 //              see the passes block) plus Kismet-listing secondary
 //              royalties; USD derived at read time from the same Chainlink
@@ -181,12 +183,12 @@ export async function GET(req: NextRequest) {
       // Combined paid-PRIMARY volume: the two commerce blocks above summed
       // (art + passes), answering "how much buyer money has moved on Kismet"
       // without the reader doing cross-block addition. Gross buyer payments;
-      // free mints are $0 by definition and resales are excluded (their
-      // volume is not aggregated — only the royalty trail in
-      // earnings.secondary). Null until the snapshot carries the passes block
-      // (same deploy-window rule as `passes`), so an art-only partial can
-      // never masquerade as the total. updatedAt mirrors `sales` — volume is
-      // derived from that same snapshot, never computed independently.
+      // free mints are $0 by definition. Secondary (resale) volume is the
+      // separate `resales` block below — all-time gross is volume + resales.
+      // Null until the snapshot carries the passes block (same deploy-window
+      // rule as `passes`), so an art-only partial can never masquerade as the
+      // total. updatedAt mirrors `sales` — volume is derived from that same
+      // snapshot, never computed independently.
       volume:
         sales && sales.passes != null
           ? {
