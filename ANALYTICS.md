@@ -13,10 +13,11 @@ Companion docs: `REDIS_IMPLEMENTATION_REVIEW.md` (key inventory),
 ## 1. What the endpoint is
 
 `GET /api/stats/platform` is the platform-wide aggregate companion to the
-per-artist `/api/stats` read. It serves **five public blocks** — `catalog`,
-`sales`, `passes`, `volume`, `earnings` — plus a **sixth, admin-only block**
-(`funnel`) that only appears for an authenticated admin requesting
-`?funnel=1`.
+per-artist `/api/stats` read. It serves **six public blocks** — `catalog`,
+`sales`, `passes`, `volume`, `resales`, `earnings` — plus an **admin-only
+block** (`funnel`) that only appears for an authenticated admin requesting
+`?funnel=1`. A companion admin route, `/api/admin/stats-health`, reports the
+pipeline's freshness and last error (see §11).
 
 Key properties:
 
@@ -149,6 +150,7 @@ scan the guards rejected.
 | `invited` | Editions airdropped as invites — from **Kismet's own airdrop records** (`lib/airdrops.ts`), because Kismet airdrops bypass the In•Process relay and the transfers feed never sees them. Best-effort: an upstream/Redis failure reads 0 for one run and the next hourly scan heals it. |
 | `eth` / `usdc` | Gross paid pass volume by currency (human units). |
 | `usd` | Read-time valuation at the current Chainlink price (same honesty rule as `earnings` — see below). |
+| `buyers` | Distinct pass-buyer wallets (smart wallets folded). `null` on a pre-field snapshot. See `volume.buyers` for the deduped art+pass union. |
 
 On artist cards (not this endpoint), a pass sale's count/earnings are credited
 to the real artist(s) in the payout split — platform treasury/referral/
@@ -169,15 +171,32 @@ product), so `volume` re-combines them.
 | `editions` / `transactions` | `sales` + `passes` counterparts summed. |
 | `eth` / `usdc` | Gross buyer payments across ALL paid primary mints (art + passes). |
 | `usd` | Read-time valuation at `earnings.ethUsd` (same honesty rule). |
+| `buyers` | Distinct buyers across art + passes, **deduped in the rebuild** (a wallet that bought both counts once — can't be derived by adding `collectors` + `passes.buyers`). `null` on a pre-field snapshot. |
 | `updatedAt` | Mirrors `sales.updatedAt` — volume is derived from that same snapshot in the route, never computed independently. |
 
-Exclusions: free mints/airdrops ($0 by definition) and **secondary resale
-volume** (not aggregated anywhere — only its royalty trail appears, in
-`earnings.secondary`). No combined unique-buyers count exists yet: pass
-buyers are not folded into `collectors`, so overlap between the two buyer
-sets is unknown. `null` until the stored snapshot carries the `passes` block
-(same deploy-window rule), so an art-only partial can never masquerade as
-the total.
+Exclusions: free mints/airdrops ($0 by definition). Secondary resale volume
+is captured separately in `resales` (below). `null` until the stored snapshot
+carries the `passes` block (same deploy-window rule), so an art-only partial
+can never masquerade as the total.
+
+## 4c. `resales` — secondary (resale) volume (added 2026-07-18)
+
+**What it answers:** gross buyer money on **resales** — the piece `volume`
+(primary mints) omits. Distinct from `earnings.secondary`, which is only the
+creator-royalty *slice* of these same sales; `resales` is the whole sale price.
+
+| Field | Meaning |
+| --- | --- |
+| `transactions` | Kismet-listing fills counted. |
+| `eth` / `usdc` | Gross resale price by currency (human units). |
+| `usd` | Read-time valuation (same honesty rule). |
+| `updatedAt` | Its OWN stamp — sourced from fills (event-driven), a different source than the hourly rebuild, so all-time gross = `volume` + `resales` is a knowing sum across two clocks. |
+
+Aggregated **event-driven** at fill time (`recordSecondaryVolume`, one atomic
+NX-idempotent increment per listing from the on-chain-verified PATCH) — never
+a read-time scan of the listings set. **Scope:** Kismet-listing fills only;
+off-platform resales (OpenSea/Blur/Zora) are structurally invisible, the same
+limit as the royalty trail. `null` until the first Kismet resale.
 
 ## 5. `earnings` — gross value captured
 
@@ -347,11 +366,10 @@ Blind spots to keep in mind when reading the numbers:
   entire behavioral surface (a deliberate no-third-party-analytics stance,
   same posture as `lib/clientError.ts`).
 - **Off-platform secondary market.** Resales on OpenSea/Blur/Zora pay the
-  artist's EIP-2981 royalty on-chain but are structurally invisible —
-  `earnings.secondary` means *Kismet-listing* royalties, not lifetime
-  secondary income. Capturing external fills would need an on-chain indexer.
-- **Secondary sale volume.** Only the royalty amounts credited are known, not
-  resale prices.
+  artist's EIP-2981 royalty on-chain but are structurally invisible — both the
+  `resales` volume block and `earnings.secondary` royalties mean
+  *Kismet-listing* fills only, not lifetime secondary activity. Capturing
+  external fills would need an on-chain indexer.
 - **Free art mints/airdrops** never appear in `sales` (paid rows only); they
   are visible only through the catalog census. The one airdrop class that *is*
   counted is pass invites, via Kismet's own records.
@@ -380,8 +398,11 @@ Blind spots to keep in mind when reading the numbers:
 | `kismetart:stats:royalty:{eth,usdc}` | Per-artist royalty zsets (Σ = `earnings.secondary`) | Event-driven, per listing fill |
 | `kismetart:stats:royalty-ledger` | Per-fill royalty journal (HSET by listingId) | Event-driven, atomic with the credit |
 | `kismetart:royalty-credited:<listingId>` | Idempotency claims | Once per fill |
-| `kismetart:stats:last-rebuild` | Shrink-guard baseline (counted + in-scope) | After each successful rebuild |
-| `kismetart:stats:{rebuild,census}-lock` | Single-flight locks | 900 s / 600 s TTL |
+| `kismetart:stats:secondary` | Resale-volume aggregate (`resales`; HASH eth/usdc/transactions/updatedAt) | Event-driven, one atomic increment per fill |
+| `kismetart:stats:secondary-counted:<listingId>` | Resale-volume idempotency claims | Once per fill |
+| `kismetart:stats:last-rebuild` | Shrink + value-jump guard baseline (counted, in-scope, eth, usdc) | After each successful rebuild |
+| `kismetart:stats:health:{rebuild,census}` | Pipeline heartbeat — last run/success/error per phase | Every sync-stats run outcome |
+| `kismetart:stats:{rebuild,census}-lock` | Single-flight locks (`lib/redisLock.ts`) | 900 s / 600 s TTL |
 | `kismetart:funnel:<event>:<YYYY-MM-DD>` | Funnel day counters | Per beacon; 90-day TTL |
 | `kismetart:ethusd` | Chainlink price cache | 60 s TTL |
 
@@ -390,11 +411,27 @@ Blind spots to keep in mind when reading the numbers:
 | Concern | File |
 | --- | --- |
 | Endpoint (shape, gating, caching) | `app/api/stats/platform/route.ts` |
-| Sales rebuild, snapshot, royalty credit | `lib/stats.ts` |
+| Sales rebuild, snapshot, royalty credit, resale volume | `lib/stats.ts` |
 | Pure per-row accumulation + attribution rules | `lib/statsMath.ts` (unit-verified by `scripts/verify-stats.ts`) |
 | Catalog census | `lib/catalogCensus.ts` |
 | Transfers feed reader | `lib/inprocessTransfers.ts` |
+| Single-flight lock (shared) | `lib/redisLock.ts` |
+| Pipeline health heartbeat + admin read | `lib/statsHealth.ts` / `app/api/admin/stats-health/route.ts` |
 | Funnel events + client tracker | `lib/funnel.ts` |
 | Funnel sink / admin read | `app/api/funnel/route.ts` / `lib/funnelServer.ts` |
 | ETH/USD price | `lib/ethPrice.ts` |
 | Hourly cron driver | `app/api/cron/sync-stats/route.ts` (+ `vercel.json`) |
+
+## 11. Pipeline health (`/api/admin/stats-health`)
+
+Admin-only (`private, no-store`). The rebuild/census integrity guards abort
+and preserve the last good snapshot on an anomaly — safe, but previously only
+a `console.error` nobody watches, so a wedged rebuild (e.g. the value-jump
+guard tripping until a human `DEL`s the baseline) could serve hours-stale
+totals silently. This exposes, per phase, `lastRunAt` / `lastOkAt` /
+`ageSinceOkMs` / `lastError` / `lastErrorAt`, plus the live snapshot ages, and
+a top-level `healthy` — false when either phase carries an unresolved error OR
+either snapshot is staler than 3 h (≥2 missed hourly runs). Point an uptime
+monitor at it (carrying the admin cookie) for alerting; the public endpoint's
+per-block `updatedAt` already exposes raw freshness for a monitor without
+credentials.
