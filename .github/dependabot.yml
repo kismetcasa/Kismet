@@ -26,10 +26,11 @@ updates:
       # The security-relevant parents, standalone so a wallet/upload-stack
       # major (e.g. wagmi@3, which clears the tracked ws highs) arrives
       # individually reviewable + smoke-testable, never bundled with an
-      # unrelated breaking bump. wagmi@3 stays unmergeable until
-      # @farcaster/miniapp-wagmi-connector ships wagmi-3 peer support
-      # (latest 2.0.0 pins @wagmi/core@^2.14.1) — when its PR goes green,
-      # that's the signal the upstream unblock landed.
+      # unrelated breaking bump. wagmi@3 stays unmergeable until BOTH
+      # @rainbow-me/rainbowkit (2.2.11 -> peer wagmi@^2.9.0, the conflict CI
+      # hits first) and @farcaster/miniapp-wagmi-connector (2.0.0 ->
+      # @wagmi/core@^2.14.1) ship wagmi-3 support — when #585 goes green,
+      # the upstream unblock landed.
       wallet-and-upload-majors:
         update-types: [major]
         patterns:
@@ -75,7 +76,7 @@ updates:
       # Revisit (unpin + restore a range here) when quick-auth relaxes its pin.
       - dependency-name: typescript
       # eslint majors move WITH the Next migration, not before it:
-      # eslint-config-next@15.5.19 peer-pins eslint ^7||^8||^9, so an
+      # eslint-config-next@15 peers eslint ^7||^8||^9, so an
       # eslint@10 PR is red from birth while config-next is ignored at 15
       # (config-next@16 peers >=9, i.e. eslint 10 pairs with next 16).
       - dependency-name: eslint

@@ -256,12 +256,12 @@ alone — re-add a verified AR.IO gateway; tracked in `VIDEO_PLAYBACK_RCA.md`.)
 ## 7. Dependencies & supply chain  ✅ (CI) / 🔶 (high-sev tail)
 
 **CI now exists** — `.github/workflows/ci.yml` runs `npm ci` → build → `npm run check`
-(typecheck + lint + resource-hint + bundle-size) → `npm audit` (blocks **critical**;
+(typecheck + lint + resource-hint + bundle-size + verify suites) → `npm audit` (blocks **critical**;
 `high` is `continue-on-error` pending the transitive triage) — plus
 `.github/dependabot.yml` (grouped weekly updates; majors split into a
-wallet/upload-stack group vs. everything else, with framework majors
-(`next`/`tailwindcss`/`typescript`) ignored as deliberate manual migrations — see the
-config header for the PR #540 deadlock that forced the split). The audit's original
+wallet/upload-stack group vs. everything else, with framework/toolchain majors and
+`@coinbase/cdp-sdk` ignored as deliberate manual holds — the config lists each with its
+rationale, plus the PR #540 deadlock that forced the split). The audit's original
 "there is no CI / no dependency scanning" is **resolved.**
 
 **`npm audit` (re-measured 2026-07-17): 59 vulnerabilities — 0 critical, 8 high, 33
@@ -269,19 +269,20 @@ moderate, 18 low** (was 70/0/11 before the override-refresh pass; first audit ev
 67 / 3 critical / 8 high). The **critical `arbundles` chain stays cleared** via root
 `overrides` (§B13). **Cleared by the 2026-07-17 pass, no majors needed:** `undici`
 ≤6.26.0 (4 advisories: Set-Cookie header injection, response-queue poisoning, WS
-DoS) via the root override bump `^6.24.0 → ^6.27.0` + lockfile re-resolve — the old
-note attributing this fix to `@ardrive/turbo-sdk@1.13` was wrong (1.42 was installed
-and still flagged; the override was the actual lever, and Dependabot never proposes
-override bumps); `form-data` CRLF (3.0.5/4.0.6) and `hono` ≤4.12.24 (4.12.30) via
+DoS) via the root override `^6.24.0 → ^6.27.0` + lockfile re-resolve (the override is
+the lever — Dependabot never proposes override bumps, so this needs a manual pass;
+turbo-sdk@1.42 is installed and still flags undici, so its bump was never the fix);
+`form-data` CRLF (3.0.5/4.0.6) and `hono` ≤4.12.24 (4.12.30) via
 in-range bumps; two vulnerable nested `ws` copies (ethers/engine.io) deduped onto the
 fixed 8.21.0. All 8 remaining **high** are transitive, in two families:
 - **`ws`** — 5 vulnerable copies, split across BOTH families: 4× `8.18.0`
   (exact-pinned by nested viem copies under `@reown/appkit*` /
   `@walletconnect/utils`) are the wallet-stack set → fix is `wagmi@3`, currently
-  **blocked upstream**: `@farcaster/miniapp-wagmi-connector` latest (2.0.0)
-  peer-pins `@wagmi/core@^2.14.1` and no wagmi-3-compatible release exists. Take
-  wagmi@3 the week that connector ships (its now-standalone Dependabot PR going
-  green is the signal), with a wallet-connect + mint smoke test. The 5th copy
+  **blocked upstream by two deps**: `@rainbow-me/rainbowkit` 2.2.11 (peer
+  `wagmi@^2.9.0`, the conflict CI surfaces first) and
+  `@farcaster/miniapp-wagmi-connector` 2.0.0 (peer `@wagmi/core@^2.14.1`); neither has a
+  wagmi-3 release yet. Take wagmi@3 the week BOTH ship it (PR #585 going green is the
+  signal), with a wallet-connect + mint smoke test. The 5th copy
   (`7.4.6`, exact-pinned by `@ethersproject/providers`) belongs to the Turbo tree
   below and **outlives wagmi@3**. Server exposure is nil meanwhile — server-side
   RPC uses viem `http()` transports; `ws` runs in the browser wallet stack.
@@ -303,8 +304,8 @@ fail on that tail, so the flip needs an allowlist wrapper (`audit-ci`
 signer advisories, or the tail clearing upstream first.
 
 **Version posture (good):** Next 15.5 (16 is a planned manual migration — it retires
-`scripts/patch-next-clone-response.mjs`, whose upstream fix is 16.x-only; checklist
-in the dependabot.yml header + OPS_RUNBOOK), React 19, Node 22 LTS, viem 2 / wagmi 2
+`scripts/patch-next-clone-response.mjs`, whose upstream fix is 16.x-only; re-verify
+checklist in the dependabot.yml `next` ignore + OPS_RUNBOOK), React 19, Node 22 LTS, viem 2 / wagmi 2
 (3 blocked upstream, above); engines pin `node >=22.11`.
 
 ## 8. Client-side scale (UX & bandwidth)
