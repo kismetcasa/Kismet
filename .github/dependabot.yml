@@ -87,6 +87,16 @@ updates:
       # until the runtime itself moves.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # @coinbase/cdp-sdk is held at 1.51.2 (pinned exactly in package.json).
+      # 1.53.0 declares @x402/* as OPTIONAL peers but STATICALLY imports
+      # @x402/evm, so `next build` fails "Can't resolve '@x402/evm'" when the
+      # optional peers aren't installed (it broke PR #584's build). The app
+      # uses CdpClient (agent spender) but NOT the x402 payment path, which is
+      # only "planned" (app/api/agent/discover/route.ts). Unpin + drop this
+      # ignore when x402 is actually implemented (adopt cdp-sdk ≥1.53 AND add
+      # @x402/core|evm|extensions|svm), or when upstream stops statically
+      # importing the optional peers.
+      - dependency-name: "@coinbase/cdp-sdk"
   - package-ecosystem: github-actions
     directory: /
     schedule:
