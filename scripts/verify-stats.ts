@@ -20,6 +20,7 @@ import {
   accumulateTransfer,
   classifyTransferCurrency,
   dominantRecipientExcluding,
+  exceedsGrowthLimit,
   newAccumulateCounters,
   newPlatformTotals,
   remapEntries,
@@ -333,6 +334,24 @@ check('buyer: zero address rejected (falls through to next field)',
   transferBuyer({ buyer: '0x0000000000000000000000000000000000000000', to: BUYER_B }) === BUYER_B)
 check('buyer: non-address garbage rejected', transferBuyer({ buyer: 'alice.eth' }) === null)
 check('buyer: absent -> null', transferBuyer({}) === null)
+
+// ── value-jump breaker predicate (unit-drift guard, lib/stats.ts) ────────────
+// factor 1000, floors ETH 0.005 / USDC 5 (the live constants).
+const GROW = 1000
+check('growth: undefined baseline never trips (pre-field / first run)',
+  exceedsGrowthLimit(undefined, 1e12, 5, GROW) === false)
+check('growth: baseline at/below floor is skipped (dust baseline)',
+  exceedsGrowthLimit(5, 1e9, 5, GROW) === false && exceedsGrowthLimit(4, 1e9, 5, GROW) === false)
+check('growth: armed at real USDC volume (40 > floor 5)',
+  exceedsGrowthLimit(40, 40_000_000, 5, GROW) === true) // ×1e6 unit drift caught
+check('growth: armed at real ETH volume (0.9 > floor 0.005)',
+  exceedsGrowthLimit(0.9085, 0.9085 * 1e18, 0.005, GROW) === true)
+check('growth: plausible organic hour does NOT trip (×100 < ×1000)',
+  exceedsGrowthLimit(40, 4000, 5, GROW) === false)
+check('growth: exactly ×1000 does not trip (strict >)',
+  exceedsGrowthLimit(40, 40_000, 5, GROW) === false)
+check('growth: just over ×1000 trips',
+  exceedsGrowthLimit(40, 40_001, 5, GROW) === true)
 
 const runPlatform = (
   rows: StatsTransfer[],

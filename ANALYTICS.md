@@ -13,9 +13,10 @@ Companion docs: `REDIS_IMPLEMENTATION_REVIEW.md` (key inventory),
 ## 1. What the endpoint is
 
 `GET /api/stats/platform` is the platform-wide aggregate companion to the
-per-artist `/api/stats` read. It serves **four public blocks** — `catalog`,
-`sales`, `passes`, `earnings` — plus a **fifth, admin-only block** (`funnel`)
-that only appears for an authenticated admin requesting `?funnel=1`.
+per-artist `/api/stats` read. It serves **five public blocks** — `catalog`,
+`sales`, `passes`, `volume`, `earnings` — plus a **sixth, admin-only block**
+(`funnel`) that only appears for an authenticated admin requesting
+`?funnel=1`.
 
 Key properties:
 
@@ -156,6 +157,28 @@ an "artist". Pass revenue is **not** inside `earnings.primary`.
 
 ---
 
+## 4b. `volume` — combined paid-primary volume (added 2026-07-17)
+
+**What it answers:** "how much buyer money has moved on Kismet, total" —
+without the reader summing blocks. On-chain a pass IS a primary mint; the
+`sales`/`passes` split is reporting semantics (art market vs platform
+product), so `volume` re-combines them.
+
+| Field | Meaning |
+| --- | --- |
+| `editions` / `transactions` | `sales` + `passes` counterparts summed. |
+| `eth` / `usdc` | Gross buyer payments across ALL paid primary mints (art + passes). |
+| `usd` | Read-time valuation at `earnings.ethUsd` (same honesty rule). |
+| `updatedAt` | Mirrors `sales.updatedAt` — volume is derived from that same snapshot in the route, never computed independently. |
+
+Exclusions: free mints/airdrops ($0 by definition) and **secondary resale
+volume** (not aggregated anywhere — only its royalty trail appears, in
+`earnings.secondary`). No combined unique-buyers count exists yet: pass
+buyers are not folded into `collectors`, so overlap between the two buyer
+sets is unknown. `null` until the stored snapshot carries the `passes` block
+(same deploy-window rule), so an art-only partial can never masquerade as
+the total.
+
 ## 5. `earnings` — gross value captured
 
 **What it answers:** money that moved through the platform's tracked
@@ -249,6 +272,10 @@ the read-time price; 2 editions invited via airdrop. Note pass revenue
 0.0008 ETH Kismet-listing royalties (≈ $1.49), total ≈ $831.62, all valued at
 the Chainlink price of $1,865.72 captured in `ethUsd`. The USDC leg shows at
 least one sale was paid in USDC.
+
+**Volume** (block added 2026-07-17, derived from the same snapshot) — art +
+passes combined: 221 editions / 221 transactions, 0.9075 ETH + 40 USDC
+≈ $1,733 at that read's price. Note passes out-earn the art primary market.
 
 ---
 
