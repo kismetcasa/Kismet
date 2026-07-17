@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPlatformSalesSnapshot, getRoyaltyTotals } from '@/lib/stats'
+import { getPlatformSalesSnapshot, getRoyaltyTotals, getSecondaryVolume } from '@/lib/stats'
 import { getCatalogCensus } from '@/lib/catalogCensus'
 import { getFunnelCounts } from '@/lib/funnelServer'
 import { getEthUsd } from '@/lib/ethPrice'
@@ -73,10 +73,11 @@ export async function GET(req: NextRequest) {
     if (!('error' in admin)) funnel = await getFunnelCounts()
   }
 
-  const [sales, catalog, royalties, ethUsd] = await Promise.all([
+  const [sales, catalog, royalties, resaleVol, ethUsd] = await Promise.all([
     getPlatformSalesSnapshot(),
     getCatalogCensus(),
     getRoyaltyTotals(),
+    getSecondaryVolume(),
     getEthUsd(),
   ])
 
@@ -200,6 +201,23 @@ export async function GET(req: NextRequest) {
               updatedAt: sales.updatedAt,
             }
           : null,
+      // Secondary (RESALE) volume — gross buyer payment on Kismet-listing fills,
+      // aggregated event-driven per fill (lib/stats.ts recordSecondaryVolume).
+      // Distinct from `volume` (primary mints) and from earnings.secondary
+      // (only the creator-royalty slice of these same resales). Its own
+      // updatedAt — a different source (fills) than the hourly rebuild — so a
+      // consumer wanting all-time gross adds volume + resales knowingly. Null
+      // until the first Kismet resale. SCOPE: Kismet-listing fills only;
+      // off-platform resales are invisible (same limit as the royalty trail).
+      resales: resaleVol
+        ? {
+            transactions: resaleVol.transactions,
+            eth: resaleVol.eth,
+            usdc: resaleVol.usdc,
+            usd: usdOf(resaleVol.eth, resaleVol.usdc),
+            updatedAt: resaleVol.updatedAt,
+          }
+        : null,
       earnings,
       ...(funnel ? { funnel } : {}),
     },

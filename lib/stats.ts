@@ -55,6 +55,27 @@ const ROYALTY_ETH_KEY = 'kismetart:stats:royalty:eth'
 const ROYALTY_USDC_KEY = 'kismetart:stats:royalty:usdc'
 const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
 
+// Platform-wide SECONDARY (resale) VOLUME — the GROSS buyer payment on each
+// Kismet-listing fill, aggregated event-driven (one increment per fill from the
+// on-chain-verified listings PATCH) so the platform endpoint never scans the
+// listings set. This is the resale companion to the primary `volume` block;
+// earnings.secondary captures only the creator-royalty SLICE of these same
+// sales, whereas this is the whole sale price. SCOPE LIMIT inherited from the
+// royalty credit path: Kismet-listing fills only — off-platform resales
+// (OpenSea/Blur/Zora) are structurally invisible here. Idempotent per listing
+// via an NX claim committed ATOMICALLY with the increment (same shape as the
+// royalty credit's Lua), so a retried/concurrent PATCH counts exactly once.
+const SECONDARY_VOLUME_KEY = 'kismetart:stats:secondary'
+const secondaryCountedKey = (listingId: string) =>
+  `kismetart:stats:secondary-counted:${listingId}`
+const RECORD_SECONDARY_LUA = `
+if not redis.call('SET', KEYS[1], '1', 'NX') then return 0 end
+redis.call('HINCRBYFLOAT', KEYS[2], ARGV[1], ARGV[2])
+redis.call('HINCRBY', KEYS[2], 'transactions', 1)
+redis.call('HSET', KEYS[2], 'updatedAt', ARGV[3])
+return 1
+`
+
 // Platform-wide primary-sale roll-up, snapshotted by the SAME rebuild scan
 // that writes the per-artist sets (one pass, one row-gating rule — see
 // PlatformTotals in lib/statsMath.ts), so /api/stats/platform and the artist
@@ -789,6 +810,61 @@ export async function getPlatformSalesSnapshot(): Promise<PlatformSalesSnapshot 
     if (!raw) return null
     const parsed = typeof raw === 'string' ? (JSON.parse(raw) as PlatformSalesSnapshot) : raw
     return typeof parsed?.updatedAt === 'number' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** Persisted secondary-volume aggregate, or null before the first fill. */
+export interface SecondaryVolume {
+  /** Kismet-listing fills counted. */
+  transactions: number
+  /** Gross ETH resale volume (human units). */
+  eth: number
+  /** Gross USDC resale volume (human units). */
+  usdc: number
+  updatedAt: number
+}
+
+/**
+ * Record one Kismet-listing fill's GROSS sale price into the platform
+ * secondary-volume aggregate. Called from the on-chain-verified listings PATCH.
+ * Idempotent per listing (NX claim, atomic with the increment), so a retried or
+ * concurrent fill counts once. Best-effort — returns false on a non-positive
+ * price, empty id, or Redis error, and never throws (must never fail the sale).
+ * `price` is in HUMAN units (the caller converts from base units).
+ */
+export async function recordSecondaryVolume(args: {
+  listingId: string
+  currency: 'eth' | 'usdc'
+  price: number
+}): Promise<boolean> {
+  const { listingId, currency, price } = args
+  if (!listingId || !Number.isFinite(price) || price <= 0) return false
+  try {
+    const wrote = await redis.eval(
+      RECORD_SECONDARY_LUA,
+      [secondaryCountedKey(listingId), SECONDARY_VOLUME_KEY],
+      [currency, String(price), String(Date.now())],
+    )
+    return wrote === 1
+  } catch {
+    return false
+  }
+}
+
+/** The secondary-volume aggregate, or null before the first fill / on error. */
+export async function getSecondaryVolume(): Promise<SecondaryVolume | null> {
+  try {
+    const h = await redis.hgetall<Record<string, string | number>>(SECONDARY_VOLUME_KEY)
+    if (!h) return null
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : 0
+    }
+    const updatedAt = num(h.updatedAt)
+    if (!updatedAt) return null
+    return { transactions: num(h.transactions), eth: num(h.eth), usdc: num(h.usdc), updatedAt }
   } catch {
     return null
   }
