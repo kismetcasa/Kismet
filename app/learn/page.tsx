@@ -4,6 +4,7 @@ import { JsonLd } from '@/components/JsonLd'
 import { faqJsonLd, breadcrumbNode } from '@/lib/structuredData'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
+import { PATRON_COLLECTION_ADDRESS } from '@/lib/patronCollection'
 import { GUIDES } from './guides'
 
 // Static informational hub. This is the page that lets Kismet rank for — and
@@ -43,11 +44,37 @@ export const metadata: Metadata = {
 // Single source of truth for the FAQ: rendered visibly below AND emitted as
 // FAQPage schema, so the two never drift. Answers are 40–70 words, declarative,
 // and lead with the direct answer — the shape AI engines extract as citations.
-const FAQ: { question: string; answer: string }[] = [
+interface FaqItem {
+  question: string
+  answer: string
+  // Optional rich render for the visible answer (e.g. an inline link). The
+  // plain `answer` string stays the single source for the FAQPage schema, so
+  // the JSON-LD and the visible words never drift.
+  answerNode?: React.ReactNode
+}
+
+const FAQ: FaqItem[] = [
   {
-    question: 'What is Kismet?',
+    question: 'Why was Kismet created?',
     answer:
-      'Kismet is an onchain art platform and marketplace on Base, an Ethereum Layer 2 network. Artists mint digital artworks — called moments — as tokens, group them into collections, and set their price. Collectors discover, collect, and trade that art directly from a crypto wallet, with every mint and sale recorded onchain.',
+      "We run hybrid residencies for artists and developers to produce experiences that bridge irl and onchain. We've found that the artists we work with through Kismet Casa need a place they can call home for their work, a place they can reach both the collectors who already support them and those that will.",
+    answerNode: (
+      <>
+        We run{' '}
+        <a
+          href="https://www.kismetcasa.xyz"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-ink underline underline-offset-4"
+        >
+          hybrid residencies
+        </a>{' '}
+        for artists and developers to produce experiences that bridge irl and
+        onchain. We&apos;ve found that the artists we work with through Kismet
+        Casa need a place they can call home for their work, a place they can
+        reach both the collectors who already support them and those that will.
+      </>
+    ),
   },
   {
     question: 'What is onchain art?',
@@ -110,16 +137,33 @@ const SECTIONS: Section[] = [
       <>
         <p>
           Kismet is an onchain art platform and marketplace on{' '}
-          <span className="text-ink">Base</span>, an Ethereum Layer 2 network.
-          Artists mint digital artworks — called <em>moments</em> — as onchain
-          tokens, organize them into collections, and set their price.
-          Collectors discover, collect, and trade that art directly from a
+          <a
+            href="https://www.base.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            Base
+          </a>
+          , an Ethereum Layer 2 network built by Coinbase. Artists mint digital
+          artworks as NFTs, organize them into collections, and set their price.
+          Collectors discover, enjoy, and collect that art directly from their
           crypto wallet.
         </p>
         <p>
           Every mint and sale is recorded onchain, and each artwork&apos;s media
-          is stored permanently on Arweave — so provenance and the work itself
-          persist independently of any single company.
+          is stored permanently on{' '}
+          <a
+            href="https://www.arweave.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            Arweave
+          </a>
+          , a network designed to keep data available for at least 200 years — so
+          provenance and the work itself persist independently of any single
+          company.
         </p>
       </>
     ),
@@ -131,12 +175,33 @@ const SECTIONS: Section[] = [
       <ol className="list-decimal space-y-2 pl-5">
         <li>Connect a Base wallet, or create one when you first sign in.</li>
         <li>
+          Collect artwork from the{' '}
+          <Link
+            href={`/collection/${PATRON_COLLECTION_ADDRESS}`}
+            className="text-ink underline underline-offset-4"
+          >
+            Patron Collection
+          </Link>
+          .
+        </li>
+        <li>
           Open <Link href="/mint" className="text-ink underline underline-offset-4">Mint</Link>{' '}
           and upload your image, video, animation, or text.
         </li>
-        <li>Add a title and description so collectors — and search engines — understand the work.</li>
-        <li>Choose a standalone moment or add it to a collection, and set it to collect for free or for a price.</li>
-        <li>Confirm. Kismet stores the file on Arweave and mints it as an ERC-1155 token on Base.</li>
+        <li>Add a title and description so collectors understand the work.</li>
+        <li>Choose a standalone mint or add it to a collection, then set the supply, price, and sale window.</li>
+        <li>
+          Confirm mint! Kismet stores the file on Arweave and mints it as an{' '}
+          <a
+            href="https://eips.ethereum.org/EIPS/eip-1155"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            ERC-1155
+          </a>{' '}
+          token on Base.
+        </li>
       </ol>
     ),
   },
@@ -146,22 +211,26 @@ const SECTIONS: Section[] = [
     body: (
       <>
         <p>
-          Open any moment and choose <span className="text-ink">Collect</span>.
-          Primary mints are collected for free or for the creator&apos;s set
-          price; pieces listed on the secondary market are bought in ETH or
-          USDC. You confirm in your Base wallet and the token transfers to you
-          onchain.
+          Click <span className="text-ink">Collect</span> on any artwork, a
+          transaction will appear in your wallet for your confirmation. Confirm
+          the correct amount is leaving your wallet and you receive the correct
+          NFT in return. Primary mints and secondary sales are priced in either
+          USDC or ETH on Base.
         </p>
         <p>
-          Moments you own can be listed for sale at a price you choose. Creators
-          earn from primary collects and from royalties when their work resells.
+          Artworks you own can be{' '}
+          <Link href="/market" className="text-ink underline underline-offset-4">
+            listed for sale
+          </Link>{' '}
+          at a price you choose. Creators earn from primary collects and from
+          royalties when their work resells on the secondary market.
         </p>
       </>
     ),
   },
   {
     id: 'ai-agent',
-    heading: 'Use Kismet from an AI assistant',
+    heading: 'Collect artwork on Kismet using an AI Agent',
     body: (
       <p>
         Kismet exposes an{' '}
@@ -196,17 +265,7 @@ export default function LearnPage() {
           <span className="text-dim">Learn</span>
         </nav>
 
-        <h1 className="mb-4 text-xl text-ink">Onchain art, minting, and collecting on Kismet</h1>
-
-        {/* Front-loaded direct answer — the paragraph AI engines lift as a
-            summary, so it leads with the definition in one self-contained block. */}
-        <p className="mb-8 text-base text-dim">
-          Kismet is an onchain art platform and marketplace on Base where artists
-          mint digital artworks as tokens, create collections, and set their
-          price, and collectors discover, collect, and trade that art from a
-          crypto wallet. This guide explains how minting, collecting, and trading
-          onchain art work on Kismet.
-        </p>
+        <h1 className="mb-8 text-xl text-ink">Minting and collecting onchain art on Kismet</h1>
 
         {SECTIONS.map((section) => (
           <section key={section.id} id={section.id} className="mb-8">
@@ -238,7 +297,7 @@ export default function LearnPage() {
             {FAQ.map((item) => (
               <div key={item.question}>
                 <h3 className="mb-1 text-ink">{item.question}</h3>
-                <p>{item.answer}</p>
+                <p>{item.answerNode ?? item.answer}</p>
               </div>
             ))}
           </div>

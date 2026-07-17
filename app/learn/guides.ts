@@ -27,6 +27,10 @@ export interface Guide {
   steps?: { heading: string; items: string[] }
   sections: GuideSection[]
   faqs: { question: string; answer: string }[]
+  // Authoritative external references, rendered as a visible "Sources" list.
+  // Citing primary sources is a recognized E-E-A-T / answer-engine signal; every
+  // link points at a canonical protocol or spec page, never marketing.
+  sources?: { label: string; url: string }[]
 }
 
 export const GUIDES: Guide[] = [
@@ -37,7 +41,7 @@ export const GUIDES: Guide[] = [
     description:
       'A step-by-step guide to minting onchain art on Kismet: connect a Base wallet, upload your image or video, set a price, and publish your artwork as a token on Base with permanent Arweave storage.',
     published: '2026-07-10',
-    updated: '2026-07-10',
+    updated: '2026-07-16',
     intro:
       'To mint onchain art on Kismet, connect a Base wallet, open Mint, upload your image, video, animation, or text, add a title and description, choose a free or paid mint, and confirm. Kismet stores your file permanently on Arweave and mints it as an ERC-1155 token on Base — an Ethereum Layer 2 — so the artwork and its ownership record live onchain.',
     steps: {
@@ -108,6 +112,11 @@ export const GUIDES: Guide[] = [
           'The onchain token and its Arweave media are permanent, which is what makes provenance trustworthy. Editable display details such as the title and description can be updated by the creator, but the underlying minted artwork and its record do not change.',
       },
     ],
+    sources: [
+      { label: 'Base — Ethereum Layer 2 built by Coinbase', url: 'https://www.base.org' },
+      { label: 'Arweave — permanent, pay-once data storage', url: 'https://www.arweave.org' },
+      { label: 'ERC-1155 Multi-Token Standard (EIP-1155)', url: 'https://eips.ethereum.org/EIPS/eip-1155' },
+    ],
   },
   {
     slug: 'what-is-onchain-art',
@@ -116,7 +125,7 @@ export const GUIDES: Guide[] = [
     description:
       'Onchain art is digital artwork whose ownership and provenance are recorded on a blockchain. Learn what onchain art is, how it differs from traditional digital art, why permanence and Base matter, and how it works on Kismet.',
     published: '2026-07-10',
-    updated: '2026-07-10',
+    updated: '2026-07-16',
     intro:
       'Onchain art is digital artwork whose ownership and provenance are recorded on a blockchain rather than in a private database. Minting the work creates a token that proves who made it and who owns it, with no central intermediary required. On Kismet, artworks are minted on Base and their media is stored permanently on Arweave, so both the piece and its record persist independently of any single company.',
     sections: [
@@ -178,6 +187,11 @@ export const GUIDES: Guide[] = [
           'The image file can be copied like any digital file, but the onchain token — the verifiable record of authorship and ownership — cannot. Provenance is what distinguishes the original mint from a copy, and it is recorded publicly onchain.',
       },
     ],
+    sources: [
+      { label: 'Ethereum — ERC-1155 token standard', url: 'https://ethereum.org/developers/docs/standards/tokens/erc-1155/' },
+      { label: 'Base — Ethereum Layer 2 built by Coinbase', url: 'https://www.base.org' },
+      { label: 'Arweave — permanent data storage', url: 'https://www.arweave.org' },
+    ],
   },
   {
     slug: 'onchain-art-marketplace',
@@ -186,7 +200,7 @@ export const GUIDES: Guide[] = [
     description:
       'How an onchain art marketplace works on Kismet: collect newly minted moments, buy listed pieces on the secondary market in ETH or USDC, list your own work for sale, earn royalties, and keep custody in your own wallet.',
     published: '2026-07-10',
-    updated: '2026-07-10',
+    updated: '2026-07-16',
     intro:
       'An onchain art marketplace is where digital artworks are bought and sold with transactions settled on a blockchain instead of a private ledger. On Kismet you collect newly minted moments, buy existing ones on the secondary market in ETH or USDC, and list work you own for sale — with ownership transferring onchain and custody staying in your own wallet.',
     sections: [
@@ -252,6 +266,11 @@ export const GUIDES: Guide[] = [
         answer:
           'Yes. Your moments and funds stay in your own Base wallet. Kismet prepares transactions and displays listings, but you sign every action yourself, so you retain custody throughout collecting, buying, and selling.',
       },
+    ],
+    sources: [
+      { label: 'Base — Ethereum Layer 2 built by Coinbase', url: 'https://www.base.org' },
+      { label: 'ERC-1155 Multi-Token Standard (EIP-1155)', url: 'https://eips.ethereum.org/EIPS/eip-1155' },
+      { label: 'Arweave — permanent media storage', url: 'https://www.arweave.org' },
     ],
   },
 ]

@@ -124,6 +124,26 @@ export default async function GuidePage({ params }: Props) {
           </div>
         </section>
 
+        {guide.sources && guide.sources.length > 0 && (
+          <section id="sources" className="mb-8">
+            <h2 className="mb-3 text-base text-ink">Sources</h2>
+            <ul className="space-y-1">
+              {guide.sources.map((s) => (
+                <li key={s.url}>
+                  <a
+                    href={s.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-ink underline underline-offset-4"
+                  >
+                    {s.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         <section className="border-t border-line pt-6 text-xs text-muted">
           <p className="mb-2 text-dim">Keep reading</p>
           <ul className="space-y-1">
