@@ -258,32 +258,54 @@ alone — re-add a verified AR.IO gateway; tracked in `VIDEO_PLAYBACK_RCA.md`.)
 **CI now exists** — `.github/workflows/ci.yml` runs `npm ci` → build → `npm run check`
 (typecheck + lint + resource-hint + bundle-size) → `npm audit` (blocks **critical**;
 `high` is `continue-on-error` pending the transitive triage) — plus
-`.github/dependabot.yml` (grouped weekly updates, majors split for
-turbo-sdk/ws/undici). The audit's original "there is no CI / no dependency scanning" is
-**resolved.**
+`.github/dependabot.yml` (grouped weekly updates; majors split into a
+wallet/upload-stack group vs. everything else, with framework majors
+(`next`/`tailwindcss`/`typescript`) ignored as deliberate manual migrations — see the
+config header for the PR #540 deadlock that forced the split). The audit's original
+"there is no CI / no dependency scanning" is **resolved.**
 
-**`npm audit` today: 65 vulnerabilities — 0 critical, 7 high, 40 moderate, 18 low**
-(down from the first audit's 67 / 3 critical / 8 high). The **critical `arbundles`
-chain is cleared** via root `overrides` (§B13). All 7 **high** are transitive, not app
-code, and split by fix path:
-- **Needs a semver-major bump** (the reason they're not yet cleared): `ws`
-  (7.x/≤8.20.1, wallet stack `wagmi → walletconnect → reown` → fix is `wagmi@3`) and
-  `undici` (≤6.26.0, Turbo/`aoconnect` → fix is `@ardrive/turbo-sdk@1.13`). Both are
-  wallet/upload-signing internals not reachable on the app's critical path (§B13);
-  taking a wallet-stack major warrants its own reviewed pass + a connect smoke test.
-- **The rest of the Turbo signing tree** — `@dha-team/arbundles`, `@ethersproject/*`,
-  `secp256k1` — is the same unused multi-chain payment/signer surface analysed in §B13
-  (RSA upload path doesn't touch it).
-- **Non-major fixes available** (`form-data` CRLF, `hono` ≤4.12.24 SSR/JWT): transitive
-  via tooling, not the request path; safe to clear when the dependabot pass lands.
+**`npm audit` (re-measured 2026-07-17): 59 vulnerabilities — 0 critical, 8 high, 33
+moderate, 18 low** (was 70/0/11 before the override-refresh pass; first audit ever:
+67 / 3 critical / 8 high). The **critical `arbundles` chain stays cleared** via root
+`overrides` (§B13). **Cleared by the 2026-07-17 pass, no majors needed:** `undici`
+≤6.26.0 (4 advisories: Set-Cookie header injection, response-queue poisoning, WS
+DoS) via the root override bump `^6.24.0 → ^6.27.0` + lockfile re-resolve — the old
+note attributing this fix to `@ardrive/turbo-sdk@1.13` was wrong (1.42 was installed
+and still flagged; the override was the actual lever, and Dependabot never proposes
+override bumps); `form-data` CRLF (3.0.5/4.0.6) and `hono` ≤4.12.24 (4.12.30) via
+in-range bumps; two vulnerable nested `ws` copies (ethers/engine.io) deduped onto the
+fixed 8.21.0. All 8 remaining **high** are transitive, in two families:
+- **`ws`** — 5 vulnerable copies, split across BOTH families: 4× `8.18.0`
+  (exact-pinned by nested viem copies under `@reown/appkit*` /
+  `@walletconnect/utils`) are the wallet-stack set → fix is `wagmi@3`, currently
+  **blocked upstream**: `@farcaster/miniapp-wagmi-connector` latest (2.0.0)
+  peer-pins `@wagmi/core@^2.14.1` and no wagmi-3-compatible release exists. Take
+  wagmi@3 the week that connector ships (its now-standalone Dependabot PR going
+  green is the signal), with a wallet-connect + mint smoke test. The 5th copy
+  (`7.4.6`, exact-pinned by `@ethersproject/providers`) belongs to the Turbo tree
+  below and **outlives wagmi@3**. Server exposure is nil meanwhile — server-side
+  RPC uses viem `http()` transports; `ws` runs in the browser wallet stack.
+- **The Turbo signing tree** — `@ardrive/turbo-sdk` itself, `@dha-team/arbundles`,
+  `@ethersproject/providers`, `secp256k1`, `@solana/spl-token`,
+  `@solana/buffer-layout-utils`, `bigint-buffer` — the unused multi-chain
+  payment/signer surface analysed in §B13 (the RSA upload path doesn't touch it);
+  npm's only offered "fix" is a force-**downgrade** to turbo-sdk 1.13 — refuse it.
+  **Reachability update:** since 2026-07-14 (`lib/arweave/uploadServer.ts`, MCP mint)
+  the Node build of turbo-sdk runs **server-side**, so this subtree is no longer
+  browser-only — its HTTP client (`undici`) is now patched (above); the signer
+  advisories still sit on code paths the RSA upload flow never calls.
 
-**Open:** this is a deliberate, tracked deferral — CI gates on `--audit-level=critical`
-(0 today) while `dependabot.yml` proposes the parent bumps; flip the gate to `high` once
-the `wagmi`/`turbo-sdk` majors are taken and smoke-tested (§B11/§B13). Not fixed inline
-here to avoid a wallet-stack major on an unrelated branch.
+**Open:** CI gates on `--audit-level=critical` (0 today). After `wagmi@3` lands and
+is smoke-tested (§B11/§B13), only the turbo-signing-tree tail remains (including
+its `ws@7.4.6` copy) — note a bare `npm audit --audit-level=high` gate would still
+fail on that tail, so the flip needs an allowlist wrapper (`audit-ci`
+/`better-npm-audit`) carrying the VEX rationale for the documented-unreachable
+signer advisories, or the tail clearing upstream first.
 
-**Version posture (good):** Next 15.5, React 19, Node 22 LTS, viem 2 / wagmi 2 — all
-current; engines pin `node >=22.11`.
+**Version posture (good):** Next 15.5 (16 is a planned manual migration — it retires
+`scripts/patch-next-clone-response.mjs`, whose upstream fix is 16.x-only; checklist
+in the dependabot.yml header + OPS_RUNBOOK), React 19, Node 22 LTS, viem 2 / wagmi 2
+(3 blocked upstream, above); engines pin `node >=22.11`.
 
 ## 8. Client-side scale (UX & bandwidth)
 

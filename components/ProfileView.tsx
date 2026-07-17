@@ -1476,7 +1476,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           entry. Owner chrome — hidden while previewing the public view. Both
           self-gate on smart-wallet eligibility, so an EOA owner sees neither. */}
       {isOwner && !previewPublic && (
-        <div className="mb-4 flex flex-col gap-3">
+        <div className="mb-4 grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2">
           <AgentCollectEntry />
           <AgentSkillCard />
         </div>

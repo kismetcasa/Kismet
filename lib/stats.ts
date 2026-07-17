@@ -16,6 +16,7 @@ import { getAirdropsByMoment } from './airdrops'
 import { USDC_BASE } from './zoraMint'
 import {
   accumulateTransfer,
+  exceedsGrowthLimit,
   newAccumulateCounters,
   newPlatformTotals,
   remapEntries,
@@ -57,12 +58,15 @@ const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
 // Platform-wide primary-sale roll-up, snapshotted by the SAME rebuild scan
 // that writes the per-artist sets (one pass, one row-gating rule — see
 // PlatformTotals in lib/statsMath.ts), so /api/stats/platform and the artist
-// cards can never disagree about what counted as a sale. SCOPE differs on
-// purpose: the roll-up folds only rows whose moment lives in a Kismet-tracked
-// collection (the /transfers feed is In•Process-network-wide, and reporting
-// the network's volume as Kismet's overstated editions ~6× when first
-// measured), while the per-artist sets keep their original network-wide
-// semantics — an artist's card has always meant "their In•Process earnings".
+// cards can never disagree about what counted as a sale. Both are
+// KISMET-SCOPED: the /transfers feed is In•Process-network-wide (reporting the
+// network's volume as Kismet's overstated editions ~6× when first measured),
+// so the roll-up folds only rows whose moment lives in a Kismet-tracked
+// collection, and — per the 2026-07-14 decision documented on PlatformScope
+// (lib/statsMath.ts) — the per-artist sets fold only 'in' + 'pass' rows too:
+// every surfaced number on kismet.art means Kismet activity. They differ only
+// in WHICH scoped rows they take ('pass' rows credit the real split artists'
+// cards but live in the snapshot's passes block, not the art figures).
 // Single JSON value, absolute overwrite per successful rebuild; read by
 // getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
@@ -118,6 +122,24 @@ const MAX_PAGES = 1000
 // all-artists wipe by an empty-but-shape-valid response. Self-healing: an
 // aborted write is retried by the next cron run against the same baseline.
 const MIN_COUNT_RETENTION = 0.8
+// Value-jump circuit breaker (exceedsGrowthLimit in lib/statsMath.ts): refuse
+// the overwrite when a run's in-scope gross value (art + passes, per currency)
+// exceeds the last successful run's by more than MAX_VALUE_GROWTH×. This is the
+// ONLY detector for upstream UNIT drift — a per-row sanity ceiling can't catch
+// it (a base-unit USDC value for a real $1–$1,000 sale, 1e6–1e9, overlaps the
+// legitimate human range), but drift multiplies the whole re-scanned total by
+// ≥1e6× in one run, which the ratio catches.
+//
+// Factor 1000 (not 100): drift is ≥1e6×, so 1000 still catches it with wide
+// margin, while NO organic hour grows the cumulative lifetime total by 1000× —
+// that separation is what lets the floors sit LOW enough to keep the guard
+// armed at the platform's real (small) volume without a genuine viral hour
+// wedging every future rebuild. The floors only skip a dust-sized baseline
+// where a ratio is meaningless; an unset (pre-field) baseline skips entirely.
+// If drift ever trips it, the error names the exact key to DEL to override.
+const MAX_VALUE_GROWTH = 1000
+const VALUE_GUARD_FLOOR_ETH = 0.005
+const VALUE_GUARD_FLOOR_USDC = 5
 const LAST_REBUILD_KEY = 'kismetart:stats:last-rebuild'
 interface LastRebuild {
   counted: number
@@ -128,6 +150,11 @@ interface LastRebuild {
   // skips the scoped guard (like `counted` on the very first run). Both the
   // fail-closed read above and this guard must miss for a wipe to commit.
   inScope?: number
+  // In-scope gross value (art + passes, human units) from the last successful
+  // run — the value-jump breaker's baseline (see MAX_VALUE_GROWTH). Optional
+  // like `inScope`: a pre-field baseline skips the guard.
+  eth?: number
+  usdc?: number
   at: number
 }
 
@@ -533,6 +560,23 @@ async function runRebuild(): Promise<RebuildResult> {
         'scope collapse (degraded tracked set?), refusing to overwrite',
     )
   }
+  // Value-jump breaker (see MAX_VALUE_GROWTH): combined art+pass gross per
+  // currency, so unit drift anywhere the endpoint serves money aborts before
+  // the destructive swap rather than publishing a ×1e6 earnings figure.
+  const grossEth = platform.eth + platform.passes.eth
+  const grossUsdc = platform.usdc + platform.passes.usdc
+  for (const [label, prevV, nowV, floor] of [
+    ['ETH', prev?.eth, grossEth, VALUE_GUARD_FLOOR_ETH],
+    ['USDC', prev?.usdc, grossUsdc, VALUE_GUARD_FLOOR_USDC],
+  ] as const) {
+    if (exceedsGrowthLimit(prevV, nowV, floor, MAX_VALUE_GROWTH)) {
+      throw new Error(
+        `rebuild folded ${nowV} gross ${label} vs ${prevV} last run — implausible ` +
+          `×${Math.round(nowV / (prevV as number))} jump (feed unit drift?); verify upstream and ` +
+          `DEL ${LAST_REBUILD_KEY} to override`,
+      )
+    }
+  }
 
   // Fold smart-wallet-credited scores onto the owning EOA so profile reads
   // (which union FC-verified wallets + known smart wallets) see them under
@@ -571,6 +615,8 @@ async function runRebuild(): Promise<RebuildResult> {
       .set(LAST_REBUILD_KEY, {
         counted: counters.counted,
         inScope: platform.transactions,
+        eth: grossEth,
+        usdc: grossUsdc,
         at: Date.now(),
       } satisfies LastRebuild)
       .catch(() => {})
@@ -878,7 +924,7 @@ export async function creditListingRoyalty(args: {
 // when membership can't be established (wallet receiver, unstored split,
 // mismatched addresses, RPC failure). Members with a zero share are dropped.
 // Stored-splits reads go out together in one auto-pipelined round trip; only
-// a membership hit pays the recipient lookup, which reads the SAME permanent
+// a membership hit pays the recipient lookup, which reads the SAME TTL-bounded
 // kismetart:splitaddr:* cache the pending roll-up maintains and race-bounds
 // any cold on-chain read — this runs awaited on the sale-confirmation path,
 // so latency must stay bounded and the common case must stay Redis-only.

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { randomUUID } from 'node:crypto'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
@@ -6,6 +7,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { consumeUserQuota } from '@/lib/userQuota'
 import { resolveArtistSplitJobs, invalidatePendingCache } from '@/lib/pending'
+import { getStoredSplits } from '@/lib/splits'
 import { planDistributeAll, jobCurrencies, DISTRIBUTE_ALL_CAP } from '@/lib/distributePlan'
 import { acquireDistributeSlot, releaseDistributeSlot } from '@/lib/distributeGovernor'
 import { getEthUsd } from '@/lib/ethPrice'
@@ -14,7 +16,15 @@ import { USDC_BASE } from '@/lib/zoraMint'
 import { errorResponse } from '@/lib/apiResponse'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 120
+// The fan-out can legitimately run long (up to DISTRIBUTE_ALL_CAP×2 sponsored
+// txs at ~30s each, 3-wide → ~400s worst case), which is why LOCK_TTL_S below
+// is sized to outlive it. maxDuration is a Vercel-only hint; the deployment
+// target is a persistent server (Coolify — see OPS_RUNBOOK / next.config
+// output:'standalone'), where the handler runs to completion and the finally
+// always releases the lock, so the 600s lock is a crash backstop, not an
+// orphan risk. Set to 300 (matching the sync-stats cron) so the two figures
+// don't read as contradictory.
+export const maxDuration = 300
 
 // "Distribute all": settle the caller's undistributed split balances in one
 // gesture. The caller signs ONCE; the server resolves the splits they're a
@@ -36,7 +46,19 @@ export const maxDuration = 120
 const FANOUT_CONCURRENCY = 3
 
 const perArtistLockKey = (addr: string) => `kismetart:distribute-all-lock:${addr.toLowerCase()}`
-const LOCK_TTL_S = 90
+// Must outlive the worst-case fan-out (CAP 20 jobs × 2 currencies ÷ 3 workers
+// × 30s upstream timeout ≈ 400s). At the previous 90s the lock lapsed mid-run,
+// letting a second click overlap the first and fire duplicate sponsored txs at
+// still-funded splits — gas waste only (0xSplits can only pay its fixed
+// recipients), but inprocess /distribute is non-idempotent, so never invite it.
+const LOCK_TTL_S = 600
+// Release only when we still hold the lock (token match) — a run that somehow
+// outlives even the raised TTL must not delete a successor's lock. Same
+// safe-release CAS the stats rebuild lock uses (lib/stats.ts).
+const RELEASE_LOCK_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`
 
 async function distributeOne(
   apiKey: string,
@@ -127,18 +149,21 @@ export async function POST(req: NextRequest) {
   // distribute for the same still-funded split. The lock serialises them; the
   // second gets a clean "already running".
   const lockKey = perArtistLockKey(callerAddress)
+  const lockToken = randomUUID()
   // Fail CLOSED: a Redis error resolves to null → 429, NOT proceed-without-lock.
   // The lock guards a non-idempotent, gas-spending fan-out; the safe failure is
   // "make them retry", never "run unguarded". NX-held also returns null here.
-  const gotLock = await redis.set(lockKey, '1', { nx: true, ex: LOCK_TTL_S }).catch(() => null)
+  const gotLock = await redis.set(lockKey, lockToken, { nx: true, ex: LOCK_TTL_S }).catch(() => null)
   if (gotLock !== 'OK') {
     return errorResponse(429, 'A distribution is already in progress — try again shortly')
   }
+  const releaseLock = () =>
+    redis.eval(RELEASE_LOCK_LUA, [lockKey], [lockToken]).catch(() => {})
 
   // Platform-wide in-flight governor — a burst of artists queues rather than
   // flooding the single shared relay. Released in finally alongside the lock.
   if (!(await acquireDistributeSlot())) {
-    await redis.del(lockKey).catch(() => {})
+    await releaseLock()
     return errorResponse(429, 'The network is busy settling payouts — try again shortly')
   }
 
@@ -186,8 +211,24 @@ export async function POST(req: NextRequest) {
       Array.from({ length: Math.min(FANOUT_CONCURRENCY, units.length) }, worker),
     )
 
-    // Drained balances → bust the 60s pending cache so the card refreshes.
-    await invalidatePendingCache(callerAddress)
+    // Drained balances → bust the 60s pending cache so cards refresh. A drained
+    // split pays ALL its recipients, so bust every co-recipient too (the caller
+    // resolves their own splits, but collaborators share the pot) — matching the
+    // single-distribute path, which busts all recipients. Recipients come from
+    // the CAP-bounded `selected` set's stored split lists (≤20 reads, auto-
+    // pipelined); the caller is always included. Best-effort per address.
+    const toBust = new Set<string>([callerAddress.toLowerCase()])
+    try {
+      const lists = await Promise.all(
+        selected.map((j) =>
+          getStoredSplits(j.collection, j.tokenId).catch(() => ({ hasSplits: false, recipients: [] })),
+        ),
+      )
+      for (const s of lists) for (const r of s.recipients) toBust.add(r.address.toLowerCase())
+    } catch {
+      // Fall back to at least the caller (already in the set).
+    }
+    await Promise.all([...toBust].map((a) => invalidatePendingCache(a)))
 
     return NextResponse.json({
       moments: selected.length,
@@ -204,6 +245,6 @@ export async function POST(req: NextRequest) {
     return errorResponse(502, 'Could not resolve or distribute splits')
   } finally {
     await releaseDistributeSlot()
-    await redis.del(lockKey).catch(() => {})
+    await releaseLock()
   }
 }

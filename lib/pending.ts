@@ -5,7 +5,7 @@ import { getEthUsd } from './ethPrice'
 import { isAddress } from './address'
 import { getRecipientSplits, type RecipientSplit } from './splits'
 import { expandToFidSiblings } from './addressUnion'
-import type { SplitJob } from './distributePlan'
+import { dedupeBySplitAddress, type SplitJob } from './distributePlan'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -22,7 +22,9 @@ export interface ArtistPending {
    *  and there IS an ETH leg — honest-USD policy shared with getArtistEarnings;
    *  never a silently-USDC-only figure presented as the whole total. */
   usd: number
-  /** How many split moments currently hold a non-zero share for the artist. */
+  /** How many distinct split CONTRACTS currently hold a non-zero share for the
+   *  artist. Several moments can pay into one deterministic split; each pot
+   *  counts once (dedupeBySplitAddress). */
   count: number
 }
 
@@ -34,8 +36,16 @@ const MULTICALL3_BALANCE_ABI = parseAbi([
   'function getEthBalance(address addr) view returns (uint256)',
 ])
 
-// A token's split address is its immutable on-chain creator-reward-recipient;
-// cache the resolved mapping forever so only first-seen moments pay the read.
+// A token's split address is its on-chain creator-reward-recipient. Kismet
+// sets it once at mint (via inprocess) and never changes it — but on Zora
+// 1155s the collection admin CAN change it later with external tools, so the
+// mapping is not truly immutable. Cache with a TTL instead of forever: a
+// stale entry would point the pending roll-up and distribute-all at the OLD
+// pot indefinitely (permanent under-report + wasted sponsored txs) and break
+// royalty split-decomposition (credit stranded on a bare contract address).
+// 7 days bounds that failure window at the cost of one batched multicall
+// re-read per moment per week.
+const SPLIT_ADDR_TTL_S = 7 * 24 * 60 * 60
 const splitAddrKey = (collection: string, tokenId: string) =>
   `kismetart:splitaddr:${collection.toLowerCase()}:${tokenId}`
 
@@ -45,12 +55,13 @@ const splitAddrKey = (collection: string, tokenId: string) =>
 const RECIPIENT_READ_TIMEOUT_MS = 3000
 
 /**
- * Single-token creator-reward-recipient, through the SAME permanent
+ * Single-token creator-reward-recipient, through the SAME TTL-bounded
  * kismetart:splitaddr:* cache resolveSplitAddresses maintains — so the
  * listings fill path (creditListingRoyalty's split decomposition) reuses
  * mappings the pending roll-up already paid for, and vice versa. Bounded and
  * best-effort: null on miss + RPC failure/timeout, never throws. The mapping
- * is immutable on-chain, so a cache hit is always authoritative.
+ * is admin-mutable on-chain (see SPLIT_ADDR_TTL_S), so cache hits are
+ * authoritative only within the TTL.
  */
 export async function getCachedCreatorRewardRecipient(
   collection: string,
@@ -58,7 +69,14 @@ export async function getCachedCreatorRewardRecipient(
 ): Promise<string | null> {
   const key = splitAddrKey(collection, tokenId)
   const cached = await redis.get<string>(key).catch(() => null)
-  if (typeof cached === 'string' && isAddress(cached)) return cached.toLowerCase()
+  if (typeof cached === 'string' && isAddress(cached)) {
+    // Migrate a legacy no-TTL entry (written before SPLIT_ADDR_TTL_S) to the
+    // 7-day bound; NX leaves an already-set expiry untouched so an active
+    // moment's window isn't slid forward (which would defeat re-resolution).
+    // Best-effort, off the returned value.
+    await redis.expire(key, SPLIT_ADDR_TTL_S, 'NX').catch(() => {})
+    return cached.toLowerCase()
+  }
   try {
     const r = await Promise.race([
       serverBaseClient().readContract({
@@ -73,7 +91,7 @@ export async function getCachedCreatorRewardRecipient(
     ])
     const addr = String(r).toLowerCase()
     if (!isAddress(addr) || addr === ZERO_ADDR) return null
-    await redis.set(key, addr).catch(() => {})
+    await redis.set(key, addr, { ex: SPLIT_ADDR_TTL_S }).catch(() => {})
     return addr
   } catch {
     return null
@@ -107,6 +125,17 @@ async function resolveSplitAddresses(
     .catch(() => moments.map(() => null))) as (string | null)[]
 
   const out: (string | undefined)[] = moments.map((_, i) => cached[i] ?? undefined)
+  // Migrate legacy no-TTL entries (written before SPLIT_ADDR_TTL_S) to the
+  // 7-day bound so the whole existing corpus — not just moments first resolved
+  // after this shipped — re-resolves and can pick up an admin-changed on-chain
+  // recipient. NX leaves an already-set expiry alone (no sliding). One
+  // auto-pipelined round trip over the cache HITS, best-effort.
+  const hitKeys = moments
+    .map((m, i) => (out[i] ? splitAddrKey(m.collection, m.tokenId) : null))
+    .filter((k): k is string => k !== null)
+  if (hitKeys.length) {
+    await Promise.all(hitKeys.map((k) => redis.expire(k, SPLIT_ADDR_TTL_S, 'NX').catch(() => {})))
+  }
   const missing = moments.map((m, i) => ({ m, i })).filter(({ i }) => !out[i])
   if (!missing.length) return out
 
@@ -126,7 +155,9 @@ async function resolveSplitAddresses(
       const addr = String(r.result).toLowerCase()
       if (!isAddress(addr) || addr === ZERO_ADDR) return
       out[i] = addr
-      await redis.set(splitAddrKey(m.collection, m.tokenId), addr).catch(() => {})
+      await redis
+        .set(splitAddrKey(m.collection, m.tokenId), addr, { ex: SPLIT_ADDR_TTL_S })
+        .catch(() => {})
     }),
   )
   return out
@@ -154,14 +185,15 @@ function mergeSplitsByMoment(perWallet: RecipientSplit[][]): RecipientSplit[] {
 }
 
 /**
- * Resolve every split the artist is a payee on, with the split's LIVE ETH+USDC
- * balance and the artist's allocation — the shared work-list for both the
- * pending roll-up (compute, below, which sums the artist's shares) and
- * distribute-all (which selects the top-CAP by value and fans out). Union across
- * FC siblings; MAX_MOMENTS-capped on the merged set so the on-chain fan-out
- * stays bounded. One aggregate3 reads native + USDC for every split (the
- * irrelevant balance is simply 0, keeping the index currency-agnostic). Returns
- * [] when the artist is on no splits or none resolve.
+ * Resolve every split the artist is a payee on — deduped to UNIQUE split
+ * contracts — with each split's LIVE ETH+USDC balance and the artist's
+ * allocation: the shared work-list for both the pending roll-up (compute,
+ * below, which sums the artist's shares) and distribute-all (which selects the
+ * top-CAP by value and fans out). Union across FC siblings; MAX_MOMENTS-capped
+ * on the merged set so the on-chain fan-out stays bounded. One aggregate3
+ * reads native + USDC for every split (the irrelevant balance is simply 0,
+ * keeping the index currency-agnostic). Returns [] when the artist is on no
+ * splits or none resolve.
  */
 export async function resolveArtistSplitJobs(
   address: string,
@@ -172,37 +204,46 @@ export async function resolveArtistSplitJobs(
   const moments = mergeSplitsByMoment(perWallet).slice(0, MAX_MOMENTS)
   if (!moments.length) return []
 
+  // Collapse onto unique split contracts BEFORE the balance read: 0xSplits
+  // addresses are deterministic, so several moments (even across collections)
+  // can pay into ONE shared pot, and a per-moment job list both re-reads the
+  // same balances and — worse — counts/distributes the same pot once per
+  // moment (the N× pending inflation and duplicate distribute calls fixed
+  // 2026-07-17; see dedupeBySplitAddress and ANALYTICS.md §7b). The first-seen
+  // moment stays as the pot's representative (collection, tokenId).
   const addrs = await resolveSplitAddresses(moments)
-  const withAddr = moments
-    .map((m, i) => ({ m, addr: addrs[i] }))
-    .filter((x): x is { m: RecipientSplit; addr: string } => !!x.addr)
+  const withAddr = dedupeBySplitAddress(
+    moments
+      .map((m, i) => ({ m, splitAddress: addrs[i], pct: m.pct }))
+      .filter((x): x is { m: RecipientSplit; splitAddress: string; pct: number } => !!x.splitAddress),
+  )
   if (!withAddr.length) return []
 
   const balances = await serverBaseClient().multicall({
-    contracts: withAddr.flatMap(({ addr }) => [
+    contracts: withAddr.flatMap(({ splitAddress }) => [
       {
         address: MULTICALL3_ADDRESS,
         abi: MULTICALL3_BALANCE_ABI,
         functionName: 'getEthBalance' as const,
-        args: [addr as `0x${string}`] as const,
+        args: [splitAddress as `0x${string}`] as const,
       },
       {
         address: USDC_BASE,
         abi: ERC20_ABI,
         functionName: 'balanceOf' as const,
-        args: [addr as `0x${string}`] as const,
+        args: [splitAddress as `0x${string}`] as const,
       },
     ]),
   })
 
-  return withAddr.map(({ m, addr }, idx) => {
+  return withAddr.map(({ m, splitAddress, pct }, idx) => {
     const ethRes = balances[idx * 2]
     const usdcRes = balances[idx * 2 + 1]
     return {
       collection: m.collection,
       tokenId: m.tokenId,
-      splitAddress: addr,
-      pct: m.pct, // getRecipientSplits guarantees a whole 1–100
+      splitAddress,
+      pct, // getRecipientSplits guarantees a whole 1–100; min across a shared group
       ethWei: ethRes?.status === 'success' ? (ethRes.result as bigint) : 0n,
       usdcBase: usdcRes?.status === 'success' ? (usdcRes.result as bigint) : 0n,
     }
