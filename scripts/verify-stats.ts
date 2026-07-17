@@ -488,6 +488,16 @@ check('scope: pass sale folds GROSS into the passes block, never the art figures
     sPass.platform.eth === 0 && sPass.platform.artists.size === 0 &&
     sPass.platform.outOfScope === 0,
   JSON.stringify({ ...sPass.platform, buyers: [], artists: [] }))
+check('scope: pass sale captures the buyer into passes.buyers, NOT the art buyer set',
+  sPass.platform.passes.buyers.has(BUYER_A) && sPass.platform.passes.buyers.size === 1 &&
+    sPass.platform.buyers.size === 0,
+  JSON.stringify({ pass: [...sPass.platform.passes.buyers], art: [...sPass.platform.buyers] }))
+const sPassNoBuyer = runScoped([{
+  t: { value: 0.04, moment: { fee_recipients: [{ artist_address: OWNER, percent_allocation: 100 }] } },
+  scope: 'pass',
+}])
+check('scope: pass sale with no buyer field adds nobody to passes.buyers',
+  sPassNoBuyer.platform.passes.buyers.size === 0)
 check('scope: pass sale credits the REAL artist — count to dominant non-platform recipient',
   sPass.maps[0].get(OWNER.toLowerCase()) === 2 && sPass.maps[0].size === 1,
   JSON.stringify([...sPass.maps[0]]))

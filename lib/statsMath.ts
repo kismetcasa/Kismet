@@ -238,8 +238,18 @@ export interface PlatformTotals {
   /** Counted rows excluded: no collection ref resolvable on the row. */
   scopeUnknown: number
   /** Paid Patron/Mint-Pass sales — Kismet revenue, kept out of the art
-   *  figures. Same gates and currency rules as the art buckets. */
-  passes: { transactions: number; editions: number; eth: number; usdc: number }
+   *  figures. Same gates and currency rules as the art buckets. `buyers` is the
+   *  pass-buyer wallet set (pre smart-wallet fold), captured so a combined
+   *  unique-buyer count across art + passes can be computed — the art
+   *  `collectors` figure alone can't be added to pass sales without
+   *  double-counting anyone who bought both. */
+  passes: {
+    transactions: number
+    editions: number
+    eth: number
+    usdc: number
+    buyers: Set<string>
+  }
 }
 
 export const newPlatformTotals = (): PlatformTotals => ({
@@ -254,7 +264,7 @@ export const newPlatformTotals = (): PlatformTotals => ({
   unknownCurrency: 0,
   outOfScope: 0,
   scopeUnknown: 0,
-  passes: { transactions: 0, editions: 0, eth: 0, usdc: 0 },
+  passes: { transactions: 0, editions: 0, eth: 0, usdc: 0, buyers: new Set<string>() },
 })
 
 export interface AccumulateCounters {
@@ -513,6 +523,11 @@ export function accumulateTransfer(
     if (platformScope === 'pass') {
       platform.passes.transactions++
       platform.passes.editions += qty
+      // Capture the pass buyer (same strict validation + null-on-missing rule
+      // as the art path) so a combined unique-buyer count can dedup people who
+      // bought both a pass and art. Missing-buyer rows just aren't added.
+      const passBuyer = transferBuyer(t)
+      if (passBuyer) platform.passes.buyers.add(passBuyer)
       const currency = classifyTransferCurrency(t.currency, opts.usdcAddress)
       if (currency === 'usdc') platform.passes.usdc += value
       else if (currency === 'eth') platform.passes.eth += value

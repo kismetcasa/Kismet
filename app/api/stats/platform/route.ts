@@ -173,6 +173,8 @@ export async function GET(req: NextRequest) {
               eth: sales.passes.eth,
               usdc: sales.passes.usdc,
               usd: usdOf(sales.passes.eth, sales.passes.usdc),
+              // Distinct pass buyers; null on a pre-field snapshot.
+              buyers: sales.passes.buyers ?? null,
             }
           : null,
       // Combined paid-PRIMARY volume: the two commerce blocks above summed
@@ -192,6 +194,9 @@ export async function GET(req: NextRequest) {
               eth: sales.eth + sales.passes.eth,
               usdc: sales.usdc + sales.passes.usdc,
               usd: usdOf(sales.eth + sales.passes.eth, sales.usdc + sales.passes.usdc),
+              // Distinct buyers across art + passes (deduped in the rebuild, not
+              // addable from the two counts). Null on a pre-field snapshot.
+              buyers: sales.buyersCombined ?? null,
               updatedAt: sales.updatedAt,
             }
           : null,

@@ -218,6 +218,9 @@ export interface RebuildResult {
   passEditions: number
   /** Pass editions airdropped as invites (Kismet airdrop records). */
   passInvited: number
+  /** Distinct buyers across art + passes (post smart-wallet fold) — the cron
+   *  log's combined-collector signal. */
+  buyersCombined: number
 }
 
 /**
@@ -251,6 +254,11 @@ export interface PlatformSalesSnapshot {
   outOfScope: number
   /** Coverage: counted rows excluded — no collection ref resolvable. */
   scopeUnknown: number
+  /** Unique buyer wallets across art AND passes (smart wallets folded), deduped
+   *  so someone who bought both counts once — the honest "total distinct
+   *  collectors" figure `collectors` (art-only) can't provide. Optional: absent
+   *  on a snapshot written before this field shipped. */
+  buyersCombined?: number
   /** Patron/Mint-Pass activity, kept out of the art figures above: paid pass
    *  SALES from the same transfers scan, plus INVITED — editions airdropped
    *  through Kismet's own airdrop records (lib/airdrops.ts), which is where
@@ -262,6 +270,9 @@ export interface PlatformSalesSnapshot {
     eth: number
     usdc: number
     invited: number
+    /** Unique pass-buyer wallets (smart wallets folded). Optional: absent on a
+     *  snapshot written before this field shipped. */
+    buyers?: number
   }
 }
 
@@ -351,6 +362,7 @@ const EMPTY_REBUILD_RESULT: RebuildResult = {
   scopeUnknown: 0,
   passEditions: 0,
   passInvited: 0,
+  buyersCombined: 0,
 }
 
 // Editions airdropped as pass INVITES, from Kismet's own per-moment airdrop
@@ -598,10 +610,15 @@ async function runRebuild(): Promise<RebuildResult> {
   const passInvited = await countPatronInvites()
 
   const platRemap = await getSmartWalletOwners([
-    ...new Set([...platform.buyers, ...platform.artists]),
+    ...new Set([...platform.buyers, ...platform.passes.buyers, ...platform.artists]),
   ])
   const collectors = new Set<string>()
   for (const b of platform.buyers) collectors.add(platRemap.get(b) ?? b)
+  const passBuyers = new Set<string>()
+  for (const b of platform.passes.buyers) passBuyers.add(platRemap.get(b) ?? b)
+  // Combined distinct buyers across art + passes — a true union (someone who
+  // bought both counts once), which adding the two counts could never give.
+  const buyersCombined = new Set<string>([...collectors, ...passBuyers])
   const scopedArtists = new Set<string>()
   for (const a of platform.artists) scopedArtists.add(platRemap.get(a) ?? a)
 
@@ -646,7 +663,17 @@ async function runRebuild(): Promise<RebuildResult> {
       droppedMints: platform.droppedMints,
       outOfScope: platform.outOfScope,
       scopeUnknown: platform.scopeUnknown,
-      passes: { ...platform.passes, invited: passInvited },
+      buyersCombined: buyersCombined.size,
+      // Explicit fields, NOT `...platform.passes` — that would spread the
+      // `buyers` Set into the JSON (serializing to `{}`); persist its size.
+      passes: {
+        transactions: platform.passes.transactions,
+        editions: platform.passes.editions,
+        eth: platform.passes.eth,
+        usdc: platform.passes.usdc,
+        invited: passInvited,
+        buyers: passBuyers.size,
+      },
     } satisfies PlatformSalesSnapshot)
     .catch((err) =>
       console.error('[stats] platform snapshot write failed (stale until next run)', err),
@@ -673,6 +700,7 @@ async function runRebuild(): Promise<RebuildResult> {
     scopeUnknown: platform.scopeUnknown,
     passEditions: platform.passes.editions,
     passInvited,
+    buyersCombined: buyersCombined.size,
   }
 }
 
