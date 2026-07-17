@@ -1,5 +1,6 @@
-import { randomUUID } from 'crypto'
+import { formatEther, formatUnits } from 'viem'
 import { redis, zpairsToMap } from './redis'
+import { acquireLock } from './redisLock'
 import { getEthUsd } from './ethPrice'
 import { fetchTransfersPage } from './inprocessTransfers'
 import { expandToEarningsWallets } from './addressUnion'
@@ -54,6 +55,27 @@ const USDC_KEY = 'kismetart:stats:earned:usdc'
 const ROYALTY_ETH_KEY = 'kismetart:stats:royalty:eth'
 const ROYALTY_USDC_KEY = 'kismetart:stats:royalty:usdc'
 const ROYALTY_LEDGER_KEY = 'kismetart:stats:royalty-ledger'
+
+// Platform-wide SECONDARY (resale) VOLUME — the GROSS buyer payment on each
+// Kismet-listing fill, aggregated event-driven (one increment per fill from the
+// on-chain-verified listings PATCH) so the platform endpoint never scans the
+// listings set. This is the resale companion to the primary `volume` block;
+// earnings.secondary captures only the creator-royalty SLICE of these same
+// sales, whereas this is the whole sale price. SCOPE LIMIT inherited from the
+// royalty credit path: Kismet-listing fills only — off-platform resales
+// (OpenSea/Blur/Zora) are structurally invisible here. Idempotent per listing
+// via an NX claim committed ATOMICALLY with the increment (same shape as the
+// royalty credit's Lua), so a retried/concurrent PATCH counts exactly once.
+const SECONDARY_VOLUME_KEY = 'kismetart:stats:secondary'
+const secondaryCountedKey = (listingId: string) =>
+  `kismetart:stats:secondary-counted:${listingId}`
+const RECORD_SECONDARY_LUA = `
+if not redis.call('SET', KEYS[1], '1', 'NX') then return 0 end
+redis.call('HINCRBYFLOAT', KEYS[2], ARGV[1], ARGV[2])
+redis.call('HINCRBY', KEYS[2], 'transactions', 1)
+redis.call('HSET', KEYS[2], 'updatedAt', ARGV[3])
+return 1
+`
 
 // Platform-wide primary-sale roll-up, snapshotted by the SAME rebuild scan
 // that writes the per-artist sets (one pass, one row-gating rule — see
@@ -167,13 +189,6 @@ interface LastRebuild {
 // "move to an incremental sync" (see MAX_PAGES).
 const REBUILD_LOCK_KEY = 'kismetart:stats:rebuild-lock'
 const REBUILD_LOCK_TTL_S = 900
-// Release only if we still hold the lock (token match), so a run whose lock
-// already expired can't delete a newer run's lock — the standard safe-release
-// CAS (mirrors the atomic pattern used for royalty crediting).
-const RELEASE_LOCK_LUA = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
-return 0
-`
 
 export interface RebuildResult {
   /** True when another rebuild held the single-flight lock and this call was a
@@ -218,6 +233,9 @@ export interface RebuildResult {
   passEditions: number
   /** Pass editions airdropped as invites (Kismet airdrop records). */
   passInvited: number
+  /** Distinct buyers across art + passes (post smart-wallet fold) — the cron
+   *  log's combined-collector signal. */
+  buyersCombined: number
 }
 
 /**
@@ -251,6 +269,11 @@ export interface PlatformSalesSnapshot {
   outOfScope: number
   /** Coverage: counted rows excluded — no collection ref resolvable. */
   scopeUnknown: number
+  /** Unique buyer wallets across art AND passes (smart wallets folded), deduped
+   *  so someone who bought both counts once — the honest "total distinct
+   *  collectors" figure `collectors` (art-only) can't provide. Optional: absent
+   *  on a snapshot written before this field shipped. */
+  buyersCombined?: number
   /** Patron/Mint-Pass activity, kept out of the art figures above: paid pass
    *  SALES from the same transfers scan, plus INVITED — editions airdropped
    *  through Kismet's own airdrop records (lib/airdrops.ts), which is where
@@ -262,6 +285,9 @@ export interface PlatformSalesSnapshot {
     eth: number
     usdc: number
     invited: number
+    /** Unique pass-buyer wallets (smart wallets folded). Optional: absent on a
+     *  snapshot written before this field shipped. */
+    buyers?: number
   }
 }
 
@@ -316,16 +342,12 @@ async function writeStatsAtomically(
 // counted-transfers shrink — so a bad scan never overwrites good totals. Drive
 // from the cron route, or call once to backfill.
 export async function rebuildStats(): Promise<RebuildResult> {
-  const lockToken = randomUUID()
-  const acquired = await redis.set(REBUILD_LOCK_KEY, lockToken, {
-    nx: true,
-    ex: REBUILD_LOCK_TTL_S,
-  })
-  if (acquired !== 'OK') return { ...EMPTY_REBUILD_RESULT, skipped: true }
+  const lock = await acquireLock(REBUILD_LOCK_KEY, REBUILD_LOCK_TTL_S)
+  if (!lock.acquired) return { ...EMPTY_REBUILD_RESULT, skipped: true }
   try {
     return await runRebuild()
   } finally {
-    await redis.eval(RELEASE_LOCK_LUA, [REBUILD_LOCK_KEY], [lockToken]).catch(() => {})
+    await lock.release()
   }
 }
 
@@ -351,6 +373,7 @@ const EMPTY_REBUILD_RESULT: RebuildResult = {
   scopeUnknown: 0,
   passEditions: 0,
   passInvited: 0,
+  buyersCombined: 0,
 }
 
 // Editions airdropped as pass INVITES, from Kismet's own per-moment airdrop
@@ -598,10 +621,15 @@ async function runRebuild(): Promise<RebuildResult> {
   const passInvited = await countPatronInvites()
 
   const platRemap = await getSmartWalletOwners([
-    ...new Set([...platform.buyers, ...platform.artists]),
+    ...new Set([...platform.buyers, ...platform.passes.buyers, ...platform.artists]),
   ])
   const collectors = new Set<string>()
   for (const b of platform.buyers) collectors.add(platRemap.get(b) ?? b)
+  const passBuyers = new Set<string>()
+  for (const b of platform.passes.buyers) passBuyers.add(platRemap.get(b) ?? b)
+  // Combined distinct buyers across art + passes — a true union (someone who
+  // bought both counts once), which adding the two counts could never give.
+  const buyersCombined = new Set<string>([...collectors, ...passBuyers])
   const scopedArtists = new Set<string>()
   for (const a of platform.artists) scopedArtists.add(platRemap.get(a) ?? a)
 
@@ -646,7 +674,17 @@ async function runRebuild(): Promise<RebuildResult> {
       droppedMints: platform.droppedMints,
       outOfScope: platform.outOfScope,
       scopeUnknown: platform.scopeUnknown,
-      passes: { ...platform.passes, invited: passInvited },
+      buyersCombined: buyersCombined.size,
+      // Explicit fields, NOT `...platform.passes` — that would spread the
+      // `buyers` Set into the JSON (serializing to `{}`); persist its size.
+      passes: {
+        transactions: platform.passes.transactions,
+        editions: platform.passes.editions,
+        eth: platform.passes.eth,
+        usdc: platform.passes.usdc,
+        invited: passInvited,
+        buyers: passBuyers.size,
+      },
     } satisfies PlatformSalesSnapshot)
     .catch((err) =>
       console.error('[stats] platform snapshot write failed (stale until next run)', err),
@@ -673,6 +711,7 @@ async function runRebuild(): Promise<RebuildResult> {
     scopeUnknown: platform.scopeUnknown,
     passEditions: platform.passes.editions,
     passInvited,
+    buyersCombined: buyersCombined.size,
   }
 }
 
@@ -761,6 +800,69 @@ export async function getPlatformSalesSnapshot(): Promise<PlatformSalesSnapshot 
     if (!raw) return null
     const parsed = typeof raw === 'string' ? (JSON.parse(raw) as PlatformSalesSnapshot) : raw
     return typeof parsed?.updatedAt === 'number' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** Persisted secondary-volume aggregate, or null before the first fill. */
+export interface SecondaryVolume {
+  /** Kismet-listing fills counted. */
+  transactions: number
+  /** Gross ETH resale volume (human units). */
+  eth: number
+  /** Gross USDC resale volume (human units). */
+  usdc: number
+  updatedAt: number
+}
+
+/**
+ * Record one Kismet-listing fill's GROSS sale price into the platform
+ * secondary-volume aggregate. Called from the on-chain-verified listings PATCH.
+ * Idempotent per listing (NX claim, atomic with the increment), so a retried or
+ * concurrent fill counts once. Best-effort — returns false on a non-positive or
+ * malformed price, empty id, or Redis error, and NEVER throws (it runs on the
+ * sale-confirmation path and must never fail the fill). `priceBaseUnits` is the
+ * raw base-units string (wei / 6-dp USDC); the parse lives INSIDE the try so a
+ * legacy/malformed value degrades to "not counted", never an exception.
+ */
+export async function recordSecondaryVolume(args: {
+  listingId: string
+  currency: 'eth' | 'usdc'
+  priceBaseUnits: string
+}): Promise<boolean> {
+  const { listingId, currency, priceBaseUnits } = args
+  if (!listingId) return false
+  try {
+    const price =
+      currency === 'usdc'
+        ? Number(formatUnits(BigInt(priceBaseUnits), 6))
+        : Number(formatEther(BigInt(priceBaseUnits)))
+    if (!Number.isFinite(price) || price <= 0) return false
+    const wrote = await redis.eval(
+      RECORD_SECONDARY_LUA,
+      [secondaryCountedKey(listingId), SECONDARY_VOLUME_KEY],
+      [currency, String(price), String(Date.now())],
+    )
+    return wrote === 1
+  } catch {
+    // Malformed price (BigInt throw) or Redis error — best-effort, never throws.
+    return false
+  }
+}
+
+/** The secondary-volume aggregate, or null before the first fill / on error. */
+export async function getSecondaryVolume(): Promise<SecondaryVolume | null> {
+  try {
+    const h = await redis.hgetall<Record<string, string | number>>(SECONDARY_VOLUME_KEY)
+    if (!h) return null
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : 0
+    }
+    const updatedAt = num(h.updatedAt)
+    if (!updatedAt) return null
+    return { transactions: num(h.transactions), eth: num(h.eth), usdc: num(h.usdc), updatedAt }
   } catch {
     return null
   }

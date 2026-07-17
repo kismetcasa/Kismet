@@ -1,6 +1,6 @@
-import { randomUUID } from 'crypto'
 import { inprocessUrl, type Moment } from './inprocess'
 import { getTrackedCollectionsStrict } from './kv'
+import { acquireLock } from './redisLock'
 import { getMomentMetaBatch } from './notifications'
 import { resolveMomentCreator } from './statsMath'
 import { synthesizeMissingCoverMoment } from './coverMomentSynthesis'
@@ -44,10 +44,6 @@ const CATALOG_KEY = 'kismetart:stats:platform:catalog'
 // short enough to free a crashed run before the next hourly cron.
 const CENSUS_LOCK_KEY = 'kismetart:stats:census-lock'
 const CENSUS_LOCK_TTL_S = 600
-const RELEASE_LOCK_LUA = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
-return 0
-`
 // Refuse to overwrite when a new census counts dramatically fewer artworks (or
 // collections) than the last successful run. The catalog is monotonic in normal
 // operation (mints only add), so a big shrink means a degraded tracked-set read
@@ -202,16 +198,12 @@ async function walkCollection(collection: string): Promise<CollectionWalk | null
  * sync-stats cron, or once to backfill.
  */
 export async function rebuildCatalogCensus(): Promise<CatalogCensus | { skipped: true }> {
-  const lockToken = randomUUID()
-  const acquired = await redis.set(CENSUS_LOCK_KEY, lockToken, {
-    nx: true,
-    ex: CENSUS_LOCK_TTL_S,
-  })
-  if (acquired !== 'OK') return { skipped: true }
+  const lock = await acquireLock(CENSUS_LOCK_KEY, CENSUS_LOCK_TTL_S)
+  if (!lock.acquired) return { skipped: true }
   try {
     return await runCensus()
   } finally {
-    await redis.eval(RELEASE_LOCK_LUA, [CENSUS_LOCK_KEY], [lockToken]).catch(() => {})
+    await lock.release()
   }
 }
 

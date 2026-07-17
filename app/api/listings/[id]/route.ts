@@ -11,7 +11,7 @@ import { writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
 import { serverBaseClient } from '@/lib/rpc'
 import { findFulfillmentInLogs } from '@/lib/seaport'
-import { creditListingRoyalty } from '@/lib/stats'
+import { creditListingRoyalty, recordSecondaryVolume } from '@/lib/stats'
 import { auditRoyaltyReceiver } from '@/lib/royaltyAudit'
 
 export async function PATCH(
@@ -220,6 +220,18 @@ export async function PATCH(
         }),
       )
     }
+
+    // Record the GROSS resale price into platform secondary volume. Runs for
+    // EVERY fill (independent of `royalty` — a sale has volume even with no
+    // creator royalty). Awaited like the royalty credit (no webhook backstop),
+    // idempotent per listing. Passes the raw base-units string; the parse and
+    // all error handling live INSIDE recordSecondaryVolume, so a malformed
+    // price can never throw this fill handler (it's already marked filled).
+    await recordSecondaryVolume({
+      listingId: listing.id,
+      currency: listing.currency,
+      priceBaseUnits: listing.price,
+    })
 
     after(() =>
       writeNotification({

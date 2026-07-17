@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import crypto from 'node:crypto'
 import { rebuildStats } from '@/lib/stats'
 import { rebuildCatalogCensus } from '@/lib/catalogCensus'
+import { recordStatsRun } from '@/lib/statsHealth'
 import { errorResponse } from '@/lib/apiResponse'
 
 export const dynamic = 'force-dynamic'
@@ -46,11 +47,16 @@ export async function GET(req: NextRequest) {
         // failure; logged distinctly so it doesn't read as a missed rebuild.
         rebuildSkipped = true
         console.log('[sync-stats] rebuild skipped (already running)')
+        await recordStatsRun('rebuild', 'skipped')
       } else {
         console.log('[sync-stats] rebuild ok', { ...result, ms: Date.now() - started })
+        await recordStatsRun('rebuild', 'ok')
       }
     } catch (err) {
       console.error('[sync-stats] rebuild failed', err)
+      // Surface the abort to /api/admin/stats-health so a wedged rebuild (e.g.
+      // a tripped integrity guard) is visible instead of a silent stale-serve.
+      await recordStatsRun('rebuild', 'error', err instanceof Error ? err.message : String(err))
     }
     // Catalog census (platform artworks/artists) — sequential so the two
     // scans never hit the single upstream at once, and skipped when the
@@ -64,11 +70,14 @@ export async function GET(req: NextRequest) {
         const census = await rebuildCatalogCensus()
         if ('skipped' in census) {
           console.log('[sync-stats] census skipped (already running)')
+          await recordStatsRun('census', 'skipped')
         } else {
           console.log('[sync-stats] census ok', { ...census, ms: Date.now() - censusStarted })
+          await recordStatsRun('census', 'ok')
         }
       } catch (err) {
         console.error('[sync-stats] census failed', err)
+        await recordStatsRun('census', 'error', err instanceof Error ? err.message : String(err))
       }
     }
   })
