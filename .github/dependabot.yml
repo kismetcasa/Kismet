@@ -65,11 +65,15 @@ updates:
       # QA, not a dep bump.
       - dependency-name: tailwindcss
         update-types: ["version-update:semver-major"]
-      # typescript majors are unmergeable while @farcaster/quick-auth
-      # peer-pins exactly 5.8.3 (the ERESOLVE that killed PR #540), and buy
-      # no runtime benefit. Revisit when quick-auth relaxes its pin.
+      # typescript is IGNORED ENTIRELY (all update types), not just majors,
+      # because @farcaster/quick-auth@0.0.8 peer-pins EXACTLY typescript@5.8.3.
+      # A major drift killed PR #540; a *minor* drift (5.8.3 -> 5.9.3, a
+      # side effect of any group's lockfile regen) killed the re-filed
+      # minor-and-patch PR #584 — `npm ci` strict rejects the peer mismatch.
+      # typescript is therefore pinned to exactly 5.8.3 in package.json; this
+      # keeps Dependabot from re-proposing a bump that can only ever be red.
+      # Revisit (unpin + restore a range here) when quick-auth relaxes its pin.
       - dependency-name: typescript
-        update-types: ["version-update:semver-major"]
       # eslint majors move WITH the Next migration, not before it:
       # eslint-config-next@15.5.19 peer-pins eslint ^7||^8||^9, so an
       # eslint@10 PR is red from birth while config-next is ignored at 15
@@ -83,6 +87,16 @@ updates:
       # until the runtime itself moves.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # @coinbase/cdp-sdk is held at 1.51.2 (pinned exactly in package.json).
+      # 1.53.0 declares @x402/* as OPTIONAL peers but STATICALLY imports
+      # @x402/evm, so `next build` fails "Can't resolve '@x402/evm'" when the
+      # optional peers aren't installed (it broke PR #584's build). The app
+      # uses CdpClient (agent spender) but NOT the x402 payment path, which is
+      # only "planned" (app/api/agent/discover/route.ts). Unpin + drop this
+      # ignore when x402 is actually implemented (adopt cdp-sdk ≥1.53 AND add
+      # @x402/core|evm|extensions|svm), or when upstream stops statically
+      # importing the optional peers.
+      - dependency-name: "@coinbase/cdp-sdk"
   - package-ecosystem: github-actions
     directory: /
     schedule:
