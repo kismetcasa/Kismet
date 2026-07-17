@@ -291,6 +291,26 @@ list onto unique split contracts before the balance read
 `scripts/verify-distribute.ts`), fixing both the card figure and the
 distribute fan-out; `ArtistPending.count` now means distinct funded pots.
 
+## 7c. Consumer map — who reads what (verified 2026-07-17)
+
+Every money figure has exactly ONE source function; no surface computes
+earnings from raw feed/chain data on its own:
+
+| Surface | Endpoint | Source function |
+| --- | --- | --- |
+| Profile earnings card (owner/admin) | `/api/stats?artist=` | `getArtistEarnings` + `getArtistPending` |
+| Profile page (visitors, pinned-public earnings) | `/api/profile/[address]` payload | `getArtistEarnings` |
+| Profile OG share image (public earnings only) | server-side render | `getArtistEarnings` |
+| Profile "Sales" panel (owner/admin) | `/api/payments?artist=` | inprocess `/payments`, **filtered to Kismet-tracked collections** so it can never disagree with the card |
+| Platform aggregates | `/api/stats/platform` | `getPlatformSalesSnapshot` + `getRoyaltyTotals` + `getCatalogCensus` (no in-repo consumer — operator/API surface) |
+| Split recipients panel | `/api/moment/splits` | stored mint-time splits |
+| Per-moment distribute | `/api/distribute` (`useMomentSplits`) | signed message bound to (collection, token, split, currency, caller, nonce) — verbatim match with the server's expected string |
+| Distribute-all | `/api/distribute-all` (`useDistributeAll`) | signed batch message, server resolves the caller's own splits |
+| Funnel counters | `/api/funnel` beacon (5 call sites) → admin read via `?funnel=1` | `getFunnelCounts` |
+
+The stats Redis keys (`kismetart:stats:*`) are written by `lib/stats.ts` and
+`lib/catalogCensus.ts` only — no other writer exists.
+
 ## 8. What is deliberately NOT captured
 
 Blind spots to keep in mind when reading the numbers:
