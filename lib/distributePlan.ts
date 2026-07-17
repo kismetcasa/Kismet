@@ -15,6 +15,8 @@
 export const DISTRIBUTE_ALL_CAP = 20
 
 export interface SplitJob {
+  /** Representative moment for this split — the FIRST-SEEN of possibly many
+   *  moments paying into the same contract (see dedupeBySplitAddress). */
   collection: string
   tokenId: string
   splitAddress: string
@@ -24,6 +26,36 @@ export interface SplitJob {
   ethWei: bigint
   /** Live USDC balance sitting on the split contract (6-dp base units). */
   usdcBase: bigint
+}
+
+/**
+ * Collapse per-moment split entries onto UNIQUE split contracts. 0xSplits
+ * addresses are deterministic — identical recipients + allocations deploy to
+ * the same contract — so a collab minting several pieces with one split config
+ * produces many moments (even across collections) whose creator-reward
+ * recipient is one shared pot. Counting per moment then counts that pot once
+ * PER MOMENT: the pending roll-up showed N× the artist's real share and
+ * distribute-all fired N duplicate calls at one contract (confirmed in
+ * production 2026-07-17: five moments → one split → a $2.50 share displayed
+ * as $12.49).
+ *
+ * First-seen entry wins (order and identity fields preserved); the address key
+ * is case-insensitive. Same address ⇒ same on-chain allocation, so the pcts
+ * should agree — on a corrupt disagreement the group MINIMUM is kept, failing
+ * toward under-report (the house rule for money figures). Generic so the
+ * pre-balance-read entries in lib/pending.ts dedupe with this exact logic.
+ */
+export function dedupeBySplitAddress<T extends { splitAddress: string; pct: number }>(
+  entries: T[],
+): T[] {
+  const byAddr = new Map<string, T>()
+  for (const e of entries) {
+    const k = e.splitAddress.toLowerCase()
+    const existing = byAddr.get(k)
+    if (!existing) byAddr.set(k, e)
+    else if (e.pct < existing.pct) byAddr.set(k, { ...existing, pct: e.pct })
+  }
+  return [...byAddr.values()]
 }
 
 /**

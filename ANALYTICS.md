@@ -268,22 +268,28 @@ the stats matches what the split later distributes to them (verified against a
 live case: a 0.0014 ETH mint with a 95% allocation both credits and pays
 0.00133 ETH).
 
-### Known issue: pending over-counts shared split contracts
+### Fixed 2026-07-17: pending over-counted shared split contracts
 
-`compute()` in `lib/pending.ts` sums the artist's share **per moment**
-(`SplitJob`), but several moments can resolve to the **same split contract**
+The pending roll-up used to sum the artist's share **per moment** (`SplitJob`),
+but several moments can resolve to the **same split contract**
 (`getCreatorRewardRecipient` is per token, and 0xSplits deploys deterministic
 addresses — the same recipient set + percentages yields the same contract, so
 every piece a collab mints with one split config shares one pot). The same
-live balance is then counted once per moment: an artist on N moments sharing
-one split sees **N× their real pending**. Observed in production 2026-07-16:
-a card showed $12.49 "to distribute" where the real undistributed share was
-$2.50 (5 moments, one shared split). `distribute-all`
-(`app/api/distribute-all/route.ts`) has the same blind spot — it fires one
-`/distribute` per moment-job, so duplicates waste per-user quota, relay
-capacity, and `DISTRIBUTE_ALL_CAP` slots (payouts themselves stay correct:
-the first call drains the split; 0xSplits can only ever pay the fixed
-recipients). Fix shape: dedupe jobs by `splitAddress` before summing/planning.
+live balance was then counted once per moment: an artist on N moments sharing
+one split saw **N× their real pending**. Confirmed in production 2026-07-16/17
+with `scripts/check-split-index.mjs`: five moments across two collections all
+resolved to one split (pct 95), so a card showed $12.49 "to distribute" where
+the real undistributed share was $2.50. `distribute-all` had the same blind
+spot — one `/distribute` per moment-job — wasting per-user quota, relay
+capacity, and `DISTRIBUTE_ALL_CAP` slots on duplicates (payouts themselves
+were always correct: the first call drains the split; 0xSplits can only ever
+pay the fixed recipients).
+
+**Fix:** `resolveArtistSplitJobs` (`lib/pending.ts`) now collapses the job
+list onto unique split contracts before the balance read
+(`dedupeBySplitAddress` in `lib/distributePlan.ts`, covered by
+`scripts/verify-distribute.ts`), fixing both the card figure and the
+distribute fan-out; `ArtistPending.count` now means distinct funded pots.
 
 ## 8. What is deliberately NOT captured
 

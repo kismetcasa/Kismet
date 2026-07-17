@@ -5,7 +5,7 @@ import { getEthUsd } from './ethPrice'
 import { isAddress } from './address'
 import { getRecipientSplits, type RecipientSplit } from './splits'
 import { expandToFidSiblings } from './addressUnion'
-import type { SplitJob } from './distributePlan'
+import { dedupeBySplitAddress, type SplitJob } from './distributePlan'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -22,7 +22,9 @@ export interface ArtistPending {
    *  and there IS an ETH leg — honest-USD policy shared with getArtistEarnings;
    *  never a silently-USDC-only figure presented as the whole total. */
   usd: number
-  /** How many split moments currently hold a non-zero share for the artist. */
+  /** How many distinct split CONTRACTS currently hold a non-zero share for the
+   *  artist. Several moments can pay into one deterministic split; each pot
+   *  counts once (dedupeBySplitAddress). */
   count: number
 }
 
@@ -154,14 +156,15 @@ function mergeSplitsByMoment(perWallet: RecipientSplit[][]): RecipientSplit[] {
 }
 
 /**
- * Resolve every split the artist is a payee on, with the split's LIVE ETH+USDC
- * balance and the artist's allocation — the shared work-list for both the
- * pending roll-up (compute, below, which sums the artist's shares) and
- * distribute-all (which selects the top-CAP by value and fans out). Union across
- * FC siblings; MAX_MOMENTS-capped on the merged set so the on-chain fan-out
- * stays bounded. One aggregate3 reads native + USDC for every split (the
- * irrelevant balance is simply 0, keeping the index currency-agnostic). Returns
- * [] when the artist is on no splits or none resolve.
+ * Resolve every split the artist is a payee on — deduped to UNIQUE split
+ * contracts — with each split's LIVE ETH+USDC balance and the artist's
+ * allocation: the shared work-list for both the pending roll-up (compute,
+ * below, which sums the artist's shares) and distribute-all (which selects the
+ * top-CAP by value and fans out). Union across FC siblings; MAX_MOMENTS-capped
+ * on the merged set so the on-chain fan-out stays bounded. One aggregate3
+ * reads native + USDC for every split (the irrelevant balance is simply 0,
+ * keeping the index currency-agnostic). Returns [] when the artist is on no
+ * splits or none resolve.
  */
 export async function resolveArtistSplitJobs(
   address: string,
@@ -172,37 +175,46 @@ export async function resolveArtistSplitJobs(
   const moments = mergeSplitsByMoment(perWallet).slice(0, MAX_MOMENTS)
   if (!moments.length) return []
 
+  // Collapse onto unique split contracts BEFORE the balance read: 0xSplits
+  // addresses are deterministic, so several moments (even across collections)
+  // can pay into ONE shared pot, and a per-moment job list both re-reads the
+  // same balances and — worse — counts/distributes the same pot once per
+  // moment (the N× pending inflation and duplicate distribute calls fixed
+  // 2026-07-17; see dedupeBySplitAddress and ANALYTICS.md §7b). The first-seen
+  // moment stays as the pot's representative (collection, tokenId).
   const addrs = await resolveSplitAddresses(moments)
-  const withAddr = moments
-    .map((m, i) => ({ m, addr: addrs[i] }))
-    .filter((x): x is { m: RecipientSplit; addr: string } => !!x.addr)
+  const withAddr = dedupeBySplitAddress(
+    moments
+      .map((m, i) => ({ m, splitAddress: addrs[i], pct: m.pct }))
+      .filter((x): x is { m: RecipientSplit; splitAddress: string; pct: number } => !!x.splitAddress),
+  )
   if (!withAddr.length) return []
 
   const balances = await serverBaseClient().multicall({
-    contracts: withAddr.flatMap(({ addr }) => [
+    contracts: withAddr.flatMap(({ splitAddress }) => [
       {
         address: MULTICALL3_ADDRESS,
         abi: MULTICALL3_BALANCE_ABI,
         functionName: 'getEthBalance' as const,
-        args: [addr as `0x${string}`] as const,
+        args: [splitAddress as `0x${string}`] as const,
       },
       {
         address: USDC_BASE,
         abi: ERC20_ABI,
         functionName: 'balanceOf' as const,
-        args: [addr as `0x${string}`] as const,
+        args: [splitAddress as `0x${string}`] as const,
       },
     ]),
   })
 
-  return withAddr.map(({ m, addr }, idx) => {
+  return withAddr.map(({ m, splitAddress, pct }, idx) => {
     const ethRes = balances[idx * 2]
     const usdcRes = balances[idx * 2 + 1]
     return {
       collection: m.collection,
       tokenId: m.tokenId,
-      splitAddress: addr,
-      pct: m.pct, // getRecipientSplits guarantees a whole 1–100
+      splitAddress,
+      pct, // getRecipientSplits guarantees a whole 1–100; min across a shared group
       ethWei: ethRes?.status === 'success' ? (ethRes.result as bigint) : 0n,
       usdcBase: usdcRes?.status === 'success' ? (usdcRes.result as bigint) : 0n,
     }
