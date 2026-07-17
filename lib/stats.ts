@@ -121,6 +121,19 @@ const MAX_PAGES = 1000
 // all-artists wipe by an empty-but-shape-valid response. Self-healing: an
 // aborted write is retried by the next cron run against the same baseline.
 const MIN_COUNT_RETENTION = 0.8
+// Value-jump circuit breaker: refuse the overwrite when a run's in-scope gross
+// value total (art + passes, per currency) exceeds the last successful run's
+// by this factor. The per-row sanity ceiling cannot catch upstream UNIT drift
+// for USDC — base-unit values of real $1–$1,000 sales (1e6–1e9) overlap the
+// legitimate human-unit range — so the only reliable detector is run-level
+// growth: drift inflates a total by ~1e6× in one scan. ×100 inside one hourly
+// window is beyond any plausible organic day; if a viral drop ever trips it
+// legitimately, verify upstream and DEL the baseline key to unblock (the
+// error message says exactly that). Floors keep a near-zero baseline from
+// tripping on the platform's first real sales.
+const MAX_VALUE_GROWTH = 100
+const VALUE_GUARD_FLOOR_ETH = 0.05
+const VALUE_GUARD_FLOOR_USDC = 100
 const LAST_REBUILD_KEY = 'kismetart:stats:last-rebuild'
 interface LastRebuild {
   counted: number
@@ -131,6 +144,11 @@ interface LastRebuild {
   // skips the scoped guard (like `counted` on the very first run). Both the
   // fail-closed read above and this guard must miss for a wipe to commit.
   inScope?: number
+  // In-scope gross value (art + passes, human units) from the last successful
+  // run — the value-jump breaker's baseline (see MAX_VALUE_GROWTH). Optional
+  // like `inScope`: a pre-field baseline skips the guard.
+  eth?: number
+  usdc?: number
   at: number
 }
 
@@ -536,6 +554,23 @@ async function runRebuild(): Promise<RebuildResult> {
         'scope collapse (degraded tracked set?), refusing to overwrite',
     )
   }
+  // Value-jump breaker (see MAX_VALUE_GROWTH): combined art+pass gross per
+  // currency, so unit drift anywhere the endpoint serves money aborts before
+  // the destructive swap rather than publishing a ×1e6 earnings figure.
+  const grossEth = platform.eth + platform.passes.eth
+  const grossUsdc = platform.usdc + platform.passes.usdc
+  for (const [label, prevV, nowV, floor] of [
+    ['ETH', prev?.eth, grossEth, VALUE_GUARD_FLOOR_ETH],
+    ['USDC', prev?.usdc, grossUsdc, VALUE_GUARD_FLOOR_USDC],
+  ] as const) {
+    if (typeof prevV === 'number' && prevV > floor && nowV > prevV * MAX_VALUE_GROWTH) {
+      throw new Error(
+        `rebuild folded ${nowV} gross ${label} vs ${prevV} last run — implausible ` +
+          `×${Math.round(nowV / prevV)} jump (feed unit drift?); verify upstream and ` +
+          `DEL ${LAST_REBUILD_KEY} to override`,
+      )
+    }
+  }
 
   // Fold smart-wallet-credited scores onto the owning EOA so profile reads
   // (which union FC-verified wallets + known smart wallets) see them under
@@ -574,6 +609,8 @@ async function runRebuild(): Promise<RebuildResult> {
       .set(LAST_REBUILD_KEY, {
         counted: counters.counted,
         inScope: platform.transactions,
+        eth: grossEth,
+        usdc: grossUsdc,
         at: Date.now(),
       } satisfies LastRebuild)
       .catch(() => {})

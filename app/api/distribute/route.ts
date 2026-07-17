@@ -9,6 +9,7 @@ import { ERC20_ABI, USDC_BASE, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/z
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
+import { invalidatePendingCache } from '@/lib/pending'
 import { serverBaseClient } from '@/lib/rpc'
 import { ADMIN_ADDRESS } from '@/lib/config'
 
@@ -280,6 +281,16 @@ export async function POST(req: NextRequest) {
               ...(share > 0n ? { price: share.toString() } : {}),
             })
           }),
+        )
+        // Drained pot → bust each recipient's 60s pending cache so their
+        // profile card reflects the payout immediately (the same courtesy
+        // distribute-all extends to its caller). Unique-set so an artist
+        // holding two wallets in the split isn't busted twice; the helper
+        // never throws.
+        await Promise.all(
+          [...new Set(stored.recipients.map((r) => r.address.toLowerCase()))].map((a) =>
+            invalidatePendingCache(a),
+          ),
         )
       } catch {}
     })

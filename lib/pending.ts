@@ -36,8 +36,16 @@ const MULTICALL3_BALANCE_ABI = parseAbi([
   'function getEthBalance(address addr) view returns (uint256)',
 ])
 
-// A token's split address is its immutable on-chain creator-reward-recipient;
-// cache the resolved mapping forever so only first-seen moments pay the read.
+// A token's split address is its on-chain creator-reward-recipient. Kismet
+// sets it once at mint (via inprocess) and never changes it — but on Zora
+// 1155s the collection admin CAN change it later with external tools, so the
+// mapping is not truly immutable. Cache with a TTL instead of forever: a
+// stale entry would point the pending roll-up and distribute-all at the OLD
+// pot indefinitely (permanent under-report + wasted sponsored txs) and break
+// royalty split-decomposition (credit stranded on a bare contract address).
+// 7 days bounds that failure window at the cost of one batched multicall
+// re-read per moment per week.
+const SPLIT_ADDR_TTL_S = 7 * 24 * 60 * 60
 const splitAddrKey = (collection: string, tokenId: string) =>
   `kismetart:splitaddr:${collection.toLowerCase()}:${tokenId}`
 
@@ -52,7 +60,8 @@ const RECIPIENT_READ_TIMEOUT_MS = 3000
  * listings fill path (creditListingRoyalty's split decomposition) reuses
  * mappings the pending roll-up already paid for, and vice versa. Bounded and
  * best-effort: null on miss + RPC failure/timeout, never throws. The mapping
- * is immutable on-chain, so a cache hit is always authoritative.
+ * is admin-mutable on-chain (see SPLIT_ADDR_TTL_S), so cache hits are
+ * authoritative only within the TTL.
  */
 export async function getCachedCreatorRewardRecipient(
   collection: string,
@@ -75,7 +84,7 @@ export async function getCachedCreatorRewardRecipient(
     ])
     const addr = String(r).toLowerCase()
     if (!isAddress(addr) || addr === ZERO_ADDR) return null
-    await redis.set(key, addr).catch(() => {})
+    await redis.set(key, addr, { ex: SPLIT_ADDR_TTL_S }).catch(() => {})
     return addr
   } catch {
     return null
@@ -128,7 +137,9 @@ async function resolveSplitAddresses(
       const addr = String(r.result).toLowerCase()
       if (!isAddress(addr) || addr === ZERO_ADDR) return
       out[i] = addr
-      await redis.set(splitAddrKey(m.collection, m.tokenId), addr).catch(() => {})
+      await redis
+        .set(splitAddrKey(m.collection, m.tokenId), addr, { ex: SPLIT_ADDR_TTL_S })
+        .catch(() => {})
     }),
   )
   return out
