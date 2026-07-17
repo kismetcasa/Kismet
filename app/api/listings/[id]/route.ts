@@ -224,17 +224,13 @@ export async function PATCH(
     // Record the GROSS resale price into platform secondary volume. Runs for
     // EVERY fill (independent of `royalty` — a sale has volume even with no
     // creator royalty). Awaited like the royalty credit (no webhook backstop),
-    // idempotent per listing, and never throws. `listing.price` is base units
-    // for the listing's currency; convert to human units to match the
-    // aggregate's denomination.
-    const priceHuman =
-      listing.currency === 'usdc'
-        ? Number(formatUnits(BigInt(listing.price), 6))
-        : Number(formatEther(BigInt(listing.price)))
+    // idempotent per listing. Passes the raw base-units string; the parse and
+    // all error handling live INSIDE recordSecondaryVolume, so a malformed
+    // price can never throw this fill handler (it's already marked filled).
     await recordSecondaryVolume({
       listingId: listing.id,
       currency: listing.currency,
-      price: priceHuman,
+      priceBaseUnits: listing.price,
     })
 
     after(() =>

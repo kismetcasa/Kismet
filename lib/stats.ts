@@ -1,3 +1,4 @@
+import { formatEther, formatUnits } from 'viem'
 import { redis, zpairsToMap } from './redis'
 import { acquireLock } from './redisLock'
 import { getEthUsd } from './ethPrice'
@@ -819,18 +820,25 @@ export interface SecondaryVolume {
  * Record one Kismet-listing fill's GROSS sale price into the platform
  * secondary-volume aggregate. Called from the on-chain-verified listings PATCH.
  * Idempotent per listing (NX claim, atomic with the increment), so a retried or
- * concurrent fill counts once. Best-effort — returns false on a non-positive
- * price, empty id, or Redis error, and never throws (must never fail the sale).
- * `price` is in HUMAN units (the caller converts from base units).
+ * concurrent fill counts once. Best-effort — returns false on a non-positive or
+ * malformed price, empty id, or Redis error, and NEVER throws (it runs on the
+ * sale-confirmation path and must never fail the fill). `priceBaseUnits` is the
+ * raw base-units string (wei / 6-dp USDC); the parse lives INSIDE the try so a
+ * legacy/malformed value degrades to "not counted", never an exception.
  */
 export async function recordSecondaryVolume(args: {
   listingId: string
   currency: 'eth' | 'usdc'
-  price: number
+  priceBaseUnits: string
 }): Promise<boolean> {
-  const { listingId, currency, price } = args
-  if (!listingId || !Number.isFinite(price) || price <= 0) return false
+  const { listingId, currency, priceBaseUnits } = args
+  if (!listingId) return false
   try {
+    const price =
+      currency === 'usdc'
+        ? Number(formatUnits(BigInt(priceBaseUnits), 6))
+        : Number(formatEther(BigInt(priceBaseUnits)))
+    if (!Number.isFinite(price) || price <= 0) return false
     const wrote = await redis.eval(
       RECORD_SECONDARY_LUA,
       [secondaryCountedKey(listingId), SECONDARY_VOLUME_KEY],
@@ -838,6 +846,7 @@ export async function recordSecondaryVolume(args: {
     )
     return wrote === 1
   } catch {
+    // Malformed price (BigInt throw) or Redis error — best-effort, never throws.
     return false
   }
 }
