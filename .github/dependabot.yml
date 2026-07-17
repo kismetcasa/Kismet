@@ -3,6 +3,15 @@
 # the parent bumps that clear transitive advisories. Grouped, weekly PRs keep
 # the tree moving without one-PR-per-package noise; CI (build + check + the
 # blocking critical audit + the patch-applied assertion) gates each one.
+#
+# Majors are split into TWO groups + an ignore list because the original
+# single "majors" group deadlocked (PR #540 sat red for two weeks): any group
+# containing typescript is unmergeable while @farcaster/quick-auth peer-pins
+# an exact typescript@5.8.3 — npm ci fails in seconds — which held the
+# security-relevant wagmi bump hostage to a framework migration. Ignored
+# majors are deliberate deferrals taken manually (rationale inline below and
+# in SCALING.md §7); NOTE ignore also suppresses Dependabot security PRs for
+# those majors, so advisory-driven framework bumps are on us to take by hand.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -14,10 +23,53 @@ updates:
       # One PR for the routine minor/patch churn.
       minor-and-patch:
         update-types: [minor, patch]
-      # Majors separately — they need manual review (breaking changes), and the
-      # security-relevant parents (turbo-sdk, wagmi/reown, undici, ws) live here.
+      # The security-relevant parents, standalone so a wallet/upload-stack
+      # major (e.g. wagmi@3, which clears the tracked ws highs) arrives
+      # individually reviewable + smoke-testable, never bundled with an
+      # unrelated breaking bump. wagmi@3 stays unmergeable until
+      # @farcaster/miniapp-wagmi-connector ships wagmi-3 peer support
+      # (latest 2.0.0 pins @wagmi/core@^2.14.1) — when its PR goes green,
+      # that's the signal the upstream unblock landed.
+      wallet-and-upload-majors:
+        update-types: [major]
+        patterns:
+          - wagmi
+          - viem
+          - "@farcaster/*"
+          - "@base-org/*"
+          - "@coinbase/*"
+          - "@ardrive/*"
+      # Everything else major-sized, minus the deferred set below.
       majors:
         update-types: [major]
+        exclude-patterns:
+          - wagmi
+          - viem
+          - "@farcaster/*"
+          - "@base-org/*"
+          - "@coinbase/*"
+          - "@ardrive/*"
+    ignore:
+      # next@16 is a planned, deliberate migration — it retires the
+      # hand-applied clone-response leak patch (scripts/
+      # patch-next-clone-response.mjs; upstream fix is 16.x-only) but must
+      # re-verify the Next-15 behaviors OPS_RUNBOOK.md documents as
+      # load-bearing (crash keep-alive, revalidate semantics, .next/cache
+      # layout) and update CI's patch assertion. Taken by hand, not by bot.
+      - dependency-name: next
+        update-types: ["version-update:semver-major"]
+      - dependency-name: eslint-config-next
+        update-types: ["version-update:semver-major"]
+      # tailwindcss@4 removed the v3-style postcss plugin our
+      # postcss.config.mjs uses — a config-model migration + app-wide visual
+      # QA, not a dep bump.
+      - dependency-name: tailwindcss
+        update-types: ["version-update:semver-major"]
+      # typescript majors are unmergeable while @farcaster/quick-auth
+      # peer-pins exactly 5.8.3 (the ERESOLVE that killed PR #540), and buy
+      # no runtime benefit. Revisit when quick-auth relaxes its pin.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
