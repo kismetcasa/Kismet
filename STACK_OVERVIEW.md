@@ -12,6 +12,13 @@ touches, how they fit together, and why each exists — validated against the co
 > Ampere box via Coolify/Traefik. It has **no SQL database** — Upstash Redis is
 > the only persistent store.
 >
+> **Terminology — "moment" ≡ "artwork".** The upstream **inprocess.world**
+> protocol calls each NFT a "moment"; Kismet's user-facing product calls the
+> same object an **"artwork"**. That rename is display-layer only and does not
+> cross the wire boundary: the In Process API paths/fields and the internal
+> `Moment*` types deliberately keep "moment" (see the header comment in
+> `lib/inprocess.ts`). Read the two words as the same entity throughout.
+>
 > **How this was produced.** A full multi-agent read of `app/`, `lib/`, `hooks/`,
 > `providers/`, `contexts/`, `scripts/`, the Dockerfile/next.config/env template,
 > and the in-repo runbooks, cross-checked against `git log`/`git show` over the

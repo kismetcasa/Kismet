@@ -1,6 +1,27 @@
 import { formatEther, formatUnits } from 'viem'
 import { USDC_BASE } from './zoraMint'
 
+// ───────────────────────────────────────────────────────────────────────────
+// TERMINOLOGY: "moment" (In Process wire) ⇄ "artwork" (Kismet UI)
+//
+// In Process — the upstream protocol/API this module is the SOLE client of —
+// calls each NFT a "moment". Kismet presents that same object to users as an
+// "artwork". That is a display-layer rename only: it lives in user-facing copy
+// and deliberately does NOT cross this wire boundary. So, on purpose and
+// permanently, the In Process contract keeps "moment" here:
+//   • endpoint paths:  moment/create, moment/create/writing,
+//                      /moment (GET + PATCH), /moment/comments
+//   • response keys:   `moments` (timeline array), `momentAdmins`
+//   • request key:     the `moment: {…}` wrapper in the PATCH /moment body
+//   • the `Moment` / `MomentDetail` interfaces below mirror In Process's JSON
+//     field-for-field (token_id, created_at, admins, …) with NO remap layer,
+//     so those field names are load-bearing wherever a response is consumed.
+// The type/component NAMES (`Moment`, `MomentCard`, …) are Kismet-side labels,
+// intentionally left as-is: renaming them buys no user-visible change and In
+// Process can't observe them either way. When editing here, keep every wire
+// token above intact and rebrand only what a user reads.
+// ───────────────────────────────────────────────────────────────────────────
+
 export const INPROCESS_API = 'https://api.inprocess.world/api'
 
 /** Build an inprocess API URL. Pass `path` with leading slash; nullish param values are skipped. */
