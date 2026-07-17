@@ -54,7 +54,7 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
           <div className="border border-line p-8 sm:p-16 text-center">
             <p className="text-sm font-mono text-muted">no listings yet</p>
             <p className="text-xs font-mono text-faint mt-2">
-              collect a moment on{' '}
+              collect an artwork on{' '}
               <Link href="/" className="accent-grad hover:underline">enjoy</Link>
               {' '}then{' '}
               <Link href={address ? `/profile/${address}` : '/'} className="accent-grad hover:underline">list</Link>

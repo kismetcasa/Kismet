@@ -607,7 +607,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           : hasCollected ? 'collect+' : 'collect'
 
   async function handleDistribute() {
-    if (!detail) { toast.error('Moment details still loading'); return }
+    if (!detail) { toast.error('Artwork details still loading'); return }
     await distribute(currency)
   }
 
@@ -1090,7 +1090,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         )}
         <div className="flex flex-col items-center justify-center gap-3 py-24 px-6">
           <EyeOff size={20} className="text-[#444]" />
-          <p className="text-sm font-mono text-dim">this moment has been hidden by the creator</p>
+          <p className="text-sm font-mono text-dim">this artwork has been hidden by the creator</p>
         </div>
       </div>
     )
@@ -1156,7 +1156,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               ) : isZoomable && media.src && !imgError ? (
                 <MomentImage
                   src={media.src}
-                  alt={meta.name ?? 'moment'}
+                  alt={meta.name ?? 'artwork'}
                   fill
                   className="object-contain"
                   sizes="(max-width: 768px) 100vw, 50vw"
@@ -1771,7 +1771,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {media.src && (
             <MomentImg
               src={media.src}
-              alt={meta.name ?? 'moment'}
+              alt={meta.name ?? 'artwork'}
               className="max-h-[95vh] max-w-[95vw] object-contain"
               onClick={(e) => e.stopPropagation()}
               // MomentImg defaults to loading="lazy"; the lightbox

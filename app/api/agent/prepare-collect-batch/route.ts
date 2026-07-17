@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
   const usdcTotalLabel = plan.totalUsdcCost > 0n ? formatPrice(plan.totalUsdcCost.toString(), 'usdc') : ''
   const totalLabel = [usdcTotalLabel, ethTotalLabel].filter(Boolean).join(' + ')
   const skipNote = skipped.length > 0 ? ` Skipped ${skipped.length} unavailable.` : ''
-  const summary = `Collect ${items.length} moment${items.length === 1 ? '' : 's'} for ${totalLabel || 'free'} in one approval.${skipNote}`
+  const summary = `Collect ${items.length} artwork${items.length === 1 ? '' : 's'} for ${totalLabel || 'free'} in one approval.${skipNote}`
 
   const envelope: AgentActionEnvelope = {
     chain: 'base',

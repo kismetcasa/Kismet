@@ -50,7 +50,7 @@ export const GUIDES: Guide[] = [
         'Connect a Base wallet, or create one the first time you sign in.',
         'Open Mint and upload your file — an image, video, animation, or text piece.',
         'Add a title and a description. Both help collectors and search engines understand the work, so write them for a real reader.',
-        'Choose whether the moment stands alone or joins one of your collections.',
+        'Choose whether the artwork stands alone or joins one of your collections.',
         'Set the terms: collect for free, or set a price collectors pay to mint.',
         'Confirm the transaction in your wallet. Kismet uploads the file to Arweave and mints the token on Base.',
       ],
@@ -67,14 +67,14 @@ export const GUIDES: Guide[] = [
         heading: 'What happens when you mint',
         paragraphs: [
           'Minting does two things at once. First, your file is uploaded to Arweave, a network designed for permanent storage, so the media persists for the long term rather than depending on one company keeping a server online. Second, a token is created on Base recording the artwork, its creator, and its metadata onchain.',
-          'On Kismet the token is an ERC-1155, a widely supported token standard, so the moment is portable and readable by other onchain tools and wallets, not locked inside one app.',
+          'On Kismet the token is an ERC-1155, a widely supported token standard, so the artwork is portable and readable by other onchain tools and wallets, not locked inside one app.',
         ],
       },
       {
-        heading: 'Standalone moments vs collections',
+        heading: 'Standalone artworks vs collections',
         paragraphs: [
-          'A moment can stand on its own or belong to a collection. A collection groups related work under one contract and one page, which is useful for a series, a drop, or an ongoing body of work.',
-          'You can mint a standalone moment first and organize later, or create a collection up front and mint into it. Either way the individual moment remains the canonical home for that artwork.',
+          'An artwork can stand on its own or belong to a collection. A collection groups related work under one contract and one page, which is useful for a series, a drop, or an ongoing body of work.',
+          'You can mint a standalone artwork first and organize later, or create a collection up front and mint into it. Either way the individual artwork remains its canonical home.',
         ],
       },
       {
@@ -99,7 +99,7 @@ export const GUIDES: Guide[] = [
       {
         question: 'Can I mint art for free on Kismet?',
         answer:
-          'You choose your terms. You can offer a moment as a free mint that collectors claim at no cost beyond the network fee, or set a price collectors pay to mint. You can also earn royalties when the work resells.',
+          'You choose your terms. You can offer an artwork as a free mint that collectors claim at no cost beyond the network fee, or set a price collectors pay to mint. You can also earn royalties when the work resells.',
       },
       {
         question: 'Where is my minted artwork stored?',
@@ -107,7 +107,7 @@ export const GUIDES: Guide[] = [
           "Your artwork's media is stored on Arweave, a network built for permanent storage, and the ownership record lives onchain on Base. Because storage is content-addressed and paid up front, the file remains available long-term rather than depending on a single server.",
       },
       {
-        question: 'Can I edit a moment after minting it?',
+        question: 'Can I edit an artwork after minting it?',
         answer:
           'The onchain token and its Arweave media are permanent, which is what makes provenance trustworthy. Editable display details such as the title and description can be updated by the creator, but the underlying minted artwork and its record do not change.',
       },
@@ -198,30 +198,30 @@ export const GUIDES: Guide[] = [
     title: 'How the onchain art marketplace works',
     metaTitle: 'Onchain Art Marketplace: Collect, Buy & Sell Digital Art | Kismet',
     description:
-      'How an onchain art marketplace works on Kismet: collect newly minted moments, buy listed pieces on the secondary market in ETH or USDC, list your own work for sale, earn royalties, and keep custody in your own wallet.',
+      'How an onchain art marketplace works on Kismet: collect newly minted artworks, buy listed pieces on the secondary market in ETH or USDC, list your own work for sale, earn royalties, and keep custody in your own wallet.',
     published: '2026-07-10',
     updated: '2026-07-16',
     intro:
-      'An onchain art marketplace is where digital artworks are bought and sold with transactions settled on a blockchain instead of a private ledger. On Kismet you collect newly minted moments, buy existing ones on the secondary market in ETH or USDC, and list work you own for sale — with ownership transferring onchain and custody staying in your own wallet.',
+      'An onchain art marketplace is where digital artworks are bought and sold with transactions settled on a blockchain instead of a private ledger. On Kismet you collect newly minted artworks, buy existing ones on the secondary market in ETH or USDC, and list work you own for sale — with ownership transferring onchain and custody staying in your own wallet.',
     sections: [
       {
         heading: 'Collecting a primary mint',
         paragraphs: [
-          'Collecting a primary mint means acquiring a moment directly from its creator. Depending on the creator’s terms, a primary collect is either free — you claim it for only the network fee — or priced, so you pay the amount the creator set.',
+          'Collecting a primary mint means acquiring an artwork directly from its creator. Depending on the creator’s terms, a primary collect is either free — you claim it for only the network fee — or priced, so you pay the amount the creator set.',
           'You confirm the transaction in your Base wallet and the token transfers to you onchain, adding you to the work’s provenance.',
         ],
       },
       {
         heading: 'Buying on the secondary market',
         paragraphs: [
-          'Once a moment has been minted, its owner can list it for sale. Buying a listed piece is a secondary-market purchase, settled onchain in ETH or USDC depending on how the listing is priced.',
+          'Once an artwork has been minted, its owner can list it for sale. Buying a listed piece is a secondary-market purchase, settled onchain in ETH or USDC depending on how the listing is priced.',
           'Because settlement is onchain, the transfer of ownership and the payment happen together and are publicly verifiable — there is no platform holding the asset in escrow off-chain.',
         ],
       },
       {
         heading: 'Listing and selling your work',
         paragraphs: [
-          'Any moment you own can be listed for sale at a price you choose. Listing makes the piece available on the market for other collectors to buy, and you can cancel or adjust a listing while you still hold the token.',
+          'Any artwork you own can be listed for sale at a price you choose. Listing makes the piece available on the market for other collectors to buy, and you can cancel or adjust a listing while you still hold the token.',
           'This applies to work you created and work you collected — the marketplace is the same for primary drops and secondary resales.',
         ],
       },
@@ -244,17 +244,17 @@ export const GUIDES: Guide[] = [
       {
         question: 'How do I buy art on Kismet?',
         answer:
-          'Open a moment and choose Collect. A primary mint is collected for free or at the creator’s price; a listed piece is bought on the secondary market. You confirm in your Base wallet and the token transfers to you onchain.',
+          'Open an artwork and choose Collect. A primary mint is collected for free or at the creator’s price; a listed piece is bought on the secondary market. You confirm in your Base wallet and the token transfers to you onchain.',
       },
       {
         question: 'Do I pay in ETH or USDC?',
         answer:
-          'Both are supported. Primary mints and secondary purchases settle in ETH or USDC depending on how the moment or listing is priced, and the amount you pay is shown before you confirm.',
+          'Both are supported. Primary mints and secondary purchases settle in ETH or USDC depending on how the artwork or listing is priced, and the amount you pay is shown before you confirm.',
       },
       {
         question: 'How do I sell art I own?',
         answer:
-          'List any moment you own for sale at a price you set. It becomes available on the market for other collectors to buy, ownership transfers onchain when it sells, and you can cancel or change the listing while you still hold the token.',
+          'List any artwork you own for sale at a price you set. It becomes available on the market for other collectors to buy, ownership transfers onchain when it sells, and you can cancel or change the listing while you still hold the token.',
       },
       {
         question: 'What are royalties and who earns them?',
@@ -264,7 +264,7 @@ export const GUIDES: Guide[] = [
       {
         question: 'Do I keep custody of my art?',
         answer:
-          'Yes. Your moments and funds stay in your own Base wallet. Kismet prepares transactions and displays listings, but you sign every action yourself, so you retain custody throughout collecting, buying, and selling.',
+          'Yes. Your artworks and funds stay in your own Base wallet. Kismet prepares transactions and displays listings, but you sign every action yourself, so you retain custody throughout collecting, buying, and selling.',
       },
     ],
     sources: [

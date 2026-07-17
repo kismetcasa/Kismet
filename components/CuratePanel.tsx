@@ -80,7 +80,7 @@ export function CuratePanel() {
     setFeedback(null)
     const parsed = parseFeatureRef(input)
     if (!parsed) {
-      setFeedback({ kind: 'err', text: 'paste a moment or collection link' })
+      setFeedback({ kind: 'err', text: 'paste an artwork or collection link' })
       return
     }
     if (parsed.kind === 'moment') {
@@ -93,7 +93,7 @@ export function CuratePanel() {
       try {
         await toggleFeatured(parsed.address, parsed.tokenId)
         setInput('')
-        setFeedback({ kind: 'ok', text: 'moment featured' })
+        setFeedback({ kind: 'ok', text: 'artwork featured' })
       } finally {
         setSubmitting(false)
       }
@@ -126,7 +126,7 @@ export function CuratePanel() {
             value={input}
             onChange={(e) => { setInput(e.target.value); setFeedback(null) }}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleSubmit() } }}
-            placeholder="moment or collection link"
+            placeholder="artwork or collection link"
             disabled={submitting}
             className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
           />

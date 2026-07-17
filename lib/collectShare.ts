@@ -55,7 +55,7 @@ export function buildCollectCastText(opts: {
 }): string {
   const verb = opts.verb ?? 'collected'
   const title = opts.momentName?.trim()
-  const subject = title ? `"${title}"` : 'a moment'
+  const subject = title ? `"${title}"` : 'an artwork'
   return opts.creatorHandle
     ? `${verb} ${subject} by ${opts.creatorHandle} on @kismet`
     : `${verb} ${subject} on @kismet`

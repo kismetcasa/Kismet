@@ -104,7 +104,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
   const { address, tokenId } = await params
   if (!isAddress(address) || !isValidTokenId(tokenId)) {
-    return { title: 'Moment — Kismet' }
+    return { title: 'Artwork — Kismet' }
   }
   const [detail, fallback] = await Promise.all([
     fetchMomentDetail(address, tokenId),
@@ -117,7 +117,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // indexable stub under the hidden work's name. Same trade-off the profile
   // page documents: the creator viewing their own hidden moment also gets
   // generic metadata; only the page body is viewer-aware.
-  if (detail?.hidden) return { title: 'Moment — Kismet', robots: { index: false } }
+  if (detail?.hidden) return { title: 'Artwork — Kismet', robots: { index: false } }
   const meta = detail?.metadata ?? fallback
   // No metadata from either source: the emptiest page of all (indexer lag or a
   // junk token URL) — noindex for the same crawl-budget reason as the isEmpty
@@ -125,11 +125,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // sitemap still lists real moments, and noindex lifts when the tag is gone).
   // The catch path below deliberately does NOT noindex: a Redis/upstream blip
   // there is unrelated to whether the moment has content.
-  if (!meta) return { title: 'Moment — Kismet', robots: { index: false } }
+  if (!meta) return { title: 'Artwork — Kismet', robots: { index: false } }
 
   const name = meta.name ?? `#${tokenId}`
   const title = `${name} — Kismet`
-  const description = meta.description ?? 'View this moment on Kismet'
+  const description = meta.description ?? 'View this artwork on Kismet'
   // A moment with no title, description, AND no image has nothing indexable —
   // usually indexer lag or a broken token. noindex it so crawl budget goes to
   // real artworks. Deliberately narrow: a titled or image-bearing moment (the
@@ -193,7 +193,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
   } catch (err) {
     console.error('[generateMetadata] moment', err)
-    return { title: 'Moment — Kismet' }
+    return { title: 'Artwork — Kismet' }
   }
 }
 
@@ -239,7 +239,7 @@ export default async function MomentPage({ params }: Props) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-24 text-center">
         <p className="text-sm font-mono text-dim">
-          this moment has been hidden by the creator
+          this artwork has been hidden by the creator
         </p>
       </div>
     )

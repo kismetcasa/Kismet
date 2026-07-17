@@ -109,9 +109,9 @@ export async function POST(
   if (!isValidTokenId(tokenId)) return errorResponse(400, 'Invalid tokenId')
 
   const moment = await fetchMoment(collectionAddress, tokenId)
-  if (!moment) return errorResponse(404, 'Moment not found')
+  if (!moment) return errorResponse(404, 'Artwork not found')
   if (!(await ownsMoment(auth.canonical, collectionAddress, tokenId, moment.creator))) {
-    return errorResponse(403, 'You can only theme from your own mints, collected, or listed moments')
+    return errorResponse(403, 'You can only theme from your own mints, collected, or listed artworks')
   }
 
   const md = moment.metadata
@@ -140,7 +140,7 @@ export async function POST(
     const rgb = thumbhashAverageRgb(md.kismet_thumbhash)
     if (rgb) palette = paletteFromColor(rgb)
   }
-  if (!palette) return errorResponse(422, "Couldn't read colors from this moment")
+  if (!palette) return errorResponse(422, "Couldn't read colors from this artwork")
 
   // Carry the owner's motion prefs across a source change, but drop `live` when
   // the new source is a still image — there's nothing to play, and the panel

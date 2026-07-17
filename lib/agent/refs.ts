@@ -35,7 +35,7 @@ export function parseMomentRef(input: {
   if (typeof input.url === 'string' && input.url.length > 0) {
     return parseMomentUrl(input.url)
   }
-  return { error: 'Provide { collection, tokenId } or a moment url' }
+  return { error: 'Provide { collection, tokenId } or an artwork url' }
 }
 
 /** Parse a Kismet moment URL: `…/moment/<collection>/<tokenId>`. Tolerates a

@@ -51,7 +51,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            {actorLabel ?? 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your moment'}
+            {actorLabel ?? 'someone'} collected {n.tokenName ? `"${n.tokenName}"` : 'your artwork'}
           </p>
           {n.comment && !isPlatformCollectComment(n.comment) && (
             <p className="text-[10px] font-mono text-dim mt-0.5 truncate">&ldquo;{n.comment}&rdquo;</p>
@@ -90,7 +90,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         return (
           <>
             <p className="text-xs font-mono text-ink truncate">
-              {actorLabel} minted {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+              {actorLabel} minted {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
             </p>
             <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
           </>
@@ -98,7 +98,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       }
       return (
         <>
-          <p className="text-xs font-mono text-ink truncate">your moment was created</p>
+          <p className="text-xs font-mono text-ink truncate">your artwork was created</p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.tokenName ?? 'untitled'} · {time}
           </p>
@@ -117,7 +117,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            {actorLabel ?? 'someone'} airdropped you {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+            {actorLabel ?? 'someone'} airdropped you {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
@@ -126,7 +126,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            {actorLabel ?? 'someone'} listed {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+            {actorLabel ?? 'someone'} listed {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} · ` : ''}{time}
@@ -138,7 +138,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         <>
           <p className="text-xs font-mono text-ink truncate">
             you received {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} ` : 'a payout '}
-            from {n.tokenName ? `"${n.tokenName}"` : 'a moment'}
+            from {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             split distributed in {(n.currency ?? 'eth').toUpperCase()} · {time}
@@ -158,7 +158,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            your agent collected {n.amount && n.amount > 1 ? `${n.amount} moments` : 'a moment'}
+            your agent collected {n.amount && n.amount > 1 ? `${n.amount} artworks` : 'an artwork'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} · ` : ''}{time}

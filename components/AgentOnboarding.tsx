@@ -18,12 +18,12 @@ const MANIFEST_URL = `${SITE_URL}/api/agent/manifest`
 // clients add https://mcp.base.org manually.
 const ADD_BASE_MCP_CLAUDE =
   'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Base%20MCP&connectorUrl=https%3A%2F%2Fmcp.base.org'
-const KISMET_PROMPT = `Use Kismet (an art marketplace on Base) through Base MCP. Open ${SKILL_URL} as your reference and follow it to discover, collect, buy, and list moments. Run every action through my Base Account for approval.`
+const KISMET_PROMPT = `Use Kismet (an art marketplace on Base) through Base MCP. Open ${SKILL_URL} as your reference and follow it to discover, collect, buy, and list artworks. Run every action through my Base Account for approval.`
 
 const EXAMPLES = [
-  'Find new moments to collect on Kismet under $5',
-  'Collect the moment at <paste a Kismet moment link>',
-  'List my moment <link> for 0.01 ETH',
+  'Find new artworks to collect on Kismet under $5',
+  'Collect the artwork at <paste a Kismet artwork link>',
+  'List my artwork <link> for 0.01 ETH',
 ]
 
 function CopyButton({ text, label = 'copy' }: { text: string; label?: string }) {
@@ -66,7 +66,7 @@ export function AgentOnboarding() {
       <header className="space-y-2">
         <h1 className="text-lg font-mono uppercase tracking-wider text-ink">Collect with your AI assistant</h1>
         <p className="text-xs font-mono text-dim leading-relaxed">
-          Connect Base MCP and your assistant can discover, collect, buy, and list moments on Kismet — you
+          Connect Base MCP and your assistant can discover, collect, buy, and list artworks on Kismet — you
           approve each action in your Base Account. Kismet never holds your keys.
         </p>
       </header>

@@ -342,7 +342,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       const priceLabel = n.price && n.price !== '0'
         ? ` for ${formatPushPrice(n.price, n.currency)}`
         : ''
-      const subject = tokenName ? `"${tokenName}"` : 'your moment'
+      const subject = tokenName ? `"${tokenName}"` : 'your artwork'
       const who = actorName ?? 'someone'
       // Surface the buyer's optional comment so the push carries the
       // same context the in-app row does. Platform-default comments are
@@ -380,9 +380,9 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // Matches NotificationRow's two branches exactly.
       if (!actorName) {
         return {
-          title: truncate('Moment created', TITLE_MAX),
+          title: truncate('Artwork created', TITLE_MAX),
           body: truncate(
-            tokenName ? `Your moment "${tokenName}" is live` : 'Your moment was created',
+            tokenName ? `Your artwork "${tokenName}" is live` : 'Your artwork was created',
             BODY_MAX,
           ),
           targetUrl: momentUrl,
@@ -391,14 +391,14 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       return {
         title: truncate(`${actorName} minted`, TITLE_MAX),
         body: truncate(
-          tokenName ? `${actorName} minted "${tokenName}"` : `${actorName} minted a new moment`,
+          tokenName ? `${actorName} minted "${tokenName}"` : `${actorName} minted a new artwork`,
           BODY_MAX,
         ),
         targetUrl: momentUrl,
       }
     }
     case 'airdrop': {
-      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       const who = actorName ?? 'someone'
       return {
         title: truncate('Airdrop received', TITLE_MAX),
@@ -421,7 +421,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // In-app row links to the moment, not the profile — payouts are
       // moment-scoped (one split distribution per moment). Match that.
       // amountLabel already carries the currency ("0.1 ETH" / "$5").
-      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       const amountLabel = n.price ? formatPushPrice(n.price, n.currency) : 'a payout'
       return {
         title: truncate('Payout received', TITLE_MAX),
@@ -439,7 +439,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       }
     }
     case 'listing_created': {
-      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       const who = actorName ?? 'someone'
       const priceLabel = n.price ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
       return {
@@ -449,7 +449,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       }
     }
     case 'listing_expired': {
-      const subject = tokenName ? `"${tokenName}"` : 'a moment'
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       const priceLabel = n.price ? ` (${formatPushPrice(n.price, n.currency)})` : ''
       return {
         title: truncate('Listing expired', TITLE_MAX),
@@ -461,7 +461,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // Self-notification: the user's own agent collected on their behalf.
       // Link to their profile (matches NotificationRow's href). amount is
       // the count; price is the run's total spend in the budget currency.
-      const count = n.amount && n.amount > 1 ? `${n.amount} moments` : 'a moment'
+      const count = n.amount && n.amount > 1 ? `${n.amount} artworks` : 'an artwork'
       const priceLabel = n.price && n.price !== '0' ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
       return {
         title: truncate('Agent collected', TITLE_MAX),

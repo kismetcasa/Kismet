@@ -435,7 +435,7 @@ function HideContentCard() {
         next
           ? 'Listing hidden'
           : stillCascaded
-            ? 'Listing flag removed — still hidden via the moment/collection hide'
+            ? 'Listing flag removed — still hidden via the artwork/collection hide'
             : 'Listing restored',
         { id: 'admin-hide-listing' },
       )
@@ -489,7 +489,7 @@ function HideContentCard() {
       // now the pasted address (or gone).
       setRefresh((v) => v + 1)
       const label =
-        target.type === 'moment' ? 'Moment' : target.type === 'collection' ? 'Collection' : 'Profile'
+        target.type === 'moment' ? 'Artwork' : target.type === 'collection' ? 'Collection' : 'Profile'
       toast.success(next ? `${label} hidden` : `${label} restored`, { id: 'admin-hide' })
     } catch (err) {
       toastError(next ? 'Hide' : 'Unhide', err, { id: 'admin-hide' })
@@ -589,13 +589,13 @@ function HideContentCard() {
       <div>
         <h2 className="text-ink font-mono text-sm">Hide content</h2>
         <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
-          Paste a moment, collection, or profile link to toggle its
+          Paste an artwork, collection, or profile link to toggle its
           visibility. Bypasses the creator/on-chain admin gate that the
           user-facing hide actions enforce. Hiding a collection removes it
-          from the collections feed and 404s the collection page; moments
+          from the collections feed and 404s the collection page; artworks
           inside stay reachable by direct link unless hidden individually.
-          Hiding a moment (or collection) also pulls its marketplace
-          listings; for a listing that should go while the moment stays
+          Hiding an artwork (or collection) also pulls its marketplace
+          listings; for a listing that should go while the artwork stays
           up, use the per-listing toggles below. Hiding a profile 404s the
           profile page for everyone but its owner — content visibility is
           unaffected (use Moderation → Hidden users for that).
@@ -604,7 +604,7 @@ function HideContentCard() {
 
       <div className="flex flex-col gap-1.5">
         <label className="text-[10px] font-mono text-dim uppercase tracking-wider">
-          moment, collection, or profile link
+          artwork, collection, or profile link
         </label>
         <input
           value={link}
@@ -616,7 +616,7 @@ function HideContentCard() {
 
       {debouncedLink.trim() && !target && (
         <p className="text-[10px] font-mono text-[#c87474]">
-          Could not parse a moment, collection, or profile from that link.
+          Could not parse an artwork, collection, or profile from that link.
         </p>
       )}
 
@@ -692,11 +692,11 @@ function HideContentCard() {
                 <p className="text-[10px] font-mono text-[#c8a874]">
                   {listings.collectionHidden
                     ? 'collection is hidden — every listing below is off the market regardless of its own flag.'
-                    : 'moment is hidden — every listing below is off the market regardless of its own flag.'}
+                    : 'artwork is hidden — every listing below is off the market regardless of its own flag.'}
                 </p>
               )}
               {listings.rows.length === 0 ? (
-                <p className="text-[10px] font-mono text-muted">no active listings for this moment.</p>
+                <p className="text-[10px] font-mono text-muted">no active listings for this artwork.</p>
               ) : (
                 <ul className="flex flex-col gap-1">
                   {listings.rows.map((l) => (

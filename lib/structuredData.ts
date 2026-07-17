@@ -44,7 +44,7 @@ export function organizationNode(): Record<string, unknown> {
     logo: `${SITE_URL}/logo.png`,
     image: `${SITE_URL}/icon.png`,
     description:
-      'Kismet is an onchain art platform on Base where artists mint moments, create collections, and collectors discover, collect, and trade digital art.',
+      'Kismet is an onchain art platform on Base where artists mint artworks, create collections, and collectors discover, collect, and trade digital art.',
     ...(SAME_AS.length ? { sameAs: SAME_AS } : {}),
   }
 }

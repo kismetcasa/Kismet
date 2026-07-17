@@ -8,7 +8,7 @@ import { SITE_URL } from '@/lib/siteUrl'
 export const metadata = {
   title: 'market — Kismet',
   description:
-    'Buy and sell onchain art on the Kismet market — moments listed by collectors and artists, settled on Base in ETH or USDC.',
+    'Buy and sell onchain art on the Kismet market — artworks listed by collectors and artists, settled on Base in ETH or USDC.',
   alternates: { canonical: `${SITE_URL}/market` },
 }
 

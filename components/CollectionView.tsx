@@ -903,7 +903,7 @@ export function CollectionView({
                 },
               }}
               className="mt-2 inline-flex items-center gap-1.5 self-start border border-accent/40 bg-accent/5 hover:border-accent hover:bg-accent/10 px-2.5 py-1 transition-colors"
-              title="Your mint wallet holds ADMIN here — create new moments via MintForm"
+              title="Your mint wallet holds ADMIN here — create new artworks via MintForm"
             >
               <ShieldCheck size={11} className="text-accent" />
               <span className="text-[10px] font-mono text-ink uppercase tracking-widest">
@@ -1014,7 +1014,7 @@ export function CollectionView({
                 Minting requires an inprocess account
               </p>
               <p className="text-[11px] font-mono text-dim mt-0.5">
-                Set up your inprocess account to issue your smart wallet — mint your first moment (we’ll create a collection for you), or sign in at inprocess.world. Then return here to authorize.
+                Set up your inprocess account to issue your smart wallet — mint your first artwork (we’ll create a collection for you), or sign in at inprocess.world. Then return here to authorize.
               </p>
             </div>
           </div>
@@ -1249,7 +1249,7 @@ export function CollectionView({
               indexing your first mint… can take a few minutes. refresh to check.
             </p>
           ) : (
-            <p className="text-xs font-mono text-muted">no moments in this collection yet</p>
+            <p className="text-xs font-mono text-muted">no artworks in this collection yet</p>
           )
         ) : isPatron ? (
           <PatronArtworkShowcase moments={loadedMoments} isMobile={isMobile} />

@@ -516,9 +516,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     let preResolvedSmartWallet: string | null = null
     const swPre = await fetchInprocessSmartWallet(address)
     if (swPre && 'notFound' in swPre) {
-      toast.error('Mint your first moment first', {
+      toast.error('Mint your first artwork first', {
         description:
-          'This wallet has no inprocess account yet, so you couldn’t mint into a collection you create here. Mint a moment without picking a collection (we create one for you) to set up your account, then create collections of your own.',
+          'This wallet has no inprocess account yet, so you couldn’t mint into a collection you create here. Mint an artwork without picking a collection (we create one for you) to set up your account, then create collections of your own.',
       })
       return
     }

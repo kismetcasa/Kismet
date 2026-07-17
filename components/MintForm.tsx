@@ -629,7 +629,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         toast.error('Set up your account to mint', {
           id: 'mint',
           description:
-            'This wallet has no inprocess account yet. Mint your first moment WITHOUT picking a collection (we create one for you) — that provisions your account — then you can mint into existing collections.',
+            'This wallet has no inprocess account yet. Mint your first artwork WITHOUT picking a collection (we create one for you) — that provisions your account — then you can mint into existing collections.',
         })
         return
       }
@@ -810,7 +810,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
 
         setStep('minting')
-        toast.loading('Minting moment…', { id: 'mint' })
+        toast.loading('Minting artwork…', { id: 'mint' })
 
         // Writing-moment payload per inprocess docs (moment/create/writing.mdx):
         // - `title` lives at the top level (not inside token, and not aliased as "name")
@@ -841,7 +841,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // remains transparent to the user as before.
         toast.loading('Confirm in wallet…', { id: 'mint' })
         const { intent } = await signMintIntent(payload, 'write')
-        toast.loading('Minting moment…', { id: 'mint' })
+        toast.loading('Minting artwork…', { id: 'mint' })
 
         const res = await fetch('/api/write', {
           method: 'POST',
@@ -1224,7 +1224,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
 
         setStep('minting')
-        toast.loading('Minting moment…', { id: 'mint' })
+        toast.loading('Minting artwork…', { id: 'mint' })
 
         const payload: CreateMomentPayload & { name: string; durationSec?: number } = {
           contract: isAutoDeploy
@@ -1256,7 +1256,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // wallet once before submission.
         toast.loading('Confirm in wallet…', { id: 'mint' })
         const { intent } = await signMintIntent(payload, 'mint')
-        toast.loading('Minting moment…', { id: 'mint' })
+        toast.loading('Minting artwork…', { id: 'mint' })
 
         const res = await fetch('/api/mint', {
           method: 'POST',
@@ -1364,7 +1364,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       const trimmed = name.trim()
       const text = trimmed
         ? `I just minted "${trimmed}" on @kismet`
-        : 'I just minted a new moment on @kismet'
+        : 'I just minted a new artwork on @kismet'
       const momentUrl = `${SITE_URL}/moment/${result.contractAddress}/${result.tokenId}`
       const composed = await sdk.actions.composeCast({
         text,
@@ -1391,7 +1391,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           <span className="text-xl accent-grad">✓</span>
         </div>
         <div>
-          <h3 className="text-ink font-mono text-sm mb-2">Moment minted</h3>
+          <h3 className="text-ink font-mono text-sm mb-2">Artwork minted</h3>
           <p className="text-dim text-xs font-mono">Token #{result.tokenId}</p>
         </div>
         <div className="flex flex-col items-center gap-2.5">
@@ -1409,7 +1409,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             onClick={() => router.push(`/moment/${result.contractAddress}/${result.tokenId}`)}
             className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent"
           >
-            Moment details →
+            Artwork details →
           </button>
         </div>
         <a
@@ -1458,7 +1458,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 Authorize Kismet to mint into {selectedCollection.name}
               </p>
               <p className="text-[11px] font-mono text-dim mt-0.5">
-                One-time onchain grant from the collection&apos;s admin. Required before this collection can mint moments via Kismet.
+                One-time onchain grant from the collection&apos;s admin. Required before this collection can mint artworks via Kismet.
               </p>
             </div>
           </div>
@@ -1558,7 +1558,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             <textarea
               value={textContent}
               onChange={(e) => setTextContent(e.target.value)}
-              placeholder="write your moment…"
+              placeholder="write your artwork…"
               rows={12}
               className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none"
             />

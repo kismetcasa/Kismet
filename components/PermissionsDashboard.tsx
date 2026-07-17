@@ -162,7 +162,7 @@ export function PermissionsDashboard() {
             Could not resolve your inprocess smart wallet
           </p>
           <p className="text-[11px] font-mono text-dim">
-            Set up your inprocess account to issue your smart wallet — mint your first moment, or sign in to inprocess.world with this address ({address ? shortAddress(address) : ''}). Then reload this page.
+            Set up your inprocess account to issue your smart wallet — mint your first artwork, or sign in to inprocess.world with this address ({address ? shortAddress(address) : ''}). Then reload this page.
           </p>
         </div>
       )}
