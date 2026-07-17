@@ -1,5 +1,5 @@
-import { randomUUID } from 'crypto'
 import { redis, zpairsToMap } from './redis'
+import { acquireLock } from './redisLock'
 import { getEthUsd } from './ethPrice'
 import { fetchTransfersPage } from './inprocessTransfers'
 import { expandToEarningsWallets } from './addressUnion'
@@ -188,13 +188,6 @@ interface LastRebuild {
 // "move to an incremental sync" (see MAX_PAGES).
 const REBUILD_LOCK_KEY = 'kismetart:stats:rebuild-lock'
 const REBUILD_LOCK_TTL_S = 900
-// Release only if we still hold the lock (token match), so a run whose lock
-// already expired can't delete a newer run's lock — the standard safe-release
-// CAS (mirrors the atomic pattern used for royalty crediting).
-const RELEASE_LOCK_LUA = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
-return 0
-`
 
 export interface RebuildResult {
   /** True when another rebuild held the single-flight lock and this call was a
@@ -348,16 +341,12 @@ async function writeStatsAtomically(
 // counted-transfers shrink — so a bad scan never overwrites good totals. Drive
 // from the cron route, or call once to backfill.
 export async function rebuildStats(): Promise<RebuildResult> {
-  const lockToken = randomUUID()
-  const acquired = await redis.set(REBUILD_LOCK_KEY, lockToken, {
-    nx: true,
-    ex: REBUILD_LOCK_TTL_S,
-  })
-  if (acquired !== 'OK') return { ...EMPTY_REBUILD_RESULT, skipped: true }
+  const lock = await acquireLock(REBUILD_LOCK_KEY, REBUILD_LOCK_TTL_S)
+  if (!lock.acquired) return { ...EMPTY_REBUILD_RESULT, skipped: true }
   try {
     return await runRebuild()
   } finally {
-    await redis.eval(RELEASE_LOCK_LUA, [REBUILD_LOCK_KEY], [lockToken]).catch(() => {})
+    await lock.release()
   }
 }
 

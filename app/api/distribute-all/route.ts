@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { randomUUID } from 'node:crypto'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
 import { INPROCESS_API } from '@/lib/inprocess'
@@ -11,7 +10,7 @@ import { getStoredSplits } from '@/lib/splits'
 import { planDistributeAll, jobCurrencies, DISTRIBUTE_ALL_CAP } from '@/lib/distributePlan'
 import { acquireDistributeSlot, releaseDistributeSlot } from '@/lib/distributeGovernor'
 import { getEthUsd } from '@/lib/ethPrice'
-import { redis } from '@/lib/redis'
+import { acquireLock } from '@/lib/redisLock'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -52,13 +51,6 @@ const perArtistLockKey = (addr: string) => `kismetart:distribute-all-lock:${addr
 // still-funded splits — gas waste only (0xSplits can only pay its fixed
 // recipients), but inprocess /distribute is non-idempotent, so never invite it.
 const LOCK_TTL_S = 600
-// Release only when we still hold the lock (token match) — a run that somehow
-// outlives even the raised TTL must not delete a successor's lock. Same
-// safe-release CAS the stats rebuild lock uses (lib/stats.ts).
-const RELEASE_LOCK_LUA = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
-return 0
-`
 
 async function distributeOne(
   apiKey: string,
@@ -149,21 +141,19 @@ export async function POST(req: NextRequest) {
   // distribute for the same still-funded split. The lock serialises them; the
   // second gets a clean "already running".
   const lockKey = perArtistLockKey(callerAddress)
-  const lockToken = randomUUID()
-  // Fail CLOSED: a Redis error resolves to null → 429, NOT proceed-without-lock.
-  // The lock guards a non-idempotent, gas-spending fan-out; the safe failure is
-  // "make them retry", never "run unguarded". NX-held also returns null here.
-  const gotLock = await redis.set(lockKey, lockToken, { nx: true, ex: LOCK_TTL_S }).catch(() => null)
-  if (gotLock !== 'OK') {
+  // Fail CLOSED: a Redis error (acquireLock throws → caught to null) resolves to
+  // 429, NOT proceed-without-lock. The lock guards a non-idempotent, gas-spending
+  // fan-out; the safe failure is "make them retry", never "run unguarded".
+  // NX-held returns acquired:false → also 429.
+  const lock = await acquireLock(lockKey, LOCK_TTL_S).catch(() => null)
+  if (!lock || !lock.acquired) {
     return errorResponse(429, 'A distribution is already in progress — try again shortly')
   }
-  const releaseLock = () =>
-    redis.eval(RELEASE_LOCK_LUA, [lockKey], [lockToken]).catch(() => {})
 
   // Platform-wide in-flight governor — a burst of artists queues rather than
   // flooding the single shared relay. Released in finally alongside the lock.
   if (!(await acquireDistributeSlot())) {
-    await releaseLock()
+    await lock.release()
     return errorResponse(429, 'The network is busy settling payouts — try again shortly')
   }
 
@@ -245,6 +235,6 @@ export async function POST(req: NextRequest) {
     return errorResponse(502, 'Could not resolve or distribute splits')
   } finally {
     await releaseDistributeSlot()
-    await releaseLock()
+    await lock.release()
   }
 }
