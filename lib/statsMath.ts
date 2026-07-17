@@ -573,6 +573,33 @@ export function accumulateTransfer(
 }
 
 /**
+ * Run-over-run value-jump predicate for the rebuild's unit-drift breaker: true
+ * when `now` exceeds `prev` by more than `factor`×, but only once `prev` clears
+ * `floor`. Pure so scripts/verify-stats.ts can pin the boundary.
+ *
+ * WHY a ratio, not a row-level check: the cumulative in-scope value total is
+ * absolute (the rebuild re-scans the whole feed each run), so an upstream unit
+ * switch (USDC human→base = ×1e6, ETH →wei = ×1e18) multiplies the WHOLE total
+ * in one run — a huge ratio no row-level sanity ceiling can catch (a $1–$1000
+ * USDC sale in base units, 1e6–1e9, overlaps the legitimate human range).
+ *
+ * WHY factor 1000 + a low floor (see the constants in lib/stats.ts): drift is
+ * ≥1e6×, so 1000 catches it with 1000× margin, while no ORGANIC hour reaches
+ * 1000× the entire prior lifetime — that separation is what lets the guard be
+ * armed at real volume (a low floor) without wedging the rebuild on a genuine
+ * viral hour. The floor only skips a dust-sized baseline where any ratio is
+ * noise; `prev` undefined (pre-field baseline / first run) never trips.
+ */
+export function exceedsGrowthLimit(
+  prev: number | undefined,
+  now: number,
+  floor: number,
+  factor: number,
+): boolean {
+  return typeof prev === 'number' && prev > floor && now > prev * factor
+}
+
+/**
  * Fold scores credited to mapped aliases (inprocess per-creator smart wallets)
  * into their owner's key. `remap` maps alias→owner, both lowercase. Entries
  * with no mapping pass through unchanged; an owner that also holds direct

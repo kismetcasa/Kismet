@@ -7,6 +7,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { consumeUserQuota } from '@/lib/userQuota'
 import { resolveArtistSplitJobs, invalidatePendingCache } from '@/lib/pending'
+import { getStoredSplits } from '@/lib/splits'
 import { planDistributeAll, jobCurrencies, DISTRIBUTE_ALL_CAP } from '@/lib/distributePlan'
 import { acquireDistributeSlot, releaseDistributeSlot } from '@/lib/distributeGovernor'
 import { getEthUsd } from '@/lib/ethPrice'
@@ -15,7 +16,15 @@ import { USDC_BASE } from '@/lib/zoraMint'
 import { errorResponse } from '@/lib/apiResponse'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 120
+// The fan-out can legitimately run long (up to DISTRIBUTE_ALL_CAP×2 sponsored
+// txs at ~30s each, 3-wide → ~400s worst case), which is why LOCK_TTL_S below
+// is sized to outlive it. maxDuration is a Vercel-only hint; the deployment
+// target is a persistent server (Coolify — see OPS_RUNBOOK / next.config
+// output:'standalone'), where the handler runs to completion and the finally
+// always releases the lock, so the 600s lock is a crash backstop, not an
+// orphan risk. Set to 300 (matching the sync-stats cron) so the two figures
+// don't read as contradictory.
+export const maxDuration = 300
 
 // "Distribute all": settle the caller's undistributed split balances in one
 // gesture. The caller signs ONCE; the server resolves the splits they're a
@@ -202,8 +211,24 @@ export async function POST(req: NextRequest) {
       Array.from({ length: Math.min(FANOUT_CONCURRENCY, units.length) }, worker),
     )
 
-    // Drained balances → bust the 60s pending cache so the card refreshes.
-    await invalidatePendingCache(callerAddress)
+    // Drained balances → bust the 60s pending cache so cards refresh. A drained
+    // split pays ALL its recipients, so bust every co-recipient too (the caller
+    // resolves their own splits, but collaborators share the pot) — matching the
+    // single-distribute path, which busts all recipients. Recipients come from
+    // the CAP-bounded `selected` set's stored split lists (≤20 reads, auto-
+    // pipelined); the caller is always included. Best-effort per address.
+    const toBust = new Set<string>([callerAddress.toLowerCase()])
+    try {
+      const lists = await Promise.all(
+        selected.map((j) =>
+          getStoredSplits(j.collection, j.tokenId).catch(() => ({ hasSplits: false, recipients: [] })),
+        ),
+      )
+      for (const s of lists) for (const r of s.recipients) toBust.add(r.address.toLowerCase())
+    } catch {
+      // Fall back to at least the caller (already in the set).
+    }
+    await Promise.all([...toBust].map((a) => invalidatePendingCache(a)))
 
     return NextResponse.json({
       moments: selected.length,

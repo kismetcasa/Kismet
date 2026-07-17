@@ -55,7 +55,7 @@ const splitAddrKey = (collection: string, tokenId: string) =>
 const RECIPIENT_READ_TIMEOUT_MS = 3000
 
 /**
- * Single-token creator-reward-recipient, through the SAME permanent
+ * Single-token creator-reward-recipient, through the SAME TTL-bounded
  * kismetart:splitaddr:* cache resolveSplitAddresses maintains — so the
  * listings fill path (creditListingRoyalty's split decomposition) reuses
  * mappings the pending roll-up already paid for, and vice versa. Bounded and
@@ -69,7 +69,14 @@ export async function getCachedCreatorRewardRecipient(
 ): Promise<string | null> {
   const key = splitAddrKey(collection, tokenId)
   const cached = await redis.get<string>(key).catch(() => null)
-  if (typeof cached === 'string' && isAddress(cached)) return cached.toLowerCase()
+  if (typeof cached === 'string' && isAddress(cached)) {
+    // Migrate a legacy no-TTL entry (written before SPLIT_ADDR_TTL_S) to the
+    // 7-day bound; NX leaves an already-set expiry untouched so an active
+    // moment's window isn't slid forward (which would defeat re-resolution).
+    // Best-effort, off the returned value.
+    await redis.expire(key, SPLIT_ADDR_TTL_S, 'NX').catch(() => {})
+    return cached.toLowerCase()
+  }
   try {
     const r = await Promise.race([
       serverBaseClient().readContract({
@@ -118,6 +125,17 @@ async function resolveSplitAddresses(
     .catch(() => moments.map(() => null))) as (string | null)[]
 
   const out: (string | undefined)[] = moments.map((_, i) => cached[i] ?? undefined)
+  // Migrate legacy no-TTL entries (written before SPLIT_ADDR_TTL_S) to the
+  // 7-day bound so the whole existing corpus — not just moments first resolved
+  // after this shipped — re-resolves and can pick up an admin-changed on-chain
+  // recipient. NX leaves an already-set expiry alone (no sliding). One
+  // auto-pipelined round trip over the cache HITS, best-effort.
+  const hitKeys = moments
+    .map((m, i) => (out[i] ? splitAddrKey(m.collection, m.tokenId) : null))
+    .filter((k): k is string => k !== null)
+  if (hitKeys.length) {
+    await Promise.all(hitKeys.map((k) => redis.expire(k, SPLIT_ADDR_TTL_S, 'NX').catch(() => {})))
+  }
   const missing = moments.map((m, i) => ({ m, i })).filter(({ i }) => !out[i])
   if (!missing.length) return out
 
