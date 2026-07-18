@@ -43,7 +43,7 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
           <div className="flex items-center gap-3">
             <ViewModeToggle mode={viewMode} onChange={setViewMode} />
             <div>
-              <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Market</h1>
+              <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Secondary Market</h1>
               <p className="text-xs font-mono text-faint mt-1">
                 creator royalties enforced on every sale
               </p>

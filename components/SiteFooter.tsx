@@ -14,7 +14,7 @@ import Link from 'next/link'
 // navigation.
 const FOOTER_LINKS = [
   { href: '/learn', label: 'Learn' },
-  { href: '/', label: 'Discover' },
+  { href: '/', label: 'Enjoy' },
   { href: '/mint', label: 'Mint' },
   { href: '/market', label: 'Market' },
   // Label "Agent" for nav brevity; the /agent URL and its page title ("AI

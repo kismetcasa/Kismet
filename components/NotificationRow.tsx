@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { Sparkles, Clock, Coins, Key, Bot } from 'lucide-react'
+import { Sparkles, Clock, Coins, Key, Bot, Send } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment } from '@/lib/inprocess'
@@ -114,10 +114,23 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         </>
       )
     case 'airdrop':
+      // Airdropee (actor set) vs the airdropper's own "you airdropped …"
+      // confirmation (no actor) — mirrors the mint two-branch.
+      if (actorLabel) {
+        return (
+          <>
+            <p className="text-xs font-mono text-ink truncate">
+              {actorLabel} airdropped you {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
+            </p>
+            <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
+          </>
+        )
+      }
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            {actorLabel ?? 'someone'} airdropped you {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
+            you airdropped {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
+            {n.amount && n.amount > 1 ? ` to ${n.amount} recipients` : ''}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
@@ -192,6 +205,8 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   if (n.type === 'listing_expired' && !n.tokenImage) {
     return badge(<Clock size={iconSize} className="text-muted" />)
   }
+  // Airdropper's own confirmation (no actor) — a send glyph, not the empty placeholder.
+  if (n.type === 'airdrop' && !n.actor) return badge(<Send size={iconSize} className="text-accent" />)
 
   if (n.type === 'follow' || !n.tokenImage) {
     if (n.actor) return <ProfileAvatar address={n.actor} size={size} />

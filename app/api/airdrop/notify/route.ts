@@ -18,10 +18,11 @@ import { errorResponse } from '@/lib/apiResponse'
 /**
  * Records an airdrop after the on-chain tx submitted by the user's wallet
  * lands. Companion to `useAirdrop` — the form fires this after
- * `writeContractAsync` resolves so two display surfaces stay populated:
+ * `writeContractAsync` resolves so these display surfaces stay populated:
  *
  *   1. ProfileView's airdrops section (read via GET /api/airdrops)
  *   2. Recipient inboxes (one notification per recipient, type=airdrop)
+ *   3. The sender's inbox (a self-action "you airdropped …" confirmation)
  *
  * Inprocess's `/api/airdrops` is no longer authoritative for Kismet — we
  * bypass their relay to call Zora's `adminMint` directly, so they never see
@@ -327,25 +328,40 @@ export async function POST(req: NextRequest) {
   const recordedCount = recordResults.filter(Boolean).length
 
   after(async () => {
-    await Promise.all(
-      finalRecipients
-        .filter((recipient) => recipient !== sender)
-        .map((recipient) =>
-          // Per-call catch so one failed notification doesn't abort the rest
-          // of the batch (Promise.all rejects on the first rejection).
-          writeNotification({
-            type: 'airdrop',
-            recipient,
-            actor: sender,
-            tokenAddress: collectionAddress,
-            tokenId,
-            ...(tokenName ? { tokenName } : {}),
-            amount: 1,
-          }).catch(
-            bestEffort('airdrop-notify.writeNotification', { recipient, sender, txHash }),
-          ),
+    // Per-call catch so one failed notification doesn't abort the rest of the
+    // batch (Promise.all rejects on the first rejection).
+    const notifications = finalRecipients
+      .filter((recipient) => recipient !== sender)
+      .map((recipient) =>
+        // Airdropee: "<sender> airdropped you …" (actor set).
+        writeNotification({
+          type: 'airdrop',
+          recipient,
+          actor: sender,
+          tokenAddress: collectionAddress,
+          tokenId,
+          ...(tokenName ? { tokenName } : {}),
+          amount: 1,
+        }).catch(
+          bestEffort('airdrop-notify.writeNotification', { recipient, sender, txHash }),
         ),
+      )
+    // Airdropper's own confirmation — no actor, so it renders as a self-action
+    // and clears writeNotification's self-check (which only blocks actor===recipient).
+    // `amount` carries the recipient count.
+    notifications.push(
+      writeNotification({
+        type: 'airdrop',
+        recipient: sender,
+        tokenAddress: collectionAddress,
+        tokenId,
+        ...(tokenName ? { tokenName } : {}),
+        amount: finalRecipients.length,
+      }).catch(
+        bestEffort('airdrop-notify.writeNotification.sender', { sender, txHash }),
+      ),
     )
+    await Promise.all(notifications)
   })
 
   // Flag the airdrop tx as platform-originated so the Pass-transfer webhook

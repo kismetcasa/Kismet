@@ -158,7 +158,9 @@ export function ProfileThemeBackdrop({ theme, inView }: { theme: ProfileTheme; i
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute -inset-x-4 inset-y-0 -z-10 overflow-hidden"
+      // -top-12 (mobile only) bleeds the band up past the container's pt-12 so
+      // it fills the screen from under the nav; sm:top-0 keeps the desktop band.
+      className="pointer-events-none absolute -inset-x-4 bottom-0 -top-12 sm:top-0 -z-10 overflow-hidden"
       style={{ ...rootVars } as CSSProperties}
     >
       <div className="absolute inset-0" style={{ background: baseGradient, ...anim(hueAnim) }} />

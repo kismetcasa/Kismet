@@ -1116,7 +1116,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           modal-free region, so isolating it can't trap ProfileView's overlays. */}
       <div ref={headerRef} className="relative isolate flex flex-col gap-4">
         {theme && <ProfileThemeBackdrop theme={theme} inView={headerInView} />}
-        <div className="flex flex-wrap items-center gap-6">
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
           <div className="relative">
             {/* Bloom glow behind the avatar — the bloom effect extended to the
                 avatar so it breathes with the backdrop. Behind + non-interactive
@@ -1146,7 +1146,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               <div className="w-20 h-20 rounded-full bg-raised animate-pulse" />
             )}
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1 order-3 w-full sm:order-2 sm:w-auto">
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1 flex-1 min-w-0">
                 {loadingProfile ? (
@@ -1280,8 +1280,9 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 </div>
               ))}
           </div>
-          {/* Earnings card — right of the identity block (wraps below on
-              mobile). Private by default: the owner sees it with a pin toggle,
+          {/* Earnings card — top-right corner across from the pfp (on mobile
+              it shares the top row with the pfp; the identity column drops
+              below). Private by default: the owner sees it with a pin toggle,
               visitors only once pinned public. Admins get a read-only view of
               any artist's figures (incl. private) for verification — but not
               while previewing the public view, where they should see exactly
