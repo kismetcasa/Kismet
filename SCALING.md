@@ -274,7 +274,9 @@ the lever — Dependabot never proposes override bumps, so this needs a manual p
 turbo-sdk@1.42 is installed and still flags undici, so its bump was never the fix);
 `form-data` CRLF (3.0.5/4.0.6) and `hono` ≤4.12.24 (4.12.30) via
 in-range bumps; two vulnerable nested `ws` copies (ethers/engine.io) deduped onto the
-fixed 8.21.0. All 8 remaining **high** are transitive, in two families:
+fixed 8.21.0. The 8 remaining **high** — vulnerable *code* all transitive and (validated
+2026-07-18, below) execution-unreachable, though fix-bearing `@ardrive/turbo-sdk` is
+itself a direct dep — fall in two families:
 - **`ws`** — 5 vulnerable copies, split across BOTH families: 4× `8.18.0`
   (exact-pinned by nested viem copies under `@reown/appkit*` /
   `@walletconnect/utils`) are the wallet-stack set → fix is `wagmi@3`, currently
@@ -284,17 +286,20 @@ fixed 8.21.0. All 8 remaining **high** are transitive, in two families:
   wagmi-3 release yet. Take wagmi@3 the week BOTH ship it (PR #585 going green is the
   signal), with a wallet-connect + mint smoke test. The 5th copy
   (`7.4.6`, exact-pinned by `@ethersproject/providers`) belongs to the Turbo tree
-  below and **outlives wagmi@3**. Server exposure is nil meanwhile — server-side
-  RPC uses viem `http()` transports; `ws` runs in the browser wallet stack.
+  below and **outlives wagmi@3**. Server exposure is nil by **invocation, not location**:
+  the 4 wallet copies are browser-only, but even the server-side `7.4.6` is never
+  instantiated — server RPC is viem `http()`, nothing constructs a `ws` client or
+  subscription, and no WebSocket server runs (validated 2026-07-18).
 - **The Turbo signing tree** — `@ardrive/turbo-sdk` itself, `@dha-team/arbundles`,
   `@ethersproject/providers`, `secp256k1`, `@solana/spl-token`,
   `@solana/buffer-layout-utils`, `bigint-buffer` — the unused multi-chain
   payment/signer surface analysed in §B13 (the RSA upload path doesn't touch it);
   npm's only offered "fix" is a force-**downgrade** to turbo-sdk 1.13 — refuse it.
-  **Reachability update:** since 2026-07-14 (`lib/arweave/uploadServer.ts`, MCP mint)
-  the Node build of turbo-sdk runs **server-side**, so this subtree is no longer
-  browser-only — its HTTP client (`undici`) is now patched (above); the signer
-  advisories still sit on code paths the RSA upload flow never calls.
+  **Validated unreachable (2026-07-18):** turbo-sdk runs server-side, but every upload
+  builds an **Arweave RSA signer** (`token:'arweave'` → `ArweaveSigner`); the secp256k1/
+  ethers/Solana code these advisories execute in is never instantiated. `undici` is
+  separately patched (above), and `npm audit fix` clears none (arbundles exact-pins block
+  in-range bumps), so overrides would risk regression for zero reachable gain.
 
 **Open:** CI gates on `--audit-level=critical` (0 today). After `wagmi@3` lands and
 is smoke-tested (§B11/§B13), only the turbo-signing-tree tail remains (including
