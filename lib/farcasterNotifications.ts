@@ -399,10 +399,19 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
     }
     case 'airdrop': {
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
-      const who = actorName ?? 'someone'
+      // Airdropper's own confirmation (no actor) vs airdropee (actor set).
+      // Matches NotificationRow's two branches exactly.
+      if (!actorName) {
+        const to = n.amount && n.amount > 1 ? ` to ${n.amount} recipients` : ''
+        return {
+          title: truncate('Airdrop sent', TITLE_MAX),
+          body: truncate(`You airdropped ${subject}${to}`, BODY_MAX),
+          targetUrl: momentUrl,
+        }
+      }
       return {
         title: truncate('Airdrop received', TITLE_MAX),
-        body: truncate(`${who} airdropped you ${subject}`, BODY_MAX),
+        body: truncate(`${actorName} airdropped you ${subject}`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }

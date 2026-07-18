@@ -31,9 +31,11 @@ interface Stats {
   pending?: Pending | null
 }
 
-// Earnings card to the right of the profile identity block. Private by default:
-// the owner sees it with a pin to make it public; visitors only once pinned
-// (mirroring the artwork pin). The figure taps to cycle ETH → USDC → USD.
+// Earnings card in the top-right corner of the profile header, across from the
+// pfp (the root order/ml-auto/w-fit classes are coupled to ProfileView's header
+// flex row; w-fit lets the box hug its content so it scales with the figure).
+// Private by default: the owner sees it with a pin to make it public; visitors
+// only once pinned (mirroring the artwork pin). Taps to cycle ETH → USDC → USD.
 export function ProfileStats({
   address,
   asVisitor,
@@ -183,7 +185,7 @@ export function ProfileStats({
     const onSignIn = adminView ? signInAdmin : signIn
     const busy = adminView ? adminSigningIn : signingIn
     return (
-      <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+      <div className="order-2 sm:order-3 ml-auto w-fit shrink-0 rounded-xl border border-line bg-raised px-4 py-3 font-mono">
         <p className="text-muted text-xs">
           {adminView ? 'sign in as admin to view earnings' : 'sign in to view your earnings'}
         </p>
@@ -230,7 +232,7 @@ export function ProfileStats({
     // this branch is skipped and they fall through to the full card, keeping
     // the pin — their only unpin surface — reachable.)
     return (
-      <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+      <div className="order-2 sm:order-3 ml-auto w-fit shrink-0 rounded-xl border border-line bg-raised px-4 py-3 font-mono">
         <p className="text-ink text-xl leading-tight tabular-nums">{formatEarningsValue('usd', stats)}</p>
         <p className="text-muted text-xs mt-0.5">{stats.mints.toLocaleString('en-US')} sales</p>
       </div>
@@ -320,7 +322,7 @@ export function ProfileStats({
   }
 
   return (
-    <div className="w-full sm:w-auto sm:ml-auto rounded-xl border border-line bg-raised px-4 py-3 font-mono">
+    <div className="order-2 sm:order-3 ml-auto w-fit shrink-0 rounded-xl border border-line bg-raised px-4 py-3 font-mono">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           {active ? (

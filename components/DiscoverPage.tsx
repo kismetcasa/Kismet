@@ -34,7 +34,7 @@ const DRAGGABLE: TabId[] = ['featured', 'trending', 'main', 'roster']
 const LABEL: Record<TabId, string> = {
   featured: 'featured',
   trending: 'trending',
-  main: 'main',
+  main: 'home',
   roster: 'artists',
 }
 

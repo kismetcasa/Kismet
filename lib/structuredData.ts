@@ -68,6 +68,34 @@ export function homeJsonLd(): Record<string, unknown> {
   }
 }
 
+// The /discover market browser. A CollectionPage — the schema.org type for a
+// page whose purpose is to list a collection of items — tied to the WebSite
+// entity, plus a Home › Discover breadcrumb. Page-level only (no per-item
+// ItemList): individual moments are indexed via the sitemap + their own
+// server-rendered /moment pages, so this stays resilient and can't drift from a
+// client-fetched feed's live contents.
+export function discoverJsonLd(): Record<string, unknown> {
+  const url = `${SITE_URL}/discover`
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'CollectionPage',
+        '@id': `${url}#discover`,
+        name: 'Discover — Kismet',
+        url,
+        isPartOf: { '@id': WEBSITE_ID },
+        description:
+          'Browse every artwork minted and listed on Kismet in chronological order — the primary mint market and the secondary resale market.',
+      },
+      breadcrumbNode([
+        { name: 'Kismet', url: `${SITE_URL}/` },
+        { name: 'Discover', url },
+      ]),
+    ],
+  }
+}
+
 // BreadcrumbList from an ordered list of {name, url}. Every url must be a real,
 // crawlable page (Google drops breadcrumbs whose items don't resolve).
 export function breadcrumbNode(

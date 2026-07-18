@@ -12,11 +12,14 @@ import Link from 'next/link'
 // only for crawlers, which is the hidden-link pattern search engines treat as
 // manipulative — the links carry weight precisely because they're real
 // navigation.
+// Enjoy / Mint / Market are intentionally NOT here: the global nav already
+// exposes them as crawlable links on every page, so footer copies added no SEO
+// (link-equity) value and just duplicated the nav. Learn, Discover, and Agent
+// are footer-first surfaces the nav doesn't carry, so they keep their crawl
+// path here.
 const FOOTER_LINKS = [
   { href: '/learn', label: 'Learn' },
-  { href: '/', label: 'Discover' },
-  { href: '/mint', label: 'Mint' },
-  { href: '/market', label: 'Market' },
+  { href: '/discover', label: 'Discover' },
   // Label "Agent" for nav brevity; the /agent URL and its page title ("AI
   // agent — Kismet") stay as-is — the title keeps the query-bearing phrase
   // for search while the anchor stays concise. No redirect needed.

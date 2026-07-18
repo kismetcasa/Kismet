@@ -25,6 +25,8 @@ const MAX_MOMENTS = 40_000
 // excluded (disallowed in robots.ts / noindex at the route).
 const STATIC_ROUTES: MetadataRoute.Sitemap = [
   { url: `${SITE_URL}/`, changeFrequency: 'hourly', priority: 1 },
+  // The market browser — new mints/resales land continuously, so crawl hourly.
+  { url: `${SITE_URL}/discover`, changeFrequency: 'hourly', priority: 0.8 },
   { url: `${SITE_URL}/learn`, changeFrequency: 'monthly', priority: 0.8 },
   // Each guide's lastModified tracks its own `updated` date, so a content edit
   // (with the date bumped) resurfaces just that page to crawlers.

@@ -6,20 +6,21 @@ import { homeJsonLd } from '@/lib/structuredData'
 import { SITE_URL } from '@/lib/siteUrl'
 
 // Homepage-specific metadata. Overrides the layout's generic title/description
-// with keyword-informed copy for the apex URL. Only these keys are replaced —
-// the layout's `other` (Farcaster embed + base:app_id verification) and
-// metadataBase are inherited via Next's shallow metadata merge, so the Mini App
-// card and Base domain verification are untouched.
+// for the apex URL. Only these keys are replaced — the layout's `other`
+// (Farcaster embed + base:app_id verification) and metadataBase are inherited
+// via Next's shallow metadata merge, so the Mini App card and Base domain
+// verification are untouched.
 export const metadata: Metadata = {
-  title: 'Kismet — Discover, Collect & Mint Onchain Art on Base',
-  // One tagline across the Google snippet, social share cards, and the footer.
-  description:
-    'Artists and collectors converge on Kismet. Create, collect and curate onchain artwork on Base.',
+  // Brand-forward title. The "onchain art on Base" keywords the previous title
+  // carried are preserved in the description below, the sr-only H1, and the
+  // Organization JSON-LD (lib/structuredData.homeJsonLd), so the page keeps its
+  // keyword footprint even though the title now leads with the tagline.
+  title: 'Artists and collectors converge on Kismet',
+  description: 'Mint, collect and curate onchain artwork on Base',
   alternates: { canonical: SITE_URL },
   openGraph: {
-    title: 'Kismet — Onchain Art on Base',
-    description:
-      'Artists and collectors converge on Kismet. Create, collect and curate onchain artwork on Base.',
+    title: 'Artists and collectors converge on Kismet',
+    description: 'Mint, collect and curate onchain artwork on Base',
     url: SITE_URL,
   },
 }
