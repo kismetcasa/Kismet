@@ -284,7 +284,12 @@ export function formatPrice(
   if (!pricePerToken) return ''
   // Decimal-string path: inprocess `amount` like "0.1" or "5".
   if (pricePerToken.includes('.')) {
-    const trimmed = pricePerToken.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+    // Strip trailing zeros + a bare trailing dot via an index walk, NOT a
+    // backtracking `/…0+$/` regex (quadratic ReDoS on a crafted long decimal).
+    let end = pricePerToken.length
+    while (end > 0 && pricePerToken[end - 1] === '0') end--
+    if (end > 0 && pricePerToken[end - 1] === '.') end--
+    const trimmed = pricePerToken.slice(0, end)
     if (trimmed === '0') return 'free'
     return currency === 'usdc' ? `$${trimmed}` : `${trimmed} ETH`
   }

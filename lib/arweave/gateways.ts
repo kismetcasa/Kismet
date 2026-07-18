@@ -30,6 +30,11 @@ const IPFS_GATEWAYS = [
  * ARWEAVE_GATEWAYS, ipfs:// across IPFS_GATEWAYS. Anything else (https://,
  * blob:, data:) is returned as a single-element array so callers can iterate
  * uniformly without special-casing.
+ *
+ * SSRF INVARIANT: that pass-through means a SERVER-side fetch caller MUST
+ * pre-validate `ar://`/`ipfs://` itself (see app/api/transcode-gif + /api/img,
+ * which 400 anything else) — this fn does not, so a raw https:// URI reaching a
+ * server fetch here would be requested verbatim.
  */
 export function gatewayUrls(uri: string): string[] {
   if (!uri) return []
