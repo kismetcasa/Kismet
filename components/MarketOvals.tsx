@@ -187,7 +187,7 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
   // MomentCard's raw saleStart/saleEnd compares for the disable gate (verified:
   // both read the max-uint64 "no end" sentinel as open-ended); used here because
   // it ALSO yields the 'closing' state that drives the close-date label. This
-  // ~derivation is deliberately NOT shared with MomentCard — a shared hook would
+  // derivation is deliberately NOT shared with MomentCard — a shared hook would
   // edit the feed's hottest component; isolation over DRY for a no-regression feature.
   const nowSec = Math.floor(Date.now() / 1000)
   const saleWindow = getSaleWindow(activeSale, nowSec)

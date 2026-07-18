@@ -219,9 +219,17 @@ export function PaginatedGrid<T>({
     [queryClient, queryKey, itemsKey, getKey],
   )
 
+  // Synchronous in-flight latch alongside the loadingMore STATE (which drives
+  // the button UI). The state guard alone can race: two triggers in the same
+  // tick (the infinite-scroll observer's initial callback + a scroll enter, or
+  // a button double-click) both read the stale pre-render `loadingMore` and
+  // would fetch the same page twice, appending duplicates. The ref flips
+  // synchronously, so the second caller is a guaranteed no-op.
+  const loadingMoreRef = useRef(false)
   const loadMore = useCallback(async () => {
     const next = currentPage + 1
-    if (next > totalPages || loadingMore) return
+    if (next > totalPages || loadingMoreRef.current) return
+    loadingMoreRef.current = true
     setLoadingMore(true)
     try {
       const url = new URL(apiUrl, location.origin)
@@ -236,18 +244,24 @@ export function PaginatedGrid<T>({
     } catch {
       // Silent — user can tap "load more" again
     } finally {
+      loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [apiUrl, pageLimit, itemsKey, currentPage, totalPages, loadingMore])
+  }, [apiUrl, pageLimit, itemsKey, currentPage, totalPages])
 
   // Infinite scroll (opt-in): auto-advance when the bottom sentinel nears the
-  // viewport. The observer is created ONCE per sentinel lifetime — loadMore is
-  // read through a ref, and the effect keys on `hasMore` (which is stable across
-  // page loads, unlike loadMore's identity), so a page load doesn't re-create
-  // the observer and re-fire on the still-intersecting sentinel (which would
-  // chain several loads). It then fires only on a genuine enter after each
-  // scroll → one page per approach. loadMore self-guards (next>totalPages,
-  // in-flight) as a backstop.
+  // viewport. The observer is re-created per COMMITTED page (currentPage in the
+  // deps) — deliberately: IntersectionObserver only fires on transitions, and
+  // observe() always delivers an initial callback with the current state, so
+  // each recreation doubles as a "is the sentinel still inside the margin?"
+  // check. That is what makes the two stall cases self-heal: a tall viewport
+  // the first page doesn't fill (the user CAN'T scroll to trigger a transition),
+  // and a page that appends less than the 600px margin (the sentinel never
+  // exits, so a genuine re-enter never comes). Chaining is bounded — each round
+  // loads exactly one page, and the chain stops the moment the initial callback
+  // reports the sentinel beyond the margin or hasMore flips false. loadMore is
+  // read through a ref so the observer never closes over a stale page counter;
+  // its sync latch above makes overlapping triggers no-ops.
   const sentinelRef = useRef<HTMLDivElement>(null)
   const loadMoreRef = useRef(loadMore)
   loadMoreRef.current = loadMore
@@ -264,7 +278,7 @@ export function PaginatedGrid<T>({
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [infiniteScroll, hasMore])
+  }, [infiniteScroll, hasMore, currentPage])
 
   // Manual refresh: clears local extras and forces a fresh first-page
   // fetch through react-query. isFetching toggles around the refetch
@@ -353,9 +367,10 @@ export function PaginatedGrid<T>({
           </div>
           {currentPage < totalPages && (
             <div className="mt-8 text-center">
-              {/* Infinite-scroll trip wire (opt-in). Sits above the button so its
-                  800px rootMargin fires the auto-load well before the fold. The
-                  button stays as a keyboard / no-IntersectionObserver fallback. */}
+              {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
+                  observer's 600px rootMargin fires the auto-load well before the
+                  fold. The button stays as a keyboard / no-IntersectionObserver
+                  fallback. */}
               {infiniteScroll && <div ref={sentinelRef} aria-hidden className="h-px w-full" />}
               <button
                 onClick={loadMore}
