@@ -295,8 +295,11 @@ export function PaginatedGrid<T>({
 
   return (
     <div>
-      <div className="flex items-center justify-between py-4">
-        <div>{header}</div>
+      <div className="flex items-center justify-between gap-4 py-4">
+        {/* flex-1 so a header that manages its own left/right layout (the
+            discover toggle + stats) can span the row; left-aligned headers
+            are unaffected. */}
+        <div className="min-w-0 flex-1">{header}</div>
         <button
           onClick={refresh}
           disabled={refreshing}

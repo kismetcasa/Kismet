@@ -16,6 +16,8 @@ import {
   formatPrice,
   inferCollectCurrency,
   shortAddress,
+  getSaleWindow,
+  formatSaleWindowLabel,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
 } from '@/lib/inprocess'
@@ -68,16 +70,20 @@ function OvalShell({
 // Artwork thumbnail. object-contain renders the FULL artwork (never a
 // pfp-style circle crop) — letterboxed in a rounded square against the page bg
 // for non-square pieces. Falls back to the thumbhash blur, then a flat tile.
+//
+// STATIC COVER (bloat): we never pass the gif mime, so MomentImage routes the
+// source through the optimizer, which flattens an animated gif to its first
+// frame; video callers pass the poster still. Either way an oval wall renders
+// zero animated decoders — the page stays light no matter how many are minted
+// as gif/video.
 function OvalArt({
   src,
   alt,
   thumbhash,
-  mime,
 }: {
   src?: string
   alt: string
   thumbhash?: string
-  mime?: string
 }) {
   const blur = useMemo(
     () => (!src && thumbhash ? thumbhashToBlurDataURL(thumbhash) : undefined),
@@ -86,7 +92,7 @@ function OvalArt({
   return (
     <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-[#0d0d0d]">
       {src ? (
-        <MomentImage src={src} alt={alt} fill className="object-contain" sizes="44px" mime={mime} thumbhash={thumbhash} />
+        <MomentImage src={src} alt={alt} fill className="object-contain" sizes="44px" thumbhash={thumbhash} />
       ) : blur ? (
         <span aria-hidden className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${blur})` }} />
       ) : (
@@ -112,7 +118,16 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
 
   const meta = useMemo(() => moment.metadata ?? {}, [moment.metadata])
   const media = useMemo(() => resolveMomentMedia(meta), [meta])
-  const stillSrc = media.kind === 'video' ? media.poster : media.kind === 'image' || media.kind === 'gif' ? media.src : undefined
+  // Static cover: video → poster; gif → poster if present, else the gif itself
+  // (the optimizer flattens it to a still — see OvalArt); image → the still.
+  const stillSrc =
+    media.kind === 'video'
+      ? media.poster
+      : media.kind === 'gif'
+        ? media.poster ?? media.src
+        : media.kind === 'image'
+          ? media.src
+          : undefined
 
   // Collection name — seed from the server-stitched chip, else resolve client-side.
   const [collectionName, setCollectionName] = useState<string | null>(() => moment.kismetCollection?.name ?? null)
@@ -159,11 +174,16 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
   // must land before flagging sold out, so it never flashes before tokenInfo.
   const mintedOut =
     maxSupply !== undefined && totalMinted !== undefined && !isOpenEdition(maxSupply) && totalMinted >= maxSupply
+  // Sale window via the canonical classifier (handles the max-uint64 "no end"
+  // sentinel that a raw saleEnd compare would miss). 'closing' = live with a
+  // real upcoming deadline → surface the close date; open-ended sales stay
+  // dateless, so it's never forced.
   const nowSec = Math.floor(Date.now() / 1000)
-  const saleStartNum = activeSale?.saleStart ? Number(activeSale.saleStart) : 0
-  const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
-  const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > nowSec
-  const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= nowSec
+  const saleWindow = getSaleWindow(activeSale, nowSec)
+  const saleNotStarted = saleWindow?.state === 'scheduled'
+  const saleEnded = saleWindow?.state === 'ended'
+  const closeLabel =
+    saleWindow?.state === 'closing' ? formatSaleWindowLabel(saleWindow, { withTime: false }) : null
   const disabled = collecting || mintedOut || saleNotStarted || saleEnded
   const label = collecting
     ? 'collecting…'
@@ -177,13 +197,14 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
             ? 'collect+'
             : 'collect'
 
-  // Supply line: minted/cap for limited editions, "N minted" for open ones.
+  // Supply line: "sold" framing — "3/100 sold" for limited editions,
+  // "open edition · N sold" for open ones.
   const supplyLabel =
     maxSupply === undefined
       ? '…'
       : isOpenEdition(maxSupply)
-        ? `${(totalMinted ?? 0n).toLocaleString()} minted`
-        : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} ed`
+        ? `open edition · ${(totalMinted ?? 0n).toLocaleString()} sold`
+        : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {
     const account = await ensureConnected()
@@ -212,9 +233,15 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
           {collectionName && <span className="text-dim">{collectionName}</span>}
           {collectionName && ' · '}
           {supplyLabel}
+          {closeLabel && (
+            <>
+              {' · '}
+              <span className="text-dim">{closeLabel}</span>
+            </>
+          )}
         </>
       }
-      artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime} />}
+      artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} />}
       action={
         <>
           <span className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
@@ -254,7 +281,7 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
       href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
       subtitle={collectionName ?? `resale · ${shortAddress(listing.seller)}`}
-      artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} mime={listing.contentMime} />}
+      artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
       action={<BuyButton listing={listing} compact onBought={onRemove} />}
     />
   )
