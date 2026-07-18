@@ -7,6 +7,7 @@ import { fetchHiddenListingsSet, hideListing, unhideListing, listingHideKey } fr
 import { getListings } from '@/lib/listings'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 // Same per-IP guard the sibling admin routes carry (hidden-users,
 // hidden-profiles, blacklist). Auth is still the session cookie; this only
@@ -82,6 +83,11 @@ export async function POST(req: NextRequest) {
     else await unhideCollection(address)
   }
 
+  await recordAdminAction('content.hide', {
+    actor: auth.signer,
+    target: address.toLowerCase(),
+    meta: { type, tokenId, seller, hidden },
+  })
   return NextResponse.json({ ok: true, hidden })
 }
 

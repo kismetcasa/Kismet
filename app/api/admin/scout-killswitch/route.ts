@@ -3,6 +3,7 @@ import { redis } from '@/lib/redis'
 import { verifyAdminSession } from '@/lib/curator'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 export const runtime = 'nodejs'
 
@@ -43,5 +44,9 @@ export async function POST(req: NextRequest) {
 
   if (body.engaged) await redis.set(KEY, '1')
   else await redis.del(KEY)
+  await recordAdminAction('scout-killswitch.set', {
+    actor: auth.signer,
+    meta: { engaged: body.engaged },
+  })
   return NextResponse.json({ engaged: body.engaged })
 }

@@ -1,5 +1,6 @@
 import { redis } from './redis'
 import { memoize } from './memoCache'
+import { strictRead } from './redisRead'
 
 // Set of "<lowercaseAddr>:<tokenId>" members. Created moments default to
 // visible; entries are added when the creator hides one and removed on
@@ -47,7 +48,13 @@ export async function unhideMoment(
  * which invalidate own-pod immediately.
  */
 async function _getHiddenMomentsSet(): Promise<Set<string>> {
-  const members = (await redis.smembers(HIDDEN_KEY)) as string[]
+  // strictRead re-throws on a Redis failure → the error propagates through
+  // memoize (which never caches rejections) to the SSR error boundary, so a
+  // blip can't resolve to an empty set and briefly reveal hidden content. It
+  // also stamps markRedisSuccess() and emits the uniform [redis] failure line.
+  const members = await strictRead('getHiddenMomentsSet', async () => {
+    return (await redis.smembers(HIDDEN_KEY)) as string[]
+  })
   return new Set(members.map((m) => m.toLowerCase()))
 }
 // 15-min memo: every hide/unhide calls .invalidate() so own-pod reads are

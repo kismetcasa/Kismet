@@ -4,6 +4,7 @@ import { listTaintedTokenIds, removeTaint } from '@/lib/pass-validity'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 async function rateLimit(req: NextRequest) {
   const ip = getClientIp(req)
@@ -63,5 +64,10 @@ export async function DELETE(req: NextRequest) {
   }
 
   await removeTaint(config.passCollection, tokenId)
+  await recordAdminAction('taint.remove', {
+    actor: auth.signer,
+    target: tokenId,
+    meta: { collection: config.passCollection },
+  })
   return NextResponse.json({ ok: true, tokenId })
 }

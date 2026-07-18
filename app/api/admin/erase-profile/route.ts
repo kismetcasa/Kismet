@@ -3,6 +3,7 @@ import { isAddress } from '@/lib/address'
 import { verifyAdminSession } from '@/lib/curator'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 import { ADMIN_ADDRESS } from '@/lib/config'
 import { getFidByAddress, getVerifiedAddressesByFidChecked } from '@/lib/farcasterProfile'
 import { getHiddenIdentityClosure } from '@/lib/addressUnion'
@@ -172,5 +173,10 @@ export async function POST(req: NextRequest) {
   // memo so search/batch reads reflect the erase on the next request.
   getHiddenIdentityClosure.invalidate()
 
+  await recordAdminAction('profile.erase', {
+    actor: auth.signer,
+    target: queried,
+    meta: { addresses, fid: fid ?? null, fcResolved },
+  })
   return NextResponse.json({ ok: true, erased: { addresses, fid: fid ?? null }, fcResolved })
 }

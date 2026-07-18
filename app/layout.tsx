@@ -83,8 +83,8 @@ export default function RootLayout({
             connection pools partition by CORS mode, so a crossorigin
             preconnect here would warm the wrong pool entry and the
             no-cors video/image requests would open a fresh connection
-            anyway. dns-prefetch covers the AR.IO + IPFS pool we walk
-            through on proxy failure. */}
+            anyway. dns-prefetch covers the IPFS pool we walk through on
+            proxy failure. */}
         <link rel="preconnect" href="https://arweave.net" />
         {/* Quick Auth token acquisition runs on every Mini App reload.
             crossorigin matches the cors-mode fetch the @farcaster/quick-auth
@@ -92,7 +92,6 @@ export default function RootLayout({
             sits unused and the SDK opens a fresh TCP+TLS connection
             anyway. */}
         <link rel="preconnect" href="https://auth.farcaster.xyz" crossOrigin="anonymous" />
-        <link rel="dns-prefetch" href="https://permagate.io" />
         <link rel="dns-prefetch" href="https://ipfs.io" />
         <link rel="dns-prefetch" href="https://dweb.link" />
       </head>

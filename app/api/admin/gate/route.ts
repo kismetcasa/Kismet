@@ -4,6 +4,7 @@ import { getGateConfig, setGateConfig } from '@/lib/gate'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
@@ -64,5 +65,9 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'passCollection is required when enabling the gate')
   }
   await setGateConfig({ enabled: body.enabled, passCollection, paused })
+  await recordAdminAction('gate.set', {
+    actor: auth.signer,
+    meta: { enabled: body.enabled, paused, passCollection },
+  })
   return NextResponse.json({ ok: true })
 }
