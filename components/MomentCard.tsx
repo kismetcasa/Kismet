@@ -519,7 +519,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : (
             <MomentImage
               src={media.src}
-              alt={meta.name ?? 'moment'}
+              alt={meta.name ?? 'artwork'}
               fill
               className="object-contain transition-transform duration-500 group-hover:scale-105"
               onAllError={() => setImgError(true)}

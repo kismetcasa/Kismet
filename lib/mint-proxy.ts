@@ -250,7 +250,7 @@ export async function proxyMintRequest(
         {
           code: 'NO_ACCOUNT',
           error:
-            'This wallet has no inprocess account yet, so it can’t mint into an existing collection. Mint your first moment (we’ll create a collection for you) to set up your account, then mint here.',
+            'This wallet has no inprocess account yet, so it can’t mint into an existing collection. Mint your first artwork (we’ll create a collection for you) to set up your account, then mint here.',
           collectionAddress,
         },
         { status: 403 },

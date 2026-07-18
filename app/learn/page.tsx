@@ -89,17 +89,17 @@ const FAQ: FaqItem[] = [
   {
     question: 'How do I mint artwork onchain on Kismet?',
     answer:
-      'To mint on Kismet, connect a Base wallet, open Mint, upload your image, video, or text, add a title and description, and confirm. Kismet stores the file on Arweave and mints it as an onchain token on Base. You can mint a standalone moment or add it to a collection, and set whether collectors mint it for free or for a price.',
+      'To mint on Kismet, connect a Base wallet, open Mint, upload your image, video, or text, add a title and description, and confirm. Kismet stores the file on Arweave and mints it as an onchain token on Base. You can mint a standalone artwork or add it to a collection, and set whether collectors mint it for free or for a price.',
   },
   {
     question: 'What is an onchain art marketplace?',
     answer:
-      'An onchain art marketplace is where digital artworks are bought and sold with transactions settled on a blockchain rather than through a private ledger. Kismet is an onchain art marketplace on Base: collectors can collect newly minted moments and buy or list existing ones on the secondary market in ETH or USDC, with ownership transferring onchain.',
+      'An onchain art marketplace is where digital artworks are bought and sold with transactions settled on a blockchain rather than through a private ledger. Kismet is an onchain art marketplace on Base: collectors can collect newly minted artworks and buy or list existing ones on the secondary market in ETH or USDC, with ownership transferring onchain.',
   },
   {
     question: 'How do I collect art on Kismet?',
     answer:
-      'To collect on Kismet, open any moment and choose Collect. Primary mints are collected for free or for the price the creator set; listed pieces are bought on the secondary market in ETH or USDC. You confirm the transaction in your Base wallet, and the token transfers to you onchain. You can also list moments you own for sale.',
+      'To collect on Kismet, open any artwork and choose Collect. Primary mints are collected for free or for the price the creator set; listed pieces are bought on the secondary market in ETH or USDC. You confirm the transaction in your Base wallet, and the token transfers to you onchain. You can also list artworks you own for sale.',
   },
   {
     question: 'What blockchain does Kismet use?',
@@ -107,14 +107,14 @@ const FAQ: FaqItem[] = [
       'Kismet runs on Base, an Ethereum Layer 2 built by Coinbase. Base offers low transaction fees and fast confirmation while inheriting Ethereum security, which makes minting and collecting affordable. Artwork media is stored on Arweave, a network designed for permanent storage, so the files remain available for the long term.',
   },
   {
-    question: 'What is a moment on Kismet?',
+    question: 'What is an artwork on Kismet?',
     answer:
-      'A moment is a single artwork minted on Kismet — an image, video, animation, or text piece published onchain as an ERC-1155 token on Base. Each moment has a creator, a title and description, and its media stored on Arweave. Moments can stand alone or belong to a collection, and can be collected or listed for sale.',
+      'An artwork on Kismet is a single piece minted onchain — an image, video, animation, or text work published as an ERC-1155 token on Base. Each artwork has a creator, a title and description, and its media stored on Arweave. Artworks can stand alone or belong to a collection, and can be collected or listed for sale.',
   },
   {
     question: 'Can an AI assistant collect art on Kismet?',
     answer:
-      'Yes. Kismet exposes an agent interface so you can collect, buy, and list moments from an AI assistant connected through Base MCP. The assistant prepares each action and you approve it in your own Base Account, so you keep custody while the agent handles discovery and transaction setup. See the agent page for setup.',
+      'Yes. Kismet exposes an agent interface so you can collect, buy, and list artworks from an AI assistant connected through Base MCP. The assistant prepares each action and you approve it in your own Base Account, so you keep custody while the agent handles discovery and transaction setup. See the agent page for setup.',
   },
   {
     question: 'How much does it cost to mint on Kismet?',
@@ -235,7 +235,7 @@ const SECTIONS: Section[] = [
       <p>
         Kismet exposes an{' '}
         <Link href="/agent" className="text-ink underline underline-offset-4">agent interface</Link>{' '}
-        so you can collect, buy, and list moments from an AI assistant connected
+        so you can collect, buy, and list artworks from an AI assistant connected
         through Base MCP. The assistant prepares each action; you approve it in
         your own Base Account, keeping custody while the agent handles discovery
         and transaction setup.
@@ -306,7 +306,7 @@ export default function LearnPage() {
         <section className="border-t border-line pt-6 text-xs text-muted">
           <p>
             Ready to start?{' '}
-            <Link href="/mint" className="text-ink underline underline-offset-4">Mint a moment</Link>,{' '}
+            <Link href="/mint" className="text-ink underline underline-offset-4">Mint an artwork</Link>,{' '}
             explore the{' '}
             <Link href="/" className="text-ink underline underline-offset-4">latest onchain art</Link>, or{' '}
             <Link href="/agent" className="text-ink underline underline-offset-4">connect an AI assistant</Link>.

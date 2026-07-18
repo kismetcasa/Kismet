@@ -160,7 +160,7 @@ export default async function GuidePage({ params }: Props) {
               </Link>{' '}
               ·{' '}
               <Link href="/mint" className="text-ink underline underline-offset-4">
-                Mint a moment
+                Mint an artwork
               </Link>
             </li>
           </ul>

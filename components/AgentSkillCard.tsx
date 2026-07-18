@@ -26,7 +26,7 @@ export function AgentSkillCard() {
         Use from your AI assistant
       </p>
       <p className="text-xs font-mono text-ink leading-relaxed">
-        Connect Base MCP and collect, buy, and list moments by chatting.
+        Connect Base MCP and collect, buy, and list artworks by chatting.
       </p>
     </Link>
   )

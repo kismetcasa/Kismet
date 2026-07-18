@@ -211,7 +211,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
         </div>
         {displayMoments.length === 0 ? (
           <div className="flex-1 flex items-center justify-center min-h-[160px]">
-            <span className="text-xs font-mono text-muted">no moments yet</span>
+            <span className="text-xs font-mono text-muted">no artworks yet</span>
           </div>
         ) : (
           displayMoments.map((m, idx) => (
@@ -236,7 +236,7 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
       <div className="hidden lg:grid lg:flex-1 lg:min-w-0 lg:grid-cols-4 lg:grid-rows-2 lg:[grid-auto-flow:column] lg:gap-2 lg:p-3">
         {displayMoments.length === 0 ? (
           <div className="row-span-2 col-span-full flex items-center justify-center min-h-[160px]">
-            <span className="text-xs font-mono text-muted">no moments yet</span>
+            <span className="text-xs font-mono text-muted">no artworks yet</span>
           </div>
         ) : (
           displayMoments.map((m, idx) => (

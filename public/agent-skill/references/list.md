@@ -1,6 +1,6 @@
-# List (offer a moment for sale)
+# List (offer an artwork for sale)
 
-List a moment the user **already holds** for a fixed price (ETH or USDC) via a
+List an artwork the user **already holds** for a fixed price (ETH or USDC) via a
 Seaport order. No funds move — listing is a signature plus a one-time
 marketplace approval.
 

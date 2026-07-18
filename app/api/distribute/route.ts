@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
       const momentUrl = inprocessUrl('/moment', { collectionAddress, tokenId, chainId: '8453' })
       const momentRes = await fetch(momentUrl, { headers: { Accept: 'application/json' } })
       if (!momentRes.ok) {
-        return errorResponse(403, 'Could not verify moment creator')
+        return errorResponse(403, 'Could not verify artwork creator')
       }
       const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
       const adminsLower = Array.isArray(momentData.momentAdmins)
@@ -140,11 +140,11 @@ export async function POST(req: NextRequest) {
         : []
       authorized = adminsLower.includes(callerLower)
     } catch {
-      return errorResponse(502, 'Could not verify moment creator')
+      return errorResponse(502, 'Could not verify artwork creator')
     }
   }
   if (!authorized) {
-    return errorResponse(403, 'Only the moment creator, an admin, or a split recipient may distribute')
+    return errorResponse(403, 'Only the artwork creator, an admin, or a split recipient may distribute')
   }
 
   // Bind splitAddress to the token: it must be the token's on-chain

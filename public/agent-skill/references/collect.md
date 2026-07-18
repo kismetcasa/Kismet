@@ -1,6 +1,6 @@
 # Collect (primary mint)
 
-Mint a copy of a moment to the user's Base Account. Pays the sale price (ETH or
+Mint a copy of an artwork to the user's Base Account. Pays the sale price (ETH or
 USDC) plus a small Zora protocol mint fee.
 
 ## 1. Prepare

@@ -3,7 +3,7 @@ import { SITE_URL } from '@/lib/siteUrl'
 
 export const metadata = {
   title: 'mint — Kismet',
-  description: 'mint moments and create collections on Kismet',
+  description: 'mint artworks and create collections on Kismet',
   // Prefill links (?collection=&name=&tab=) are all the same page — collapse
   // every variant onto one indexable URL.
   alternates: { canonical: `${SITE_URL}/mint` },

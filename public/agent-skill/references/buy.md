@@ -1,6 +1,6 @@
 # Buy (fulfill a listing)
 
-Buy a moment from a secondary-market Seaport listing — **a single approval, no
+Buy an artwork from a secondary-market Seaport listing — **a single approval, no
 extra signature**. Find listings with `discover` (kind=listings) — each row gives
 you a `listingId`.
 

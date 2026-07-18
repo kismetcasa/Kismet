@@ -433,7 +433,7 @@ export function ProfileStats({
               type="button"
               onClick={distributeAll}
               disabled={distributing}
-              title="Settle your undistributed split earnings — one signature distributes your highest-value moments; also pays your collaborators on them. Tap again for more."
+              title="Settle your undistributed split earnings — one signature distributes your highest-value artworks; also pays your collaborators on them. Tap again for more."
               className="flex items-center gap-1 text-accent text-xs mt-0.5 hover:underline transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {distributing

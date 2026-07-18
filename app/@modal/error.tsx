@@ -32,12 +32,12 @@ export default function ModalMomentError({
     <div
       role="alertdialog"
       aria-modal="true"
-      aria-label="Moment failed to load"
+      aria-label="Artwork failed to load"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 px-4"
       onClick={(e) => { if (e.target === e.currentTarget) dismiss() }}
     >
       <div className="text-center font-mono">
-        <p className="text-sm text-ink mb-2">couldn&apos;t load this moment</p>
+        <p className="text-sm text-ink mb-2">couldn&apos;t load this artwork</p>
         <p className="text-xs text-muted mb-4">something went wrong opening it.</p>
         <div className="flex items-center justify-center gap-3">
           <button

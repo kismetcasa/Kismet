@@ -1,6 +1,6 @@
-# Mint (create a new moment)
+# Mint (create a new artwork)
 
-Create a **new** moment on Kismet on behalf of the user (the artist). This is the
+Create a **new** artwork on Kismet on behalf of the user (the artist). This is the
 one verb that is **not** a wallet payment: the user signs an EIP-712 `MintIntent`
 (no funds, no gas — Kismet sponsors the on-chain mint) and Kismet executes it.
 
@@ -15,7 +15,7 @@ Two things make mint different from collect/buy/list:
 
 App defaults apply unless you override them: **free**, **ETH**, **open edition**,
 and the artist keeps one copy. If the user gives no collection, Kismet
-auto-creates one named after the moment (exactly like the app's default mint).
+auto-creates one named after the artwork (exactly like the app's default mint).
 
 ## 1. Prepare
 
@@ -23,7 +23,7 @@ auto-creates one named after the moment (exactly like the app's default mint).
 POST BASE/api/agent/prepare-mint
 {
   "account": "0xYourBaseAccount",   // the artist; must hold a Kismet Pass
-  "name": "My Moment",              // required — the title
+  "name": "My Artwork",             // required — the title
   "description": "…",               // optional
   "media": "data:image/png;base64,…",  // image/video: a data: URI (the bytes) or an ar://|ipfs:// URI
   "mediaType": "image",             // "image" | "video" | "text" (optional; inferred from the media)
@@ -35,7 +35,7 @@ POST BASE/api/agent/prepare-mint
 }
 ```
 
-For a **writing moment**, omit `media` and pass the text instead:
+For a **writing artwork**, omit `media` and pass the text instead:
 
 ```jsonc
 {
@@ -58,7 +58,7 @@ The response is the standard envelope, containing:
 - `typedData` — the EIP-712 `MintIntent` to sign (this is **not** a transaction).
 - `record` — the follow-up call (`POST /api/mint` for media, `POST /api/write`
   for text) with a `<REPLACE_WITH_sign_signature>` placeholder.
-- `summary` — e.g. `Mint "My Moment" — free, open edition (new collection)`.
+- `summary` — e.g. `Mint "My Artwork" — free, open edition (new collection)`.
 
 There are no `calls` and no `caps`: minting spends nothing from the wallet.
 
@@ -77,8 +77,8 @@ Wait for the user to approve in their Base Account and capture the **signature**
 Put the signature into `record.bodyTemplate.intent.signature` and send it:
 
 ```
-POST BASE/api/mint         (media moment — record.bodyTemplate with signature filled)
-POST BASE/api/write        (writing moment)
+POST BASE/api/mint         (media artwork — record.bodyTemplate with signature filled)
+POST BASE/api/write        (writing artwork)
 ```
 
 Kismet re-verifies the signature against the exact body, re-runs the Pass gate

@@ -95,7 +95,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   }
 
   const name = firstString(body.name, body.title).slice(0, NAME_MAX)
-  if (!name) return errorResponse(400, 'name is required — the title of the moment')
+  if (!name) return errorResponse(400, 'name is required — the title of the artwork')
   const description = firstString(body.description).slice(0, DESCRIPTION_MAX)
 
   const explicitKind = normalizeKind(body.mediaType ?? body.kind)
@@ -106,10 +106,10 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   const text = firstString(body.text, body.tokenContent)
   const isText = explicitKind === 'text' || (!media && !!text)
   if (isText) {
-    if (!text) return errorResponse(400, 'text is required for a writing moment')
+    if (!text) return errorResponse(400, 'text is required for a writing artwork')
     if (text.length > TEXT_MAX) return errorResponse(400, `text exceeds the ${TEXT_MAX}-character limit`)
   } else if (!media) {
-    return errorResponse(400, 'media is required — a data: URI or an ar://|ipfs:// URI (or pass text for a writing moment)')
+    return errorResponse(400, 'media is required — a data: URI or an ar://|ipfs:// URI (or pass text for a writing artwork)')
   }
 
   const price = firstString(body.price) || '0'
@@ -195,7 +195,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
         {
           code: 'NO_ACCOUNT',
           error:
-            "This wallet has no Kismet creator account yet, so it can't mint into an existing collection. Mint your first moment without a collection (we'll create one) to set up your account, then mint into existing collections.",
+            "This wallet has no Kismet creator account yet, so it can't mint into an existing collection. Mint your first artwork without a collection (we'll create one) to set up your account, then mint into existing collections.",
           collectionAddress: collection,
         },
         { status: 403, headers: { 'Cache-Control': 'private, no-store' } },

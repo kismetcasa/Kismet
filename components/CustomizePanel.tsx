@@ -75,7 +75,7 @@ function SourceTile({ src, thumbhash, name, active, disabled, pending, onClick }
     <button
       onClick={onClick}
       disabled={disabled}
-      title={name ?? 'moment'}
+      title={name ?? 'artwork'}
       className={`relative aspect-square overflow-hidden border transition-colors disabled:cursor-not-allowed ${active ? 'border-accent' : 'border-line hover:border-dim'}`}
     >
       {src && !failed ? (
@@ -214,13 +214,13 @@ export function CustomizePanel({ address, moments, collected, listings, theme, o
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="w-full max-w-lg bg-[#161616] border border-line flex flex-col max-h-[80vh]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-line">
-          <p className="text-xs font-mono text-dim uppercase tracking-wider">{step === 'select' ? 'Pick a moment' : 'Customize profile'}</p>
+          <p className="text-xs font-mono text-dim uppercase tracking-wider">{step === 'select' ? 'Pick an artwork' : 'Customize profile'}</p>
           <button onClick={onClose} className="p-1 text-muted hover:text-dim transition-colors" title="close"><X size={14} /></button>
         </div>
 
         {step === 'select' ? (
           <>
-            <p className="px-5 pt-3 text-[11px] font-mono text-muted">Pick a mint, collected, or listed moment — its colors theme your profile.</p>
+            <p className="px-5 pt-3 text-[11px] font-mono text-muted">Pick a mint, collected, or listed artwork — its colors theme your profile.</p>
             <div className="flex gap-2 px-5 py-3">
               {(['mints', 'collected', 'listings'] as const).map((t) => (
                 <button
@@ -263,8 +263,8 @@ export function CustomizePanel({ address, moments, collected, listings, theme, o
                 )}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-mono text-ink truncate">{theme.momentName ?? 'themed moment'}</p>
-                <button onClick={() => setStep('select')} className="text-[10px] font-mono text-muted hover:text-accent transition-colors">change moment</button>
+                <p className="text-[11px] font-mono text-ink truncate">{theme.momentName ?? 'themed artwork'}</p>
+                <button onClick={() => setStep('select')} className="text-[10px] font-mono text-muted hover:text-accent transition-colors">change artwork</button>
               </div>
               <button
                 onClick={remove}

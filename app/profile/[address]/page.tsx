@@ -74,7 +74,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const description =
     farcaster?.username
       ? `@${farcaster.username} on Kismet`
-      : `${displayName}'s moments and collections on Kismet`
+      : `${displayName}'s artworks and collections on Kismet`
   const avatarUrl = profile.avatarUrl || farcaster?.pfpUrl || undefined
 
   // Share card image. The profile-specific opengraph-image route renders
@@ -185,7 +185,7 @@ export default async function ProfilePage({ params }: Props) {
         name: displayName,
         description: canonical.farcaster?.username
           ? `@${canonical.farcaster.username} on Kismet`
-          : `${displayName}'s moments and collections on Kismet`,
+          : `${displayName}'s artworks and collections on Kismet`,
         image: canonical.profile.avatarUrl || canonical.farcaster?.pfpUrl || undefined,
         sameAs: canonical.farcaster?.username
           ? [`https://warpcast.com/${canonical.farcaster.username}`]

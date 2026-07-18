@@ -443,7 +443,7 @@ function MainFeed() {
   return (
     <MomentFeed
       apiUrl={apiUrl}
-      emptyMessage="no moments yet — be the first to mint"
+      emptyMessage="no artworks yet — be the first to mint"
       header={subTabBar}
     />
   )

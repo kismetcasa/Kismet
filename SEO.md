@@ -99,6 +99,20 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
   share card (`…/opengraph-image`). Other unscoped routes (e.g. /mint,
   /market) still inherit the homepage embed — acceptable, and fixable the same
   way if ever desired.
+- **Public artwork URL intentionally stays `/moment/<address>/<tokenId>`.** The
+  UI rebrands the term "moment" → "artwork" (see the terminology note in
+  `lib/inprocess.ts`), but the URL slug is deliberately NOT migrated to
+  `/artwork/`. Rationale: the slug is a durable identifier, not user-facing copy
+  (collectors reach artworks via cards/overlays, not by reading the path);
+  keeping it preserves every historical cast, notification deep-link, shared
+  link, and search-index entry with zero redirect machinery and no reindex
+  wobble; and provenance is recorded onchain + on Arweave keyed by
+  (contract address, tokenId) — never by the page URL — so the URL word is
+  immaterial to it. Revisit only if a brand decision requires the address-bar
+  slug to read `/artwork`; the full migration (route rename + `(.)moment`→
+  `(.)artwork` intercepting-route rename + a permanent catch-all 301 +
+  widening the paste-URL parsers + sitemap/canonical updates) is understood and
+  can ship as its own change.
 
 ## Realistic timelines
 

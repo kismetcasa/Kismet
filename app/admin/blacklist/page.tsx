@@ -73,7 +73,7 @@ const LISTS: ListConfig[] = [
     id: 'hidden',
     title: 'Hidden users',
     desc:
-      "Strips every public-feed entry authored by this address — moments, collections, listings, featured rows, search. The user's own profile still surfaces their content to themselves. Distinct from per-content hiding (under Hide content on the admin dashboard).",
+      "Strips every public-feed entry authored by this address — artworks, collections, listings, featured rows, search. The user's own profile still surfaces their content to themselves. Distinct from per-content hiding (under Hide content on the admin dashboard).",
     endpoint: '/api/admin/hidden-users',
     addLabel: 'hide',
     removeLabel: 'unhide',

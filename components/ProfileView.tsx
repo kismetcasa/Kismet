@@ -211,10 +211,10 @@ function ProvenanceChip({ theme }: { theme: ProfileTheme }) {
     <Link
       href={`/moment/${coll}/${tid}`}
       className="self-start inline-flex items-center gap-1.5 max-w-full text-[11px] font-mono text-muted hover:text-dim transition-colors"
-      title={`Theme derived from ${theme.momentName ?? 'this moment'}`}
+      title={`Theme derived from ${theme.momentName ?? 'this artwork'}`}
     >
       <span aria-hidden className="text-accent">✦</span>
-      <span className="truncate">themed from {theme.momentName ?? 'this moment'}</span>
+      <span className="truncate">themed from {theme.momentName ?? 'this artwork'}</span>
     </Link>
   )
 }
@@ -968,7 +968,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     listings: loadingListings ? skeleton(3) : displayListings.length === 0
       ? (
         <p className="text-muted font-mono text-xs">
-          collect a moment on discover then{' '}
+          collect an artwork on discover then{' '}
           <Link href={`/profile/${address}`} className="accent-grad hover:opacity-80 transition-opacity">list</Link>
           {' '}it here
         </p>
