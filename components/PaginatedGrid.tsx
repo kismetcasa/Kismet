@@ -63,6 +63,27 @@ interface PaginatedGridProps<T> {
    * components to remount when the toggle flips, defeating the point.
    */
   lazy?: boolean
+  /**
+   * Auto-load the next page when the bottom sentinel scrolls into view,
+   * instead of waiting for a "load more" tap. Opt-in (default false) so every
+   * existing caller keeps its explicit button; the /discover desktop grid sets
+   * it true for a continuous scroll. loadMore's own next>totalPages / in-flight
+   * guards make the repeated observer calls safe. The button still renders as a
+   * keyboard-reachable + no-IntersectionObserver fallback.
+   */
+  infiniteScroll?: boolean
+  /**
+   * Container class for the items. Defaults to the feed/grid column classes;
+   * callers with a bespoke layout (e.g. the discover ovals' 1/2/3 rows) pass
+   * their own.
+   */
+  containerClassName?: string
+  /**
+   * Cold-load skeleton. Defaults to the card-shaped placeholder grid; callers
+   * with a non-card layout (the ovals) pass a shape-matched one so the loading
+   * state doesn't flash tall square cards before short ovals resolve.
+   */
+  skeleton?: ReactNode
 }
 
 export function PaginatedGrid<T>({
@@ -76,6 +97,9 @@ export function PaginatedGrid<T>({
   pageLimit = 18,
   viewMode = 'feed',
   lazy = false,
+  infiniteScroll = false,
+  containerClassName,
+  skeleton,
 }: PaginatedGridProps<T>) {
   const queryClient = useQueryClient()
 
@@ -216,6 +240,25 @@ export function PaginatedGrid<T>({
     }
   }, [apiUrl, pageLimit, itemsKey, currentPage, totalPages, loadingMore])
 
+  // Infinite scroll (opt-in): auto-advance when the bottom sentinel nears the
+  // viewport. rootMargin pre-loads ~800px early so the next ovals are ready
+  // before the user reaches them. loadMore self-guards (next>totalPages,
+  // in-flight), so redundant observer callbacks are no-ops.
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!infiniteScroll) return
+    const el = sentinelRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) void loadMore()
+      },
+      { rootMargin: '800px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [infiniteScroll, loadMore])
+
   // Manual refresh: clears local extras and forces a fresh first-page
   // fetch through react-query. isFetching toggles around the refetch
   // so the icon spins.
@@ -239,7 +282,7 @@ export function PaginatedGrid<T>({
 
   // Eager/lazy mount decision lives in MaybeLazy (single source of the
   // EAGER_MOUNT_COUNT gate). Key goes on MaybeLazy itself per its contract.
-  const gridClass = viewMode === 'grid' ? GRID_GRID : GRID_FEED
+  const gridClass = containerClassName ?? (viewMode === 'grid' ? GRID_GRID : GRID_FEED)
   function renderEntry(item: T, index: number): ReactElement {
     const key = getKey(item)
     const node = renderItem(item, { remove: () => removeItem(key), index })
@@ -264,19 +307,20 @@ export function PaginatedGrid<T>({
         </button>
       </div>
 
-      {loading && (
-        <div className={gridClass}>
-          {Array.from({ length: viewMode === 'grid' ? 12 : 6 }).map((_, i) => (
-            <div key={i} className="bg-[#161616] border border-line">
-              <div className="aspect-square bg-raised animate-pulse" />
-              <div className={viewMode === 'grid' ? 'p-2 space-y-1.5' : 'p-4 space-y-2'}>
-                <div className="h-3 bg-raised animate-pulse w-2/3" />
-                <div className="h-3 bg-raised animate-pulse w-1/3" />
+      {loading &&
+        (skeleton ?? (
+          <div className={gridClass}>
+            {Array.from({ length: viewMode === 'grid' ? 12 : 6 }).map((_, i) => (
+              <div key={i} className="bg-[#161616] border border-line">
+                <div className="aspect-square bg-raised animate-pulse" />
+                <div className={viewMode === 'grid' ? 'p-2 space-y-1.5' : 'p-4 space-y-2'}>
+                  <div className="h-3 bg-raised animate-pulse w-2/3" />
+                  <div className="h-3 bg-raised animate-pulse w-1/3" />
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        ))}
 
       {error && !loading && (
         <div className="border border-red-900/50 p-6 text-center">
@@ -299,6 +343,10 @@ export function PaginatedGrid<T>({
           </div>
           {currentPage < totalPages && (
             <div className="mt-8 text-center">
+              {/* Infinite-scroll trip wire (opt-in). Sits above the button so its
+                  800px rootMargin fires the auto-load well before the fold. The
+                  button stays as a keyboard / no-IntersectionObserver fallback. */}
+              {infiniteScroll && <div ref={sentinelRef} aria-hidden className="h-px w-full" />}
               <button
                 onClick={loadMore}
                 disabled={loadingMore}

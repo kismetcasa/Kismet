@@ -1,0 +1,262 @@
+'use client'
+
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
+import Link from 'next/link'
+import { useAccount, useReadContract } from 'wagmi'
+import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useMomentSale } from '@/hooks/useMomentSale'
+import { useInViewDwell } from '@/hooks/useInViewDwell'
+import { fetchCollectionChip } from '@/lib/collectionCache'
+import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { ERC1155_ABI } from '@/lib/seaport'
+import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
+import {
+  formatPrice,
+  inferCollectCurrency,
+  shortAddress,
+  DEFAULT_COLLECT_COMMENT,
+  type Moment,
+} from '@/lib/inprocess'
+import type { Listing } from '@/lib/listings'
+import { MomentImage } from './MomentImage'
+import { BuyButton } from './BuyButton'
+
+// ── Shared oval shell ────────────────────────────────────────────────────────
+// A horizontal "rounded oval" (stadium) card: artwork · title · subtitle on the
+// left, a price/action cluster on the right. The whole oval is one crawlable
+// link to the moment (a stretched <Link> covering the card), while the
+// collect/buy button floats above it (pointer-events + z) so it stays its own
+// click target. The left content is pointer-events-none so a tap anywhere on it
+// falls through to the link.
+const OVAL_CLASS =
+  'group relative flex items-center gap-3 h-16 pl-2.5 pr-3 rounded-full border border-line bg-[#151515] hover:border-accent/40 hover:bg-[#1b1616] transition-colors'
+
+function OvalShell({
+  href,
+  title,
+  subtitle,
+  artwork,
+  action,
+  rootRef,
+}: {
+  href: string
+  title: string
+  subtitle: ReactNode
+  artwork: ReactNode
+  action: ReactNode
+  rootRef?: Ref<HTMLElement>
+}) {
+  return (
+    <article ref={rootRef} className={OVAL_CLASS}>
+      {/* Stretched link — one crawlable /moment anchor covering the whole oval. */}
+      <Link href={href} prefetch={false} aria-label={title} className="absolute inset-0 rounded-full" />
+      <div className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-3">
+        {artwork}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <p className="truncate font-mono text-[13px] text-ink">{title}</p>
+          <p className="truncate font-mono text-[10.5px] text-muted">{subtitle}</p>
+        </div>
+      </div>
+      {/* z-10 + implicit pointer-events-auto so the button wins the click. */}
+      <div className="relative z-10 flex shrink-0 flex-col items-end gap-1">{action}</div>
+    </article>
+  )
+}
+
+// Artwork thumbnail. object-contain renders the FULL artwork (never a
+// pfp-style circle crop) — letterboxed in a rounded square against the page bg
+// for non-square pieces. Falls back to the thumbhash blur, then a flat tile.
+function OvalArt({
+  src,
+  alt,
+  thumbhash,
+  mime,
+}: {
+  src?: string
+  alt: string
+  thumbhash?: string
+  mime?: string
+}) {
+  const blur = useMemo(
+    () => (!src && thumbhash ? thumbhashToBlurDataURL(thumbhash) : undefined),
+    [src, thumbhash],
+  )
+  return (
+    <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-[#0d0d0d]">
+      {src ? (
+        <MomentImage src={src} alt={alt} fill className="object-contain" sizes="44px" mime={mime} thumbhash={thumbhash} />
+      ) : blur ? (
+        <span aria-hidden className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${blur})` }} />
+      ) : (
+        <span aria-hidden className="absolute inset-0 bg-raised" />
+      )}
+    </div>
+  )
+}
+
+// ── Primary market oval (a mint) ─────────────────────────────────────────────
+// Mirrors MomentCard's collect data-path (dwell-gated price + on-chain
+// supply/ownership reads, on-chain-authoritative collect) in the oval layout.
+// The price/supply/RPC reads all gate on an in-view dwell so a fast scroll
+// past never fires them — same lever the feed uses.
+function MomentOvalImpl({ moment }: { moment: Moment }) {
+  const rootRef = useRef<HTMLElement>(null)
+  const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
+  const { address: connectedAddress } = useAccount()
+  const ensureConnected = useEnsureConnected()
+  const { collect, status } = useDirectCollect()
+  const collecting = status !== 'idle' && status !== 'done' && status !== 'error'
+  const [collected, setCollected] = useState(false)
+
+  const meta = useMemo(() => moment.metadata ?? {}, [moment.metadata])
+  const media = useMemo(() => resolveMomentMedia(meta), [meta])
+  const stillSrc = media.kind === 'video' ? media.poster : media.kind === 'image' || media.kind === 'gif' ? media.src : undefined
+
+  // Collection name — seed from the server-stitched chip, else resolve client-side.
+  const [collectionName, setCollectionName] = useState<string | null>(() => moment.kismetCollection?.name ?? null)
+  useEffect(() => {
+    if (moment.kismetCollection !== undefined) return
+    fetchCollectionChip(moment.address).then(({ name }) => setCollectionName(name)).catch(() => {})
+  }, [moment.address, moment.kismetCollection])
+
+  // Display price (dwell-gated batch fetch). Collect re-reads the authoritative
+  // price on-chain at click time, so the button never depends on this resolving.
+  const { data: saleData } = useMomentSale(moment.address, moment.token_id, inView && !moment.saleConfig)
+  const activeSale = moment.saleConfig ?? saleData ?? null
+  const price = useMemo(() => {
+    if (!activeSale) return null
+    try {
+      return formatPrice(activeSale.pricePerToken, inferCollectCurrency(activeSale))
+    } catch {
+      return null
+    }
+  }, [activeSale])
+
+  // On-chain supply + ownership (gated on dwell). maxSupply/totalMinted arrive
+  // together from getTokenInfo, so either both are defined or neither is.
+  const { data: tokenInfo, refetch: refetchTokenInfo } = useReadContract({
+    address: moment.address as `0x${string}`,
+    abi: ZORA_1155_TOKEN_INFO_ABI,
+    functionName: 'getTokenInfo',
+    args: [BigInt(moment.token_id)],
+    query: { enabled: inView, staleTime: 30_000 },
+  })
+  const maxSupply = tokenInfo?.maxSupply
+  const totalMinted = tokenInfo?.totalMinted
+  const { data: ownedBalance, refetch: refetchOwned } = useReadContract({
+    address: moment.address as `0x${string}`,
+    abi: ERC1155_ABI,
+    functionName: 'balanceOf',
+    args: connectedAddress ? [connectedAddress, BigInt(moment.token_id)] : undefined,
+    query: { enabled: inView && !!connectedAddress, staleTime: 30_000 },
+  })
+  const owned = ownedBalance ? Number(ownedBalance) : 0
+  const hasCollected = collected || owned > 0
+
+  // Sold-out + sale-window gates — identical logic to MomentCard. Both reads
+  // must land before flagging sold out, so it never flashes before tokenInfo.
+  const mintedOut =
+    maxSupply !== undefined && totalMinted !== undefined && !isOpenEdition(maxSupply) && totalMinted >= maxSupply
+  const nowSec = Math.floor(Date.now() / 1000)
+  const saleStartNum = activeSale?.saleStart ? Number(activeSale.saleStart) : 0
+  const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
+  const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > nowSec
+  const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= nowSec
+  const disabled = collecting || mintedOut || saleNotStarted || saleEnded
+  const label = collecting
+    ? 'collecting…'
+    : saleNotStarted
+      ? 'not started'
+      : saleEnded
+        ? 'mint ended'
+        : mintedOut
+          ? 'sold out'
+          : hasCollected
+            ? 'collect+'
+            : 'collect'
+
+  // Supply line: minted/cap for limited editions, "N minted" for open ones.
+  const supplyLabel =
+    maxSupply === undefined
+      ? '…'
+      : isOpenEdition(maxSupply)
+        ? `${(totalMinted ?? 0n).toLocaleString()} minted`
+        : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} ed`
+
+  async function handleCollect() {
+    const account = await ensureConnected()
+    if (!account) return
+    const result = await collect({
+      collectionAddress: moment.address as `0x${string}`,
+      tokenId: moment.token_id,
+      amount: 1,
+      comment: DEFAULT_COLLECT_COMMENT,
+      share: { momentName: meta.name ?? null, creatorAddress: moment.creator?.address ?? null },
+    })
+    if (result) {
+      setCollected(true)
+      refetchOwned().catch(() => {})
+      refetchTokenInfo().catch(() => {})
+    }
+  }
+
+  return (
+    <OvalShell
+      rootRef={rootRef}
+      href={`/moment/${moment.address}/${moment.token_id}`}
+      title={meta.name || `#${moment.token_id}`}
+      subtitle={
+        <>
+          {collectionName && <span className="text-dim">{collectionName}</span>}
+          {collectionName && ' · '}
+          {supplyLabel}
+        </>
+      }
+      artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} mime={media.kind === 'gif' ? 'image/gif' : meta.content?.mime} />}
+      action={
+        <>
+          <span className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
+          <button
+            onClick={handleCollect}
+            disabled={disabled}
+            aria-label={`${label} ${meta.name ?? 'artwork'}`}
+            className={`rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
+              mintedOut || saleEnded
+                ? 'border-line/60 text-faint'
+                : hasCollected
+                  ? 'border-accent bg-accent/10 text-accent hover:bg-accent/20'
+                  : 'border-line text-dim accent-grad-hover disabled:opacity-50'
+            }`}
+          >
+            {label}
+          </button>
+        </>
+      }
+    />
+  )
+}
+export const MomentOval = memo(MomentOvalImpl)
+
+// ── Secondary market oval (a resale listing) ─────────────────────────────────
+// Reuses BuyButton wholesale (the Seaport fulfill flow), so the action carries
+// its own price ("buy 0.01 ETH"). onRemove drops the oval from the grid once
+// the sale confirms (PaginatedGrid's optimistic remove).
+function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
+  const [collectionName, setCollectionName] = useState<string | null>(null)
+  useEffect(() => {
+    fetchCollectionChip(listing.collectionAddress).then(({ name }) => setCollectionName(name)).catch(() => {})
+  }, [listing.collectionAddress])
+
+  return (
+    <OvalShell
+      href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
+      title={listing.name || `#${listing.tokenId}`}
+      subtitle={collectionName ?? `resale · ${shortAddress(listing.seller)}`}
+      artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} mime={listing.contentMime} />}
+      action={<BuyButton listing={listing} compact onBought={onRemove} />}
+    />
+  )
+}
+export const ListingOval = memo(ListingOvalImpl)
