@@ -38,6 +38,7 @@ const OVAL_CLASS =
 function OvalShell({
   href,
   title,
+  titleRight,
   subtitle,
   artwork,
   action,
@@ -45,6 +46,8 @@ function OvalShell({
 }: {
   href: string
   title: string
+  /** Right-aligned aside on the title line (e.g. the sale close date). */
+  titleRight?: ReactNode
   subtitle: ReactNode
   artwork: ReactNode
   action: ReactNode
@@ -57,7 +60,10 @@ function OvalShell({
       <div className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-3">
         {artwork}
         <div className="flex min-w-0 flex-col gap-0.5">
-          <p className="truncate font-mono text-[13px] text-ink">{title}</p>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <p className="min-w-0 flex-1 truncate font-mono text-[13px] text-ink">{title}</p>
+            {titleRight && <span className="shrink-0 font-mono text-[10px] text-dim">{titleRight}</span>}
+          </div>
           <p className="truncate font-mono text-[10.5px] text-muted">{subtitle}</p>
         </div>
       </div>
@@ -228,17 +234,14 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
       rootRef={rootRef}
       href={`/moment/${moment.address}/${moment.token_id}`}
       title={meta.name || `#${moment.token_id}`}
+      // Sale close date to the right of the title (only for a real upcoming
+      // deadline — see closeLabel).
+      titleRight={closeLabel || undefined}
       subtitle={
         <>
           {collectionName && <span className="text-dim">{collectionName}</span>}
           {collectionName && ' · '}
           {supplyLabel}
-          {closeLabel && (
-            <>
-              {' · '}
-              <span className="text-dim">{closeLabel}</span>
-            </>
-          )}
         </>
       }
       artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} />}
