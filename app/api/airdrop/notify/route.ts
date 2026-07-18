@@ -328,27 +328,30 @@ export async function POST(req: NextRequest) {
   const recordedCount = recordResults.filter(Boolean).length
 
   after(async () => {
+    // Everyone the airdrop actually notifies as a recipient — the sender is
+    // excluded (a self-airdrop mints to yourself but shouldn't ping your own
+    // inbox as an airdropee). Computed once and reused for the sender's count
+    // below, so "you airdropped … to N recipients" matches the notifications sent.
+    const recipientsExSelf = finalRecipients.filter((recipient) => recipient !== sender)
     // Per-call catch so one failed notification doesn't abort the rest of the
     // batch (Promise.all rejects on the first rejection).
-    const notifications = finalRecipients
-      .filter((recipient) => recipient !== sender)
-      .map((recipient) =>
-        // Airdropee: "<sender> airdropped you …" (actor set).
-        writeNotification({
-          type: 'airdrop',
-          recipient,
-          actor: sender,
-          tokenAddress: collectionAddress,
-          tokenId,
-          ...(tokenName ? { tokenName } : {}),
-          amount: 1,
-        }).catch(
-          bestEffort('airdrop-notify.writeNotification', { recipient, sender, txHash }),
-        ),
-      )
+    const notifications = recipientsExSelf.map((recipient) =>
+      // Airdropee: "<sender> airdropped you …" (actor set).
+      writeNotification({
+        type: 'airdrop',
+        recipient,
+        actor: sender,
+        tokenAddress: collectionAddress,
+        tokenId,
+        ...(tokenName ? { tokenName } : {}),
+        amount: 1,
+      }).catch(
+        bestEffort('airdrop-notify.writeNotification', { recipient, sender, txHash }),
+      ),
+    )
     // Airdropper's own confirmation — no actor, so it renders as a self-action
     // and clears writeNotification's self-check (which only blocks actor===recipient).
-    // `amount` carries the recipient count.
+    // `amount` is the count of OTHER recipients, matching who got an airdropee ping.
     notifications.push(
       writeNotification({
         type: 'airdrop',
@@ -356,7 +359,7 @@ export async function POST(req: NextRequest) {
         tokenAddress: collectionAddress,
         tokenId,
         ...(tokenName ? { tokenName } : {}),
-        amount: finalRecipients.length,
+        amount: recipientsExSelf.length,
       }).catch(
         bestEffort('airdrop-notify.writeNotification.sender', { sender, txHash }),
       ),

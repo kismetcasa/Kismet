@@ -67,8 +67,11 @@ function OvalShell({
           <p className="truncate font-mono text-[10.5px] text-muted">{subtitle}</p>
         </div>
       </div>
-      {/* z-10 + implicit pointer-events-auto so the button wins the click. */}
-      <div className="relative z-10 flex shrink-0 flex-col items-end gap-1">{action}</div>
+      {/* pointer-events-none so the price + gaps fall through to the stretched
+          link (the whole oval navigates); the actionable button inside
+          re-enables pointer-events to win its own click. z-10 keeps it painted
+          above the link. A disabled button stays pass-through → still navigates. */}
+      <div className="pointer-events-none relative z-10 flex shrink-0 flex-col items-end gap-1">{action}</div>
     </article>
   )
 }
@@ -254,7 +257,10 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
             onClick={handleCollect}
             disabled={disabled}
             aria-label={`${label} ${meta.name ?? 'artwork'}`}
-            className={`rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
+            // Re-enable pointer events only when the button is an actionable
+            // target; a disabled button inherits the cluster's none and lets the
+            // click fall through to the oval's navigate link.
+            className={`${disabled ? '' : 'pointer-events-auto'} rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
               mintedOut || saleEnded
                 ? 'border-line/60 text-faint'
                 : hasCollected
@@ -287,7 +293,9 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
       title={listing.name || `#${listing.tokenId}`}
       subtitle={collectionName ?? `resale · ${shortAddress(listing.seller)}`}
       artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
-      action={<BuyButton listing={listing} compact onBought={onRemove} />}
+      // pointer-events-auto: the cluster is pointer-events-none (so the rest of
+      // the oval navigates), so the buy button must opt back in to be clickable.
+      action={<BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />}
     />
   )
 }
