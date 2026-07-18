@@ -4,6 +4,7 @@ import { isAddress } from '@/lib/address'
 import { recordAirdrop } from '@/lib/airdrops'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 import { serverBaseClient } from '@/lib/rpc'
 
 /**
@@ -113,5 +114,10 @@ export async function POST(req: NextRequest) {
   )
 
   const recorded = results.filter((r) => r.ok).length
+  await recordAdminAction('airdrop-record.recover', {
+    actor: auth.signer,
+    target: sender,
+    meta: { txHash, collection: collectionAddress, tokenId, recorded, total: recipients.size },
+  })
   return NextResponse.json({ ok: true, recorded, total: recipients.size, results })
 }

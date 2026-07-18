@@ -3,6 +3,7 @@ import { isAddress } from '@/lib/address'
 import { redis, FEATURED_KEY, FEATURED_COLLECTIONS_KEY, FEATURED_MOMENT_DISPLAYS_KEY, MAX_FEATURED } from '@/lib/redis'
 import { verifyPrivilegedSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 // zadd + rank-trim in one atomic MULTI (single Upstash round trip) — the
 // TRENDING pattern from /api/collect. The single trim policy lives here so a
@@ -77,6 +78,11 @@ export async function POST(req: NextRequest) {
 
   if (body.type === 'collection') {
     await zaddCapped(FEATURED_COLLECTIONS_KEY, collectionAddress.toLowerCase(), Date.now())
+    await recordAdminAction('featured.add', {
+      actor: auth.signer,
+      target: collectionAddress.toLowerCase(),
+      meta: { type: 'collection' },
+    })
     return NextResponse.json({ featured: true })
   }
 
@@ -105,10 +111,16 @@ export async function POST(req: NextRequest) {
       .zadd(FEATURED_KEY, { score: now, member })
       .zremrangebyrank(FEATURED_KEY, 0, -(MAX_FEATURED + 1))
       .exec()
+    await recordAdminAction('featured.add', {
+      actor: auth.signer,
+      target: member,
+      meta: { type: 'momentDisplay' },
+    })
     return NextResponse.json({ featured: true })
   }
 
   await zaddCapped(FEATURED_KEY, member, now)
+  await recordAdminAction('featured.add', { actor: auth.signer, target: member, meta: { type: 'moment' } })
   return NextResponse.json({ featured: true })
 }
 
@@ -131,6 +143,11 @@ export async function DELETE(req: NextRequest) {
 
   if (body.type === 'collection') {
     await redis.zrem(FEATURED_COLLECTIONS_KEY, collectionAddress.toLowerCase())
+    await recordAdminAction('featured.remove', {
+      actor: auth.signer,
+      target: collectionAddress.toLowerCase(),
+      meta: { type: 'collection' },
+    })
     return NextResponse.json({ featured: false })
   }
 
@@ -145,6 +162,11 @@ export async function DELETE(req: NextRequest) {
   // FEATURED.
   if (body.type === 'momentDisplay') {
     await redis.zrem(FEATURED_MOMENT_DISPLAYS_KEY, member)
+    await recordAdminAction('featured.remove', {
+      actor: auth.signer,
+      target: member,
+      meta: { type: 'momentDisplay' },
+    })
     return NextResponse.json({ featured: false })
   }
 
@@ -152,5 +174,6 @@ export async function DELETE(req: NextRequest) {
     redis.zrem(FEATURED_KEY, member),
     redis.zrem(FEATURED_MOMENT_DISPLAYS_KEY, member),
   ])
+  await recordAdminAction('featured.remove', { actor: auth.signer, target: member, meta: { type: 'moment' } })
   return NextResponse.json({ featured: false })
 }

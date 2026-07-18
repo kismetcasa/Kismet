@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 import { inprocessUrl } from '@/lib/inprocess'
 import {
   getUserCollections,
@@ -139,9 +140,19 @@ export async function POST(req: NextRequest) {
   const auth = await verifyAdminSession()
   if ('error' in auth) return errorResponse(auth.status, auth.error)
   const body = (await req.json().catch(() => null)) as BackfillBody | null
-  return run({
+  const write = !body?.dryRun
+  const res = await run({
     address: body?.address,
     force: !!body?.force,
-    write: !body?.dryRun,
+    write,
   })
+  // Audit only real writes — the GET handler and dryRun POSTs mutate nothing.
+  if (write) {
+    await recordAdminAction('backfill-created-at.run', {
+      actor: auth.signer,
+      ...(body?.address ? { target: body.address.toLowerCase() } : {}),
+      meta: { force: !!body?.force },
+    })
+  }
+  return res
 }
