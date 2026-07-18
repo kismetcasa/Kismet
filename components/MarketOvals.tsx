@@ -176,14 +176,16 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
   const owned = ownedBalance ? Number(ownedBalance) : 0
   const hasCollected = collected || owned > 0
 
-  // Sold-out + sale-window gates — identical logic to MomentCard. Both reads
-  // must land before flagging sold out, so it never flashes before tokenInfo.
+  // Sold-out: same check as MomentCard — both on-chain reads must land before
+  // flagging, so it never flashes "sold out" before tokenInfo resolves.
   const mintedOut =
     maxSupply !== undefined && totalMinted !== undefined && !isOpenEdition(maxSupply) && totalMinted >= maxSupply
-  // Sale window via the canonical classifier (handles the max-uint64 "no end"
-  // sentinel that a raw saleEnd compare would miss). 'closing' = live with a
-  // real upcoming deadline → surface the close date; open-ended sales stay
-  // dateless, so it's never forced.
+  // Sale-window state via the canonical classifier. Result-equivalent to
+  // MomentCard's raw saleStart/saleEnd compares for the disable gate (verified:
+  // both read the max-uint64 "no end" sentinel as open-ended); used here because
+  // it ALSO yields the 'closing' state that drives the close-date label. This
+  // ~derivation is deliberately NOT shared with MomentCard — a shared hook would
+  // edit the feed's hottest component; isolation over DRY for a no-regression feature.
   const nowSec = Math.floor(Date.now() / 1000)
   const saleWindow = getSaleWindow(activeSale, nowSec)
   const saleNotStarted = saleWindow?.state === 'scheduled'

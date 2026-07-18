@@ -241,23 +241,30 @@ export function PaginatedGrid<T>({
   }, [apiUrl, pageLimit, itemsKey, currentPage, totalPages, loadingMore])
 
   // Infinite scroll (opt-in): auto-advance when the bottom sentinel nears the
-  // viewport. rootMargin pre-loads ~800px early so the next ovals are ready
-  // before the user reaches them. loadMore self-guards (next>totalPages,
-  // in-flight), so redundant observer callbacks are no-ops.
+  // viewport. The observer is created ONCE per sentinel lifetime — loadMore is
+  // read through a ref, and the effect keys on `hasMore` (which is stable across
+  // page loads, unlike loadMore's identity), so a page load doesn't re-create
+  // the observer and re-fire on the still-intersecting sentinel (which would
+  // chain several loads). It then fires only on a genuine enter after each
+  // scroll → one page per approach. loadMore self-guards (next>totalPages,
+  // in-flight) as a backstop.
   const sentinelRef = useRef<HTMLDivElement>(null)
+  const loadMoreRef = useRef(loadMore)
+  loadMoreRef.current = loadMore
+  const hasMore = currentPage < totalPages
   useEffect(() => {
-    if (!infiniteScroll) return
+    if (!infiniteScroll || !hasMore) return
     const el = sentinelRef.current
     if (!el) return
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (entry?.isIntersecting) void loadMore()
+        if (entry?.isIntersecting) void loadMoreRef.current()
       },
-      { rootMargin: '800px' },
+      { rootMargin: '600px' },
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [infiniteScroll, loadMore])
+  }, [infiniteScroll, hasMore])
 
   // Manual refresh: clears local extras and forces a fresh first-page
   // fetch through react-query. isFetching toggles around the refetch

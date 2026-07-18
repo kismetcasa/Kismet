@@ -113,6 +113,13 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
   if (market === 'primary') {
     return (
       <PaginatedGrid<Moment>
+        // Distinct key per market: <PaginatedGrid<Moment>> and
+        // <PaginatedGrid<Listing>> are the SAME runtime component (generics
+        // erase), so without a key React reuses one instance across the toggle
+        // and its accumulated extraPages of the other type would render through
+        // the wrong renderItem (a Listing reaching MomentOval → BigInt(undefined)
+        // crash). The key forces a clean remount → fresh state on every switch.
+        key="market-primary"
         apiUrl="/api/timeline?scope=standalone"
         itemsKey="moments"
         getKey={(m) => `${m.address}:${m.token_id}`}
@@ -134,6 +141,7 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
 
   return (
     <PaginatedGrid<Listing>
+      key="market-secondary"
       apiUrl="/api/listings"
       itemsKey="listings"
       getKey={(l) => l.id}
