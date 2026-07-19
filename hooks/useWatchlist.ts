@@ -32,8 +32,16 @@ function read(): WatchlistEntry[] {
   if (cache) return cache
   try {
     const raw = localStorage.getItem(KEY)
-    const parsed = raw ? (JSON.parse(raw) as WatchlistEntry[]) : []
-    cache = Array.isArray(parsed) ? parsed : []
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    // Shape-validate every element, not just the array: keyOf calls
+    // .toLowerCase() on address during every oval render, so one corrupt or
+    // legacy row without a string address would crash-loop the whole page
+    // until storage is cleared. Drop bad rows instead.
+    cache = Array.isArray(parsed)
+      ? (parsed as WatchlistEntry[]).filter(
+          (e) => !!e && typeof e.address === 'string' && typeof e.tokenId === 'string',
+        )
+      : []
   } catch {
     cache = []
   }

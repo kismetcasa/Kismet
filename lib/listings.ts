@@ -230,9 +230,9 @@ export interface ListingFilters {
   expiringWithinMs?: number
   /** 'artist' = seller is the moment's creator, verified against the KV
    *  moment-meta record (NOT the client-supplied creatorAddress display field,
-   *  which is spoofable). Unverifiable rows (no meta) count as resale —
+   *  which is spoofable). Unverifiable rows (no meta) are excluded —
    *  fail-closed so the artist badge can't be bought with a forged field. */
-  sellerType?: 'artist' | 'resale'
+  sellerType?: 'artist'
   /** Minimum creator-royalty share of the sale price, in basis points.
    *  Derived from the stored royaltyAmount/price (display-level fields; fine
    *  for a browse filter, never for settlement math). */
@@ -308,14 +308,13 @@ export async function getListings({
       return (safePrice(l.royaltyAmount) * 10000n) / price >= BigInt(filters.royaltyMinBps!)
     })
   }
-  if (filters?.sellerType) {
+  if (filters?.sellerType === 'artist') {
     const metas = await getMomentMetaBatch(
       rows.map((l) => ({ address: l.collectionAddress, tokenId: l.tokenId })),
     )
     rows = rows.filter((l, i) => {
       const creator = metas[i]?.creator?.toLowerCase()
-      const isArtist = !!creator && creator === l.seller.toLowerCase()
-      return filters.sellerType === 'artist' ? isArtist : !isArtist
+      return !!creator && creator === l.seller.toLowerCase()
     })
   }
 

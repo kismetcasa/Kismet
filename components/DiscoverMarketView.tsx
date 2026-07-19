@@ -12,6 +12,7 @@ import {
   hasActiveFilters,
   parseDiscoverState,
   primaryApiUrl,
+  reconcileState,
   secondaryApiUrl,
   type DiscoverState,
 } from './DiscoverFilters'
@@ -51,7 +52,10 @@ function momentFromEntry(e: WatchlistEntry): Moment {
     uri: '',
     creator: { address: e.creator ?? '', hidden: false },
     admins: [],
-    created_at: e.createdAt ?? new Date(e.addedAt).toISOString(),
+    // Guard addedAt: toISOString THROWS on an invalid date, and this runs per
+    // entry per render — one legacy/corrupt row must not crash the page.
+    created_at:
+      e.createdAt ?? (Number.isFinite(e.addedAt) ? new Date(e.addedAt).toISOString() : ''),
     metadata: { name: e.name, image: e.image },
     ...(e.collection ? { kismetCollection: { name: e.collection, image: null } } : {}),
   }
@@ -102,16 +106,23 @@ export function DiscoverMarketView({
   // All state changes flow through here so the URL and component state can
   // never disagree. push=true for navigation-grade changes (market, sort);
   // refinements replace so pill-tapping doesn't pollute history.
+  //
+  // The next state is computed OUTSIDE setState, from a render-phase ref
+  // mirror: React may re-invoke updater functions (StrictMode dev double-
+  // invoke; concurrent re-renders), and a pushState inside the updater minted
+  // duplicate history entries — one market tap, two back-presses. Event
+  // handlers run once, so computing here calls history exactly once.
+  // reconcileState keeps every transition inside the server-expressible space
+  // (e.g. switching to a sales sort drops an active free filter with it).
+  const stateRef = useRef(state)
+  stateRef.current = state
   const update = useCallback((patch: Partial<DiscoverState>, opts?: { push?: boolean }) => {
-    setState((prev) => {
-      const next = { ...prev, ...patch }
-      const url = discoverUrl(next)
-      try {
-        if (opts?.push) window.history.pushState(null, '', url)
-        else window.history.replaceState(null, '', url)
-      } catch {}
-      return next
-    })
+    const next = reconcileState({ ...stateRef.current, ...patch })
+    setState(next)
+    try {
+      if (opts?.push) window.history.pushState(null, '', discoverUrl(next))
+      else window.history.replaceState(null, '', discoverUrl(next))
+    } catch {}
   }, [])
 
   // Back/forward restores the full filter state from the URL.
@@ -202,7 +213,14 @@ export function DiscoverMarketView({
   const pulseUrl =
     market === 'primary' && state.sortP === 'new' && !state.watchlist ? primaryApiUrl(state) : null
   useEffect(() => {
-    if (!pulseUrl) return
+    // Leaving the chronological view (sort change, watchlist, secondary) must
+    // also CLEAR any showing badge — otherwise a stale "N new mints" floats
+    // over a feed it doesn't describe and its tap refreshes the wrong thing.
+    if (!pulseUrl) {
+      pulseBaselineRef.current = null
+      setNewCount(0)
+      return
+    }
     pulseBaselineRef.current = null
     setNewCount(0)
     let cancelled = false

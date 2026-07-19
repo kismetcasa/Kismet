@@ -358,11 +358,13 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid price bound')
   }
   const expiring = searchParams.get('expiring') === '1'
+  // Only 'artist' exists: the UI pill is a boolean and nothing sends 'resale',
+  // so the value would be dead API surface (line-audit finding).
   const rawSellerType = searchParams.get('seller_type')
-  if (rawSellerType !== null && rawSellerType !== 'artist' && rawSellerType !== 'resale') {
+  if (rawSellerType !== null && rawSellerType !== 'artist') {
     return errorResponse(400, 'Invalid seller_type')
   }
-  const sellerType = (rawSellerType as 'artist' | 'resale' | null) ?? undefined
+  const sellerType = (rawSellerType as 'artist' | null) ?? undefined
   const royaltyMinRaw = searchParams.get('royalty_min')
   if (royaltyMinRaw !== null && !(DECIMAL.test(royaltyMinRaw) && Number(royaltyMinRaw) <= 100)) {
     return errorResponse(400, 'Invalid royalty_min')

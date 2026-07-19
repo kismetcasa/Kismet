@@ -8,9 +8,11 @@ import { useWatchlist } from '@/hooks/useWatchlist'
 import { shortAddress } from '@/lib/inprocess'
 
 // ── Discover filter state ─────────────────────────────────────────────────────
-// One flat model for both markets. Every field maps 1:1 to a validated server
-// param (commit 1); the URL is the single source of truth so filter states are
-// shareable and the back button restores them.
+// One flat model for both markets. Every server-facing field maps 1:1 to a
+// validated route param; market/watchlist are view-level. The URL is the single
+// source of truth so filter states are shareable and the back button restores
+// them. All writes flow through reconcileState so client state can never
+// express a combination the server rejects or that is empty by definition.
 
 export type PrimarySort = 'new' | 'trending' | 'latest-sales' | 'ending-soon'
 export type SecondarySort = 'new' | 'price-asc' | 'price-desc' | 'expiring'
@@ -37,7 +39,7 @@ export interface DiscoverState {
   collection: string | null
 }
 
-export const DEFAULT_DISCOVER_STATE: DiscoverState = {
+const DEFAULT_DISCOVER_STATE: DiscoverState = {
   market: 'primary',
   sortP: 'new',
   free: false,
@@ -56,6 +58,33 @@ export const DEFAULT_DISCOVER_STATE: DiscoverState = {
 
 const DECIMAL = /^\d+(\.\d{1,18})?$/
 const ADDR = /^0x[a-fA-F0-9]{40}$/
+
+// Per-currency decimal cap, mirroring the server's parseUnits denomination
+// (USDC is 6dp). Without this a 7dp USDC bound passes the generic DECIMAL
+// regex client-side but 400s server-side — bricking the feed behind a retry
+// that can never succeed.
+function amountValid(v: string, currency: 'eth' | 'usdc'): boolean {
+  return currency === 'usdc' ? /^\d+(\.\d{1,6})?$/.test(v) : DECIMAL.test(v)
+}
+
+// Sales-derived sorts (trending / latest-sales) exclude free mints by design —
+// a free mint is not a sale — so free=1 under them is empty by definition. One
+// choke point drops the incoherent combination (and any price bound the active
+// currency's denomination can't express), applied to every parse AND every
+// update so neither a pill tap nor a hand-edited URL can express a state the
+// server would answer with a lie.
+export function reconcileState(s: DiscoverState): DiscoverState {
+  const next = { ...s }
+  if (next.free && (next.sortP === 'trending' || next.sortP === 'latest-sales')) next.free = false
+  if (!next.currency) {
+    next.priceMin = null
+    next.priceMax = null
+  } else {
+    if (next.priceMin && !amountValid(next.priceMin, next.currency)) next.priceMin = null
+    if (next.priceMax && !amountValid(next.priceMax, next.currency)) next.priceMax = null
+  }
+  return next
+}
 
 /** Parse a query getter into a state. Lenient: anything malformed falls back
  *  to the default (a shared link with a bad param still renders the page). */
@@ -84,7 +113,7 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   if (royaltyMin && DECIMAL.test(royaltyMin) && Number(royaltyMin) <= 100) s.royaltyMin = royaltyMin
   const collection = get('collection')
   if (collection && ADDR.test(collection)) s.collection = collection
-  return s
+  return reconcileState(s)
 }
 
 /** Canonical /discover querystring for a state — fixed param order so equal
@@ -170,13 +199,23 @@ function PillToggle({
   label,
   on,
   onClick,
+  disabled,
+  disabledReason,
 }: {
   label: string
   on: boolean
   onClick: () => void
+  disabled?: boolean
+  disabledReason?: string
 }) {
   return (
-    <button aria-pressed={on} onClick={onClick} className={`${PILL_BASE} ${on ? PILL_ON : PILL_OFF}`}>
+    <button
+      aria-pressed={on}
+      disabled={disabled}
+      title={disabled ? disabledReason : undefined}
+      onClick={onClick}
+      className={`${PILL_BASE} ${on ? PILL_ON : PILL_OFF} disabled:cursor-not-allowed disabled:opacity-40`}
+    >
       {label}
     </button>
   )
@@ -194,7 +233,9 @@ function PillMenu({
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  useEscapeKey(() => setOpen(false))
+  // enabled=open: closed pills keep no window listener and Escape elsewhere
+  // doesn't fan out no-op setStates across every pill on the bar.
+  useEscapeKey(() => setOpen(false), open)
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -294,7 +335,9 @@ function PricePill({
 
   const commit = (key: 'priceMin' | 'priceMax', raw: string) => {
     const v = raw.trim()
-    onChange({ [key]: v && DECIMAL.test(v) ? v : null })
+    // Currency-aware validation (USDC caps at 6dp) — mirrors the server's
+    // parseUnits denomination so a committed bound can never 400 the feed.
+    onChange({ [key]: v && state.currency && amountValid(v, state.currency) ? v : null })
   }
 
   return (
@@ -481,7 +524,15 @@ export function DiscoverPillBar({
       {state.market === 'primary' ? (
         <>
           <SortSelect value={state.sortP} options={PRIMARY_SORTS} onChange={(v) => onSortChange({ sortP: v })} />
-          <PillToggle label="free mints" on={state.free} onClick={() => onChange({ free: !state.free })} />
+          <PillToggle
+            label="free mints"
+            on={state.free}
+            // Sales-derived sorts exclude free mints by definition (see
+            // reconcileState) — disabled with the reason, not a lying empty feed.
+            disabled={state.sortP === 'trending' || state.sortP === 'latest-sales'}
+            disabledReason="free mints have no sales — switch to newest or ending soon"
+            onClick={() => onChange({ free: !state.free })}
+          />
           <PillMenu label={state.media ? MEDIA_LABEL[state.media] : 'media'} active={state.media !== null}>
             {(close) => (
               <>

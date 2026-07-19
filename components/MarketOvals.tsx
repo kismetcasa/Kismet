@@ -77,7 +77,9 @@ function OvalShell({
           re-enables pointer-events to win its own click. z-10 keeps it painted
           above the link. A disabled button stays pass-through → still navigates. */}
       <div className="pointer-events-none relative z-10 flex shrink-0 flex-col items-end gap-1">{action}</div>
-      {corner && <div className="absolute -top-1.5 right-4 z-10">{corner}</div>}
+      {/* -top-2: the star's arc must clear the price's cap height in the
+          two-line action cluster (audited ~2px kiss at -top-1.5). */}
+      {corner && <div className="absolute -top-2 right-4 z-10">{corner}</div>}
     </article>
   )
 }
@@ -363,6 +365,11 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
   const belowMint = useMemo(() => {
     if (!mintSale) return false
     try {
+      // Only against a mint you could actually pay instead: an ended or
+      // not-yet-open sale's price isn't obtainable, so "below mint" against
+      // it would flatter the listing with a dead comparison.
+      const windowState = getSaleWindow(mintSale)?.state
+      if (windowState === 'ended' || windowState === 'scheduled') return false
       if ((listing.currency ?? 'eth') !== inferCollectCurrency(mintSale)) return false
       const mint = BigInt(mintSale.pricePerToken)
       return mint > 0n && BigInt(listing.price) < mint

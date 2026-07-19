@@ -183,10 +183,12 @@ export async function getUpcomingSaleEnds(nowSec: number): Promise<Map<string, n
 }
 
 /**
- * The set of currently-free moments ("collection:tokenId"), for filtering free
- * mints out of the Latest/Most Sales feeds. Members only (no scores) — bounded
- * by the write-side cap. Empty set on any Redis failure, so the filter degrades
- * to a no-op (show everything) rather than emptying the feed.
+ * The set of currently-free moments ("collection:tokenId"). Two consumers with
+ * OPPOSITE failure semantics: the Latest/Most Sales feeds EXCLUDE members (a
+ * Redis failure degrades to a no-op — show everything), while the discover
+ * free=1 filter INCLUDES only members (a failure degrades to an empty filtered
+ * feed — its honest "no matches" state, never wrong-positives). Members only
+ * (no scores), bounded by the write-side cap.
  */
 export async function getFreeMoments(): Promise<Set<string>> {
   try {
