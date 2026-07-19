@@ -316,7 +316,7 @@ function formatPushPrice(price: string, currency?: 'eth' | 'usdc'): string {
 
 // Composition mirrors components/NotificationRow.tsx so the push and the
 // in-app row read identically — including the actor-absent variants
-// ("your moment was created", "your listing was filled", "an admin added
+// ("your artwork was created", "your listing was filled", "an admin added
 // you as creator"). When the row says one thing and the push says
 // another, users feel like two notification systems rather than one.
 async function compose(n: Notification): Promise<ComposedPush | null> {

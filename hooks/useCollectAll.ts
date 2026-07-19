@@ -563,7 +563,7 @@ export function useCollectAll(): UseCollectAllReturn {
         setStatus('done')
         if (recorded.length === totalMints) {
           toast.success(
-            `Collected ${totalMints} moment${totalMints === 1 ? '' : 's'}!`,
+            `Collected ${totalMints} artwork${totalMints === 1 ? '' : 's'}!`,
             { id: TOAST_ID },
           )
         } else {

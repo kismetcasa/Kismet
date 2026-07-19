@@ -96,7 +96,7 @@ function SourceTile({ src, thumbhash, name, active, disabled, pending, onClick }
 //            moments (robust tiles, no new fetch — same URLs the profile already
 //            loaded, so they cache-serve).
 //   tune   — the selected moment + the variables to change (motion, accent,
-//            remove). "Change moment" returns to select, keeping the current
+//            remove). "change artwork" returns to select, keeping the current
 //            theme live until a new one is picked (non-destructive).
 // Opens straight to tune when a theme already exists, else to select.
 export function CustomizePanel({ address, moments, collected, listings, theme, onThemeChange, onClose }: CustomizePanelProps) {
