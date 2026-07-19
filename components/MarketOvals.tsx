@@ -374,7 +374,7 @@ function MomentOvalImpl({
             // click fall through to the oval's navigate link.
             className={`${disabled ? '' : 'pointer-events-auto'} rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
               mintedOut || saleEnded
-                ? 'border-line/60 text-faint'
+                ? 'border-line/60 text-subtle'
                 : hasCollected
                   ? 'border-accent bg-accent/10 text-accent hover:bg-accent/20'
                   : 'border-line text-dim accent-grad-hover disabled:opacity-50'
