@@ -2,7 +2,9 @@ import { after } from 'next/server'
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import type { SerializedOrderComponents } from './seaport'
-import { fanoutToFollowers, writeNotification } from './notifications'
+import { fanoutToFollowers, writeNotification, getMomentMetaBatch } from './notifications'
+import { getEthUsd } from './ethPrice'
+import { getListingVisibility } from './hiddenListings'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { clearKismetListed } from './pass-validity'
 import { unhideListing } from './hiddenListings'
@@ -43,6 +45,15 @@ export interface Listing {
   // present and renders a preview snippet instead of "no preview".
   contentUri?: string
   contentMime?: string
+  // Mint-price snapshot captured SERVER-SIDE at listing-create from the live
+  // on-chain sale config — never client-supplied (a lister could otherwise
+  // forge a high mint price to buy the below-mint deal signal). Base units of
+  // mintPriceCurrency. Absent when the mint had no live sale at listing time
+  // or the RPC read failed; such rows never match the belowMint filter
+  // (fail-closed). Display badges use the LIVE dwell-gated read instead, so
+  // the filter can drift from the badge if the artist reprices after listing.
+  mintPrice?: string
+  mintPriceCurrency?: 'eth' | 'usdc'
 }
 
 const KEY_ALL = 'kismetart:listings'
@@ -209,15 +220,47 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
 
 const MAX_LISTINGS_SCAN = 500
 
-export async function getListings({
-  page = 1,
-  limit = 18,
-  collection,
-}: {
-  page?: number
-  limit?: number
-  collection?: string
-} = {}): Promise<{ listings: Listing[]; total: number }> {
+/** BigInt(price) that never throws — malformed rows sort/filter as 0. */
+function safePrice(raw: string): bigint {
+  try {
+    return BigInt(raw)
+  } catch {
+    return 0n
+  }
+}
+
+export interface ListingFilters {
+  /** Scope to one settlement currency. Required alongside priceMin/priceMax —
+   *  a base-units range is meaningless across wei (18dp) and USDC (6dp). */
+  currency?: 'eth' | 'usdc'
+  /** Inclusive price bounds in the currency's BASE UNITS. */
+  priceMin?: bigint
+  priceMax?: bigint
+  /** Keep only listings expiring within this many ms from now. */
+  expiringWithinMs?: number
+  /** 'artist' = seller is the moment's creator, verified against the KV
+   *  moment-meta record (NOT the client-supplied creatorAddress display field,
+   *  which is spoofable). Unverifiable rows (no meta) are excluded —
+   *  fail-closed so the artist badge can't be bought with a forged field. */
+  sellerType?: 'artist'
+  /** Minimum creator-royalty share of the sale price, in basis points.
+   *  Derived from the stored royaltyAmount/price (display-level fields; fine
+   *  for a browse filter, never for settlement math). */
+  royaltyMinBps?: number
+  /** Only listings priced below their mint-price snapshot (same currency,
+   *  snapshot present — see Listing.mintPrice for the trust + drift notes). */
+  belowMint?: boolean
+  /** In-memory sort before pagination. Price sorts compare exact base units
+   *  within a currency; cross-currency pairs compare at the Chainlink ETH/USD
+   *  rate (rate unavailable → ETH rows group first, order degraded not wrong). */
+  sort?: 'price-asc' | 'price-desc' | 'expiring'
+}
+
+/** One pass over the marketplace zset: batch-read, drop ghosts and just-
+ *  expired rows (with the same cleanup side-effects getListings always had),
+ *  return the ACTIVE rows newest-first. Shared by getListings and
+ *  getActiveListingKeys so the two views of "what's live" can't drift. */
+async function scanActiveListings(): Promise<Listing[]> {
   const ids = (await redis.zrange(KEY_ALL, 0, MAX_LISTINGS_SCAN - 1, { rev: true })) as string[]
 
   const all = await getListingsBatch(ids)
@@ -238,7 +281,7 @@ export async function getListings({
       ghosts.push(l.id)
       return false
     }
-    return !collection || l.collectionAddress.toLowerCase() === collection.toLowerCase()
+    return true
   })
 
   if (expired.length > 0) {
@@ -247,10 +290,106 @@ export async function getListings({
   if (ghosts.length > 0) {
     redis.zrem(KEY_ALL, ...ghosts).catch(bestEffort('listings.sweepGhosts', { count: ghosts.length }))
   }
+  return active
+}
 
-  const total = active.length
+/**
+ * "collection:tokenId" key per visible active listing — duplicates are
+ * meaningful (multiple sellers listing the same token = that many live
+ * resales). Powers the discover cross-market bridge: the primary ovals'
+ * "N resale" asides (/api/listings?keys=1) and the timeline's has-resale
+ * filter. Visibility-filtered here so a hidden listing can never leak its
+ * existence through a bridge count.
+ */
+export async function getActiveListingKeys(): Promise<string[]> {
+  const [active, visibility] = await Promise.all([scanActiveListings(), getListingVisibility()])
+  return active
+    .filter((l) => !visibility.feedHidden(l))
+    .map((l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`)
+}
+
+export async function getListings({
+  page = 1,
+  limit = 18,
+  collection,
+  filters,
+}: {
+  page?: number
+  limit?: number
+  collection?: string
+  filters?: ListingFilters
+} = {}): Promise<{ listings: Listing[]; total: number }> {
+  const scanned = await scanActiveListings()
+  const active = collection
+    ? scanned.filter((l) => l.collectionAddress.toLowerCase() === collection.toLowerCase())
+    : scanned
+
+  // Browse filters — applied to the full in-memory active set BEFORE
+  // pagination, so filtered pages and totals are honest (never the sparse
+  // client-side-filtered pages that lie about emptiness). The zset scan is
+  // bounded at MAX_LISTINGS_SCAN, so each predicate is a cheap array pass.
+  let rows = active
+  if (filters?.currency) {
+    rows = rows.filter((l) => (l.currency ?? 'eth') === filters.currency)
+  }
+  if (filters?.priceMin !== undefined) {
+    rows = rows.filter((l) => safePrice(l.price) >= filters.priceMin!)
+  }
+  if (filters?.priceMax !== undefined) {
+    rows = rows.filter((l) => safePrice(l.price) <= filters.priceMax!)
+  }
+  if (filters?.expiringWithinMs !== undefined) {
+    const now = Date.now()
+    rows = rows.filter((l) => l.expiresAt <= now + filters.expiringWithinMs!)
+  }
+  if (filters?.royaltyMinBps !== undefined) {
+    rows = rows.filter((l) => {
+      const price = safePrice(l.price)
+      if (price <= 0n) return false
+      return (safePrice(l.royaltyAmount) * 10000n) / price >= BigInt(filters.royaltyMinBps!)
+    })
+  }
+  if (filters?.belowMint) {
+    rows = rows.filter((l) => {
+      if (!l.mintPrice || !l.mintPriceCurrency) return false
+      if ((l.currency ?? 'eth') !== l.mintPriceCurrency) return false
+      const mint = safePrice(l.mintPrice)
+      return mint > 0n && safePrice(l.price) < mint
+    })
+  }
+  if (filters?.sellerType === 'artist') {
+    const metas = await getMomentMetaBatch(
+      rows.map((l) => ({ address: l.collectionAddress, tokenId: l.tokenId })),
+    )
+    rows = rows.filter((l, i) => {
+      const creator = metas[i]?.creator?.toLowerCase()
+      return !!creator && creator === l.seller.toLowerCase()
+    })
+  }
+
+  if (filters?.sort === 'expiring') {
+    rows = [...rows].sort((a, b) => a.expiresAt - b.expiresAt)
+  } else if (filters?.sort === 'price-asc' || filters?.sort === 'price-desc') {
+    const ethUsd = await getEthUsd().catch(() => null)
+    const usdOf = (l: Listing): number => {
+      const v = Number(safePrice(l.price))
+      return (l.currency ?? 'eth') === 'usdc' ? v / 1e6 : (v / 1e18) * (ethUsd ?? 0)
+    }
+    const dir = filters.sort === 'price-asc' ? 1 : -1
+    rows = [...rows].sort((a, b) => {
+      // Same currency → exact base-units compare (oracle-independent).
+      if ((a.currency ?? 'eth') === (b.currency ?? 'eth')) {
+        const pa = safePrice(a.price)
+        const pb = safePrice(b.price)
+        return pa < pb ? -dir : pa > pb ? dir : 0
+      }
+      return (usdOf(a) - usdOf(b)) * dir
+    })
+  }
+
+  const total = rows.length
   const start = (page - 1) * limit
-  return { listings: active.slice(start, start + limit), total }
+  return { listings: rows.slice(start, start + limit), total }
 }
 
 export async function getListingsBySeller(seller: string): Promise<Listing[]> {

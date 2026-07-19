@@ -4,13 +4,16 @@ import {
   ContractFunctionRevertedError,
   ContractFunctionZeroDataError,
   parseErc6492Signature,
+  parseUnits,
+  type Address,
 } from 'viem'
+import { resolveOnchainSale } from '@/lib/saleConfig'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getListingVisibility } from '@/lib/hiddenListings'
 import { getSessionAddress } from '@/lib/session'
-import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
+import { createListing, getListings, getActiveListingKeys, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
@@ -29,6 +32,11 @@ import { markKismetListed } from '@/lib/pass-validity'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const ZERO_BYTES32 = '0x' + '0'.repeat(64)
+
+// "Expiring soon" browse-filter window. 48h matches the urgency framing on
+// the discover ovals ("expires 2d") — long enough to act on, short enough
+// to mean something.
+const EXPIRING_SOON_MS = 48 * 60 * 60 * 1000
 
 /** Validate orderComponents matches what our marketplace assumes: exactly
  *  one ERC-1155 offer item pointing at the listing's collection + tokenId;
@@ -321,6 +329,68 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid seller address')
   }
 
+  // Cross-market bridge: just the visible active listings' "collection:tokenId"
+  // keys (duplicates = one per live listing), so the discover primary ovals can
+  // mark "N resale" from ONE bounded request instead of paginating the whole
+  // book. Identical for every viewer → safe for the same short shared-cache
+  // window the timeline uses.
+  if (searchParams.get('keys') === '1') {
+    return NextResponse.json(
+      { keys: await getActiveListingKeys() },
+      { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60' } },
+    )
+  }
+
+  // ── Browse filters (marketplace feed only — the single-token and
+  // seller-scope branches below ignore them). Validated fail-closed: a
+  // malformed value is a 400, never a silently unfiltered feed. ──
+  const rawCurrency = searchParams.get('currency')
+  if (rawCurrency !== null && rawCurrency !== 'eth' && rawCurrency !== 'usdc') {
+    return errorResponse(400, 'Invalid currency')
+  }
+  const currency = (rawCurrency as 'eth' | 'usdc' | null) ?? undefined
+  const DECIMAL = /^\d+(\.\d{1,18})?$/
+  const priceMinRaw = searchParams.get('price_min')
+  const priceMaxRaw = searchParams.get('price_max')
+  if ((priceMinRaw !== null && !DECIMAL.test(priceMinRaw)) || (priceMaxRaw !== null && !DECIMAL.test(priceMaxRaw))) {
+    return errorResponse(400, 'Invalid price bound')
+  }
+  // A base-units range is meaningless across two denominations (wei vs 6dp),
+  // so a price bound requires the currency to be pinned.
+  if ((priceMinRaw !== null || priceMaxRaw !== null) && !currency) {
+    return errorResponse(400, 'Price filter requires currency')
+  }
+  // parseUnits throws when the decimal has more places than the currency
+  // carries (e.g. 7dp against USDC's 6) — surface that as a 400, not a 500.
+  const decimals = currency === 'usdc' ? 6 : 18
+  let priceMin: bigint | undefined
+  let priceMax: bigint | undefined
+  try {
+    priceMin = priceMinRaw !== null ? parseUnits(priceMinRaw, decimals) : undefined
+    priceMax = priceMaxRaw !== null ? parseUnits(priceMaxRaw, decimals) : undefined
+  } catch {
+    return errorResponse(400, 'Invalid price bound')
+  }
+  const expiring = searchParams.get('expiring') === '1'
+  const belowMint = searchParams.get('below') === '1'
+  // Only 'artist' exists: the UI pill is a boolean and nothing sends 'resale',
+  // so the value would be dead API surface (line-audit finding).
+  const rawSellerType = searchParams.get('seller_type')
+  if (rawSellerType !== null && rawSellerType !== 'artist') {
+    return errorResponse(400, 'Invalid seller_type')
+  }
+  const sellerType = (rawSellerType as 'artist' | null) ?? undefined
+  const royaltyMinRaw = searchParams.get('royalty_min')
+  if (royaltyMinRaw !== null && !(DECIMAL.test(royaltyMinRaw) && Number(royaltyMinRaw) <= 100)) {
+    return errorResponse(400, 'Invalid royalty_min')
+  }
+  const royaltyMinBps = royaltyMinRaw !== null ? Math.round(Number(royaltyMinRaw) * 100) : undefined
+  const rawSort = searchParams.get('sort')
+  if (rawSort !== null && rawSort !== 'price-asc' && rawSort !== 'price-desc' && rawSort !== 'expiring') {
+    return errorResponse(400, 'Invalid sort')
+  }
+  const sort = (rawSort as 'price-asc' | 'price-desc' | 'expiring' | null) ?? undefined
+
   const visibility = await getListingVisibility()
 
   // Single-token lookup — direct deeplink. Author-level (hidden-user)
@@ -364,7 +434,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ listings, pagination: { page: 1, limit: listings.length, total: listings.length, total_pages: 1 } })
   }
 
-  const { listings, total } = await getListings({ page, limit, collection })
+  const { listings, total } = await getListings({
+    page,
+    limit,
+    collection,
+    filters: {
+      currency,
+      priceMin,
+      priceMax,
+      ...(expiring ? { expiringWithinMs: EXPIRING_SOON_MS } : {}),
+      ...(belowMint ? { belowMint: true } : {}),
+      sellerType,
+      royaltyMinBps,
+      sort,
+    },
+  })
   // Filter post-pagination; the store isn't indexed by visibility, so
   // `total` may overcount hidden listings on this page. Acceptable for
   // the marketplace feed. feedHidden covers the per-listing hide, the
@@ -619,6 +703,36 @@ export async function POST(req: NextRequest) {
     // within 1 year), so Number() is safe — endTime << 2^53.
     const expiresAt = Number(BigInt(orderComponents.endTime)) * 1000
 
+    // Mint-price snapshot for the below-mint browse filter — read from CHAIN,
+    // server-side, so it can't be forged (a client-supplied value would let a
+    // lister buy the deal signal with a fake high mint price). Non-blocking:
+    // an RPC blip skips the snapshot, never the listing (such rows simply
+    // never match below=1 — fail-closed). Skipped when the mint sale is
+    // scheduled or ended: a price nobody can pay isn't a comparison baseline.
+    // Display badges keep using the LIVE dwell-gated read (authoritative);
+    // this snapshot only powers the server filter, so the two can drift if
+    // the artist reprices the mint after listing — documented trade.
+    let mintPrice: string | undefined
+    let mintPriceCurrency: 'eth' | 'usdc' | undefined
+    try {
+      const sale = await resolveOnchainSale(
+        serverBaseClient(),
+        collectionAddress as Address,
+        BigInt(canonicalTokenId),
+      )
+      if (sale && sale.pricePerToken > 0n) {
+        const nowSec = BigInt(Math.floor(Date.now() / 1000))
+        const scheduled = sale.saleStart > nowSec
+        // saleEnd 0 = no end; the max-uint64 sentinel is > nowSec, so a raw
+        // compare reads it as live — same semantics as parseRealSaleEnd.
+        const ended = sale.saleEnd !== 0n && sale.saleEnd < nowSec
+        if (!scheduled && !ended) {
+          mintPrice = sale.pricePerToken.toString()
+          mintPriceCurrency = sale.currency
+        }
+      }
+    } catch {}
+
     const listing = await createListing({
       collectionAddress,
       tokenId: canonicalTokenId,
@@ -635,9 +749,17 @@ export async function POST(req: NextRequest) {
       expiresAt,
       name: body.name,
       image: body.image,
-      creatorAddress: body.creatorAddress,
+      // Display attribution only — drop anything that isn't a well-formed
+      // address so a malformed value can't sit in the row. Trust (the
+      // artist-listing filter) never reads this field; it verifies the
+      // seller against the KV moment-meta creator instead.
+      creatorAddress:
+        body.creatorAddress && isAddress(body.creatorAddress)
+          ? body.creatorAddress.toLowerCase()
+          : undefined,
       contentUri: body.contentUri,
       contentMime: body.contentMime,
+      ...(mintPrice && mintPriceCurrency ? { mintPrice, mintPriceCurrency } : {}),
     })
 
     // For Pass-collection listings, mark this (tokenId, seller) as actively

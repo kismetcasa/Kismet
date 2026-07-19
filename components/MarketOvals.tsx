@@ -2,11 +2,13 @@
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import Link from 'next/link'
+import { Star } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useMomentSale } from '@/hooks/useMomentSale'
 import { useInViewDwell } from '@/hooks/useInViewDwell'
+import { useWatchlist } from '@/hooks/useWatchlist'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
@@ -42,6 +44,7 @@ function OvalShell({
   subtitle,
   artwork,
   action,
+  corner,
   rootRef,
 }: {
   href: string
@@ -51,6 +54,8 @@ function OvalShell({
   subtitle: ReactNode
   artwork: ReactNode
   action: ReactNode
+  /** Floating control on the oval's top edge (the watchlist star). */
+  corner?: ReactNode
   rootRef?: Ref<HTMLElement>
 }) {
   return (
@@ -72,7 +77,30 @@ function OvalShell({
           re-enables pointer-events to win its own click. z-10 keeps it painted
           above the link. A disabled button stays pass-through → still navigates. */}
       <div className="pointer-events-none relative z-10 flex shrink-0 flex-col items-end gap-1">{action}</div>
+      {/* -top-2: the star's arc must clear the price's cap height in the
+          two-line action cluster (audited ~2px kiss at -top-1.5). */}
+      {corner && <div className="absolute -top-2 right-4 z-10">{corner}</div>}
     </article>
+  )
+}
+
+// Watchlist star — floats on the oval's top edge. Quiet until hovered (or
+// starred); always tappable on touch, where the resting opacity is the
+// affordance.
+function WatchStar({ watched, name, onToggle }: { watched: boolean; name: string; onToggle: () => void }) {
+  return (
+    <button
+      aria-pressed={watched}
+      aria-label={watched ? `Remove ${name} from watchlist` : `Add ${name} to watchlist`}
+      onClick={onToggle}
+      className={`flex h-[22px] w-[22px] items-center justify-center rounded-full border bg-[#141414] transition-opacity ${
+        watched
+          ? 'border-accent text-accent opacity-100'
+          : 'border-line text-faint opacity-60 hover:text-dim group-hover:opacity-100'
+      }`}
+    >
+      <Star size={11} strokeWidth={1.5} className={watched ? 'fill-accent' : ''} />
+    </button>
   )
 }
 
@@ -111,12 +139,30 @@ function OvalArt({
   )
 }
 
+// Display window for the listing-expiry aside. Mirrors the server's
+// "expiring soon" filter window (EXPIRING_SOON_MS in app/api/listings/route.ts)
+// so the chip and the filter agree on what "soon" means.
+const EXPIRES_SOON_MS = 48 * 60 * 60 * 1000
+
 // ── Primary market oval (a mint) ─────────────────────────────────────────────
 // Mirrors MomentCard's collect data-path (dwell-gated price + on-chain
 // supply/ownership reads, on-chain-authoritative collect) in the oval layout.
 // The price/supply/RPC reads all gate on an in-view dwell so a fast scroll
 // past never fires them — same lever the feed uses.
-function MomentOvalImpl({ moment }: { moment: Moment }) {
+// `ethUsd` (Chainlink rate from the page's one platform-stats read) powers a
+// hover-only USD approximation on ETH prices — a tooltip, never a sub-label,
+// so the price column can't layout-shift when the rate arrives.
+// `resaleCount` is the cross-market bridge: how many live resales this moment
+// has on the secondary market (from the page's one /api/listings?keys=1 read).
+function MomentOvalImpl({
+  moment,
+  ethUsd,
+  resaleCount,
+}: {
+  moment: Moment
+  ethUsd?: number | null
+  resaleCount?: number
+}) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
   const { address: connectedAddress } = useAccount()
@@ -124,6 +170,7 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
   const { collect, status } = useDirectCollect()
   const collecting = status !== 'idle' && status !== 'done' && status !== 'error'
   const [collected, setCollected] = useState(false)
+  const { has: isWatched, toggle: toggleWatch } = useWatchlist()
 
   const meta = useMemo(() => moment.metadata ?? {}, [moment.metadata])
   const media = useMemo(() => resolveMomentMedia(meta), [meta])
@@ -157,6 +204,18 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
       return null
     }
   }, [activeSale])
+  const usdTitle = useMemo(() => {
+    if (!activeSale || !ethUsd) return undefined
+    try {
+      if (inferCollectCurrency(activeSale) !== 'eth') return undefined
+      const wei = BigInt(activeSale.pricePerToken)
+      if (wei <= 0n) return undefined
+      const usd = (Number(wei) / 1e18) * ethUsd
+      return `≈ $${usd < 1 ? usd.toFixed(2) : usd.toLocaleString('en-US', { maximumFractionDigits: 2 })} at today's ETH price`
+    } catch {
+      return undefined
+    }
+  }, [activeSale, ethUsd])
 
   // On-chain supply + ownership (gated on dwell). maxSupply/totalMinted arrive
   // together from getTokenInfo, so either both are defined or neither is.
@@ -247,12 +306,39 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
           {collectionName && <span className="text-dim">{collectionName}</span>}
           {collectionName && ' · '}
           {supplyLabel}
+          {/* Cross-market bridge: this mint has live secondary listings — the
+              whole oval already links to the moment page where they're buyable. */}
+          {!!resaleCount && (
+            <>
+              {' · '}
+              <span className="text-dim">
+                {resaleCount} resale{resaleCount > 1 ? 's' : ''} ↗
+              </span>
+            </>
+          )}
         </>
       }
       artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} />}
+      corner={
+        <WatchStar
+          watched={isWatched(moment.address, moment.token_id)}
+          name={meta.name ?? 'artwork'}
+          onToggle={() =>
+            toggleWatch({
+              address: moment.address,
+              tokenId: moment.token_id,
+              name: meta.name,
+              image: stillSrc,
+              collection: collectionName ?? undefined,
+              creator: moment.creator?.address,
+              createdAt: moment.created_at,
+            })
+          }
+        />
+      }
       action={
         <>
-          <span className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
+          <span title={usdTitle} className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
           <button
             onClick={handleCollect}
             disabled={disabled}
@@ -280,22 +366,107 @@ export const MomentOval = memo(MomentOvalImpl)
 // ── Secondary market oval (a resale listing) ─────────────────────────────────
 // Reuses BuyButton wholesale (the Seaport fulfill flow), so the action carries
 // its own price ("buy 0.01 ETH"). onRemove drops the oval from the grid once
-// the sale confirms (PaginatedGrid's optimistic remove).
+// the sale confirms (PaginatedGrid's optimistic remove). The subtitle is the
+// trade trust line: collection · who's selling · the enforced royalty share.
 function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
+  const rootRef = useRef<HTMLElement>(null)
+  const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
+  const { has: isWatched, toggle: toggleWatch } = useWatchlist()
   const [collectionName, setCollectionName] = useState<string | null>(null)
   useEffect(() => {
     fetchCollectionChip(listing.collectionAddress).then(({ name }) => setCollectionName(name)).catch(() => {})
   }, [listing.collectionAddress])
 
+  // Below-mint deal signal — the listing price vs the moment's live mint
+  // price, via the same dwell-gated coalesced batch the primary ovals use.
+  // Same-currency comparisons only: a wei-vs-USDC compare is meaningless, so
+  // cross-currency pairs simply never show the badge (fail-closed).
+  const { data: mintSale } = useMomentSale(listing.collectionAddress, listing.tokenId, inView)
+  const belowMint = useMemo(() => {
+    if (!mintSale) return false
+    try {
+      // Only against a mint you could actually pay instead: an ended or
+      // not-yet-open sale's price isn't obtainable, so "below mint" against
+      // it would flatter the listing with a dead comparison.
+      const windowState = getSaleWindow(mintSale)?.state
+      if (windowState === 'ended' || windowState === 'scheduled') return false
+      if ((listing.currency ?? 'eth') !== inferCollectCurrency(mintSale)) return false
+      const mint = BigInt(mintSale.pricePerToken)
+      return mint > 0n && BigInt(listing.price) < mint
+    } catch {
+      return false
+    }
+  }, [mintSale, listing.price, listing.currency])
+
+  // Expiry aside — only inside the 48h urgency window, so it's never forced.
+  const expiresLabel = useMemo(() => {
+    const msLeft = listing.expiresAt - Date.now()
+    if (msLeft <= 0 || msLeft > EXPIRES_SOON_MS) return null
+    const hours = Math.ceil(msLeft / 3_600_000)
+    return hours <= 24 ? `expires ${hours}h` : `expires ${Math.ceil(hours / 24)}d`
+  }, [listing.expiresAt])
+
+  // Royalty share of the sale price, from the stored display fields (never
+  // settlement math). Hidden when unparseable or zero.
+  const royaltyPct = useMemo(() => {
+    try {
+      const price = BigInt(listing.price)
+      if (price <= 0n) return null
+      const bps = Number((BigInt(listing.royaltyAmount) * 10000n) / price)
+      if (bps <= 0) return null
+      return bps % 100 === 0 ? String(bps / 100) : (bps / 100).toFixed(1)
+    } catch {
+      return null
+    }
+  }, [listing.price, listing.royaltyAmount])
+
   return (
     <OvalShell
+      rootRef={rootRef}
       href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
-      subtitle={collectionName ?? `resale · ${shortAddress(listing.seller)}`}
+      titleRight={expiresLabel || undefined}
+      subtitle={
+        <>
+          {collectionName && (
+            <>
+              <span className="text-dim">{collectionName}</span>
+              {' · '}
+            </>
+          )}
+          resale by {shortAddress(listing.seller)}
+          {royaltyPct && ` · ${royaltyPct}% royalty`}
+        </>
+      }
       artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
+      corner={
+        <WatchStar
+          watched={isWatched(listing.collectionAddress, listing.tokenId)}
+          name={listing.name ?? 'artwork'}
+          onToggle={() =>
+            toggleWatch({
+              address: listing.collectionAddress,
+              tokenId: listing.tokenId,
+              name: listing.name,
+              image: listing.image,
+              collection: collectionName ?? undefined,
+              creator: listing.creatorAddress,
+            })
+          }
+        />
+      }
       // pointer-events-auto: the cluster is pointer-events-none (so the rest of
       // the oval navigates), so the buy button must opt back in to be clickable.
-      action={<BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />}
+      action={
+        <>
+          {belowMint && (
+            <span className="font-mono text-[10px] text-[#4ade80]" title="listed below its live mint price">
+              ↓ below mint
+            </span>
+          )}
+          <BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />
+        </>
+      }
     />
   )
 }

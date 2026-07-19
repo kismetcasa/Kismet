@@ -14,6 +14,8 @@ import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
+import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { getActiveListingKeys } from '@/lib/listings'
 import { getRecipientSplits } from '@/lib/splits'
 import { getDelegatedMoments } from '@/lib/airdropDelegates'
 import { serverBaseClient } from '@/lib/rpc'
@@ -133,6 +135,32 @@ export async function GET(req: NextRequest) {
       ? rawSort
       : null
   const featured = searchParams.get('featured') === '1'
+  // ── Discover browse filters. Both applied to the merged set BEFORE
+  // pagination (see the filter block above the slice), so filtered pages and
+  // total_pages are honest. Both are non-personalized, so they ride the same
+  // public s-maxage cache as the base feed — each combination is its own edge
+  // cache family; the client canonicalizes param order so equivalent filter
+  // states never mint duplicate keys. ──
+  //
+  // free=1: membership in the SALE_FREE_KEY census (lib/saleEnds). The census
+  // is write-through from browsing (/api/moments batch reads), so it's
+  // approximate by construction: a free mint nobody has browsed since the
+  // index shipped is absent until first browsed. Fail-closed (absent = not
+  // shown under the filter), never wrong-positive.
+  const freeOnly = searchParams.get('free') === '1'
+  // media=<kind>: classify via resolveMomentMedia over the inline metadata —
+  // the same single source of truth every render surface uses, so the filter
+  // can't disagree with what the card would actually show.
+  const rawMedia = searchParams.get('media')
+  const media =
+    rawMedia === 'image' || rawMedia === 'video' || rawMedia === 'gif' || rawMedia === 'text'
+      ? rawMedia
+      : null
+  // resale=1: only mints with a live secondary listing (the cross-market
+  // bridge as a filter). Costs one bounded listing scan (zrange + chunked
+  // MGET, ≤500 rows) per cache miss — amortized by the same shared-cache
+  // window as the rest of the response.
+  const resaleOnly = searchParams.get('resale') === '1'
   // Manual-refresh signal (PaginatedGrid's refresh button). Bypasses the
   // upstream revalidate window AND the shared-response cache below so the
   // click reliably surfaces new mints; normal browsing never sets it.
@@ -685,6 +713,31 @@ export async function GET(req: NextRequest) {
   // enrichment overlay that runs after it (username AND avatar). See
   // lib/momentEnrichment.ts.
 
+  // Discover browse filters — narrow the merged set BEFORE the following
+  // bubble and pagination so page slices and total_pages reflect the filtered
+  // reality. Both fail closed: a row the filter can't classify is excluded
+  // under the filter, never wrongly included.
+  if (freeOnly) {
+    const freeSet = await getFreeMoments()
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return freeSet.has(`${moment.address?.toLowerCase() ?? ''}:${moment.token_id}`)
+    })
+  }
+  if (media) {
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { metadata?: { image?: string; animation_url?: string; content?: { mime?: string; uri?: string } } }
+      return resolveMomentMedia(moment.metadata ?? {}).kind === media
+    })
+  }
+  if (resaleOnly) {
+    const resaleKeys = new Set(await getActiveListingKeys())
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return resaleKeys.has(`${moment.address?.toLowerCase() ?? ''}:${moment.token_id}`)
+    })
+  }
+
   // Following priority: bubble followed creators to the top, preserve internal order
   if (followingSet && followingSet.size > 0) {
     const followed = merged.filter((m: unknown) => {
@@ -699,7 +752,11 @@ export async function GET(req: NextRequest) {
   }
 
   const start = (page - 1) * limit
-  const total_pages = Math.max(1, Math.ceil(merged.length / limit))
+  // Clamp to the same ceiling the `page` param enforces at parse time (100).
+  // Unclamped, a merged set larger than 100×limit advertised total_pages the
+  // route can't serve — page 101+ silently re-served page 100's slice, and a
+  // paginating client appended duplicate rows (duplicate React keys) forever.
+  const total_pages = Math.max(1, Math.min(100, Math.ceil(merged.length / limit)))
 
   // Enrich only the page slice — keeps the MGET cost proportional to
   // what the client will render.
