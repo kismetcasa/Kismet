@@ -15,6 +15,7 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
+import { getActiveListingKeys } from '@/lib/listings'
 import { getRecipientSplits } from '@/lib/splits'
 import { getDelegatedMoments } from '@/lib/airdropDelegates'
 import { serverBaseClient } from '@/lib/rpc'
@@ -155,6 +156,11 @@ export async function GET(req: NextRequest) {
     rawMedia === 'image' || rawMedia === 'video' || rawMedia === 'gif' || rawMedia === 'text'
       ? rawMedia
       : null
+  // resale=1: only mints with a live secondary listing (the cross-market
+  // bridge as a filter). Costs one bounded listing scan (zrange + chunked
+  // MGET, ≤500 rows) per cache miss — amortized by the same shared-cache
+  // window as the rest of the response.
+  const resaleOnly = searchParams.get('resale') === '1'
   // Manual-refresh signal (PaginatedGrid's refresh button). Bypasses the
   // upstream revalidate window AND the shared-response cache below so the
   // click reliably surfaces new mints; normal browsing never sets it.
@@ -722,6 +728,13 @@ export async function GET(req: NextRequest) {
     merged = merged.filter((m: unknown) => {
       const moment = m as { metadata?: { image?: string; animation_url?: string; content?: { mime?: string; uri?: string } } }
       return resolveMomentMedia(moment.metadata ?? {}).kind === media
+    })
+  }
+  if (resaleOnly) {
+    const resaleKeys = new Set(await getActiveListingKeys())
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string }
+      return resaleKeys.has(`${moment.address?.toLowerCase() ?? ''}:${moment.token_id}`)
     })
   }
 

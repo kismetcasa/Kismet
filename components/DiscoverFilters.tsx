@@ -26,6 +26,8 @@ export interface DiscoverState {
   media: MediaKind | null
   /** 'standalone' (solo mints, the page default) | 'collections' | 'all'. */
   scope: 'standalone' | 'collections' | 'all'
+  /** Only mints with a live secondary listing (the bridge as a filter). */
+  resale: boolean
   /** Show the viewer's local watchlist instead of the feed (primary only). */
   watchlist: boolean
   // Secondary
@@ -45,6 +47,7 @@ const DEFAULT_DISCOVER_STATE: DiscoverState = {
   free: false,
   media: null,
   scope: 'standalone',
+  resale: false,
   watchlist: false,
   sortS: 'new',
   currency: null,
@@ -98,6 +101,7 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   if (media === 'image' || media === 'video' || media === 'gif' || media === 'text') s.media = media
   const scope = get('scope')
   if (scope === 'collections' || scope === 'all') s.scope = scope
+  if (get('resale') === '1') s.resale = true
   if (get('watch') === '1') s.watchlist = true
   const sortS = get('sort_s')
   if (sortS === 'price-asc' || sortS === 'price-desc' || sortS === 'expiring') s.sortS = sortS
@@ -127,6 +131,7 @@ export function discoverUrl(s: DiscoverState): string {
   if (s.scope !== 'standalone') q.set('scope', s.scope)
   if (s.free) q.set('free', '1')
   if (s.media) q.set('media', s.media)
+  if (s.resale) q.set('resale', '1')
   if (s.watchlist) q.set('watch', '1')
   if (s.sortS !== 'new') q.set('sort_s', s.sortS)
   if (s.currency) q.set('currency', s.currency)
@@ -148,6 +153,7 @@ export function primaryApiUrl(s: DiscoverState): string {
   if (s.sortP !== 'new') url += `&sort=${s.sortP}`
   if (s.free) url += '&free=1'
   if (s.media) url += `&media=${s.media}`
+  if (s.resale) url += '&resale=1'
   return url
 }
 
@@ -168,7 +174,7 @@ export function secondaryApiUrl(s: DiscoverState): string {
 
 export function hasActiveFilters(s: DiscoverState): boolean {
   return s.market === 'primary'
-    ? s.free || s.media !== null || s.scope !== 'standalone' || s.watchlist
+    ? s.free || s.media !== null || s.scope !== 'standalone' || s.resale || s.watchlist
     : s.currency !== null ||
         s.priceMin !== null ||
         s.priceMax !== null ||
@@ -533,6 +539,7 @@ export function DiscoverPillBar({
             disabledReason="free mints have no sales — switch to newest or ending soon"
             onClick={() => onChange({ free: !state.free })}
           />
+          <PillToggle label="has resale" on={state.resale} onClick={() => onChange({ resale: !state.resale })} />
           <PillMenu label={state.media ? MEDIA_LABEL[state.media] : 'media'} active={state.media !== null}>
             {(close) => (
               <>
