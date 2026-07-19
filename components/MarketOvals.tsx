@@ -9,6 +9,7 @@ import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useMomentSale } from '@/hooks/useMomentSale'
 import { useInViewDwell } from '@/hooks/useInViewDwell'
 import { useWatchlist } from '@/hooks/useWatchlist'
+import { trackFunnel } from '@/lib/funnel'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
@@ -277,6 +278,9 @@ function MomentOvalImpl({
         : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {
+    // Discover-scoped collect intent (the global collect_attempt fires inside
+    // useDirectCollect) — the numerator of the discover→collect conversion.
+    trackFunnel('discover_collect_attempt')
     const account = await ensureConnected()
     if (!account) return
     const result = await collect({

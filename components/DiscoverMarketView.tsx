@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
 import { useWatchlist, type WatchlistEntry } from '@/hooks/useWatchlist'
+import { trackFunnel } from '@/lib/funnel'
 import { DiscoverPillBar } from './DiscoverFilters'
 import {
   clearedFilters,
@@ -155,6 +156,11 @@ export function DiscoverMarketView({
       if (opts?.push) window.history.pushState(null, '', discoverUrl(next))
       else window.history.replaceState(null, '', discoverUrl(next))
     } catch {}
+  }, [])
+
+  // Funnel: one discover visit per session (SESSION_ONCE dedupes back-navs).
+  useEffect(() => {
+    trackFunnel('discover_landing')
   }, [])
 
   // Back/forward restores the full filter state from the URL.
@@ -340,7 +346,12 @@ export function DiscoverMarketView({
       </div>
       <DiscoverPillBar
         state={state}
-        onChange={(patch) => update(patch)}
+        onChange={(patch) => {
+          // Filter engagement — pills and drawer refinements only; sort
+          // changes route through onSortChange and don't count.
+          trackFunnel('discover_filter')
+          update(patch)
+        }}
         onSortChange={(patch) => update(patch, { push: true })}
       />
     </div>
