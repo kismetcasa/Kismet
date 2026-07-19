@@ -56,7 +56,25 @@ function write(next: WatchlistEntry[]): void {
   listeners.forEach((l) => l())
 }
 
+// Cross-tab sync: another tab's toggle fires the storage event here; dropping
+// the cache makes the next snapshot re-read the authoritative stored value, so
+// stars converge instead of this tab later clobbering the other's additions
+// with its stale array. Installed lazily on first subscribe (SSR-safe) and
+// never removed — it's one module-lifetime listener, not per-hook.
+let storageSyncInstalled = false
+function installStorageSync(): void {
+  if (storageSyncInstalled || typeof window === 'undefined') return
+  storageSyncInstalled = true
+  window.addEventListener('storage', (e) => {
+    // e.key === null means the whole store was cleared.
+    if (e.key !== KEY && e.key !== null) return
+    cache = null
+    listeners.forEach((l) => l())
+  })
+}
+
 function subscribe(listener: () => void): () => void {
+  installStorageSync()
   listeners.add(listener)
   return () => listeners.delete(listener)
 }
