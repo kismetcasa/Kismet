@@ -27,6 +27,9 @@ export interface DiscoverState {
   scope: 'standalone' | 'collections' | 'all'
   /** Only mints with a live secondary listing (the bridge as a filter). */
   resale: boolean
+  /** Strict creator filter — one artist's work (timeline creator=, which
+   *  expands to the artist's Farcaster sibling wallets server-side). */
+  artist: string | null
   /** Show the viewer's local watchlist instead of the feed (primary only). */
   watchlist: boolean
   // Secondary
@@ -49,6 +52,7 @@ const DEFAULT_DISCOVER_STATE: DiscoverState = {
   media: null,
   scope: 'standalone',
   resale: false,
+  artist: null,
   watchlist: false,
   sortS: 'new',
   currency: null,
@@ -105,6 +109,8 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   if (scope === 'collections' || scope === 'all') s.scope = scope
   if (get('resale') === '1') s.resale = true
   if (get('watch') === '1') s.watchlist = true
+  const artist = get('artist')
+  if (artist && ADDR.test(artist)) s.artist = artist.toLowerCase()
   const sortS = get('sort_s')
   if (sortS === 'price-asc' || sortS === 'price-desc' || sortS === 'expiring') s.sortS = sortS
   const currency = get('currency')
@@ -135,6 +141,7 @@ export function discoverUrl(s: DiscoverState): string {
   if (s.free) q.set('free', '1')
   if (s.media) q.set('media', s.media)
   if (s.resale) q.set('resale', '1')
+  if (s.artist) q.set('artist', s.artist)
   if (s.watchlist) q.set('watch', '1')
   if (s.sortS !== 'new') q.set('sort_s', s.sortS)
   if (s.currency) q.set('currency', s.currency)
@@ -159,6 +166,7 @@ export function primaryApiUrl(s: DiscoverState): string {
   if (s.free) url += '&free=1'
   if (s.media) url += `&media=${s.media}`
   if (s.resale) url += '&resale=1'
+  if (s.artist) url += `&creator=${s.artist}`
   return url
 }
 
@@ -180,7 +188,7 @@ export function secondaryApiUrl(s: DiscoverState): string {
 
 export function hasActiveFilters(s: DiscoverState): boolean {
   return s.market === 'primary'
-    ? s.free || s.media !== null || s.scope !== 'standalone' || s.resale || s.watchlist
+    ? s.free || s.media !== null || s.scope !== 'standalone' || s.resale || s.artist !== null || s.watchlist
     : s.currency !== null ||
         s.priceMin !== null ||
         s.priceMax !== null ||

@@ -6,6 +6,8 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useWatchlist } from '@/hooks/useWatchlist'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { isAddress } from '@/lib/address'
+import { fetchCreatorProfile } from '@/lib/profileCache'
 import {
   amountValid,
   DECIMAL,
@@ -224,6 +226,102 @@ function PricePill({
   )
 }
 
+// ── Artist pill (primary) ─────────────────────────────────────────────────────
+// Typeahead over the existing /api/search profiles (2+ chars, debounced), plus
+// a paste-an-address fast path. The applied pill resolves the artist's display
+// name through the same profileCache the feed cards use.
+
+function ArtistPill({
+  state,
+  onChange,
+}: {
+  state: DiscoverState
+  onChange: (patch: Partial<DiscoverState>) => void
+}) {
+  const [label, setLabel] = useState<string | null>(null)
+  useEffect(() => {
+    if (!state.artist) {
+      setLabel(null)
+      return
+    }
+    let cancelled = false
+    fetchCreatorProfile(state.artist)
+      .then(({ name }) => {
+        if (!cancelled) setLabel(name)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [state.artist])
+
+  const [q, setQ] = useState('')
+  const [hits, setHits] = useState<{ address: string; username?: string }[] | null>(null)
+  useEffect(() => {
+    const query = q.trim()
+    if (query.length < 2) {
+      setHits(null)
+      return
+    }
+    const t = setTimeout(() => {
+      fetch(`/api/search?q=${encodeURIComponent(query)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => setHits(Array.isArray(d?.users) ? d.users.slice(0, 6) : []))
+        .catch(() => setHits([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q])
+
+  const pasted = isAddress(q.trim()) ? q.trim().toLowerCase() : null
+  const pick = (address: string, close: () => void) => {
+    onChange({ artist: address.toLowerCase() })
+    setQ('')
+    close()
+  }
+
+  return (
+    <PillMenu
+      label={state.artist ? `artist: ${label ?? shortAddress(state.artist)}` : 'artist'}
+      active={state.artist !== null}
+    >
+      {(close) => (
+        <div className="w-64 p-2">
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="search artists or paste 0x…"
+            className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-faint"
+          />
+          <div className="mt-1 flex flex-col">
+            {state.artist && (
+              <MenuOption label="clear artist" selected={false} onSelect={() => { onChange({ artist: null }); setQ(''); close() }} />
+            )}
+            {pasted && (
+              <MenuOption
+                label={`use ${shortAddress(pasted)}`}
+                selected={state.artist === pasted}
+                onSelect={() => pick(pasted, close)}
+              />
+            )}
+            {hits?.map((u) => (
+              <MenuOption
+                key={u.address}
+                label={u.username ? `${u.username} · ${shortAddress(u.address)}` : shortAddress(u.address)}
+                selected={state.artist === u.address.toLowerCase()}
+                onSelect={() => pick(u.address, close)}
+              />
+            ))}
+            {hits !== null && hits.length === 0 && !pasted && (
+              <p className="px-3 py-1.5 font-mono text-[10px] text-faint">no artists found</p>
+            )}
+          </div>
+        </div>
+      )}
+    </PillMenu>
+  )
+}
+
 // ── Filters drawer (secondary long tail: collection, royalty) ─────────────────
 
 interface CollectionOption {
@@ -406,6 +504,7 @@ export function DiscoverPillBar({
               </>
             )}
           </PillMenu>
+          <ArtistPill state={state} onChange={onChange} />
           <button
             aria-pressed={state.watchlist}
             onClick={() => onChange({ watchlist: !state.watchlist })}
