@@ -44,7 +44,10 @@ function inDiagnosticSink(node) {
       const c = n.callee
       if (c && c.type === 'MemberExpression' && c.object.type === 'Identifier' &&
           (c.object.name === 'console' || c.object.name === 'logger')) return true
-      if (c && c.type === 'Identifier' && /Error$/.test(c.name)) return true // Error(), TypeError(), HttpError()
+      // Capitalized constructor-style names only (Error(), TypeError(),
+      // HttpError()). Lowercase *Error helpers are NOT exempt — this repo's
+      // toastError() renders user-facing copy and must stay guarded.
+      if (c && c.type === 'Identifier' && /^[A-Z]\w*Error$/.test(c.name)) return true
     }
   }
   return false
