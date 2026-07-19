@@ -1,9 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
+import { useWatchlist, type WatchlistEntry } from '@/hooks/useWatchlist'
 import {
   DiscoverPillBar,
   clearedFilters,
@@ -36,6 +37,47 @@ const fmtUsd = (n: number) =>
     style: 'currency',
     currency: 'USD',
   }).format(n)
+
+const LAST_VISIT_KEY = 'kismetart:discover-last-visit'
+const PULSE_INTERVAL_MS = 60_000
+
+/** Reconstruct a renderable Moment from a watchlist snapshot. Price, supply,
+ *  and collectability still resolve live through the oval's own dwell-gated
+ *  reads — only the display shell comes from the snapshot. */
+function momentFromEntry(e: WatchlistEntry): Moment {
+  return {
+    address: e.address,
+    token_id: e.tokenId,
+    uri: '',
+    creator: { address: e.creator ?? '', hidden: false },
+    admins: [],
+    created_at: e.createdAt ?? new Date(e.addedAt).toISOString(),
+    metadata: { name: e.name, image: e.image },
+    ...(e.collection ? { kismetCollection: { name: e.collection, image: null } } : {}),
+  }
+}
+
+/** The watchlist as its own view — never a feed filter (a client-side filter
+ *  over server pages would produce lying sparse pages). Renders straight from
+ *  the local snapshots: zero backend, instant, honest. */
+function WatchlistView({ ethUsd }: { ethUsd?: number | null }) {
+  const { entries } = useWatchlist()
+  if (entries.length === 0) {
+    return (
+      <div className="border border-line p-8 text-center sm:p-16">
+        <p className="font-mono text-sm text-muted">nothing on your watchlist yet</p>
+        <p className="mt-2 font-mono text-xs text-faint">tap the ★ on any artwork to keep an eye on it</p>
+      </div>
+    )
+  }
+  return (
+    <div className={OVAL_GRID}>
+      {entries.map((e) => (
+        <MomentOval key={`${e.address}:${e.tokenId}`} moment={momentFromEntry(e)} ethUsd={ethUsd} />
+      ))}
+    </div>
+  )
+}
 
 /**
  * Advanced market browser: every mint (Primary) or every live resale
@@ -107,6 +149,97 @@ export function DiscoverMarketView({
   const market = state.market
   const filtered = hasActiveFilters(state)
 
+  // ── Last-visit divider. Captured once per mount (the PREVIOUS visit), then
+  // the marker is advanced to now — so the divider marks everything minted
+  // since you last opened discover. Client-only by construction: the grid's
+  // items never SSR (react-query is pending on the server), so the divider
+  // can't cause a hydration mismatch.
+  const [lastVisit] = useState<number | null>(() => {
+    if (typeof window === 'undefined') return null
+    try {
+      const raw = localStorage.getItem(LAST_VISIT_KEY)
+      const n = raw ? Number(raw) : NaN
+      return Number.isFinite(n) && n > 0 ? n : null
+    } catch {
+      return null
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAST_VISIT_KEY, String(Date.now()))
+    } catch {}
+  }, [])
+  // Only meaningful on the chronological view — any other sort interleaves
+  // ages and the boundary would lie.
+  const renderBetween =
+    market === 'primary' && state.sortP === 'new' && lastVisit !== null
+      ? (prev: Moment, next: Moment) => {
+          const prevTs = new Date(prev.created_at).getTime()
+          const nextTs = new Date(next.created_at).getTime()
+          if (!(prevTs > lastVisit && nextTs <= lastVisit)) return null
+          return (
+            <div className="col-span-full flex items-center gap-3 px-1" aria-hidden>
+              <span className="h-px flex-1 bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+              <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-accent/70">
+                new since your last visit ↑
+              </span>
+              <span className="h-px flex-1 bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+            </div>
+          )
+        }
+      : undefined
+
+  // ── Live pulse: a visibility-gated 60s poll of the feed's own first page
+  // (tiny limit → its own shared edge-cache family). The first poll sets the
+  // baseline; later polls count mints newer than it. Tap = scroll to top THEN
+  // refresh, so the reset never teleports a deep-scrolled reader.
+  const gridRefreshRef = useRef<(() => void) | null>(null)
+  const onRefreshReady = useCallback((fn: () => void) => {
+    gridRefreshRef.current = fn
+  }, [])
+  const [newCount, setNewCount] = useState(0)
+  const pulseBaselineRef = useRef<number | null>(null)
+  const pulseUrl =
+    market === 'primary' && state.sortP === 'new' && !state.watchlist ? primaryApiUrl(state) : null
+  useEffect(() => {
+    if (!pulseUrl) return
+    pulseBaselineRef.current = null
+    setNewCount(0)
+    let cancelled = false
+    const poll = async () => {
+      if (document.visibilityState !== 'visible') return
+      try {
+        const res = await fetch(`${pulseUrl}&page=1&limit=10`)
+        if (!res.ok) return
+        const d = (await res.json()) as { moments?: { created_at?: string }[] }
+        const moments = Array.isArray(d?.moments) ? d.moments : []
+        if (cancelled || moments.length === 0) return
+        const newest = new Date(moments[0]?.created_at ?? 0).getTime()
+        if (!Number.isFinite(newest) || newest <= 0) return
+        if (pulseBaselineRef.current === null) {
+          pulseBaselineRef.current = newest
+          return
+        }
+        const count = moments.filter(
+          (m) => new Date(m.created_at ?? 0).getTime() > pulseBaselineRef.current!,
+        ).length
+        if (count > 0) setNewCount(count)
+      } catch {}
+    }
+    void poll()
+    const id = setInterval(() => void poll(), PULSE_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [pulseUrl])
+  const onPulseTap = () => {
+    setNewCount(0)
+    pulseBaselineRef.current = null
+    window.scrollTo({ top: 0 })
+    gridRefreshRef.current?.()
+  }
+
   // Second line under "<market> market". Falls back to the ordering hint until
   // the totals land (or if a figure is unavailable).
   const statLine =
@@ -177,36 +310,63 @@ export function DiscoverMarketView({
     </div>
   )
 
+  // Watchlist is its own view (never a feed filter — see WatchlistView).
+  // Rendered with the same header row shape the grid draws, minus refresh.
+  if (market === 'primary' && state.watchlist) {
+    return (
+      <div>
+        <div className="flex items-center justify-between gap-4 py-4">
+          <div className="min-w-0 flex-1">{header}</div>
+        </div>
+        <WatchlistView ethUsd={stats?.ethUsd} />
+      </div>
+    )
+  }
+
   if (market === 'primary') {
     return (
-      <PaginatedGrid<Moment>
-        // Distinct key per market: <PaginatedGrid<Moment>> and
-        // <PaginatedGrid<Listing>> are the SAME runtime component (generics
-        // erase), so without a key React reuses one instance across the toggle
-        // and its accumulated extraPages of the other type would render through
-        // the wrong renderItem (a Listing reaching MomentOval → BigInt(undefined)
-        // crash). The key forces a clean remount → fresh state on every switch.
-        key="market-primary"
-        apiUrl={primaryApiUrl(state)}
-        itemsKey="moments"
-        getKey={(m) => `${m.address}:${m.token_id}`}
-        pageLimit={pageLimit}
-        lazy={isMobile}
-        infiniteScroll={infiniteScroll}
-        containerClassName={OVAL_GRID}
-        skeleton={skeleton}
-        header={header}
-        renderItem={(m) => <MomentOval key={`${m.address}:${m.token_id}`} moment={m} ethUsd={stats?.ethUsd} />}
-        empty={
-          filtered ? (
-            filteredEmpty
-          ) : (
-            <div className="border border-line p-8 text-center sm:p-16">
-              <p className="font-mono text-sm text-muted">no mints yet</p>
-            </div>
-          )
-        }
-      />
+      <>
+        {newCount > 0 && (
+          <button
+            onClick={onPulseTap}
+            // Below the fixed nav (h-14 + safe-top), above content, below overlays.
+            style={{ top: 'calc(3.5rem + var(--safe-top) + 12px)' }}
+            className="fixed left-1/2 z-40 -translate-x-1/2 rounded-full border border-accent bg-[#141414] px-4 py-1.5 font-mono text-[11px] text-accent shadow-[0_4px_18px_rgba(224,81,47,0.25)] transition-colors hover:bg-accent/10"
+          >
+            ● {newCount >= 10 ? '10+' : newCount} new mint{newCount === 1 ? '' : 's'} — tap to refresh
+          </button>
+        )}
+        <PaginatedGrid<Moment>
+          // Distinct key per market: <PaginatedGrid<Moment>> and
+          // <PaginatedGrid<Listing>> are the SAME runtime component (generics
+          // erase), so without a key React reuses one instance across the toggle
+          // and its accumulated extraPages of the other type would render through
+          // the wrong renderItem (a Listing reaching MomentOval → BigInt(undefined)
+          // crash). The key forces a clean remount → fresh state on every switch.
+          key="market-primary"
+          apiUrl={primaryApiUrl(state)}
+          itemsKey="moments"
+          getKey={(m) => `${m.address}:${m.token_id}`}
+          pageLimit={pageLimit}
+          lazy={isMobile}
+          infiniteScroll={infiniteScroll}
+          containerClassName={OVAL_GRID}
+          skeleton={skeleton}
+          header={header}
+          renderBetween={renderBetween}
+          onRefreshReady={onRefreshReady}
+          renderItem={(m) => <MomentOval key={`${m.address}:${m.token_id}`} moment={m} ethUsd={stats?.ethUsd} />}
+          empty={
+            filtered ? (
+              filteredEmpty
+            ) : (
+              <div className="border border-line p-8 text-center sm:p-16">
+                <p className="font-mono text-sm text-muted">no mints yet</p>
+              </div>
+            )
+          }
+        />
+      </>
     )
   }
 

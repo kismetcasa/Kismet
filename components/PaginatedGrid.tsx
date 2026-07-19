@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactElement, type ReactNode } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { MaybeLazy } from './LazyMount'
@@ -84,6 +84,20 @@ interface PaginatedGridProps<T> {
    * state doesn't flash tall square cards before short ovals resolve.
    */
   skeleton?: ReactNode
+  /**
+   * Optional separator injected between adjacent rendered items (receives the
+   * pair, returns a node or null). Powers the discover feed's "new since your
+   * last visit" divider without the grid knowing anything about visits. The
+   * node renders as a plain grid child — span it with col-span classes.
+   */
+  renderBetween?: (prev: T, next: T) => ReactNode
+  /**
+   * Hands the caller this grid's refresh() (same action as the refresh
+   * button) once on mount, so an external control — e.g. the discover feed's
+   * "N new mints" pulse — can trigger a fresh first page without the grid
+   * growing any polling logic of its own.
+   */
+  onRefreshReady?: (refresh: () => void) => void
 }
 
 export function PaginatedGrid<T>({
@@ -100,6 +114,8 @@ export function PaginatedGrid<T>({
   infiniteScroll = false,
   containerClassName,
   skeleton,
+  renderBetween,
+  onRefreshReady,
 }: PaginatedGridProps<T>) {
   const queryClient = useQueryClient()
 
@@ -282,7 +298,7 @@ export function PaginatedGrid<T>({
 
   // Manual refresh: clears local extras and forces a fresh first-page
   // fetch through react-query. isFetching toggles around the refetch
-  // so the icon spins.
+  // so the icon spins. Also handed to the caller via onRefreshReady.
   const refresh = useCallback(() => {
     setExtraPages([])
     setCurrentPage(1)
@@ -292,6 +308,12 @@ export function PaginatedGrid<T>({
     forceFreshRef.current = true
     void refetch()
   }, [refetch])
+
+  // Hand the caller a live refresh handle. refresh's identity is stable
+  // (useCallback on refetch), so this fires once per mount in practice.
+  useEffect(() => {
+    onRefreshReady?.(refresh)
+  }, [onRefreshReady, refresh])
 
   // Show the skeleton only on cold load — the very first mount with no
   // cache. Subsequent mounts inside the gcTime window render cached
@@ -312,6 +334,20 @@ export function PaginatedGrid<T>({
         {() => node}
       </MaybeLazy>
     )
+  }
+  // Interleave optional separators between adjacent items (see renderBetween).
+  // Fragment-keyed by the following item so separators stay stable across
+  // load-more appends.
+  function renderEntries(): ReactNode[] {
+    const out: ReactNode[] = []
+    visible.forEach((item, index) => {
+      if (renderBetween && index > 0) {
+        const sep = renderBetween(visible[index - 1], item)
+        if (sep) out.push(<Fragment key={`between-${getKey(item)}`}>{sep}</Fragment>)
+      }
+      out.push(renderEntry(item, index))
+    })
+    return out
   }
 
   return (
@@ -363,7 +399,7 @@ export function PaginatedGrid<T>({
       {!loading && visible.length > 0 && (
         <>
           <div className={gridClass}>
-            {visible.map((item, index) => renderEntry(item, index))}
+            {renderEntries()}
           </div>
           {currentPage < totalPages && (
             <div className="mt-8 text-center">

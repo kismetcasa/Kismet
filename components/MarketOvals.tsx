@@ -2,11 +2,13 @@
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import Link from 'next/link'
+import { Star } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useMomentSale } from '@/hooks/useMomentSale'
 import { useInViewDwell } from '@/hooks/useInViewDwell'
+import { useWatchlist } from '@/hooks/useWatchlist'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
@@ -42,6 +44,7 @@ function OvalShell({
   subtitle,
   artwork,
   action,
+  corner,
   rootRef,
 }: {
   href: string
@@ -51,6 +54,8 @@ function OvalShell({
   subtitle: ReactNode
   artwork: ReactNode
   action: ReactNode
+  /** Floating control on the oval's top edge (the watchlist star). */
+  corner?: ReactNode
   rootRef?: Ref<HTMLElement>
 }) {
   return (
@@ -72,7 +77,28 @@ function OvalShell({
           re-enables pointer-events to win its own click. z-10 keeps it painted
           above the link. A disabled button stays pass-through → still navigates. */}
       <div className="pointer-events-none relative z-10 flex shrink-0 flex-col items-end gap-1">{action}</div>
+      {corner && <div className="absolute -top-1.5 right-4 z-10">{corner}</div>}
     </article>
+  )
+}
+
+// Watchlist star — floats on the oval's top edge. Quiet until hovered (or
+// starred); always tappable on touch, where the resting opacity is the
+// affordance.
+function WatchStar({ watched, name, onToggle }: { watched: boolean; name: string; onToggle: () => void }) {
+  return (
+    <button
+      aria-pressed={watched}
+      aria-label={watched ? `Remove ${name} from watchlist` : `Add ${name} to watchlist`}
+      onClick={onToggle}
+      className={`flex h-[22px] w-[22px] items-center justify-center rounded-full border bg-[#141414] transition-opacity ${
+        watched
+          ? 'border-accent text-accent opacity-100'
+          : 'border-line text-faint opacity-60 hover:text-dim group-hover:opacity-100'
+      }`}
+    >
+      <Star size={11} strokeWidth={1.5} className={watched ? 'fill-accent' : ''} />
+    </button>
   )
 }
 
@@ -132,6 +158,7 @@ function MomentOvalImpl({ moment, ethUsd }: { moment: Moment; ethUsd?: number | 
   const { collect, status } = useDirectCollect()
   const collecting = status !== 'idle' && status !== 'done' && status !== 'error'
   const [collected, setCollected] = useState(false)
+  const { has: isWatched, toggle: toggleWatch } = useWatchlist()
 
   const meta = useMemo(() => moment.metadata ?? {}, [moment.metadata])
   const media = useMemo(() => resolveMomentMedia(meta), [meta])
@@ -270,6 +297,23 @@ function MomentOvalImpl({ moment, ethUsd }: { moment: Moment; ethUsd?: number | 
         </>
       }
       artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} />}
+      corner={
+        <WatchStar
+          watched={isWatched(moment.address, moment.token_id)}
+          name={meta.name ?? 'artwork'}
+          onToggle={() =>
+            toggleWatch({
+              address: moment.address,
+              tokenId: moment.token_id,
+              name: meta.name,
+              image: stillSrc,
+              collection: collectionName ?? undefined,
+              creator: moment.creator?.address,
+              createdAt: moment.created_at,
+            })
+          }
+        />
+      }
       action={
         <>
           <span title={usdTitle} className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
@@ -305,6 +349,7 @@ export const MomentOval = memo(MomentOvalImpl)
 function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
+  const { has: isWatched, toggle: toggleWatch } = useWatchlist()
   const [collectionName, setCollectionName] = useState<string | null>(null)
   useEffect(() => {
     fetchCollectionChip(listing.collectionAddress).then(({ name }) => setCollectionName(name)).catch(() => {})
@@ -367,6 +412,22 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
         </>
       }
       artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
+      corner={
+        <WatchStar
+          watched={isWatched(listing.collectionAddress, listing.tokenId)}
+          name={listing.name ?? 'artwork'}
+          onToggle={() =>
+            toggleWatch({
+              address: listing.collectionAddress,
+              tokenId: listing.tokenId,
+              name: listing.name,
+              image: listing.image,
+              collection: collectionName ?? undefined,
+              creator: listing.creatorAddress,
+            })
+          }
+        />
+      }
       // pointer-events-auto: the cluster is pointer-events-none (so the rest of
       // the oval navigates), so the buy button must opt back in to be clickable.
       action={

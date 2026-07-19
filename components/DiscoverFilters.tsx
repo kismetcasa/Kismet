@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, X } from 'lucide-react'
+import { ChevronDown, Star, X } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
+import { useWatchlist } from '@/hooks/useWatchlist'
 import { shortAddress } from '@/lib/inprocess'
 
 // ── Discover filter state ─────────────────────────────────────────────────────
@@ -23,6 +24,8 @@ export interface DiscoverState {
   media: MediaKind | null
   /** 'standalone' (solo mints, the page default) | 'collections' | 'all'. */
   scope: 'standalone' | 'collections' | 'all'
+  /** Show the viewer's local watchlist instead of the feed (primary only). */
+  watchlist: boolean
   // Secondary
   sortS: SecondarySort
   currency: 'eth' | 'usdc' | null
@@ -40,6 +43,7 @@ export const DEFAULT_DISCOVER_STATE: DiscoverState = {
   free: false,
   media: null,
   scope: 'standalone',
+  watchlist: false,
   sortS: 'new',
   currency: null,
   priceMin: null,
@@ -65,6 +69,7 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   if (media === 'image' || media === 'video' || media === 'gif' || media === 'text') s.media = media
   const scope = get('scope')
   if (scope === 'collections' || scope === 'all') s.scope = scope
+  if (get('watch') === '1') s.watchlist = true
   const sortS = get('sort_s')
   if (sortS === 'price-asc' || sortS === 'price-desc' || sortS === 'expiring') s.sortS = sortS
   const currency = get('currency')
@@ -93,6 +98,7 @@ export function discoverUrl(s: DiscoverState): string {
   if (s.scope !== 'standalone') q.set('scope', s.scope)
   if (s.free) q.set('free', '1')
   if (s.media) q.set('media', s.media)
+  if (s.watchlist) q.set('watch', '1')
   if (s.sortS !== 'new') q.set('sort_s', s.sortS)
   if (s.currency) q.set('currency', s.currency)
   if (s.priceMin) q.set('price_min', s.priceMin)
@@ -133,7 +139,7 @@ export function secondaryApiUrl(s: DiscoverState): string {
 
 export function hasActiveFilters(s: DiscoverState): boolean {
   return s.market === 'primary'
-    ? s.free || s.media !== null || s.scope !== 'standalone'
+    ? s.free || s.media !== null || s.scope !== 'standalone' || s.watchlist
     : s.currency !== null ||
         s.priceMin !== null ||
         s.priceMax !== null ||
@@ -468,6 +474,7 @@ export function DiscoverPillBar({
   onSortChange: (patch: Partial<DiscoverState>) => void
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const { entries: watchlistEntries } = useWatchlist()
 
   return (
     <div className="flex items-center gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -494,6 +501,14 @@ export function DiscoverPillBar({
               </>
             )}
           </PillMenu>
+          <button
+            aria-pressed={state.watchlist}
+            onClick={() => onChange({ watchlist: !state.watchlist })}
+            className={`${PILL_BASE} inline-flex items-center gap-1.5 ${state.watchlist ? PILL_ON : PILL_OFF}`}
+          >
+            <Star size={11} strokeWidth={1.5} className={state.watchlist ? 'fill-accent' : ''} />
+            watchlist{watchlistEntries.length > 0 ? ` (${watchlistEntries.length})` : ''}
+          </button>
         </>
       ) : (
         <>
