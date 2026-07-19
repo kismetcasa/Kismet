@@ -2,7 +2,8 @@ import { after } from 'next/server'
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
 import type { SerializedOrderComponents } from './seaport'
-import { fanoutToFollowers, writeNotification } from './notifications'
+import { fanoutToFollowers, writeNotification, getMomentMetaBatch } from './notifications'
+import { getEthUsd } from './ethPrice'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { clearKismetListed } from './pass-validity'
 import { unhideListing } from './hiddenListings'
@@ -209,14 +210,49 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
 
 const MAX_LISTINGS_SCAN = 500
 
+/** BigInt(price) that never throws — malformed rows sort/filter as 0. */
+function safePrice(raw: string): bigint {
+  try {
+    return BigInt(raw)
+  } catch {
+    return 0n
+  }
+}
+
+export interface ListingFilters {
+  /** Scope to one settlement currency. Required alongside priceMin/priceMax —
+   *  a base-units range is meaningless across wei (18dp) and USDC (6dp). */
+  currency?: 'eth' | 'usdc'
+  /** Inclusive price bounds in the currency's BASE UNITS. */
+  priceMin?: bigint
+  priceMax?: bigint
+  /** Keep only listings expiring within this many ms from now. */
+  expiringWithinMs?: number
+  /** 'artist' = seller is the moment's creator, verified against the KV
+   *  moment-meta record (NOT the client-supplied creatorAddress display field,
+   *  which is spoofable). Unverifiable rows (no meta) count as resale —
+   *  fail-closed so the artist badge can't be bought with a forged field. */
+  sellerType?: 'artist' | 'resale'
+  /** Minimum creator-royalty share of the sale price, in basis points.
+   *  Derived from the stored royaltyAmount/price (display-level fields; fine
+   *  for a browse filter, never for settlement math). */
+  royaltyMinBps?: number
+  /** In-memory sort before pagination. Price sorts compare exact base units
+   *  within a currency; cross-currency pairs compare at the Chainlink ETH/USD
+   *  rate (rate unavailable → ETH rows group first, order degraded not wrong). */
+  sort?: 'price-asc' | 'price-desc' | 'expiring'
+}
+
 export async function getListings({
   page = 1,
   limit = 18,
   collection,
+  filters,
 }: {
   page?: number
   limit?: number
   collection?: string
+  filters?: ListingFilters
 } = {}): Promise<{ listings: Listing[]; total: number }> {
   const ids = (await redis.zrange(KEY_ALL, 0, MAX_LISTINGS_SCAN - 1, { rev: true })) as string[]
 
@@ -248,9 +284,64 @@ export async function getListings({
     redis.zrem(KEY_ALL, ...ghosts).catch(bestEffort('listings.sweepGhosts', { count: ghosts.length }))
   }
 
-  const total = active.length
+  // Browse filters — applied to the full in-memory active set BEFORE
+  // pagination, so filtered pages and totals are honest (never the sparse
+  // client-side-filtered pages that lie about emptiness). The zset scan is
+  // bounded at MAX_LISTINGS_SCAN, so each predicate is a cheap array pass.
+  let rows = active
+  if (filters?.currency) {
+    rows = rows.filter((l) => (l.currency ?? 'eth') === filters.currency)
+  }
+  if (filters?.priceMin !== undefined) {
+    rows = rows.filter((l) => safePrice(l.price) >= filters.priceMin!)
+  }
+  if (filters?.priceMax !== undefined) {
+    rows = rows.filter((l) => safePrice(l.price) <= filters.priceMax!)
+  }
+  if (filters?.expiringWithinMs !== undefined) {
+    rows = rows.filter((l) => l.expiresAt <= now + filters.expiringWithinMs!)
+  }
+  if (filters?.royaltyMinBps !== undefined) {
+    rows = rows.filter((l) => {
+      const price = safePrice(l.price)
+      if (price <= 0n) return false
+      return (safePrice(l.royaltyAmount) * 10000n) / price >= BigInt(filters.royaltyMinBps!)
+    })
+  }
+  if (filters?.sellerType) {
+    const metas = await getMomentMetaBatch(
+      rows.map((l) => ({ address: l.collectionAddress, tokenId: l.tokenId })),
+    )
+    rows = rows.filter((l, i) => {
+      const creator = metas[i]?.creator?.toLowerCase()
+      const isArtist = !!creator && creator === l.seller.toLowerCase()
+      return filters.sellerType === 'artist' ? isArtist : !isArtist
+    })
+  }
+
+  if (filters?.sort === 'expiring') {
+    rows = [...rows].sort((a, b) => a.expiresAt - b.expiresAt)
+  } else if (filters?.sort === 'price-asc' || filters?.sort === 'price-desc') {
+    const ethUsd = await getEthUsd().catch(() => null)
+    const usdOf = (l: Listing): number => {
+      const v = Number(safePrice(l.price))
+      return (l.currency ?? 'eth') === 'usdc' ? v / 1e6 : (v / 1e18) * (ethUsd ?? 0)
+    }
+    const dir = filters.sort === 'price-asc' ? 1 : -1
+    rows = [...rows].sort((a, b) => {
+      // Same currency → exact base-units compare (oracle-independent).
+      if ((a.currency ?? 'eth') === (b.currency ?? 'eth')) {
+        const pa = safePrice(a.price)
+        const pb = safePrice(b.price)
+        return pa < pb ? -dir : pa > pb ? dir : 0
+      }
+      return (usdOf(a) - usdOf(b)) * dir
+    })
+  }
+
+  const total = rows.length
   const start = (page - 1) * limit
-  return { listings: active.slice(start, start + limit), total }
+  return { listings: rows.slice(start, start + limit), total }
 }
 
 export async function getListingsBySeller(seller: string): Promise<Listing[]> {
