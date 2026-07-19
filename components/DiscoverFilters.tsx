@@ -5,7 +5,7 @@ import { ChevronDown, Star, X } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useWatchlist } from '@/hooks/useWatchlist'
-import { shortAddress } from '@/lib/inprocess'
+import { formatPrice, shortAddress } from '@/lib/inprocess'
 import {
   amountValid,
   DECIMAL,
@@ -231,12 +231,29 @@ interface CollectionOption {
   label: string
 }
 
+/** Per-collection floors (base units per currency) from the listings
+ *  snapshot — see ActiveListingSnapshot in lib/listings. */
+export type CollectionFloors = Record<string, { eth?: string; usdc?: string }>
+
+// Floor label for a collection option — ETH floor first (the dominant
+// denomination), else USDC; nothing when the collection has no priced
+// active listing. formatPrice keeps the rendering identical to every
+// other price on the site.
+function floorLabel(floors: CollectionFloors | null | undefined, address: string): string {
+  const f = floors?.[address.toLowerCase()]
+  if (!f) return ''
+  const label = f.eth ? formatPrice(f.eth, 'eth') : f.usdc ? formatPrice(f.usdc, 'usdc') : null
+  return label ? ` · floor ${label}` : ''
+}
+
 function FiltersDrawer({
   state,
+  floors,
   onChange,
   onClose,
 }: {
   state: DiscoverState
+  floors?: CollectionFloors | null
   onChange: (patch: Partial<DiscoverState>) => void
   onClose: () => void
 }) {
@@ -279,6 +296,7 @@ function FiltersDrawer({
           {(collections ?? []).map((c) => (
             <option key={c.contractAddress} value={c.contractAddress}>
               {c.label}
+              {floorLabel(floors, c.contractAddress)}
             </option>
           ))}
         </select>
@@ -339,10 +357,13 @@ const SCOPE_LABEL: Record<DiscoverState['scope'], string> = {
 
 export function DiscoverPillBar({
   state,
+  floors,
   onChange,
   onSortChange,
 }: {
   state: DiscoverState
+  /** Collection floors for the drawer's picker labels. */
+  floors?: CollectionFloors | null
   /** Filter refinement (history.replaceState). */
   onChange: (patch: Partial<DiscoverState>) => void
   /** Sort change (history.pushState — a navigation-grade change). */
@@ -407,7 +428,7 @@ export function DiscoverPillBar({
           >
             filters ▾
           </button>
-          {drawerOpen && <FiltersDrawer state={state} onChange={onChange} onClose={() => setDrawerOpen(false)} />}
+          {drawerOpen && <FiltersDrawer state={state} floors={floors} onChange={onChange} onClose={() => setDrawerOpen(false)} />}
         </>
       )}
     </div>

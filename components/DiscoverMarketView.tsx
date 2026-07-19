@@ -115,6 +115,9 @@ export function DiscoverMarketView({
   // Cross-market bridge: "collection:tokenId" → live-resale count, from one
   // bounded, edge-cached request. Fetched once — the map is market-independent.
   const [resaleCounts, setResaleCounts] = useState<Map<string, number> | null>(null)
+  // Per-collection floors from the same snapshot — drives the drawer's
+  // collection-picker labels ("casa · floor 0.005 ETH").
+  const [floors, setFloors] = useState<Record<string, { eth?: string; usdc?: string }> | null>(null)
   const pageLimit = isMobile ? 20 : 24
   const infiniteScroll = !isMobile
 
@@ -123,12 +126,15 @@ export function DiscoverMarketView({
     fetch('/api/listings?keys=1')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (cancelled || !Array.isArray(d?.keys)) return
-        const m = new Map<string, number>()
-        for (const k of d.keys as unknown[]) {
-          if (typeof k === 'string') m.set(k, (m.get(k) ?? 0) + 1)
+        if (cancelled) return
+        if (Array.isArray(d?.keys)) {
+          const m = new Map<string, number>()
+          for (const k of d.keys as unknown[]) {
+            if (typeof k === 'string') m.set(k, (m.get(k) ?? 0) + 1)
+          }
+          setResaleCounts(m)
         }
-        setResaleCounts(m)
+        if (d?.floors && typeof d.floors === 'object') setFloors(d.floors)
       })
       .catch(() => {})
     return () => {
@@ -346,6 +352,7 @@ export function DiscoverMarketView({
       </div>
       <DiscoverPillBar
         state={state}
+        floors={floors}
         onChange={(patch) => {
           // Filter engagement — pills and drawer refinements only; sort
           // changes route through onSortChange and don't count.

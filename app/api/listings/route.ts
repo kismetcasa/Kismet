@@ -13,7 +13,7 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getListingVisibility } from '@/lib/hiddenListings'
 import { getSessionAddress } from '@/lib/session'
-import { createListing, getListings, getActiveListingKeys, getListingForToken, getListingsBySeller } from '@/lib/listings'
+import { createListing, getListings, getActiveListingSnapshot, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
@@ -336,7 +336,7 @@ export async function GET(req: NextRequest) {
   // window the timeline uses.
   if (searchParams.get('keys') === '1') {
     return NextResponse.json(
-      { keys: await getActiveListingKeys() },
+      await getActiveListingSnapshot(),
       { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60' } },
     )
   }
