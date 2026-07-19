@@ -165,7 +165,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
         const sale = await resolveOnchainSale(publicClient, collectionAddress, tokenIdBn)
         if (!sale) {
           setStatus('error')
-          toast.error('No active sale for this moment', { id: TOAST_ID })
+          toast.error('No active sale for this artwork', { id: TOAST_ID })
           return null
         }
         const { pricePerToken, currency } = sale
