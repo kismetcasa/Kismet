@@ -111,12 +111,20 @@ function OvalArt({
   )
 }
 
+// Display window for the listing-expiry aside. Mirrors the server's
+// "expiring soon" filter window (EXPIRING_SOON_MS in app/api/listings/route.ts)
+// so the chip and the filter agree on what "soon" means.
+const EXPIRES_SOON_MS = 48 * 60 * 60 * 1000
+
 // ── Primary market oval (a mint) ─────────────────────────────────────────────
 // Mirrors MomentCard's collect data-path (dwell-gated price + on-chain
 // supply/ownership reads, on-chain-authoritative collect) in the oval layout.
 // The price/supply/RPC reads all gate on an in-view dwell so a fast scroll
 // past never fires them — same lever the feed uses.
-function MomentOvalImpl({ moment }: { moment: Moment }) {
+// `ethUsd` (Chainlink rate from the page's one platform-stats read) powers a
+// hover-only USD approximation on ETH prices — a tooltip, never a sub-label,
+// so the price column can't layout-shift when the rate arrives.
+function MomentOvalImpl({ moment, ethUsd }: { moment: Moment; ethUsd?: number | null }) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
   const { address: connectedAddress } = useAccount()
@@ -157,6 +165,18 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
       return null
     }
   }, [activeSale])
+  const usdTitle = useMemo(() => {
+    if (!activeSale || !ethUsd) return undefined
+    try {
+      if (inferCollectCurrency(activeSale) !== 'eth') return undefined
+      const wei = BigInt(activeSale.pricePerToken)
+      if (wei <= 0n) return undefined
+      const usd = (Number(wei) / 1e18) * ethUsd
+      return `≈ $${usd < 1 ? usd.toFixed(2) : usd.toLocaleString('en-US', { maximumFractionDigits: 2 })} at today's ETH price`
+    } catch {
+      return undefined
+    }
+  }, [activeSale, ethUsd])
 
   // On-chain supply + ownership (gated on dwell). maxSupply/totalMinted arrive
   // together from getTokenInfo, so either both are defined or neither is.
@@ -252,7 +272,7 @@ function MomentOvalImpl({ moment }: { moment: Moment }) {
       artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} />}
       action={
         <>
-          <span className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
+          <span title={usdTitle} className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
           <button
             onClick={handleCollect}
             disabled={disabled}
@@ -280,22 +300,85 @@ export const MomentOval = memo(MomentOvalImpl)
 // ── Secondary market oval (a resale listing) ─────────────────────────────────
 // Reuses BuyButton wholesale (the Seaport fulfill flow), so the action carries
 // its own price ("buy 0.01 ETH"). onRemove drops the oval from the grid once
-// the sale confirms (PaginatedGrid's optimistic remove).
+// the sale confirms (PaginatedGrid's optimistic remove). The subtitle is the
+// trade trust line: collection · who's selling · the enforced royalty share.
 function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
+  const rootRef = useRef<HTMLElement>(null)
+  const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
   const [collectionName, setCollectionName] = useState<string | null>(null)
   useEffect(() => {
     fetchCollectionChip(listing.collectionAddress).then(({ name }) => setCollectionName(name)).catch(() => {})
   }, [listing.collectionAddress])
 
+  // Below-mint deal signal — the listing price vs the moment's live mint
+  // price, via the same dwell-gated coalesced batch the primary ovals use.
+  // Same-currency comparisons only: a wei-vs-USDC compare is meaningless, so
+  // cross-currency pairs simply never show the badge (fail-closed).
+  const { data: mintSale } = useMomentSale(listing.collectionAddress, listing.tokenId, inView)
+  const belowMint = useMemo(() => {
+    if (!mintSale) return false
+    try {
+      if ((listing.currency ?? 'eth') !== inferCollectCurrency(mintSale)) return false
+      const mint = BigInt(mintSale.pricePerToken)
+      return mint > 0n && BigInt(listing.price) < mint
+    } catch {
+      return false
+    }
+  }, [mintSale, listing.price, listing.currency])
+
+  // Expiry aside — only inside the 48h urgency window, so it's never forced.
+  const expiresLabel = useMemo(() => {
+    const msLeft = listing.expiresAt - Date.now()
+    if (msLeft <= 0 || msLeft > EXPIRES_SOON_MS) return null
+    const hours = Math.ceil(msLeft / 3_600_000)
+    return hours <= 24 ? `expires ${hours}h` : `expires ${Math.ceil(hours / 24)}d`
+  }, [listing.expiresAt])
+
+  // Royalty share of the sale price, from the stored display fields (never
+  // settlement math). Hidden when unparseable or zero.
+  const royaltyPct = useMemo(() => {
+    try {
+      const price = BigInt(listing.price)
+      if (price <= 0n) return null
+      const bps = Number((BigInt(listing.royaltyAmount) * 10000n) / price)
+      if (bps <= 0) return null
+      return bps % 100 === 0 ? String(bps / 100) : (bps / 100).toFixed(1)
+    } catch {
+      return null
+    }
+  }, [listing.price, listing.royaltyAmount])
+
   return (
     <OvalShell
+      rootRef={rootRef}
       href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
-      subtitle={collectionName ?? `resale · ${shortAddress(listing.seller)}`}
+      titleRight={expiresLabel || undefined}
+      subtitle={
+        <>
+          {collectionName && (
+            <>
+              <span className="text-dim">{collectionName}</span>
+              {' · '}
+            </>
+          )}
+          resale by {shortAddress(listing.seller)}
+          {royaltyPct && ` · ${royaltyPct}% royalty`}
+        </>
+      }
       artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
       // pointer-events-auto: the cluster is pointer-events-none (so the rest of
       // the oval navigates), so the buy button must opt back in to be clickable.
-      action={<BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />}
+      action={
+        <>
+          {belowMint && (
+            <span className="font-mono text-[10px] text-[#4ade80]" title="listed below its live mint price">
+              ↓ below mint
+            </span>
+          )}
+          <BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />
+        </>
+      }
     />
   )
 }

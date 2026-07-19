@@ -21,6 +21,8 @@ interface PlatformStats {
   mints: number | null
   earningsUsd: number | null
   resaleUsd: number | null
+  /** Chainlink ETH/USD from the same payload — powers the oval price tooltips. */
+  ethUsd: number | null
 }
 
 // 1 oval per row on mobile, 2 on tablet, 3 on desktop — the "2–3 per row"
@@ -93,6 +95,7 @@ export function DiscoverMarketView({
           mints: typeof d?.catalog?.artworksMinted === 'number' ? d.catalog.artworksMinted : null,
           earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
           resaleUsd: typeof d?.resales?.usd === 'number' ? d.resales.usd : null,
+          ethUsd: typeof d?.earnings?.ethUsd === 'number' ? d.earnings.ethUsd : null,
         })
       })
       .catch(() => {})
@@ -193,7 +196,7 @@ export function DiscoverMarketView({
         containerClassName={OVAL_GRID}
         skeleton={skeleton}
         header={header}
-        renderItem={(m) => <MomentOval key={`${m.address}:${m.token_id}`} moment={m} />}
+        renderItem={(m) => <MomentOval key={`${m.address}:${m.token_id}`} moment={m} ethUsd={stats?.ethUsd} />}
         empty={
           filtered ? (
             filteredEmpty
