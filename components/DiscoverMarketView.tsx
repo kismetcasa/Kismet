@@ -64,7 +64,13 @@ function momentFromEntry(e: WatchlistEntry): Moment {
 /** The watchlist as its own view — never a feed filter (a client-side filter
  *  over server pages would produce lying sparse pages). Renders straight from
  *  the local snapshots: zero backend, instant, honest. */
-function WatchlistView({ ethUsd }: { ethUsd?: number | null }) {
+function WatchlistView({
+  ethUsd,
+  resaleCounts,
+}: {
+  ethUsd?: number | null
+  resaleCounts?: Map<string, number> | null
+}) {
   const { entries } = useWatchlist()
   if (entries.length === 0) {
     return (
@@ -77,7 +83,12 @@ function WatchlistView({ ethUsd }: { ethUsd?: number | null }) {
   return (
     <div className={OVAL_GRID}>
       {entries.map((e) => (
-        <MomentOval key={`${e.address}:${e.tokenId}`} moment={momentFromEntry(e)} ethUsd={ethUsd} />
+        <MomentOval
+          key={`${e.address}:${e.tokenId}`}
+          moment={momentFromEntry(e)}
+          ethUsd={ethUsd}
+          resaleCount={resaleCounts?.get(`${e.address.toLowerCase()}:${e.tokenId}`)}
+        />
       ))}
     </div>
   )
@@ -100,8 +111,29 @@ export function DiscoverMarketView({
 }) {
   const [state, setState] = useState<DiscoverState>(initialState)
   const [stats, setStats] = useState<PlatformStats | null>(null)
+  // Cross-market bridge: "collection:tokenId" → live-resale count, from one
+  // bounded, edge-cached request. Fetched once — the map is market-independent.
+  const [resaleCounts, setResaleCounts] = useState<Map<string, number> | null>(null)
   const pageLimit = isMobile ? 20 : 24
   const infiniteScroll = !isMobile
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/listings?keys=1')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !Array.isArray(d?.keys)) return
+        const m = new Map<string, number>()
+        for (const k of d.keys as unknown[]) {
+          if (typeof k === 'string') m.set(k, (m.get(k) ?? 0) + 1)
+        }
+        setResaleCounts(m)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // All state changes flow through here so the URL and component state can
   // never disagree. push=true for navigation-grade changes (market, sort);
@@ -336,7 +368,7 @@ export function DiscoverMarketView({
         <div className="flex items-center justify-between gap-4 py-4">
           <div className="min-w-0 flex-1">{header}</div>
         </div>
-        <WatchlistView ethUsd={stats?.ethUsd} />
+        <WatchlistView ethUsd={stats?.ethUsd} resaleCounts={resaleCounts} />
       </div>
     )
   }
@@ -373,7 +405,14 @@ export function DiscoverMarketView({
           header={header}
           renderBetween={renderBetween}
           onRefreshReady={onRefreshReady}
-          renderItem={(m) => <MomentOval key={`${m.address}:${m.token_id}`} moment={m} ethUsd={stats?.ethUsd} />}
+          renderItem={(m) => (
+            <MomentOval
+              key={`${m.address}:${m.token_id}`}
+              moment={m}
+              ethUsd={stats?.ethUsd}
+              resaleCount={resaleCounts?.get(`${m.address.toLowerCase()}:${m.token_id}`)}
+            />
+          )}
           empty={
             filtered ? (
               filteredEmpty

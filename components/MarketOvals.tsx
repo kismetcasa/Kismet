@@ -152,7 +152,17 @@ const EXPIRES_SOON_MS = 48 * 60 * 60 * 1000
 // `ethUsd` (Chainlink rate from the page's one platform-stats read) powers a
 // hover-only USD approximation on ETH prices — a tooltip, never a sub-label,
 // so the price column can't layout-shift when the rate arrives.
-function MomentOvalImpl({ moment, ethUsd }: { moment: Moment; ethUsd?: number | null }) {
+// `resaleCount` is the cross-market bridge: how many live resales this moment
+// has on the secondary market (from the page's one /api/listings?keys=1 read).
+function MomentOvalImpl({
+  moment,
+  ethUsd,
+  resaleCount,
+}: {
+  moment: Moment
+  ethUsd?: number | null
+  resaleCount?: number
+}) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
   const { address: connectedAddress } = useAccount()
@@ -296,6 +306,16 @@ function MomentOvalImpl({ moment, ethUsd }: { moment: Moment; ethUsd?: number | 
           {collectionName && <span className="text-dim">{collectionName}</span>}
           {collectionName && ' · '}
           {supplyLabel}
+          {/* Cross-market bridge: this mint has live secondary listings — the
+              whole oval already links to the moment page where they're buyable. */}
+          {!!resaleCount && (
+            <>
+              {' · '}
+              <span className="text-dim">
+                {resaleCount} resale{resaleCount > 1 ? 's' : ''} ↗
+              </span>
+            </>
+          )}
         </>
       }
       artwork={<OvalArt src={stillSrc} alt={meta.name ?? 'artwork'} thumbhash={meta.kismet_thumbhash} />}

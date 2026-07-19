@@ -11,7 +11,7 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getListingVisibility } from '@/lib/hiddenListings'
 import { getSessionAddress } from '@/lib/session'
-import { createListing, getListings, getListingForToken, getListingsBySeller } from '@/lib/listings'
+import { createListing, getListings, getActiveListingKeys, getListingForToken, getListingsBySeller } from '@/lib/listings'
 import {
   SEAPORT_DOMAIN,
   SEAPORT_ORDER_TYPES,
@@ -325,6 +325,18 @@ export async function GET(req: NextRequest) {
   }
   if (seller && !isAddress(seller)) {
     return errorResponse(400, 'Invalid seller address')
+  }
+
+  // Cross-market bridge: just the visible active listings' "collection:tokenId"
+  // keys (duplicates = one per live listing), so the discover primary ovals can
+  // mark "N resale" from ONE bounded request instead of paginating the whole
+  // book. Identical for every viewer → safe for the same short shared-cache
+  // window the timeline uses.
+  if (searchParams.get('keys') === '1') {
+    return NextResponse.json(
+      { keys: await getActiveListingKeys() },
+      { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60' } },
+    )
   }
 
   // ── Browse filters (marketplace feed only — the single-token and

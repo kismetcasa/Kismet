@@ -4,6 +4,7 @@ import { bestEffort } from './bestEffort'
 import type { SerializedOrderComponents } from './seaport'
 import { fanoutToFollowers, writeNotification, getMomentMetaBatch } from './notifications'
 import { getEthUsd } from './ethPrice'
+import { getListingVisibility } from './hiddenListings'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
 import { clearKismetListed } from './pass-validity'
 import { unhideListing } from './hiddenListings'
@@ -243,17 +244,11 @@ export interface ListingFilters {
   sort?: 'price-asc' | 'price-desc' | 'expiring'
 }
 
-export async function getListings({
-  page = 1,
-  limit = 18,
-  collection,
-  filters,
-}: {
-  page?: number
-  limit?: number
-  collection?: string
-  filters?: ListingFilters
-} = {}): Promise<{ listings: Listing[]; total: number }> {
+/** One pass over the marketplace zset: batch-read, drop ghosts and just-
+ *  expired rows (with the same cleanup side-effects getListings always had),
+ *  return the ACTIVE rows newest-first. Shared by getListings and
+ *  getActiveListingKeys so the two views of "what's live" can't drift. */
+async function scanActiveListings(): Promise<Listing[]> {
   const ids = (await redis.zrange(KEY_ALL, 0, MAX_LISTINGS_SCAN - 1, { rev: true })) as string[]
 
   const all = await getListingsBatch(ids)
@@ -274,7 +269,7 @@ export async function getListings({
       ghosts.push(l.id)
       return false
     }
-    return !collection || l.collectionAddress.toLowerCase() === collection.toLowerCase()
+    return true
   })
 
   if (expired.length > 0) {
@@ -283,6 +278,39 @@ export async function getListings({
   if (ghosts.length > 0) {
     redis.zrem(KEY_ALL, ...ghosts).catch(bestEffort('listings.sweepGhosts', { count: ghosts.length }))
   }
+  return active
+}
+
+/**
+ * "collection:tokenId" key per visible active listing — duplicates are
+ * meaningful (multiple sellers listing the same token = that many live
+ * resales). Powers the discover cross-market bridge: the primary ovals'
+ * "N resale" asides (/api/listings?keys=1) and the timeline's has-resale
+ * filter. Visibility-filtered here so a hidden listing can never leak its
+ * existence through a bridge count.
+ */
+export async function getActiveListingKeys(): Promise<string[]> {
+  const [active, visibility] = await Promise.all([scanActiveListings(), getListingVisibility()])
+  return active
+    .filter((l) => !visibility.feedHidden(l))
+    .map((l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`)
+}
+
+export async function getListings({
+  page = 1,
+  limit = 18,
+  collection,
+  filters,
+}: {
+  page?: number
+  limit?: number
+  collection?: string
+  filters?: ListingFilters
+} = {}): Promise<{ listings: Listing[]; total: number }> {
+  const scanned = await scanActiveListings()
+  const active = collection
+    ? scanned.filter((l) => l.collectionAddress.toLowerCase() === collection.toLowerCase())
+    : scanned
 
   // Browse filters — applied to the full in-memory active set BEFORE
   // pagination, so filtered pages and totals are honest (never the sparse
@@ -299,6 +327,7 @@ export async function getListings({
     rows = rows.filter((l) => safePrice(l.price) <= filters.priceMax!)
   }
   if (filters?.expiringWithinMs !== undefined) {
+    const now = Date.now()
     rows = rows.filter((l) => l.expiresAt <= now + filters.expiringWithinMs!)
   }
   if (filters?.royaltyMinBps !== undefined) {
