@@ -45,6 +45,15 @@ export interface Listing {
   // present and renders a preview snippet instead of "no preview".
   contentUri?: string
   contentMime?: string
+  // Mint-price snapshot captured SERVER-SIDE at listing-create from the live
+  // on-chain sale config — never client-supplied (a lister could otherwise
+  // forge a high mint price to buy the below-mint deal signal). Base units of
+  // mintPriceCurrency. Absent when the mint had no live sale at listing time
+  // or the RPC read failed; such rows never match the belowMint filter
+  // (fail-closed). Display badges use the LIVE dwell-gated read instead, so
+  // the filter can drift from the badge if the artist reprices after listing.
+  mintPrice?: string
+  mintPriceCurrency?: 'eth' | 'usdc'
 }
 
 const KEY_ALL = 'kismetart:listings'
@@ -238,6 +247,9 @@ export interface ListingFilters {
    *  Derived from the stored royaltyAmount/price (display-level fields; fine
    *  for a browse filter, never for settlement math). */
   royaltyMinBps?: number
+  /** Only listings priced below their mint-price snapshot (same currency,
+   *  snapshot present — see Listing.mintPrice for the trust + drift notes). */
+  belowMint?: boolean
   /** In-memory sort before pagination. Price sorts compare exact base units
    *  within a currency; cross-currency pairs compare at the Chainlink ETH/USD
    *  rate (rate unavailable → ETH rows group first, order degraded not wrong). */
@@ -335,6 +347,14 @@ export async function getListings({
       const price = safePrice(l.price)
       if (price <= 0n) return false
       return (safePrice(l.royaltyAmount) * 10000n) / price >= BigInt(filters.royaltyMinBps!)
+    })
+  }
+  if (filters?.belowMint) {
+    rows = rows.filter((l) => {
+      if (!l.mintPrice || !l.mintPriceCurrency) return false
+      if ((l.currency ?? 'eth') !== l.mintPriceCurrency) return false
+      const mint = safePrice(l.mintPrice)
+      return mint > 0n && safePrice(l.price) < mint
     })
   }
   if (filters?.sellerType === 'artist') {

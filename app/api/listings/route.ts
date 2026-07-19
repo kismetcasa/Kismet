@@ -5,7 +5,9 @@ import {
   ContractFunctionZeroDataError,
   parseErc6492Signature,
   parseUnits,
+  type Address,
 } from 'viem'
+import { resolveOnchainSale } from '@/lib/saleConfig'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { isBlacklisted } from '@/lib/blacklist'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
@@ -370,6 +372,7 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid price bound')
   }
   const expiring = searchParams.get('expiring') === '1'
+  const belowMint = searchParams.get('below') === '1'
   // Only 'artist' exists: the UI pill is a boolean and nothing sends 'resale',
   // so the value would be dead API surface (line-audit finding).
   const rawSellerType = searchParams.get('seller_type')
@@ -440,6 +443,7 @@ export async function GET(req: NextRequest) {
       priceMin,
       priceMax,
       ...(expiring ? { expiringWithinMs: EXPIRING_SOON_MS } : {}),
+      ...(belowMint ? { belowMint: true } : {}),
       sellerType,
       royaltyMinBps,
       sort,
@@ -699,6 +703,36 @@ export async function POST(req: NextRequest) {
     // within 1 year), so Number() is safe — endTime << 2^53.
     const expiresAt = Number(BigInt(orderComponents.endTime)) * 1000
 
+    // Mint-price snapshot for the below-mint browse filter — read from CHAIN,
+    // server-side, so it can't be forged (a client-supplied value would let a
+    // lister buy the deal signal with a fake high mint price). Non-blocking:
+    // an RPC blip skips the snapshot, never the listing (such rows simply
+    // never match below=1 — fail-closed). Skipped when the mint sale is
+    // scheduled or ended: a price nobody can pay isn't a comparison baseline.
+    // Display badges keep using the LIVE dwell-gated read (authoritative);
+    // this snapshot only powers the server filter, so the two can drift if
+    // the artist reprices the mint after listing — documented trade.
+    let mintPrice: string | undefined
+    let mintPriceCurrency: 'eth' | 'usdc' | undefined
+    try {
+      const sale = await resolveOnchainSale(
+        serverBaseClient(),
+        collectionAddress as Address,
+        BigInt(canonicalTokenId),
+      )
+      if (sale && sale.pricePerToken > 0n) {
+        const nowSec = BigInt(Math.floor(Date.now() / 1000))
+        const scheduled = sale.saleStart > nowSec
+        // saleEnd 0 = no end; the max-uint64 sentinel is > nowSec, so a raw
+        // compare reads it as live — same semantics as parseRealSaleEnd.
+        const ended = sale.saleEnd !== 0n && sale.saleEnd < nowSec
+        if (!scheduled && !ended) {
+          mintPrice = sale.pricePerToken.toString()
+          mintPriceCurrency = sale.currency
+        }
+      }
+    } catch {}
+
     const listing = await createListing({
       collectionAddress,
       tokenId: canonicalTokenId,
@@ -725,6 +759,7 @@ export async function POST(req: NextRequest) {
           : undefined,
       contentUri: body.contentUri,
       contentMime: body.contentMime,
+      ...(mintPrice && mintPriceCurrency ? { mintPrice, mintPriceCurrency } : {}),
     })
 
     // For Pass-collection listings, mark this (tokenId, seller) as actively

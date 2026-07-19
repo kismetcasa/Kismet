@@ -37,6 +37,8 @@ export interface DiscoverState {
   priceMax: string | null
   expiring: boolean
   sellerArtist: boolean
+  /** Only listings under their (server-snapshotted) mint price. */
+  below: boolean
   royaltyMin: string | null
   collection: string | null
 }
@@ -55,6 +57,7 @@ const DEFAULT_DISCOVER_STATE: DiscoverState = {
   priceMax: null,
   expiring: false,
   sellerArtist: false,
+  below: false,
   royaltyMin: null,
   collection: null,
 }
@@ -113,6 +116,7 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   if (priceMax && DECIMAL.test(priceMax) && s.currency) s.priceMax = priceMax
   if (get('expiring') === '1') s.expiring = true
   if (get('seller') === 'artist') s.sellerArtist = true
+  if (get('below') === '1') s.below = true
   const royaltyMin = get('royalty_min')
   if (royaltyMin && DECIMAL.test(royaltyMin) && Number(royaltyMin) <= 100) s.royaltyMin = royaltyMin
   const collection = get('collection')
@@ -139,6 +143,7 @@ export function discoverUrl(s: DiscoverState): string {
   if (s.priceMax) q.set('price_max', s.priceMax)
   if (s.expiring) q.set('expiring', '1')
   if (s.sellerArtist) q.set('seller', 'artist')
+  if (s.below) q.set('below', '1')
   if (s.royaltyMin) q.set('royalty_min', s.royaltyMin)
   if (s.collection) q.set('collection', s.collection)
   const str = q.toString()
@@ -166,6 +171,7 @@ export function secondaryApiUrl(s: DiscoverState): string {
   if (s.priceMax) q.set('price_max', s.priceMax)
   if (s.expiring) q.set('expiring', '1')
   if (s.sellerArtist) q.set('seller_type', 'artist')
+  if (s.below) q.set('below', '1')
   if (s.royaltyMin) q.set('royalty_min', s.royaltyMin)
   if (s.sortS !== 'new') q.set('sort', s.sortS)
   const str = q.toString()
@@ -180,6 +186,7 @@ export function hasActiveFilters(s: DiscoverState): boolean {
         s.priceMax !== null ||
         s.expiring ||
         s.sellerArtist ||
+        s.below ||
         s.royaltyMin !== null ||
         s.collection !== null
 }
@@ -572,6 +579,7 @@ export function DiscoverPillBar({
         <>
           <SortSelect value={state.sortS} options={SECONDARY_SORTS} onChange={(v) => onSortChange({ sortS: v })} />
           <PricePill state={state} onChange={onChange} />
+          <PillToggle label="below mint" on={state.below} onClick={() => onChange({ below: !state.below })} />
           <PillToggle label="expiring soon" on={state.expiring} onClick={() => onChange({ expiring: !state.expiring })} />
           <PillToggle label="artist listings" on={state.sellerArtist} onClick={() => onChange({ sellerArtist: !state.sellerArtist })} />
           <button
