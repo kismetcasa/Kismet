@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import { DiscoverMarketView } from '@/components/DiscoverMarketView'
-import { parseDiscoverState } from '@/components/DiscoverFilters'
+import { parseDiscoverState } from '@/lib/discoverState'
 import { isMobileUA } from '@/lib/serverDevice'
 import { JsonLd } from '@/components/JsonLd'
 import { discoverJsonLd } from '@/lib/structuredData'

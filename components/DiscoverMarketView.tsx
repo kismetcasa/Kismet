@@ -5,8 +5,8 @@ import Link from 'next/link'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
 import { useWatchlist, type WatchlistEntry } from '@/hooks/useWatchlist'
+import { DiscoverPillBar } from './DiscoverFilters'
 import {
-  DiscoverPillBar,
   clearedFilters,
   discoverUrl,
   hasActiveFilters,
@@ -15,7 +15,7 @@ import {
   reconcileState,
   secondaryApiUrl,
   type DiscoverState,
-} from './DiscoverFilters'
+} from '@/lib/discoverState'
 import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 
