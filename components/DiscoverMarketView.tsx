@@ -179,6 +179,31 @@ export function DiscoverMarketView({
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  // Keyboard navigation: j/k move focus across the ovals' stretched links;
+  // Enter opens the focused one (native anchor behavior — no handler).
+  // Guarded off inside inputs/selects/editables and while any dialog (the
+  // filters drawer) is open. Collect deliberately has NO key — a single
+  // unmodified keystroke must never reach a wallet flow.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== 'j' && e.key !== 'k') || e.metaKey || e.ctrlKey || e.altKey) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+      if (document.querySelector('[role="dialog"]')) return
+      const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[data-oval-nav]'))
+      if (links.length === 0) return
+      const idx = links.indexOf(document.activeElement as HTMLAnchorElement)
+      const next = e.key === 'j' ? Math.min(idx + 1, links.length - 1) : Math.max(idx - 1, 0)
+      const el = links[next]
+      if (!el) return
+      e.preventDefault()
+      el.focus({ preventScroll: true })
+      el.scrollIntoView({ block: 'center' })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // Platform totals for the top-right readout. One cached request (the endpoint
   // is public + s-maxage=300), fetched once — market-independent, so switching
   // tabs never re-fetches.
