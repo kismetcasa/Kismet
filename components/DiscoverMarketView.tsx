@@ -1,13 +1,21 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
+import {
+  DiscoverPillBar,
+  clearedFilters,
+  discoverUrl,
+  hasActiveFilters,
+  parseDiscoverState,
+  primaryApiUrl,
+  secondaryApiUrl,
+  type DiscoverState,
+} from './DiscoverFilters'
 import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
-
-type Market = 'primary' | 'secondary'
 
 interface PlatformStats {
   mints: number | null
@@ -29,16 +37,48 @@ const fmtUsd = (n: number) =>
 
 /**
  * Advanced market browser: every mint (Primary) or every live resale
- * (Secondary) as a chronological wall of ovals. Desktop auto-loads on scroll;
- * mobile / Mini App loads 20 per tap and lazy-mounts off-screen ovals. Primary
- * is the timeline's native newest-first-by-mint-time order (stable against
- * edits — the "true history" requirement); Secondary is newest listing first.
+ * (Secondary) as a chronological wall of ovals, with the filter state living
+ * in the URL (shareable links, back-button coherent). Refinements rewrite the
+ * URL via history.replaceState; market/sort changes push a history entry.
+ * Desktop auto-loads on scroll; mobile / Mini App loads 20 per tap and
+ * lazy-mounts off-screen ovals.
  */
-export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean }) {
-  const [market, setMarket] = useState<Market>('primary')
+export function DiscoverMarketView({
+  isMobile = false,
+  initialState,
+}: {
+  isMobile?: boolean
+  initialState: DiscoverState
+}) {
+  const [state, setState] = useState<DiscoverState>(initialState)
   const [stats, setStats] = useState<PlatformStats | null>(null)
   const pageLimit = isMobile ? 20 : 24
   const infiniteScroll = !isMobile
+
+  // All state changes flow through here so the URL and component state can
+  // never disagree. push=true for navigation-grade changes (market, sort);
+  // refinements replace so pill-tapping doesn't pollute history.
+  const update = useCallback((patch: Partial<DiscoverState>, opts?: { push?: boolean }) => {
+    setState((prev) => {
+      const next = { ...prev, ...patch }
+      const url = discoverUrl(next)
+      try {
+        if (opts?.push) window.history.pushState(null, '', url)
+        else window.history.replaceState(null, '', url)
+      } catch {}
+      return next
+    })
+  }, [])
+
+  // Back/forward restores the full filter state from the URL.
+  useEffect(() => {
+    const onPop = () => {
+      const params = new URLSearchParams(window.location.search)
+      setState(parseDiscoverState((k) => params.get(k)))
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
 
   // Platform totals for the top-right readout. One cached request (the endpoint
   // is public + s-maxage=300), fetched once — market-independent, so switching
@@ -60,6 +100,9 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
       cancelled = true
     }
   }, [])
+
+  const market = state.market
+  const filtered = hasActiveFilters(state)
 
   // Second line under "<market> market". Falls back to the ordering hint until
   // the totals land (or if a figure is unavailable).
@@ -88,25 +131,46 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
   )
 
   const header = (
-    <div className="flex items-center justify-between gap-4">
-      <div className="inline-flex rounded-full border border-accent/40 bg-[#141414] p-0.5">
-        {(['primary', 'secondary'] as Market[]).map((m) => (
-          <button
-            key={m}
-            aria-pressed={market === m}
-            onClick={() => setMarket(m)}
-            className={`rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
-              market === m ? 'bg-accent font-semibold text-[#0d0d0d]' : 'text-muted hover:text-dim'
-            }`}
-          >
-            {m}
-          </button>
-        ))}
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-4">
+        <div className="inline-flex rounded-full border border-accent/40 bg-[#141414] p-0.5">
+          {(['primary', 'secondary'] as const).map((m) => (
+            <button
+              key={m}
+              aria-pressed={market === m}
+              onClick={() => update({ market: m }, { push: true })}
+              className={`rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+                market === m ? 'bg-accent font-semibold text-[#0d0d0d]' : 'text-muted hover:text-dim'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <div className="text-right leading-tight">
+          <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
+          <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
+        </div>
       </div>
-      <div className="text-right leading-tight">
-        <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
-        <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
-      </div>
+      <DiscoverPillBar
+        state={state}
+        onChange={(patch) => update(patch)}
+        onSortChange={(patch) => update(patch, { push: true })}
+      />
+    </div>
+  )
+
+  // With filters active, an empty page means "no matches", never "no activity"
+  // — and always offers the way out.
+  const filteredEmpty = (
+    <div className="border border-line p-8 text-center sm:p-16">
+      <p className="font-mono text-sm text-muted">no matches for these filters</p>
+      <button
+        onClick={() => update(clearedFilters(state))}
+        className="mt-3 rounded-full border border-line px-4 py-1.5 font-mono text-xs uppercase tracking-wider text-dim hover:border-accent hover:text-accent"
+      >
+        clear filters
+      </button>
     </div>
   )
 
@@ -120,7 +184,7 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
         // the wrong renderItem (a Listing reaching MomentOval → BigInt(undefined)
         // crash). The key forces a clean remount → fresh state on every switch.
         key="market-primary"
-        apiUrl="/api/timeline?scope=standalone"
+        apiUrl={primaryApiUrl(state)}
         itemsKey="moments"
         getKey={(m) => `${m.address}:${m.token_id}`}
         pageLimit={pageLimit}
@@ -131,9 +195,13 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
         header={header}
         renderItem={(m) => <MomentOval key={`${m.address}:${m.token_id}`} moment={m} />}
         empty={
-          <div className="border border-line p-8 text-center sm:p-16">
-            <p className="font-mono text-sm text-muted">no mints yet</p>
-          </div>
+          filtered ? (
+            filteredEmpty
+          ) : (
+            <div className="border border-line p-8 text-center sm:p-16">
+              <p className="font-mono text-sm text-muted">no mints yet</p>
+            </div>
+          )
         }
       />
     )
@@ -142,7 +210,7 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
   return (
     <PaginatedGrid<Listing>
       key="market-secondary"
-      apiUrl="/api/listings"
+      apiUrl={secondaryApiUrl(state)}
       itemsKey="listings"
       getKey={(l) => l.id}
       pageLimit={pageLimit}
@@ -153,16 +221,20 @@ export function DiscoverMarketView({ isMobile = false }: { isMobile?: boolean })
       header={header}
       renderItem={(l, { remove }) => <ListingOval key={l.id} listing={l} onRemove={remove} />}
       empty={
-        <div className="border border-line p-8 text-center sm:p-16">
-          <p className="font-mono text-sm text-muted">no live resales</p>
-          <p className="mt-2 font-mono text-xs text-faint">
-            collect on{' '}
-            <Link href="/" className="accent-grad hover:underline">
-              enjoy
-            </Link>
-            , then list it on your profile
-          </p>
-        </div>
+        filtered ? (
+          filteredEmpty
+        ) : (
+          <div className="border border-line p-8 text-center sm:p-16">
+            <p className="font-mono text-sm text-muted">no live resales</p>
+            <p className="mt-2 font-mono text-xs text-faint">
+              collect on{' '}
+              <Link href="/" className="accent-grad hover:underline">
+                enjoy
+              </Link>
+              , then list it on your profile
+            </p>
+          </div>
+        )
       }
     />
   )
