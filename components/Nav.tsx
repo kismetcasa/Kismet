@@ -26,7 +26,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 // the global nav — it's Base-Account-only, so a tab shown to everyone (EOAs,
 // visitors) misrepresented who can use it. /agent still resolves by URL.
 const NAV_PAGES = [
-  { id: 'enjoy',  label: 'Enjoy',    mobileLabel: 'Enjoy',  href: '/' },
+  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Enjoy',  href: '/' },
   { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
   { id: 'market', label: 'Market',   mobileLabel: 'Curate', href: '/market' },
 ] as const
