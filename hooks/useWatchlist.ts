@@ -15,7 +15,6 @@ export interface WatchlistEntry {
   tokenId: string
   name?: string
   image?: string
-  collection?: string
   creator?: string
   createdAt?: string
   addedAt: number

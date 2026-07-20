@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
+import { memo, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import Link from 'next/link'
 import { Star } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
@@ -10,7 +10,6 @@ import { useMomentSale } from '@/hooks/useMomentSale'
 import { useInViewDwell } from '@/hooks/useInViewDwell'
 import { useWatchlist } from '@/hooks/useWatchlist'
 import { trackFunnel } from '@/lib/funnel'
-import { fetchCollectionChip } from '@/lib/collectionCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { ERC1155_ABI } from '@/lib/seaport'
@@ -21,6 +20,7 @@ import {
   shortAddress,
   getSaleWindow,
   formatSaleWindowLabel,
+  parseRealSaleEnd,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
 } from '@/lib/inprocess'
@@ -199,22 +199,6 @@ function MomentOvalImpl({
           ? media.src
           : undefined
 
-  // Collection name — seed from the server-stitched chip, else resolve
-  // client-side. Curated gate mirrors MomentCard: an individual mint
-  // auto-deploys a wrapper named after its single piece, so an ungated seed
-  // printed every solo mint's own title again as its subtitle. The client
-  // fetch path needs no gate — /api/collections?address returns a name only
-  // for blessed collections.
-  const [collectionName, setCollectionName] = useState<string | null>(() => {
-    const kc = moment.kismetCollection
-    if (!kc) return null
-    return (kc.isCuratedCollection ?? true) ? (kc.name ?? null) : null
-  })
-  useEffect(() => {
-    if (moment.kismetCollection !== undefined) return
-    fetchCollectionChip(moment.address).then(({ name }) => setCollectionName(name)).catch(() => {})
-  }, [moment.address, moment.kismetCollection])
-
   // Display price (dwell-gated batch fetch). Collect re-reads the authoritative
   // price on-chain at click time, so the button never depends on this resolving.
   const { data: saleData } = useMomentSale(moment.address, moment.token_id, inView && !moment.saleConfig)
@@ -290,13 +274,19 @@ function MomentOvalImpl({
             ? 'collect+'
             : 'collect'
 
-  // Supply line: "sold" framing — "3/100 sold" for limited editions,
-  // "open edition · N sold" for open ones.
+  // Supply line: "sold" framing — "3/100 sold" for limited editions. Uncapped
+  // editions split by whether the sale has a real end: a window-bound one is a
+  // "timed edition" (supply is set by the clock, and the deadline is already at
+  // titleRight), only a truly unbounded one is an "open edition". Until the
+  // sale config resolves (same dwell fetch as the price) an uncapped edition
+  // reads "open edition" and upgrades in place — same progressive fill as the
+  // price slot.
+  const timedEdition = activeSale != null && parseRealSaleEnd(activeSale.saleEnd) !== null
   const supplyLabel =
     maxSupply === undefined
       ? '…'
       : isOpenEdition(maxSupply)
-        ? `open edition · ${(totalMinted ?? 0n).toLocaleString()} sold`
+        ? `${timedEdition ? 'timed' : 'open'} edition · ${(totalMinted ?? 0n).toLocaleString()} sold`
         : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {
@@ -329,8 +319,10 @@ function MomentOvalImpl({
       titleRight={closeLabel || undefined}
       subtitle={
         <>
-          {collectionName && <span className="text-dim">{collectionName}</span>}
-          {collectionName && ' · '}
+          {/* Market data only — no collection/prose segment. Long collection
+              names were truncating the supply figure (the line's whole job) on
+              real rows; collection context lives one click away on the moment
+              page, and the scope pill already splits solo vs collection drops. */}
           {supplyLabel}
           {/* Cross-market bridge: this mint has live secondary listings — the
               whole oval already links to the moment page where they're buyable. */}
@@ -355,7 +347,6 @@ function MomentOvalImpl({
               tokenId: moment.token_id,
               name: meta.name,
               image: stillSrc,
-              collection: collectionName ?? undefined,
               creator: moment.creator?.address,
               createdAt: moment.created_at,
             })
@@ -393,15 +384,13 @@ export const MomentOval = memo(MomentOvalImpl)
 // Reuses BuyButton wholesale (the Seaport fulfill flow), so the action carries
 // its own price ("buy 0.01 ETH"). onRemove drops the oval from the grid once
 // the sale confirms (PaginatedGrid's optimistic remove). The subtitle is the
-// trade trust line: collection · who's selling · the enforced royalty share.
+// trade trust line: who's selling · the enforced royalty share — no collection
+// segment, same doctrine as the primary ovals (a long name truncated exactly
+// the seller/royalty data the line exists to carry).
 function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
   const { has: isWatched, toggle: toggleWatch } = useWatchlist()
-  const [collectionName, setCollectionName] = useState<string | null>(null)
-  useEffect(() => {
-    fetchCollectionChip(listing.collectionAddress).then(({ name }) => setCollectionName(name)).catch(() => {})
-  }, [listing.collectionAddress])
 
   // Below-mint deal signal — the listing price vs the moment's live mint
   // price, via the same dwell-gated coalesced batch the primary ovals use.
@@ -454,12 +443,6 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
       titleRight={expiresLabel || undefined}
       subtitle={
         <>
-          {collectionName && (
-            <>
-              <span className="text-dim">{collectionName}</span>
-              {' · '}
-            </>
-          )}
           resale by {shortAddress(listing.seller)}
           {royaltyPct && ` · ${royaltyPct}% royalty`}
         </>
@@ -475,7 +458,6 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
               tokenId: listing.tokenId,
               name: listing.name,
               image: listing.image,
-              collection: collectionName ?? undefined,
               creator: listing.creatorAddress,
             })
           }

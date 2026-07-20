@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, Star, X } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
@@ -373,7 +374,12 @@ function FiltersDrawer({
       .catch(() => setCollections([]))
   }, [])
 
-  return (
+  // Portaled to <body> for the same reason as the stats dialog: this mounts
+  // inside the sticky header's z-40 stacking context (sm+), where a fixed
+  // overlay paints UNDER the z-50 nav — backdrop excluded from the top strip
+  // on desktop, full-cover on mobile. The portal makes it full-cover
+  // everywhere. Mounted only while open, so document.body always exists.
+  return createPortal(
     <div className="fixed inset-0 z-[70]" role="dialog" aria-label="All filters">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="absolute bottom-0 right-0 top-0 w-80 max-w-full overflow-y-auto border-l border-line bg-[#121212] p-5">
@@ -423,7 +429,8 @@ function FiltersDrawer({
           clear these
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

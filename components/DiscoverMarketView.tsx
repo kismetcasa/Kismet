@@ -1,10 +1,14 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
+import { X } from 'lucide-react'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
 import { useWatchlist, type WatchlistEntry } from '@/hooks/useWatchlist'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { trackFunnel } from '@/lib/funnel'
 import { DiscoverPillBar } from './DiscoverFilters'
 import {
@@ -26,6 +30,13 @@ interface PlatformStats {
   resaleUsd: number | null
   /** Chainlink ETH/USD from the same payload — powers the oval price tooltips. */
   ethUsd: number | null
+  // Stats-modal figures, from the same single fetch (no extra request):
+  /** All-time gross buyer volume, primary (art + passes) + secondary resales. */
+  volumeUsd: number | null
+  /** Distinct artists who have minted (catalog census). */
+  artists: number | null
+  /** Paid art editions sold (passes excluded — memberships aren't artworks). */
+  editionsSold: number | null
 }
 
 // 1 oval per row on mobile, 2 on tablet, 3 on desktop — the "2–3 per row"
@@ -58,7 +69,6 @@ function momentFromEntry(e: WatchlistEntry): Moment {
     created_at:
       e.createdAt ?? (Number.isFinite(e.addedAt) ? new Date(e.addedAt).toISOString() : ''),
     metadata: { name: e.name, image: e.image },
-    ...(e.collection ? { kismetCollection: { name: e.collection, image: null } } : {}),
   }
 }
 
@@ -95,6 +105,64 @@ function WatchlistView({
   )
 }
 
+// Centered platform-stats dialog, opened by the header's "stats" pill. One
+// headline (all-time gross volume across both markets) over the three
+// creation/collection counters — all from the /api/stats/platform payload the
+// page already fetched, so opening it costs zero requests. Fields render '—'
+// until their snapshot exists (the API emits null, never fabricated zeros).
+// Same overlay conventions as the filters drawer: z-[70], Escape, scroll lock,
+// backdrop tap.
+function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: () => void }) {
+  useEscapeKey(onClose)
+  useBodyScrollLock()
+  const count = (n: number | null | undefined) => (typeof n === 'number' ? n.toLocaleString() : '—')
+  const rows: Array<[string, string]> = [
+    ['artists minting', count(stats?.artists)],
+    ['total mints', count(stats?.mints)],
+    ['editions collected', count(stats?.editionsSold)],
+  ]
+  // Portaled to <body>: this mounts inside the sticky header, whose z-40 +
+  // position (sm+) makes it a stacking context — a fixed overlay declared
+  // there paints UNDER the z-50 nav on desktop while covering it on mobile
+  // (where sm:sticky is off and no context forms). The portal escapes the
+  // ancestor context so the backdrop covers the full viewport, nav included,
+  // on every breakpoint. Mounted only while open (client-side, post-
+  // hydration), so document.body is always available.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Platform stats"
+    >
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative w-full max-w-xs border border-line bg-[#0d0d0d] p-6">
+        <button
+          onClick={onClose}
+          aria-label="Close stats"
+          className="absolute right-2.5 top-2.5 p-1 text-dim transition-colors hover:text-ink"
+        >
+          <X size={14} />
+        </button>
+        <p className="font-mono text-[10px] uppercase tracking-widest text-faint">total volume</p>
+        <p className="mt-1 font-mono text-3xl tabular-nums accent-grad">
+          {stats?.volumeUsd != null ? fmtUsd(stats.volumeUsd) : '—'}
+        </p>
+        <p className="mt-1 font-mono text-[10px] text-muted">primary + secondary · all time</p>
+        <dl className="mt-5 space-y-2.5 border-t border-line pt-4">
+          {rows.map(([label, value]) => (
+            <div key={label} className="flex items-baseline justify-between gap-4">
+              <dt className="font-mono text-xs text-dim">{label}</dt>
+              <dd className="font-mono text-sm tabular-nums text-ink">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 /**
  * Advanced market browser: every mint (Primary) or every live resale
  * (Secondary) as a chronological wall of ovals, with the filter state living
@@ -112,6 +180,7 @@ export function DiscoverMarketView({
 }) {
   const [state, setState] = useState<DiscoverState>(initialState)
   const [stats, setStats] = useState<PlatformStats | null>(null)
+  const [statsOpen, setStatsOpen] = useState(false)
   // Cross-market bridge: "collection:tokenId" → live-resale count, from one
   // bounded, edge-cached request. Fetched once — the map is market-independent.
   const [resaleCounts, setResaleCounts] = useState<Map<string, number> | null>(null)
@@ -213,11 +282,23 @@ export function DiscoverMarketView({
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (cancelled || !d) return
+        // Volume = primary (volume block: art + passes) + secondary (resales).
+        // The API blesses exactly this addition for all-time gross. Same
+        // no-masquerade rule the API applies to its own volume block: no
+        // headline unless the PRIMARY total exists (a resales-only sum would
+        // present a sliver as "total volume" during the deploy window where the
+        // snapshot predates the passes field). resales null just means no
+        // Kismet resale yet — that leg contributes 0, not a veto.
+        const primaryVol = typeof d?.volume?.usd === 'number' ? d.volume.usd : null
+        const resaleVol = typeof d?.resales?.usd === 'number' ? d.resales.usd : null
         setStats({
           mints: typeof d?.catalog?.artworksMinted === 'number' ? d.catalog.artworksMinted : null,
           earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
-          resaleUsd: typeof d?.resales?.usd === 'number' ? d.resales.usd : null,
+          resaleUsd: resaleVol,
           ethUsd: typeof d?.earnings?.ethUsd === 'number' ? d.earnings.ethUsd : null,
+          volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
+          artists: typeof d?.catalog?.artistsMinted === 'number' ? d.catalog.artistsMinted : null,
+          editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
         })
       })
       .catch(() => {})
@@ -397,8 +478,17 @@ export function DiscoverMarketView({
           <div className="text-right leading-tight">
             <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
             <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
+            {/* The glance line above stays; this opens the full-figure dialog. */}
+            <button
+              onClick={() => setStatsOpen(true)}
+              aria-haspopup="dialog"
+              className="mt-1.5 rounded-full border border-line px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-dim transition-colors hover:border-accent/40 hover:text-ink"
+            >
+              stats
+            </button>
           </div>
         </div>
+        {statsOpen && <StatsModal stats={stats} onClose={() => setStatsOpen(false)} />}
         <DiscoverPillBar
           state={state}
           floors={floors}
