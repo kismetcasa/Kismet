@@ -15,6 +15,8 @@ export interface WatchlistEntry {
   tokenId: string
   name?: string
   image?: string
+  /** Legacy — no longer written or rendered (oval subtitles carry market data
+   *  only); kept so rows stored before the change still parse untouched. */
   collection?: string
   creator?: string
   createdAt?: string
