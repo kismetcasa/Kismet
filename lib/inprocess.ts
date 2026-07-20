@@ -395,7 +395,7 @@ export interface SaleWindowInfo {
  * Classify a moment's sale window for display — the structured companion to the
  * saleStart/saleEnd gating MomentCard + MomentDetailView already do, so
  * collectors can see WHEN a scheduled drop opens or a live one closes instead
- * of just a disabled "not started" / "mint ended" button. Returns null when
+ * of just a disabled "not started" / "sale ended" button. Returns null when
  * there's no saleConfig at all (nothing to say). Pair with formatSaleWindowLabel
  * to render an absolute, viewer-local date.
  *

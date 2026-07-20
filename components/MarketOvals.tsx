@@ -270,12 +270,12 @@ function MomentOvalImpl({
   const disabled = collecting || mintedOut || saleNotStarted || saleEnded
   const label = collecting
     ? 'collecting…'
-    : saleNotStarted
-      ? 'not started'
-      : saleEnded
-        ? 'mint ended'
-        : mintedOut
-          ? 'sold out'
+    : mintedOut
+      ? 'sold out'
+      : saleNotStarted
+        ? 'not started'
+        : saleEnded
+          ? 'sale ended'
           : hasCollected
             ? 'collect+'
             : 'collect'

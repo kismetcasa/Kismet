@@ -355,12 +355,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       (saleWindowState === 'ended' && !chipAvailable))
   const collectLabel = collecting
     ? 'collecting…'
-    : saleNotStarted
-      ? 'not started'
-      : saleEnded
-        ? 'mint ended'
-        : mintedOut
-          ? 'sold out'
+    : mintedOut
+      ? 'sold out'
+      : saleNotStarted
+        ? 'not started'
+        : saleEnded
+          ? 'sale ended'
           : hasCollected ? 'collect+' : 'collect'
 
   // Artists/roster tab: steer the primary action to the creator's profile.

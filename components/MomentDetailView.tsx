@@ -598,12 +598,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
   const collectLabel = collecting
     ? 'collecting…'
-    : saleNotStarted
-      ? 'not started'
-      : saleEnded
-        ? 'mint ended'
-        : mintedOut
-          ? 'sold out'
+    : mintedOut
+      ? 'sold out'
+      : saleNotStarted
+        ? 'not started'
+        : saleEnded
+          ? 'sale ended'
           : hasCollected ? 'collect+' : 'collect'
 
   async function handleDistribute() {
