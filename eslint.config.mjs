@@ -1,6 +1,7 @@
 import { FlatCompat } from '@eslint/eslintrc'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import noUserFacingMoment from './eslint-rules/no-user-facing-moment.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -37,6 +38,21 @@ const config = [
         { selector: `TemplateElement[value.raw=/${TOKENIZED_HEX}/i]`, message: TOKEN_MSG },
       ],
     },
+  },
+  {
+    // User-facing copy says "artwork", never "moment" (the In Process wire
+    // keeps "moment" — see lib/inprocess.ts TERMINOLOGY). scripts/** is
+    // excluded: verify-script test descriptions are not user copy.
+    files: [
+      'app/**/*.{ts,tsx}',
+      'components/**/*.{ts,tsx}',
+      'hooks/**/*.{ts,tsx}',
+      'lib/**/*.{ts,tsx}',
+      'contexts/**/*.{ts,tsx}',
+      'providers/**/*.{ts,tsx}',
+    ],
+    plugins: { local: { rules: { 'no-user-facing-moment': noUserFacingMoment } } },
+    rules: { 'local/no-user-facing-moment': 'error' },
   },
 ]
 

@@ -294,7 +294,7 @@ export async function POST(req: NextRequest) {
 
   // tokenName lookup is best-effort — kept off the critical path so a meta
   // miss (older moments not indexed yet, Redis hiccup) doesn't drop the
-  // record. The notification just renders "a moment" instead of the title.
+  // record. The notification just renders "an artwork" instead of the title.
   const meta = await getMomentMeta(collectionAddress, tokenId).catch(() => null)
   const tokenName = meta?.name
 

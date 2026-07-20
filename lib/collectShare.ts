@@ -29,7 +29,7 @@ export interface CollectShareContext {
   /** Collection (1155) address of the collected moment — for the embed URL. */
   collectionAddress: string
   tokenId: string
-  /** Artwork title from moment metadata; null falls back to "a moment". */
+  /** Artwork title from moment metadata; null falls back to "an artwork". */
   momentName: string | null
   /** Creator EOA — resolved to an FC @username at share time; null skips lookup. */
   creatorAddress: string | null

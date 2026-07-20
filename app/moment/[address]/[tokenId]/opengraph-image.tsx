@@ -28,7 +28,7 @@ import {
 // When a poster resolves cleanly, this route renders a side-by-side
 // card: 800x800 image hero + 400-wide branded text panel. Otherwise
 // it falls back to the text-only branded card with a media-type label
-// ("VIDEO" / "WRITING" / "MOMENT").
+// ("VIDEO" / "WRITING" / "ARTWORK").
 
 export const size = SHARE_CARD_SIZE
 export const contentType = SHARE_CARD_CONTENT_TYPE
@@ -42,7 +42,7 @@ export default async function Image({ params }: Props) {
 
   let title = `#${tokenId}`
   let creator = ''
-  let label = 'MOMENT'
+  let label = 'ARTWORK'
   let imageUrl: string | undefined
 
   if (isAddress(address) && isValidTokenId(tokenId)) {

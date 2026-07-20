@@ -83,7 +83,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         </>
       )
     case 'mint':
-      // Self-notification (no actor) = "your moment was created" — confirms
+      // Self-notification (no actor) = "your artwork was created" — confirms
       // the user's own create action. Follower-fanout (actor set) = "@addr
       // minted X" — surfaces creates by people you follow.
       if (actorLabel) {

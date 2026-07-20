@@ -82,10 +82,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (!creatorLower) {
-    return errorResponse(403, 'Cannot verify creator for this moment')
+    return errorResponse(403, 'Cannot verify creator for this artwork')
   }
   if (creatorLower !== viewer.toLowerCase()) {
-    return errorResponse(403, 'Only the creator can hide this moment')
+    return errorResponse(403, 'Only the creator can hide this artwork')
   }
 
   if (hidden) {
