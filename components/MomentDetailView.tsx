@@ -586,6 +586,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
+  // Sold-out spotlight for viewers who HAVEN'T collected — mirrors MomentCard:
+  // gradient moves price → SOLD OUT label (no disabled dimming on it).
+  // Collected viewers keep today's treatment, including the gradient price.
+  const soldOutUncollected = mintedOut && !hasCollected
   // Sale-window gating — see MomentCard for the rationale. saleStart/saleEnd
   // are unix-second strings on detail.saleConfig; absent, "0", or the max-
   // uint64 sentinel mean "no bound". Number() fails open so malformed data
@@ -1628,7 +1632,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           <div className="px-5 py-4 flex gap-2 items-stretch">
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
@@ -1656,10 +1660,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                hasCollected
-                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                  : 'text-muted border-line accent-grad-hover'
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+                soldOutUncollected
+                  ? 'accent-grad border-line'
+                  : hasCollected
+                    ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+                    : 'text-muted border-line accent-grad-hover disabled:opacity-50'
               }`}
             >
               {collectLabel}
