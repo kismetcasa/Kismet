@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { X } from 'lucide-react'
 import { PaginatedGrid } from './PaginatedGrid'
@@ -120,7 +121,14 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
     ['total mints', count(stats?.mints)],
     ['editions collected', count(stats?.editionsSold)],
   ]
-  return (
+  // Portaled to <body>: this mounts inside the sticky header, whose z-40 +
+  // position (sm+) makes it a stacking context — a fixed overlay declared
+  // there paints UNDER the z-50 nav on desktop while covering it on mobile
+  // (where sm:sticky is off and no context forms). The portal escapes the
+  // ancestor context so the backdrop covers the full viewport, nav included,
+  // on every breakpoint. Mounted only while open (client-side, post-
+  // hydration), so document.body is always available.
+  return createPortal(
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center p-4"
       role="dialog"
@@ -150,7 +158,8 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
           ))}
         </dl>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -274,10 +283,12 @@ export function DiscoverMarketView({
       .then((d) => {
         if (cancelled || !d) return
         // Volume = primary (volume block: art + passes) + secondary (resales).
-        // The API blesses exactly this addition for all-time gross; each leg is
-        // independently null before its first snapshot (resales stays null until
-        // the first Kismet resale), so sum whatever exists and only show '—'
-        // when neither has ever been computed.
+        // The API blesses exactly this addition for all-time gross. Same
+        // no-masquerade rule the API applies to its own volume block: no
+        // headline unless the PRIMARY total exists (a resales-only sum would
+        // present a sliver as "total volume" during the deploy window where the
+        // snapshot predates the passes field). resales null just means no
+        // Kismet resale yet — that leg contributes 0, not a veto.
         const primaryVol = typeof d?.volume?.usd === 'number' ? d.volume.usd : null
         const resaleVol = typeof d?.resales?.usd === 'number' ? d.resales.usd : null
         setStats({
@@ -285,7 +296,7 @@ export function DiscoverMarketView({
           earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
           resaleUsd: resaleVol,
           ethUsd: typeof d?.earnings?.ethUsd === 'number' ? d.earnings.ethUsd : null,
-          volumeUsd: primaryVol == null && resaleVol == null ? null : (primaryVol ?? 0) + (resaleVol ?? 0),
+          volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
           artists: typeof d?.catalog?.artistsMinted === 'number' ? d.catalog.artistsMinted : null,
           editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
         })
