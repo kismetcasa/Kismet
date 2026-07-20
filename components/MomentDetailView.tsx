@@ -52,7 +52,7 @@ import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { SplitsPanel } from './SplitsPanel'
 import { useAdmin } from '@/contexts/AdminContext'
-import { toastError } from '@/lib/toast'
+import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { composeMomentShareCast } from '@/lib/collectShare'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -683,7 +683,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('kismetart:moment-hidden-changed'))
       }
-      toast.success(next ? 'Hidden from public feeds' : 'Visible again', { id: 'hide' })
+      // Updates the in-flight 'hide' loading toast, which would otherwise pin
+      // it on screen forever (see TERMINAL_TOAST_DURATION_MS).
+      toast.success(next ? 'Hidden from public feeds' : 'Visible again', {
+        id: 'hide',
+        duration: TERMINAL_TOAST_DURATION_MS,
+      })
     } catch (err) {
       toastError('Hide', err, { id: 'hide' })
     } finally {

@@ -34,7 +34,7 @@ import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { toastError, toastChainStalled } from '@/lib/toast'
+import { toastError, toastChainStalled, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -415,6 +415,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
     toast.error('Authorization required', {
       id: 'mint',
+      // Longer than TERMINAL_TOAST_DURATION_MS: there's a CTA to read + click.
+      duration: 10_000,
       description:
         "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
       action: {
@@ -468,7 +470,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     if (status !== 503 || typeof data?.error !== 'string' || !/paused/i.test(data.error)) {
       return false
     }
-    toast.error('Platform is temporarily paused', { id: 'mint' })
+    toast.error('Platform is temporarily paused', {
+      id: 'mint',
+      duration: TERMINAL_TOAST_DURATION_MS,
+    })
     setStep('idle')
     setUploadProgress(0)
     return true
@@ -877,7 +882,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         trackFunnel('mint_success')
         setStep('done')
-        toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        // Updates the long-lived 'mint' loading toast — without an explicit
+        // duration the success inherits its infinite lifetime and never
+        // dismisses (see TERMINAL_TOAST_DURATION_MS).
+        toast.success('Minted!', {
+          id: 'mint',
+          description: `Token #${data.tokenId}`,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        })
         if (isInMiniApp) {
           hapticNotifySuccess()
           maybePromptCollectNotifs()
@@ -1306,7 +1318,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         mediaUploadRef.current = null
         trackFunnel('mint_success')
         setStep('done')
-        toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        // Updates the long-lived 'mint' loading toast — without an explicit
+        // duration the success inherits its infinite lifetime and never
+        // dismisses (see TERMINAL_TOAST_DURATION_MS).
+        toast.success('Minted!', {
+          id: 'mint',
+          description: `Token #${data.tokenId}`,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        })
         if (isInMiniApp) {
           hapticNotifySuccess()
           maybePromptCollectNotifs()
