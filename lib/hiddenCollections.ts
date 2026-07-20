@@ -1,5 +1,6 @@
 import { redis } from './redis'
 import { memoize } from './memoCache'
+import { strictRead } from './redisRead'
 
 // Set of lowercase collection addresses the creator has hidden from public
 // feeds. Mirrors hiddenMoments at the collection level — a creator can hide
@@ -45,7 +46,13 @@ export async function unhideCollection(address: string): Promise<void> {
  * the set changes only on hide/unhide writes which invalidate own-pod.
  */
 async function _getHiddenCollectionsSet(): Promise<Set<string>> {
-  const members = (await redis.smembers(HIDDEN_KEY)) as string[]
+  // strictRead re-throws on a Redis failure → the error propagates through
+  // memoize (which never caches rejections) to the SSR error boundary, so a
+  // blip can't resolve to an empty set and briefly reveal hidden content. It
+  // also stamps markRedisSuccess() and emits the uniform [redis] failure line.
+  const members = await strictRead('getHiddenCollectionsSet', async () => {
+    return (await redis.smembers(HIDDEN_KEY)) as string[]
+  })
   return new Set(members.map((m) => m.toLowerCase()))
 }
 // 15-min memo: hide/unhide invalidate immediately, so the longer TTL only

@@ -7,6 +7,7 @@ import {
   slugify,
 } from '@/lib/creatorLists'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 // Public — anyone can read which curated rosters exist. Lists never carry
 // private data (just lowercased EOA addresses already on the public chain),
@@ -63,6 +64,11 @@ export async function POST(req: NextRequest) {
   const addresses = body.addresses.filter((a): a is string => typeof a === 'string')
   const collection = typeof body.collection === 'string' ? body.collection : undefined
   const saved = await saveCreatorList({ slug, name: body.name, addresses, collection })
+  await recordAdminAction('creator-list.save', {
+    actor: auth.signer,
+    target: slug,
+    meta: { name: body.name, addressCount: addresses.length },
+  })
   return NextResponse.json({ list: saved })
 }
 
@@ -76,5 +82,6 @@ export async function DELETE(req: NextRequest) {
   if (!slug) return errorResponse(400, 'slug required')
 
   const removed = await deleteCreatorList(slug)
+  await recordAdminAction('creator-list.delete', { actor: auth.signer, target: slug, meta: { removed } })
   return NextResponse.json({ removed })
 }

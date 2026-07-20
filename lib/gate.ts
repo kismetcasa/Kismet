@@ -14,13 +14,17 @@ export interface GateConfig {
   /** Address of the dedicated Pass collection. Holding any tokenId minted
    *  into this collection (with valid provenance) grants creator access. */
   passCollection: string | null
-  /** Emergency kill switch. Enforced server-side only on the relayed creator
-   *  writes (mint, write — lib/mint-proxy), which the server can hard-stop.
-   *  Direct-from-wallet create surfaces via /api/platform-status, where the
-   *  client disables its deploy button (CreateCollectionForm) — the on-chain
-   *  deploy can't be server-gated, so the button is the stop. NOT a
-   *  stop-everything switch: collect / airdrop / listing flows are not gated by
-   *  pause. Admin bypasses so the unpause toggle can be verified. */
+  /** Emergency kill switch. Enforced server-side on every relayed, platform-
+   *  gas-sponsored write the server can hard-stop: mint + write (lib/mint-proxy),
+   *  distribute + distribute-all, and moment/update-uri. Direct-from-wallet
+   *  create surfaces via /api/platform-status, where the client disables its
+   *  deploy button (CreateCollectionForm) — the on-chain deploy can't be
+   *  server-gated, so the button is the stop. Still NOT a stop-EVERYTHING
+   *  switch: collect / airdrop only RECORD an already-on-chain action (blocking
+   *  them loses data without stopping anything), and listing fills are
+   *  peer-to-peer with no platform spend — so neither is gated; the autonomous
+   *  agent has its own fail-closed scout-killswitch. Admin bypasses so the
+   *  unpause toggle can be verified. */
   paused: boolean
 }
 

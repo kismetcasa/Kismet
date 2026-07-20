@@ -8,6 +8,7 @@ import {
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 async function rateLimit(req: NextRequest) {
   const ip = getClientIp(req)
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     return errorResponse(400, e instanceof Error ? e.message : 'Add failed')
   }
+  await recordAdminAction('user-content.hide', { actor: auth.signer, target: body.address.toLowerCase() })
   return NextResponse.json({ ok: true })
 }
 
@@ -68,5 +70,6 @@ export async function DELETE(req: NextRequest) {
     return errorResponse(400, 'valid address required')
   }
   await removeHiddenUser(body.address)
+  await recordAdminAction('user-content.unhide', { actor: auth.signer, target: body.address.toLowerCase() })
   return NextResponse.json({ ok: true })
 }

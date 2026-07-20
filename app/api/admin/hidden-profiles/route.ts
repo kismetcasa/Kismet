@@ -13,6 +13,7 @@ import {
 import { ADMIN_ADDRESS } from '@/lib/config'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
+import { recordAdminAction } from '@/lib/adminAudit'
 import { errorResponse } from '@/lib/apiResponse'
 
 async function rateLimit(req: NextRequest) {
@@ -97,6 +98,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     return errorResponse(400, e instanceof Error ? e.message : 'Add failed')
   }
+  await recordAdminAction('profile.hide', { actor: auth.signer, target: body.address.toLowerCase() })
   // Own-layer sibling-closure refresh so search/batch/API reads through
   // this layer see the hide immediately; RSC pages catch up via the
   // closure's short TTL (direct-URL hides are already instant there).
@@ -122,5 +124,6 @@ export async function DELETE(req: NextRequest) {
   }
   await removeHiddenProfile(body.address)
   getHiddenIdentityClosure.invalidate()
+  await recordAdminAction('profile.unhide', { actor: auth.signer, target: body.address.toLowerCase() })
   return NextResponse.json({ ok: true })
 }

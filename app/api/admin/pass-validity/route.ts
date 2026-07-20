@@ -5,6 +5,7 @@ import { getGateConfig } from '@/lib/gate'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 async function rateLimit(req: NextRequest) {
   const ip = getClientIp(req)
@@ -77,5 +78,10 @@ export async function POST(req: NextRequest) {
   }
 
   await setValidBalance(config.passCollection, body.address, Math.floor(value))
+  await recordAdminAction('pass-validity.set', {
+    actor: auth.signer,
+    target: body.address.toLowerCase(),
+    meta: { value: Math.floor(value), collection: config.passCollection },
+  })
   return NextResponse.json({ ok: true })
 }

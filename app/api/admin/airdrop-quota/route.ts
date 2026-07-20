@@ -3,6 +3,7 @@ import { getLimits, setLimits } from '@/lib/airdrop-quota'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
 import { errorResponse } from '@/lib/apiResponse'
+import { recordAdminAction } from '@/lib/adminAudit'
 
 async function rateLimit(req: NextRequest) {
   const ip = getClientIp(req)
@@ -45,6 +46,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const saved = await setLimits({ day, week })
+    await recordAdminAction('airdrop-quota.set', { actor: auth.signer, meta: { day, week } })
     return NextResponse.json({ ok: true, ...saved })
   } catch (e) {
     return errorResponse(400, e instanceof Error ? e.message : 'Save failed')

@@ -12,6 +12,7 @@ import { consumeUserQuota } from '@/lib/userQuota'
 import { invalidatePendingCache } from '@/lib/pending'
 import { serverBaseClient } from '@/lib/rpc'
 import { ADMIN_ADDRESS } from '@/lib/config'
+import { isPlatformPausedFor } from '@/lib/gate'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
@@ -85,6 +86,15 @@ export async function POST(req: NextRequest) {
     return errorResponse(401, 'Invalid signature')
   }
   if (!sigValid) return errorResponse(401, 'Signature verification failed')
+
+  // Emergency pause: distribute fires a platform-gas-sponsored on-chain tx via
+  // the shared relay, so the same kill switch that halts mint/write halts it.
+  // Checked after signature verification (proves callerAddress for the admin
+  // bypass) and before the nonce is consumed, so a paused attempt doesn't burn
+  // the caller's single-use nonce. Admin bypasses.
+  if (await isPlatformPausedFor(callerAddress)) {
+    return errorResponse(503, 'Platform is temporarily paused — try again shortly')
+  }
 
   // Verify-then-consume: failed sigs leave the nonce reusable.
   const nonceValid = await consumeNonce(callerAddress, nonce)

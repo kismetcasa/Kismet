@@ -9,6 +9,7 @@ import { setMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { errorResponse } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
+import { isPlatformPausedFor } from '@/lib/gate'
 
 /**
  * Caller must hold ADMIN (2) or METADATA (16) permission on the token —
@@ -106,6 +107,15 @@ export async function POST(req: NextRequest) {
     return errorResponse(401, 'Invalid signature')
   }
   if (!sigValid) return errorResponse(401, 'Signature verification failed')
+
+  // Emergency pause: the URI update runs on-chain via a platform-gas-sponsored
+  // relay tx, so the same kill switch that halts mint/write halts it. Checked
+  // after signature verification (proves callerAddress for the admin bypass) and
+  // before the nonce is consumed, so a paused attempt doesn't burn it. Admin
+  // bypasses.
+  if (await isPlatformPausedFor(callerAddress)) {
+    return errorResponse(503, 'Platform is temporarily paused — try again shortly')
+  }
 
   // Verify-then-consume: failed sigs leave the nonce reusable.
   const nonceValid = await consumeNonce(callerAddress, nonce)
