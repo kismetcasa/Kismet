@@ -525,6 +525,9 @@ export async function POST(req: NextRequest) {
       setMomentMeta(body.address, coverTokenId, {
         creator: sessionAddress,
         name: body.name ?? body.address,
+        // Pin the mint instant (cover mints ARE mints) — keeps feed ordering
+        // stable across later metadata edits (see MomentMeta.createdAt).
+        createdAt: new Date().toISOString(),
       }),
     ])
     // Phase 3 — a new collection's cover IS a drop; fan it out to agents
