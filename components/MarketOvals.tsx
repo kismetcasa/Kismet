@@ -93,9 +93,14 @@ function OvalShell({
   )
 }
 
-// Watchlist star — floats on the oval's top edge. Quiet until hovered (or
-// starred); always tappable on touch, where the resting opacity is the
-// affordance.
+// Watchlist star — floats on the oval's top edge. Starred is always-on accent
+// (it's signal). Unstarred splits by pointer capability, not breakpoint:
+// hover-capable devices rest invisible (a wall of faint stars read as visual
+// debris) and reveal on oval hover or keyboard focus — hovering any part of
+// the star itself also fires group-hover, since :hover propagates to DOM
+// ancestors, so a mouse can never click it unseen. Touch devices (phones AND
+// ipads, which sit above the sm breakpoint) keep the resting opacity as their
+// only affordance.
 function WatchStar({ watched, name, onToggle }: { watched: boolean; name: string; onToggle: () => void }) {
   return (
     <button
@@ -105,7 +110,7 @@ function WatchStar({ watched, name, onToggle }: { watched: boolean; name: string
       className={`flex h-[22px] w-[22px] items-center justify-center rounded-full border bg-[#141414] transition-opacity ${
         watched
           ? 'border-accent text-accent opacity-100'
-          : 'border-line text-faint opacity-60 hover:text-dim group-hover:opacity-100'
+          : 'border-line text-faint [@media(hover:none)]:opacity-60 [@media(hover:hover)]:opacity-0 hover:text-dim group-hover:opacity-100 focus-visible:opacity-100'
       }`}
     >
       <Star size={11} strokeWidth={1.5} className={watched ? 'fill-accent' : ''} />
@@ -194,8 +199,17 @@ function MomentOvalImpl({
           ? media.src
           : undefined
 
-  // Collection name — seed from the server-stitched chip, else resolve client-side.
-  const [collectionName, setCollectionName] = useState<string | null>(() => moment.kismetCollection?.name ?? null)
+  // Collection name — seed from the server-stitched chip, else resolve
+  // client-side. Curated gate mirrors MomentCard: an individual mint
+  // auto-deploys a wrapper named after its single piece, so an ungated seed
+  // printed every solo mint's own title again as its subtitle. The client
+  // fetch path needs no gate — /api/collections?address returns a name only
+  // for blessed collections.
+  const [collectionName, setCollectionName] = useState<string | null>(() => {
+    const kc = moment.kismetCollection
+    if (!kc) return null
+    return (kc.isCuratedCollection ?? true) ? (kc.name ?? null) : null
+  })
   useEffect(() => {
     if (moment.kismetCollection !== undefined) return
     fetchCollectionChip(moment.address).then(({ name }) => setCollectionName(name)).catch(() => {})
