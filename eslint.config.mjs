@@ -13,6 +13,14 @@ const compat = new FlatCompat({ baseDirectory: __dirname })
 const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|333|8b5cf6|c084fc)\\]'
 const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/line/ink/dim/muted/faint/accent) instead of this hex literal.'
 
+// /moment is redirect-only legacy since the /artwork rename: app code must
+// build /artwork links. Start-anchored so /api/moment/* (Kismet's internal
+// API) and the In Process wire's bare '/moment' endpoint stay legal; the two
+// sanctioned exceptions (the next.config redirect source and the wire's
+// '/moment/comments' path) carry inline disables at the site.
+const LEGACY_MOMENT_URL = '^\\/moment\\/'
+const LEGACY_URL_MSG = 'Build /artwork links — /moment is a redirect-only legacy path (see the rename redirect in next.config.mjs).'
+
 const config = [
   {
     // public/ffmpeg-core/* is the third-party UMD bundle copied in by postinstall.
@@ -36,6 +44,11 @@ const config = [
         'error',
         { selector: `Literal[value=/${TOKENIZED_HEX}/i]`, message: TOKEN_MSG },
         { selector: `TemplateElement[value.raw=/${TOKENIZED_HEX}/i]`, message: TOKEN_MSG },
+        // Per-quasi matching means `${SITE_URL}/moment/${id}` is caught: its
+        // middle TemplateElement is exactly '/moment/'. Regex literals (the
+        // dual-accept parsers) have non-string values and never match.
+        { selector: `Literal[value=/${LEGACY_MOMENT_URL}/]`, message: LEGACY_URL_MSG },
+        { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_URL}/]`, message: LEGACY_URL_MSG },
       ],
     },
   },

@@ -22,7 +22,7 @@ export default function ModalMomentError({
 
   useEffect(() => {
     // ChunkLoadError = stale deploy; one-shot loop-guarded reload (shared with
-    // app/error.tsx + lib/toast). A hard reload of /moment/X lands on the
+    // app/error.tsx + lib/toast). A hard reload of /artwork/X lands on the
     // canonical page, bypassing interception.
     if (error.name === 'ChunkLoadError' && reloadOnceForChunkError()) return
     console.error('[modal-error-boundary]', { name: error.name, digest: error.digest })

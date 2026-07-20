@@ -38,9 +38,12 @@ export function parseMomentRef(input: {
   return { error: 'Provide { collection, tokenId } or an artwork url' }
 }
 
-/** Parse a Kismet moment URL: `…/moment/<collection>/<tokenId>`. Tolerates a
- *  missing scheme, a trailing slash, and any query/hash. Internal — callers use
- *  `parseMomentRef`, which dispatches to this for the URL form. */
+/** Parse a Kismet artwork URL: `…/artwork/<collection>/<tokenId>`. The legacy
+ *  `/moment/…` form is accepted forever — pre-migration links live on in casts
+ *  and agent memory, and this parser sees the raw string, never the 308 that
+ *  covers HTTP navigation. Tolerates a missing scheme, a trailing slash, and
+ *  any query/hash. Internal — callers use `parseMomentRef`, which dispatches
+ *  to this for the URL form. */
 function parseMomentUrl(raw: string): MomentRefResult {
   let pathname: string
   try {
@@ -49,8 +52,8 @@ function parseMomentUrl(raw: string): MomentRefResult {
   } catch {
     return { error: 'Malformed url' }
   }
-  const m = pathname.match(/\/moment\/(0x[0-9a-fA-F]{40})\/(\d+)\/?$/)
-  if (!m) return { error: 'URL must look like /moment/<collection>/<tokenId>' }
+  const m = pathname.match(/\/(?:artwork|moment)\/(0x[0-9a-fA-F]{40})\/(\d+)\/?$/)
+  if (!m) return { error: 'URL must look like /artwork/<collection>/<tokenId>' }
   const collection = m[1]
   const tokenId = m[2]
   if (!isAddress(collection)) return { error: 'Invalid collection address in url' }

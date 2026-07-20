@@ -1,5 +1,5 @@
 // Renders during the brief window between a client-side route change to
-// /moment/<address>/<tokenId> and the server's generateMetadata +
+// /artwork/<address>/<tokenId> and the server's generateMetadata +
 // fetchMomentDetail resolving. Without this, the browser shows a blank
 // white page during the fetch — Mini App users misread that flash as
 // the FC splash "reappearing" because the FC splash is also white.

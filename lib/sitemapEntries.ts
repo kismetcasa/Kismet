@@ -123,7 +123,7 @@ export function buildSitemapEntries(input: SitemapEntryInputs): MetadataRoute.Si
     const tokenId = member.slice(sep + 1)
     if (!tokenId || isHiddenCollection(address)) continue
     momentEntries.push({
-      url: `${siteUrl}/moment/${address.toLowerCase()}/${tokenId}`,
+      url: `${siteUrl}/artwork/${address.toLowerCase()}/${tokenId}`,
       changeFrequency: 'weekly',
       priority: 0.6,
     })
