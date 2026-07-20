@@ -233,7 +233,7 @@ export function SearchModal({ onClose, initialQuery = '' }: SearchModalProps) {
               {results.mints.map((mint) => (
                 <Link
                   key={mint.id}
-                  href={`/moment/${mint.address}/${mint.tokenId}`}
+                  href={`/artwork/${mint.address}/${mint.tokenId}`}
                   onClick={onClose}
                   className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#1e1e1e] transition-colors"
                 >

@@ -4,7 +4,7 @@ import { SITE_URL } from '@/lib/siteUrl'
 // Crawl policy for search engines. Static route — no dynamic data — so
 // Next prerenders it to /robots.txt at build time.
 //
-// The content surfaces (/, /moment, /collection, /profile, /learn, /mint,
+// The content surfaces (/, /artwork, /collection, /profile, /learn, /mint,
 // /market, /agent) stay crawlable via the top-level allow. We disallow:
 //   - /api/   machine endpoints, never a landing page. (Note: the moment/
 //             collection/profile opengraph-image routes live under their page

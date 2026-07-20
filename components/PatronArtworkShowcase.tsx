@@ -57,7 +57,7 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
   }, [])
 
   const title = meta.name ?? `#${moment.token_id}`
-  const momentHref = `/moment/${moment.address}/${moment.token_id}`
+  const momentHref = `/artwork/${moment.address}/${moment.token_id}`
 
   return (
     // `mx-auto` centers a height-capped portrait in the column (its used width

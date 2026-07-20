@@ -61,6 +61,19 @@ const nextConfig = {
         destination: `https://${CANONICAL_HOST}/:path*`,
         permanent: true,
       },
+      // /moment → /artwork rename (2026-07). Permanent (308) and kept
+      // forever: artwork URLs are provenance links — they live in casts,
+      // agent memory, and search results indefinitely. Covers the page,
+      // its opengraph-image child, and query strings. Evaluated before
+      // the filesystem, so nothing can shadow it. In-app code must build
+      // /artwork links directly (enforced by no-restricted-syntax in
+      // eslint.config.mjs); this rule is the only sanctioned /moment path.
+      {
+        // eslint-disable-next-line no-restricted-syntax -- the legacy redirect source itself
+        source: '/moment/:path*',
+        destination: '/artwork/:path*',
+        permanent: true,
+      },
     ]
   },
 

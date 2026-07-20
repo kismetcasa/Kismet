@@ -146,7 +146,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // crawlers at the raw poster instead breaks on heavy stills: X drops
   // images >5MB and the next/image optimizer 413's on sources past its
   // 50MB body cap.
-  const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
+  const canonicalUrl = `${SITE_URL}/artwork/${address}/${tokenId}`
   const embedImageUrl = `${canonicalUrl}/opengraph-image`
   // Active marketplace listing → embed button reads "View Listing"
   // instead of "Collect <name>", since the destination conceptually
@@ -172,13 +172,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     // <link rel="canonical"> — lowercased address so every case variant of
     // the same moment URL (external links can arrive checksummed) collapses
     // onto one indexable URL, matching what app/sitemap.ts lists.
-    alternates: { canonical: `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}` },
+    alternates: { canonical: `${SITE_URL}/artwork/${address.toLowerCase()}/${tokenId}` },
     openGraph: {
       title: name,
       description,
       // og:url — share-aggregation key for FB/X scrapers; matches the
       // canonical (profile-page precedent).
-      url: `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}`,
+      url: `${SITE_URL}/artwork/${address.toLowerCase()}/${tokenId}`,
     },
     twitter: {
       // summary_large_image + the opengraph-image file convention →
@@ -279,7 +279,7 @@ export default async function MomentPage({ params }: Props) {
   // so we never describe a moment we're withholding. The Offer price comes from
   // the same React-cached listing the "View Listing" button uses, so schema and
   // UI can't disagree.
-  const canonicalUrl = `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}`
+  const canonicalUrl = `${SITE_URL}/artwork/${address.toLowerCase()}/${tokenId}`
   const displayName = detail?.metadata?.name ?? fallbackMeta?.name ?? `#${tokenId}`
   const rawImage = detail?.metadata?.image ?? fallbackMeta?.image
   const activeListing = await getActiveListing(address, tokenId)

@@ -316,7 +316,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
   if (isMobile) return card
 
   const loading = !detail
-  const momentHref = `/moment/${address}/${tokenId}`
+  const momentHref = `/artwork/${address}/${tokenId}`
   const profileHref = creatorAddress
     ? `/profile/${CREDIT_PROFILE_OVERRIDES[creatorAddress.toLowerCase()] ?? creatorAddress}`
     : undefined

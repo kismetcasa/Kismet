@@ -61,7 +61,7 @@ function OvalShell({
 }) {
   return (
     <article ref={rootRef} className={OVAL_CLASS}>
-      {/* Stretched link — one crawlable /moment anchor covering the whole
+      {/* Stretched link — one crawlable /artwork anchor covering the whole
           oval. data-oval-nav is the j/k keyboard-navigation hook; the ring
           renders only for keyboard focus (focus-visible), never on click. */}
       <Link
@@ -312,7 +312,7 @@ function MomentOvalImpl({
   return (
     <OvalShell
       rootRef={rootRef}
-      href={`/moment/${moment.address}/${moment.token_id}`}
+      href={`/artwork/${moment.address}/${moment.token_id}`}
       title={meta.name || `#${moment.token_id}`}
       // Sale close date to the right of the title (only for a real upcoming
       // deadline — see closeLabel).
@@ -438,7 +438,7 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
   return (
     <OvalShell
       rootRef={rootRef}
-      href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
+      href={`/artwork/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
       titleRight={expiresLabel || undefined}
       subtitle={

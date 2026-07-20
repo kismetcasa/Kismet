@@ -209,7 +209,7 @@ function ProvenanceChip({ theme }: { theme: ProfileTheme }) {
   if (!coll || !tid) return null
   return (
     <Link
-      href={`/moment/${coll}/${tid}`}
+      href={`/artwork/${coll}/${tid}`}
       className="self-start inline-flex items-center gap-1.5 max-w-full text-[11px] font-mono text-muted hover:text-dim transition-colors"
       title={`Theme derived from ${theme.momentName ?? 'this artwork'}`}
     >
@@ -1032,7 +1032,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               {a.recipient.username ? `@${a.recipient.username}` : shortAddress(a.recipient.address)}
             </Link>
             <Link
-              href={`/moment/${a.collectionAddress}/${a.tokenId}`}
+              href={`/artwork/${a.collectionAddress}/${a.tokenId}`}
               className="text-xs font-mono text-[#444] hover:text-dim transition-colors flex-shrink-0"
             >
               token #{a.tokenId}

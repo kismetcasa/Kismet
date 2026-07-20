@@ -10,7 +10,7 @@ POST BASE/api/agent/prepare-collect
 {
   "collection": "0x…",        // or omit and pass "url"
   "tokenId": "42",            // or omit and pass "url"
-  "url": "BASE/moment/0x…/42", // alternative to collection+tokenId
+  "url": "BASE/artwork/0x…/42", // alternative to collection+tokenId
   "account": "0xYourBaseAccount",
   "amount": 1,                 // optional, default 1
   "comment": "great piece"    // optional mint comment
@@ -63,7 +63,7 @@ curated set), use the batch endpoint instead of N single collects:
 
 ```
 POST BASE/api/agent/prepare-collect-batch
-{ "items": [ { "collection": "0x…", "tokenId": "1" }, { "url": "BASE/moment/0x…/2" } ],
+{ "items": [ { "collection": "0x…", "tokenId": "1" }, { "url": "BASE/artwork/0x…/2" } ],
   "account": "0xYourBaseAccount",
   "recipient": "0xOptionalCollector",  // optional, defaults to account
   "comment": "great set" }             // optional mint comment

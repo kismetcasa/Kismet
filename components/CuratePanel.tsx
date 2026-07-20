@@ -7,8 +7,9 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { shortAddress } from '@/lib/inprocess'
 import { CreatorListEditor, type CreatorListShape } from './CreatorListEditor'
 
-// Accept a /moment/<addr>/<id> link, /collection/<addr> link, or bare
-// shorthands (0xabc/123 for a moment, 0xabc for a collection).
+// Accept an /artwork/<addr>/<id> link (legacy /moment links parse forever —
+// this reads the pasted string, so the 308 redirect can't help it),
+// /collection/<addr> link, or bare shorthands (0xabc/123, 0xabc).
 type ParsedRef =
   | { kind: 'moment'; address: string; tokenId: string }
   | { kind: 'collection'; address: string }
@@ -18,7 +19,7 @@ function parseFeatureRef(input: string): ParsedRef {
   const trimmed = input.trim()
   if (!trimmed) return null
 
-  const momentUrl = trimmed.match(/\/moment\/(0x[a-fA-F0-9]{40})\/([^/?#\s]+)/)
+  const momentUrl = trimmed.match(/\/(?:artwork|moment)\/(0x[a-fA-F0-9]{40})\/([^/?#\s]+)/)
   if (momentUrl) {
     const [, addr, tokenId] = momentUrl
     if (isAddress(addr) && /^\d+$/.test(tokenId)) return { kind: 'moment', address: addr, tokenId }
@@ -177,7 +178,7 @@ export function CuratePanel() {
               return (
                 <li key={key} className="flex items-center justify-between gap-2 text-[11px] font-mono text-dim">
                   <a
-                    href={`/moment/${addr}/${tokenId}`}
+                    href={`/artwork/${addr}/${tokenId}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="truncate hover:text-ink transition-colors"

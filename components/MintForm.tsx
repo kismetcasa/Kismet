@@ -119,7 +119,7 @@ const MINT_MEDIA_VERIFY_BUDGET_MS = 25_000
 // case it leaks into the user-collection list from the indexer) but is
 // no longer the implicit destination for end-user mints — when nothing
 // is selected, submit auto-creates a fresh collection via inprocess's
-// /api/moment/create with contract.name+uri.
+// /api/artwork/create with contract.name+uri.
 
 export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }: MintFormProps = {}) {
   const router = useRouter()
@@ -207,7 +207,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     (c) => c.address.toLowerCase() !== PLATFORM_COLLECTION.toLowerCase(),
   )
   // No collection selected → auto-create one on submit via
-  // /api/moment/create with contract.name+uri.
+  // /api/artwork/create with contract.name+uri.
   const isAutoDeploy = !selectedCollection
 
   // Batch-read permissions for the user's existing collections so the
@@ -1365,7 +1365,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       const text = trimmed
         ? `I just minted "${trimmed}" on @kismet`
         : 'I just minted a new artwork on @kismet'
-      const momentUrl = `${SITE_URL}/moment/${result.contractAddress}/${result.tokenId}`
+      const momentUrl = `${SITE_URL}/artwork/${result.contractAddress}/${result.tokenId}`
       const composed = await sdk.actions.composeCast({
         text,
         embeds: [momentUrl],
@@ -1406,7 +1406,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           )}
           <button
             type="button"
-            onClick={() => router.push(`/moment/${result.contractAddress}/${result.tokenId}`)}
+            onClick={() => router.push(`/artwork/${result.contractAddress}/${result.tokenId}`)}
             className="text-xs font-mono uppercase tracking-wider px-4 py-2 btn-accent"
           >
             Artwork details →

@@ -204,7 +204,7 @@ type ParsedTarget =
 function parseTarget(input: string): ParsedTarget | null {
   const trimmed = input.trim()
   if (!trimmed) return null
-  const moment = trimmed.match(/\/moment\/(0x[a-fA-F0-9]{40})\/(\d+)/)
+  const moment = trimmed.match(/\/(?:artwork|moment)\/(0x[a-fA-F0-9]{40})\/(\d+)/)
   if (moment) return { type: 'moment', address: moment[1], tokenId: moment[2] }
   const collection = trimmed.match(/\/collection\/(0x[a-fA-F0-9]{40})/)
   if (collection) return { type: 'collection', address: collection[1] }
@@ -609,7 +609,7 @@ function HideContentCard() {
         <input
           value={link}
           onChange={(e) => setLink(e.target.value)}
-          placeholder="https://kismet.art/moment/0x…/1"
+          placeholder="https://kismet.art/artwork/0x…/1"
           className="bg-[#0a0a0a] border border-line focus:border-muted outline-none px-2 py-1.5 text-xs font-mono text-ink placeholder:text-[#444]"
         />
       </div>

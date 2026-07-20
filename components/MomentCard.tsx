@@ -268,7 +268,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
     const params = new URLSearchParams({ collectionAddress: moment.address, tokenId: moment.token_id, chainId: '8453' })
-    fetch(`/api/moment/comments?${params}`)
+    fetch(`/api/artwork/comments?${params}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (data) setCachedComments(moment.address, moment.token_id, data.comments ?? []) })
       .catch(() => {})
@@ -280,7 +280,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }
 
   function handleCopyLink() {
-    navigator.clipboard.writeText(`${window.location.origin}/moment/${moment.address}/${moment.token_id}`).catch(() => {})
+    navigator.clipboard.writeText(`${window.location.origin}/artwork/${moment.address}/${moment.token_id}`).catch(() => {})
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 1500)
   }
@@ -417,13 +417,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       className={`group flex flex-col bg-[#161616] border border-line overflow-hidden${fillCell && compact ? ' h-full' : ''}`}
     >
       {/* Media — wrapped in <Link> so the click triggers Next.js's
-          intercepting route at app/@modal/(.)moment/.../page.tsx. The
+          intercepting route at app/@modal/(.)artwork/.../page.tsx. The
           feed stays mounted; the detail page renders as an overlay
           above, with the card's inline video still playing underneath.
-          Direct URL load of /moment/X bypasses the interception and
+          Direct URL load of /artwork/X bypasses the interception and
           hits the canonical detail page. */}
       <Link
-        href={`/moment/${moment.address}/${moment.token_id}`}
+        href={`/artwork/${moment.address}/${moment.token_id}`}
         onMouseEnter={() => {
           const key = `${moment.address}:${moment.token_id}`
           if (prefetchedRef.current === key) return
@@ -433,7 +433,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           // Link auto-prefetches on hover (in production) but the
           // explicit prefetch warms the route bundle alongside the
           // comments/text caches.
-          router.prefetch(`/moment/${moment.address}/${moment.token_id}`)
+          router.prefetch(`/artwork/${moment.address}/${moment.token_id}`)
         }}
         className={`cursor-pointer relative bg-surface overflow-hidden block ${fillCell && compact ? 'flex-1 min-h-0' : 'aspect-square'}`}
       >
@@ -592,7 +592,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                   detail route — sibling to the copy affordance, same
                   visual weight. */}
               <a
-                href={`/moment/${moment.address}/${moment.token_id}`}
+                href={`/artwork/${moment.address}/${moment.token_id}`}
                 title="open full details page"
                 className="text-[#444] hover:text-dim transition-colors flex items-center"
               >

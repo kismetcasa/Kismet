@@ -103,7 +103,7 @@ export async function composeMomentShareCast(
     creatorHandle,
     verb: opts.verb,
   })
-  const momentUrl = `${SITE_URL}/moment/${ctx.collectionAddress}/${ctx.tokenId}`
+  const momentUrl = `${SITE_URL}/artwork/${ctx.collectionAddress}/${ctx.tokenId}`
   return sdk.actions.composeCast({
     text,
     embeds: [momentUrl],

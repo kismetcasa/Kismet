@@ -1,4 +1,4 @@
-// Shared OG share-card frame for /collection and /moment opengraph routes.
+// Shared OG share-card frame for /collection and /artwork opengraph routes.
 // Edit the layout here once instead of in both files.
 
 // 1200x800 = 3:2, matching Farcaster's Mini App embed spec. Twitter /
