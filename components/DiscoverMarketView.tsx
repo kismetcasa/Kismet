@@ -141,7 +141,10 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
   const rows: Array<[string, string]> = [
     ['artists minting', count(stats?.artists)],
     ['total mints', count(stats?.mints)],
-    ['editions collected', count(stats?.editionsSold)],
+    // "artworks collected" counts collected edition UNITS (each copy in a
+    // wallet is an artwork collected) — deliberately not distinct works,
+    // which is what "total mints" above already counts.
+    ['artworks collected', count(stats?.editionsSold)],
   ]
   // Portaled to <body>: this mounts inside the sticky header, whose z-40 +
   // position (sm+) makes it a stacking context — a fixed overlay declared
@@ -166,7 +169,11 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
         >
           <X size={14} />
         </button>
-        <p className="font-mono text-[10px] uppercase tracking-widest text-faint">total volume</p>
+        {/* "Sales volume", not "total volume": every dollar here is a sale
+            (mint, pass, or resale fill), and next to the header's "$— earned"
+            line the sales-vs-earnings distinction has to be legible at a
+            glance. */}
+        <p className="font-mono text-[10px] uppercase tracking-widest text-faint">sales volume</p>
         {/* The figure is the denomination toggle. Same precedent as the USD
             view itself: cross-currency legs convert at today's Chainlink price
             with no inline caveat (the header's "$—K earned" glance line has
@@ -174,7 +181,7 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
         <button
           onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
           aria-pressed={denom === 'eth'}
-          aria-label={denom === 'usd' ? 'Show total volume in ETH' : 'Show total volume in USD'}
+          aria-label={denom === 'usd' ? 'Show sales volume in ETH' : 'Show sales volume in USD'}
           title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
           className="mt-1 block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
         >
