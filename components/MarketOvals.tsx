@@ -20,7 +20,6 @@ import {
   shortAddress,
   getSaleWindow,
   formatSaleWindowLabel,
-  parseRealSaleEnd,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
 } from '@/lib/inprocess'
@@ -259,14 +258,16 @@ function MomentOvalImpl({
   const saleWindow = getSaleWindow(activeSale, nowSec)
   const saleNotStarted = saleWindow?.state === 'scheduled'
   const saleEnded = saleWindow?.state === 'ended'
+  const uncapped = maxSupply !== undefined && isOpenEdition(maxSupply)
   // Sold-out supersedes the clock: the close date is an urgency cue for a live
   // collect action, and on a mint with nothing left it reads as "you have
   // until X" — a dead promise. Cards drop it; the artwork page keeps the full
   // window for provenance (MomentDetailView's SaleWindow is ungated).
-  const closeLabel =
-    !mintedOut && saleWindow?.state === 'closing'
-      ? formatSaleWindowLabel(saleWindow, { withTime: false })
-      : null
+  const windowLabel = !mintedOut ? formatSaleWindowLabel(saleWindow, { withTime: false }) : null
+  // Uncapped editions carry the dated window INSIDE the supply line (it
+  // replaced the redundant "timed edition" tag), so the titleRight chip only
+  // serves capped rows — one dated edge per oval, never both.
+  const closeLabel = !uncapped && saleWindow?.state === 'closing' ? windowLabel : null
   const disabled = collecting || mintedOut || saleNotStarted || saleEnded
   const label = collecting
     ? 'collecting…'
@@ -280,19 +281,21 @@ function MomentOvalImpl({
             ? 'collect+'
             : 'collect'
 
-  // Supply line: "sold" framing — "3/100 sold" for limited editions. Uncapped
-  // editions split by whether the sale has a real end: a window-bound one is a
-  // "timed edition" (supply is set by the clock, and the deadline is already at
-  // titleRight), only a truly unbounded one is an "open edition". Until the
-  // sale config resolves (same dwell fetch as the price) an uncapped edition
-  // reads "open edition" and upgrades in place — same progressive fill as the
-  // price slot.
-  const timedEdition = activeSale != null && parseRealSaleEnd(activeSale.saleEnd) !== null
+  // Supply line: "sold" framing — "3/100 sold" for limited editions. An
+  // uncapped edition leads with its dated sale window when one exists
+  // ("sale ends Jul 31" / "opens Aug 1" / "ended Jun 25" — supply is set by
+  // the clock, and the words "timed edition" were redundant next to a visible
+  // date); only a truly unbounded one reads "open edition". Until the sale
+  // config resolves (same dwell fetch as the price) an uncapped edition reads
+  // "open edition" and upgrades in place — same progressive fill as the price
+  // slot. Lowercased to sit in the subtitle's register ("sale ends Jul 31",
+  // not "Sale ends Jul 31").
+  const lcFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
   const supplyLabel =
     maxSupply === undefined
       ? '…'
-      : isOpenEdition(maxSupply)
-        ? `${timedEdition ? 'timed' : 'open'} edition · ${(totalMinted ?? 0n).toLocaleString()} sold`
+      : uncapped
+        ? `${windowLabel ? lcFirst(windowLabel) : 'open edition'} · ${(totalMinted ?? 0n).toLocaleString()} sold`
         : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {

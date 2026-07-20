@@ -18,13 +18,18 @@ interface ShareCardProps {
   // branded card (video moments without a poster, text moments,
   // collections without a cover, etc.).
   imageUrl?: string
+  // Raw writing-moment body. Only the first non-empty line renders (capped),
+  // and only on the text-only branded card — a title alone told a text
+  // mint's share card nothing about the piece.
+  excerpt?: string
 }
 
 // Satori (Next's OG renderer) doesn't handle text-overflow gracefully;
 // cap up front to keep the layout within the card.
 const MAX_TITLE_LEN = 50
+const MAX_EXCERPT_LEN = 160
 
-export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
+export function shareCard({ label, title, creator, imageUrl, excerpt }: ShareCardProps) {
   if (imageUrl) {
     // Full-frame hero. <img> + objectFit:contain rather than CSS
     // background because Satori silently treats background-size:contain
@@ -65,6 +70,16 @@ export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
 
   const displayName =
     title.length > MAX_TITLE_LEN ? `${title.slice(0, MAX_TITLE_LEN - 1)}…` : title
+  // First non-empty line of the body, capped. Satori wraps long lines fine;
+  // the cap bounds total glyphs so the excerpt can't crowd out the title.
+  const firstLine = excerpt
+    ?.split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0)
+  const excerptLine =
+    firstLine && firstLine.length > MAX_EXCERPT_LEN
+      ? `${firstLine.slice(0, MAX_EXCERPT_LEN - 1)}…`
+      : firstLine
   return (
     <div
       style={{
@@ -85,6 +100,11 @@ export function shareCard({ label, title, creator, imageUrl }: ShareCardProps) {
         <div style={{ fontSize: 80, lineHeight: 1.1, color: '#efefef', letterSpacing: -1, maxWidth: 1000 }}>
           {displayName}
         </div>
+        {excerptLine && (
+          <div style={{ fontSize: 34, lineHeight: 1.45, color: '#999', marginTop: 28, maxWidth: 1000 }}>
+            {excerptLine}
+          </div>
+        )}
         {creator && (
           <div style={{ fontSize: 32, color: '#888', marginTop: 32 }}>{`by ${creator}`}</div>
         )}

@@ -117,7 +117,7 @@ const UNREAD_COUNT_CACHE_TTL_SECS = 3600
 const keyMomentMeta = (addr: string, tokenId: string) =>
   `kismetart:moment-meta:${addr.toLowerCase()}:${tokenId}`
 
-interface MomentMeta {
+export interface MomentMeta {
   creator: string
   name?: string
   // Video duration in whole seconds, captured client-side at mint time
@@ -125,6 +125,14 @@ interface MomentMeta {
   // so InlineVideo can pick the long-form preload strategy at
   // element-create time instead of waiting for loadedmetadata.
   durationSec?: number
+  // First-seen mint instant (ISO-8601). Pinned so newest-first feed ordering
+  // survives inprocess's reindex-on-edit: a tokenURI update makes its indexer
+  // rewrite the row's created_at, which bumped edited moments back to the top
+  // of the feed as fake "latest mints" (confirmed in production 2026-07-20).
+  // First-write-wins like `creator` — later writes never move an established
+  // pin. Written at mint by mint-proxy + the cover-mint path; backfilled for
+  // older rows by the timeline stitch's write-through.
+  createdAt?: string
 }
 
 async function isPriority(
@@ -558,12 +566,39 @@ export async function setMomentMeta(
     typeof meta.durationSec === 'number' && meta.durationSec > 0
       ? Math.round(meta.durationSec)
       : existing?.durationSec
+  // Same first-write-wins as creator: the pin exists precisely so later
+  // events (metadata edits) can't move the moment in newest-first feeds.
+  const createdAt = existing?.createdAt ?? meta.createdAt
   await redis.set(
     key,
     JSON.stringify({
       creator,
       name,
       ...(typeof durationSec === 'number' && durationSec > 0 ? { durationSec } : {}),
+      ...(createdAt ? { createdAt } : {}),
     }),
+  )
+}
+
+/**
+ * Write-through pin for rows whose meta predates the createdAt field:
+ * persists meta + createdAt in one same-tick fan-out (auto-pipelined into a
+ * single REST round trip). Callers pass the meta they ALREADY read (the
+ * timeline stitch's MGET), so this costs zero extra reads. The plain SET
+ * (vs setMomentMeta's read-modify-write) is safe because the value was just
+ * read and createdAt is additive — a lost race against a concurrent name
+ * edit self-heals on the next browse.
+ */
+export async function pinMomentCreatedAtBatch(
+  entries: { address: string; tokenId: string; meta: MomentMeta; createdAt: string }[],
+): Promise<void> {
+  if (entries.length === 0) return
+  await Promise.all(
+    entries.map((e) =>
+      redis.set(
+        keyMomentMeta(e.address, e.tokenId),
+        JSON.stringify({ ...e.meta, createdAt: e.createdAt }),
+      ),
+    ),
   )
 }

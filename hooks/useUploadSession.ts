@@ -74,9 +74,12 @@ export function useUploadSession() {
       // the server can bind verification to the host (anti-phishing) and
       // wallets render the domain prominently in the typed signing UI.
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      // Distinct messages per failure leg (HTTP status vs empty body) — the
+      // 2026-07-20 incident spent a day telling these apart from one shared
+      // "Could not fetch nonce" string.
+      if (!nonceRes.ok) throw new Error(`Could not fetch sign-in nonce (HTTP ${nonceRes.status})`)
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
+      if (!nonce) throw new Error('Could not fetch sign-in nonce (empty response)')
 
       const issuedAt = new Date()
       const message = createSiweMessage({

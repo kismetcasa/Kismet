@@ -4,8 +4,10 @@ import { reloadOnceForChunkError } from './chunkReload'
 // Recognized rejection patterns across MetaMask, WalletConnect, Coinbase
 // Wallet, Brave, Trust, etc. We match either the EIP-1193 numeric code
 // (4001 = User Rejected Request) or the various human-readable phrasings
-// providers attach to error.message.
-const REJECTION_REGEX = /user rejected|user denied|rejected the request|user cancell?ed/i
+// providers attach to error.message. The regex lives in lib/walletRejection
+// (pure module) so verify-wallet-rejection can unit-test the classification
+// without pulling in sonner.
+import { REJECTION_REGEX } from './walletRejection'
 
 // "Connected but not authorized" signals. wagmi can restore a persisted
 // session while the wallet's signing backend is dead. Deliberately does
@@ -165,6 +167,15 @@ export function humanError(err: unknown): string {
 }
 
 /**
+ * Explicit lifetime for toasts that UPDATE an in-flight loading toast by id.
+ * sonner gives loading toasts an infinite duration and an update inherits the
+ * original's — so a terminal success/error reusing the id (the mint/hide/
+ * collect flows all do) stays on screen forever unless it carries its own
+ * duration. The global <Toaster duration={3000}> only applies to fresh toasts.
+ */
+export const TERMINAL_TOAST_DURATION_MS = 6_000
+
+/**
  * Show an error toast. Wallet rejections collapse to a clean "Cancelled"
  * title. Callers that opt into wallet-recovery UX by supplying `onReconnect`
  * get a "Wallet needs to reconnect" toast with a Reconnect action when the
@@ -184,7 +195,7 @@ export function toastError(
   options: { id?: string; onReconnect?: () => void } = {},
 ): void {
   if (isUserRejection(err)) {
-    toast.error('Cancelled', { id: options.id })
+    toast.error('Cancelled', { id: options.id, duration: TERMINAL_TOAST_DURATION_MS })
     return
   }
   // Stale-deploy chunk failure: retrying the action re-runs the same broken
@@ -210,6 +221,8 @@ export function toastError(
     const onReconnect = options.onReconnect
     toast.error('Wallet needs to reconnect', {
       id: options.id,
+      // Longer than TERMINAL_TOAST_DURATION_MS: there's a CTA to read + click.
+      duration: 10_000,
       description:
         'Your wallet session expired. Reconnect and try again — nothing was charged.',
       action: {
@@ -230,6 +243,7 @@ export function toastError(
   }
   toast.error(`${action} failed`, {
     id: options.id,
+    duration: TERMINAL_TOAST_DURATION_MS,
     description: extractMessage(err),
   })
 }
@@ -247,6 +261,8 @@ export function toastChainStalled(
 ): void {
   toast.error('Base isn’t responding', {
     id: options.id,
+    // CTA + status-page guidance to absorb; still must not linger forever.
+    duration: 12_000,
     description:
       options.description ??
       'Base’s network looks stalled right now, so your transaction can’t confirm. Check the chain status and try again once it recovers.',

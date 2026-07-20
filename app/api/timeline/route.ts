@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsMembership, type CollectionScope } from '@/lib/kv'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
@@ -8,7 +8,7 @@ import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getSessionAddress } from '@/lib/session'
-import { getMomentMetaBatch } from '@/lib/notifications'
+import { getMomentMetaBatch, pinMomentCreatedAtBatch, type MomentMeta } from '@/lib/notifications'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
@@ -52,6 +52,13 @@ const FANOUT_CONCURRENCY = 10
 // once the tracked set is large enough, and one line a minute is signal while
 // one per request is noise.
 let lastThinningWarnAt = 0
+
+// Per-pod memory of "collection:tokenId" members already createdAt-pinned by
+// the stitch's write-through backfill, so steady-state pages stop re-writing
+// the same metas. Cleared wholesale at the cap (lib/saleEnds' seen-cache
+// pattern — a clear only costs some redundant re-pins).
+const MAX_PINNED_SEEN = 20_000
+const pinnedCreatedAtSeen = new Set<string>()
 
 async function fetchCollection(collection: string, limit: number, fresh: boolean): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
@@ -350,10 +357,14 @@ export async function GET(req: NextRequest) {
       return { address: moment.address, tokenId: moment.token_id }
     }),
   )
+  const pinsDue: { address: string; tokenId: string; meta: MomentMeta; createdAt: string }[] = []
   merged = merged.map((m: unknown, i: number) => {
     const meta = metas[i]
     if (!meta) return m
     const moment = m as {
+      address?: string
+      token_id?: string
+      created_at?: string
       creator?: { address?: string; username?: string | null }
     }
     // Shared precedence (lib/statsMath resolveMomentCreator) — the same order
@@ -368,7 +379,29 @@ export async function GET(req: NextRequest) {
     const needsCreatorOverride = resolved.source === 'kv'
     const hasDuration =
       typeof meta.durationSec === 'number' && meta.durationSec > 0
-    if (!needsCreatorOverride && !hasDuration) return m
+    // Pinned mint instant outranks the feed's created_at: inprocess rewrites
+    // created_at when its indexer reprocesses a tokenURI edit, which bumped
+    // edited moments back to the top of newest-first (confirmed in production
+    // 2026-07-20). Rows whose meta predates the pin get write-through-pinned
+    // with their CURRENT feed value below — that freezes future edit-bumps;
+    // an already-bumped legacy row pins where it sits (the true mint time
+    // isn't recoverable without a chain scan). Meta-less rows (pre-KV era)
+    // are left alone: fabricating a meta here would launder inprocess's
+    // sometimes-wrong creator attribution into the trusted KV layer.
+    const pinnedAt = meta.createdAt
+    if (!pinnedAt && moment.address && moment.token_id && moment.created_at) {
+      const seenKey = `${moment.address.toLowerCase()}:${moment.token_id}`
+      if (!pinnedCreatedAtSeen.has(seenKey)) {
+        pinsDue.push({
+          address: moment.address,
+          tokenId: moment.token_id,
+          meta,
+          createdAt: moment.created_at,
+        })
+      }
+    }
+    const needsCreatedAtOverride = !!pinnedAt && pinnedAt !== moment.created_at
+    if (!needsCreatorOverride && !hasDuration && !needsCreatedAtOverride) return m
     return {
       ...moment,
       ...(needsCreatorOverride
@@ -377,8 +410,17 @@ export async function GET(req: NextRequest) {
       // Surfaced for the client durationCache so InlineVideo can
       // skip the metadata→auto preload upgrade dance for long-form.
       ...(hasDuration ? { kismet_duration_sec: meta.durationSec } : {}),
+      ...(needsCreatedAtOverride ? { created_at: pinnedAt } : {}),
     }
   })
+  // Fire the write-through pins post-response (same-tick SETs auto-pipeline
+  // into one REST trip). Seen-cache marked optimistically: a lost batch just
+  // re-pins after a pod recycle or cap clear — benign, self-healing.
+  if (pinsDue.length > 0) {
+    if (pinnedCreatedAtSeen.size + pinsDue.length > MAX_PINNED_SEEN) pinnedCreatedAtSeen.clear()
+    for (const p of pinsDue) pinnedCreatedAtSeen.add(`${p.address.toLowerCase()}:${p.tokenId}`)
+    after(() => pinMomentCreatedAtBatch(pinsDue).catch(() => {}))
+  }
 
   // Curated creator allowlist — narrows to moments by the listed creators.
   // Runs after the KV stitch above so cover-mints and delegated mints (which

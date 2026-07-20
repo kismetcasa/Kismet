@@ -319,6 +319,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
+  // Sold-out spotlight for viewers who HAVEN'T collected: the brand gradient
+  // moves from the price (a dead number once nothing's left) to the SOLD OUT
+  // label, which also skips the usual disabled dimming so it reads as a
+  // statement rather than a greyed-out control. Collected viewers keep the
+  // standard accent treatment — their sold-out state is a receipt, not a miss.
+  const soldOutUncollected = mintedOut && !hasCollected
   // Sale-window gating. saleStart/saleEnd are unix-second strings on the
   // active sale config; absent, "0", or the max-uint64 sentinel mean "no
   // bound". A scheduled mint isn't collectible until it opens; a closed one
@@ -687,7 +693,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         <div className="px-2 pb-2 flex flex-col gap-1 mt-auto">
           {!hidePriceSupply && owned === 0 && !collected && (
             <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
-              <span className="text-[10px] font-mono accent-grad truncate">{price ?? '…'}</span>
+              <span className={`text-[10px] font-mono truncate ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
               <span className="text-[10px] font-mono text-faint">·</span>
               <span className="text-[10px] font-mono text-[#444] truncate">
                 {maxSupply === undefined
@@ -715,10 +721,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || saleNotStarted || saleEnded}
-              className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                hasCollected
-                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                  : 'text-muted border-line accent-grad-hover'
+              className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+                soldOutUncollected
+                  ? 'accent-grad border-line'
+                  : hasCollected
+                    ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+                    : 'text-muted border-line accent-grad-hover disabled:opacity-50'
               }`}
             >
               {collectLabel}
@@ -730,7 +738,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {!showProfileCta && !hidePriceSupply && owned === 0 && !collected && (
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-[#444]">
@@ -762,10 +770,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           <button
             onClick={handleCollect}
             disabled={collecting || mintedOut || saleNotStarted || saleEnded}
-            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-              hasCollected
-                ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                : 'text-muted border-line accent-grad-hover transition-all'
+            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+              soldOutUncollected
+                ? 'accent-grad border-line'
+                : hasCollected
+                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+                  : 'text-muted border-line accent-grad-hover transition-all disabled:opacity-50'
             }`}
           >
             {collectLabel}
