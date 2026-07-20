@@ -1225,7 +1225,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {detailExhausted ? (
                     <>
                       <span className="text-muted font-mono text-xs text-center px-6">
-                        this moment hasn&rsquo;t loaded — it may still be indexing
+                        this artwork hasn&rsquo;t loaded — it may still be indexing
                       </span>
                       <button
                         type="button"
