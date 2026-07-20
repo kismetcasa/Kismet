@@ -259,17 +259,23 @@ function MomentOvalImpl({
   const saleWindow = getSaleWindow(activeSale, nowSec)
   const saleNotStarted = saleWindow?.state === 'scheduled'
   const saleEnded = saleWindow?.state === 'ended'
+  // Sold-out supersedes the clock: the close date is an urgency cue for a live
+  // collect action, and on a mint with nothing left it reads as "you have
+  // until X" — a dead promise. Cards drop it; the artwork page keeps the full
+  // window for provenance (MomentDetailView's SaleWindow is ungated).
   const closeLabel =
-    saleWindow?.state === 'closing' ? formatSaleWindowLabel(saleWindow, { withTime: false }) : null
+    !mintedOut && saleWindow?.state === 'closing'
+      ? formatSaleWindowLabel(saleWindow, { withTime: false })
+      : null
   const disabled = collecting || mintedOut || saleNotStarted || saleEnded
   const label = collecting
     ? 'collecting…'
-    : saleNotStarted
-      ? 'not started'
-      : saleEnded
-        ? 'mint ended'
-        : mintedOut
-          ? 'sold out'
+    : mintedOut
+      ? 'sold out'
+      : saleNotStarted
+        ? 'not started'
+        : saleEnded
+          ? 'sale ended'
           : hasCollected
             ? 'collect+'
             : 'collect'
