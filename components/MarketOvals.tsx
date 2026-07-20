@@ -109,7 +109,7 @@ function WatchStar({ watched, name, onToggle }: { watched: boolean; name: string
       className={`flex h-[22px] w-[22px] items-center justify-center rounded-full border bg-[#141414] transition-opacity ${
         watched
           ? 'border-accent text-accent opacity-100'
-          : 'border-line text-faint [@media(hover:none)]:opacity-60 [@media(hover:hover)]:opacity-0 hover:text-dim group-hover:opacity-100 focus-visible:opacity-100'
+          : 'border-line text-subtle [@media(hover:none)]:opacity-60 [@media(hover:hover)]:opacity-0 hover:text-dim group-hover:opacity-100 focus-visible:opacity-100'
       }`}
     >
       <Star size={11} strokeWidth={1.5} className={watched ? 'fill-accent' : ''} />
