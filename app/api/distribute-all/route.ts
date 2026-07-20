@@ -13,6 +13,7 @@ import { getEthUsd } from '@/lib/ethPrice'
 import { acquireLock } from '@/lib/redisLock'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { errorResponse } from '@/lib/apiResponse'
+import { isPlatformPausedFor } from '@/lib/gate'
 
 export const dynamic = 'force-dynamic'
 // The fan-out can legitimately run long (up to DISTRIBUTE_ALL_CAP×2 sponsored
@@ -130,6 +131,14 @@ export async function POST(req: NextRequest) {
     return errorResponse(401, 'Invalid signature')
   }
   if (!sigValid) return errorResponse(401, 'Signature verification failed')
+
+  // Emergency pause: this fans out platform-gas-sponsored distribute txs, so the
+  // same kill switch that halts mint/write halts it. Checked after signature
+  // verification (proves callerAddress for the admin bypass) and before the
+  // nonce is consumed, so a paused attempt doesn't burn it. Admin bypasses.
+  if (await isPlatformPausedFor(callerAddress)) {
+    return errorResponse(503, 'Platform is temporarily paused — try again shortly')
+  }
 
   // Verify-then-consume: a failed sig leaves the nonce reusable.
   if (!(await consumeNonce(callerAddress, nonce))) {
