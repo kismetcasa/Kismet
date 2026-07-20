@@ -25,9 +25,9 @@ export function useDistributeAll(onDone?: () => void) {
     setDistributing(true)
     try {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
+      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
 
       const message = `Distribute all Kismet splits\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })

@@ -653,7 +653,9 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     setSaving(true)
     try {
       const nonceRes = await fetch(`/api/profile/${address}/nonce`)
-      const { nonce } = await nonceRes.json()
+      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
+      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
+      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
       const message = `Update Kismet profile\nAddress: ${address.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
       const res = await fetch(`/api/profile/${address}`, {
@@ -690,7 +692,9 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     setFollowLoading(true)
     try {
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      const { nonce } = await nonceRes.json()
+      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
+      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
+      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
       const action = following ? 'Unfollow' : 'Follow'
       const message = `${action} ${address.toLowerCase()} on Kismet\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })

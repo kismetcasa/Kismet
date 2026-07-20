@@ -9,7 +9,7 @@ import { Plus, X } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
-import { toastError } from '@/lib/toast'
+import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -154,7 +154,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       return
     }
     setDelegateInput('')
-    toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
+    // Updates the in-flight loading toast — needs its own duration or it
+    // inherits the loading toast's infinite one (see TERMINAL_TOAST_DURATION_MS).
+    toast.success('Airdrop delegated', { id: 'delegate-airdrop', duration: TERMINAL_TOAST_DURATION_MS })
     void refetchDelegates()
   }, [delegateReceipt, resetDelegateGrant, refetchDelegates])
 
@@ -215,7 +217,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         return
       }
       setDelegateInput('')
-      toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
+      toast.success('Airdrop delegated', { id: 'delegate-airdrop', duration: TERMINAL_TOAST_DURATION_MS })
       void refetchDelegates()
     } catch (err) {
       toastError('Delegate airdrop', err, { id: 'delegate-airdrop' })
@@ -241,6 +243,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       )
       toast.success(outcome === 'submitted' ? 'Revoking…' : 'Delegate removed', {
         id: 'revoke-delegate',
+        duration: TERMINAL_TOAST_DURATION_MS,
       })
       void refetchDelegates()
     } catch (err) {
@@ -331,7 +334,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       setRecipients([])
       toast.success(
         `Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`,
-        { id: 'airdrop' },
+        { id: 'airdrop', duration: TERMINAL_TOAST_DURATION_MS },
       )
       // Record the airdrop server-side so it shows up in the sender's profile
       // airdrops section and recipients get an inbox notification. Kismet

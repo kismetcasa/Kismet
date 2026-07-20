@@ -3,7 +3,7 @@ import { randomHex } from '@/lib/random'
 import { redis } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { adminNonceKey } from '@/lib/curator'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 
 // 5 minutes is long enough for any reasonable wallet signing flow and
 // short enough that a leaked nonce can't be exploited later. Nonces are
@@ -23,10 +23,16 @@ export async function POST(req: NextRequest) {
     return errorResponse(429, 'Too many requests')
   }
 
+  // Guarded like the profile/intent nonce issuers: an unguarded Redis write
+  // here turned a transient blip into an unhandled 500 mid-login.
   const nonce = randomHex(16)
-  await redis.set(adminNonceKey(nonce), '1', {
-    nx: true,
-    ex: NONCE_TTL_SECONDS,
-  })
+  try {
+    await redis.set(adminNonceKey(nonce), '1', {
+      nx: true,
+      ex: NONCE_TTL_SECONDS,
+    })
+  } catch (err) {
+    return upstreamError(503, 'Temporarily unavailable — please retry', err, 'auth-nonce')
+  }
   return NextResponse.json({ nonce })
 }
