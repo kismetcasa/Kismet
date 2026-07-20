@@ -9,6 +9,7 @@ import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useMomentSale } from '@/hooks/useMomentSale'
 import { useInViewDwell } from '@/hooks/useInViewDwell'
 import { useWatchlist } from '@/hooks/useWatchlist'
+import { trackFunnel } from '@/lib/funnel'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
@@ -60,8 +61,16 @@ function OvalShell({
 }) {
   return (
     <article ref={rootRef} className={OVAL_CLASS}>
-      {/* Stretched link — one crawlable /moment anchor covering the whole oval. */}
-      <Link href={href} prefetch={false} aria-label={title} className="absolute inset-0 rounded-full" />
+      {/* Stretched link — one crawlable /moment anchor covering the whole
+          oval. data-oval-nav is the j/k keyboard-navigation hook; the ring
+          renders only for keyboard focus (focus-visible), never on click. */}
+      <Link
+        href={href}
+        prefetch={false}
+        aria-label={title}
+        data-oval-nav
+        className="absolute inset-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-[#0d0d0d]"
+      />
       <div className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-3">
         {artwork}
         <div className="flex min-w-0 flex-col gap-0.5">
@@ -277,6 +286,9 @@ function MomentOvalImpl({
         : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {
+    // Discover-scoped collect intent (the global collect_attempt fires inside
+    // useDirectCollect) — the numerator of the discover→collect conversion.
+    trackFunnel('discover_collect_attempt')
     const account = await ensureConnected()
     if (!account) return
     const result = await collect({

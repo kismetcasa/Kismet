@@ -259,7 +259,7 @@ export interface ListingFilters {
 /** One pass over the marketplace zset: batch-read, drop ghosts and just-
  *  expired rows (with the same cleanup side-effects getListings always had),
  *  return the ACTIVE rows newest-first. Shared by getListings and
- *  getActiveListingKeys so the two views of "what's live" can't drift. */
+ *  getActiveListingSnapshot so the two views of "what's live" can't drift. */
 async function scanActiveListings(): Promise<Listing[]> {
   const ids = (await redis.zrange(KEY_ALL, 0, MAX_LISTINGS_SCAN - 1, { rev: true })) as string[]
 
@@ -293,19 +293,40 @@ async function scanActiveListings(): Promise<Listing[]> {
   return active
 }
 
+export interface ActiveListingSnapshot {
+  /** "collection:tokenId" per visible active listing — duplicates are
+   *  meaningful (multiple sellers listing the same token = that many live
+   *  resales). */
+  keys: string[]
+  /** Per-collection floor (min active listing price) in BASE UNITS, kept
+   *  per currency — a cross-currency min needs an oracle, and a browse
+   *  label doesn't warrant one. */
+  floors: Record<string, { eth?: string; usdc?: string }>
+}
+
 /**
- * "collection:tokenId" key per visible active listing — duplicates are
- * meaningful (multiple sellers listing the same token = that many live
- * resales). Powers the discover cross-market bridge: the primary ovals'
- * "N resale" asides (/api/listings?keys=1) and the timeline's has-resale
- * filter. Visibility-filtered here so a hidden listing can never leak its
- * existence through a bridge count.
+ * One visibility-filtered pass over the active book, folded two ways: the
+ * bridge keys (primary ovals' "N resale" asides via /api/listings?keys=1 and
+ * the timeline's resale=1 filter) and the collection floors (the drawer's
+ * collection picker labels). Visibility-filtered here so a hidden listing can
+ * never leak its existence through a count or a floor.
  */
-export async function getActiveListingKeys(): Promise<string[]> {
+export async function getActiveListingSnapshot(): Promise<ActiveListingSnapshot> {
   const [active, visibility] = await Promise.all([scanActiveListings(), getListingVisibility()])
-  return active
-    .filter((l) => !visibility.feedHidden(l))
-    .map((l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`)
+  const visible = active.filter((l) => !visibility.feedHidden(l))
+  const floors: ActiveListingSnapshot['floors'] = {}
+  for (const l of visible) {
+    const price = safePrice(l.price)
+    if (price <= 0n) continue
+    const slot = (floors[l.collectionAddress.toLowerCase()] ??= {})
+    const cur = l.currency ?? 'eth'
+    const prev = slot[cur]
+    if (prev === undefined || price < BigInt(prev)) slot[cur] = price.toString()
+  }
+  return {
+    keys: visible.map((l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`),
+    floors,
+  }
 }
 
 export async function getListings({

@@ -7,9 +7,14 @@
 //
 // Read side: kismetart:funnel:<event>:<YYYY-MM-DD> in Redis (90-day TTL).
 
-// The seven events, in funnel order — the single source shared by the client
+// The named events, in funnel order — the single source shared by the client
 // tracker (below), the /api/funnel sink's allowlist, and the admin read
 // (lib/funnelServer.ts), so the three surfaces can never drift.
+//
+// The discover_* trio instruments the /discover market browser: visits,
+// filter engagement (any pill/drawer refinement), and collect intent from an
+// oval — the measurements that decide which discover backlog items (activity
+// strip, sale-open index, windowed trending) earn their build.
 export const FUNNEL_EVENTS = [
   'landing',
   'connect_modal',
@@ -18,13 +23,16 @@ export const FUNNEL_EVENTS = [
   'collect_success',
   'mint_attempt',
   'mint_success',
+  'discover_landing',
+  'discover_filter',
+  'discover_collect_attempt',
 ] as const
 
 export type FunnelEvent = (typeof FUNNEL_EVENTS)[number]
 
-// De-dupe key for once-per-session events (currently just 'landing' — a
-// back-nav to the feed isn't a new visit).
-const SESSION_ONCE: ReadonlySet<FunnelEvent> = new Set(['landing'])
+// De-dupe key for once-per-session events — a back-nav to the same surface
+// isn't a new visit.
+const SESSION_ONCE: ReadonlySet<FunnelEvent> = new Set(['landing', 'discover_landing'])
 
 export function trackFunnel(event: FunnelEvent): void {
   try {

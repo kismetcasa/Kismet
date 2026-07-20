@@ -5,8 +5,9 @@ import Link from 'next/link'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
 import { useWatchlist, type WatchlistEntry } from '@/hooks/useWatchlist'
+import { trackFunnel } from '@/lib/funnel'
+import { DiscoverPillBar } from './DiscoverFilters'
 import {
-  DiscoverPillBar,
   clearedFilters,
   discoverUrl,
   hasActiveFilters,
@@ -15,7 +16,7 @@ import {
   reconcileState,
   secondaryApiUrl,
   type DiscoverState,
-} from './DiscoverFilters'
+} from '@/lib/discoverState'
 import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 
@@ -114,6 +115,9 @@ export function DiscoverMarketView({
   // Cross-market bridge: "collection:tokenId" → live-resale count, from one
   // bounded, edge-cached request. Fetched once — the map is market-independent.
   const [resaleCounts, setResaleCounts] = useState<Map<string, number> | null>(null)
+  // Per-collection floors from the same snapshot — drives the drawer's
+  // collection-picker labels ("casa · floor 0.005 ETH").
+  const [floors, setFloors] = useState<Record<string, { eth?: string; usdc?: string }> | null>(null)
   const pageLimit = isMobile ? 20 : 24
   const infiniteScroll = !isMobile
 
@@ -122,12 +126,15 @@ export function DiscoverMarketView({
     fetch('/api/listings?keys=1')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (cancelled || !Array.isArray(d?.keys)) return
-        const m = new Map<string, number>()
-        for (const k of d.keys as unknown[]) {
-          if (typeof k === 'string') m.set(k, (m.get(k) ?? 0) + 1)
+        if (cancelled) return
+        if (Array.isArray(d?.keys)) {
+          const m = new Map<string, number>()
+          for (const k of d.keys as unknown[]) {
+            if (typeof k === 'string') m.set(k, (m.get(k) ?? 0) + 1)
+          }
+          setResaleCounts(m)
         }
-        setResaleCounts(m)
+        if (d?.floors && typeof d.floors === 'object') setFloors(d.floors)
       })
       .catch(() => {})
     return () => {
@@ -157,6 +164,11 @@ export function DiscoverMarketView({
     } catch {}
   }, [])
 
+  // Funnel: one discover visit per session (SESSION_ONCE dedupes back-navs).
+  useEffect(() => {
+    trackFunnel('discover_landing')
+  }, [])
+
   // Back/forward restores the full filter state from the URL.
   useEffect(() => {
     const onPop = () => {
@@ -165,6 +177,31 @@ export function DiscoverMarketView({
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  // Keyboard navigation: j/k move focus across the ovals' stretched links;
+  // Enter opens the focused one (native anchor behavior — no handler).
+  // Guarded off inside inputs/selects/editables and while any dialog (the
+  // filters drawer) is open. Collect deliberately has NO key — a single
+  // unmodified keystroke must never reach a wallet flow.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== 'j' && e.key !== 'k') || e.metaKey || e.ctrlKey || e.altKey) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+      if (document.querySelector('[role="dialog"]')) return
+      const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[data-oval-nav]'))
+      if (links.length === 0) return
+      const idx = links.indexOf(document.activeElement as HTMLAnchorElement)
+      const next = e.key === 'j' ? Math.min(idx + 1, links.length - 1) : Math.max(idx - 1, 0)
+      const el = links[next]
+      if (!el) return
+      e.preventDefault()
+      el.focus({ preventScroll: true })
+      el.scrollIntoView({ block: 'center' })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   // Platform totals for the top-right readout. One cached request (the endpoint
@@ -316,33 +353,63 @@ export function DiscoverMarketView({
     </div>
   )
 
-  const header = (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-4">
-        <div className="inline-flex rounded-full border border-accent/40 bg-[#141414] p-0.5">
-          {(['primary', 'secondary'] as const).map((m) => (
-            <button
-              key={m}
-              aria-pressed={market === m}
-              onClick={() => update({ market: m }, { push: true })}
-              className={`rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
-                market === m ? 'bg-accent font-semibold text-[#0d0d0d]' : 'text-muted hover:text-dim'
-              }`}
-            >
-              {m}
-            </button>
-          ))}
+  const pulseButton = (
+    <button
+      onClick={onPulseTap}
+      className="rounded-full border border-accent bg-[#141414] px-4 py-1.5 font-mono text-[11px] text-accent shadow-[0_4px_18px_rgba(224,81,47,0.25)] transition-colors hover:bg-accent/10"
+    >
+      ● {newCount >= 10 ? '10+' : newCount} new mint{newCount === 1 ? '' : 's'} — tap to refresh
+    </button>
+  )
+
+  // The control surface — toggle + totals + pill bar — rendered ONCE above
+  // whichever content branch is active. sm+: sticky under the fixed nav so
+  // filters stay reachable while the wall scrolls (the grid's own row keeps
+  // just its refresh button). Mobile: in-flow — vertical space is too precious
+  // for a permanent bar. Opaque bg + border-b so ovals scroll cleanly under.
+  // z-40 sits above the ovals' z-10 stars and below the drawer (z-70) and nav
+  // overlays; the pill popovers (z-30) live inside this stacking context.
+  const stickyHeader = (
+    <div
+      className="z-40 border-b border-line bg-[#0d0d0d] pb-3 pt-4 sm:sticky"
+      style={{ top: 'calc(3.5rem + var(--safe-top))' }}
+    >
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="inline-flex rounded-full border border-accent/40 bg-[#141414] p-0.5">
+            {(['primary', 'secondary'] as const).map((m) => (
+              <button
+                key={m}
+                aria-pressed={market === m}
+                onClick={() => update({ market: m }, { push: true })}
+                className={`rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+                  market === m ? 'bg-accent font-semibold text-[#0d0d0d]' : 'text-muted hover:text-dim'
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <div className="text-right leading-tight">
+            <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
+            <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
+          </div>
         </div>
-        <div className="text-right leading-tight">
-          <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
-          <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
-        </div>
+        <DiscoverPillBar
+          state={state}
+          floors={floors}
+          onChange={(patch) => {
+            // Filter engagement — pills and drawer refinements only; sort
+            // changes route through onSortChange and don't count.
+            trackFunnel('discover_filter')
+            update(patch)
+          }}
+          onSortChange={(patch) => update(patch, { push: true })}
+        />
       </div>
-      <DiscoverPillBar
-        state={state}
-        onChange={(patch) => update(patch)}
-        onSortChange={(patch) => update(patch, { push: true })}
-      />
+      {/* sm+ pulse lives IN the bar — visible whenever the bar is, including
+          deep scroll. The mobile fixed variant renders in the primary branch. */}
+      {newCount > 0 && <div className="hidden justify-center pt-2 sm:flex">{pulseButton}</div>}
     </div>
   )
 
@@ -361,30 +428,30 @@ export function DiscoverMarketView({
   )
 
   // Watchlist is its own view (never a feed filter — see WatchlistView).
-  // Rendered with the same header row shape the grid draws, minus refresh.
   if (market === 'primary' && state.watchlist) {
     return (
-      <div>
-        <div className="flex items-center justify-between gap-4 py-4">
-          <div className="min-w-0 flex-1">{header}</div>
+      <>
+        {stickyHeader}
+        <div className="pt-4">
+          <WatchlistView ethUsd={stats?.ethUsd} resaleCounts={resaleCounts} />
         </div>
-        <WatchlistView ethUsd={stats?.ethUsd} resaleCounts={resaleCounts} />
-      </div>
+      </>
     )
   }
 
   if (market === 'primary') {
     return (
       <>
+        {stickyHeader}
         {newCount > 0 && (
-          <button
-            onClick={onPulseTap}
-            // Below the fixed nav (h-14 + safe-top), above content, below overlays.
+          <div
+            // Mobile only — the bar isn't sticky there, so the pulse floats
+            // fixed under the nav; sm+ reads it inside the sticky bar instead.
             style={{ top: 'calc(3.5rem + var(--safe-top) + 12px)' }}
-            className="fixed left-1/2 z-40 -translate-x-1/2 rounded-full border border-accent bg-[#141414] px-4 py-1.5 font-mono text-[11px] text-accent shadow-[0_4px_18px_rgba(224,81,47,0.25)] transition-colors hover:bg-accent/10"
+            className="fixed left-1/2 z-40 -translate-x-1/2 sm:hidden"
           >
-            ● {newCount >= 10 ? '10+' : newCount} new mint{newCount === 1 ? '' : 's'} — tap to refresh
-          </button>
+            {pulseButton}
+          </div>
         )}
         <PaginatedGrid<Moment>
           // Distinct key per market: <PaginatedGrid<Moment>> and
@@ -402,7 +469,6 @@ export function DiscoverMarketView({
           infiniteScroll={infiniteScroll}
           containerClassName={OVAL_GRID}
           skeleton={skeleton}
-          header={header}
           renderBetween={renderBetween}
           onRefreshReady={onRefreshReady}
           renderItem={(m) => (
@@ -428,34 +494,36 @@ export function DiscoverMarketView({
   }
 
   return (
-    <PaginatedGrid<Listing>
-      key="market-secondary"
-      apiUrl={secondaryApiUrl(state)}
-      itemsKey="listings"
-      getKey={(l) => l.id}
-      pageLimit={pageLimit}
-      lazy={isMobile}
-      infiniteScroll={infiniteScroll}
-      containerClassName={OVAL_GRID}
-      skeleton={skeleton}
-      header={header}
-      renderItem={(l, { remove }) => <ListingOval key={l.id} listing={l} onRemove={remove} />}
-      empty={
-        filtered ? (
-          filteredEmpty
-        ) : (
-          <div className="border border-line p-8 text-center sm:p-16">
-            <p className="font-mono text-sm text-muted">no live resales</p>
-            <p className="mt-2 font-mono text-xs text-faint">
-              collect on{' '}
-              <Link href="/" className="accent-grad hover:underline">
-                enjoy
-              </Link>
-              , then list it on your profile
-            </p>
-          </div>
-        )
-      }
-    />
+    <>
+      {stickyHeader}
+      <PaginatedGrid<Listing>
+        key="market-secondary"
+        apiUrl={secondaryApiUrl(state)}
+        itemsKey="listings"
+        getKey={(l) => l.id}
+        pageLimit={pageLimit}
+        lazy={isMobile}
+        infiniteScroll={infiniteScroll}
+        containerClassName={OVAL_GRID}
+        skeleton={skeleton}
+        renderItem={(l, { remove }) => <ListingOval key={l.id} listing={l} onRemove={remove} />}
+        empty={
+          filtered ? (
+            filteredEmpty
+          ) : (
+            <div className="border border-line p-8 text-center sm:p-16">
+              <p className="font-mono text-sm text-muted">no live resales</p>
+              <p className="mt-2 font-mono text-xs text-faint">
+                collect on{' '}
+                <Link href="/" className="accent-grad hover:underline">
+                  enjoy
+                </Link>
+                , then list it on your profile
+              </p>
+            </div>
+          )
+        }
+      />
+    </>
   )
 }

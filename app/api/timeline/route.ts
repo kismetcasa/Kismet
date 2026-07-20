@@ -15,7 +15,7 @@ import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
 import type { Moment } from '@/lib/inprocess'
 import { synthesizeMissingCoverMoment } from '@/lib/coverMomentSynthesis'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
-import { getActiveListingKeys } from '@/lib/listings'
+import { getActiveListingSnapshot } from '@/lib/listings'
 import { getRecipientSplits } from '@/lib/splits'
 import { getDelegatedMoments } from '@/lib/airdropDelegates'
 import { serverBaseClient } from '@/lib/rpc'
@@ -731,7 +731,7 @@ export async function GET(req: NextRequest) {
     })
   }
   if (resaleOnly) {
-    const resaleKeys = new Set(await getActiveListingKeys())
+    const resaleKeys = new Set((await getActiveListingSnapshot()).keys)
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
       return resaleKeys.has(`${moment.address?.toLowerCase() ?? ''}:${moment.token_id}`)
