@@ -376,7 +376,11 @@ export function DiscoverMarketView({
     >
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-4">
-          <div className="inline-flex rounded-full border border-accent/40 bg-[#141414] p-0.5">
+          {/* overflow-hidden: the active pill is its own rounded-full — at
+              fractional device-pixel ratios its corner arc can poke past the
+              container's inner curve and sit on the border. Clipping to the
+              container keeps the two radii visually concentric everywhere. */}
+          <div className="inline-flex overflow-hidden rounded-full border border-accent/40 bg-[#141414] p-0.5">
             {(['primary', 'secondary'] as const).map((m) => (
               <button
                 key={m}

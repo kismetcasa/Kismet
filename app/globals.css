@@ -71,9 +71,42 @@ body {
   background: #444;
 }
 
-/* RainbowKit override — square modal buttons; inline styles on custom buttons override this */
+/* RainbowKit override — square modal buttons; inline styles on custom buttons
+ * override this. CAUTION: RainbowKitProvider's [data-rk] wrapper contains the
+ * ENTIRE app tree, not just the wallet modal — so at (0,1,1) this rule
+ * out-specifies every Tailwind rounded-* utility (0,1,0) and silently squared
+ * every rounded button in the app (discover's market toggle, filter pills,
+ * watch stars, the mint-form switches). The mirrors below re-assert the full
+ * standard radius scale at (0,2,1) so a button that declares rounded-* renders
+ * it, while undeclared buttons — RainbowKit's own included — stay square.
+ * Corner/side variants (rounded-t-*, …) and arbitrary values (rounded-[…])
+ * have no mirror; if one is ever put on a button, add it here. */
 [data-rk] button {
   border-radius: 0;
+}
+[data-rk] button.rounded-sm {
+  border-radius: 0.125rem;
+}
+[data-rk] button.rounded {
+  border-radius: 0.25rem;
+}
+[data-rk] button.rounded-md {
+  border-radius: 0.375rem;
+}
+[data-rk] button.rounded-lg {
+  border-radius: 0.5rem;
+}
+[data-rk] button.rounded-xl {
+  border-radius: 0.75rem;
+}
+[data-rk] button.rounded-2xl {
+  border-radius: 1rem;
+}
+[data-rk] button.rounded-3xl {
+  border-radius: 1.5rem;
+}
+[data-rk] button.rounded-full {
+  border-radius: 9999px;
 }
 
 /* Hide number input spinner arrows */
