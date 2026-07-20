@@ -33,6 +33,12 @@ interface PlatformStats {
   // Stats-modal figures, from the same single fetch (no extra request):
   /** All-time gross buyer volume, primary (art + passes) + secondary resales. */
   volumeUsd: number | null
+  /** The same total denominated in ETH — the exact inverse of the API's usd
+   *  derivation: ETH legs pass through unconverted, USDC legs divide by the
+   *  same Chainlink price the USD figure multiplied with. Null when the
+   *  conversion would be dishonest (price unavailable while a USDC leg > 0);
+   *  a zero USDC leg needs no price at all, so pure-ETH volume never nulls. */
+  volumeEth: number | null
   /** Distinct artists who have minted (catalog census). */
   artists: number | null
   /** Paid art editions sold (passes excluded — memberships aren't artworks). */
@@ -50,6 +56,11 @@ const fmtUsd = (n: number) =>
     style: 'currency',
     currency: 'USD',
   }).format(n)
+
+// 3 significant digits keeps the ETH headline as compact as "$1.9K" across
+// magnitudes (0.591 ETH · 12.3 ETH · 1,230 ETH).
+const fmtEth = (n: number) =>
+  `${new Intl.NumberFormat('en-US', { maximumSignificantDigits: 3 }).format(n)} ETH`
 
 const LAST_VISIT_KEY = 'kismetart:discover-last-visit'
 const PULSE_INTERVAL_MS = 60_000
@@ -115,7 +126,18 @@ function WatchlistView({
 function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: () => void }) {
   useEscapeKey(onClose)
   useBodyScrollLock()
+  // Headline denomination — tap the figure to flip USD ↔ ETH. Resets to USD
+  // per open (state dies with the unmount), matching the header glance line.
+  const [denom, setDenom] = useState<'usd' | 'eth'>('usd')
   const count = (n: number | null | undefined) => (typeof n === 'number' ? n.toLocaleString() : '—')
+  const headline =
+    denom === 'usd'
+      ? stats?.volumeUsd != null
+        ? fmtUsd(stats.volumeUsd)
+        : '—'
+      : stats?.volumeEth != null
+        ? fmtEth(stats.volumeEth)
+        : '—'
   const rows: Array<[string, string]> = [
     ['artists minting', count(stats?.artists)],
     ['total mints', count(stats?.mints)],
@@ -145,9 +167,19 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
           <X size={14} />
         </button>
         <p className="font-mono text-[10px] uppercase tracking-widest text-faint">total volume</p>
-        <p className="mt-1 font-mono text-3xl tabular-nums accent-grad">
-          {stats?.volumeUsd != null ? fmtUsd(stats.volumeUsd) : '—'}
-        </p>
+        {/* The figure is the denomination toggle. Same precedent as the USD
+            view itself: cross-currency legs convert at today's Chainlink price
+            with no inline caveat (the header's "$—K earned" glance line has
+            always worked this way). */}
+        <button
+          onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
+          aria-pressed={denom === 'eth'}
+          aria-label={denom === 'usd' ? 'Show total volume in ETH' : 'Show total volume in USD'}
+          title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
+          className="mt-1 block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
+        >
+          {headline}
+        </button>
         <p className="mt-1 font-mono text-[10px] text-muted">primary + secondary · all time</p>
         <dl className="mt-5 space-y-2.5 border-t border-line pt-4">
           {rows.map(([label, value]) => (
@@ -291,12 +323,28 @@ export function DiscoverMarketView({
         // Kismet resale yet — that leg contributes 0, not a veto.
         const primaryVol = typeof d?.volume?.usd === 'number' ? d.volume.usd : null
         const resaleVol = typeof d?.resales?.usd === 'number' ? d.resales.usd : null
+        const ethUsd = typeof d?.earnings?.ethUsd === 'number' ? d.earnings.ethUsd : null
+        // ETH denomination of the same total, from the payload's per-currency
+        // legs. Same primary-block veto as volumeUsd; USDC converts at the
+        // same price usd was derived with, or the figure nulls rather than
+        // dropping the USDC leg silently.
+        let volumeEth: number | null = null
+        if (primaryVol != null) {
+          const ethLeg =
+            (typeof d.volume.eth === 'number' ? d.volume.eth : 0) +
+            (typeof d?.resales?.eth === 'number' ? d.resales.eth : 0)
+          const usdcLeg =
+            (typeof d.volume.usdc === 'number' ? d.volume.usdc : 0) +
+            (typeof d?.resales?.usdc === 'number' ? d.resales.usdc : 0)
+          volumeEth = usdcLeg === 0 ? ethLeg : ethUsd ? ethLeg + usdcLeg / ethUsd : null
+        }
         setStats({
           mints: typeof d?.catalog?.artworksMinted === 'number' ? d.catalog.artworksMinted : null,
           earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
           resaleUsd: resaleVol,
-          ethUsd: typeof d?.earnings?.ethUsd === 'number' ? d.earnings.ethUsd : null,
+          ethUsd,
           volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
+          volumeEth,
           artists: typeof d?.catalog?.artistsMinted === 'number' ? d.catalog.artistsMinted : null,
           editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
         })
