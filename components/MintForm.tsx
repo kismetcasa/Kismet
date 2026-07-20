@@ -839,7 +839,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // (collection, content hash, sale params, splits hash). Prompts
         // wallet once before submission; the on-chain mint via inprocess
         // remains transparent to the user as before.
-        toast.loading('Confirm in wallet…', { id: 'mint' })
+        toast.loading('Confirm in wallet…', {
+          id: 'mint',
+          // Wallet security layers can't simulate our custom sign-then-relay
+          // typed data (no decoder, no verifyingContract), so they show
+          // "can't preview" / "likely to fail" warnings. Set expectations here
+          // so artists don't cancel — the 2026-07-20 incident was four
+          // warning-scared cancels across two devices.
+          description:
+            'Free signature — your wallet may warn it can’t preview it; the mint runs through Kismet’s relay.',
+        })
         const { intent } = await signMintIntent(payload, 'write')
         toast.loading('Minting artwork…', { id: 'mint' })
 
@@ -1254,7 +1263,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // `payload.account` actually authorized this exact payload
         // (collection, tokenURI, sale params, splits hash). Prompts
         // wallet once before submission.
-        toast.loading('Confirm in wallet…', { id: 'mint' })
+        toast.loading('Confirm in wallet…', {
+          id: 'mint',
+          // Wallet security layers can't simulate our custom sign-then-relay
+          // typed data (no decoder, no verifyingContract), so they show
+          // "can't preview" / "likely to fail" warnings. Set expectations here
+          // so artists don't cancel — the 2026-07-20 incident was four
+          // warning-scared cancels across two devices.
+          description:
+            'Free signature — your wallet may warn it can’t preview it; the mint runs through Kismet’s relay.',
+        })
         const { intent } = await signMintIntent(payload, 'mint')
         toast.loading('Minting artwork…', { id: 'mint' })
 
@@ -1303,6 +1321,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       // closure here is stale at 'idle').
       reportClientError('mint_failed', {
         phase: stepRef.current,
+        // Wallet address (public on-chain data) so multi-user incidents
+        // attribute cleanly — the 2026-07-20 cancels couldn't be told apart
+        // from admin repro attempts without it.
+        account: address ?? null,
         mode: mintMode,
         autoDeploy: isAutoDeploy,
         fileType: file?.type ?? null,

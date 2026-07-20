@@ -4,8 +4,10 @@ import { reloadOnceForChunkError } from './chunkReload'
 // Recognized rejection patterns across MetaMask, WalletConnect, Coinbase
 // Wallet, Brave, Trust, etc. We match either the EIP-1193 numeric code
 // (4001 = User Rejected Request) or the various human-readable phrasings
-// providers attach to error.message.
-const REJECTION_REGEX = /user rejected|user denied|rejected the request|user cancell?ed/i
+// providers attach to error.message. The regex lives in lib/walletRejection
+// (pure module) so verify-wallet-rejection can unit-test the classification
+// without pulling in sonner.
+import { REJECTION_REGEX } from './walletRejection'
 
 // "Connected but not authorized" signals. wagmi can restore a persisted
 // session while the wallet's signing backend is dead. Deliberately does

@@ -78,6 +78,11 @@ export async function getGateConfig(): Promise<GateConfig> {
     // fabricate an enabled gate (no trustworthy passCollection), and pause is
     // the one piece of state with no on-chain backstop, so it's the one we fail
     // closed.
+    // Log so these windows are countable: each occurrence is a transient
+    // stretch where every non-admin mint/write 503s "paused" while admin
+    // bypasses — invisible in client telemetry (maybeHandlePauseError
+    // early-returns without reportClientError).
+    console.warn('[gate] cold-start Redis failure — failing closed (paused) for this request')
     return { enabled: false, passCollection: null, paused: true }
   }
 }

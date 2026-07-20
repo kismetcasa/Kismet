@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { issueIntentNonce } from '@/lib/intentAuth'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 
 /**
  * Issues a fresh single-use nonce + expiry for per-action intent signing.
@@ -17,6 +17,13 @@ export async function POST(req: NextRequest) {
   const allowed = await checkRateLimit(`intent-nonce:${ip}`, 60, 60)
   if (!allowed) return errorResponse(429, 'Too many requests')
 
-  const issued = await issueIntentNonce()
-  return NextResponse.json(issued)
+  // Same guard as agent/prepare-mint: issueIntentNonce is an unguarded Redis
+  // write, so a transient Upstash blip must surface as a retryable 503 mid-mint
+  // rather than a bare 500.
+  try {
+    const issued = await issueIntentNonce()
+    return NextResponse.json(issued)
+  } catch (err) {
+    return upstreamError(503, 'Temporarily unavailable — please retry', err, 'intent-nonce')
+  }
 }
