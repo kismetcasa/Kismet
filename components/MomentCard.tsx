@@ -340,13 +340,19 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   //     active sale (scheduled / closing) always; for an ENDED sale it yields
   //     to the collection chip when one exists, reading "Ended …" only when
   //     there's no collection to fall back to. A live open-ended sale has no
-  //     date, so it never takes the row.
+  //     date, so it never takes the row. A SOLD-OUT mint never shows the
+  //     window at all — the date is an urgency cue for a live collect action,
+  //     and on a mint with nothing left "Sale ends X" reads as a dead promise;
+  //     sold-out is the terminal state (the button already says it), so the
+  //     row yields back to the chip. The artwork page keeps the full window
+  //     for provenance (MomentDetailView's SaleWindow is ungated).
   const chipAvailable = !compact && isCuratedCollection && !!collectionName
   const saleWindowState = mounted ? (getSaleWindow(activeSale)?.state ?? null) : null
   const saleWindowTakesRow =
-    saleWindowState === 'scheduled' ||
-    saleWindowState === 'closing' ||
-    (saleWindowState === 'ended' && !chipAvailable)
+    !mintedOut &&
+    (saleWindowState === 'scheduled' ||
+      saleWindowState === 'closing' ||
+      (saleWindowState === 'ended' && !chipAvailable))
   const collectLabel = collecting
     ? 'collecting…'
     : saleNotStarted
