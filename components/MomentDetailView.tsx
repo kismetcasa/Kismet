@@ -997,9 +997,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
       toast.loading('Sign update in wallet…', { id: 'edit-meta' })
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
+      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
       const message = `Update Kismet metadata\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
 

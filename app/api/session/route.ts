@@ -11,7 +11,7 @@ import {
   setSessionCookie,
 } from '@/lib/session'
 import { verifySiweLogin } from '@/lib/siweLogin'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 
 /** Returns the address bound to the current session cookie, or 401. */
 export async function GET(req: NextRequest) {
@@ -51,12 +51,25 @@ export async function POST(req: NextRequest) {
   // stored against the SIGNER address (the same address that requested
   // it via /api/profile/<addr>/nonce), making this lookup symmetric
   // with the rest of the address-keyed nonce flows.
-  const nonceValid = await consumeNonce(verified.address, verified.nonce)
+  // Both Redis legs guarded (same pattern as the nonce-issuance routes): a
+  // transient blip must surface as a retryable 503, not an unhandled 500 —
+  // and for the consume specifically, not a misleading 401 "invalid nonce".
+  let nonceValid = false
+  try {
+    nonceValid = await consumeNonce(verified.address, verified.nonce)
+  } catch (err) {
+    return upstreamError(503, 'Temporarily unavailable — please retry', err, 'session')
+  }
   if (!nonceValid) {
     return errorResponse(401, 'Invalid or expired nonce')
   }
 
-  const token = await createSession(verified.address)
+  let token: string
+  try {
+    token = await createSession(verified.address)
+  } catch (err) {
+    return upstreamError(503, 'Temporarily unavailable — please retry', err, 'session')
+  }
   // ttl returned so clients can decide when to refresh — but the cookie's
   // Max-Age is the single source of truth.
   const res = NextResponse.json({ ok: true, address: verified.address, ttl: SESSION_TTL_SECONDS })
