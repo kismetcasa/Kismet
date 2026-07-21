@@ -42,12 +42,14 @@ export function MarketView({ isMobile = false }: { isMobile?: boolean }) {
         header={
           <div className="flex items-center gap-3">
             <ViewModeToggle mode={viewMode} onChange={setViewMode} />
-            <div>
-              <h1 className="text-xs font-mono text-dim uppercase tracking-widest">Secondary Market</h1>
-              <p className="text-xs font-mono text-subtle mt-1">
-                creator royalties enforced on every sale · 1% platform fee
-              </p>
-            </div>
+            {/* The "creator royalties enforced · 1% fee" sub-line moved into a
+                hover tooltip so the title owns the row on its own. */}
+            <h1
+              title="creator royalties are always enforced on Kismet"
+              className="w-fit cursor-help text-xs font-mono text-dim uppercase tracking-widest"
+            >
+              Secondary Market
+            </h1>
           </div>
         }
         empty={

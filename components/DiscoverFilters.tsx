@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Star, X } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -56,7 +56,14 @@ function PillToggle({
   )
 }
 
-/** NavDropdown-style popover menu pill (outside-click + Escape to close). */
+/** NavDropdown-style popover menu pill (outside-click + Escape to close).
+ *
+ *  The popover is PORTALED to <body> and fixed-positioned under the trigger,
+ *  not rendered inline: the pill bar is `overflow-x-auto`, and per the CSS
+ *  overflow spec an `auto` on one axis forces the other from `visible` to
+ *  `auto` too — so an inline `top-full` popover was clipped to the bar's ~1-row
+ *  height and never actually opened (the "media dropdown not working" bug). The
+ *  portal escapes that clip the same way the filters drawer / stats dialog do. */
 function PillMenu({
   label,
   active,
@@ -67,20 +74,46 @@ function PillMenu({
   children: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+
+  // Anchor the fixed popover under the trigger. Recomputed on open and while
+  // open (the bar scrolls horizontally; the sticky header scrolls vertically).
+  const place = useCallback(() => {
+    const el = triggerRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setPos({ top: r.bottom + 4, left: r.left })
+  }, [])
+
   // enabled=open: closed pills keep no window listener and Escape elsewhere
   // doesn't fan out no-op setStates across every pill on the bar.
   useEscapeKey(() => setOpen(false), open)
   useEffect(() => {
     if (!open) return
+    place()
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      // The menu lives in a body portal (outside triggerRef), so an
+      // outside-click check must clear BOTH the trigger and the menu.
+      if (triggerRef.current?.contains(t) || menuRef.current?.contains(t)) return
+      setOpen(false)
     }
+    // capture:true so the bar's own scroll (which doesn't bubble) repositions.
+    const onScroll = () => place()
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onScroll)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [open, place])
+
   return (
-    <div ref={ref} className="relative shrink-0">
+    <div ref={triggerRef} className="relative shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -89,11 +122,20 @@ function PillMenu({
         {label}
         <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 min-w-[9rem] rounded-xl border border-line bg-[#121212] p-1 shadow-lg">
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{ position: 'fixed', top: pos.top, left: pos.left }}
+            // z-[60]: above the fixed nav (z-50) and sticky header (z-40) the
+            // portal now paints over; below the drawer / stats dialog (z-[70]).
+            className="z-[60] min-w-[9rem] rounded-xl border border-line bg-[#121212] p-1 shadow-lg"
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }
@@ -454,11 +496,6 @@ const MEDIA_LABEL: Record<MediaKind, string> = {
   gif: 'gifs',
   text: 'writing',
 }
-const SCOPE_LABEL: Record<DiscoverState['scope'], string> = {
-  standalone: 'solo mints',
-  collections: 'collections',
-  all: 'everything',
-}
 
 export function DiscoverPillBar({
   state,
@@ -491,7 +528,7 @@ export function DiscoverPillBar({
             disabledReason="free mints have no sales — switch to newest or ending soon"
             onClick={() => onChange({ free: !state.free })}
           />
-          <PillToggle label="has resale" on={state.resale} onClick={() => onChange({ resale: !state.resale })} />
+          <PillToggle label="has listing" on={state.resale} onClick={() => onChange({ resale: !state.resale })} />
           <PillMenu label={state.media ? MEDIA_LABEL[state.media] : 'media'} active={state.media !== null}>
             {(close) => (
               <>
@@ -502,15 +539,7 @@ export function DiscoverPillBar({
               </>
             )}
           </PillMenu>
-          <PillMenu label={SCOPE_LABEL[state.scope]} active={state.scope !== 'standalone'}>
-            {(close) => (
-              <>
-                {(['standalone', 'collections', 'all'] as const).map((sc) => (
-                  <MenuOption key={sc} label={SCOPE_LABEL[sc]} selected={state.scope === sc} onSelect={() => { onChange({ scope: sc }); close() }} />
-                ))}
-              </>
-            )}
-          </PillMenu>
+          <PillToggle label="sold out" on={state.soldOut} onClick={() => onChange({ soldOut: !state.soldOut })} />
           <ArtistPill state={state} onChange={onChange} />
           <button
             aria-pressed={state.watchlist}

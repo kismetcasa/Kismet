@@ -1263,6 +1263,45 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     )
   }
 
+  // scan / share (+ send when owned). One fragment, two positions: ABOVE the
+  // price row on mobile / mini-app, and inside the controls band BELOW the price
+  // on desktop (see the two call sites). Sharing the fragment keeps the buttons
+  // and their handlers identical across both — only one set is ever visible
+  // (the other is display:none via the breakpoint), so no double-firing.
+  const secondaryActionButtons = (
+    <>
+      <button
+        onClick={handleCopyScan}
+        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+        title="Copy BaseScan link"
+      >
+        <Square size={12} strokeWidth={1.5} />
+        {scanCopied ? 'copied' : 'scan'}
+      </button>
+      <button
+        onClick={handleShare}
+        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+      >
+        {linkCopied
+          ? <Check size={12} className="text-[#6ee7b7]" />
+          : <Copy size={12} strokeWidth={1.5} />}
+        {linkCopied ? 'copied' : 'share'}
+      </button>
+      {alreadyOwned && (
+        <button
+          onClick={() => setSendOpen((v) => !v)}
+          // order-first: on mobile (the "x sold" row) send leads — send → scan
+          // → share. sm:order-none restores DOM order in the desktop controls
+          // band, where it reads scan → share → send.
+          className="order-first flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit sm:order-none"
+        >
+          <Send size={12} strokeWidth={1.5} />
+          {sendOpen ? 'cancel' : 'send'}
+        </button>
+      )}
+    </>
+  )
+
   return (
     <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
 
@@ -1800,89 +1839,29 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               mints (and as the default while detail is still loading,
               since "collected" is the broader truthful term). Owned
               count sits next to it when the viewer holds any. */}
-          {totalMinted !== undefined && (
-            <div className="px-5 pb-1 flex items-center gap-3">
-              <p className="text-[10px] font-mono text-subtle uppercase tracking-widest">
-                {Number(totalMinted).toLocaleString()}{' '}
-                {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
-              </p>
-              {ownedCount > 0 && (
-                <p className="text-[10px] font-mono text-muted uppercase tracking-widest">
-                  ×{ownedCount} own
+          <div className="px-5 pb-2 flex items-center gap-3">
+            {totalMinted !== undefined && (
+              <>
+                <p className="text-[10px] font-mono text-subtle uppercase tracking-widest">
+                  {Number(totalMinted).toLocaleString()}{' '}
+                  {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
                 </p>
-              )}
-            </div>
-          )}
-
-          {/* Secondary actions: scan / share (+ send when owned) — placed
-              ABOVE the collect row so the layout is identical on mobile web and
-              in the Mini App overlay (whose top-right corner is owned by the
-              close X). Share always renders so any viewer can copy the link. */}
-          <div className="px-5 pt-1 pb-2">
-            <div className="flex flex-wrap items-center gap-3 gap-y-2">
-              <button
-                onClick={handleCopyScan}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                title="Copy BaseScan link"
-              >
-                <Square size={12} strokeWidth={1.5} />
-                {scanCopied ? 'copied' : 'scan'}
-              </button>
-              <button
-                onClick={handleShare}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-              >
-                {linkCopied
-                  ? <Check size={12} className="text-[#6ee7b7]" />
-                  : <Copy size={12} strokeWidth={1.5} />}
-                {linkCopied ? 'copied' : 'share'}
-              </button>
-              {alreadyOwned && (
-                <button
-                  onClick={() => setSendOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                >
-                  <Send size={12} strokeWidth={1.5} />
-                  {sendOpen ? 'cancel' : 'send'}
-                </button>
-              )}
-            </div>
-            {alreadyOwned && sendOpen && (
-              <div className="mt-2">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={sendTo}
-                    onChange={(e) => setSendTo(e.target.value)}
-                    placeholder="0x address or name.eth"
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
-                  >
-                    {sending ? '…' : 'confirm'}
-                  </button>
-                </div>
-                {trimmedSendTo && (
-                  <div className="mt-1.5 text-[10px] font-mono">
-                    {resolvingSendTo ? (
-                      <span className="text-muted">resolving…</span>
-                    ) : isSelfSend ? (
-                      <span className="text-red-400">cannot send to yourself</span>
-                    ) : sendToError ? (
-                      <span className="text-red-400">{sendToError}</span>
-                    ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
-                    ) : null}
-                  </div>
+                {ownedCount > 0 && (
+                  <p className="text-[10px] font-mono text-muted uppercase tracking-widest">
+                    ×{ownedCount} own
+                  </p>
                 )}
-              </div>
+              </>
             )}
+            {/* Mobile / mini-app: scan / share / send hug the RIGHT edge of the
+                "x sold" row (ml-auto), ordered send → scan → share via the
+                fragment's responsive order. Desktop shows them in the controls
+                band below the price, so they're sm:hidden here. Rendered outside
+                the totalMinted gate so the actions never wait on the on-chain
+                supply read. */}
+            <div className="ml-auto flex items-center gap-3 sm:hidden">
+              {secondaryActionButtons}
+            </div>
           </div>
 
           {/* Action row: [price|supply] [list] [collect] */}
@@ -1929,26 +1908,72 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Sale-window date centered under collect; admin feature toggle
-              pinned right. Scan / share / send now sit ABOVE the collect row
-              (see the block before the action row). */}
+          {/* Sale-window date — centered directly underneath the price/supply +
+              collect row. Three columns share the row so the date lands in the
+              TRUE center between two EQUAL flex-1 gutters: scan / share / send in
+              the LEFT gutter (DESKTOP only — on mobile they sit in the "x sold"
+              row above), and the admin feature toggle in the RIGHT gutter. Equal
+              gutters keep the date centered no matter what the sides hold
+              (mobile empty-left, non-admin empty-right, open-ended no-date). */}
           <div className="px-5 pb-4">
-            <div className="flex flex-wrap items-center gap-3 gap-y-2">
-              <div className="flex-1 flex justify-center">
-                <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                {/* Desktop only — on mobile these live in the "x sold" row. */}
+                <div className="hidden items-center gap-3 sm:flex">
+                  {secondaryActionButtons}
+                </div>
               </div>
-              {isAdmin && (
-                <button
-                  onClick={() => toggleFeatured(address, tokenId)}
-                  className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                    isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
-                  }`}
-                >
-                  <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-                  {isFeatured ? 'unfeature' : 'feature'}
-                </button>
-              )}
+              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              <div className="flex-1 flex justify-end">
+                {isAdmin && (
+                  <button
+                    onClick={() => toggleFeatured(address, tokenId)}
+                    className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
+                      isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
+                    }`}
+                  >
+                    <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                    {isFeatured ? 'unfeature' : 'feature'}
+                  </button>
+                )}
+              </div>
             </div>
+            {alreadyOwned && sendOpen && (
+              <div className="mt-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={sendTo}
+                    onChange={(e) => setSendTo(e.target.value)}
+                    placeholder="0x address or name.eth"
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!sendToValid || sending}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+                  >
+                    {sending ? '…' : 'confirm'}
+                  </button>
+                </div>
+                {trimmedSendTo && (
+                  <div className="mt-1.5 text-[10px] font-mono">
+                    {resolvingSendTo ? (
+                      <span className="text-muted">resolving…</span>
+                    ) : isSelfSend ? (
+                      <span className="text-red-400">cannot send to yourself</span>
+                    ) : sendToError ? (
+                      <span className="text-red-400">{sendToError}</span>
+                    ) : resolvedSendTo && looksLikeEns ? (
+                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
         </div>

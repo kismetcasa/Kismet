@@ -77,7 +77,10 @@ function OvalShell({
             <p className="min-w-0 flex-1 truncate font-mono text-[13px] text-ink">{title}</p>
             {titleRight && <span className="shrink-0 font-mono text-[10px] text-dim">{titleRight}</span>}
           </div>
-          <p className="truncate font-mono text-[10.5px] text-muted">{subtitle}</p>
+          {/* flex (not a truncating <p>) so a caller can pair a truncating
+              primary with a shrink-0 aside — e.g. the mint oval's supply line
+              that yields space to a fixed listing link. */}
+          <div className="flex min-w-0 items-center gap-1 font-mono text-[10.5px] text-muted">{subtitle}</div>
         </div>
       </div>
       {/* pointer-events-none so the price + gaps fall through to the stretched
@@ -165,8 +168,8 @@ const EXPIRES_SOON_MS = 48 * 60 * 60 * 1000
 // `ethUsd` (Chainlink rate from the page's one platform-stats read) powers a
 // hover-only USD approximation on ETH prices — a tooltip, never a sub-label,
 // so the price column can't layout-shift when the rate arrives.
-// `resaleCount` is the cross-market bridge: how many live resales this moment
-// has on the secondary market (from the page's one /api/listings?keys=1 read).
+// `resaleCount` is the cross-market bridge: how many live secondary listings
+// this moment has (from the page's one /api/listings?keys=1 read).
 function MomentOvalImpl({
   moment,
   ethUsd,
@@ -328,20 +331,28 @@ function MomentOvalImpl({
       titleRight={closeLabel || undefined}
       subtitle={
         <>
-          {/* Market data only — no collection/prose segment. Long collection
-              names were truncating the supply figure (the line's whole job) on
-              real rows; collection context lives one click away on the moment
-              page, and the scope pill already splits solo vs collection drops. */}
-          {supplyLabel}
-          {/* Cross-market bridge: this mint has live secondary listings — the
-              whole oval already links to the moment page where they're buyable. */}
+          {/* Supply is the line's whole job — truncate IT, never the listing
+              link beside it. Long collection names were eating the supply
+              figure on real rows; collection context lives one click away on
+              the moment page. */}
+          <span className="min-w-0 truncate">{supplyLabel}</span>
+          {/* Cross-market bridge: this mint has live secondary listings. There
+              are no per-listing pages yet, so the arrow links to the market
+              (the floor listing is the future target). Rendered as just the ↗ —
+              not "N listings ↗" — so it can never crowd the supply figure; the
+              count rides in the title/aria-label. pointer-events-auto + z-10
+              wins the click over the oval's stretched link, like the action
+              button does. */}
           {!!resaleCount && (
-            <>
-              {' · '}
-              <span className="text-dim">
-                {resaleCount} resale{resaleCount > 1 ? 's' : ''} ↗
-              </span>
-            </>
+            <Link
+              href="/market"
+              prefetch={false}
+              title={`${resaleCount} listing${resaleCount > 1 ? 's' : ''} on the market`}
+              aria-label={`${resaleCount} listing${resaleCount > 1 ? 's' : ''} — view on the market`}
+              className="pointer-events-auto relative z-10 shrink-0 text-dim transition-colors hover:text-accent"
+            >
+              ↗
+            </Link>
           )}
         </>
       }
@@ -389,13 +400,13 @@ function MomentOvalImpl({
 }
 export const MomentOval = memo(MomentOvalImpl)
 
-// ── Secondary market oval (a resale listing) ─────────────────────────────────
+// ── Secondary market oval (a listing) ────────────────────────────────────────
 // Reuses BuyButton wholesale (the Seaport fulfill flow), so the action carries
 // its own price ("buy 0.01 ETH"). onRemove drops the oval from the grid once
-// the sale confirms (PaginatedGrid's optimistic remove). The subtitle is the
-// trade trust line: who's selling · the enforced royalty share — no collection
-// segment, same doctrine as the primary ovals (a long name truncated exactly
-// the seller/royalty data the line exists to carry).
+// the sale confirms (PaginatedGrid's optimistic remove). The subtitle names the
+// seller ("listed by …") — no collection segment, same doctrine as the primary
+// ovals. Royalty share is dropped from the row: it's the same on every listing
+// (creator royalties are always enforced on Kismet), so per-row it was noise.
 function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
@@ -430,32 +441,13 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
     return hours <= 24 ? `expires ${hours}h` : `expires ${Math.ceil(hours / 24)}d`
   }, [listing.expiresAt])
 
-  // Royalty share of the sale price, from the stored display fields (never
-  // settlement math). Hidden when unparseable or zero.
-  const royaltyPct = useMemo(() => {
-    try {
-      const price = BigInt(listing.price)
-      if (price <= 0n) return null
-      const bps = Number((BigInt(listing.royaltyAmount) * 10000n) / price)
-      if (bps <= 0) return null
-      return bps % 100 === 0 ? String(bps / 100) : (bps / 100).toFixed(1)
-    } catch {
-      return null
-    }
-  }, [listing.price, listing.royaltyAmount])
-
   return (
     <OvalShell
       rootRef={rootRef}
       href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
       titleRight={expiresLabel || undefined}
-      subtitle={
-        <>
-          resale by {shortAddress(listing.seller)}
-          {royaltyPct && ` · ${royaltyPct}% royalty`}
-        </>
-      }
+      subtitle={<span className="min-w-0 truncate">listed by {shortAddress(listing.seller)}</span>}
       artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
       corner={
         <WatchStar
@@ -481,7 +473,9 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
               ↓ below mint
             </span>
           )}
-          <BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />
+          {/* rounded-full: a sharp rectangle looked out of place inside the
+              rounded oval — matches the mint oval's stadium collect button. */}
+          <BuyButton listing={listing} compact className="pointer-events-auto rounded-full" onBought={onRemove} />
         </>
       }
     />
