@@ -359,7 +359,7 @@ export function ProfileStats({
                   role="tooltip"
                   className="absolute left-0 top-full z-20 mt-1 w-max min-w-[8rem] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg"
                 >
-                  <p className="text-faint text-[10px] uppercase tracking-wide mb-1">accumulated</p>
+                  <p className="text-subtle text-[10px] uppercase tracking-wide mb-1">accumulated</p>
                   <div className="flex flex-col gap-0.5 tabular-nums">
                     {cryptoDenoms.map((d) => (
                       <p key={d} className="text-ink text-xs">{formatEarningsValue(d, stats)}</p>
@@ -367,7 +367,7 @@ export function ProfileStats({
                     {rendersNonZero('usd', stats) && (
                       <p className="text-muted text-[11px] mt-0.5 pt-1 border-t border-raised">
                         ≈ {formatEarningsValue('usd', stats)}
-                        <span className="text-faint"> at today’s ETH price</span>
+                        <span className="text-subtle"> at today’s ETH price</span>
                       </p>
                     )}
                   </div>
@@ -424,7 +424,7 @@ export function ProfileStats({
             <p
               id="earnings-source-split"
               hidden={showSplitToggle && !splitOpen}
-              className="text-faint text-xs mt-0.5 tabular-nums"
+              className="text-subtle text-xs mt-0.5 tabular-nums"
               title="Resales counted are those sold through Kismet listings"
             >
               {formatEarningsValue(active, stats.primary)} sales · {formatEarningsValue(active, stats.secondary)} resales
@@ -469,12 +469,12 @@ export function ProfileStats({
           )}
         </div>
       </div>
-      {!asVisitor && !stats.public && hasEarnings && <p className="text-faint text-[10px] mt-1.5">private · tap the pin to show</p>}
+      {!asVisitor && !stats.public && hasEarnings && <p className="text-subtle text-[10px] mt-1.5">private · tap the pin to show</p>}
       {/* Read-only visibility state for the admin — confirms at a glance
           whether the artist has published earnings (what a visitor would see)
           vs. kept them private, without exposing the owner's pin control. */}
       {adminView && hasEarnings && (
-        <p className="text-faint text-[10px] mt-1.5">
+        <p className="text-subtle text-[10px] mt-1.5">
           {stats.public ? 'public · visible to visitors' : 'private · hidden from visitors'}
         </p>
       )}

@@ -20,6 +20,7 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -52,7 +53,7 @@ import { ProfileAvatar } from './ProfileAvatar'
 import { CopyAddress } from './CopyAddress'
 import { SplitsPanel } from './SplitsPanel'
 import { useAdmin } from '@/contexts/AdminContext'
-import { toastError } from '@/lib/toast'
+import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { composeMomentShareCast } from '@/lib/collectShare'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -147,6 +148,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       }
     : undefined
   const ensureConnected = useEnsureConnected()
+  const armPendingAction = usePendingAction()
   const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
   const { isInMiniApp } = useFarcaster()
@@ -154,6 +156,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [detail, setDetail] = useState<MomentDetail | null>(
     initialDetail ?? getCachedDetail(address, tokenId) ?? null
   )
+  // Set when the indexer-lag poll below exhausts its attempts without data —
+  // drives the "couldn't load — retry" pane. Bumping the nonce restarts the poll.
+  const [detailExhausted, setDetailExhausted] = useState(false)
+  const [detailRetryNonce, setDetailRetryNonce] = useState(0)
   const textContentUri =
     detail?.metadata?.content?.mime === 'text/plain'
       ? detail.metadata.content.uri
@@ -480,7 +486,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
     let cancelled = false
     let attempt = 0
+    let visHandler: (() => void) | null = null
     const MAX_ATTEMPTS = 12 // 12 × 5s = 60s of polling
+
+    // Schedule the next attempt — deferred while the tab is hidden. The
+    // common share-link pattern is open-then-switch-away; without this the
+    // 12 attempts burn out in a background tab and the user comes back to
+    // the exhausted state having never really "waited" at all.
+    const schedule = () => {
+      if (cancelled) return
+      if (document.visibilityState === 'hidden') {
+        visHandler = () => {
+          if (visHandler) document.removeEventListener('visibilitychange', visHandler)
+          visHandler = null
+          if (!cancelled) void tryFetch()
+        }
+        document.addEventListener('visibilitychange', visHandler)
+        return
+      }
+      setTimeout(tryFetch, 5000)
+    }
 
     const tryFetch = async () => {
       if (cancelled) return
@@ -499,12 +524,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       }
       attempt += 1
       if (attempt < MAX_ATTEMPTS && !cancelled) {
-        setTimeout(tryFetch, 5000)
+        schedule()
+      } else if (!cancelled) {
+        // Terminal: surface a retry affordance instead of an indefinite
+        // "loading…" with collect dead — the frozen page hits exactly the
+        // freshly-minted URLs people share.
+        setDetailExhausted(true)
       }
     }
+    setDetailExhausted(false)
     tryFetch()
-    return () => { cancelled = true }
-  }, [address, tokenId, initialDetail])
+    return () => {
+      cancelled = true
+      if (visHandler) document.removeEventListener('visibilitychange', visHandler)
+    }
+  }, [address, tokenId, initialDetail, detailRetryNonce])
 
   // Fetch creator profile via shared cache
   useEffect(() => {
@@ -668,7 +702,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
-    if (!account) return
+    if (!account) {
+      // Picker is open — resume this collect once the user connects, so the
+      // first tap carries through (see usePendingAction).
+      armPendingAction(() => { void handleCollect() })
+      return
+    }
     // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: address as `0x${string}`,
@@ -705,6 +744,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
+  // Sold-out spotlight for viewers who HAVEN'T collected — mirrors MomentCard:
+  // gradient moves price → SOLD OUT label (no disabled dimming on it).
+  // Collected viewers keep today's treatment, including the gradient price.
+  const soldOutUncollected = mintedOut && !hasCollected
   // Sale-window gating — see MomentCard for the rationale. saleStart/saleEnd
   // are unix-second strings on detail.saleConfig; absent, "0", or the max-
   // uint64 sentinel mean "no bound". Number() fails open so malformed data
@@ -802,7 +845,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('kismetart:moment-hidden-changed'))
       }
-      toast.success(next ? 'Hidden from public feeds' : 'Visible again', { id: 'hide' })
+      // Updates the in-flight 'hide' loading toast, which would otherwise pin
+      // it on screen forever (see TERMINAL_TOAST_DURATION_MS).
+      toast.success(next ? 'Hidden from public feeds' : 'Visible again', {
+        id: 'hide',
+        duration: TERMINAL_TOAST_DURATION_MS,
+      })
     } catch (err) {
       toastError('Hide', err, { id: 'hide' })
     } finally {
@@ -1107,9 +1155,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
       toast.loading('Sign update in wallet…', { id: 'edit-meta' })
       const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error('Could not fetch nonce')
+      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
       const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce')
+      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
       const message = `Update Kismet metadata\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
       const signature = await signMessageAsync({ message })
 
@@ -1208,7 +1256,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           </div>
         )}
         <div className="flex flex-col items-center justify-center gap-3 py-24 px-6">
-          <EyeOff size={20} className="text-[#444]" />
+          <EyeOff size={20} className="text-subtle" />
           <p className="text-sm font-mono text-dim">this artwork has been hidden by the creator</p>
         </div>
       </div>
@@ -1292,8 +1340,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   onAllError={() => setImgError(true)}
                 />
               ) : !detail ? (
-                <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-faint font-mono text-xs">loading…</span>
+                <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+                  {detailExhausted ? (
+                    <>
+                      <span className="text-muted font-mono text-xs text-center px-6">
+                        this artwork hasn&rsquo;t loaded — it may still be indexing
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDetailExhausted(false)
+                          setDetailRetryNonce((n) => n + 1)
+                        }}
+                        className="px-4 py-1.5 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors"
+                      >
+                        retry
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-subtle font-mono text-xs">loading…</span>
+                  )}
                 </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
@@ -1394,7 +1460,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     onChange={(e) => setEditName(e.target.value)}
                     disabled={savingMeta}
                     placeholder="title"
-                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -1405,7 +1471,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     disabled={savingMeta}
                     rows={3}
                     placeholder="description"
-                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50 resize-y min-h-[3.5rem] overflow-auto"
                   />
                 </div>
                 {/* Change media — upload a new file, or re-point at content
@@ -1474,10 +1540,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                         }}
                         disabled={savingMeta}
                         placeholder="ar://… or https://arweave.net/…"
-                        className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                        className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                       />
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-mono uppercase tracking-widest text-faint">type</span>
+                        <span className="text-[10px] font-mono uppercase tracking-widest text-subtle">type</span>
                         {(['video', 'gif', 'image'] as const).map((t) => (
                           <button
                             key={t}
@@ -1490,7 +1556,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                           </button>
                         ))}
                       </div>
-                      <p className="text-[10px] font-mono text-faint leading-relaxed">
+                      <p className="text-[10px] font-mono text-subtle leading-relaxed">
                         re-points to content already on arweave — no re-upload. the cover/poster is kept unless you also change it below.
                       </p>
                     </div>
@@ -1594,7 +1660,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             )}
             {meta.description && (
               <div className="flex flex-col gap-1.5">
-                <p className="text-[10px] font-mono text-faint uppercase tracking-wider">description</p>
+                <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">description</p>
                 <p
                   ref={descRef}
                   className={`text-xs font-mono text-dim leading-relaxed ${showFullDesc ? '' : 'line-clamp-4'}`}
@@ -1614,7 +1680,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             {hasSplits && <SplitsPanel recipients={splitRecipients} />}
             {!commentsLoading && comments.length > 0 && (
               <div className="flex flex-col gap-2">
-                <p className="text-[10px] font-mono text-faint uppercase tracking-wider">activity</p>
+                <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">activity</p>
                 <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
                   {comments.map((c) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
@@ -1649,7 +1715,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                               ? 'collected on kismet'
                               : c.comment}
                         </span>
-                        <span className="text-[10px] font-mono text-faint flex-shrink-0">
+                        <span className="text-[10px] font-mono text-subtle flex-shrink-0">
                           {formatRelativeTime(c.timestamp)}
                         </span>
                       </div>
@@ -1678,7 +1744,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 placeholder="leave a comment… (optional)"
                 rows={2}
                 disabled={collecting}
-                className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none disabled:opacity-50"
+                className="w-full bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-none disabled:opacity-50"
               />
             )}
           </div>
@@ -1692,7 +1758,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               plus the viewer's cut. */}
           {canDistribute && (
             <div className="px-5 pb-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-faint uppercase tracking-wider">
+              <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">
                 distribute earnings
                 {adminDistributeOverride && <span className="text-accent"> · admin override</span>}
               </p>
@@ -1736,7 +1802,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               count sits next to it when the viewer holds any. */}
           {totalMinted !== undefined && (
             <div className="px-5 pb-1 flex items-center gap-3">
-              <p className="text-[10px] font-mono text-[#444] uppercase tracking-widest">
+              <p className="text-[10px] font-mono text-subtle uppercase tracking-widest">
                 {Number(totalMinted).toLocaleString()}{' '}
                 {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
               </p>
@@ -1792,7 +1858,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     autoComplete="off"
                     autoCapitalize="off"
                     spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted"
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
                   />
                   <button
                     onClick={handleSend}
@@ -1811,7 +1877,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     ) : sendToError ? (
                       <span className="text-red-400">{sendToError}</span>
                     ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
+                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
                     ) : null}
                   </div>
                 )}
@@ -1823,10 +1889,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           <div className="px-5 py-4 flex gap-2 items-stretch">
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-[#444]">
+                <span className="text-[11px] font-mono text-subtle">
                   {maxSupply === undefined
                     ? '…'
                     : isOpenEdition(maxSupply)
@@ -1851,10 +1917,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
-              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                hasCollected
-                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                  : 'text-muted border-line accent-grad-hover'
+              className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+                soldOutUncollected
+                  ? 'accent-grad border-line'
+                  : hasCollected
+                    ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+                    : 'text-muted border-line accent-grad-hover disabled:opacity-50'
               }`}
             >
               {collectLabel}

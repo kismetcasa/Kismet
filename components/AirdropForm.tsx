@@ -9,7 +9,7 @@ import { Plus, X } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
-import { toastError } from '@/lib/toast'
+import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
 import { useUploadSession } from '@/hooks/useUploadSession'
@@ -154,7 +154,9 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       return
     }
     setDelegateInput('')
-    toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
+    // Updates the in-flight loading toast — needs its own duration or it
+    // inherits the loading toast's infinite one (see TERMINAL_TOAST_DURATION_MS).
+    toast.success('Airdrop delegated', { id: 'delegate-airdrop', duration: TERMINAL_TOAST_DURATION_MS })
     void refetchDelegates()
   }, [delegateReceipt, resetDelegateGrant, refetchDelegates])
 
@@ -215,7 +217,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         return
       }
       setDelegateInput('')
-      toast.success('Airdrop delegated', { id: 'delegate-airdrop' })
+      toast.success('Airdrop delegated', { id: 'delegate-airdrop', duration: TERMINAL_TOAST_DURATION_MS })
       void refetchDelegates()
     } catch (err) {
       toastError('Delegate airdrop', err, { id: 'delegate-airdrop' })
@@ -241,6 +243,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       )
       toast.success(outcome === 'submitted' ? 'Revoking…' : 'Delegate removed', {
         id: 'revoke-delegate',
+        duration: TERMINAL_TOAST_DURATION_MS,
       })
       void refetchDelegates()
     } catch (err) {
@@ -331,7 +334,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
       setRecipients([])
       toast.success(
         `Airdropped to ${activeRecipients.length} recipient${activeRecipients.length !== 1 ? 's' : ''}!`,
-        { id: 'airdrop' },
+        { id: 'airdrop', duration: TERMINAL_TOAST_DURATION_MS },
       )
       // Record the airdrop server-side so it shows up in the sender's profile
       // airdrops section and recipients get an inbox notification. Kismet
@@ -407,7 +410,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               </span>
             </>
           ) : (
-            <span className="text-sm text-faint font-mono flex-1">
+            <span className="text-sm text-subtle font-mono flex-1">
               {loadingMoments ? 'loading your artworks…' : 'select an artwork'}
             </span>
           )}
@@ -456,7 +459,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
                         </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-faint font-mono text-[10px]">#{m.token_id}</span>
+                          <span className="text-subtle font-mono text-[10px]">#{m.token_id}</span>
                         </div>
                       )}
                       <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
@@ -489,7 +492,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRecipient() } }}
             placeholder="0x… wallet address"
             aria-label="Recipient wallet address"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <button
             type="button"
@@ -593,7 +596,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
         )
       })()}
 
-      <p className="text-[10px] font-mono text-[#444] text-center -mt-2">
+      <p className="text-[10px] font-mono text-subtle text-center -mt-2">
         airdrop freshly minted supply to recipients · paid from your wallet
       </p>
 
@@ -619,7 +622,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
           <p className="text-[10px] font-mono text-muted uppercase tracking-wider">
             delegate airdrop
           </p>
-          <p className="text-[10px] font-mono text-[#444]">
+          <p className="text-[10px] font-mono text-subtle">
             let another wallet airdrop this specific artwork
           </p>
           <div className="flex gap-2">
@@ -636,7 +639,7 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
               }}
               placeholder="0x… wallet address"
               aria-label="Delegate wallet address"
-              className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+              className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
             <button
               type="button"

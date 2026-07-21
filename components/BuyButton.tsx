@@ -12,7 +12,7 @@ import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { formatPrice } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
-import { toastError, isUserRejection, isUnsupportedMethodError } from '@/lib/toast'
+import { toastError, isUserRejection, isUnsupportedMethodError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
 
 interface BuyButtonProps {
@@ -186,7 +186,9 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
       })
 
       setBought(true)
-      toast.success('Purchased!', { id: 'buy' })
+      // Updates the in-flight 'buy' loading toast — explicit duration or it
+      // inherits the loading toast's infinite one and never dismisses.
+      toast.success('Purchased!', { id: 'buy', duration: TERMINAL_TOAST_DURATION_MS })
       onBought?.()
     } catch (err) {
       toastError('Purchase', err, { id: 'buy' })

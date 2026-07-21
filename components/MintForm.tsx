@@ -34,7 +34,7 @@ import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { toastError, toastChainStalled } from '@/lib/toast'
+import { toastError, toastChainStalled, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -415,6 +415,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     }
     toast.error('Authorization required', {
       id: 'mint',
+      // Longer than TERMINAL_TOAST_DURATION_MS: there's a CTA to read + click.
+      duration: 10_000,
       description:
         "This collection hasn't authorized Kismet for minting. One-time onchain grant from your wallet.",
       action: {
@@ -468,7 +470,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     if (status !== 503 || typeof data?.error !== 'string' || !/paused/i.test(data.error)) {
       return false
     }
-    toast.error('Platform is temporarily paused', { id: 'mint' })
+    toast.error('Platform is temporarily paused', {
+      id: 'mint',
+      duration: TERMINAL_TOAST_DURATION_MS,
+    })
     setStep('idle')
     setUploadProgress(0)
     return true
@@ -839,7 +844,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // (collection, content hash, sale params, splits hash). Prompts
         // wallet once before submission; the on-chain mint via inprocess
         // remains transparent to the user as before.
-        toast.loading('Confirm in wallet…', { id: 'mint' })
+        toast.loading('Confirm in wallet…', {
+          id: 'mint',
+          // Wallet security layers can't simulate our custom sign-then-relay
+          // typed data (no decoder, no verifyingContract), so they show
+          // "can't preview" / "likely to fail" warnings. Set expectations here
+          // so artists don't cancel — the 2026-07-20 incident was four
+          // warning-scared cancels across two devices.
+          description:
+            'Free signature — your wallet may warn it can’t preview it; the mint runs through Kismet’s relay.',
+        })
         const { intent } = await signMintIntent(payload, 'write')
         toast.loading('Minting artwork…', { id: 'mint' })
 
@@ -868,7 +882,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         trackFunnel('mint_success')
         setStep('done')
-        toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        // Updates the long-lived 'mint' loading toast — without an explicit
+        // duration the success inherits its infinite lifetime and never
+        // dismisses (see TERMINAL_TOAST_DURATION_MS).
+        toast.success('Minted!', {
+          id: 'mint',
+          description: `Token #${data.tokenId}`,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        })
         if (isInMiniApp) {
           hapticNotifySuccess()
           maybePromptCollectNotifs()
@@ -1254,7 +1275,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // `payload.account` actually authorized this exact payload
         // (collection, tokenURI, sale params, splits hash). Prompts
         // wallet once before submission.
-        toast.loading('Confirm in wallet…', { id: 'mint' })
+        toast.loading('Confirm in wallet…', {
+          id: 'mint',
+          // Wallet security layers can't simulate our custom sign-then-relay
+          // typed data (no decoder, no verifyingContract), so they show
+          // "can't preview" / "likely to fail" warnings. Set expectations here
+          // so artists don't cancel — the 2026-07-20 incident was four
+          // warning-scared cancels across two devices.
+          description:
+            'Free signature — your wallet may warn it can’t preview it; the mint runs through Kismet’s relay.',
+        })
         const { intent } = await signMintIntent(payload, 'mint')
         toast.loading('Minting artwork…', { id: 'mint' })
 
@@ -1288,7 +1318,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         mediaUploadRef.current = null
         trackFunnel('mint_success')
         setStep('done')
-        toast.success('Minted!', { id: 'mint', description: `Token #${data.tokenId}` })
+        // Updates the long-lived 'mint' loading toast — without an explicit
+        // duration the success inherits its infinite lifetime and never
+        // dismisses (see TERMINAL_TOAST_DURATION_MS).
+        toast.success('Minted!', {
+          id: 'mint',
+          description: `Token #${data.tokenId}`,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        })
         if (isInMiniApp) {
           hapticNotifySuccess()
           maybePromptCollectNotifs()
@@ -1303,6 +1340,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       // closure here is stale at 'idle').
       reportClientError('mint_failed', {
         phase: stepRef.current,
+        // Wallet address (public on-chain data) so multi-user incidents
+        // attribute cleanly — the 2026-07-20 cancels couldn't be told apart
+        // from admin repro attempts without it.
+        account: address ?? null,
         mode: mintMode,
         autoDeploy: isAutoDeploy,
         fileType: file?.type ?? null,
@@ -1526,7 +1567,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 <Upload size={24} className="text-muted" />
                 <div className="text-center">
                   <p className="text-xs font-mono text-muted">drop file or click to upload</p>
-                  <p className="text-xs font-mono text-faint mt-1">
+                  <p className="text-xs font-mono text-subtle mt-1">
                     image, video, gif,{' '}
                     {/* "text" is a shortcut into the writing-moment mode.
                         stopPropagation so we don't also trigger the parent
@@ -1560,7 +1601,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               onChange={(e) => setTextContent(e.target.value)}
               placeholder="write your artwork…"
               rows={12}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-none"
             />
             <div
               className={`mt-1.5 text-right text-[10px] font-mono ${
@@ -1584,7 +1625,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           onChange={(e) => setName(e.target.value)}
           placeholder="untitled"
           required
-          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
       </div>
 
@@ -1600,7 +1641,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             onChange={(e) => setDescription(e.target.value)}
             placeholder="describe your work…"
             rows={3}
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
           />
         </div>
       )}
@@ -1697,7 +1738,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={is11 ? '0' : price}
               disabled={is11}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button
               type="button"
@@ -1725,7 +1766,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={maxSupply}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
               placeholder="unlimited"
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
             {!maxSupply.trim() ? (
               <p className="text-xs text-muted font-mono mt-1">open edition</p>
@@ -1892,7 +1933,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-faint font-mono text-[10px]">
+                          <span className="text-subtle font-mono text-[10px]">
                             {shortAddress(c.address)}
                           </span>
                         </div>
@@ -1929,7 +1970,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             value={splitInput.address}
             onChange={(e) => setSplitInput((s) => ({ ...s, address: e.target.value }))}
             placeholder="0x… address"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <input
             type="number"
@@ -1939,7 +1980,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             placeholder="%"
             min="1"
             max="100"
-            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <button
             type="button"
@@ -2041,7 +2082,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${residenciesEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
           </div>
         </button>
-        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-[#444]'}`}>
+        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-subtle'}`}>
           {residenciesEnabled ? (
             editingResidencies ? (
               <input

@@ -1,7 +1,8 @@
-// Verifies the pure resolution half of /api/moments' batched on-chain price
-// fallback (lib/saleConfig.saleConfigsFromMulticall).
+// Verifies the pure resolution halves of two lib/saleConfig on-chain batch reads:
+//   1. saleConfigsFromMulticall — /api/moments' batched price fallback.
+//   2. soldOutKeysFromMulticall — the ending-soon feed's sold-out supply filter.
 //
-// WHAT IT GUARDS: the fallback now prices a whole feed page's gaps in ONE
+// WHAT IT GUARDS (1): the fallback prices a whole feed page's gaps in ONE
 // multicall (even slot = ETH FixedPriceSaleStrategy, odd = USDC ERC20Minter,
 // per token) instead of up-to-2N sequential eth_calls — the change that stops
 // the price badge from taking 3-5s on a rate-limited RPC. These checks pin the
@@ -9,11 +10,22 @@
 // saleEnd==0 "no sale" rule, and per-row failure isolation — the exact rules
 // resolveOnchainSale enforces per-token, now applied across a batch.
 //
+// WHAT IT GUARDS (2): ending-soon must drop a CAPPED edition that minted out
+// while its sale window is still open (nothing left to collect). These checks
+// pin the exhaustion rule (totalMinted >= maxSupply), the open-edition exemption
+// (0 and the max-uint64 sentinel), and the fail-OPEN bias on reverting/malformed
+// rows — the exact rules MomentCard's `mintedOut` badge uses.
+//
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-moments-batch.ts
 
 import type { Address } from 'viem'
-import { saleConfigsFromMulticall, type SaleReadSlot } from '../lib/saleConfig.ts'
-import { USDC_BASE } from '../lib/zoraMint.ts'
+import {
+  saleConfigsFromMulticall,
+  soldOutKeysFromMulticall,
+  type SaleReadSlot,
+  type TokenInfoSlot,
+} from '../lib/saleConfig.ts'
+import { USDC_BASE, OPEN_EDITION_MINT_SIZE } from '../lib/zoraMint.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -121,6 +133,84 @@ function usdcSale(price: bigint, start: bigint, end: bigint, currency: Address) 
 
 // ── 9. Empty input → empty map ──
 check('empty items → empty map', saleConfigsFromMulticall([], []).size === 0)
+
+// ── soldOutKeysFromMulticall — ending-soon supply filter ─────────────────────
+function info(maxSupply: bigint, totalMinted: bigint) {
+  return { uri: 'ar://x', maxSupply, totalMinted }
+}
+function okInfo(result: unknown): TokenInfoSlot {
+  return { status: 'success', result }
+}
+function failInfo(): TokenInfoSlot {
+  return { status: 'failure', error: new Error('reverted') }
+}
+
+// ── S1. Capped edition, fully minted → sold out ──
+{
+  const items = [{ collection: A, tokenId: 1n }]
+  const s = soldOutKeysFromMulticall([okInfo(info(100n, 100n))], items)
+  check('capped edition totalMinted==maxSupply → sold out', s.has(`${A.toLowerCase()}:1`) && s.size === 1)
+}
+
+// ── S2. Capped edition with supply left → NOT sold out ──
+{
+  const items = [{ collection: A, tokenId: 2n }]
+  const s = soldOutKeysFromMulticall([okInfo(info(100n, 99n))], items)
+  check('capped edition totalMinted<maxSupply → not sold out', s.size === 0)
+}
+
+// ── S3. Over-minted (totalMinted > maxSupply) → sold out ──
+{
+  const items = [{ collection: A, tokenId: 3n }]
+  const s = soldOutKeysFromMulticall([okInfo(info(50n, 51n))], items)
+  check('over-minted → sold out', s.has(`${A.toLowerCase()}:3`))
+}
+
+// ── S4. Open edition (maxSupply 0) → never sold out ──
+{
+  const items = [{ collection: A, tokenId: 4n }]
+  const s = soldOutKeysFromMulticall([okInfo(info(0n, 5_000n))], items)
+  check('open edition (maxSupply 0) → not sold out', s.size === 0)
+}
+
+// ── S5. Open edition (max-uint64 sentinel) → never sold out ──
+{
+  const items = [{ collection: A, tokenId: 5n }]
+  const s = soldOutKeysFromMulticall([okInfo(info(OPEN_EDITION_MINT_SIZE, OPEN_EDITION_MINT_SIZE))], items)
+  check('open edition (uint64 sentinel) → not sold out', s.size === 0)
+}
+
+// ── S6. Reverting row → fail-open (not sold out) ──
+{
+  const items = [{ collection: A, tokenId: 6n }]
+  check('reverting getTokenInfo → fail-open (not sold out)', soldOutKeysFromMulticall([failInfo()], items).size === 0)
+}
+
+// ── S7. Malformed result (missing fields) → fail-open ──
+{
+  const items = [{ collection: A, tokenId: 7n }]
+  check('malformed result → fail-open (not sold out)', soldOutKeysFromMulticall([okInfo({ uri: 'ar://x' })], items).size === 0)
+}
+
+// ── S8. Multi-item batch: correct indexing + mixed-case key lowercasing ──
+{
+  const items = [
+    { collection: A, tokenId: 1n }, // sold out
+    { collection: B, tokenId: 2n }, // supply left
+    { collection: C, tokenId: 3n }, // sold out, mixed-case collection
+  ]
+  const s = soldOutKeysFromMulticall(
+    [okInfo(info(10n, 10n)), okInfo(info(10n, 1n)), okInfo(info(3n, 3n))],
+    items,
+  )
+  check('batch: A:1 sold out', s.has(`${A.toLowerCase()}:1`))
+  check('batch: B:2 not sold out', !s.has(`${B.toLowerCase()}:2`))
+  check('batch: C:3 sold out with lowercased key', s.has(`${C.toLowerCase()}:3`) && [...s].every((k) => k === k.toLowerCase()))
+  check('batch: exactly two sold out', s.size === 2)
+}
+
+// ── S9. Empty input → empty set ──
+check('empty items → empty set', soldOutKeysFromMulticall([], []).size === 0)
 
 if (failures > 0) {
   console.error(`\n${failures} moments-batch check(s) FAILED`)

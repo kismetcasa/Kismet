@@ -395,6 +395,9 @@ export async function proxyMintRequest(
           setMomentMeta(contractAddress, tokenId, {
             creator: account,
             name: displayName,
+            // Pin the mint instant so feed ordering survives inprocess's
+            // reindex-on-edit rewriting the row's created_at (see MomentMeta).
+            createdAt: new Date().toISOString(),
             // Optional video duration probed client-side at mint time.
             // Validated as a finite positive number here; the helper
             // drops anything else from the persisted record.

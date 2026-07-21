@@ -5,7 +5,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { ADMIN_ADDRESS, CURATOR_ADDRESSES } from '@/lib/config'
 import { ADMIN_SESSION_COOKIE, adminSessionKey, adminNonceKey } from '@/lib/curator'
 import { verifySiweLogin } from '@/lib/siweLogin'
-import { errorResponse } from '@/lib/apiResponse'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 
 // 4 hours — matches the prior signature-TTL UX so admins/curators sign
 // once per work session. Stored server-side in Redis so we can revoke
@@ -69,7 +69,14 @@ export async function POST(req: NextRequest) {
   // any practical brute force. The token never leaves Redis + the cookie;
   // there's no JWT to forge offline.
   const token = randomHex(32)
-  await redis.set(adminSessionKey(token), signer, { ex: ADMIN_SESSION_TTL_SECONDS })
+  // Guarded like createSession on the user path: a Redis blip here is a
+  // retryable 503, not an unhandled 500. (The nonce consume above already
+  // fails soft via .catch(() => 0).)
+  try {
+    await redis.set(adminSessionKey(token), signer, { ex: ADMIN_SESSION_TTL_SECONDS })
+  } catch (err) {
+    return upstreamError(503, 'Temporarily unavailable — please retry', err, 'auth-login')
+  }
 
   const res = NextResponse.json({ ok: true, address: signer })
   res.cookies.set(ADMIN_SESSION_COOKIE, token, {

@@ -47,7 +47,7 @@ export function CopyAddress({ address, size = 13, className = '' }: CopyAddressP
     <button
       onClick={handleCopy}
       title={address}
-      className={`flex-shrink-0 text-[#444] hover:text-dim transition-colors ${className}`}
+      className={`flex-shrink-0 text-subtle hover:text-dim transition-colors ${className}`}
     >
       {copied
         ? <Check size={size} className="text-[#6ee7b7]" />

@@ -179,7 +179,7 @@ function PricePill({
     <PillMenu label={label} active={active}>
       {() => (
         <div className="w-56 p-2">
-          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-faint">currency</p>
+          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-subtle">currency</p>
           <div className="mb-3 flex gap-1">
             {([null, 'eth', 'usdc'] as const).map((c) => (
               <button
@@ -195,7 +195,7 @@ function PricePill({
               </button>
             ))}
           </div>
-          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-faint">
+          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-subtle">
             range {state.currency ? `(${state.currency.toUpperCase()})` : '— pick a currency'}
           </p>
           <div className="flex items-center gap-2">
@@ -207,9 +207,9 @@ function PricePill({
               disabled={!state.currency}
               onBlur={(e) => commit('priceMin', e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && commit('priceMin', (e.target as HTMLInputElement).value)}
-              className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-faint disabled:opacity-40"
+              className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-subtle disabled:opacity-40"
             />
-            <span className="font-mono text-[11px] text-faint">—</span>
+            <span className="font-mono text-[11px] text-subtle">—</span>
             <input
               key={`max-${state.priceMax ?? ''}`}
               defaultValue={state.priceMax ?? ''}
@@ -218,7 +218,7 @@ function PricePill({
               disabled={!state.currency}
               onBlur={(e) => commit('priceMax', e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && commit('priceMax', (e.target as HTMLInputElement).value)}
-              className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-faint disabled:opacity-40"
+              className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-subtle disabled:opacity-40"
             />
           </div>
         </div>
@@ -292,7 +292,7 @@ function ArtistPill({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="search artists or paste 0x…"
-            className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-faint"
+            className="w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-subtle"
           />
           <div className="mt-1 flex flex-col">
             {state.artist && (
@@ -314,7 +314,7 @@ function ArtistPill({
               />
             ))}
             {hits !== null && hits.length === 0 && !pasted && (
-              <p className="px-3 py-1.5 font-mono text-[10px] text-faint">no artists found</p>
+              <p className="px-3 py-1.5 font-mono text-[10px] text-muted">no artists found</p>
             )}
           </div>
         </div>
@@ -390,7 +390,7 @@ function FiltersDrawer({
           </button>
         </div>
 
-        <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-faint">collection</p>
+        <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-subtle">collection</p>
         <select
           value={state.collection ?? ''}
           onChange={(e) => onChange({ collection: e.target.value || null })}
@@ -404,9 +404,9 @@ function FiltersDrawer({
             </option>
           ))}
         </select>
-        {collections === null && <p className="-mt-3 mb-4 font-mono text-[10px] text-faint">loading collections…</p>}
+        {collections === null && <p className="-mt-3 mb-4 font-mono text-[10px] text-muted">loading collections…</p>}
 
-        <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-faint">min royalty %</p>
+        <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-subtle">min royalty %</p>
         <input
           key={state.royaltyMin ?? ''}
           defaultValue={state.royaltyMin ?? ''}
@@ -416,7 +416,7 @@ function FiltersDrawer({
             const v = e.target.value.trim()
             onChange({ royaltyMin: v && DECIMAL.test(v) && Number(v) <= 100 ? v : null })
           }}
-          className="mb-6 w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-2 font-mono text-[11px] text-ink outline-none placeholder:text-faint"
+          className="mb-6 w-full rounded-lg border border-line bg-[#0d0d0d] px-2 py-2 font-mono text-[11px] text-ink outline-none placeholder:text-subtle"
         />
 
         <button

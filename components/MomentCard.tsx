@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { usePendingAction } from '@/hooks/usePendingAction'
 import {
   resolveUri,
   formatPrice,
@@ -153,6 +154,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const [mounted, setMounted] = useState(false)
   const { address: connectedAddress } = useAccount()
   const ensureConnected = useEnsureConnected()
+  const armPendingAction = usePendingAction()
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
   // The "hidden" badge is a creator-self affordance — only the creator viewing
@@ -289,7 +291,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     // Resolve a connected wallet (host wallet inside a Mini App, RainbowKit
     // picker on web); null = not yet connected. See useEnsureConnected.
     const account = await ensureConnected()
-    if (!account) return
+    if (!account) {
+      // The picker is open — resume this collect once the user connects, so
+      // the first tap carries through instead of requiring a second hunt for
+      // the button (see usePendingAction).
+      armPendingAction(() => { void handleCollect() })
+      return
+    }
     // No price passed — the hook reads the live sale on-chain (authoritative).
     const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
@@ -319,6 +327,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
+  // Sold-out spotlight for viewers who HAVEN'T collected: the brand gradient
+  // moves from the price (a dead number once nothing's left) to the SOLD OUT
+  // label, which also skips the usual disabled dimming so it reads as a
+  // statement rather than a greyed-out control. Collected viewers keep the
+  // standard accent treatment — their sold-out state is a receipt, not a miss.
+  const soldOutUncollected = mintedOut && !hasCollected
   // Sale-window gating. saleStart/saleEnd are unix-second strings on the
   // active sale config; absent, "0", or the max-uint64 sentinel mean "no
   // bound". A scheduled mint isn't collectible until it opens; a closed one
@@ -330,25 +344,28 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
-  // Collection chip and sale-window badge share ONE meta row (never stack).
-  //   • chipAvailable — a curated-collection chip could render here (non-
-  //     compact, curated, named).
+  // Sale-window date + collection chip. The date now renders INLINE to the right
+  // of the creator name (non-compact) instead of on a meta row it shared
+  // exclusively with the chip, so a curated collection can show BOTH its chip
+  // AND its (live) sale window. The chip is no longer suppressed when the date
+  // shows — it renders whenever available; the date's own visibility rules are
+  // UNCHANGED from before (see showSaleDate), only its placement moved.
+  //   • chipAvailable — a curated-collection chip could render (non-compact,
+  //     curated, named).
   //   • saleWindowState — mirrors SaleWindow's own classifier, `mounted`-gated
-  //     to match its client-only output, so the server renders the chip
-  //     baseline and swaps on mount (no hydration mismatch).
-  //   • saleWindowTakesRow — the sale window owns the row for an upcoming/
-  //     active sale (scheduled / closing) always; for an ENDED sale it yields
-  //     to the collection chip when one exists, reading "Ended …" only when
-  //     there's no collection to fall back to. A live open-ended sale has no
-  //     date, so it never takes the row. A SOLD-OUT mint never shows the
-  //     window at all — the date is an urgency cue for a live collect action,
-  //     and on a mint with nothing left "Sale ends X" reads as a dead promise;
-  //     sold-out is the terminal state (the button already says it), so the
-  //     row yields back to the chip. The artwork page keeps the full window
-  //     for provenance (MomentDetailView's SaleWindow is ungated).
+  //     to match its client-only output, so the date only appears post-mount
+  //     (the chip is the stable server baseline; no hydration mismatch).
+  //   • showSaleDate — when the sale has a dated edge worth surfacing. Scheduled
+  //     ("Opens…") and closing ("Sale ends…") always qualify; an ENDED sale only
+  //     when there's no chip to fall back to (a collection keeps its identity
+  //     over a spent "Ended…"). A live open-ended sale has no date, and a
+  //     SOLD-OUT mint suppresses it ("Sale ends X" is a dead promise once
+  //     nothing's left — the button already says sold out). Identical predicate
+  //     to the pre-inline `saleWindowTakesRow`, so WHEN the date shows is
+  //     unchanged; the detail page keeps the full window (SaleWindow ungated).
   const chipAvailable = !compact && isCuratedCollection && !!collectionName
   const saleWindowState = mounted ? (getSaleWindow(activeSale)?.state ?? null) : null
-  const saleWindowTakesRow =
+  const showSaleDate =
     !mintedOut &&
     (saleWindowState === 'scheduled' ||
       saleWindowState === 'closing' ||
@@ -468,7 +485,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               onTogglePin()
             }}
             className={`absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center transition-colors ${
-              pinned ? 'text-accent' : 'text-faint hover:text-dim'
+              pinned ? 'text-accent' : 'text-subtle hover:text-dim'
             }`}
             title={pinned ? 'Unpin from profile' : 'Pin to profile'}
             aria-label={pinned ? 'Unpin from profile' : 'Pin to profile'}
@@ -587,7 +604,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               <button
                 onClick={handleCopyLink}
                 title="copy link"
-                className="text-[#444] hover:text-dim transition-colors flex items-center"
+                className="text-subtle hover:text-dim transition-colors flex items-center"
               >
                 {linkCopied
                   ? <Check size={11} className="text-[#6ee7b7]" />
@@ -600,28 +617,48 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               <a
                 href={`/moment/${moment.address}/${moment.token_id}`}
                 title="open full details page"
-                className="text-[#444] hover:text-dim transition-colors flex items-center"
+                className="text-subtle hover:text-dim transition-colors flex items-center"
               >
                 <ArrowUpRight size={11} />
               </a>
             </div>
           )}
         </div>
+        {/* Creator row — the artist chip on the left, and (non-compact, post-
+            mount) the sale window's absolute date INLINE on the right ("Opens
+            Jul 3", "Sale ends Jul 8, 5:00 PM"). Inlining it here — instead of a
+            meta row it used to share exclusively with the collection chip — is
+            what lets a curated collection surface BOTH its chip (below) and its
+            sale window. The creator link takes the remaining width and truncates;
+            the date is capped and truncates past that so a long artist name and a
+            long date can't crowd each other off the row. Compact cards keep the
+            date on its own row (see the fallback below) — there's no chip to
+            coexist with there, so inlining would only cramp the tiny row. */}
         {renderCreator && (
-          <Link
-            href={`/profile/${moment.creator.address}`}
-            onClick={(e) => e.stopPropagation()}
-            className="flex items-center gap-1.5 group/creator max-w-full"
-            title={moment.creator.address}
-          >
-            <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
-            {/* min-w-0 is what lets `truncate` actually clip — without it
-                a flex child takes its natural width and overflows. Matters
-                in grid view where cards are ~180px wide. */}
-            <span className={`${compact ? 'text-[10px]' : 'text-xs'} text-muted font-mono group-hover/creator:text-dim transition-colors truncate min-w-0`}>
-              {creatorName}
-            </span>
-          </Link>
+          <div className="flex items-center gap-2 max-w-full">
+            <Link
+              href={`/profile/${moment.creator.address}`}
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center gap-1.5 group/creator min-w-0 flex-1"
+              title={moment.creator.address}
+            >
+              <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
+              {/* min-w-0 is what lets `truncate` actually clip — without it
+                  a flex child takes its natural width and overflows. Matters
+                  in grid view where cards are ~180px wide. */}
+              <span className={`${compact ? 'text-[10px]' : 'text-xs'} text-muted font-mono group-hover/creator:text-dim transition-colors truncate min-w-0`}>
+                {creatorName}
+              </span>
+            </Link>
+            {!compact && showSaleDate && (
+              <SaleWindow
+                saleConfig={activeSale}
+                variant="card"
+                compact={compact}
+                className="shrink-0 max-w-[60%]"
+              />
+            )}
+          </div>
         )}
         {/* Collection chip — shown only for a REAL curated collection (one
             created via the Create Collection flow, or an existing collection
@@ -635,12 +672,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             every case). When the chip does render it always carries the name;
             the icon is shown alongside when we have one.
 
-            Mutually exclusive with the sale-window badge below (see
-            saleWindowTakesRow): an upcoming/active sale takes the single meta
-            row and the chip yields; an ENDED sale yields back TO the chip. The
-            chip is the server-rendered baseline; once mounted, a scheduled or
-            active sale swaps it out. */}
-        {chipAvailable && !saleWindowTakesRow && (
+            No longer mutually exclusive with the sale window (which now sits
+            inline in the creator row above): the chip renders whenever it's
+            available, so a collection shows its identity AND its sale window. */}
+        {chipAvailable && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
@@ -665,14 +700,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Sale-window badge — the absolute date the feed answers WHEN with
-            (the collect button only gates on it): "Opens Jul 3" for a scheduled
-            drop, "Sale ends Jul 8, 5:00 PM" for a live one with an end, "Ended …"
-            once closed. Compact cards show date-only; tap through for the time.
-            Rendered only when it owns the meta row (saleWindowTakesRow), so it
-            never stacks under the collection chip: hidden for live open-ended
-            sales (no date) and for an ended sale that yields to a chip. */}
-        {saleWindowTakesRow && (
+        {/* Sale-window own-row — the original placement, kept for the cases the
+            inline date above doesn't cover: compact cards (grid + featured-row
+            preview, date-only) and any card with no creator row to host it
+            (showCreator=false). Exactly one of inline / this ever renders. */}
+        {showSaleDate && (compact || !renderCreator) && (
           <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
         )}
       </div>
@@ -687,9 +719,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         <div className="px-2 pb-2 flex flex-col gap-1 mt-auto">
           {!hidePriceSupply && owned === 0 && !collected && (
             <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
-              <span className="text-[10px] font-mono accent-grad truncate">{price ?? '…'}</span>
-              <span className="text-[10px] font-mono text-faint">·</span>
-              <span className="text-[10px] font-mono text-[#444] truncate">
+              <span className={`text-[10px] font-mono truncate ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+              <span className="text-[10px] font-mono text-subtle">·</span>
+              <span className="text-[10px] font-mono text-subtle truncate">
                 {maxSupply === undefined
                   ? '…'
                   : isOpenEdition(maxSupply)
@@ -715,10 +747,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || saleNotStarted || saleEnded}
-              className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-                hasCollected
-                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                  : 'text-muted border-line accent-grad-hover'
+              className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+                soldOutUncollected
+                  ? 'accent-grad border-line'
+                  : hasCollected
+                    ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+                    : 'text-muted border-line accent-grad-hover disabled:opacity-50'
               }`}
             >
               {collectLabel}
@@ -730,10 +764,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {!showProfileCta && !hidePriceSupply && owned === 0 && !collected && (
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono accent-grad">{price ?? '…'}</span>
+                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-[#444]">
+                <span className="text-[11px] font-mono text-subtle">
                   {maxSupply === undefined
                     ? '…'
                     : isOpenEdition(maxSupply)
@@ -762,10 +796,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           <button
             onClick={handleCollect}
             disabled={collecting || mintedOut || saleNotStarted || saleEnded}
-            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${collecting ? 'cursor-not-allowed' : ''} ${
-              hasCollected
-                ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20'
-                : 'text-muted border-line accent-grad-hover transition-all'
+            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+              soldOutUncollected
+                ? 'accent-grad border-line'
+                : hasCollected
+                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+                  : 'text-muted border-line accent-grad-hover transition-all disabled:opacity-50'
             }`}
           >
             {collectLabel}

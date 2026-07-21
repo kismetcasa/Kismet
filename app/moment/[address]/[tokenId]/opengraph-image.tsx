@@ -2,6 +2,7 @@ import { ImageResponse } from 'next/og'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchMomentDetail } from '@/lib/momentDetail'
+import { getMomentContent } from '@/lib/momentContent'
 import { shareImageSource } from '@/lib/media/shareImage'
 import {
   shareCard,
@@ -44,6 +45,7 @@ export default async function Image({ params }: Props) {
   let creator = ''
   let label = 'ARTWORK'
   let imageUrl: string | undefined
+  let excerpt: string | undefined
 
   if (isAddress(address) && isValidTokenId(tokenId)) {
     // fetchMomentDetail stitches the creator field via the timeline
@@ -62,10 +64,13 @@ export default async function Image({ params }: Props) {
         creator = detail.creator.username || shortAddress(detail.creator.address)
       }
       const mime = detail.metadata?.content?.mime
-      if (mime?.startsWith('video/') || detail.metadata?.animation_url) {
-        label = 'VIDEO'
-      } else if (mime === 'text/plain') {
+      // Text FIRST: inprocess writing-moment metadata also carries an
+      // animation_url (the uploaded body), so the video branch checked ahead
+      // of it shadowed the text case and mislabeled every text mint "VIDEO".
+      if (mime?.startsWith('text/')) {
         label = 'WRITING'
+      } else if (mime?.startsWith('video/') || detail.metadata?.animation_url) {
+        label = 'VIDEO'
       }
       // Resolve the moment's poster for the hero side of the card.
       // shareImageSource applies shareImageUrl's guards (gateway mapping,
@@ -76,10 +81,23 @@ export default async function Image({ params }: Props) {
       // Satori never re-downloads a multi-MB original mid-render (the
       // failure that blanked this class's Farcaster embeds).
       imageUrl = await shareImageSource(detail.metadata?.image, detail.metadata?.animation_url)
+      // Text-only card → pull the writing body's first line from the KV
+      // mirror mint-proxy writes at mint time (setMomentContent). Doubles as
+      // a WRITING rescue for text moments whose metadata carries neither a
+      // text mime nor an image. Only probed when there's no hero image, so
+      // the common poster-backed moment pays no extra Redis read; a KV miss
+      // (pre-mirror mints, Redis blip) degrades to today's title-only card.
+      if (!imageUrl) {
+        const body = await getMomentContent(address, tokenId)
+        if (body && body.trim().length > 0) {
+          label = 'WRITING'
+          excerpt = body
+        }
+      }
     }
   }
 
-  return new ImageResponse(shareCard({ label, title, creator, imageUrl }), {
+  return new ImageResponse(shareCard({ label, title, creator, imageUrl, excerpt }), {
     ...SHARE_CARD_SIZE,
   })
 }

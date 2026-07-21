@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
+import Image from 'next/image'
 import { X } from 'lucide-react'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
@@ -25,6 +26,8 @@ import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 
 interface PlatformStats {
+  /** VISIBLE (non-hidden) artworks minted — hidden work is excluded so the
+   *  public counter matches what the feeds actually show. */
   mints: number | null
   earningsUsd: number | null
   resaleUsd: number | null
@@ -39,8 +42,13 @@ interface PlatformStats {
    *  conversion would be dishonest (price unavailable while a USDC leg > 0);
    *  a zero USDC leg needs no price at all, so pure-ETH volume never nulls. */
   volumeEth: number | null
-  /** Distinct artists who have minted (catalog census). */
+  /** Distinct artists with at least one VISIBLE artwork — hidden-only makers
+   *  excluded (catalog census visibleArtists). */
   artists: number | null
+  /** Distinct paying art collectors (passes excluded, same scope as sales).
+   *  A TRUE total by design: a sale happened whether or not the work is
+   *  hidden today. */
+  collectors: number | null
   /** Paid art editions sold (passes excluded — memberships aren't artworks). */
   editionsSold: number | null
 }
@@ -98,7 +106,7 @@ function WatchlistView({
     return (
       <div className="border border-line p-8 text-center sm:p-16">
         <p className="font-mono text-sm text-muted">nothing on your watchlist yet</p>
-        <p className="mt-2 font-mono text-xs text-faint">tap the ★ on any artwork to keep an eye on it</p>
+        <p className="mt-2 font-mono text-xs text-muted">tap the ★ on any artwork to keep an eye on it</p>
       </div>
     )
   }
@@ -138,13 +146,21 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
       : stats?.volumeEth != null
         ? fmtEth(stats.volumeEth)
         : '—'
+  // Scoping is deliberate and split: the two CATALOG rows count only VISIBLE
+  // work (hidden artworks excluded; artists whose every piece is hidden
+  // excluded) so the counters match what the feeds actually show, while the
+  // two SALES rows are TRUE totals — a sale happened whether or not the work
+  // is hidden today, and un-counting it would misstate market history.
   const rows: Array<[string, string]> = [
-    ['artists minting', count(stats?.artists)],
-    ['total mints', count(stats?.mints)],
-    // "artworks collected" counts collected edition UNITS (each copy in a
-    // wallet is an artwork collected) — deliberately not distinct works,
-    // which is what "total mints" above already counts.
-    ['artworks collected', count(stats?.editionsSold)],
+    ['artists', count(stats?.artists)],
+    ['artworks minted', count(stats?.mints)],
+    // Distinct paying collectors on art sales (sales.collectors) — art-scoped
+    // like every other counter here, so pass buyers don't inflate it.
+    ['collectors', count(stats?.collectors)],
+    // "artworks sold" counts sold edition UNITS (each copy in a collector's
+    // wallet) — deliberately not distinct works, which is what "artworks
+    // minted" above already counts.
+    ['artworks sold', count(stats?.editionsSold)],
   ]
   // Portaled to <body>: this mounts inside the sticky header, whose z-40 +
   // position (sm+) makes it a stacking context — a fixed overlay declared
@@ -169,25 +185,44 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
         >
           <X size={14} />
         </button>
-        {/* "Sales volume", not "total volume": every dollar here is a sale
-            (mint, pass, or resale fill), and next to the header's "$— earned"
-            line the sales-vs-earnings distinction has to be legible at a
-            glance. */}
-        <p className="font-mono text-[10px] uppercase tracking-widest text-faint">sales volume</p>
+        {/* "Total sales volume" — kept "sales" (every dollar here is a sale:
+            mint, pass, or resale fill) so it can't read as earnings next to
+            the header's "$— earned" line; "total" says both markets, all
+            time. Ink, not a faint kicker — the section title must be legible
+            at a glance. */}
+        <p className="font-mono text-[10px] uppercase tracking-widest text-ink">total sales volume</p>
         {/* The figure is the denomination toggle. Same precedent as the USD
             view itself: cross-currency legs convert at today's Chainlink price
             with no inline caveat (the header's "$—K earned" glance line has
-            always worked this way). */}
-        <button
-          onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
-          aria-pressed={denom === 'eth'}
-          aria-label={denom === 'usd' ? 'Show sales volume in ETH' : 'Show sales volume in USD'}
-          title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
-          className="mt-1 block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
-        >
-          {headline}
-        </button>
-        <p className="mt-1 font-mono text-[10px] text-muted">primary + secondary · all time</p>
+            always worked this way). The brand mark sits opposite — decorative
+            (empty alt + aria-hidden; the dialog itself is already labeled). */}
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <button
+            onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
+            aria-pressed={denom === 'eth'}
+            aria-label={denom === 'usd' ? 'Show sales volume in ETH' : 'Show sales volume in USD'}
+            title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
+            className="block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
+          >
+            {headline}
+          </button>
+          {/* 40px is deliberate cache alignment, not just prominence: the
+              optimizer rounds 40px to the same srcset variants (w=48 / w=96)
+              Nav's 36px logo already loaded, so the mark paints instantly
+              from cache — at 32px the retina candidate was w=64, a variant
+              nothing had fetched, which popped in on modal open. priority
+              skips the lazy-load observer tick for the same reason. */}
+          <Image
+            src="/logo.png"
+            alt=""
+            width={40}
+            height={40}
+            className="object-contain"
+            aria-hidden
+            priority
+          />
+        </div>
+        <p className="mt-1 font-mono text-[10px] text-dim">primary + secondary</p>
         <dl className="mt-5 space-y-2.5 border-t border-line pt-4">
           {rows.map(([label, value]) => (
             <div key={label} className="flex items-baseline justify-between gap-4">
@@ -346,13 +381,19 @@ export function DiscoverMarketView({
           volumeEth = usdcLeg === 0 ? ethLeg : ethUsd ? ethLeg + usdcLeg / ethUsd : null
         }
         setStats({
-          mints: typeof d?.catalog?.artworksMinted === 'number' ? d.catalog.artworksMinted : null,
+          // Visible-scoped (hidden artworks excluded) — the header glance line
+          // and the dialog's "artworks minted" must match what feeds show.
+          // Null-guarded per the deploy-window rule: a pre-field snapshot
+          // renders '—' rather than silently falling back to the hidden-
+          // inclusive total.
+          mints: typeof d?.catalog?.visibleArtworks === 'number' ? d.catalog.visibleArtworks : null,
           earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
           resaleUsd: resaleVol,
           ethUsd,
           volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
           volumeEth,
-          artists: typeof d?.catalog?.artistsMinted === 'number' ? d.catalog.artistsMinted : null,
+          artists: typeof d?.catalog?.visibleArtists === 'number' ? d.catalog.visibleArtists : null,
+          collectors: typeof d?.sales?.collectors === 'number' ? d.sales.collectors : null,
           editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
         })
       })
@@ -523,6 +564,7 @@ export function DiscoverMarketView({
                 aria-pressed={market === m}
                 onClick={() => update({ market: m }, { push: true })}
                 className={`rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+                  // a11y-ok: dark text on the accent pill (bg-accent), not the #111 surface
                   market === m ? 'bg-accent font-semibold text-[#0d0d0d]' : 'text-muted hover:text-dim'
                 }`}
               >
@@ -531,7 +573,7 @@ export function DiscoverMarketView({
             ))}
           </div>
           <div className="text-right leading-tight">
-            <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
+            <div className="font-mono text-[11px] uppercase tracking-widest text-subtle">{market} market</div>
             <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
             {/* The glance line above stays; this opens the full-figure dialog. */}
             <button
@@ -662,7 +704,7 @@ export function DiscoverMarketView({
           ) : (
             <div className="border border-line p-8 text-center sm:p-16">
               <p className="font-mono text-sm text-muted">no live resales</p>
-              <p className="mt-2 font-mono text-xs text-faint">
+              <p className="mt-2 font-mono text-xs text-muted">
                 collect on{' '}
                 <Link href="/" className="accent-grad hover:underline">
                   enjoy

@@ -4,6 +4,7 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef, type React
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { MaybeLazy } from './LazyMount'
+import { FeedSkeleton } from './FeedSkeleton'
 import { trackPerf } from '@/lib/telemetry'
 import {
   fetchPageJson,
@@ -369,17 +370,11 @@ export function PaginatedGrid<T>({
 
       {loading &&
         (skeleton ?? (
-          <div className={gridClass}>
-            {Array.from({ length: viewMode === 'grid' ? 12 : 6 }).map((_, i) => (
-              <div key={i} className="bg-[#161616] border border-line">
-                <div className="aspect-square bg-raised animate-pulse" />
-                <div className={viewMode === 'grid' ? 'p-2 space-y-1.5' : 'p-4 space-y-2'}>
-                  <div className="h-3 bg-raised animate-pulse w-2/3" />
-                  <div className="h-3 bg-raised animate-pulse w-1/3" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <FeedSkeleton
+            count={viewMode === 'grid' ? 12 : 6}
+            gridClass={gridClass}
+            bodyClass={viewMode === 'grid' ? 'p-2 space-y-1.5' : 'p-4 space-y-2'}
+          />
         ))}
 
       {error && !loading && (

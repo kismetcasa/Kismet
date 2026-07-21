@@ -201,7 +201,7 @@ export function AgentCollectPanel({
           </p>
 
           {ag.lastRun ? (
-            <p className="text-[10px] font-mono text-faint leading-relaxed">
+            <p className="text-[10px] font-mono text-subtle leading-relaxed">
               {ag.running
                 ? 'Checking your artists…'
                 : ag.lastRun.collected > 0
@@ -209,7 +209,7 @@ export function AgentCollectPanel({
                   : `Last run: ${ag.lastRun.reason ?? 'nothing to collect'}.`}
             </p>
           ) : active ? (
-            <p className="text-[10px] font-mono text-faint leading-relaxed">
+            <p className="text-[10px] font-mono text-subtle leading-relaxed">
               {ag.running ? 'Checking your artists…' : 'Runs automatically each time you open Kismet.'}
             </p>
           ) : null}
@@ -257,7 +257,7 @@ export function AgentCollectPanel({
                   <div className={`text-[11px] font-mono uppercase tracking-wider ${mode === m ? 'text-accent' : 'text-dim'}`}>
                     {m === 'patron' ? 'Patron' : 'Editions'}
                   </div>
-                  <div className="text-[10px] font-mono text-faint leading-snug mt-0.5">
+                  <div className="text-[10px] font-mono text-subtle leading-snug mt-0.5">
                     {m === 'patron' ? '1 of each new drop' : 'up to N of each drop'}
                   </div>
                 </button>
@@ -288,7 +288,7 @@ export function AgentCollectPanel({
                     }
                   }}
                   disabled={busy}
-                  className="flex-1 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                  className="flex-1 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                 />
                 <button
                   onClick={() => typedIsAddress && addArtist({ address: artistInput.trim().toLowerCase() })}
@@ -303,7 +303,7 @@ export function AgentCollectPanel({
               {!typedIsAddress && artistInput.trim().length >= 2 && (searching || results.length > 0) && (
                 <div className="absolute z-10 left-0 right-0 mt-1 bg-surface border border-line max-h-44 overflow-y-auto">
                   {searching && results.length === 0 ? (
-                    <div className="px-2 py-2 text-[10px] font-mono text-faint">searching…</div>
+                    <div className="px-2 py-2 text-[10px] font-mono text-subtle">searching…</div>
                   ) : (
                     results.map((u) => (
                       <button
@@ -313,7 +313,7 @@ export function AgentCollectPanel({
                         className="w-full text-left px-2 py-1.5 text-xs font-mono text-ink hover:bg-raised transition-colors disabled:opacity-40 flex items-center justify-between gap-2"
                       >
                         <span className="truncate">{u.username || short(u.address)}</span>
-                        <span className="text-[10px] text-faint shrink-0">{short(u.address)}</span>
+                        <span className="text-[10px] text-subtle shrink-0">{short(u.address)}</span>
                       </button>
                     ))
                   )}
@@ -332,7 +332,7 @@ export function AgentCollectPanel({
                     <button
                       onClick={() => setArtists((xs) => xs.filter((x) => x.address !== a.address))}
                       disabled={busy}
-                      className="text-faint hover:text-accent transition-colors disabled:opacity-50"
+                      className="text-subtle hover:text-accent transition-colors disabled:opacity-50"
                       aria-label="remove"
                     >
                       ×
@@ -371,7 +371,7 @@ export function AgentCollectPanel({
                   if (x === '' || /^\d*\.?\d*$/.test(x)) setAmount(x)
                 }}
                 disabled={busy}
-                className="w-20 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                className="w-20 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
               />
               <select
                 value={periodDays}
@@ -403,7 +403,7 @@ export function AgentCollectPanel({
                     if (x === '' || /^\d*\.?\d*$/.test(x)) setMaxItem(x)
                   }}
                   disabled={busy}
-                  className="w-16 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                  className="w-16 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                 />
               </div>
             </div>
@@ -418,7 +418,7 @@ export function AgentCollectPanel({
                   if (x === '' || /^\d*$/.test(x)) setMaxItems(x)
                 }}
                 disabled={busy}
-                className="w-16 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                className="w-16 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
               />
             </div>
             {mode === 'editions' && (
@@ -434,7 +434,7 @@ export function AgentCollectPanel({
                   }}
                   disabled={busy}
                   title="Up to how many of each drop to collect (1–10)"
-                  className="w-16 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+                  className="w-16 bg-surface border border-line px-2 py-1.5 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
                 />
               </div>
             )}
