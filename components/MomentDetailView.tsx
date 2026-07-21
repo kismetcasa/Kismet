@@ -66,6 +66,21 @@ function activityRowKey(c: MomentComment): string {
   return `${c.sender.toLowerCase()}:${c.timestamp}:${c.kind ?? 'collect'}`
 }
 
+// Drop rows sharing an activityRowKey, preserving first-seen order. The fetch
+// and append paths dedupe as they go; this also covers the initial state
+// seeded from the shared cache (MomentCard writes the raw page-0), so
+// `comments` is dup-free on every entry path and row keys stay unique by
+// construction.
+function dedupeActivity(rows: MomentComment[]): MomentComment[] {
+  const seen = new Set<string>()
+  return rows.filter((c) => {
+    const k = activityRowKey(c)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
 interface Props {
   address: string
   tokenId: string
@@ -145,7 +160,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       : undefined
   const textContent = useTextContent(textContentUri, initialTextContent)
   const [comments, setComments] = useState<MomentComment[]>(
-    () => getCachedComments(address, tokenId) ?? []
+    () => dedupeActivity(getCachedComments(address, tokenId) ?? [])
   )
   const [commentsLoading, setCommentsLoading] = useState(
     () => getCachedComments(address, tokenId) === undefined
@@ -521,14 +536,8 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       if (res.ok) {
         const data = await res.json()
         const fetched: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
-        const seen = new Set<string>()
-        const deduped = fetched.filter((c) => {
-          const k = activityRowKey(c)
-          if (seen.has(k)) return false
-          seen.add(k)
-          return true
-        })
-        seenCommentsRef.current = seen
+        const deduped = dedupeActivity(fetched)
+        seenCommentsRef.current = new Set(deduped.map(activityRowKey))
         // Next page starts after page 0's real comments; airdrop rows live only
         // in Kismet's fold, not inprocess's offset space, so exclude them.
         commentOffsetRef.current = fetched.filter((c) => c.kind !== 'airdrop').length
