@@ -58,6 +58,12 @@ const FANOUT_CONCURRENCY = 10
 // broken feed) — rather than issuing an unbounded eth_call whose response also
 // carries a token `uri` string per row.
 const MAX_ENDING_SOON_SUPPLY_CHECK = 80
+// Hard latency cap for that supply read — it runs on the ending-soon request's
+// critical path (the response waits on it), so a slow/rate-limited RPC must not
+// stall the feed. On timeout the read fails open (feed serves unfiltered, same
+// as an RPC error) so load time never regresses past this bound. Well above a
+// warm paid-RPC multicall (~sub-second) but far below viem's 10s default.
+const ENDING_SOON_SUPPLY_TIMEOUT_MS = 2000
 
 // Throttle for the fan-out-thinning warning below — it fires on every request
 // once the tracked set is large enough, and one line a minute is signal while
@@ -706,10 +712,12 @@ export async function GET(req: NextRequest) {
     // surface) should not show. Supply is on-chain only, so read getTokenInfo
     // for the soonest-closing survivors in ONE multicall and filter the
     // exhausted ones out. Fail-open at every step: a malformed id, a per-row
-    // revert, or a whole-multicall failure leaves the moment IN (its card still
-    // renders "sold out"), so an RPC blip can never empty a live feed. Bounded
-    // by MAX_ENDING_SOON_SUPPLY_CHECK and edge-cached (s-maxage=30 below), so
-    // this is one bounded eth_call per cache miss. resolveSoldOutKeys never
+    // revert, a whole-multicall failure, OR a timeout leaves the moment IN (its
+    // card still renders "sold out"), so an RPC blip can never empty a live feed.
+    // Bounded three ways — MAX_ENDING_SOON_SUPPLY_CHECK rows, a hard
+    // ENDING_SOON_SUPPLY_TIMEOUT_MS latency cap (this read is on the response's
+    // critical path), and the edge cache (s-maxage=30 below) — so it's one
+    // bounded, time-boxed eth_call per cache miss. resolveSoldOutKeys never
     // rejects (it catches its own multicall), so no wrapper try is needed.
     if (merged.length > 0) {
       const supplyItems: { collection: `0x${string}`; tokenId: bigint }[] = []
@@ -722,7 +730,11 @@ export async function GET(req: NextRequest) {
           // malformed token_id — skip the supply check, leave the moment in
         }
       }
-      const soldOut = await resolveSoldOutKeys(serverBaseClient(), supplyItems)
+      const soldOut = await resolveSoldOutKeys(
+        serverBaseClient(),
+        supplyItems,
+        ENDING_SOON_SUPPLY_TIMEOUT_MS,
+      )
       if (soldOut.size > 0) {
         merged = merged.filter((m: unknown) => {
           const mm = m as { address?: string; token_id?: string }
