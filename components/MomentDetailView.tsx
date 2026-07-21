@@ -1724,12 +1724,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 )}
               </>
             )}
-            {/* Mobile / mini-app: scan / share / send in line with the count
-                (send → scan → share, via the fragment's responsive order).
-                Desktop shows them in the controls band below the price, so
-                they're sm:hidden here. Rendered outside the totalMinted gate so
-                the actions never wait on the on-chain supply read. */}
-            <div className="flex items-center gap-3 sm:hidden">
+            {/* Mobile / mini-app: scan / share / send hug the RIGHT edge of the
+                "x sold" row (ml-auto), ordered send → scan → share via the
+                fragment's responsive order. Desktop shows them in the controls
+                band below the price, so they're sm:hidden here. Rendered outside
+                the totalMinted gate so the actions never wait on the on-chain
+                supply read. */}
+            <div className="ml-auto flex items-center gap-3 sm:hidden">
               {secondaryActionButtons}
             </div>
           </div>
@@ -1778,35 +1779,35 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Controls band beneath the collect button. DESKTOP: scan / share /
-              send on the left, the sale-window date centered under the collect
-              button, the admin feature toggle pinned right — one row. MOBILE /
-              mini-app: the buttons render ABOVE the price instead (see above),
-              so only the centered date + feature show here. */}
+          {/* Sale-window date — centered directly underneath the price/supply +
+              collect row. Three columns share the row so the date lands in the
+              TRUE center between two EQUAL flex-1 gutters: scan / share / send in
+              the LEFT gutter (DESKTOP only — on mobile they sit in the "x sold"
+              row above), and the admin feature toggle in the RIGHT gutter. Equal
+              gutters keep the date centered no matter what the sides hold
+              (mobile empty-left, non-admin empty-right, open-ended no-date). */}
           <div className="px-5 pb-4">
-            <div className="flex flex-wrap items-center gap-3 gap-y-2">
-              {/* Desktop only — on mobile / mini-app these live above the price. */}
-              <div className="hidden items-center gap-3 sm:flex">
-                {secondaryActionButtons}
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                {/* Desktop only — on mobile these live in the "x sold" row. */}
+                <div className="hidden items-center gap-3 sm:flex">
+                  {secondaryActionButtons}
+                </div>
               </div>
-              {/* Sale-window date — centered under the collect button. The
-                  flex-1 spacer keeps it centered (and pins the feature toggle
-                  to the right) even when there's no date to show / before
-                  mount. Hidden for live open-ended sales. */}
-              <div className="flex-1 flex justify-center">
-                <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              <div className="flex-1 flex justify-end">
+                {isAdmin && (
+                  <button
+                    onClick={() => toggleFeatured(address, tokenId)}
+                    className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
+                      isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
+                    }`}
+                  >
+                    <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                    {isFeatured ? 'unfeature' : 'feature'}
+                  </button>
+                )}
               </div>
-              {isAdmin && (
-                <button
-                  onClick={() => toggleFeatured(address, tokenId)}
-                  className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                    isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
-                  }`}
-                >
-                  <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-                  {isFeatured ? 'unfeature' : 'feature'}
-                </button>
-              )}
             </div>
             {alreadyOwned && sendOpen && (
               <div className="mt-2">
