@@ -1171,7 +1171,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       {alreadyOwned && (
         <button
           onClick={() => setSendOpen((v) => !v)}
-          className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+          // order-first: on mobile (the "x sold" row) send leads — send → scan
+          // → share. sm:order-none restores DOM order in the desktop controls
+          // band, where it reads scan → share → send.
+          className="order-first flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit sm:order-none"
         >
           <Send size={12} strokeWidth={1.5} />
           {sendOpen ? 'cancel' : 'send'}
@@ -1707,25 +1710,28 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               mints (and as the default while detail is still loading,
               since "collected" is the broader truthful term). Owned
               count sits next to it when the viewer holds any. */}
-          {totalMinted !== undefined && (
-            <div className="px-5 pb-1 flex items-center gap-3">
-              <p className="text-[10px] font-mono text-subtle uppercase tracking-widest">
-                {Number(totalMinted).toLocaleString()}{' '}
-                {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
-              </p>
-              {ownedCount > 0 && (
-                <p className="text-[10px] font-mono text-muted uppercase tracking-widest">
-                  ×{ownedCount} own
+          <div className="px-5 pb-2 flex items-center gap-3">
+            {totalMinted !== undefined && (
+              <>
+                <p className="text-[10px] font-mono text-subtle uppercase tracking-widest">
+                  {Number(totalMinted).toLocaleString()}{' '}
+                  {saleConfig && BigInt(saleConfig.pricePerToken) > 0n ? 'sold' : 'collected'}
                 </p>
-              )}
+                {ownedCount > 0 && (
+                  <p className="text-[10px] font-mono text-muted uppercase tracking-widest">
+                    ×{ownedCount} own
+                  </p>
+                )}
+              </>
+            )}
+            {/* Mobile / mini-app: scan / share / send in line with the count
+                (send → scan → share, via the fragment's responsive order).
+                Desktop shows them in the controls band below the price, so
+                they're sm:hidden here. Rendered outside the totalMinted gate so
+                the actions never wait on the on-chain supply read. */}
+            <div className="flex items-center gap-3 sm:hidden">
+              {secondaryActionButtons}
             </div>
-          )}
-
-          {/* Mobile / mini-app: scan / share / send sit ABOVE the price row.
-              Desktop relocates them into the controls band below the price
-              (the sm:flex wrapper in the secondary row), so this is sm:hidden. */}
-          <div className="flex items-center gap-3 px-5 pb-3 sm:hidden">
-            {secondaryActionButtons}
           </div>
 
           {/* Action row: [price|supply] [list] [collect] */}
