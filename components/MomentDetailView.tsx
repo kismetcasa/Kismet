@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, getSaleWindow, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -160,6 +160,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // drives the "couldn't load — retry" pane. Bumping the nonce restarts the poll.
   const [detailExhausted, setDetailExhausted] = useState(false)
   const [detailRetryNonce, setDetailRetryNonce] = useState(0)
+  // Client-only mount flag — the sale-window date row (like SaleWindow itself)
+  // is locale/timezone-formatted, so it renders only post-mount to avoid a
+  // hydration mismatch AND to keep the row from reserving height before there's
+  // a date to show (see showSaleWindowRow below).
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const textContentUri =
     detail?.metadata?.content?.mime === 'text/plain'
       ? detail.metadata.content.uri
@@ -1302,6 +1308,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     </>
   )
 
+  // Whether the sale-window date row should render at all. Mirrors SaleWindow's
+  // own decision (mounted + a dated window) so the row — and its height-
+  // reserving invisible price-box spacer — only exists when a date will show.
+  // atSec is set for scheduled/closing/ended and null for a live open-ended
+  // sale, so this is false exactly when SaleWindow would render null.
+  const showSaleWindowRow = mounted && getSaleWindow(detail?.saleConfig)?.atSec != null
+
   // The price | supply box. Rendered real in the action row, and again
   // (visibility:hidden) as the left spacer of the date row below, so the date
   // can line up under the collect button — matching this box's exact,
@@ -1917,18 +1930,22 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           </div>
 
           {/* Sale-window date — centered under the COLLECT BUTTON, not the full
-              row. This row mirrors the action row's columns: an invisible copy
-              of the price|supply box, a LIST-width spacer when the viewer owns
-              the piece, then the date centered in the collect column — so it
-              lines up under collect for owners and non-owners alike. Hidden for
-              live open-ended sales (SaleWindow renders null). */}
-          <div className="px-5 pt-1 pb-3 flex gap-2">
-            <div aria-hidden className="invisible flex-none">{priceSupplyBox}</div>
-            {alreadyOwned && <div aria-hidden className="flex-1" />}
-            <div className="flex-1 flex justify-center">
-              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              row. Gated on showSaleWindowRow so the row (and its height-
+              reserving invisible price-box spacer) exists ONLY when a date will
+              show — otherwise a live open-ended sale left an empty band here.
+              Mirrors the action row's columns: an invisible copy of the
+              price|supply box, a LIST-width spacer when the viewer owns the
+              piece, then the date centered in the collect column — so it lines
+              up under collect for owners and non-owners alike. */}
+          {showSaleWindowRow && (
+            <div className="px-5 pt-1 pb-3 flex gap-2">
+              <div aria-hidden className="invisible flex-none">{priceSupplyBox}</div>
+              {alreadyOwned && <div aria-hidden className="flex-1" />}
+              <div className="flex-1 flex justify-center">
+                <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Utility row: scan / share / send (DESKTOP — on mobile they sit in
               the "x sold" row) on the left, the admin feature toggle pinned

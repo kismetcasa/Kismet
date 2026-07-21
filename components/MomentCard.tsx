@@ -696,19 +696,24 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
-              // The artist's width yields to what the meta slot holds:
+              // The artist's width yields to what the meta slot holds — but
+              // ONLY when that slot is INLINE (non-compact); compact cards route
+              // the slot to its own row, so the artist should still fill the
+              // creator row (flex-1) there.
               //  • chip — artist takes natural width (capped so a long name
               //    can't eat the row), the chip grows into the leftover so a
               //    short artist like "Turro" makes room for a long collection.
               //  • sale — artist takes natural width so the date's mx-auto can
               //    center it (rather than being shoved right by a flex-1 name).
-              //  • no slot — artist keeps flex-1 and fills the row.
+              //  • no inline slot — artist keeps flex-1 and fills the row.
               className={`flex items-center gap-1.5 group/creator min-w-0 ${
-                metaSlot === 'chip'
-                  ? 'shrink-0 max-w-[65%]'
-                  : metaSlot === 'sale'
-                    ? 'shrink max-w-[55%]'
-                    : 'flex-1'
+                compact
+                  ? 'flex-1'
+                  : metaSlot === 'chip'
+                    ? 'shrink-0 max-w-[65%]'
+                    : metaSlot === 'sale'
+                      ? 'shrink max-w-[55%]'
+                      : 'flex-1'
               }`}
               title={moment.creator.address}
             >
