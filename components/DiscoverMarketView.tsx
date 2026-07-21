@@ -25,6 +25,8 @@ import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
 
 interface PlatformStats {
+  /** VISIBLE (non-hidden) artworks minted — hidden work is excluded so the
+   *  public counter matches what the feeds actually show. */
   mints: number | null
   earningsUsd: number | null
   resaleUsd: number | null
@@ -39,9 +41,12 @@ interface PlatformStats {
    *  conversion would be dishonest (price unavailable while a USDC leg > 0);
    *  a zero USDC leg needs no price at all, so pure-ETH volume never nulls. */
   volumeEth: number | null
-  /** Distinct artists who have minted (catalog census). */
+  /** Distinct artists with at least one VISIBLE artwork — hidden-only makers
+   *  excluded (catalog census visibleArtists). */
   artists: number | null
-  /** Distinct paying art collectors (passes excluded, same scope as sales). */
+  /** Distinct paying art collectors (passes excluded, same scope as sales).
+   *  A TRUE total by design: a sale happened whether or not the work is
+   *  hidden today. */
   collectors: number | null
   /** Paid art editions sold (passes excluded — memberships aren't artworks). */
   editionsSold: number | null
@@ -140,6 +145,11 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
       : stats?.volumeEth != null
         ? fmtEth(stats.volumeEth)
         : '—'
+  // Scoping is deliberate and split: the two CATALOG rows count only VISIBLE
+  // work (hidden artworks excluded; artists whose every piece is hidden
+  // excluded) so the counters match what the feeds actually show, while the
+  // two SALES rows are TRUE totals — a sale happened whether or not the work
+  // is hidden today, and un-counting it would misstate market history.
   const rows: Array<[string, string]> = [
     ['artists', count(stats?.artists)],
     ['artworks minted', count(stats?.mints)],
@@ -351,13 +361,18 @@ export function DiscoverMarketView({
           volumeEth = usdcLeg === 0 ? ethLeg : ethUsd ? ethLeg + usdcLeg / ethUsd : null
         }
         setStats({
-          mints: typeof d?.catalog?.artworksMinted === 'number' ? d.catalog.artworksMinted : null,
+          // Visible-scoped (hidden artworks excluded) — the header glance line
+          // and the dialog's "artworks minted" must match what feeds show.
+          // Null-guarded per the deploy-window rule: a pre-field snapshot
+          // renders '—' rather than silently falling back to the hidden-
+          // inclusive total.
+          mints: typeof d?.catalog?.visibleArtworks === 'number' ? d.catalog.visibleArtworks : null,
           earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
           resaleUsd: resaleVol,
           ethUsd,
           volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
           volumeEth,
-          artists: typeof d?.catalog?.artistsMinted === 'number' ? d.catalog.artistsMinted : null,
+          artists: typeof d?.catalog?.visibleArtists === 'number' ? d.catalog.visibleArtists : null,
           collectors: typeof d?.sales?.collectors === 'number' ? d.sales.collectors : null,
           editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
         })

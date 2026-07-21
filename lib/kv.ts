@@ -299,6 +299,34 @@ export async function setCollectionCreatedAt(
   return 'set'
 }
 
+/**
+ * Feed-ordering decision for one collection row: which instant ranks it, and
+ * whether that instant should be write-through pinned. Pure so
+ * verify-collection-rank can CI-lock the invariants:
+ *   - a stored pin (positive finite ms) always outranks the feed's
+ *     created_at — an inprocess reindex-on-edit rewrite can then never move
+ *     the row in newest-first ordering;
+ *   - without a pin, the feed's created_at ranks the row, and is offered
+ *     back as a backfill pin ONLY when a meta record already exists (never
+ *     synthesized — a partial meta would launder feed-attributed fields
+ *     into the trusted KV layer);
+ *   - no pin and no PARSEABLE created_at → Infinity, floating an
+ *     indexer-lagging fresh deploy to the top while inprocess catches up
+ *     (malformed dates get the same float instead of NaN-poisoning the sort).
+ */
+export function collectionFeedOrderTs(
+  meta: Pick<CollectionMeta, 'createdAt'> | undefined,
+  createdAtIso: string | undefined,
+): { ts: number; backfillTs: number | null } {
+  const pin = meta?.createdAt
+  if (typeof pin === 'number' && Number.isFinite(pin) && pin > 0) {
+    return { ts: pin, backfillTs: null }
+  }
+  const parsed = createdAtIso ? new Date(createdAtIso).getTime() : Number.NaN
+  if (!Number.isFinite(parsed)) return { ts: Number.POSITIVE_INFINITY, backfillTs: null }
+  return { ts: parsed, backfillTs: meta ? parsed : null }
+}
+
 // Inprocess-indexer-lag fallback for the collection page.
 export async function getCollectionMeta(
   address: string

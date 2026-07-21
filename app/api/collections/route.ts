@@ -17,6 +17,7 @@ import {
   getCollectionMeta,
   getCollectionMetaBatch,
   setCollectionCreatedAt,
+  collectionFeedOrderTs,
   markCreatedMint,
   type CollectionSource,
 } from '@/lib/kv'
@@ -260,16 +261,16 @@ export async function GET(req: NextRequest) {
     const pinsDue: { address: string; createdAt: number }[] = []
     const ranked = hydrated.map((row, i) => {
       const addr = visible[i].toLowerCase()
-      const pin = metaByAddr.get(addr)?.createdAt
-      if (typeof pin === 'number' && pin > 0) return { row, ts: pin }
-      const raw = (row as { created_at?: string }).created_at
-      const ts = raw ? new Date(raw).getTime() : Number.POSITIVE_INFINITY
-      // Backfill only rows that already HAVE a meta record (idempotent via
-      // setCollectionCreatedAt's 'skipped'/'no-record' semantics) — next
-      // request's batch read then serves the pin, so this self-quiesces.
-      if (Number.isFinite(ts) && metaByAddr.has(addr)) {
-        pinsDue.push({ address: addr, createdAt: ts })
-      }
+      // Pure decision (CI-locked by verify-collection-rank): pin wins,
+      // else feed created_at (offered back as a backfill pin only when a
+      // meta record exists — idempotent via setCollectionCreatedAt, and
+      // self-quiescing: the next request's batch read serves the pin),
+      // else Infinity floats an indexer-lagging fresh deploy to the top.
+      const { ts, backfillTs } = collectionFeedOrderTs(
+        metaByAddr.get(addr),
+        (row as { created_at?: string }).created_at,
+      )
+      if (backfillTs != null) pinsDue.push({ address: addr, createdAt: backfillTs })
       return { row, ts }
     })
     ranked.sort((a, b) => b.ts - a.ts)
