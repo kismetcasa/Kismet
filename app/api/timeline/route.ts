@@ -19,6 +19,7 @@ import { getActiveListingSnapshot } from '@/lib/listings'
 import { getRecipientSplits } from '@/lib/splits'
 import { getDelegatedMoments } from '@/lib/airdropDelegates'
 import { serverBaseClient } from '@/lib/rpc'
+import { resolveSoldOutKeys } from '@/lib/saleConfig'
 import { hasAdminBit, hasMinterBit, readPermissions } from '@/lib/permissions'
 
 // Bounded-concurrency map: cap how many inprocess /timeline fetches are in
@@ -48,10 +49,21 @@ async function mapWithConcurrency<T, R>(
 
 const FANOUT_CONCURRENCY = 10
 
+// Ending-soon sold-out check: cap the getTokenInfo supply multicall to a bounded
+// prefix of the soonest-closing active sales. The active-timed-sales set is tiny
+// by construction (see the tab's "no active timed sales right now" empty state),
+// so this comfortably covers every page a collector realistically reaches; in
+// the pathological case the far-future tail is left unchecked — those cards
+// still render their own "sold out" button — rather than issuing an unbounded
+// eth_call whose response also carries a token `uri` string per row.
+const MAX_ENDING_SOON_SUPPLY_CHECK = 80
+
 // Throttle for the fan-out-thinning warning below — it fires on every request
 // once the tracked set is large enough, and one line a minute is signal while
 // one per request is noise.
 let lastThinningWarnAt = 0
+// Same throttle for the (near-impossible) ending-soon supply-check overflow.
+let lastSoldOutCapWarnAt = 0
 
 // Per-pod memory of "collection:tokenId" members already createdAt-pinned by
 // the stitch's write-through backfill, so steady-state pages stop re-writing
@@ -687,6 +699,51 @@ export async function GET(req: NextRequest) {
       if (endA !== endB) return endA - endB
       return new Date(mb.created_at).getTime() - new Date(ma.created_at).getTime()
     })
+
+    // Drop SOLD-OUT editions. The sale-end index tracks only the sale WINDOW
+    // (real close date + started), not supply — so a CAPPED edition that minted
+    // out while its window is still open lingers here with nothing left to
+    // collect, which is exactly what "ending soon" (an urgency-to-collect
+    // surface) should not show. Supply is on-chain only, so read getTokenInfo
+    // for the soonest-closing survivors in ONE multicall and filter the
+    // exhausted ones out. Fail-open at every step: a malformed id, a per-row
+    // revert, or a whole-multicall failure leaves the moment IN (its card still
+    // renders "sold out"), so an RPC blip can never empty a live feed. Bounded
+    // by MAX_ENDING_SOON_SUPPLY_CHECK and edge-cached (s-maxage=30 below), so
+    // this is one bounded eth_call per cache miss.
+    if (merged.length > 0) {
+      const supplyItems: { collection: `0x${string}`; tokenId: bigint }[] = []
+      for (const m of merged.slice(0, MAX_ENDING_SOON_SUPPLY_CHECK)) {
+        const mm = m as { address?: string; token_id?: string }
+        if (!mm.address || mm.token_id == null) continue
+        try {
+          supplyItems.push({ collection: mm.address as `0x${string}`, tokenId: BigInt(mm.token_id) })
+        } catch {
+          // malformed token_id — skip the supply check, leave the moment in
+        }
+      }
+      if (merged.length > MAX_ENDING_SOON_SUPPLY_CHECK && Date.now() - lastSoldOutCapWarnAt > 60_000) {
+        lastSoldOutCapWarnAt = Date.now()
+        console.warn('[timeline] ending-soon supply check capped; far-future tail unchecked', {
+          active: merged.length,
+          cap: MAX_ENDING_SOON_SUPPLY_CHECK,
+        })
+      }
+      const soldOut = await resolveSoldOutKeys(serverBaseClient(), supplyItems).catch(
+        () => new Set<string>(),
+      )
+      if (soldOut.size > 0) {
+        merged = merged.filter((m: unknown) => {
+          const mm = m as { address?: string; token_id?: string }
+          if (!mm.address || mm.token_id == null) return true
+          try {
+            return !soldOut.has(`${mm.address.toLowerCase()}:${BigInt(mm.token_id).toString()}`)
+          } catch {
+            return true
+          }
+        })
+      }
+    }
   } else {
     // Default: newest first
     merged = merged.sort((a: unknown, b: unknown) => {
