@@ -344,30 +344,32 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
-  // Sale-window date placement. It renders INLINE to the right of the creator
-  // name (see the info block below) rather than on its own meta row, so a
-  // curated collection can show BOTH its chip AND its sale window — the chip is
-  // no longer mutually exclusive with the date. When there's no creator row to
-  // host it (the compact featured-row preview, showCreator=false), it falls back
-  // to its own row.
-  //   • chipAvailable — a curated-collection chip could render here (non-
-  //     compact, curated, named). Now shown whenever available.
+  // Sale-window date + collection chip. The date now renders INLINE to the right
+  // of the creator name (non-compact) instead of on a meta row it shared
+  // exclusively with the chip, so a curated collection can show BOTH its chip
+  // AND its (live) sale window. The chip is no longer suppressed when the date
+  // shows — it renders whenever available; the date's own visibility rules are
+  // UNCHANGED from before (see showSaleDate), only its placement moved.
+  //   • chipAvailable — a curated-collection chip could render (non-compact,
+  //     curated, named).
   //   • saleWindowState — mirrors SaleWindow's own classifier, `mounted`-gated
-  //     to match its client-only output, so the server renders the chip
-  //     baseline and the date only appears post-mount (no hydration mismatch).
-  //   • showSaleDate — a scheduled / closing / ended sale has a dated edge to
-  //     surface (a live open-ended sale has no date). A SOLD-OUT mint suppresses
-  //     it: the date is an urgency cue for a live collect action, and on a mint
-  //     with nothing left "Sale ends X" reads as a dead promise — sold-out is
-  //     the terminal state (the button already says it). The artwork page keeps
-  //     the full window for provenance (MomentDetailView's SaleWindow is ungated).
+  //     to match its client-only output, so the date only appears post-mount
+  //     (the chip is the stable server baseline; no hydration mismatch).
+  //   • showSaleDate — when the sale has a dated edge worth surfacing. Scheduled
+  //     ("Opens…") and closing ("Sale ends…") always qualify; an ENDED sale only
+  //     when there's no chip to fall back to (a collection keeps its identity
+  //     over a spent "Ended…"). A live open-ended sale has no date, and a
+  //     SOLD-OUT mint suppresses it ("Sale ends X" is a dead promise once
+  //     nothing's left — the button already says sold out). Identical predicate
+  //     to the pre-inline `saleWindowTakesRow`, so WHEN the date shows is
+  //     unchanged; the detail page keeps the full window (SaleWindow ungated).
   const chipAvailable = !compact && isCuratedCollection && !!collectionName
   const saleWindowState = mounted ? (getSaleWindow(activeSale)?.state ?? null) : null
   const showSaleDate =
     !mintedOut &&
     (saleWindowState === 'scheduled' ||
       saleWindowState === 'closing' ||
-      saleWindowState === 'ended')
+      (saleWindowState === 'ended' && !chipAvailable))
   const collectLabel = collecting
     ? 'collecting…'
     : mintedOut
@@ -622,14 +624,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </div>
           )}
         </div>
-        {/* Creator row — the artist chip on the left, and (post-mount) the sale
-            window's absolute date INLINE on the right ("Opens Jul 3", "Sale ends
-            Jul 8, 5:00 PM", "Ended …"). Inlining it here — instead of a separate
+        {/* Creator row — the artist chip on the left, and (non-compact, post-
+            mount) the sale window's absolute date INLINE on the right ("Opens
+            Jul 3", "Sale ends Jul 8, 5:00 PM"). Inlining it here — instead of a
             meta row it used to share exclusively with the collection chip — is
             what lets a curated collection surface BOTH its chip (below) and its
             sale window. The creator link takes the remaining width and truncates;
             the date is capped and truncates past that so a long artist name and a
-            long date can't crowd each other off the row. */}
+            long date can't crowd each other off the row. Compact cards keep the
+            date on its own row (see the fallback below) — there's no chip to
+            coexist with there, so inlining would only cramp the tiny row. */}
         {renderCreator && (
           <div className="flex items-center gap-2 max-w-full">
             <Link
@@ -646,7 +650,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 {creatorName}
               </span>
             </Link>
-            {showSaleDate && (
+            {!compact && showSaleDate && (
               <SaleWindow
                 saleConfig={activeSale}
                 variant="card"
@@ -696,10 +700,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Sale-window fallback row — only when there's no creator row to host
-            the inline date above (the compact featured-row preview, which passes
-            showCreator=false). Same date, its own row. */}
-        {!renderCreator && showSaleDate && (
+        {/* Sale-window own-row — the original placement, kept for the cases the
+            inline date above doesn't cover: compact cards (grid + featured-row
+            preview, date-only) and any card with no creator row to host it
+            (showCreator=false). Exactly one of inline / this ever renders. */}
+        {showSaleDate && (compact || !renderCreator) && (
           <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
         )}
       </div>
