@@ -57,6 +57,15 @@ import { composeMomentShareCast } from '@/lib/collectShare'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
+// Stable identity for one activity row across paginated fetches. Collect
+// comments and the airdrop rows the route folds onto page 0 share the
+// sender+timestamp space, so `kind` disambiguates. Used as the React key AND
+// for cross-page dedup, so a new collect shifting the newest-first feed can't
+// surface a boundary row twice.
+function activityRowKey(c: MomentComment): string {
+  return `${c.sender.toLowerCase()}:${c.timestamp}:${c.kind ?? 'collect'}`
+}
+
 interface Props {
   address: string
   tokenId: string
@@ -141,6 +150,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [commentsLoading, setCommentsLoading] = useState(
     () => getCachedComments(address, tokenId) === undefined
   )
+  const [loadingMoreComments, setLoadingMoreComments] = useState(false)
+  // Seeded true when comments come from the shared cache (depth is unknown, so
+  // allow a load-more that self-terminates on the first empty page); a cold
+  // page-0 fetch overwrites this with the real signal.
+  const [hasMoreComments, setHasMoreComments] = useState(
+    () => (getCachedComments(address, tokenId)?.length ?? 0) > 0
+  )
+  // Row offset into inprocess's comment feed for the NEXT page. Excludes the
+  // airdrop rows the route folds onto page 0, and advances by each page's RAW
+  // returned count (never the deduped/displayed count) so a boundary re-fetch
+  // can't stall it. null until page 0 (or a cache-restore load-more) seeds it.
+  const commentOffsetRef = useRef<number | null>(null)
+  const seenCommentsRef = useRef<Set<string> | null>(null)
   const [commentSenderProfiles, setCommentSenderProfiles] = useState<Record<string, { name: string; avatarUrl?: string }>>({})
   const [commentText, setCommentText] = useState('')
   const [collected, setCollected] = useState(false)
@@ -485,18 +507,34 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     })
   }, [creatorAddress, detail?.creator?.username])
 
-  // Fetch comments — skip if already seeded from shared cache
-  const fetchComments = useCallback(async () => {
-    if (getCachedComments(address, tokenId)) return
-    setCommentsLoading(true)
+  // Fetch page 0 of activity. Skips when already seeded from the shared cache
+  // unless `force` (post-collect refresh) — which bypasses the cache to pull
+  // the just-added comment and resets pagination to the newest page.
+  const fetchComments = useCallback(async (force = false) => {
+    if (!force && getCachedComments(address, tokenId)) return
+    // A forced refresh already has the list on screen — keep it visible and
+    // swap in place rather than blanking to the empty state.
+    if (!force) setCommentsLoading(true)
     try {
       const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        const fetched = data.comments ?? []
-        setCachedComments(address, tokenId, fetched)
-        setComments(fetched)
+        const fetched: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        const seen = new Set<string>()
+        const deduped = fetched.filter((c) => {
+          const k = activityRowKey(c)
+          if (seen.has(k)) return false
+          seen.add(k)
+          return true
+        })
+        seenCommentsRef.current = seen
+        // Next page starts after page 0's real comments; airdrop rows live only
+        // in Kismet's fold, not inprocess's offset space, so exclude them.
+        commentOffsetRef.current = fetched.filter((c) => c.kind !== 'airdrop').length
+        setHasMoreComments(fetched.some((c) => c.kind !== 'airdrop'))
+        setCachedComments(address, tokenId, deduped)
+        setComments(deduped)
       }
     } catch {
       // comments are non-critical
@@ -504,6 +542,63 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       setCommentsLoading(false)
     }
   }, [address, tokenId])
+
+  // Load the next page of activity: paginate inprocess's comment feed by row
+  // offset and append. Redis-neutral — the route folds airdrops on page 0
+  // only, so pages > 0 are pure upstream comments and touch no Kismet state.
+  const loadMoreComments = useCallback(async () => {
+    if (loadingMoreComments || !hasMoreComments) return
+    // Cache-restore path: the refs were never seeded by a page-0 fetch (the
+    // list came from the shared cache), so derive them from what's on screen.
+    let seenInit = seenCommentsRef.current
+    if (seenInit === null) {
+      seenInit = new Set(comments.map(activityRowKey))
+      seenCommentsRef.current = seenInit
+    }
+    const seen = seenInit
+    const startOffset =
+      commentOffsetRef.current ?? comments.filter((c) => c.kind !== 'airdrop').length
+    setLoadingMoreComments(true)
+    try {
+      const params = new URLSearchParams({
+        collectionAddress: address,
+        tokenId,
+        chainId: '8453',
+        offset: String(startOffset),
+      })
+      const res = await fetch(`/api/moment/comments?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        const page: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        // Advance by the RAW page size before deduping so an all-duplicate
+        // boundary page still moves the cursor forward.
+        commentOffsetRef.current = startOffset + page.length
+        // An empty page is the end of the feed. Immune to the route's per-page
+        // hidden-user filtering, which can shorten a page without ending it.
+        if (page.length === 0) {
+          setHasMoreComments(false)
+        } else {
+          const fresh = page.filter((c) => {
+            const k = activityRowKey(c)
+            if (seen.has(k)) return false
+            seen.add(k)
+            return true
+          })
+          if (fresh.length > 0) {
+            setComments((prev) => {
+              const next = [...prev, ...fresh]
+              setCachedComments(address, tokenId, next)
+              return next
+            })
+          }
+        }
+      }
+    } catch {
+      // non-critical — the button remains for a retry
+    } finally {
+      setLoadingMoreComments(false)
+    }
+  }, [address, tokenId, comments, hasMoreComments, loadingMoreComments])
 
   useEffect(() => { fetchComments() }, [fetchComments])
 
@@ -570,7 +665,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (result) {
       setCollected(true)
       setCommentText('')
-      setTimeout(fetchComments, 3000)
+      // Force past the cache so the just-added comment lands (and pagination
+      // resets to the newest page); 3s lets inprocess index the collect.
+      setTimeout(() => void fetchComments(true), 3000)
       // Refresh on-chain state immediately rather than waiting for the
       // 30s poll — chain state has moved one tick at this point.
       refetchTokenInfo().catch(() => {})
@@ -1497,7 +1594,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <div className="flex flex-col gap-2">
                 <p className="text-[10px] font-mono text-faint uppercase tracking-wider">activity</p>
                 <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
-                  {comments.map((c, i) => {
+                  {comments.map((c) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
                     const displayName = profile?.name ?? shortAddress(c.sender)
                     // Airdrop rows are gifts the recipient didn't buy. The
@@ -1508,7 +1605,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     const isAirdrop = c.kind === 'airdrop'
                     const isDefault = isPlatformCollectComment(c.comment)
                     return (
-                      <div key={i} className="flex gap-2 items-center">
+                      <div key={activityRowKey(c)} className="flex gap-2 items-center">
                         <Link href={`/profile/${c.sender}`} className="flex-shrink-0">
                           <ProfileAvatar
                             address={c.sender}
@@ -1536,6 +1633,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       </div>
                     )
                   })}
+                  {hasMoreComments && (
+                    <button
+                      type="button"
+                      onClick={() => void loadMoreComments()}
+                      disabled={loadingMoreComments}
+                      className="mt-1 self-center text-[10px] font-mono text-muted hover:text-dim transition-colors disabled:opacity-50"
+                    >
+                      {loadingMoreComments ? 'loading…' : 'load more'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}
