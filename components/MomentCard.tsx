@@ -344,29 +344,30 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
-  // Collection chip and sale-window badge share ONE meta row (never stack).
+  // Sale-window date placement. It renders INLINE to the right of the creator
+  // name (see the info block below) rather than on its own meta row, so a
+  // curated collection can show BOTH its chip AND its sale window — the chip is
+  // no longer mutually exclusive with the date. When there's no creator row to
+  // host it (the compact featured-row preview, showCreator=false), it falls back
+  // to its own row.
   //   • chipAvailable — a curated-collection chip could render here (non-
-  //     compact, curated, named).
+  //     compact, curated, named). Now shown whenever available.
   //   • saleWindowState — mirrors SaleWindow's own classifier, `mounted`-gated
   //     to match its client-only output, so the server renders the chip
-  //     baseline and swaps on mount (no hydration mismatch).
-  //   • saleWindowTakesRow — the sale window owns the row for an upcoming/
-  //     active sale (scheduled / closing) always; for an ENDED sale it yields
-  //     to the collection chip when one exists, reading "Ended …" only when
-  //     there's no collection to fall back to. A live open-ended sale has no
-  //     date, so it never takes the row. A SOLD-OUT mint never shows the
-  //     window at all — the date is an urgency cue for a live collect action,
-  //     and on a mint with nothing left "Sale ends X" reads as a dead promise;
-  //     sold-out is the terminal state (the button already says it), so the
-  //     row yields back to the chip. The artwork page keeps the full window
-  //     for provenance (MomentDetailView's SaleWindow is ungated).
+  //     baseline and the date only appears post-mount (no hydration mismatch).
+  //   • showSaleDate — a scheduled / closing / ended sale has a dated edge to
+  //     surface (a live open-ended sale has no date). A SOLD-OUT mint suppresses
+  //     it: the date is an urgency cue for a live collect action, and on a mint
+  //     with nothing left "Sale ends X" reads as a dead promise — sold-out is
+  //     the terminal state (the button already says it). The artwork page keeps
+  //     the full window for provenance (MomentDetailView's SaleWindow is ungated).
   const chipAvailable = !compact && isCuratedCollection && !!collectionName
   const saleWindowState = mounted ? (getSaleWindow(activeSale)?.state ?? null) : null
-  const saleWindowTakesRow =
+  const showSaleDate =
     !mintedOut &&
     (saleWindowState === 'scheduled' ||
       saleWindowState === 'closing' ||
-      (saleWindowState === 'ended' && !chipAvailable))
+      saleWindowState === 'ended')
   const collectLabel = collecting
     ? 'collecting…'
     : mintedOut
@@ -621,21 +622,39 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </div>
           )}
         </div>
+        {/* Creator row — the artist chip on the left, and (post-mount) the sale
+            window's absolute date INLINE on the right ("Opens Jul 3", "Sale ends
+            Jul 8, 5:00 PM", "Ended …"). Inlining it here — instead of a separate
+            meta row it used to share exclusively with the collection chip — is
+            what lets a curated collection surface BOTH its chip (below) and its
+            sale window. The creator link takes the remaining width and truncates;
+            the date is capped and truncates past that so a long artist name and a
+            long date can't crowd each other off the row. */}
         {renderCreator && (
-          <Link
-            href={`/profile/${moment.creator.address}`}
-            onClick={(e) => e.stopPropagation()}
-            className="flex items-center gap-1.5 group/creator max-w-full"
-            title={moment.creator.address}
-          >
-            <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
-            {/* min-w-0 is what lets `truncate` actually clip — without it
-                a flex child takes its natural width and overflows. Matters
-                in grid view where cards are ~180px wide. */}
-            <span className={`${compact ? 'text-[10px]' : 'text-xs'} text-muted font-mono group-hover/creator:text-dim transition-colors truncate min-w-0`}>
-              {creatorName}
-            </span>
-          </Link>
+          <div className="flex items-center gap-2 max-w-full">
+            <Link
+              href={`/profile/${moment.creator.address}`}
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center gap-1.5 group/creator min-w-0 flex-1"
+              title={moment.creator.address}
+            >
+              <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
+              {/* min-w-0 is what lets `truncate` actually clip — without it
+                  a flex child takes its natural width and overflows. Matters
+                  in grid view where cards are ~180px wide. */}
+              <span className={`${compact ? 'text-[10px]' : 'text-xs'} text-muted font-mono group-hover/creator:text-dim transition-colors truncate min-w-0`}>
+                {creatorName}
+              </span>
+            </Link>
+            {showSaleDate && (
+              <SaleWindow
+                saleConfig={activeSale}
+                variant="card"
+                compact={compact}
+                className="shrink-0 max-w-[60%]"
+              />
+            )}
+          </div>
         )}
         {/* Collection chip — shown only for a REAL curated collection (one
             created via the Create Collection flow, or an existing collection
@@ -649,12 +668,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             every case). When the chip does render it always carries the name;
             the icon is shown alongside when we have one.
 
-            Mutually exclusive with the sale-window badge below (see
-            saleWindowTakesRow): an upcoming/active sale takes the single meta
-            row and the chip yields; an ENDED sale yields back TO the chip. The
-            chip is the server-rendered baseline; once mounted, a scheduled or
-            active sale swaps it out. */}
-        {chipAvailable && !saleWindowTakesRow && (
+            No longer mutually exclusive with the sale window (which now sits
+            inline in the creator row above): the chip renders whenever it's
+            available, so a collection shows its identity AND its sale window. */}
+        {chipAvailable && (
           <Link
             href={`/collection/${moment.address}`}
             onClick={(e) => e.stopPropagation()}
@@ -679,14 +696,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </span>
           </Link>
         )}
-        {/* Sale-window badge — the absolute date the feed answers WHEN with
-            (the collect button only gates on it): "Opens Jul 3" for a scheduled
-            drop, "Sale ends Jul 8, 5:00 PM" for a live one with an end, "Ended …"
-            once closed. Compact cards show date-only; tap through for the time.
-            Rendered only when it owns the meta row (saleWindowTakesRow), so it
-            never stacks under the collection chip: hidden for live open-ended
-            sales (no date) and for an ended sale that yields to a chip. */}
-        {saleWindowTakesRow && (
+        {/* Sale-window fallback row — only when there's no creator row to host
+            the inline date above (the compact featured-row preview, which passes
+            showCreator=false). Same date, its own row. */}
+        {!renderCreator && showSaleDate && (
           <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
         )}
       </div>
