@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
+import Image from 'next/image'
 import { X } from 'lucide-react'
 import { PaginatedGrid } from './PaginatedGrid'
 import { MomentOval, ListingOval } from './MarketOvals'
@@ -184,25 +185,37 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
         >
           <X size={14} />
         </button>
-        {/* "Sales volume", not "total volume": every dollar here is a sale
-            (mint, pass, or resale fill), and next to the header's "$— earned"
-            line the sales-vs-earnings distinction has to be legible at a
-            glance. */}
-        <p className="font-mono text-[10px] uppercase tracking-widest text-subtle">sales volume</p>
+        {/* "Total sales volume" — kept "sales" (every dollar here is a sale:
+            mint, pass, or resale fill) so it can't read as earnings next to
+            the header's "$— earned" line; "total" says both markets, all
+            time. Ink, not a faint kicker — the section title must be legible
+            at a glance. */}
+        <p className="font-mono text-[10px] uppercase tracking-widest text-ink">total sales volume</p>
         {/* The figure is the denomination toggle. Same precedent as the USD
             view itself: cross-currency legs convert at today's Chainlink price
             with no inline caveat (the header's "$—K earned" glance line has
-            always worked this way). */}
-        <button
-          onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
-          aria-pressed={denom === 'eth'}
-          aria-label={denom === 'usd' ? 'Show sales volume in ETH' : 'Show sales volume in USD'}
-          title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
-          className="mt-1 block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
-        >
-          {headline}
-        </button>
-        <p className="mt-1 font-mono text-[10px] text-muted">primary + secondary · all time</p>
+            always worked this way). The brand mark sits opposite — decorative
+            (empty alt + aria-hidden; the dialog itself is already labeled). */}
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <button
+            onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
+            aria-pressed={denom === 'eth'}
+            aria-label={denom === 'usd' ? 'Show sales volume in ETH' : 'Show sales volume in USD'}
+            title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
+            className="block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
+          >
+            {headline}
+          </button>
+          <Image
+            src="/logo.png"
+            alt=""
+            width={32}
+            height={32}
+            className="object-contain"
+            aria-hidden
+          />
+        </div>
+        <p className="mt-1 font-mono text-[10px] text-dim">primary + secondary</p>
         <dl className="mt-5 space-y-2.5 border-t border-line pt-4">
           {rows.map(([label, value]) => (
             <div key={label} className="flex items-baseline justify-between gap-4">
