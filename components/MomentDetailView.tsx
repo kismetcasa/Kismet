@@ -1302,6 +1302,27 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     </>
   )
 
+  // The price | supply box. Rendered real in the action row, and again
+  // (visibility:hidden) as the left spacer of the date row below, so the date
+  // can line up under the collect button — matching this box's exact,
+  // content-dependent width without hardcoding it.
+  const priceSupplyBox = (
+    <div className="flex border border-line flex-none">
+      <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+        <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+      </div>
+      <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+        <span className="text-[11px] font-mono text-subtle">
+          {maxSupply === undefined
+            ? '…'
+            : isOpenEdition(maxSupply)
+              ? 'open'
+              : maxSupply.toLocaleString()}
+        </span>
+      </div>
+    </div>
+  )
+
   return (
     <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
 
@@ -1866,20 +1887,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
-            <div className="flex border border-line flex-none">
-              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
-              </div>
-              <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-subtle">
-                  {maxSupply === undefined
-                    ? '…'
-                    : isOpenEdition(maxSupply)
-                      ? 'open'
-                      : maxSupply.toLocaleString()}
-                </span>
-              </div>
-            </div>
+            {priceSupplyBox}
             {alreadyOwned && (
               <div className="flex-1 min-w-0">
                 <ListButton
@@ -1908,35 +1916,39 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Sale-window date — centered directly underneath the price/supply +
-              collect row. Three columns share the row so the date lands in the
-              TRUE center between two EQUAL flex-1 gutters: scan / share / send in
-              the LEFT gutter (DESKTOP only — on mobile they sit in the "x sold"
-              row above), and the admin feature toggle in the RIGHT gutter. Equal
-              gutters keep the date centered no matter what the sides hold
-              (mobile empty-left, non-admin empty-right, open-ended no-date). */}
+          {/* Sale-window date — centered under the COLLECT BUTTON, not the full
+              row. This row mirrors the action row's columns: an invisible copy
+              of the price|supply box, a LIST-width spacer when the viewer owns
+              the piece, then the date centered in the collect column — so it
+              lines up under collect for owners and non-owners alike. Hidden for
+              live open-ended sales (SaleWindow renders null). */}
+          <div className="px-5 pt-1 pb-3 flex gap-2">
+            <div aria-hidden className="invisible flex-none">{priceSupplyBox}</div>
+            {alreadyOwned && <div aria-hidden className="flex-1" />}
+            <div className="flex-1 flex justify-center">
+              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+            </div>
+          </div>
+
+          {/* Utility row: scan / share / send (DESKTOP — on mobile they sit in
+              the "x sold" row) on the left, the admin feature toggle pinned
+              right; the send form drops in below when armed. */}
           <div className="px-5 pb-4">
             <div className="flex items-center gap-3">
-              <div className="flex-1">
-                {/* Desktop only — on mobile these live in the "x sold" row. */}
-                <div className="hidden items-center gap-3 sm:flex">
-                  {secondaryActionButtons}
-                </div>
+              <div className="hidden items-center gap-3 sm:flex">
+                {secondaryActionButtons}
               </div>
-              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
-              <div className="flex-1 flex justify-end">
-                {isAdmin && (
-                  <button
-                    onClick={() => toggleFeatured(address, tokenId)}
-                    className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                      isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
-                    }`}
-                  >
-                    <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-                    {isFeatured ? 'unfeature' : 'feature'}
-                  </button>
-                )}
-              </div>
+              {isAdmin && (
+                <button
+                  onClick={() => toggleFeatured(address, tokenId)}
+                  className={`ml-auto flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
+                    isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
+                  }`}
+                >
+                  <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                  {isFeatured ? 'unfeature' : 'feature'}
+                </button>
+              )}
             </div>
             {alreadyOwned && sendOpen && (
               <div className="mt-2">

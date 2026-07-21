@@ -426,7 +426,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         <Link
           href={`/collection/${moment.address}`}
           onClick={(e) => e.stopPropagation()}
-          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? 'shrink-0 max-w-[60%]' : 'w-fit'}`}
+          // inline: grow into the space a short artist name frees (flex-1),
+          // right-aligned, truncating only when the full name genuinely can't
+          // fit. own-row: natural width.
+          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? 'flex-1 justify-end' : 'w-fit'}`}
           title={collectionName ?? undefined}
           aria-label={collectionName ?? undefined}
         >
@@ -689,7 +692,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
-              className="flex items-center gap-1.5 group/creator min-w-0 flex-1"
+              // When the collection chip owns the meta slot, the artist takes
+              // only its natural width (capped so a long name can't eat the
+              // row) and the chip grows into the leftover — so a short artist
+              // like "Turro" yields room for a long collection name. For the
+              // sale slot / no slot the artist keeps flex-1 as before.
+              className={`flex items-center gap-1.5 group/creator min-w-0 ${
+                metaSlot === 'chip' ? 'shrink-0 max-w-[65%]' : 'flex-1'
+              }`}
               title={moment.creator.address}
             >
               <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
