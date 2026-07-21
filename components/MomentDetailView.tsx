@@ -1308,33 +1308,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     </>
   )
 
-  // Whether the sale-window date row should render at all. Mirrors SaleWindow's
-  // own decision (mounted + a dated window) so the row — and its height-
-  // reserving invisible price-box spacer — only exists when a date will show.
-  // atSec is set for scheduled/closing/ended and null for a live open-ended
-  // sale, so this is false exactly when SaleWindow would render null.
+  // Whether the sale-window date should render at all. Mirrors SaleWindow's own
+  // decision (mounted + a dated window) so neither the mobile date line nor the
+  // desktop inline date reserves space when there's no date to show. atSec is
+  // set for scheduled/closing/ended and null for a live open-ended sale, so this
+  // is false exactly when SaleWindow would render null.
   const showSaleWindowRow = mounted && getSaleWindow(detail?.saleConfig)?.atSec != null
-
-  // The price | supply box. Rendered real in the action row, and again
-  // (visibility:hidden) as the left spacer of the date row below, so the date
-  // can line up under the collect button — matching this box's exact,
-  // content-dependent width without hardcoding it.
-  const priceSupplyBox = (
-    <div className="flex border border-line flex-none">
-      <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-        <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
-      </div>
-      <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-        <span className="text-[11px] font-mono text-subtle">
-          {maxSupply === undefined
-            ? '…'
-            : isOpenEdition(maxSupply)
-              ? 'open'
-              : maxSupply.toLocaleString()}
-        </span>
-      </div>
-    </div>
-  )
 
   return (
     <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
@@ -1900,7 +1879,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
-            {priceSupplyBox}
+            <div className="flex border border-line flex-none">
+              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+              </div>
+              <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+                <span className="text-[11px] font-mono text-subtle">
+                  {maxSupply === undefined
+                    ? '…'
+                    : isOpenEdition(maxSupply)
+                      ? 'open'
+                      : maxSupply.toLocaleString()}
+                </span>
+              </div>
+            </div>
             {alreadyOwned && (
               <div className="flex-1 min-w-0">
                 <ListButton
@@ -1929,46 +1921,47 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Sale-window date — centered under the COLLECT BUTTON, not the full
-              row. Gated on showSaleWindowRow so the row (and its height-
-              reserving invisible price-box spacer) exists ONLY when a date will
-              show — otherwise a live open-ended sale left an empty band here.
-              Mirrors the action row's columns: an invisible copy of the
-              price|supply box, a LIST-width spacer when the viewer owns the
-              piece, then the date centered in the collect column — so it lines
-              up under collect for owners and non-owners alike. */}
+          {/* Mobile / mini-app: sale-window date centered under the action row.
+              Its own full-width centered line — the detail label (date + time +
+              zone) is too long to sit under the collect column alone on a phone,
+              so it centers across the whole row. Desktop places the date inline
+              with the utility buttons (below), so this line is mobile-only. Gated
+              on showSaleWindowRow so nothing shows for a live open-ended sale. */}
           {showSaleWindowRow && (
-            <div className="px-5 pt-1 pb-3 flex gap-2">
-              <div aria-hidden className="invisible flex-none">{priceSupplyBox}</div>
-              {alreadyOwned && <div aria-hidden className="flex-1" />}
-              <div className="flex-1 flex justify-center">
-                <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
-              </div>
+            <div className="px-5 pt-1 pb-3 flex justify-center sm:hidden">
+              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
             </div>
           )}
 
-          {/* Utility row: scan / share / send (DESKTOP — on mobile they sit in
-              the "x sold" row) on the left, the admin feature toggle pinned
-              right; the send form drops in below when armed. */}
-          <div className="px-5 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="hidden items-center gap-3 sm:flex">
-                {secondaryActionButtons}
-              </div>
-              {isAdmin && (
-                <button
-                  onClick={() => toggleFeatured(address, tokenId)}
-                  className={`ml-auto flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                    isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
-                  }`}
-                >
-                  <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-                  {isFeatured ? 'unfeature' : 'feature'}
-                </button>
+          {/* Utility row — flex-col, so gap spans only rendered rows (a hidden
+              desktop line reserves nothing on mobile).
+              • Desktop: scan / share / send on the left, the sale date inline on
+                the right (ml-auto) — one line, so no empty band around the date.
+              • Feature toggle: admin-only, demoted to its own line directly
+                beneath the button group.
+              • Send form: drops in when armed.
+              On mobile the buttons live in the "x sold" row and the date in its
+              own line above, so this row carries only feature (admin) + the form. */}
+          <div className="px-5 pb-4 flex flex-col gap-2">
+            <div className="hidden items-center gap-3 sm:flex">
+              {secondaryActionButtons}
+              {showSaleWindowRow && (
+                <SaleWindow saleConfig={detail?.saleConfig} variant="detail" className="ml-auto" />
               )}
             </div>
+            {isAdmin && (
+              <button
+                onClick={() => toggleFeatured(address, tokenId)}
+                className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
+                  isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
+                }`}
+              >
+                <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                {isFeatured ? 'unfeature' : 'feature'}
+              </button>
+            )}
             {alreadyOwned && sendOpen && (
-              <div className="mt-2">
+              <div>
                 <div className="flex gap-2">
                   <input
                     type="text"
