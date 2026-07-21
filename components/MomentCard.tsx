@@ -417,7 +417,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           saleConfig={activeSale}
           variant="card"
           compact={compact}
-          className={inline ? 'shrink-0 max-w-[60%]' : ''}
+          // inline: mx-auto centers the date in the space the artist name
+          // leaves (auto margins split the free space), so it drifts toward
+          // center-over-collect instead of snapping to the far right — and
+          // falls back gracefully toward the right as the artist name grows.
+          className={inline ? 'mx-auto min-w-0 max-w-[70%]' : ''}
         />
       )
     }
@@ -426,7 +430,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         <Link
           href={`/collection/${moment.address}`}
           onClick={(e) => e.stopPropagation()}
-          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? 'shrink-0 max-w-[60%]' : 'w-fit'}`}
+          // inline: grow into the space a short artist name frees (flex-1),
+          // right-aligned, truncating only when the full name genuinely can't
+          // fit. own-row: natural width.
+          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? 'flex-1 justify-end' : 'w-fit'}`}
           title={collectionName ?? undefined}
           aria-label={collectionName ?? undefined}
         >
@@ -689,7 +696,25 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
-              className="flex items-center gap-1.5 group/creator min-w-0 flex-1"
+              // The artist's width yields to what the meta slot holds — but
+              // ONLY when that slot is INLINE (non-compact); compact cards route
+              // the slot to its own row, so the artist should still fill the
+              // creator row (flex-1) there.
+              //  • chip — artist takes natural width (capped so a long name
+              //    can't eat the row), the chip grows into the leftover so a
+              //    short artist like "Turro" makes room for a long collection.
+              //  • sale — artist takes natural width so the date's mx-auto can
+              //    center it (rather than being shoved right by a flex-1 name).
+              //  • no inline slot — artist keeps flex-1 and fills the row.
+              className={`flex items-center gap-1.5 group/creator min-w-0 ${
+                compact
+                  ? 'flex-1'
+                  : metaSlot === 'chip'
+                    ? 'shrink-0 max-w-[65%]'
+                    : metaSlot === 'sale'
+                      ? 'shrink max-w-[55%]'
+                      : 'flex-1'
+              }`}
               title={moment.creator.address}
             >
               <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
