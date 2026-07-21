@@ -518,3 +518,77 @@ export function saleConfigsFromMulticall(
   }
   return out
 }
+
+/** One getTokenInfo multicall slot — viem's allowFailure result shape, loosely
+ *  typed so the pure resolver below is testable with synthetic rows (no RPC). */
+export type TokenInfoSlot =
+  | { status: 'success'; result: unknown }
+  | { status: 'failure'; error?: unknown }
+
+/**
+ * Pure half of resolveSoldOutKeys (network half below) — turns a getTokenInfo
+ * multicall result array (one slot per item, SAME order) into the SET of
+ * SOLD-OUT keys (`collection:tokenId`, tokenId decimal). A key is sold out only
+ * when its edition is CAPPED (not an open edition, per isOpenEdition) AND
+ * totalMinted has reached maxSupply — the exact rule MomentCard's `mintedOut`
+ * uses, so the feed filter and the card badge can't disagree.
+ *
+ * Everything else is treated as NOT sold out: open editions, unset / reverting
+ * rows (non-Zora-1155 contracts, older versions without getTokenInfo), and
+ * malformed results. This fail-OPEN bias is deliberate — the ending-soon filter
+ * must never hide a genuinely live drop on a bad read, and a sold-out edition
+ * that slips through still renders its own "sold out" button. Split out so
+ * scripts/verify-moments-batch.ts can pin the cap/exhaustion rules with no RPC.
+ */
+export function soldOutKeysFromMulticall(
+  res: readonly TokenInfoSlot[],
+  items: { collection: Address; tokenId: bigint }[],
+): Set<string> {
+  const out = new Set<string>()
+  for (let i = 0; i < items.length; i++) {
+    const r = res[i]
+    if (r?.status !== 'success' || !r.result) continue
+    const info = r.result as { maxSupply?: bigint; totalMinted?: bigint }
+    if (typeof info.maxSupply !== 'bigint' || typeof info.totalMinted !== 'bigint') continue
+    if (isOpenEdition(info.maxSupply)) continue
+    if (info.totalMinted >= info.maxSupply) {
+      out.add(`${items[i].collection.toLowerCase()}:${items[i].tokenId.toString()}`)
+    }
+  }
+  return out
+}
+
+/**
+ * Read on-chain supply for a batch and return the SOLD-OUT subset as a set of
+ * `collection:tokenId` keys. ONE Multicall3 getTokenInfo aggregate for the
+ * whole batch (N tokens = one eth_call).
+ *
+ * Used by the ending-soon feed to drop capped editions whose supply is
+ * exhausted: the sale-end index tracks only the sale WINDOW (real close date +
+ * started), so a limited edition that minted out while its window is still open
+ * lingers there with nothing left to collect. Whole-multicall failure → empty
+ * set (fail-open: serve the feed unfiltered rather than empty on an RPC blip);
+ * per-row rules — including per-row failure isolation — live in
+ * soldOutKeysFromMulticall.
+ */
+export async function resolveSoldOutKeys(
+  client: AnyClient,
+  items: { collection: Address; tokenId: bigint }[],
+): Promise<Set<string>> {
+  if (items.length === 0) return new Set()
+  let res
+  try {
+    res = await multicall(client, {
+      contracts: items.map((it) => ({
+        address: it.collection,
+        abi: ZORA_1155_TOKEN_INFO_ABI,
+        functionName: 'getTokenInfo' as const,
+        args: [it.tokenId] as const,
+      })),
+      allowFailure: true,
+    })
+  } catch {
+    return new Set()
+  }
+  return soldOutKeysFromMulticall(res, items)
+}
