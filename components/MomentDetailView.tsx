@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -57,6 +57,30 @@ import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { composeMomentShareCast } from '@/lib/collectShare'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+
+// Stable identity for one activity row across paginated fetches. Collect
+// comments and the airdrop rows the route folds onto page 0 share the
+// sender+timestamp space, so `kind` disambiguates. Used as the React key AND
+// for cross-page dedup, so a new collect shifting the newest-first feed can't
+// surface a boundary row twice.
+function activityRowKey(c: MomentComment): string {
+  return `${c.sender.toLowerCase()}:${c.timestamp}:${c.kind ?? 'collect'}`
+}
+
+// Drop rows sharing an activityRowKey, preserving first-seen order. The fetch
+// and append paths dedupe as they go; this also covers the initial state
+// seeded from the shared cache (MomentCard writes the raw page-0), so
+// `comments` is dup-free on every entry path and row keys stay unique by
+// construction.
+function dedupeActivity(rows: MomentComment[]): MomentComment[] {
+  const seen = new Set<string>()
+  return rows.filter((c) => {
+    const k = activityRowKey(c)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
 
 interface Props {
   address: string
@@ -142,11 +166,24 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       : undefined
   const textContent = useTextContent(textContentUri, initialTextContent)
   const [comments, setComments] = useState<MomentComment[]>(
-    () => getCachedComments(address, tokenId) ?? []
+    () => dedupeActivity(getCachedComments(address, tokenId) ?? [])
   )
   const [commentsLoading, setCommentsLoading] = useState(
     () => getCachedComments(address, tokenId) === undefined
   )
+  const [loadingMoreComments, setLoadingMoreComments] = useState(false)
+  // Seeded true when comments come from the shared cache (depth is unknown, so
+  // allow a load-more that self-terminates on the first empty page); a cold
+  // page-0 fetch overwrites this with the real signal.
+  const [hasMoreComments, setHasMoreComments] = useState(
+    () => (getCachedComments(address, tokenId)?.length ?? 0) > 0
+  )
+  // Row offset into inprocess's comment feed for the NEXT page. Excludes the
+  // airdrop rows the route folds onto page 0, and advances by each page's RAW
+  // returned count (never the deduped/displayed count) so a boundary re-fetch
+  // can't stall it. null until page 0 (or a cache-restore load-more) seeds it.
+  const commentOffsetRef = useRef<number | null>(null)
+  const seenCommentsRef = useRef<Set<string> | null>(null)
   const [commentSenderProfiles, setCommentSenderProfiles] = useState<Record<string, { name: string; avatarUrl?: string }>>({})
   const [commentText, setCommentText] = useState('')
   const [collected, setCollected] = useState(false)
@@ -519,18 +556,28 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     })
   }, [creatorAddress, detail?.creator?.username])
 
-  // Fetch comments — skip if already seeded from shared cache
-  const fetchComments = useCallback(async () => {
-    if (getCachedComments(address, tokenId)) return
-    setCommentsLoading(true)
+  // Fetch page 0 of activity. Skips when already seeded from the shared cache
+  // unless `force` (post-collect refresh) — which bypasses the cache to pull
+  // the just-added comment and resets pagination to the newest page.
+  const fetchComments = useCallback(async (force = false) => {
+    if (!force && getCachedComments(address, tokenId)) return
+    // A forced refresh already has the list on screen — keep it visible and
+    // swap in place rather than blanking to the empty state.
+    if (!force) setCommentsLoading(true)
     try {
       const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        const fetched = data.comments ?? []
-        setCachedComments(address, tokenId, fetched)
-        setComments(fetched)
+        const fetched: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        const deduped = dedupeActivity(fetched)
+        seenCommentsRef.current = new Set(deduped.map(activityRowKey))
+        // Next page starts after page 0's real comments; airdrop rows live only
+        // in Kismet's fold, not inprocess's offset space, so exclude them.
+        commentOffsetRef.current = fetched.filter((c) => c.kind !== 'airdrop').length
+        setHasMoreComments(fetched.some((c) => c.kind !== 'airdrop'))
+        setCachedComments(address, tokenId, deduped)
+        setComments(deduped)
       }
     } catch {
       // comments are non-critical
@@ -538,6 +585,76 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       setCommentsLoading(false)
     }
   }, [address, tokenId])
+
+  // Load the next page of activity: paginate inprocess's comment feed by row
+  // offset and append. Redis-neutral — the route folds airdrops on page 0
+  // only, so pages > 0 are pure upstream comments and touch no Kismet state.
+  const loadMoreComments = useCallback(async () => {
+    if (loadingMoreComments || !hasMoreComments) return
+    // Cache-restore path: the refs were never seeded by a page-0 fetch (the
+    // list came from the shared cache), so derive them from what's on screen.
+    let seenInit = seenCommentsRef.current
+    if (seenInit === null) {
+      seenInit = new Set(comments.map(activityRowKey))
+      seenCommentsRef.current = seenInit
+    }
+    const seen = seenInit
+    const startOffset =
+      commentOffsetRef.current ?? comments.filter((c) => c.kind !== 'airdrop').length
+    setLoadingMoreComments(true)
+    try {
+      const params = new URLSearchParams({
+        collectionAddress: address,
+        tokenId,
+        chainId: '8453',
+        offset: String(startOffset),
+      })
+      const res = await fetch(`/api/moment/comments?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        const page: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        // Advance by the RAW page size before deduping so an all-duplicate
+        // boundary page still moves the cursor forward.
+        commentOffsetRef.current = startOffset + page.length
+        // An empty page is the end of the feed. Immune to the route's per-page
+        // hidden-user filtering, which can shorten a page without ending it.
+        if (page.length === 0) {
+          setHasMoreComments(false)
+        } else {
+          const fresh = page.filter((c) => {
+            const k = activityRowKey(c)
+            if (seen.has(k)) return false
+            seen.add(k)
+            return true
+          })
+          if (fresh.length > 0) {
+            setComments((prev) => {
+              const next = [...prev, ...fresh]
+              // Airdrop rows are folded onto page 0 only, so a later (older)
+              // comment page can carry rows that belong BELOW an already-shown
+              // airdrop. Re-sort by normalized timestamp — the exact comparator
+              // the route applies to page 0 (lib inprocess normalizeTimestampMs,
+              // `|| 0` NaN guard) — but only when an airdrop is present, so pure-
+              // comment feeds keep inprocess's order untouched and never reflow.
+              if (next.some((c) => c.kind === 'airdrop')) {
+                next.sort(
+                  (x, y) =>
+                    (normalizeTimestampMs(y.timestamp) || 0) -
+                    (normalizeTimestampMs(x.timestamp) || 0),
+                )
+              }
+              setCachedComments(address, tokenId, next)
+              return next
+            })
+          }
+        }
+      }
+    } catch {
+      // non-critical — the button remains for a retry
+    } finally {
+      setLoadingMoreComments(false)
+    }
+  }, [address, tokenId, comments, hasMoreComments, loadingMoreComments])
 
   useEffect(() => { fetchComments() }, [fetchComments])
 
@@ -609,7 +726,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (result) {
       setCollected(true)
       setCommentText('')
-      setTimeout(fetchComments, 3000)
+      // Force past the cache so the just-added comment lands (and pagination
+      // resets to the newest page); 3s lets inprocess index the collect.
+      setTimeout(() => void fetchComments(true), 3000)
       // Refresh on-chain state immediately rather than waiting for the
       // 30s poll — chain state has moved one tick at this point.
       refetchTokenInfo().catch(() => {})
@@ -1563,7 +1682,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <div className="flex flex-col gap-2">
                 <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">activity</p>
                 <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
-                  {comments.map((c, i) => {
+                  {comments.map((c) => {
                     const profile = commentSenderProfiles[c.sender.toLowerCase()]
                     const displayName = profile?.name ?? shortAddress(c.sender)
                     // Airdrop rows are gifts the recipient didn't buy. The
@@ -1574,7 +1693,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     const isAirdrop = c.kind === 'airdrop'
                     const isDefault = isPlatformCollectComment(c.comment)
                     return (
-                      <div key={i} className="flex gap-2 items-center">
+                      <div key={activityRowKey(c)} className="flex gap-2 items-center">
                         <Link href={`/profile/${c.sender}`} className="flex-shrink-0">
                           <ProfileAvatar
                             address={c.sender}
@@ -1602,6 +1721,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                       </div>
                     )
                   })}
+                  {hasMoreComments && (
+                    <button
+                      type="button"
+                      onClick={() => void loadMoreComments()}
+                      disabled={loadingMoreComments}
+                      className="mt-1 self-center text-[10px] font-mono text-muted hover:text-dim transition-colors disabled:opacity-50"
+                    >
+                      {loadingMoreComments ? 'loading…' : 'load more'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -1685,6 +1814,77 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
+          {/* Secondary actions: scan / share (+ send when owned) — placed
+              ABOVE the collect row so the layout is identical on mobile web and
+              in the Mini App overlay (whose top-right corner is owned by the
+              close X). Share always renders so any viewer can copy the link. */}
+          <div className="px-5 pt-1 pb-2">
+            <div className="flex flex-wrap items-center gap-3 gap-y-2">
+              <button
+                onClick={handleCopyScan}
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+                title="Copy BaseScan link"
+              >
+                <Square size={12} strokeWidth={1.5} />
+                {scanCopied ? 'copied' : 'scan'}
+              </button>
+              <button
+                onClick={handleShare}
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+              >
+                {linkCopied
+                  ? <Check size={12} className="text-[#6ee7b7]" />
+                  : <Copy size={12} strokeWidth={1.5} />}
+                {linkCopied ? 'copied' : 'share'}
+              </button>
+              {alreadyOwned && (
+                <button
+                  onClick={() => setSendOpen((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+                >
+                  <Send size={12} strokeWidth={1.5} />
+                  {sendOpen ? 'cancel' : 'send'}
+                </button>
+              )}
+            </div>
+            {alreadyOwned && sendOpen && (
+              <div className="mt-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={sendTo}
+                    onChange={(e) => setSendTo(e.target.value)}
+                    placeholder="0x address or name.eth"
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!sendToValid || sending}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+                  >
+                    {sending ? '…' : 'confirm'}
+                  </button>
+                </div>
+                {trimmedSendTo && (
+                  <div className="mt-1.5 text-[10px] font-mono">
+                    {resolvingSendTo ? (
+                      <span className="text-muted">resolving…</span>
+                    ) : isSelfSend ? (
+                      <span className="text-red-400">cannot send to yourself</span>
+                    ) : sendToError ? (
+                      <span className="text-red-400">{sendToError}</span>
+                    ) : resolvedSendTo && looksLikeEns ? (
+                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
             <div className="flex border border-line flex-none">
@@ -1729,42 +1929,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Secondary actions row: scan / share (+ send when owned) on the
-              left, the sale-window date centered under the collect button, and
-              the admin feature toggle pinned right — one band beneath collect.
-              Share always renders so every viewer can copy the moment link. */}
+          {/* Sale-window date centered under collect; admin feature toggle
+              pinned right. Scan / share / send now sit ABOVE the collect row
+              (see the block before the action row). */}
           <div className="px-5 pb-4">
             <div className="flex flex-wrap items-center gap-3 gap-y-2">
-              <button
-                onClick={handleCopyScan}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                title="Copy BaseScan link"
-              >
-                <Square size={12} strokeWidth={1.5} />
-                {scanCopied ? 'copied' : 'scan'}
-              </button>
-              <button
-                onClick={handleShare}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-              >
-                {linkCopied
-                  ? <Check size={12} className="text-[#6ee7b7]" />
-                  : <Copy size={12} strokeWidth={1.5} />}
-                {linkCopied ? 'copied' : 'share'}
-              </button>
-              {alreadyOwned && (
-                <button
-                  onClick={() => setSendOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                >
-                  <Send size={12} strokeWidth={1.5} />
-                  {sendOpen ? 'cancel' : 'send'}
-                </button>
-              )}
-              {/* Sale-window date — centered under the collect button. The
-                  flex-1 spacer keeps it centered (and pins the feature toggle
-                  to the right) even when there's no date to show / before
-                  mount. Hidden for live open-ended sales. */}
               <div className="flex-1 flex justify-center">
                 <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
               </div>
@@ -1780,42 +1949,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </button>
               )}
             </div>
-            {alreadyOwned && sendOpen && (
-              <div className="mt-2">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={sendTo}
-                    onChange={(e) => setSendTo(e.target.value)}
-                    placeholder="0x address or name.eth"
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
-                  >
-                    {sending ? '…' : 'confirm'}
-                  </button>
-                </div>
-                {trimmedSendTo && (
-                  <div className="mt-1.5 text-[10px] font-mono">
-                    {resolvingSendTo ? (
-                      <span className="text-muted">resolving…</span>
-                    ) : isSelfSend ? (
-                      <span className="text-red-400">cannot send to yourself</span>
-                    ) : sendToError ? (
-                      <span className="text-red-400">{sendToError}</span>
-                    ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
         </div>
