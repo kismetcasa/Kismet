@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -587,6 +587,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           if (fresh.length > 0) {
             setComments((prev) => {
               const next = [...prev, ...fresh]
+              // Airdrop rows are folded onto page 0 only, so a later (older)
+              // comment page can carry rows that belong BELOW an already-shown
+              // airdrop. Re-sort by normalized timestamp — the exact comparator
+              // the route applies to page 0 (lib inprocess normalizeTimestampMs,
+              // `|| 0` NaN guard) — but only when an airdrop is present, so pure-
+              // comment feeds keep inprocess's order untouched and never reflow.
+              if (next.some((c) => c.kind === 'airdrop')) {
+                next.sort(
+                  (x, y) =>
+                    (normalizeTimestampMs(y.timestamp) || 0) -
+                    (normalizeTimestampMs(x.timestamp) || 0),
+                )
+              }
               setCachedComments(address, tokenId, next)
               return next
             })
