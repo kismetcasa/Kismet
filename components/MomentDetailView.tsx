@@ -1144,6 +1144,42 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     )
   }
 
+  // scan / share (+ send when owned). One fragment, two positions: ABOVE the
+  // price row on mobile / mini-app, and inside the controls band BELOW the price
+  // on desktop (see the two call sites). Sharing the fragment keeps the buttons
+  // and their handlers identical across both — only one set is ever visible
+  // (the other is display:none via the breakpoint), so no double-firing.
+  const secondaryActionButtons = (
+    <>
+      <button
+        onClick={handleCopyScan}
+        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+        title="Copy BaseScan link"
+      >
+        <Square size={12} strokeWidth={1.5} />
+        {scanCopied ? 'copied' : 'scan'}
+      </button>
+      <button
+        onClick={handleShare}
+        className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+      >
+        {linkCopied
+          ? <Check size={12} className="text-[#6ee7b7]" />
+          : <Copy size={12} strokeWidth={1.5} />}
+        {linkCopied ? 'copied' : 'share'}
+      </button>
+      {alreadyOwned && (
+        <button
+          onClick={() => setSendOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+        >
+          <Send size={12} strokeWidth={1.5} />
+          {sendOpen ? 'cancel' : 'send'}
+        </button>
+      )}
+    </>
+  )
+
   return (
     <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
 
@@ -1685,6 +1721,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
+          {/* Mobile / mini-app: scan / share / send sit ABOVE the price row.
+              Desktop relocates them into the controls band below the price
+              (the sm:flex wrapper in the secondary row), so this is sm:hidden. */}
+          <div className="flex items-center gap-3 px-5 pb-3 sm:hidden">
+            {secondaryActionButtons}
+          </div>
+
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
             <div className="flex border border-line flex-none">
@@ -1729,38 +1772,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Secondary actions row: scan / share (+ send when owned) on the
-              left, the sale-window date centered under the collect button, and
-              the admin feature toggle pinned right — one band beneath collect.
-              Share always renders so every viewer can copy the moment link. */}
+          {/* Controls band beneath the collect button. DESKTOP: scan / share /
+              send on the left, the sale-window date centered under the collect
+              button, the admin feature toggle pinned right — one row. MOBILE /
+              mini-app: the buttons render ABOVE the price instead (see above),
+              so only the centered date + feature show here. */}
           <div className="px-5 pb-4">
             <div className="flex flex-wrap items-center gap-3 gap-y-2">
-              <button
-                onClick={handleCopyScan}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                title="Copy BaseScan link"
-              >
-                <Square size={12} strokeWidth={1.5} />
-                {scanCopied ? 'copied' : 'scan'}
-              </button>
-              <button
-                onClick={handleShare}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-              >
-                {linkCopied
-                  ? <Check size={12} className="text-[#6ee7b7]" />
-                  : <Copy size={12} strokeWidth={1.5} />}
-                {linkCopied ? 'copied' : 'share'}
-              </button>
-              {alreadyOwned && (
-                <button
-                  onClick={() => setSendOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                >
-                  <Send size={12} strokeWidth={1.5} />
-                  {sendOpen ? 'cancel' : 'send'}
-                </button>
-              )}
+              {/* Desktop only — on mobile / mini-app these live above the price. */}
+              <div className="hidden items-center gap-3 sm:flex">
+                {secondaryActionButtons}
+              </div>
               {/* Sale-window date — centered under the collect button. The
                   flex-1 spacer keeps it centered (and pins the feature toggle
                   to the right) even when there's no date to show / before
