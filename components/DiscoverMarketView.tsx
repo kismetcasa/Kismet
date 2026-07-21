@@ -206,13 +206,20 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
           >
             {headline}
           </button>
+          {/* 40px is deliberate cache alignment, not just prominence: the
+              optimizer rounds 40px to the same srcset variants (w=48 / w=96)
+              Nav's 36px logo already loaded, so the mark paints instantly
+              from cache — at 32px the retina candidate was w=64, a variant
+              nothing had fetched, which popped in on modal open. priority
+              skips the lazy-load observer tick for the same reason. */}
           <Image
             src="/logo.png"
             alt=""
-            width={32}
-            height={32}
+            width={40}
+            height={40}
             className="object-contain"
             aria-hidden
+            priority
           />
         </div>
         <p className="mt-1 font-mono text-[10px] text-dim">primary + secondary</p>
