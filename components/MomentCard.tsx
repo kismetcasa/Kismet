@@ -417,7 +417,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           saleConfig={activeSale}
           variant="card"
           compact={compact}
-          className={inline ? 'shrink-0 max-w-[60%]' : ''}
+          // inline: mx-auto centers the date in the space the artist name
+          // leaves (auto margins split the free space), so it drifts toward
+          // center-over-collect instead of snapping to the far right — and
+          // falls back gracefully toward the right as the artist name grows.
+          className={inline ? 'mx-auto min-w-0 max-w-[70%]' : ''}
         />
       )
     }
@@ -692,13 +696,19 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
-              // When the collection chip owns the meta slot, the artist takes
-              // only its natural width (capped so a long name can't eat the
-              // row) and the chip grows into the leftover — so a short artist
-              // like "Turro" yields room for a long collection name. For the
-              // sale slot / no slot the artist keeps flex-1 as before.
+              // The artist's width yields to what the meta slot holds:
+              //  • chip — artist takes natural width (capped so a long name
+              //    can't eat the row), the chip grows into the leftover so a
+              //    short artist like "Turro" makes room for a long collection.
+              //  • sale — artist takes natural width so the date's mx-auto can
+              //    center it (rather than being shoved right by a flex-1 name).
+              //  • no slot — artist keeps flex-1 and fills the row.
               className={`flex items-center gap-1.5 group/creator min-w-0 ${
-                metaSlot === 'chip' ? 'shrink-0 max-w-[65%]' : 'flex-1'
+                metaSlot === 'chip'
+                  ? 'shrink-0 max-w-[65%]'
+                  : metaSlot === 'sale'
+                    ? 'shrink max-w-[55%]'
+                    : 'flex-1'
               }`}
               title={moment.creator.address}
             >
