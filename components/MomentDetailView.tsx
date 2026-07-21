@@ -1748,6 +1748,77 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
+          {/* Secondary actions: scan / share (+ send when owned) — placed
+              ABOVE the collect row so the layout is identical on mobile web and
+              in the Mini App overlay (whose top-right corner is owned by the
+              close X). Share always renders so any viewer can copy the link. */}
+          <div className="px-5 pt-1 pb-2">
+            <div className="flex flex-wrap items-center gap-3 gap-y-2">
+              <button
+                onClick={handleCopyScan}
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+                title="Copy BaseScan link"
+              >
+                <Square size={12} strokeWidth={1.5} />
+                {scanCopied ? 'copied' : 'scan'}
+              </button>
+              <button
+                onClick={handleShare}
+                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+              >
+                {linkCopied
+                  ? <Check size={12} className="text-[#6ee7b7]" />
+                  : <Copy size={12} strokeWidth={1.5} />}
+                {linkCopied ? 'copied' : 'share'}
+              </button>
+              {alreadyOwned && (
+                <button
+                  onClick={() => setSendOpen((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
+                >
+                  <Send size={12} strokeWidth={1.5} />
+                  {sendOpen ? 'cancel' : 'send'}
+                </button>
+              )}
+            </div>
+            {alreadyOwned && sendOpen && (
+              <div className="mt-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={sendTo}
+                    onChange={(e) => setSendTo(e.target.value)}
+                    placeholder="0x address or name.eth"
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted"
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!sendToValid || sending}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+                  >
+                    {sending ? '…' : 'confirm'}
+                  </button>
+                </div>
+                {trimmedSendTo && (
+                  <div className="mt-1.5 text-[10px] font-mono">
+                    {resolvingSendTo ? (
+                      <span className="text-muted">resolving…</span>
+                    ) : isSelfSend ? (
+                      <span className="text-red-400">cannot send to yourself</span>
+                    ) : sendToError ? (
+                      <span className="text-red-400">{sendToError}</span>
+                    ) : resolvedSendTo && looksLikeEns ? (
+                      <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
             <div className="flex border border-line flex-none">
@@ -1790,42 +1861,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Secondary actions row: scan / share (+ send when owned) on the
-              left, the sale-window date centered under the collect button, and
-              the admin feature toggle pinned right — one band beneath collect.
-              Share always renders so every viewer can copy the moment link. */}
+          {/* Sale-window date centered under collect; admin feature toggle
+              pinned right. Scan / share / send now sit ABOVE the collect row
+              (see the block before the action row). */}
           <div className="px-5 pb-4">
             <div className="flex flex-wrap items-center gap-3 gap-y-2">
-              <button
-                onClick={handleCopyScan}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                title="Copy BaseScan link"
-              >
-                <Square size={12} strokeWidth={1.5} />
-                {scanCopied ? 'copied' : 'scan'}
-              </button>
-              <button
-                onClick={handleShare}
-                className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-              >
-                {linkCopied
-                  ? <Check size={12} className="text-[#6ee7b7]" />
-                  : <Copy size={12} strokeWidth={1.5} />}
-                {linkCopied ? 'copied' : 'share'}
-              </button>
-              {alreadyOwned && (
-                <button
-                  onClick={() => setSendOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-mono text-muted hover:text-dim transition-colors w-fit"
-                >
-                  <Send size={12} strokeWidth={1.5} />
-                  {sendOpen ? 'cancel' : 'send'}
-                </button>
-              )}
-              {/* Sale-window date — centered under the collect button. The
-                  flex-1 spacer keeps it centered (and pins the feature toggle
-                  to the right) even when there's no date to show / before
-                  mount. Hidden for live open-ended sales. */}
               <div className="flex-1 flex justify-center">
                 <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
               </div>
@@ -1841,42 +1881,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </button>
               )}
             </div>
-            {alreadyOwned && sendOpen && (
-              <div className="mt-2">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={sendTo}
-                    onChange={(e) => setSendTo(e.target.value)}
-                    placeholder="0x address or name.eth"
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-faint focus:outline-none focus:border-muted"
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
-                  >
-                    {sending ? '…' : 'confirm'}
-                  </button>
-                </div>
-                {trimmedSendTo && (
-                  <div className="mt-1.5 text-[10px] font-mono">
-                    {resolvingSendTo ? (
-                      <span className="text-muted">resolving…</span>
-                    ) : isSelfSend ? (
-                      <span className="text-red-400">cannot send to yourself</span>
-                    ) : sendToError ? (
-                      <span className="text-red-400">{sendToError}</span>
-                    ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-[#666]">→ {shortAddress(resolvedSendTo)}</span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
         </div>
