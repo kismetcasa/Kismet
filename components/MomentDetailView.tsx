@@ -1954,7 +1954,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               On mobile the buttons live in the "x sold" row and the date in its
               own line above, so this row carries only feature (admin) + the form. */}
           <div className="px-5 pb-4 flex flex-col gap-2">
-            <div className="hidden items-center gap-2 sm:flex">
+            {/* flex-wrap: the nowrap date label is ~228px — wider than the whole
+                collect column on the narrowest md panels (info column is ~368px
+                at a 768px viewport). Wrapping lets the date column drop to its
+                own full-width centered line exactly when it can't fit beside the
+                buttons (panel ≲ 425px), instead of overflowing the panel edge /
+                overlapping the send button. At every wider width the row lays
+                out single-line and the wrap is inert. */}
+            <div className="hidden flex-wrap items-center gap-2 sm:flex">
               {/* Column 1 = the action row's price|supply column, by construction:
                   a grid-stacked invisible copy of the box (h-0 → contributes its
                   exact width but NO height) with the buttons in the same cell
