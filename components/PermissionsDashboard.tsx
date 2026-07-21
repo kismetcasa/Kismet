@@ -288,7 +288,7 @@ function PermissionRow({
         </div>
       ) : (
         <div className="w-12 h-12 bg-raised flex-shrink-0 flex items-center justify-center">
-          <span className="text-faint font-mono text-[9px]">{shortAddress(address)}</span>
+          <span className="text-subtle font-mono text-[9px]">{shortAddress(address)}</span>
         </div>
       )}
       <div className="min-w-0 flex-1">
@@ -298,7 +298,7 @@ function PermissionRow({
             {description}
           </p>
         )}
-        <p className="text-[10px] font-mono text-[#444] mt-0.5">
+        <p className="text-[10px] font-mono text-muted mt-0.5">
           {shortAddress(address)}
         </p>
       </div>

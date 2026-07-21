@@ -98,7 +98,7 @@ function WatchlistView({
     return (
       <div className="border border-line p-8 text-center sm:p-16">
         <p className="font-mono text-sm text-muted">nothing on your watchlist yet</p>
-        <p className="mt-2 font-mono text-xs text-faint">tap the ★ on any artwork to keep an eye on it</p>
+        <p className="mt-2 font-mono text-xs text-muted">tap the ★ on any artwork to keep an eye on it</p>
       </div>
     )
   }
@@ -173,7 +173,7 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
             (mint, pass, or resale fill), and next to the header's "$— earned"
             line the sales-vs-earnings distinction has to be legible at a
             glance. */}
-        <p className="font-mono text-[10px] uppercase tracking-widest text-faint">sales volume</p>
+        <p className="font-mono text-[10px] uppercase tracking-widest text-subtle">sales volume</p>
         {/* The figure is the denomination toggle. Same precedent as the USD
             view itself: cross-currency legs convert at today's Chainlink price
             with no inline caveat (the header's "$—K earned" glance line has
@@ -523,6 +523,7 @@ export function DiscoverMarketView({
                 aria-pressed={market === m}
                 onClick={() => update({ market: m }, { push: true })}
                 className={`rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+                  // a11y-ok: dark text on the accent pill (bg-accent), not the #111 surface
                   market === m ? 'bg-accent font-semibold text-[#0d0d0d]' : 'text-muted hover:text-dim'
                 }`}
               >
@@ -531,7 +532,7 @@ export function DiscoverMarketView({
             ))}
           </div>
           <div className="text-right leading-tight">
-            <div className="font-mono text-[11px] uppercase tracking-widest text-faint">{market} market</div>
+            <div className="font-mono text-[11px] uppercase tracking-widest text-subtle">{market} market</div>
             <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
             {/* The glance line above stays; this opens the full-figure dialog. */}
             <button
@@ -662,7 +663,7 @@ export function DiscoverMarketView({
           ) : (
             <div className="border border-line p-8 text-center sm:p-16">
               <p className="font-mono text-sm text-muted">no live resales</p>
-              <p className="mt-2 font-mono text-xs text-faint">
+              <p className="mt-2 font-mono text-xs text-muted">
                 collect on{' '}
                 <Link href="/" className="accent-grad hover:underline">
                   enjoy

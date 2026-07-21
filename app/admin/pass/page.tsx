@@ -155,7 +155,7 @@ export default function PassAdminPage() {
           }}
           onBlur={fetchCurrent}
           placeholder="0x…"
-          className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-[#444] focus:outline-none focus:border-muted"
+          className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
         {currentValue !== null && (
           <p className="text-[10px] font-mono text-dim mt-1.5">
@@ -173,7 +173,7 @@ export default function PassAdminPage() {
           value={newValue}
           onChange={(e) => setNewValue(e.target.value)}
           placeholder="0 to revoke, ≥1 to grant"
-          className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-[#444] focus:outline-none focus:border-muted"
+          className="w-full bg-[#0a0a0a] border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
       </div>
 

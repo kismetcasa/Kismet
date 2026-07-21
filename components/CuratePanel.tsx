@@ -128,7 +128,7 @@ export function CuratePanel() {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleSubmit() } }}
             placeholder="artwork or collection link"
             disabled={submitting}
-            className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-faint focus:outline-none focus:border-muted disabled:opacity-50"
+            className="flex-1 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
           />
           <button
             onClick={() => void handleSubmit()}
@@ -161,11 +161,11 @@ export function CuratePanel() {
                   className="truncate hover:text-ink transition-colors"
                 >
                   {shortAddress(addr)}
-                  <span className="text-[#444] ml-1.5">collection</span>
+                  <span className="text-subtle ml-1.5">collection</span>
                 </a>
                 <button
                   onClick={() => void toggleFeaturedCollection(addr)}
-                  className="text-[#444] hover:text-red-400 transition-colors"
+                  className="text-subtle hover:text-red-400 transition-colors"
                   title="unfeature"
                 >
                   <X size={11} />
@@ -186,7 +186,7 @@ export function CuratePanel() {
                   </a>
                   <button
                     onClick={() => void toggleFeatured(addr, tokenId)}
-                    className="text-[#444] hover:text-red-400 transition-colors"
+                    className="text-subtle hover:text-red-400 transition-colors"
                     title="unfeature"
                   >
                     <X size={11} />
@@ -228,7 +228,7 @@ export function CuratePanel() {
         )}
 
         {lists.length === 0 && editing !== '__new__' && (
-          <p className="text-[11px] font-mono text-[#444]">
+          <p className="text-[11px] font-mono text-muted">
             no lists yet — create one to expose a curated roster on the homepage.
           </p>
         )}

@@ -109,7 +109,7 @@ function WatchStar({ watched, name, onToggle }: { watched: boolean; name: string
       className={`flex h-[22px] w-[22px] items-center justify-center rounded-full border bg-[#141414] transition-opacity ${
         watched
           ? 'border-accent text-accent opacity-100'
-          : 'border-line text-faint [@media(hover:none)]:opacity-60 [@media(hover:hover)]:opacity-0 hover:text-dim group-hover:opacity-100 focus-visible:opacity-100'
+          : 'border-line text-subtle [@media(hover:none)]:opacity-60 [@media(hover:hover)]:opacity-0 hover:text-dim group-hover:opacity-100 focus-visible:opacity-100'
       }`}
     >
       <Star size={11} strokeWidth={1.5} className={watched ? 'fill-accent' : ''} />
@@ -374,7 +374,7 @@ function MomentOvalImpl({
             // click fall through to the oval's navigate link.
             className={`${disabled ? '' : 'pointer-events-auto'} rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
               mintedOut || saleEnded
-                ? 'border-line/60 text-faint'
+                ? 'border-line/60 text-subtle'
                 : hasCollected
                   ? 'border-accent bg-accent/10 text-accent hover:bg-accent/20'
                   : 'border-line text-dim accent-grad-hover disabled:opacity-50'

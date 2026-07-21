@@ -1567,7 +1567,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 <Upload size={24} className="text-muted" />
                 <div className="text-center">
                   <p className="text-xs font-mono text-muted">drop file or click to upload</p>
-                  <p className="text-xs font-mono text-faint mt-1">
+                  <p className="text-xs font-mono text-subtle mt-1">
                     image, video, gif,{' '}
                     {/* "text" is a shortcut into the writing-moment mode.
                         stopPropagation so we don't also trigger the parent
@@ -1601,7 +1601,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               onChange={(e) => setTextContent(e.target.value)}
               placeholder="write your artwork…"
               rows={12}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-none"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-none"
             />
             <div
               className={`mt-1.5 text-right text-[10px] font-mono ${
@@ -1625,7 +1625,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           onChange={(e) => setName(e.target.value)}
           placeholder="untitled"
           required
-          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+          className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
       </div>
 
@@ -1641,7 +1641,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             onChange={(e) => setDescription(e.target.value)}
             placeholder="describe your work…"
             rows={3}
-            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
+            className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted resize-y min-h-[4.5rem] overflow-auto"
           />
         </div>
       )}
@@ -1738,7 +1738,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={is11 ? '0' : price}
               disabled={is11}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPrice(v) }}
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted pr-14 disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button
               type="button"
@@ -1766,7 +1766,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               value={maxSupply}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
               placeholder="unlimited"
-              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+              className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
             {!maxSupply.trim() ? (
               <p className="text-xs text-muted font-mono mt-1">open edition</p>
@@ -1933,7 +1933,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-faint font-mono text-[10px]">
+                          <span className="text-subtle font-mono text-[10px]">
                             {shortAddress(c.address)}
                           </span>
                         </div>
@@ -1970,7 +1970,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             value={splitInput.address}
             onChange={(e) => setSplitInput((s) => ({ ...s, address: e.target.value }))}
             placeholder="0x… address"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <input
             type="number"
@@ -1980,7 +1980,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             placeholder="%"
             min="1"
             max="100"
-            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-faint focus:outline-none focus:border-muted"
+            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
           />
           <button
             type="button"
@@ -2082,7 +2082,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${residenciesEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
           </div>
         </button>
-        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-[#444]'}`}>
+        <span className={`text-[10px] font-mono ${residenciesEnabled ? 'text-dim' : 'text-subtle'}`}>
           {residenciesEnabled ? (
             editingResidencies ? (
               <input

@@ -34,7 +34,7 @@ export function SplitsPanel({ recipients }: Props) {
   if (recipients.length === 0) return null
   return (
     <div className="flex flex-col gap-1.5">
-      <p className="text-[10px] font-mono text-faint uppercase tracking-wider">splits</p>
+      <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">splits</p>
       <div className="flex flex-col gap-1">
         {recipients.map((r) => {
           const lower = r.address.toLowerCase()
@@ -50,7 +50,7 @@ export function SplitsPanel({ recipients }: Props) {
               <span className="text-xs font-mono text-muted group-hover:text-dim transition-colors flex-1 truncate">
                 {label}
               </span>
-              <span className="text-[10px] font-mono text-[#444] flex-shrink-0">
+              <span className="text-[10px] font-mono text-subtle flex-shrink-0">
                 {r.percentAllocation}%
               </span>
             </Link>
