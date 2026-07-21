@@ -255,8 +255,12 @@ export async function updateCollectionMeta(
   // Preserve the immutable deploy-time creation timestamp across metadata
   // edits — the edit form never sends one, so without this an edit would wipe
   // the "created <date>" the collection page reads back from KV.
+  // FIRST-WRITE-WINS (existing outranks incoming), mirroring MomentMeta's
+  // createdAt: the pin exists so nothing downstream of an edit can move a
+  // collection in newest-first ordering. setCollectionCreatedAt(force) is the
+  // one deliberate override path.
   const existing = await getCollectionMeta(address)
-  const createdAt = meta.createdAt ?? existing?.createdAt
+  const createdAt = existing?.createdAt ?? meta.createdAt
   const data: CollectionMeta = {
     ...meta,
     address: address.toLowerCase(),

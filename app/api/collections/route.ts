@@ -16,6 +16,7 @@ import {
   getCollectionsByArtist,
   getCollectionMeta,
   getCollectionMetaBatch,
+  setCollectionCreatedAt,
   markCreatedMint,
   type CollectionSource,
 } from '@/lib/kv'
@@ -216,15 +217,11 @@ export async function GET(req: NextRequest) {
       getHiddenMomentsSet(),
       getHiddenUsersSet(),
     ])
-    // Cascade the hidden-users filter onto the discovery feed by looking
-    // up each tracked collection's deployer (stored in KV's artist field)
-    // and dropping any whose artist is on the hidden-users list. Single
-    // MGET via getCollectionMetaBatch — same cost as a single Redis call,
-    // not per-collection. Auto-deploy wrappers without a stored meta
-    // entry are kept (artist unknown ≠ hidden).
-    const metaByAddr = hiddenUsers.size > 0
-      ? await getCollectionMetaBatch(userCreated)
-      : new Map<string, { artist?: string }>()
+    // One MGET serves two jobs: the hidden-users deployer cascade below, and
+    // the createdAt pin the sort prefers (see the sort comment). Same cost as
+    // a single Redis call, not per-collection. Auto-deploy wrappers without a
+    // stored meta entry are kept (artist unknown ≠ hidden).
+    const metaByAddr = await getCollectionMetaBatch(userCreated)
     const visible = userCreated.filter((addr) => {
       const lower = addr.toLowerCase()
       if (hiddenSet.has(lower)) return false
@@ -249,18 +246,42 @@ export async function GET(req: NextRequest) {
         return { ...metaPart, ...eligibility }
       }),
     )
-    // Indexer-lagging deploys have no `created_at` (KV fallback shape) —
-    // Infinity sorts them above any indexed entry, so a just-created
-    // collection lands at the top of the feed while inprocess catches up.
-    hydrated.sort((a, b) => {
-      const aRaw = (a as { created_at?: string }).created_at
-      const bRaw = (b as { created_at?: string }).created_at
-      const aTs = aRaw ? new Date(aRaw).getTime() : Number.POSITIVE_INFINITY
-      const bTs = bRaw ? new Date(bRaw).getTime() : Number.POSITIVE_INFINITY
-      return bTs - aTs
+    // Order by the KV-pinned deploy instant when one exists — inprocess
+    // rewrites a collection's created_at when its indexer reprocesses a
+    // contractURI edit (the same reindex-on-edit that bumped edited MOMENTS;
+    // see the timeline stitch), so sorting on it verbatim let an edited
+    // collection jump back to the top as a fake "latest". registerCollection
+    // stamps the pin at deploy; rows whose meta predates the stamp are
+    // write-through backfilled below with their current feed value (freezes
+    // future edit-bumps; an already-bumped row pins where it sits). Meta-less
+    // rows and indexer-lagging deploys keep the inprocess/Infinity path —
+    // Infinity still floats a just-created collection to the top while
+    // inprocess catches up.
+    const pinsDue: { address: string; createdAt: number }[] = []
+    const ranked = hydrated.map((row, i) => {
+      const addr = visible[i].toLowerCase()
+      const pin = metaByAddr.get(addr)?.createdAt
+      if (typeof pin === 'number' && pin > 0) return { row, ts: pin }
+      const raw = (row as { created_at?: string }).created_at
+      const ts = raw ? new Date(raw).getTime() : Number.POSITIVE_INFINITY
+      // Backfill only rows that already HAVE a meta record (idempotent via
+      // setCollectionCreatedAt's 'skipped'/'no-record' semantics) — next
+      // request's batch read then serves the pin, so this self-quiesces.
+      if (Number.isFinite(ts) && metaByAddr.has(addr)) {
+        pinsDue.push({ address: addr, createdAt: ts })
+      }
+      return { row, ts }
     })
+    ranked.sort((a, b) => b.ts - a.ts)
+    if (pinsDue.length > 0) {
+      after(() =>
+        Promise.all(
+          pinsDue.map((p) => setCollectionCreatedAt(p.address, p.createdAt)),
+        ).catch(() => {}),
+      )
+    }
     const start = (page - 1) * limit
-    const collections = hydrated.slice(start, start + limit)
+    const collections = ranked.slice(start, start + limit).map((r) => r.row)
     // Visibility for "empty feed" reports — distinguishes "nothing tracked
     // yet" from "tracked but inprocess+KV both returned nothing".
     if (collections.length === 0) {

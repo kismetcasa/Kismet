@@ -41,6 +41,8 @@ interface PlatformStats {
   volumeEth: number | null
   /** Distinct artists who have minted (catalog census). */
   artists: number | null
+  /** Distinct paying art collectors (passes excluded, same scope as sales). */
+  collectors: number | null
   /** Paid art editions sold (passes excluded — memberships aren't artworks). */
   editionsSold: number | null
 }
@@ -139,12 +141,15 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
         ? fmtEth(stats.volumeEth)
         : '—'
   const rows: Array<[string, string]> = [
-    ['artists minting', count(stats?.artists)],
-    ['total mints', count(stats?.mints)],
-    // "artworks collected" counts collected edition UNITS (each copy in a
-    // wallet is an artwork collected) — deliberately not distinct works,
-    // which is what "total mints" above already counts.
-    ['artworks collected', count(stats?.editionsSold)],
+    ['artists', count(stats?.artists)],
+    ['artworks minted', count(stats?.mints)],
+    // Distinct paying collectors on art sales (sales.collectors) — art-scoped
+    // like every other counter here, so pass buyers don't inflate it.
+    ['collectors', count(stats?.collectors)],
+    // "artworks sold" counts sold edition UNITS (each copy in a collector's
+    // wallet) — deliberately not distinct works, which is what "artworks
+    // minted" above already counts.
+    ['artworks sold', count(stats?.editionsSold)],
   ]
   // Portaled to <body>: this mounts inside the sticky header, whose z-40 +
   // position (sm+) makes it a stacking context — a fixed overlay declared
@@ -353,6 +358,7 @@ export function DiscoverMarketView({
           volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
           volumeEth,
           artists: typeof d?.catalog?.artistsMinted === 'number' ? d.catalog.artistsMinted : null,
+          collectors: typeof d?.sales?.collectors === 'number' ? d.sales.collectors : null,
           editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
         })
       })
