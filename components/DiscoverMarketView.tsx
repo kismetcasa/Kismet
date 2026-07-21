@@ -517,7 +517,7 @@ export function DiscoverMarketView({
             .filter(Boolean)
             .join(' · ') || 'newest first'
       : stats?.resaleUsd
-        ? `${fmtUsd(stats.resaleUsd)} in resales`
+        ? `${fmtUsd(stats.resaleUsd)} in sales`
         : 'newest first'
 
   // Oval-shaped cold-load placeholder, so the skeleton matches the row height
@@ -703,7 +703,7 @@ export function DiscoverMarketView({
             filteredEmpty
           ) : (
             <div className="border border-line p-8 text-center sm:p-16">
-              <p className="font-mono text-sm text-muted">no live resales</p>
+              <p className="font-mono text-sm text-muted">no live listings</p>
               <p className="mt-2 font-mono text-xs text-muted">
                 collect on{' '}
                 <Link href="/" className="accent-grad hover:underline">

@@ -59,6 +59,16 @@ const FANOUT_CONCURRENCY = 10
 // carries a token `uri` string per row.
 const MAX_ENDING_SOON_SUPPLY_CHECK = 80
 
+// soldout=1 browse filter: how many rows of the (newest-first, already
+// filter-narrowed) merged set to read supply for. Higher than the ending-soon
+// cap because SURFACING sold-out mints is the whole point here — not a small
+// correction to a closing set — but still bounded so the getTokenInfo
+// multicall (one `uri` string per row) can't balloon on a full MERGE_BUDGET
+// merge. Sold-out mints past this prefix are treated as unclassified and
+// excluded (fail-closed, same as a malformed row) rather than triggering an
+// unbounded read.
+const MAX_SOLDOUT_FILTER_CHECK = 240
+
 // Throttle for the fan-out-thinning warning below — it fires on every request
 // once the tracked set is large enough, and one line a minute is signal while
 // one per request is noise.
@@ -179,6 +189,10 @@ export async function GET(req: NextRequest) {
   // MGET, ≤500 rows) per cache miss — amortized by the same shared-cache
   // window as the rest of the response.
   const resaleOnly = searchParams.get('resale') === '1'
+  // soldout=1: only capped editions whose supply is exhausted (totalMinted ≥
+  // maxSupply). On-chain only, so it costs one bounded getTokenInfo multicall
+  // per cache miss (see the filter block + MAX_SOLDOUT_FILTER_CHECK below).
+  const soldOutOnly = searchParams.get('soldout') === '1'
   // Manual-refresh signal (PaginatedGrid's refresh button). Bypasses the
   // upstream revalidate window AND the shared-response cache below so the
   // click reliably surfaces new mints; normal browsing never sets it.
@@ -711,7 +725,9 @@ export async function GET(req: NextRequest) {
     // by MAX_ENDING_SOON_SUPPLY_CHECK and edge-cached (s-maxage=30 below), so
     // this is one bounded eth_call per cache miss. resolveSoldOutKeys never
     // rejects (it catches its own multicall), so no wrapper try is needed.
-    if (merged.length > 0) {
+    // Skipped under soldout=1: that filter (below) wants EXACTLY these editions,
+    // so pre-dropping them here would guarantee an empty feed.
+    if (merged.length > 0 && !soldOutOnly) {
       const supplyItems: { collection: `0x${string}`; tokenId: bigint }[] = []
       for (const m of merged.slice(0, MAX_ENDING_SOON_SUPPLY_CHECK)) {
         const mm = m as { address?: string; token_id?: string }
@@ -805,7 +821,7 @@ export async function GET(req: NextRequest) {
 
   // Discover browse filters — narrow the merged set BEFORE the following
   // bubble and pagination so page slices and total_pages reflect the filtered
-  // reality. Both fail closed: a row the filter can't classify is excluded
+  // reality. All fail closed: a row the filter can't classify is excluded
   // under the filter, never wrongly included.
   if (freeOnly) {
     const freeSet = await getFreeMoments()
@@ -825,6 +841,35 @@ export async function GET(req: NextRequest) {
     merged = merged.filter((m: unknown) => {
       const moment = m as { address?: string; token_id?: string }
       return resaleKeys.has(`${moment.address?.toLowerCase() ?? ''}:${moment.token_id}`)
+    })
+  }
+  if (soldOutOnly && merged.length > 0) {
+    // Supply is on-chain only: read getTokenInfo for a BOUNDED prefix of the
+    // merged set in ONE multicall (soldOutKeysFromMulticall flags only capped
+    // editions at totalMinted ≥ maxSupply — the same rule the card's badge
+    // uses). Runs last of the browse filters so the supply read is over the
+    // already-narrowed set. Fail-CLOSED like the others: a row we couldn't
+    // classify — beyond the bound, malformed id, or a reverting read — is
+    // excluded, so a bad read serves fewer rows, never a wrong-positive.
+    const supplyItems: { collection: `0x${string}`; tokenId: bigint }[] = []
+    for (const m of merged.slice(0, MAX_SOLDOUT_FILTER_CHECK)) {
+      const mm = m as { address?: string; token_id?: string }
+      if (!mm.address || mm.token_id == null) continue
+      try {
+        supplyItems.push({ collection: mm.address as `0x${string}`, tokenId: BigInt(mm.token_id) })
+      } catch {
+        // malformed token_id — leave out (excluded under a positive filter)
+      }
+    }
+    const soldOut = await resolveSoldOutKeys(serverBaseClient(), supplyItems)
+    merged = merged.filter((m: unknown) => {
+      const mm = m as { address?: string; token_id?: string }
+      if (!mm.address || mm.token_id == null) return false
+      try {
+        return soldOut.has(`${mm.address.toLowerCase()}:${BigInt(mm.token_id).toString()}`)
+      } catch {
+        return false
+      }
     })
   }
 
