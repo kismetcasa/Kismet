@@ -89,6 +89,11 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
   function handleDeployed(address: string, name: string) {
     setDeployedCollection({ address, name })
     setTab('mint')
+    // Symmetry with onSwitchToCreate below: the user lands back on their
+    // preserved mint draft — bring them to the top of it.
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
   }
 
   const tabs: { id: Tab; label: string }[] = [
@@ -116,7 +121,17 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
         ))}
       </div>
 
-      {tab === 'mint' && (
+      {/* All three panels stay MOUNTED across tab switches; `hidden` (UA
+          display:none, removed from the a11y tree and tab order) toggles
+          visibility. Conditional rendering here used to unmount the active
+          form and silently destroy every draft — picked file, title, splits —
+          which is exactly what the "+ create new collection" detour tripped
+          over. All three are static imports, so this changes zero bundle
+          bytes; the cost is their mount-time effects running at page load
+          (three small same-origin GETs). React's <Activity> is NOT usable for
+          this: Next 15.5 aliases `react` to its vendored 19.2 canary, which
+          does not export it — typechecks, then crashes at render. */}
+      <div hidden={tab !== 'mint'}>
         <MintForm
           collectionAddress={deployedCollection?.address}
           collectionName={deployedCollection?.name}
@@ -131,15 +146,15 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
             }
           }}
         />
-      )}
+      </div>
 
-      {tab === 'create' && (
+      <div hidden={tab !== 'create'}>
         <CreateCollectionForm onDeployed={handleDeployed} />
-      )}
+      </div>
 
-      {tab === 'airdrop' && (
+      <div hidden={tab !== 'airdrop'}>
         <AirdropForm moments={moments} loadingMoments={loadingMoments} />
-      )}
+      </div>
     </div>
   )
 }

@@ -13,6 +13,7 @@ import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useAirdrop } from '@/hooks/useAirdrop'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { useAirdropDelegates } from '@/hooks/useAirdropDelegates'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
@@ -54,6 +55,14 @@ export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
+
+  // Leave-site prompt only for typed-in work (recipient list / inputs). A
+  // selected artwork alone is one click to restore — warning on it would
+  // train dismissal. Never while sending (in-flight tx, nothing to lose).
+  useUnsavedChangesWarning(
+    !sending &&
+      (recipients.length > 0 || recipientInput.trim() !== '' || delegateInput.trim() !== ''),
+  )
 
   // Wallets the admin has delegated airdrop rights to for the selected piece.
   const { delegates, refetch: refetchDelegates } = useAirdropDelegates(
