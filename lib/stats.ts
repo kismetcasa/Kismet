@@ -802,6 +802,11 @@ async function runRebuild(): Promise<RebuildResult> {
       console.error('[stats] platform snapshot write failed (stale until next run)', err),
     )
 
+  // Record today's cumulative totals into the daily trend series (overwrites
+  // today's point, converging to end-of-day). Best-effort; reads the snapshot
+  // just written above, so it reflects this run. Never throws (see fn).
+  await recordDailyStats()
+
   return {
     skipped: false,
     artists,
@@ -1004,6 +1009,132 @@ export async function getRoyaltyTotals(): Promise<{ eth: number; usdc: number }>
   }
 }
 
+// Platform-wide PRIMARY artist earnings — the Σ over the per-artist `earned`
+// zsets, i.e. exactly what every artist card shows for primary (art mint shares
+// + pass split shares), summed. Small sets, one ZRANGE each on the same
+// auto-pipelined round trip as getRoyaltyTotals. This is the "total artist
+// earnings (primary)" figure; residencies' art share counts here because it is
+// a creator-DIRECTED donation credited to the artist's allocation — consistent
+// with the cards. Platform-primary earnings are then the derived remainder
+// (gross pass − pass artist = the treasury cut), so they need no separate sum.
+export async function getPrimaryArtistTotals(): Promise<{ eth: number; usdc: number }> {
+  try {
+    const [rawEth, rawUsdc] = await Promise.all([
+      redis.zrange(ETH_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+      redis.zrange(USDC_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+    ])
+    const sum = (raw: (string | number)[]) => {
+      let total = 0
+      for (const v of zpairsToMap(raw).values()) total += v
+      return total
+    }
+    return { eth: sum(rawEth), usdc: sum(rawUsdc) }
+  } catch {
+    return { eth: 0, usdc: 0 }
+  }
+}
+
+// Platform-wide PLATFORM secondary earnings — patron/pass resale royalties that
+// belong to the platform treasury, not a creator. On a Patron/Mint-Pass resale
+// the split's platform-payee share would otherwise be booked as "creator
+// royalty"; instead creditListingRoyalty ROUTES it here (event-driven, one
+// idempotent increment per fill from the on-chain-verified PATCH), leaving the
+// artist royalty zsets — and therefore earnings.secondary — treasury-free. A
+// HASH of eth/usdc human-unit totals, its own per-listing NX claim so a retried
+// PATCH counts once, committed atomically with the increment. Best-effort and
+// never-throwing, exactly like recordSecondaryVolume, so it can't fail a fill.
+const PLATFORM_ROYALTY_KEY = 'kismetart:stats:royalty-platform'
+const platformRoyaltyCountedKey = (listingId: string) =>
+  `kismetart:stats:platform-royalty-counted:${listingId}`
+const RECORD_PLATFORM_ROYALTY_LUA = `
+if not redis.call('SET', KEYS[1], '1', 'NX') then return 0 end
+redis.call('HINCRBYFLOAT', KEYS[2], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[2], 'updatedAt', ARGV[3])
+return 1
+`
+async function recordPlatformRoyalty(args: {
+  listingId: string
+  currency: 'eth' | 'usdc'
+  amount: number
+}): Promise<boolean> {
+  const { listingId, currency, amount } = args
+  if (!listingId || !Number.isFinite(amount) || amount <= 0) return false
+  try {
+    const wrote = await redis.eval(
+      RECORD_PLATFORM_ROYALTY_LUA,
+      [platformRoyaltyCountedKey(listingId), PLATFORM_ROYALTY_KEY],
+      [currency, String(amount), String(Date.now())],
+    )
+    return wrote === 1
+  } catch {
+    return false
+  }
+}
+
+/** Platform-treasury resale-royalty totals (patron collection royalties), or
+ *  zeros before the first pass resale / on error. */
+export async function getPlatformRoyaltyTotals(): Promise<{ eth: number; usdc: number }> {
+  try {
+    const h = await redis.hgetall<Record<string, string | number>>(PLATFORM_ROYALTY_KEY)
+    if (!h) return { eth: 0, usdc: 0 }
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : 0
+    }
+    return { eth: num(h.eth), usdc: num(h.usdc) }
+  } catch {
+    return { eth: 0, usdc: 0 }
+  }
+}
+
+// ── Daily time-series (trend-graph foundation) ───────────────────────────────
+
+// One cumulative point per UTC day for the three headline metrics — the history
+// a D/W/M/all-time trend graph needs, which the hourly snapshot alone can't give
+// (it only holds "now"). Piggybacks the rebuild: each hourly run OVERWRITES
+// today's field, so it converges to the end-of-day value with no separate cron.
+// Stored NATIVE (eth+usdc) plus the day's ethUsd so historical USD is honest
+// (valued at the time, not today's price). A HASH keyed by date; ~120 bytes/day
+// is negligible and effectively unbounded (years ≪ 1 MB), so no prune. Best-
+// effort — a failure just skips one day's point, healed on the next hourly run.
+const DAILY_STATS_KEY = 'kismetart:stats:daily'
+
+async function recordDailyStats(): Promise<void> {
+  try {
+    const [snap, artistPrimary, royalties, platformRoyalty, resaleVol, ethUsd] =
+      await Promise.all([
+        getPlatformSalesSnapshot(),
+        getPrimaryArtistTotals(),
+        getRoyaltyTotals(),
+        getPlatformRoyaltyTotals(),
+        getSecondaryVolume(),
+        getEthUsd(),
+      ])
+    if (!snap) return
+    const passEth = snap.passes?.eth ?? 0
+    const passUsdc = snap.passes?.usdc ?? 0
+    const passArtistEth = snap.passes?.artistEth ?? 0
+    const passArtistUsdc = snap.passes?.artistUsdc ?? 0
+    // The SAME three metrics /api/stats/platform serves, in native units:
+    //   volume   = gross primary (art + pass) + gross resales
+    //   artist   = Σ earned zsets (primary) + creator royalties (secondary)
+    //   platform = pass-treasury primary + patron resale royalties (secondary)
+    const point = {
+      volumeEth: snap.eth + passEth + (resaleVol?.eth ?? 0),
+      volumeUsdc: snap.usdc + passUsdc + (resaleVol?.usdc ?? 0),
+      artistEth: artistPrimary.eth + royalties.eth,
+      artistUsdc: artistPrimary.usdc + royalties.usdc,
+      platformEth: passEth - passArtistEth + platformRoyalty.eth,
+      platformUsdc: passUsdc - passArtistUsdc + platformRoyalty.usdc,
+      ethUsd: ethUsd ?? 0,
+    }
+    const day = new Date().toISOString().slice(0, 10) // UTC date
+    await redis.hset(DAILY_STATS_KEY, { [day]: JSON.stringify(point) })
+  } catch {
+    // Best-effort: the trend series is non-critical and self-heals next hour.
+  }
+}
+
 // ── Secondary-royalty credit ─────────────────────────────────────────────────
 
 // Atomic claim + ledger + credit. SET NX takes the per-listing claim; only
@@ -1107,17 +1238,25 @@ export async function creditListingRoyalty(args: {
       }
     }
 
-    // SECONDARY pass exclusion — the mirror of the primary pass earnings path:
-    // on a Patron/Mint-Pass resale, drop platform-payout members so the treasury's
-    // royalty share is NOT booked as "creator royalty", whether it arrived via the
-    // split decomposition above or as a bare platform-wallet receiver. Pass-scoped
-    // ONLY (isPatronCollection) — a legitimate ART split pays residencies, and art
-    // royalties must keep crediting it, so this must never fire for art. When a
-    // pass split names no real artist (all platform payees), credits filter to
-    // empty: credit nothing and DON'T claim, so no misleading ledger entry is
-    // written and the gross resale is still recorded by recordSecondaryVolume.
+    // SECONDARY pass split — the mirror of the primary pass earnings path: on a
+    // Patron/Mint-Pass resale the treasury's royalty share is PLATFORM earnings,
+    // not creator royalty, so ROUTE it to the platform-royalty aggregate (patron
+    // collection royalties) and keep only the real artists in `credits` — leaving
+    // the artist royalty zsets, and therefore earnings.secondary, treasury-free.
+    // Pass-scoped ONLY (isPatronCollection): a legitimate ART split pays
+    // residencies, which art royalties must keep crediting (a creator-directed
+    // donation), so this never fires for art. A pass split naming no real artist
+    // (all platform payees) records the platform share and then credits no card.
     const isPass = !!collection && isPatronCollection(collection)
-    credits = filterPassRoyaltyCredits(credits, isPass, PASS_PLATFORM_ADDRESSES)
+    if (isPass) {
+      const platformShare = credits
+        .filter((c) => PASS_PLATFORM_ADDRESSES.has(c.member))
+        .reduce((s, c) => s + c.amount, 0)
+      credits = filterPassRoyaltyCredits(credits, true, PASS_PLATFORM_ADDRESSES)
+      // Best-effort, own per-listing idempotency, never throws — safe to await
+      // on the fill path (recordPlatformRoyalty swallows all errors).
+      if (platformShare > 0) await recordPlatformRoyalty({ listingId, currency, amount: platformShare })
+    }
     if (credits.length === 0) {
       return { credited: false, decomposed: matchedTokenId !== null, matchedTokenId, credits: [], failed: false }
     }

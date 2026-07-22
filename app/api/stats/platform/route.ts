@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPlatformSalesSnapshot, getRoyaltyTotals, getSecondaryVolume } from '@/lib/stats'
+import {
+  getPlatformSalesSnapshot,
+  getRoyaltyTotals,
+  getSecondaryVolume,
+  getPrimaryArtistTotals,
+  getPlatformRoyaltyTotals,
+} from '@/lib/stats'
 import { getCatalogCensus } from '@/lib/catalogCensus'
 import { getFunnelCounts } from '@/lib/funnelServer'
 import { getEthUsd } from '@/lib/ethPrice'
@@ -75,17 +81,33 @@ export async function GET(req: NextRequest) {
     if (!('error' in admin)) funnel = await getFunnelCounts()
   }
 
-  const [sales, catalog, royalties, resaleVol, ethUsd] = await Promise.all([
-    getPlatformSalesSnapshot(),
-    getCatalogCensus(),
-    getRoyaltyTotals(),
-    getSecondaryVolume(),
-    getEthUsd(),
-  ])
+  const [sales, catalog, royalties, resaleVol, artistPrimary, platformRoyalty, ethUsd] =
+    await Promise.all([
+      getPlatformSalesSnapshot(),
+      getCatalogCensus(),
+      getRoyaltyTotals(),
+      getSecondaryVolume(),
+      getPrimaryArtistTotals(),
+      getPlatformRoyaltyTotals(),
+      getEthUsd(),
+    ])
 
   // Same rule as getArtistEarnings: never emit a partial USD figure.
   const usdOf = (eth: number, usdc: number) =>
     ethUsd == null && eth > 0 ? 0 : eth * (ethUsd ?? 0) + usdc
+
+  // Platform PRIMARY earnings = the pass-treasury cut (gross pass − pass artist).
+  // Pass-only: an art split has no in-split platform recipient (residencies is a
+  // creator-directed donation, counted as artist), so art contributes nothing
+  // here. null until the snapshot carries passes.artistEth (first post-deploy
+  // rebuild), so platform reads "not computed yet" rather than a wrong 0.
+  const platformPrimary =
+    sales && sales.passes?.artistEth != null && sales.passes?.artistUsdc != null
+      ? {
+          eth: sales.passes.eth - sales.passes.artistEth,
+          usdc: sales.passes.usdc - sales.passes.artistUsdc,
+        }
+      : null
 
   // earnings is null exactly when sales is (both come from the rebuild's
   // snapshot); royalties accrue separately but only ever postdate sales.
@@ -109,6 +131,57 @@ export async function GET(req: NextRequest) {
           eth: sales.eth + royalties.eth,
           usdc: sales.usdc + royalties.usdc,
           usd: usdOf(sales.eth + royalties.eth, sales.usdc + royalties.usdc),
+        },
+        // WHO NETTED the money, vs the gross figures above. `artist` = every
+        // artist card's earnings summed (primary = Σ earned zsets: art mint +
+        // pass split shares, a residency donation counted as the creator's;
+        // secondary = the same creator royalties as `secondary` above).
+        // `platform` = the treasury's take (primary = the pass-treasury cut;
+        // secondary = patron collection resale royalties). NOTE artist.total +
+        // platform.total ≠ the gross total — resale gross is mostly SELLER
+        // proceeds, which are neither, and live only in `resales`.
+        artist: {
+          primary: {
+            eth: artistPrimary.eth,
+            usdc: artistPrimary.usdc,
+            usd: usdOf(artistPrimary.eth, artistPrimary.usdc),
+          },
+          secondary: {
+            eth: royalties.eth,
+            usdc: royalties.usdc,
+            usd: usdOf(royalties.eth, royalties.usdc),
+          },
+          total: {
+            eth: artistPrimary.eth + royalties.eth,
+            usdc: artistPrimary.usdc + royalties.usdc,
+            usd: usdOf(artistPrimary.eth + royalties.eth, artistPrimary.usdc + royalties.usdc),
+          },
+        },
+        platform: {
+          primary:
+            platformPrimary != null
+              ? {
+                  eth: platformPrimary.eth,
+                  usdc: platformPrimary.usdc,
+                  usd: usdOf(platformPrimary.eth, platformPrimary.usdc),
+                }
+              : null,
+          secondary: {
+            eth: platformRoyalty.eth,
+            usdc: platformRoyalty.usdc,
+            usd: usdOf(platformRoyalty.eth, platformRoyalty.usdc),
+          },
+          total:
+            platformPrimary != null
+              ? {
+                  eth: platformPrimary.eth + platformRoyalty.eth,
+                  usdc: platformPrimary.usdc + platformRoyalty.usdc,
+                  usd: usdOf(
+                    platformPrimary.eth + platformRoyalty.eth,
+                    platformPrimary.usdc + platformRoyalty.usdc,
+                  ),
+                }
+              : null,
         },
         // The price the usd figures were derived with (null = unavailable,
         // usd fields are then 0 for eth-bearing figures — see usdOf).

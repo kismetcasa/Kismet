@@ -50,6 +50,15 @@ interface PlatformStats {
   collectors: number | null
   /** Paid art editions sold (passes excluded — memberships aren't artworks). */
   editionsSold: number | null
+  // Headline metric alternates (the modal figure cycles Volume → Artist → Platform).
+  // Each carries USD + its honest-ETH twin (same convention as volume). Null when
+  // the snapshot can't yet produce it (e.g. platform before passes.artistEth ships).
+  /** Total ARTIST earnings — Σ artist-card primary (art + pass shares) + royalties. */
+  artistUsd: number | null
+  artistEth: number | null
+  /** Total PLATFORM earnings — the pass-treasury primary cut + patron resale royalties. */
+  platformUsd: number | null
+  platformEth: number | null
 }
 
 // 1 oval per row on mobile, 2 on tablet, 3 on desktop — the "2–3 per row"
@@ -130,21 +139,40 @@ function WatchlistView({
 // until their snapshot exists (the API emits null, never fabricated zeros).
 // Same overlay conventions as the filters drawer: z-[70], Escape, scroll lock,
 // backdrop tap.
+type StatsMetric = 'volume' | 'artist' | 'platform'
+const STATS_METRICS: StatsMetric[] = ['volume', 'artist', 'platform']
+const STATS_METRIC_LABEL: Record<StatsMetric, string> = {
+  volume: 'total sales volume',
+  artist: 'total artist earnings',
+  platform: 'total platform earnings',
+}
+
 function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: () => void }) {
   useEscapeKey(onClose)
   useBodyScrollLock()
   // Headline denomination — tap the figure to flip USD ↔ ETH. Resets to USD
   // per open (state dies with the unmount), matching the header glance line.
   const [denom, setDenom] = useState<'usd' | 'eth'>('usd')
+  // The headline alternates between three all-time metrics: tapping the LABEL
+  // cycles the metric, tapping the NUMBER flips USD ↔ ETH. Both reset per open.
+  const [metric, setMetric] = useState<StatsMetric>('volume')
   const count = (n: number | null | undefined) => (typeof n === 'number' ? n.toLocaleString() : '—')
+  const metricValue =
+    metric === 'volume'
+      ? denom === 'usd'
+        ? stats?.volumeUsd
+        : stats?.volumeEth
+      : metric === 'artist'
+        ? denom === 'usd'
+          ? stats?.artistUsd
+          : stats?.artistEth
+        : denom === 'usd'
+          ? stats?.platformUsd
+          : stats?.platformEth
   const headline =
-    denom === 'usd'
-      ? stats?.volumeUsd != null
-        ? fmtUsd(stats.volumeUsd)
-        : '—'
-      : stats?.volumeEth != null
-        ? fmtEth(stats.volumeEth)
-        : '—'
+    metricValue == null ? '—' : denom === 'usd' ? fmtUsd(metricValue) : fmtEth(metricValue)
+  const nextMetric = () =>
+    setMetric((m) => STATS_METRICS[(STATS_METRICS.indexOf(m) + 1) % STATS_METRICS.length])
   // Scoping is deliberate and split: the two CATALOG rows count only VISIBLE
   // work (hidden artworks excluded; artists whose every piece is hidden
   // excluded) so the counters match what the feeds actually show, while the
@@ -184,12 +212,22 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
         >
           <X size={14} />
         </button>
-        {/* "Total sales volume" — kept "sales" (every dollar here is a sale:
-            mint, pass, or resale fill) so it can't read as earnings next to
-            the header's "$— earned" line; "total" says both markets, all
-            time. Ink, not a faint kicker — the section title must be legible
-            at a glance. */}
-        <p className="font-mono text-[10px] uppercase tracking-widest text-ink">total sales volume</p>
+        {/* Section title = the METRIC toggle: tap to cycle Volume → Artist
+            earnings → Platform earnings. Dotted underline + the ⇄ glyph signify
+            it's interactive; the figure below is the separate DENOMINATION toggle.
+            "primary + secondary" stays true for all three (each is a primary leg
+            plus a secondary/royalty leg). */}
+        <button
+          onClick={nextMetric}
+          aria-label={`Show ${STATS_METRIC_LABEL[STATS_METRICS[(STATS_METRICS.indexOf(metric) + 1) % STATS_METRICS.length]]}`}
+          title="tap to switch metric"
+          className="group flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-ink decoration-dotted decoration-dim underline-offset-4 hover:underline"
+        >
+          {STATS_METRIC_LABEL[metric]}
+          <span aria-hidden className="text-[9px] text-dim opacity-50 transition-opacity group-hover:opacity-100">
+            ⇄
+          </span>
+        </button>
         {/* The figure is the denomination toggle. Same precedent as the USD
             view itself: cross-currency legs convert at today's Chainlink price
             with no inline caveat (the header's "$—K earned" glance line has
@@ -199,9 +237,9 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
           <button
             onClick={() => setDenom((v) => (v === 'usd' ? 'eth' : 'usd'))}
             aria-pressed={denom === 'eth'}
-            aria-label={denom === 'usd' ? 'Show sales volume in ETH' : 'Show sales volume in USD'}
-            title={denom === 'usd' ? 'show in ETH' : 'show in USD'}
-            className="block font-mono text-3xl tabular-nums accent-grad transition-opacity hover:opacity-80"
+            aria-label={denom === 'usd' ? 'Show the total in ETH' : 'Show the total in USD'}
+            title={denom === 'usd' ? 'tap to show in ETH' : 'tap to show in USD'}
+            className="block font-mono text-3xl tabular-nums accent-grad decoration-dotted decoration-dim underline-offset-[6px] transition hover:underline hover:opacity-80"
           >
             {headline}
           </button>
@@ -369,6 +407,11 @@ export function DiscoverMarketView({
         // legs. Same primary-block veto as volumeUsd; USDC converts at the
         // same price usd was derived with, or the figure nulls rather than
         // dropping the USDC leg silently.
+        // ETH denomination of a mixed eth+usdc total: pure-ETH passes through;
+        // a USDC leg converts at the same price `usd` was derived with, or nulls
+        // rather than dropping the leg. Shared by volume + the two earnings metrics.
+        const toEth = (eth: number, usdc: number): number | null =>
+          usdc === 0 ? eth : ethUsd ? eth + usdc / ethUsd : null
         let volumeEth: number | null = null
         if (primaryVol != null) {
           const ethLeg =
@@ -377,8 +420,24 @@ export function DiscoverMarketView({
           const usdcLeg =
             (typeof d.volume.usdc === 'number' ? d.volume.usdc : 0) +
             (typeof d?.resales?.usdc === 'number' ? d.resales.usdc : 0)
-          volumeEth = usdcLeg === 0 ? ethLeg : ethUsd ? ethLeg + usdcLeg / ethUsd : null
+          volumeEth = toEth(ethLeg, usdcLeg)
         }
+        // Total artist / platform earnings (each metric's `total`). num() nulls a
+        // non-number so a pre-field block (platform before artistEth ships) reads
+        // '—' rather than NaN.
+        const num = (v: unknown): number | null => (typeof v === 'number' ? v : null)
+        const artistT = d?.earnings?.artist?.total
+        const platformT = d?.earnings?.platform?.total
+        const artistUsd = num(artistT?.usd)
+        const artistEth =
+          artistT && num(artistT.eth) != null && num(artistT.usdc) != null
+            ? toEth(artistT.eth, artistT.usdc)
+            : null
+        const platformUsd = num(platformT?.usd)
+        const platformEth =
+          platformT && num(platformT.eth) != null && num(platformT.usdc) != null
+            ? toEth(platformT.eth, platformT.usdc)
+            : null
         setStats({
           // Visible-scoped (hidden artworks excluded) — the header glance line
           // and the dialog's "artworks minted" must match what feeds show.
@@ -393,6 +452,10 @@ export function DiscoverMarketView({
           artists: typeof d?.catalog?.visibleArtists === 'number' ? d.catalog.visibleArtists : null,
           collectors: typeof d?.sales?.collectors === 'number' ? d.sales.collectors : null,
           editionsSold: typeof d?.sales?.editionsSold === 'number' ? d.sales.editionsSold : null,
+          artistUsd,
+          artistEth,
+          platformUsd,
+          platformEth,
         })
       })
       .catch(() => {})
