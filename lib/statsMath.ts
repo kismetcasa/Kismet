@@ -23,6 +23,22 @@ export interface StatsFeeRecipient {
   percent_allocation?: number
 }
 
+/**
+ * Map a stored 0xSplits recipient list (the lib/splits.ts SplitRecipient shape,
+ * `{ address, percentAllocation }`) onto the accumulator's fee-recipient shape
+ * (`{ artist_address, percent_allocation }`). Structural (no SplitRecipient
+ * import) so statsMath stays redis-free for CI, and unit-pinned because a silent
+ * field-name mismatch here would zero a pass artist's earnings.
+ */
+export function storedSplitsToFeeRecipients(
+  recipients: { address: string; percentAllocation: number }[],
+): StatsFeeRecipient[] {
+  return recipients.map((r) => ({
+    artist_address: r.address,
+    percent_allocation: r.percentAllocation,
+  }))
+}
+
 // Structural superset of the /transfers row. Only `value`/`currency`/
 // `quantity`/`moment.collection` are known-present today; the identifier,
 // buyer, and per-moment fields are speculative reads — the upstream docs are
@@ -249,6 +265,13 @@ export interface PlatformTotals {
     eth: number
     usdc: number
     buyers: Set<string>
+    /** Σ of the split shares credited to the REAL artist(s) on pass rows —
+     *  platform payout wallets excluded, i.e. the SAME per-recipient amounts
+     *  bumped onto the artist cards, summed here in one pass. So
+     *  `artistEth === Σ(pass card credits)` by construction, and the platform's
+     *  own pass cut is `eth − artistEth` (derived downstream, never stored). */
+    artistEth: number
+    artistUsdc: number
   }
 }
 
@@ -264,7 +287,15 @@ export const newPlatformTotals = (): PlatformTotals => ({
   unknownCurrency: 0,
   outOfScope: 0,
   scopeUnknown: 0,
-  passes: { transactions: 0, editions: 0, eth: 0, usdc: 0, buyers: new Set<string>() },
+  passes: {
+    transactions: 0,
+    editions: 0,
+    eth: 0,
+    usdc: 0,
+    buyers: new Set<string>(),
+    artistEth: 0,
+    artistUsdc: 0,
+  },
 })
 
 export interface AccumulateCounters {
@@ -293,6 +324,12 @@ export interface AccumulateCounters {
   collectionFallbacks: number
   /** Rows whose creator was recovered from the dominant fee recipient. */
   recoveredCreators: number
+  /** Pass (Patron/Mint-Pass) editions whose split named NO real artist we could
+   *  credit — every recipient was a platform payout wallet (or the split was
+   *  empty). These editions are counted in the passes block but credited to no
+   *  card; a non-zero value means a pass sale's artist attribution was lost, so
+   *  the rebuild log surfaces it instead of the silence of a bare drop. */
+  passUnattributed: number
 }
 
 export const newAccumulateCounters = (): AccumulateCounters => ({
@@ -304,6 +341,7 @@ export const newAccumulateCounters = (): AccumulateCounters => ({
   kvCreatorOverrides: 0,
   collectionFallbacks: 0,
   recoveredCreators: 0,
+  passUnattributed: 0,
 })
 
 const bump = (m: Map<string, number>, k: string, by: number) =>
@@ -383,6 +421,25 @@ export function dominantRecipientExcluding(
 }
 
 /**
+ * Drop platform-payout members from a resale-royalty credit list — the SECONDARY
+ * mirror of the pass earnings exclusion in accumulateTransfer. Applied ONLY when
+ * `isPass` (Patron/Mint-Pass resale): a pass split's 80% treasury share must not
+ * book as "creator royalty", exactly as it is not booked as primary earnings.
+ * NEVER unconditional — a legitimate ART split contains residencies' cut, and art
+ * royalties must keep mirroring art primary behaviour (which credits it). Members
+ * are lowercased already (resolveRoyaltySplitCredits lowercases). Pure so the
+ * pass-only decision is unit-verified without the redis/RPC credit plumbing.
+ */
+export function filterPassRoyaltyCredits(
+  credits: { member: string; amount: number }[],
+  isPass: boolean,
+  exclude: ReadonlySet<string>,
+): { member: string; amount: number }[] {
+  if (!isPass) return credits
+  return credits.filter((c) => !exclude.has(c.member))
+}
+
+/**
  * Fold one paid transfer into the aggregates.
  *
  * The mint-credit key comes from resolveMomentCreator above — ONE precedence
@@ -420,6 +477,13 @@ export function accumulateTransfer(
      *  rows; absent = no exclusion (the dominant-share pick still favours the
      *  artist). */
     platformAddresses?: ReadonlySet<string>
+    /** Authoritative mint-time split for a PASS row (from getStoredSplits — the
+     *  SAME source /api/moment/splits serves the Patron page). When present on a
+     *  'pass' row it REPLACES the feed's speculative fee_recipients; ignored for
+     *  non-pass scopes and when absent. Lets a pass credit its real artist(s)
+     *  even if the feed omits the split. Runs through the same corruption filter
+     *  as the feed value. */
+    passSplitRecipients?: StatsFeeRecipient[] | null
   },
   mints: Map<string, number>,
   eth: Map<string, number>,
@@ -455,7 +519,18 @@ export function accumulateTransfer(
   const feedCreator =
     typeof feedCreatorRaw === 'string' ? feedCreatorRaw : feedCreatorRaw?.address
 
-  const recipients = (t.moment?.fee_recipients ?? []).filter(
+  // A PASS row prefers the AUTHORITATIVE mint-time split (opts.passSplitRecipients,
+  // resolved by the rebuild from getStoredSplits — the SAME source the Patron page
+  // reads via /api/moment/splits) over the feed's speculative fee_recipients, so a
+  // pass credits its real artist(s) even when the feed omits the split. Non-pass
+  // rows and a missing override fall through to the feed field unchanged; either
+  // way the corruption filter below applies, so a garbage stored value is guarded
+  // exactly like a garbage feed value.
+  const isPass = platformScope === 'pass'
+  const rawRecipients =
+    isPass && opts.passSplitRecipients ? opts.passSplitRecipients : t.moment?.fee_recipients
+
+  const recipients = (rawRecipients ?? []).filter(
     (r): r is { artist_address: string; percent_allocation: number } =>
       typeof r.artist_address === 'string' &&
       r.artist_address.length > 0 &&
@@ -495,13 +570,18 @@ export function accumulateTransfer(
   //            the per-artist credit is a separate VIEW, not a double-count.
   // NOTE: counters.counted (below) stays network-wide — the shrink-guard signal.
   const creditArtist = platformScope === 'in' || platformScope === 'pass'
-  const isPass = platformScope === 'pass'
   const passExclude = opts.platformAddresses ?? EMPTY_ADDRESS_SET
   if (creditArtist) {
     if (isPass) {
       const primary = dominantRecipientExcluding(recipients, passExclude)
       if (primary) bump(mints, primary, qty)
-      else counters.droppedMints += qty
+      else {
+        // No real (non-platform) artist in the split — credit no card, and
+        // surface it LOUDLY (passUnattributed) rather than as a silent bare
+        // drop, so a lost pass attribution is visible in the rebuild log.
+        counters.droppedMints += qty
+        counters.passUnattributed += qty
+      }
     } else {
       if (resolved.source === 'kv') counters.kvCreatorOverrides++
       if (resolved.source === 'collection') counters.collectionFallbacks++
@@ -576,7 +656,16 @@ export function accumulateTransfer(
         // artist still gets EXACTLY their on-chain proportional share (not an
         // inflated one) — the platform cut is simply not credited to any card.
         if (isPass && passExclude.has(addr)) continue
-        bump(earned, addr, (value * r.percent_allocation) / divisor)
+        const share = (value * r.percent_allocation) / divisor
+        bump(earned, addr, share)
+        // Platform aggregate of pass artist-net: the IDENTICAL share bumped onto
+        // the card above, summed so the passes block can report what artists
+        // netted (gross − this = the platform's pass cut). Pass rows only, and
+        // only when the platform roll-up is being collected.
+        if (isPass && platform) {
+          if (currency === 'usdc') platform.passes.artistUsdc += share
+          else platform.passes.artistEth += share
+        }
       }
     } else if (creator && !isPass) {
       // Whole value to the resolved creator when there is no split — 'in' only.

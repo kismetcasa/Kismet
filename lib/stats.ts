@@ -9,21 +9,24 @@ import { getStoredSplits } from './splits'
 import { getCachedCreatorRewardRecipient } from './pending'
 import { getSmartWalletOwners } from './smartWalletCache'
 import { getTrackedCollectionsStrict } from './kv'
-import { PATRON_COLLECTION_ADDRESS } from './patronCollection'
+import { PATRON_COLLECTION_ADDRESS, isPatronCollection } from './patronCollection'
 import { CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET } from './config'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
-import { fetchCollectionMoments } from './inprocess'
+import { fetchCollectionMoments, inprocessUrl } from './inprocess'
 import { getAirdropsByMoment } from './airdrops'
 import { USDC_BASE } from './zoraMint'
 import {
   accumulateTransfer,
   exceedsGrowthLimit,
+  filterPassRoyaltyCredits,
   newAccumulateCounters,
   newPlatformTotals,
   remapEntries,
+  storedSplitsToFeeRecipients,
   transferDedupKey,
   transferMomentRef,
   type PlatformScope,
+  type StatsFeeRecipient,
 } from './statsMath'
 import type { EarningsAmounts } from './earningsFormat'
 
@@ -93,20 +96,87 @@ return 1
 // getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
 
-// Platform payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
-// credited to its real artist(s) — the same known-platform set the Patron page
-// uses (lib/patronCollection deriveArtistsFromRecipients + CollectionView). The
-// per-collection defaultAdmin/payout the UI also excludes is omitted here on
-// purpose: the sale-count creditee is the DOMINANT-share recipient, and the
-// artist who made the artwork holds the majority, so they win even if a minor
-// platform payee slips through — while a slipped payee's earnings share is a
-// tiny, un-viewed credit, never the artist's. Empty entries (unset env) are
-// filtered so the set never contains ''.
+// Static platform-payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
+// credited to its real artist(s) — the known-platform set from config. This is
+// the FALLBACK / floor; resolvePassExcludeAddresses below UNIONS the Patron
+// collection's own on-chain default_admin + payout onto it so the stats exclude
+// set matches the Patron page's deriveArtistsFromRecipients EXACTLY (see
+// CollectionView). Extending it matters because the pass artist can be a
+// MINORITY holder (e.g. 20%), so the old "artist holds the dominant share, a
+// slipped platform payee doesn't matter" reasoning does NOT hold — a slipped
+// 80% payout would steal the sale-count and book its share as artist earnings.
+// Empty entries (unset env) are filtered so the set never contains ''.
 const PASS_PLATFORM_ADDRESSES: ReadonlySet<string> = new Set(
   [PLATFORM_FEE_RECIPIENT, CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET]
     .filter((a): a is string => typeof a === 'string' && a.length > 0)
     .map((a) => a.toLowerCase()),
 )
+
+// Cached union of the static set above with the Patron collection's own
+// non-artist payees (its on-chain default_admin + payout), so a pass sale's
+// artist attribution excludes exactly who the Patron page excludes. Sourced from
+// the inprocess /collection detail (what the collection page reads), TTL-cached
+// like the splitaddr cache — the roles are upstream-mutable, so bound the staleness
+// rather than pinning forever. Best-effort: any failure falls back to the static
+// set (== prior behavior) and self-heals next scan, so the resolved set is always
+// a SUPERSET of the static one and can never credit FEWER real artists.
+const PASS_EXCLUDE_KEY = 'kismetart:stats:pass-exclude'
+const PASS_EXCLUDE_TTL_S = 7 * 24 * 60 * 60
+const HEX40 = /^0x[0-9a-f]{40}$/
+
+async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
+  const extra = new Set<string>()
+  let fetchedOk = false
+  try {
+    const res = await fetch(
+      inprocessUrl('/collection', { collectionAddress: PATRON_COLLECTION_ADDRESS, chainId: 8453 }),
+      { headers: { Accept: 'application/json' }, cache: 'no-store', signal: AbortSignal.timeout(8_000) },
+    )
+    if (res.ok) {
+      fetchedOk = true
+      const d = (await res.json()) as {
+        creator?: { address?: string } | null
+        default_admin?: { address?: string } | null
+        payout_recipient?: string | null
+      }
+      for (const a of [d?.creator?.address, d?.default_admin?.address, d?.payout_recipient]) {
+        if (typeof a === 'string' && HEX40.test(a.toLowerCase())) extra.add(a.toLowerCase())
+      }
+    }
+  } catch {
+    // fall through to the cached value (below), else the static set
+  }
+  if (fetchedOk && extra.size > 0) {
+    await redis.set(PASS_EXCLUDE_KEY, JSON.stringify([...extra]), { ex: PASS_EXCLUDE_TTL_S }).catch(() => {})
+  } else if (!fetchedOk) {
+    // Transient inprocess failure — reuse the last-known roles so a pass artist's
+    // attribution stays STABLE across scans instead of flip-flopping.
+    const cached = await redis.get<string | string[] | null>(PASS_EXCLUDE_KEY).catch(() => null)
+    let arr: unknown = cached
+    if (typeof cached === 'string') {
+      try {
+        arr = JSON.parse(cached)
+      } catch {
+        arr = null
+      }
+    }
+    if (Array.isArray(arr)) {
+      for (const a of arr) if (typeof a === 'string' && HEX40.test(a)) extra.add(a)
+    }
+  }
+  return extra.size > 0 ? new Set([...PASS_PLATFORM_ADDRESSES, ...extra]) : PASS_PLATFORM_ADDRESSES
+}
+
+// Resolve a Patron/pass token's AUTHORITATIVE mint-time split (getStoredSplits —
+// the same source /api/moment/splits serves the Patron page) into the accumulator
+// fee-recipient shape, or null when none is stored (the accumulator then falls
+// back to the feed). One Redis read per distinct pass token; the rebuild memoizes
+// across pages, so the Patron (a single-artwork release) costs ~one read/scan.
+async function resolvePassSplit(tokenId: string): Promise<StatsFeeRecipient[] | null> {
+  const stored = await getStoredSplits(PATRON_COLLECTION_ADDRESS, tokenId).catch(() => null)
+  if (!stored || stored.recipients.length === 0) return null
+  return storedSplitsToFeeRecipients(stored.recipients)
+}
 // One-time idempotency claim per filled listing so a retried/concurrent fill
 // credits exactly once. Committed ATOMICALLY with the credit (see the Lua
 // script below) — claiming first and crediting after left a swallowed credit
@@ -236,6 +306,10 @@ export interface RebuildResult {
   /** Distinct buyers across art + passes (post smart-wallet fold) — the cron
    *  log's combined-collector signal. */
   buyersCombined: number
+  /** Pass editions whose split named no creditable real artist (all payees were
+   *  platform wallets, or the split was empty) — a non-zero value flags lost pass
+   *  attribution in the cron log instead of a silent drop. */
+  passUnattributed: number
 }
 
 /**
@@ -288,6 +362,12 @@ export interface PlatformSalesSnapshot {
     /** Unique pass-buyer wallets (smart wallets folded). Optional: absent on a
      *  snapshot written before this field shipped. */
     buyers?: number
+    /** Σ of the real-artist split shares on pass sales (platform payees excluded)
+     *  — what artists NETTED from passes, vs `eth`/`usdc` which are GROSS buyer
+     *  payment. The platform's own pass cut is `eth − artistEth`. Optional:
+     *  absent on a snapshot written before this field shipped. */
+    artistEth?: number
+    artistUsdc?: number
   }
 }
 
@@ -374,6 +454,7 @@ const EMPTY_REBUILD_RESULT: RebuildResult = {
   passEditions: 0,
   passInvited: 0,
   buyersCombined: 0,
+  passUnattributed: 0,
 }
 
 // Editions airdropped as pass INVITES, from Kismet's own per-moment airdrop
@@ -435,6 +516,15 @@ async function runRebuild(): Promise<RebuildResult> {
   const tracked = new Set(
     (await getTrackedCollectionsStrict()).map((c) => c.toLowerCase()),
   )
+  // Pass (Patron/Mint-Pass) attribution inputs, resolved once per scan:
+  //  - passExclude: the static platform set UNIONED with the Patron's on-chain
+  //    admin/payout, so a pass sale credits exactly the Patron page's artist(s)
+  //    even when that artist is a minority holder. Best-effort → static set.
+  //  - passSplitByToken: the authoritative mint-time split per pass token
+  //    (getStoredSplits — the source /api/moment/splits uses), memoized across
+  //    pages and preferred over the feed's speculative fee_recipients.
+  const passExclude = await resolvePassExcludeAddresses()
+  const passSplitByToken = new Map<string, StatsFeeRecipient[] | null>()
   // Dedup across page reads: the live feed is offset-paged, so rows shift
   // across page boundaries as new sales land mid-scan; a row with a stable
   // identifier is folded at most once. Rows without one pass through (no
@@ -468,6 +558,24 @@ async function runRebuild(): Promise<RebuildResult> {
       refs.map((r) => ({ address: r?.collection, tokenId: r?.tokenId })),
     )
 
+    // Resolve the authoritative stored split for any Patron/pass tokens on this
+    // page, memoized across pages (the Patron is a single-artwork release, so
+    // this is ~one Redis read per scan). Injected below so a pass credits its
+    // real artist(s) from the mint-time split rather than the optional feed field.
+    const passTokens = new Set<string>()
+    for (const r of refs) {
+      if (r && r.collection === PATRON_COLLECTION_ADDRESS && !passSplitByToken.has(r.tokenId)) {
+        passTokens.add(r.tokenId)
+      }
+    }
+    if (passTokens.size > 0) {
+      await Promise.all(
+        [...passTokens].map(async (tid) => {
+          passSplitByToken.set(tid, await resolvePassSplit(tid))
+        }),
+      )
+    }
+
     res.transfers.forEach((t, i) => {
       const dedupKey = transferDedupKey(t)
       if (dedupKey) {
@@ -495,7 +603,9 @@ async function runRebuild(): Promise<RebuildResult> {
         {
           usdcAddress: USDC_BASE,
           kvCreator: metas[i]?.creator ?? null,
-          platformAddresses: PASS_PLATFORM_ADDRESSES,
+          platformAddresses: passExclude,
+          passSplitRecipients:
+            scope === 'pass' && ref ? passSplitByToken.get(ref.tokenId) ?? null : null,
         },
         mints,
         eth,
@@ -684,6 +794,8 @@ async function runRebuild(): Promise<RebuildResult> {
         usdc: platform.passes.usdc,
         invited: passInvited,
         buyers: passBuyers.size,
+        artistEth: platform.passes.artistEth,
+        artistUsdc: platform.passes.artistUsdc,
       },
     } satisfies PlatformSalesSnapshot)
     .catch((err) =>
@@ -712,6 +824,7 @@ async function runRebuild(): Promise<RebuildResult> {
     passEditions: platform.passes.editions,
     passInvited,
     buyersCombined: buyersCombined.size,
+    passUnattributed: counters.passUnattributed,
   }
 }
 
@@ -992,6 +1105,21 @@ export async function creditListingRoyalty(args: {
         credits = decomposed.credits
         matchedTokenId = decomposed.matchedTokenId
       }
+    }
+
+    // SECONDARY pass exclusion — the mirror of the primary pass earnings path:
+    // on a Patron/Mint-Pass resale, drop platform-payout members so the treasury's
+    // royalty share is NOT booked as "creator royalty", whether it arrived via the
+    // split decomposition above or as a bare platform-wallet receiver. Pass-scoped
+    // ONLY (isPatronCollection) — a legitimate ART split pays residencies, and art
+    // royalties must keep crediting it, so this must never fire for art. When a
+    // pass split names no real artist (all platform payees), credits filter to
+    // empty: credit nothing and DON'T claim, so no misleading ledger entry is
+    // written and the gross resale is still recorded by recordSecondaryVolume.
+    const isPass = !!collection && isPatronCollection(collection)
+    credits = filterPassRoyaltyCredits(credits, isPass, PASS_PLATFORM_ADDRESSES)
+    if (credits.length === 0) {
+      return { credited: false, decomposed: matchedTokenId !== null, matchedTokenId, credits: [], failed: false }
     }
 
     const ledgerEntry = JSON.stringify({
