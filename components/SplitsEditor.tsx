@@ -9,31 +9,28 @@ import { MAX_SPLITS } from '@/lib/splits'
 import { RESIDENCIES_ADDRESS } from '@/lib/config'
 
 // The mint form's revenue-splits editor (extracted from MintForm, which is
-// its only host). Controlled: `splits` holds CUSTOM recipients only — the
-// creator is never stored. Their share is the derived remainder, rendered as
-// a permanent non-removable "you" row that auto-absorbs every add/edit/remove,
-// so a total ≠ 100 is unrepresentable here (MintForm keeps submit-time
-// backstops for state drift). Empty state shows a purpose line and nothing
-// else — no percentages until a collaborator exists; the residencies cut
-// surfaces through the mechanic + "mints as" lines the moment rows appear
-// (and via the toggle below the mint button, which stays where it is).
+// its only host). Controlled: `splits` holds COLLABORATORS only — the creator
+// is never stored. Collaborators receive the exact percent typed; the
+// residencies donation (when on) comes out of the creator's share; the creator
+// receives the remainder, shown as a permanent non-removable "you" row that
+// already nets out residencies. Because the model is subtraction (no scaling),
+// the rows are byte-for-byte what mints — no preview line needed. A total ≠ 100
+// is unrepresentable here; MintForm keeps submit-time backstops for state
+// drift. Empty state shows a purpose line and nothing else — no percentages
+// until a collaborator exists; residencies stays on its toggle below the mint
+// button.
 interface SplitsEditorProps {
   splits: Split[]
   onChange: (next: Split[]) => void
   /** Connected wallet; undefined pre-connect (you-row shows a bare "you"). */
   creatorAddress?: string
   residenciesEnabled: boolean
-  residenciesPercent: number
-  residenciesOverCap: boolean
-  /** 100 − sum of custom rows — the derived "you" share (from MintForm). */
-  remainder: number
   /**
-   * computeFinalSplits output when the final integers can differ from the
-   * rows (residencies on + rows present + connected + not over-cap), else
-   * null. Composed in MintForm from the SAME array the payload uses, so the
-   * preview cannot drift from what actually mints.
+   * The derived "you" share: 100 − collaborators − residencies cut (from
+   * MintForm). Drives the you-row, auto-absorb, over-allocation, and edit
+   * clamps — all measured against what's left for the creator.
    */
-  preview: Split[] | null
+  remainder: number
 }
 
 export function SplitsEditor({
@@ -41,10 +38,7 @@ export function SplitsEditor({
   onChange,
   creatorAddress,
   residenciesEnabled,
-  residenciesPercent,
-  residenciesOverCap,
   remainder,
-  preview,
 }: SplitsEditorProps) {
   const [input, setInput] = useState({ address: '', pct: '' })
   // Inline % edit (same idiom as MintForm's residencies %): row address being
@@ -55,12 +49,14 @@ export function SplitsEditor({
   const typedPct = parseInt(input.pct, 10)
   // Live over-allocation state — surfaces BEFORE the click (the + disables,
   // hint below explains) instead of a surprise toast. Rows-only: with no rows
-  // the remainder is 100 and the 1–100 add validation already covers it.
+  // the remainder is what's left for you and the 1–100 add validation covers it.
   const overAlloc = splits.length > 0 && Number.isFinite(typedPct) && typedPct > remainder
-  // The one editor state with no valid payload: a lone recipient holding all
-  // 100 (computeFinalSplits' residencies branch would silently DROP them, and
-  // with residencies off a 1-recipient split can't exist on-chain).
-  const soleFull = splits.length === 1 && remainder === 0
+  // The one editor state with no valid payload: a lone collaborator taking all
+  // 100 with residencies OFF (a 1-recipient split can't exist on-chain, and
+  // computeFinalSplits returns undefined → 100% would misroute to the creator).
+  // With residencies ON, the lone collaborator pairs with the residencies
+  // recipient into a valid 2-entry split, so it's allowed.
+  const soleFull = splits.length === 1 && remainder === 0 && !residenciesEnabled
 
   function addSplit() {
     const addr = input.address.trim()
@@ -128,24 +124,6 @@ export function SplitsEditor({
     onChange(splits.map((s) => (s.address === addr ? { ...s, percentAllocation: clamped } : s)))
   }
 
-  // "mints as" entries in reading order (you → rows as added → residencies),
-  // values looked up from the computed array. On-chain order is address-
-  // sorted; this order optimizes reading, the values are exact.
-  const previewEntries: Array<{ label: string; pct: number }> = []
-  if (preview) {
-    const byAddr = new Map(preview.map((p) => [p.address.toLowerCase(), p.percentAllocation]))
-    if (creatorAddress) {
-      const mine = byAddr.get(creatorAddress.toLowerCase())
-      if (mine !== undefined) previewEntries.push({ label: 'you', pct: mine })
-    }
-    for (const s of splits) {
-      const pct = byAddr.get(s.address.toLowerCase())
-      if (pct !== undefined) previewEntries.push({ label: shortAddress(s.address), pct })
-    }
-    const res = byAddr.get(RESIDENCIES_ADDRESS.toLowerCase())
-    if (res !== undefined) previewEntries.push({ label: 'residencies', pct: res })
-  }
-
   return (
     <div>
       <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-1">
@@ -163,8 +141,8 @@ export function SplitsEditor({
       {splits.length > 0 && (
         <ul className="flex flex-col gap-1 mb-2">
           {/* Derived "you" row — non-removable, absorbs every change. Shows
-              the pre-cut share (the editing currency); the mints-as line
-              below carries the post-residencies truth. */}
+              your true take: 100 − collaborators − residencies, i.e. exactly
+              what mints. */}
           <li className="flex items-center justify-between bg-surface border border-line px-3 py-2">
             <span className="text-xs font-mono text-ink truncate">
               you{creatorAddress ? <span className="text-subtle"> {shortAddress(creatorAddress)}</span> : null}
@@ -228,7 +206,7 @@ export function SplitsEditor({
         </p>
       ) : remainder === 0 && splits.length >= 2 ? (
         <p className="text-xs font-mono text-muted mb-2">
-          you receive 0% — all revenue splits between the recipients above
+          you receive 0% — all proceeds go to the recipients above
         </p>
       ) : null}
 
@@ -269,31 +247,6 @@ export function SplitsEditor({
           only {remainder}% left — lower the % or remove a recipient
         </p>
       )}
-
-      {/* Residencies echo — the toggle itself stays below the mint button
-          (settled product decision, commit 2910e74); these lines make its
-          effect visible where splits are edited. */}
-      {residenciesEnabled && splits.length > 0 && (
-        <p className="text-xs font-mono text-muted">
-          residencies takes {residenciesPercent}% off the top — shares scale to the
-          remaining {100 - residenciesPercent}%, in whole percents
-        </p>
-      )}
-      {previewEntries.length > 0 ? (
-        <p className="text-xs font-mono text-muted mt-1" aria-live="polite">
-          <span className="text-subtle">mints as:</span>{' '}
-          {previewEntries.map((e, i) => (
-            <span key={`${e.label}-${i}`} className="text-dim">
-              {i > 0 && <span className="text-subtle"> · </span>}
-              {e.label} {e.pct}%
-            </span>
-          ))}
-        </p>
-      ) : residenciesEnabled && splits.length > 0 && residenciesOverCap ? (
-        <p className="text-xs font-mono text-muted mt-1">
-          fix the residencies % below to see the final split
-        </p>
-      ) : null}
     </div>
   )
 }
