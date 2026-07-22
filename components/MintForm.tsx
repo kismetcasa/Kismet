@@ -1813,7 +1813,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               inputMode="numeric"
               value={maxSupply}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
-              placeholder="open edition"
+              placeholder="open"
               className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
             {/* One vocabulary, every state explained. "open edition" is the
@@ -1828,7 +1828,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ) : is11 ? (
               <p className="text-xs text-muted font-mono mt-1">1/1 minted to your wallet</p>
             ) : (
-              <p className="text-xs text-muted font-mono mt-1">edition of {parseInt(maxSupply.trim(), 10).toLocaleString()}</p>
+              <p className="text-xs text-muted font-mono mt-1">limited edition ({parseInt(maxSupply.trim(), 10).toLocaleString()})</p>
             )}
           </div>
         )}
