@@ -29,7 +29,6 @@ interface PlatformStats {
   /** VISIBLE (non-hidden) artworks minted — hidden work is excluded so the
    *  public counter matches what the feeds actually show. */
   mints: number | null
-  earningsUsd: number | null
   resaleUsd: number | null
   /** Chainlink ETH/USD from the same payload — powers the oval price tooltips. */
   ethUsd: number | null
@@ -387,7 +386,6 @@ export function DiscoverMarketView({
           // renders '—' rather than silently falling back to the hidden-
           // inclusive total.
           mints: typeof d?.catalog?.visibleArtworks === 'number' ? d.catalog.visibleArtworks : null,
-          earningsUsd: typeof d?.earnings?.total?.usd === 'number' ? d.earnings.total.usd : null,
           resaleUsd: resaleVol,
           ethUsd,
           volumeUsd: primaryVol == null ? null : primaryVol + (resaleVol ?? 0),
@@ -504,20 +502,29 @@ export function DiscoverMarketView({
     gridRefreshRef.current?.()
   }
 
-  // Second line under "<market> market". Falls back to the ordering hint until
-  // the totals land (or if a figure is unavailable).
+  // Total live listings across the secondary book. The keys snapshot returns one
+  // entry per active listing (duplicates included — see /api/listings?keys=1), so
+  // the summed per-token counts ARE the listing total, not a distinct-token count.
+  const totalListings = resaleCounts
+    ? [...resaleCounts.values()].reduce((sum, n) => sum + n, 0)
+    : null
+
+  // Second line under "<market> market". Primary: artists · mints (both are
+  // catalog-census figures, which EXCLUDE the Patron/pass collection — so no
+  // membership activity leaks into the art glance). Secondary: total live
+  // listings. Each falls back to the ordering hint until its total lands.
   const statLine =
     market === 'primary'
       ? stats == null
         ? 'newest first'
         : [
+            stats.artists != null ? `${stats.artists.toLocaleString()} artists` : null,
             stats.mints != null ? `${stats.mints.toLocaleString()} mints` : null,
-            stats.earningsUsd ? `${fmtUsd(stats.earningsUsd)} earned` : null,
           ]
             .filter(Boolean)
             .join(' · ') || 'newest first'
-      : stats?.resaleUsd
-        ? `${fmtUsd(stats.resaleUsd)} in sales`
+      : totalListings != null
+        ? `${totalListings.toLocaleString()} listing${totalListings === 1 ? '' : 's'}`
         : 'newest first'
 
   // Oval-shaped cold-load placeholder, so the skeleton matches the row height
