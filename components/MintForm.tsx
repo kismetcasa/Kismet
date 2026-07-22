@@ -26,6 +26,7 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet, fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useEthUsd } from '@/hooks/useEthUsd'
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
@@ -346,6 +347,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   useEffect(() => {
     stepRef.current = step
   }, [step])
+
+  // Leave-site prompt for a dirty IDLE draft only. In-flight steps are
+  // excluded on purpose: mid-mint reloads are a supported recovery path
+  // (the banked-upload resume in uploadPersistence) and must not be nagged.
+  useUnsavedChangesWarning(
+    step === 'idle' &&
+      (file !== null ||
+        textContent.trim() !== '' ||
+        name.trim() !== '' ||
+        description.trim() !== '' ||
+        splits.length > 0 ||
+        maxSupply.trim() !== '' ||
+        (price.trim() !== '' && price.trim() !== '0')),
+  )
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
   // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits

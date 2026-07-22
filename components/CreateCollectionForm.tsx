@@ -20,6 +20,7 @@ import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { loadPersistedCover, savePersistedCover, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
@@ -420,11 +421,21 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [receipt, step])
 
-  // Once everything (deploy + optional cover mint) finishes, route to the new collection.
+  // Once everything (deploy + optional cover mint) finishes, route to the new
+  // collection — but ONLY in standalone usage. When onDeployed is wired (the
+  // /mint tabs, this form's sole consumer today), the parent owns post-deploy
+  // navigation: it returns the user to the mint tab with this collection
+  // preselected and their draft intact, and pushing to the collection page
+  // would yank them away mid-flow. (With the tabs now keeping panels mounted,
+  // this push actually fires — previously the unmount raced it into dead
+  // code.) Nothing load-bearing is lost by skipping the collection page: the
+  // deploy tx itself granted the smart wallet ADMIN via setupActions, and
+  // MintForm's preflight authorize banner covers the rare failed-grant case.
   useEffect(() => {
     if (step !== 'done' || !collectionAddress) return
+    if (onDeployed) return
     router.push(`/collection/${collectionAddress}`)
-  }, [step, collectionAddress, router])
+  }, [step, collectionAddress, router, onDeployed])
 
   // uploadJson with per-content reuse: identical JSON reuses the txid from
   // a previous attempt so its propagation clock keeps running across
@@ -926,6 +937,22 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   }
 
   const isBusy = step !== 'idle' && step !== 'done'
+
+  // Leave-site prompt for a dirty IDLE draft only. In-flight steps are
+  // excluded on purpose — the stuck-tx toast tells users to refresh to
+  // resume, and the pending-deploy persistence exists for exactly that.
+  // The auto-seeded royalty recipient doesn't count as dirty (it's ours,
+  // not theirs); an edited one does.
+  useUnsavedChangesWarning(
+    step === 'idle' &&
+      (coverFile !== null ||
+        name.trim() !== '' ||
+        description.trim() !== '' ||
+        minters.length > 0 ||
+        mintCover ||
+        royaltyBps !== '500' ||
+        (royaltyRecipient !== '' && royaltyRecipient !== seededRoyaltyRef.current)),
+  )
 
   if (step === 'done' && collectionAddress) {
     return (
