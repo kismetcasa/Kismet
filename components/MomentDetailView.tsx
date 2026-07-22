@@ -19,6 +19,7 @@ import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments 
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useComment } from '@/hooks/useComment'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
@@ -189,6 +190,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [collected, setCollected] = useState(false)
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
+  // On-chain comment (Zora Comments contract) — the post-collect path for
+  // holders. Separate from `commentText`, which rides a collect tx.
+  const { submitComment, status: commentStatus } = useComment()
+  const commenting = commentStatus !== 'idle' && commentStatus !== 'done' && commentStatus !== 'error'
+  const [onchainComment, setOnchainComment] = useState('')
   // Seed from the inprocess-provided username (or short address) up front so
   // we don't flash a raw address before fetchCreatorProfile resolves —
   // matches the seeding MomentCard already does on the discover grid.
@@ -693,6 +699,23 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }, [detail])
 
   useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
+
+  async function handlePostComment() {
+    const text = onchainComment.trim()
+    if (!text) return
+    const result = await submitComment({
+      collectionAddress: address as `0x${string}`,
+      tokenId,
+      text,
+    })
+    if (result) {
+      setOnchainComment('')
+      // Give In Process a moment to index the Commented event, then refresh the
+      // feed so the new comment appears (same force-refresh the collect path
+      // uses; the 60s cache expiry backstops it if indexing runs long).
+      setTimeout(() => void fetchComments(true), 5000)
+    }
+  }
 
   async function handleCollect() {
     // No saleConfig gate — collect resolves price on-chain (see
@@ -1734,10 +1757,44 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </div>
               </div>
             )}
-            {/* Comment goes with the collect — hide the textarea once the
-                token is minted out, since there's no further collect to
-                attach the comment to. */}
-            {!mintedOut && (
+            {/* Holders post an on-chain comment (Zora Comments contract) after
+                collecting — In Process indexes it into the activity feed above.
+                Shown IN PLACE OF the collect-note textarea for holders, so
+                there's one comment box, contextual to whether you've collected.
+                The contract gates on ownership; costs one spark + gas. */}
+            {alreadyOwned && (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={onchainComment}
+                    onChange={(e) => setOnchainComment(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && onchainComment.trim() && !commenting) {
+                        void handlePostComment()
+                      }
+                    }}
+                    placeholder="add a comment…"
+                    maxLength={1000}
+                    disabled={commenting}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handlePostComment()}
+                    disabled={commenting || !onchainComment.trim()}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+                  >
+                    {commenting ? '…' : 'comment'}
+                  </button>
+                </div>
+                <p className="text-[10px] font-mono text-subtle">onchain comment · you hold this piece</p>
+              </div>
+            )}
+            {/* Comment goes with the collect — hidden once the token is minted
+                out (no further collect to attach to) or when the viewer already
+                holds it (they use the on-chain comment box above instead). */}
+            {!mintedOut && !alreadyOwned && (
               <textarea
                 value={commentText}
                 onChange={(e) => setCommentText(e.target.value)}
