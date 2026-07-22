@@ -1476,17 +1476,6 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         </div>
       )}
 
-      {/* Owner-only agent surfaces, consolidated here (replacing the former global
-          "Agent" nav tab): the autonomous Agent Collect setup + the Base MCP skill
-          entry. Owner chrome — hidden while previewing the public view. Both
-          self-gate on smart-wallet eligibility, so an EOA owner sees neither. */}
-      {isOwner && !previewPublic && (
-        <div className="mb-4 grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2">
-          <AgentCollectEntry />
-          <AgentSkillCard />
-        </div>
-      )}
-
       {/* Owner-only curation hint, shown only when nothing is pinned: an owner
           only ever sees this (full) dashboard, so without it they'd have no
           prompt to feature artworks on their otherwise detail-only profile.
@@ -1609,6 +1598,19 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         })
         )}
       </div>
+
+      {/* Owner-only agent surfaces (replacing the former global "Agent" nav
+          tab): the autonomous Agent Collect setup + the Base MCP skill entry.
+          Placed AFTER the artwork sections — the profile leads with the art;
+          tools trail it (artist feedback). Owner chrome — hidden while
+          previewing the public view. Both self-gate on smart-wallet
+          eligibility, so an EOA owner sees neither. */}
+      {isOwner && !previewPublic && (
+        <div className="mt-4 grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2">
+          <AgentCollectEntry />
+          <AgentSkillCard />
+        </div>
+      )}
     </div>
   )
 }

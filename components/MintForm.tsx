@@ -25,6 +25,7 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet, fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
+import { useEthUsd } from '@/hooks/useEthUsd'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
@@ -367,6 +368,22 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // with self-mint OFF, a supply of 1 is just a public edition of one, so
   // price + sale window apply normally.
   const is11 = mintMode === 'media' && maxSupply.trim() === '1' && artistMintEnabled
+
+  // Live "≈ $…" label under the price input. ETH converts via the Chainlink
+  // rate (null while loading or when the feed is stale — the label hides
+  // rather than showing a wrong figure, same honest-USD rule as the earnings
+  // views); USDC maps 1:1, shown anyway so both currencies read consistently.
+  // "≈ $" mirrors MarketOvals' existing conversion-label convention.
+  const ethUsd = useEthUsd()
+  const priceNum = parseFloat(price)
+  const priceUsdApprox =
+    !is11 && Number.isFinite(priceNum) && priceNum > 0
+      ? priceCurrency === 'usdc'
+        ? priceNum
+        : ethUsd !== null
+          ? priceNum * ethUsd
+          : null
+      : null
 
   // Sale-close display. Empty falls back to open-ended; the helper mirrors the
   // Supply field's open-edition vs finite copy so the empty-end semantics read
@@ -1753,6 +1770,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           {price === '0' && !is11 && (
             <p className="text-xs text-muted font-mono mt-1">free mint</p>
           )}
+          {/* Mutually exclusive with "free mint": the label only renders for a
+              parsed price > 0. aria-live so screen readers hear the conversion
+              update as the artist types. */}
+          {priceUsdApprox !== null && (
+            <p className="text-xs text-muted font-mono mt-1" aria-live="polite">
+              ≈ {formatUsdApprox(priceUsdApprox)}
+            </p>
+          )}
         </div>
 
         {mintMode === 'media' && (
@@ -1765,14 +1790,23 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               inputMode="numeric"
               value={maxSupply}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
-              placeholder="unlimited"
+              placeholder="open edition"
               className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
+            {/* One vocabulary, every state explained. "open edition" is the
+                artist-community term (Zora/Manifold/OpenSea all use it;
+                "unlimited" appears in their docs only as its explanation), and
+                it's what Kismet's own market tags already say — the old
+                "unlimited" placeholder + "open edition" helper used two words
+                for one concept in a single field. The helper glosses each
+                state; finite supplies previously got no helper at all. */}
             {!maxSupply.trim() ? (
-              <p className="text-xs text-muted font-mono mt-1">open edition</p>
+              <p className="text-xs text-muted font-mono mt-1">open edition — no supply cap</p>
             ) : is11 ? (
               <p className="text-xs text-muted font-mono mt-1">1/1 minted to your wallet</p>
-            ) : null}
+            ) : (
+              <p className="text-xs text-muted font-mono mt-1">edition of {parseInt(maxSupply.trim(), 10).toLocaleString()}</p>
+            )}
           </div>
         )}
       </div>
@@ -2137,6 +2171,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       )}
     </form>
   )
+}
+
+// "$1,234.56" for the price input's ≈-USD label. Two decimals for ordinary
+// amounts; sub-cent prices collapse to "< $0.01" instead of a misleading
+// "$0.00". en-US grouping to match the platform's other USD figures.
+function formatUsdApprox(usd: number): string {
+  if (usd < 0.01) return '< $0.01'
+  return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 // Format a Date as a `datetime-local` value (YYYY-MM-DDTHH:mm) in the

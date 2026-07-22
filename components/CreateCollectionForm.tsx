@@ -108,6 +108,20 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
   const [description, setDescription] = useState('')
   const [royaltyBps, setRoyaltyBps] = useState('500')
   const [royaltyRecipient, setRoyaltyRecipient] = useState('')
+  // Prefill the royalty recipient with the connected wallet — the submit-time
+  // default (resolvedRoyalty falls back to `address`) made visible, instead of
+  // an empty field artists read as "required" or "unknown". The ref holds the
+  // last value WE seeded so an account switch reseeds only an untouched field:
+  // anything the user typed (or a seed they edited) is never clobbered.
+  const seededRoyaltyRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!address) return
+    setRoyaltyRecipient((cur) => {
+      if (cur !== '' && cur !== seededRoyaltyRef.current) return cur
+      seededRoyaltyRef.current = address
+      return address
+    })
+  }, [address])
   // Minters are stored as resolved-once entries: ENS gets resolved when
   // the user clicks +, the 0x is what we encode into setupActions, and
   // the original input (.eth or 0x) is what we display so the list
@@ -942,7 +956,9 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
             setName('')
             setDescription('')
             setRoyaltyBps('500')
-            setRoyaltyRecipient('')
+            // Back to the prefilled default, not empty — the seeding effect
+            // only reruns on an address change, which "Create another" isn't.
+            setRoyaltyRecipient(address ?? '')
             setMinters([])
             setMinterInput('')
             setMintCover(false)
@@ -1020,8 +1036,8 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
                     inputMode="numeric"
                     value={coverSupply}
                     onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setCoverSupply(v) }}
-                    placeholder="∞"
-                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-subtle placeholder:text-[16px] placeholder:leading-none focus:outline-none focus:border-muted"
+                    placeholder="open"
+                    className="w-16 bg-surface border border-line px-2 py-0.5 text-[11px] text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
                   />
                 </label>
               </div>
@@ -1119,7 +1135,7 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted">%</span>
         </div>
-        <p className="text-xs text-muted font-mono mt-1">paid to your wallet on secondary sales</p>
+        <p className="text-xs text-muted font-mono mt-1">paid on secondary sales to the recipient below</p>
       </div>
 
       {/* Royalty recipient */}
@@ -1131,19 +1147,35 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
           type="text"
           value={royaltyRecipient}
           onChange={(e) => setRoyaltyRecipient(e.target.value)}
-          placeholder={address ? `${shortAddress(address)} (or vitalik.eth)` : '0x… or vitalik.eth (defaults to your wallet)'}
+          placeholder="0x… or vitalik.eth (defaults to your wallet)"
           className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
         />
+        <p className="text-xs text-muted font-mono mt-1">
+          {address
+            ? 'prefilled with your connected wallet — edit to route royalties elsewhere'
+            : 'your wallet by default once connected — or set any address'}
+        </p>
       </div>
 
       {/* Authorized minters */}
       <div>
-        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
+        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-1">
           Authorized Minters
         </label>
+        {/* Hint between label and input so it's read before the field is used,
+            linked via aria-describedby (GOV.UK hint pattern). Phrased as
+            capability + boundary; the scope comes from the MINTER bit this
+            grants (encodeMinterPermission): mint/airdrop editions — adminMint
+            accepts ADMIN | MINTER — but not setupNewToken (needs ADMIN) or
+            settings. */}
+        <p id="authorized-minters-hint" className="text-xs text-muted font-mono mb-2">
+          optional — added wallets can mint &amp; airdrop pieces in this
+          collection, but can’t create new artworks or change settings
+        </p>
         <div className="flex gap-2 mb-2">
           <input
             type="text"
+            aria-describedby="authorized-minters-hint"
             value={minterInput}
             onChange={(e) => setMinterInput(e.target.value)}
             onKeyDown={(e) => {
