@@ -21,13 +21,16 @@ import {
   classifyTransferCurrency,
   dominantRecipientExcluding,
   exceedsGrowthLimit,
+  filterPassRoyaltyCredits,
   newAccumulateCounters,
   newPlatformTotals,
   remapEntries,
   resolveMomentCreator,
+  storedSplitsToFeeRecipients,
   transferBuyer,
   transferDedupKey,
   transferMomentRef,
+  type StatsFeeRecipient,
   type StatsTransfer,
 } from '../lib/statsMath.ts'
 
@@ -584,6 +587,136 @@ check('scope: default scope is in — pre-scope callers keep folding (back-compa
     )
     return platform.transactions === 1 && platform.eth === 1
   })())
+
+// ── 7. Pass artist-net + authoritative stored-split source + secondary filter ─
+// The primary pass path now (a) sources its split from the AUTHORITATIVE
+// stored-split override (opts.passSplitRecipients) rather than the feed's
+// speculative fee_recipients, (b) aggregates artist-net into passes.artistEth/
+// Usdc from the SAME per-recipient share bumped onto the card, and (c) surfaces
+// an unattributable pass loudly via counters.passUnattributed.
+const runPass = (
+  t: StatsTransfer,
+  passSplitRecipients: StatsFeeRecipient[] | null,
+): { maps: Maps; platform: ReturnType<typeof newPlatformTotals>; counters: ReturnType<typeof newAccumulateCounters> } => {
+  const maps: Maps = [new Map(), new Map(), new Map()]
+  const counters = newAccumulateCounters()
+  const platform = newPlatformTotals()
+  accumulateTransfer(
+    t,
+    { usdcAddress: USDC, kvCreator: null, platformAddresses: PLATFORM_SET, passSplitRecipients },
+    ...maps, counters, platform, 'pass',
+  )
+  return { maps, platform, counters }
+}
+
+const PASS_SPLIT_20_80: StatsFeeRecipient[] = [
+  { artist_address: OWNER, percent_allocation: 20 },
+  { artist_address: PLAT, percent_allocation: 80 },
+]
+
+// The live Turro case: 11 pass editions × 0.044 ETH, artist 20% / platform 80%.
+{
+  const maps: Maps = [new Map(), new Map(), new Map()]
+  const counters = newAccumulateCounters()
+  const platform = newPlatformTotals()
+  for (let n = 0; n < 11; n++) {
+    accumulateTransfer(
+      { value: 0.044, quantity: 1, id: `pass-${n}`, moment: {} },
+      { usdcAddress: USDC, kvCreator: null, platformAddresses: PLATFORM_SET, passSplitRecipients: PASS_SPLIT_20_80 },
+      ...maps, counters, platform, 'pass',
+    )
+  }
+  check('pass: 11×0.044 @ 20% → gross 0.484, artist-net 0.0968, card 0.0968 (the live Turro case)',
+    Math.abs(platform.passes.eth - 0.484) < 1e-9 &&
+      Math.abs(platform.passes.artistEth - 0.0968) < 1e-9 &&
+      Math.abs((maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.0968) < 1e-9 &&
+      maps[0].get(OWNER.toLowerCase()) === 11 &&
+      platform.passes.transactions === 11 && platform.passes.editions === 11 &&
+      !maps[1].has(PLAT.toLowerCase()),
+    JSON.stringify({ eth: platform.passes.eth, artistEth: platform.passes.artistEth, ownerEth: maps[1].get(OWNER.toLowerCase()), ownerMints: maps[0].get(OWNER.toLowerCase()) }))
+  check('pass: artist-net can never exceed gross (invariant artistEth ≤ passes.eth)',
+    platform.passes.artistEth <= platform.passes.eth + 1e-12)
+}
+
+// The stored-split override REPLACES the feed's fee_recipients on a pass row.
+{
+  const { maps, platform } = runPass(
+    { value: 0.044, moment: { fee_recipients: [{ artist_address: COLLAB, percent_allocation: 100 }] } },
+    PASS_SPLIT_20_80,
+  )
+  check('pass: stored-split override REPLACES feed fee_recipients (real artist credited, feed COLLAB ignored)',
+    Math.abs((maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.0088) < 1e-12 &&
+      !maps[1].has(COLLAB.toLowerCase()) && !maps[1].has(PLAT.toLowerCase()) &&
+      maps[0].get(OWNER.toLowerCase()) === 1 &&
+      Math.abs(platform.passes.artistEth - 0.0088) < 1e-12,
+    JSON.stringify({ eth: [...maps[1]], mints: [...maps[0]] }))
+}
+
+// A garbage percent in the STORED override is rejected by the same corruption
+// guard as a garbage feed value (no NaN divisor, surviving recipient credited).
+{
+  const { maps } = runPass(
+    { value: 1, moment: {} },
+    [{ artist_address: OWNER, percent_allocation: 20 }, { artist_address: COLLAB, percent_allocation: Infinity }],
+  )
+  check('pass: corrupt pct in the stored override is rejected by the same guard as feed values',
+    Number.isFinite(maps[1].get(OWNER.toLowerCase()) ?? 0) &&
+      Math.abs((maps[1].get(OWNER.toLowerCase()) ?? 0) - 0.2) < 1e-12 &&
+      (maps[1].get(COLLAB.toLowerCase()) ?? 0) === 0,
+    JSON.stringify([...maps[1]]))
+}
+
+// A pass split naming NO real artist (all platform payees) credits no card and
+// surfaces loudly via passUnattributed — never a silent bare drop.
+{
+  const { maps, platform, counters } = runPass({ value: 0.044, quantity: 2, moment: {} }, [
+    { artist_address: PLAT, percent_allocation: 100 },
+  ])
+  check('pass: split with NO real artist → no card credit, passUnattributed surfaced, gross still counted',
+    maps[0].size === 0 && maps[1].size === 0 &&
+      counters.passUnattributed === 2 && counters.droppedMints === 2 &&
+      platform.passes.transactions === 1 && Math.abs(platform.passes.eth - 0.044) < 1e-12 &&
+      platform.passes.artistEth === 0,
+    JSON.stringify({ passUnattributed: counters.passUnattributed, droppedMints: counters.droppedMints, artistEth: platform.passes.artistEth }))
+}
+
+// Pinned-risk case: an un-excluded 80% payee IS mis-credited — this is exactly
+// the Gap the RESOLVED exclude set (admin/payout, wired in lib/stats.ts) closes.
+{
+  const STRAY = '0x0000000000000000000000000000000000008888' // NOT in PLATFORM_SET
+  const { maps, platform } = runPass({ value: 0.044, moment: {} }, [
+    { artist_address: OWNER, percent_allocation: 20 },
+    { artist_address: STRAY, percent_allocation: 80 },
+  ])
+  check('pass: an UN-excluded 80% payee is mis-credited — proves the resolved exclude set is load-bearing (Gap A)',
+    maps[0].get(STRAY.toLowerCase()) === 1 &&
+      Math.abs(platform.passes.artistEth - 0.044) < 1e-12,
+    JSON.stringify({ mints: [...maps[0]], artistEth: platform.passes.artistEth }))
+}
+
+// storedSplitsToFeeRecipients: the field-name mapping a silent typo could break.
+check('storedSplitsToFeeRecipients: address→artist_address, percentAllocation→percent_allocation',
+  JSON.stringify(storedSplitsToFeeRecipients([
+    { address: OWNER, percentAllocation: 20 },
+    { address: PLAT, percentAllocation: 80 },
+  ])) === JSON.stringify([
+    { artist_address: OWNER, percent_allocation: 20 },
+    { artist_address: PLAT, percent_allocation: 80 },
+  ]))
+
+// filterPassRoyaltyCredits: the SECONDARY pass exclusion — pass-scoped ONLY.
+{
+  const credits = [
+    { member: OWNER.toLowerCase(), amount: 0.2 },
+    { member: PLAT.toLowerCase(), amount: 0.8 },
+  ]
+  check('filterPassRoyaltyCredits: PASS drops platform members (treasury royalty not booked as creator royalty)',
+    JSON.stringify(filterPassRoyaltyCredits(credits, true, PLATFORM_SET)) ===
+      JSON.stringify([{ member: OWNER.toLowerCase(), amount: 0.2 }]))
+  check('filterPassRoyaltyCredits: NON-pass passes through unchanged (art royalties keep crediting residencies)',
+    filterPassRoyaltyCredits(credits, false, PLATFORM_SET).length === 2 &&
+      filterPassRoyaltyCredits(credits, false, PLATFORM_SET) === credits)
+}
 
 if (failures > 0) {
   console.error(`\n${failures} stats check(s) FAILED`)

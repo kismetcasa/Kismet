@@ -178,6 +178,21 @@ export async function GET(req: NextRequest) {
               usd: usdOf(sales.passes.eth, sales.passes.usdc),
               // Distinct pass buyers; null on a pre-field snapshot.
               buyers: sales.passes.buyers ?? null,
+              // Of the GROSS pass volume above, the share that reached real
+              // artists (platform payees excluded) — so `eth`/`usdc` is what
+              // buyers paid and `artistEarnings` is what artists netted; the
+              // platform's own pass cut is the difference. Credited to the same
+              // per-artist maps the profile cards read, so this aggregate equals
+              // Σ of those pass credits. `null` on a pre-field snapshot (never a
+              // fabricated 0). Derived platform cut = eth − artistEarnings.eth.
+              artistEarnings:
+                sales.passes.artistEth != null && sales.passes.artistUsdc != null
+                  ? {
+                      eth: sales.passes.artistEth,
+                      usdc: sales.passes.artistUsdc,
+                      usd: usdOf(sales.passes.artistEth, sales.passes.artistUsdc),
+                    }
+                  : null,
             }
           : null,
       // Combined paid-PRIMARY volume: the two commerce blocks above summed
