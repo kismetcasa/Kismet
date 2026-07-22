@@ -156,7 +156,7 @@ export function SplitsEditor({
           exists. */}
       {splits.length === 0 && (
         <p className="text-xs text-muted font-mono mb-2">
-          add collaborators to receive a split of mint proceeds
+          split mint proceeds with collaborators
         </p>
       )}
 
