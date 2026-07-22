@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, getSaleWindow, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -19,6 +19,7 @@ import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments 
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
+import { useComment } from '@/hooks/useComment'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
@@ -160,6 +161,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // drives the "couldn't load — retry" pane. Bumping the nonce restarts the poll.
   const [detailExhausted, setDetailExhausted] = useState(false)
   const [detailRetryNonce, setDetailRetryNonce] = useState(0)
+  // Client-only mount flag — the sale-window date row (like SaleWindow itself)
+  // is locale/timezone-formatted, so it renders only post-mount to avoid a
+  // hydration mismatch AND to keep the row from reserving height before there's
+  // a date to show (see showSaleWindowRow below).
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const textContentUri =
     detail?.metadata?.content?.mime === 'text/plain'
       ? detail.metadata.content.uri
@@ -189,6 +196,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [collected, setCollected] = useState(false)
   const { collect, status: collectStatus } = useDirectCollect()
   const collecting = collectStatus !== 'idle' && collectStatus !== 'done' && collectStatus !== 'error'
+  // On-chain comment (Zora Comments contract) — the post-collect path for
+  // holders. Separate from `commentText`, which rides a collect tx.
+  const { submitComment, status: commentStatus } = useComment()
+  const commenting = commentStatus !== 'idle' && commentStatus !== 'done' && commentStatus !== 'error'
+  const [onchainComment, setOnchainComment] = useState('')
   // Seed from the inprocess-provided username (or short address) up front so
   // we don't flash a raw address before fetchCreatorProfile resolves —
   // matches the seeding MomentCard already does on the discover grid.
@@ -693,6 +705,23 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }, [detail])
 
   useEscapeKey(useCallback(() => setLightboxOpen(false), []), lightboxOpen)
+
+  async function handlePostComment() {
+    const text = onchainComment.trim()
+    if (!text) return
+    const result = await submitComment({
+      collectionAddress: address as `0x${string}`,
+      tokenId,
+      text,
+    })
+    if (result) {
+      setOnchainComment('')
+      // Give In Process a moment to index the Commented event, then refresh the
+      // feed so the new comment appears (same force-refresh the collect path
+      // uses; the 60s cache expiry backstops it if indexing runs long).
+      setTimeout(() => void fetchComments(true), 5000)
+    }
+  }
 
   async function handleCollect() {
     // No saleConfig gate — collect resolves price on-chain (see
@@ -1302,6 +1331,76 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     </>
   )
 
+  // Whether the sale-window date should render at all. Mirrors SaleWindow's own
+  // decision (mounted + a dated window) so neither the mobile date line nor the
+  // desktop date column reserves space when there's no date to show. atSec is
+  // set for scheduled/closing/ended and null for a live open-ended sale, so this
+  // is false exactly when SaleWindow would render null.
+  const showSaleWindowRow = mounted && getSaleWindow(detail?.saleConfig)?.atSec != null
+
+  // The armed send form (input + confirm + resolver hint). One definition, two
+  // breakpoint-exclusive positions: INLINE in the desktop utility row (between
+  // the send button and the sale date — the row is hidden below sm, so that
+  // copy self-hides on mobile) and full-width below the row on mobile
+  // (sm:hidden). Both copies bind the same state; only one is ever displayed.
+  const sendForm = (
+    <div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={sendTo}
+          onChange={(e) => setSendTo(e.target.value)}
+          placeholder="0x address or name.eth"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
+        />
+        <button
+          onClick={handleSend}
+          disabled={!sendToValid || sending}
+          className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+        >
+          {sending ? '…' : 'confirm'}
+        </button>
+      </div>
+      {trimmedSendTo && (
+        <div className="mt-1.5 text-[10px] font-mono">
+          {resolvingSendTo ? (
+            <span className="text-muted">resolving…</span>
+          ) : isSelfSend ? (
+            <span className="text-red-400">cannot send to yourself</span>
+          ) : sendToError ? (
+            <span className="text-red-400">{sendToError}</span>
+          ) : resolvedSendTo && looksLikeEns ? (
+            <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
+          ) : null}
+        </div>
+      )}
+    </div>
+  )
+
+  // The price | supply box. Rendered real in the action row, and again as an
+  // invisible WIDTH-ONLY strut (h-0) in the desktop utility row, so the sale
+  // date can center under the collect button by mirroring this box's exact,
+  // content-dependent width without hardcoding it.
+  const priceSupplyBox = (
+    <div className="flex border border-line flex-none">
+      <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+        <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+      </div>
+      <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
+        <span className="text-[11px] font-mono text-subtle">
+          {maxSupply === undefined
+            ? '…'
+            : isOpenEdition(maxSupply)
+              ? 'open'
+              : maxSupply.toLocaleString()}
+        </span>
+      </div>
+    </div>
+  )
+
   return (
     <div className="max-w-[88rem] mx-auto px-3 sm:px-4 pt-3 sm:pt-4 pb-16" onClick={outerClick}>
 
@@ -1773,10 +1872,44 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 </div>
               </div>
             )}
-            {/* Comment goes with the collect — hide the textarea once the
-                token is minted out, since there's no further collect to
-                attach the comment to. */}
-            {!mintedOut && (
+            {/* Holders post an on-chain comment (Zora Comments contract) after
+                collecting — In Process indexes it into the activity feed above.
+                Shown IN PLACE OF the collect-note textarea for holders, so
+                there's one comment box, contextual to whether you've collected.
+                The contract gates on ownership; costs one spark + gas. */}
+            {alreadyOwned && (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={onchainComment}
+                    onChange={(e) => setOnchainComment(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && onchainComment.trim() && !commenting) {
+                        void handlePostComment()
+                      }
+                    }}
+                    placeholder="add a comment…"
+                    maxLength={1000}
+                    disabled={commenting}
+                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handlePostComment()}
+                    disabled={commenting || !onchainComment.trim()}
+                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+                  >
+                    {commenting ? '…' : 'comment'}
+                  </button>
+                </div>
+                <p className="text-[10px] font-mono text-subtle">onchain comment · you hold this piece</p>
+              </div>
+            )}
+            {/* Comment goes with the collect — hidden once the token is minted
+                out (no further collect to attach to) or when the viewer already
+                holds it (they use the on-chain comment box above instead). */}
+            {!mintedOut && !alreadyOwned && (
               <textarea
                 value={commentText}
                 onChange={(e) => setCommentText(e.target.value)}
@@ -1866,20 +1999,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
           {/* Action row: [price|supply] [list] [collect] */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
-            <div className="flex border border-line flex-none">
-              <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
-              </div>
-              <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className="text-[11px] font-mono text-subtle">
-                  {maxSupply === undefined
-                    ? '…'
-                    : isOpenEdition(maxSupply)
-                      ? 'open'
-                      : maxSupply.toLocaleString()}
-                </span>
-              </div>
-            </div>
+            {priceSupplyBox}
             {alreadyOwned && (
               <div className="flex-1 min-w-0">
                 <ListButton
@@ -1908,72 +2028,96 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </button>
           </div>
 
-          {/* Sale-window date — centered directly underneath the price/supply +
-              collect row. Three columns share the row so the date lands in the
-              TRUE center between two EQUAL flex-1 gutters: scan / share / send in
-              the LEFT gutter (DESKTOP only — on mobile they sit in the "x sold"
-              row above), and the admin feature toggle in the RIGHT gutter. Equal
-              gutters keep the date centered no matter what the sides hold
-              (mobile empty-left, non-admin empty-right, open-ended no-date). */}
-          <div className="px-5 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="flex-1">
-                {/* Desktop only — on mobile these live in the "x sold" row. */}
-                <div className="hidden items-center gap-3 sm:flex">
+          {/* Mobile / mini-app: sale-window date centered under the action row.
+              Its own full-width centered line — the detail label (date + time +
+              zone) is too long to sit under the collect column alone on a phone,
+              so it centers across the whole row. Desktop centers the date under
+              the collect button in the utility row (below), so this line is
+              mobile-only. Gated on showSaleWindowRow so nothing shows for a live
+              open-ended sale. */}
+          {showSaleWindowRow && (
+            <div className="px-5 pt-1 pb-3 flex justify-center sm:hidden">
+              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+            </div>
+          )}
+
+          {/* Utility row — flex-col, so gap spans only rendered rows (a hidden
+              desktop line reserves nothing on mobile).
+              • Desktop: scan / share / send on the left, the sale date CENTERED
+                UNDER THE COLLECT BUTTON — the line mirrors the action row's
+                columns ([price-box width] [list flex-1 when owned] [flex-1]),
+                still one line, so no empty band around the date.
+              • Feature toggle: admin-only, demoted to its own line directly
+                beneath the button group.
+              • Send form: armed on DESKTOP it sits inline in the utility row,
+                between the send button and the date (the empty list-mirror
+                column); on mobile it drops in full-width below the row.
+              On mobile the buttons live in the "x sold" row and the date in its
+              own line above, so this row carries only feature (admin) + the form. */}
+          <div className="px-5 pb-4 flex flex-col gap-2">
+            {/* flex-wrap: the nowrap date label is ~228px — wider than the whole
+                collect column on the narrowest md panels (info column is ~368px
+                at a 768px viewport). Wrapping lets the date column drop to its
+                own full-width centered line exactly when it can't fit beside the
+                buttons (panel ≲ 425px), instead of overflowing the panel edge /
+                overlapping the send button. At every wider width the row lays
+                out single-line and the wrap is inert. */}
+            <div className="hidden flex-wrap items-center gap-2 sm:flex">
+              {/* Column 1 = the action row's price|supply column, by construction:
+                  a grid-stacked invisible copy of the box (h-0 → contributes its
+                  exact width but NO height) with the buttons in the same cell
+                  (w-0 → contribute height but no width). Cell = box width ×
+                  buttons height, so the columns align without a hardcoded width
+                  and the row stays button-height. Buttons overflow the cell
+                  rightward into the empty spacer beside it; `relative` keeps
+                  those tails painted above (and clickable over) the spacer.
+                  EXCEPT while the send form is armed: the form occupies that
+                  spacer column, so the buttons keep their natural width (no
+                  w-0) and the cell grows to hold them — the tail would
+                  otherwise paint over (and steal clicks from) the input's left
+                  edge. Cost: the date drifts ~20px right of collect center
+                  while the form is open. */}
+              <div className="grid flex-none">
+                <div aria-hidden className="invisible col-start-1 row-start-1 h-0 overflow-hidden">
+                  {priceSupplyBox}
+                </div>
+                <div className={`relative col-start-1 row-start-1 flex items-center gap-3 ${sendOpen ? '' : 'w-0'}`}>
                   {secondaryActionButtons}
                 </div>
               </div>
-              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
-              <div className="flex-1 flex justify-end">
-                {isAdmin && (
-                  <button
-                    onClick={() => toggleFeatured(address, tokenId)}
-                    className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
-                      isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
-                    }`}
-                  >
-                    <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
-                    {isFeatured ? 'unfeature' : 'feature'}
-                  </button>
-                )}
-              </div>
-            </div>
-            {alreadyOwned && sendOpen && (
-              <div className="mt-2">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={sendTo}
-                    onChange={(e) => setSendTo(e.target.value)}
-                    placeholder="0x address or name.eth"
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
-                  >
-                    {sending ? '…' : 'confirm'}
-                  </button>
+              {/* List-mirror column: an empty spacer normally; the send form
+                  when armed — sitting exactly between the send button and the
+                  sale date. min-w-[12rem] floors the input at a usable width:
+                  on panels too narrow to hold buttons + form + date in one
+                  line, the DATE (whose min-content exceeds its flex share
+                  first) wraps to its own centered line via the row's existing
+                  flex-wrap fallback instead of the input crushing to ~40px. */}
+              {alreadyOwned &&
+                (sendOpen ? (
+                  <div className="flex-1 min-w-[12rem]">{sendForm}</div>
+                ) : (
+                  <div aria-hidden className="flex-1" />
+                ))}
+              {showSaleWindowRow && (
+                <div className="flex-1 flex justify-center">
+                  <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
                 </div>
-                {trimmedSendTo && (
-                  <div className="mt-1.5 text-[10px] font-mono">
-                    {resolvingSendTo ? (
-                      <span className="text-muted">resolving…</span>
-                    ) : isSelfSend ? (
-                      <span className="text-red-400">cannot send to yourself</span>
-                    ) : sendToError ? (
-                      <span className="text-red-400">{sendToError}</span>
-                    ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
+              )}
+            </div>
+            {isAdmin && (
+              <button
+                onClick={() => toggleFeatured(address, tokenId)}
+                className={`flex items-center gap-1.5 text-xs font-mono transition-colors w-fit ${
+                  isFeatured ? 'text-yellow-400' : 'text-muted hover:text-dim'
+                }`}
+              >
+                <Star size={12} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
+                {isFeatured ? 'unfeature' : 'feature'}
+              </button>
             )}
+            {/* Mobile-only: the armed form full-width below the row (desktop
+                shows it inline in the utility row above). */}
+            {alreadyOwned && sendOpen && <div className="sm:hidden">{sendForm}</div>}
           </div>
 
         </div>

@@ -19,7 +19,6 @@ import {
   inferCollectCurrency,
   shortAddress,
   getSaleWindow,
-  formatSaleWindowLabel,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
 } from '@/lib/inprocess'
@@ -253,24 +252,15 @@ function MomentOvalImpl({
     maxSupply !== undefined && totalMinted !== undefined && !isOpenEdition(maxSupply) && totalMinted >= maxSupply
   // Sale-window state via the canonical classifier. Result-equivalent to
   // MomentCard's raw saleStart/saleEnd compares for the disable gate (verified:
-  // both read the max-uint64 "no end" sentinel as open-ended); used here because
-  // it ALSO yields the 'closing' state that drives the close-date label. This
-  // derivation is deliberately NOT shared with MomentCard — a shared hook would
-  // edit the feed's hottest component; isolation over DRY for a no-regression feature.
+  // both read the max-uint64 "no end" sentinel as open-ended); atSec also
+  // marks a dated window for the "timed edition" supply tag. This derivation
+  // is deliberately NOT shared with MomentCard — a shared hook would edit the
+  // feed's hottest component; isolation over DRY for a no-regression feature.
   const nowSec = Math.floor(Date.now() / 1000)
   const saleWindow = getSaleWindow(activeSale, nowSec)
   const saleNotStarted = saleWindow?.state === 'scheduled'
   const saleEnded = saleWindow?.state === 'ended'
   const uncapped = maxSupply !== undefined && isOpenEdition(maxSupply)
-  // Sold-out supersedes the clock: the close date is an urgency cue for a live
-  // collect action, and on a mint with nothing left it reads as "you have
-  // until X" — a dead promise. Cards drop it; the artwork page keeps the full
-  // window for provenance (MomentDetailView's SaleWindow is ungated).
-  const windowLabel = !mintedOut ? formatSaleWindowLabel(saleWindow, { withTime: false }) : null
-  // Uncapped editions carry the dated window INSIDE the supply line (it
-  // replaced the redundant "timed edition" tag), so the titleRight chip only
-  // serves capped rows — one dated edge per oval, never both.
-  const closeLabel = !uncapped && saleWindow?.state === 'closing' ? windowLabel : null
   const disabled = collecting || mintedOut || saleNotStarted || saleEnded
   const label = collecting
     ? 'collecting…'
@@ -285,20 +275,19 @@ function MomentOvalImpl({
             : 'collect'
 
   // Supply line: "sold" framing — "3/100 sold" for limited editions. An
-  // uncapped edition leads with its dated sale window when one exists
-  // ("sale ends Jul 31" / "opens Aug 1" / "ended Jun 25" — supply is set by
-  // the clock, and the words "timed edition" were redundant next to a visible
-  // date); only a truly unbounded one reads "open edition". Until the sale
-  // config resolves (same dwell fetch as the price) an uncapped edition reads
-  // "open edition" and upgrades in place — same progressive fill as the price
-  // slot. Lowercased to sit in the subtitle's register ("sale ends Jul 31",
-  // not "Sale ends Jul 31").
-  const lcFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
+  // uncapped edition whose sale has a dated window (scheduled / closing /
+  // ended — atSec set) reads "timed edition"; only a truly unbounded one
+  // reads "open edition". DELIBERATELY no dates on ovals — the compact tag,
+  // not "sale ends Jul 31": the dense discover rows keep the category signal
+  // and the moment page carries the actual window. Until the sale config
+  // resolves (same dwell fetch as the price) an uncapped edition reads
+  // "open edition" and upgrades in place — same progressive fill as the
+  // price slot.
   const supplyLabel =
     maxSupply === undefined
       ? '…'
       : uncapped
-        ? `${windowLabel ? lcFirst(windowLabel) : 'open edition'} · ${(totalMinted ?? 0n).toLocaleString()} sold`
+        ? `${saleWindow?.atSec != null ? 'timed edition' : 'open edition'} · ${(totalMinted ?? 0n).toLocaleString()} sold`
         : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {
@@ -326,9 +315,6 @@ function MomentOvalImpl({
       rootRef={rootRef}
       href={`/moment/${moment.address}/${moment.token_id}`}
       title={meta.name || `#${moment.token_id}`}
-      // Sale close date to the right of the title (only for a real upcoming
-      // deadline — see closeLabel).
-      titleRight={closeLabel || undefined}
       subtitle={
         <>
           {/* Supply is the line's whole job — truncate IT, never the listing

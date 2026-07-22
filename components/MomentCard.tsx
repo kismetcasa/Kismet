@@ -407,9 +407,10 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   )
 
   // The single meta-slot element (see metaSlot) — the sale window or the
-  // collection chip — styled for its placement. `inline` caps + truncates it so
-  // it sits to the right of the artist without crowding the name; the own-row
-  // variant takes its natural width. Returns null when the slot is empty.
+  // collection chip. Position lives in the CALLER: the inline call site wraps
+  // this in the standardized right-55% zone (see the creator row), so `inline`
+  // here only means "constrain to the zone" (min-w-0 → inner truncate can
+  // clip); the own-row variant takes its natural width. Null when empty.
   const renderMeta = (inline: boolean) => {
     if (metaSlot === 'sale') {
       return (
@@ -417,7 +418,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           saleConfig={activeSale}
           variant="card"
           compact={compact}
-          className={inline ? 'shrink-0 max-w-[60%]' : ''}
+          className={inline ? 'min-w-0' : ''}
         />
       )
     }
@@ -426,7 +427,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         <Link
           href={`/collection/${moment.address}`}
           onClick={(e) => e.stopPropagation()}
-          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? 'shrink-0 max-w-[60%]' : 'w-fit'}`}
+          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? '' : 'w-fit'}`}
           title={collectionName ?? undefined}
           aria-label={collectionName ?? undefined}
         >
@@ -678,18 +679,35 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           )}
         </div>
         {/* Creator row — artist chip on the left, and (full cards) the single
-            secondary-metadata slot INLINE on the right: the sale window, or the
-            collection chip when there's no sale window (see metaSlot). The two
-            are mutually exclusive, so a collection never stacks a chip row under
-            a sale row — same card height as a solo mint. The creator link takes
-            the remaining width and truncates; the meta slot is capped and
-            truncates past that, so neither crowds the other off the row. */}
+            secondary-metadata slot at a STANDARDIZED position: a fixed zone
+            spanning the right 55% of the row (ml-auto), content centered — so
+            the sale window / collection chip sits at the same x on EVERY card
+            (~over the collect button in all action-row variants), instead of
+            drifting with the artist name's length.
+            Precedence: the FULL artist name wins over the meta. The artist link
+            is shrink-0 (never squeezed to make the meta fit); when the name
+            needs more than the left 45%, the meta zone wraps to a second flex
+            line that h-4 + overflow-clip erases entirely — the "cut the meta,
+            keep the name" rule, in pure CSS. overflow-CLIP, not -hidden: hidden
+            makes the row a scroll container, so keyboard-focusing a clipped
+            chip link would scroll line 2 into view and shove the artist out;
+            clip cannot scroll. h-4 also pins the row height whether or not the
+            meta got cut, so card heights never jitter. Compact cards keep the
+            plain row — they never host an inline meta, and h-4 would inflate
+            their shorter (12px-avatar) row for nothing. */}
         {renderCreator && (
-          <div className="flex items-center gap-2 max-w-full">
+          <div className={`flex items-center gap-2 max-w-full ${compact ? '' : 'flex-wrap h-4 overflow-clip'}`}>
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
-              className="flex items-center gap-1.5 group/creator min-w-0 flex-1"
+              // compact routes the meta to its own row, so the artist fills the
+              // creator row there (flex-1); same when there's no meta at all.
+              // With an inline meta: shrink-0 gives the full name priority (the
+              // meta cuts before the name compresses), max-w-full still caps a
+              // name longer than the whole row (inner truncate clips it).
+              className={`flex items-center gap-1.5 group/creator min-w-0 ${
+                compact ? 'flex-1' : metaSlot ? 'shrink-0 max-w-full' : 'flex-1'
+              }`}
               title={moment.creator.address}
             >
               <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
@@ -701,9 +719,22 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </span>
             </Link>
             {/* Inline on full cards only. Compact cards route the slot to its own
-                row below — no chip lives in compact, so there's nothing to solve
-                for there, and inlining would only cram the tiny row. */}
-            {!compact && renderMeta(true)}
+                row below. The zone is the position-standardizer: MIN-width 55%
+                of the row (right-anchored), content centered — so any meta that
+                fits the zone sits at the same x on every card (edge 45%, center
+                72.5% ≈ over the collect button). min-w, not w: a collection
+                name LONGER than the zone grows the zone leftward into whatever
+                room a short artist leaves, showing the full name snapped to the
+                right edge instead of truncating — and when the artist isn't
+                short enough for the full name, flex line-breaking (which uses
+                the zone's un-shrunk size) wraps the zone out to the clipped
+                line: the cut rule, never a squeezed middle state. Dates are
+                always narrower than the zone, so they stay centered. */}
+            {!compact && metaSlot && (
+              <div className="ml-auto min-w-[55%] shrink-0 flex justify-center">
+                {renderMeta(true)}
+              </div>
+            )}
           </div>
         )}
         {/* Own-row meta slot — the fallback for what the inline slot above can't
