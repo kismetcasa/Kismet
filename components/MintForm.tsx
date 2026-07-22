@@ -369,20 +369,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // price + sale window apply normally.
   const is11 = mintMode === 'media' && maxSupply.trim() === '1' && artistMintEnabled
 
-  // Live "≈ $…" label under the price input. ETH converts via the Chainlink
-  // rate (null while loading or when the feed is stale — the label hides
-  // rather than showing a wrong figure, same honest-USD rule as the earnings
-  // views); USDC maps 1:1, shown anyway so both currencies read consistently.
-  // "≈ $" mirrors MarketOvals' existing conversion-label convention.
+  // Live "≈ $…" label under the price input — ETH only. The Chainlink rate is
+  // null while loading or when the feed is stale, and the label hides rather
+  // than showing a wrong figure (same honest-USD rule as the earnings views).
+  // USDC gets no label: it's already dollar-denominated, so a 1:1 echo would
+  // be noise. "≈ $" mirrors MarketOvals' existing conversion-label convention.
   const ethUsd = useEthUsd()
   const priceNum = parseFloat(price)
   const priceUsdApprox =
-    !is11 && Number.isFinite(priceNum) && priceNum > 0
-      ? priceCurrency === 'usdc'
-        ? priceNum
-        : ethUsd !== null
-          ? priceNum * ethUsd
-          : null
+    priceCurrency === 'eth' && !is11 && ethUsd !== null && Number.isFinite(priceNum) && priceNum > 0
+      ? priceNum * ethUsd
       : null
 
   // Sale-close display. Empty falls back to open-ended; the helper mirrors the
