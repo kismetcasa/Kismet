@@ -1315,6 +1315,48 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // is false exactly when SaleWindow would render null.
   const showSaleWindowRow = mounted && getSaleWindow(detail?.saleConfig)?.atSec != null
 
+  // The armed send form (input + confirm + resolver hint). One definition, two
+  // breakpoint-exclusive positions: INLINE in the desktop utility row (between
+  // the send button and the sale date — the row is hidden below sm, so that
+  // copy self-hides on mobile) and full-width below the row on mobile
+  // (sm:hidden). Both copies bind the same state; only one is ever displayed.
+  const sendForm = (
+    <div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={sendTo}
+          onChange={(e) => setSendTo(e.target.value)}
+          placeholder="0x address or name.eth"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
+        />
+        <button
+          onClick={handleSend}
+          disabled={!sendToValid || sending}
+          className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+        >
+          {sending ? '…' : 'confirm'}
+        </button>
+      </div>
+      {trimmedSendTo && (
+        <div className="mt-1.5 text-[10px] font-mono">
+          {resolvingSendTo ? (
+            <span className="text-muted">resolving…</span>
+          ) : isSelfSend ? (
+            <span className="text-red-400">cannot send to yourself</span>
+          ) : sendToError ? (
+            <span className="text-red-400">{sendToError}</span>
+          ) : resolvedSendTo && looksLikeEns ? (
+            <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
+          ) : null}
+        </div>
+      )}
+    </div>
+  )
+
   // The price | supply box. Rendered real in the action row, and again as an
   // invisible WIDTH-ONLY strut (h-0) in the desktop utility row, so the sale
   // date can center under the collect button by mirroring this box's exact,
@@ -1950,7 +1992,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 still one line, so no empty band around the date.
               • Feature toggle: admin-only, demoted to its own line directly
                 beneath the button group.
-              • Send form: drops in when armed.
+              • Send form: armed on DESKTOP it sits inline in the utility row,
+                between the send button and the date (the empty list-mirror
+                column); on mobile it drops in full-width below the row.
               On mobile the buttons live in the "x sold" row and the date in its
               own line above, so this row carries only feature (admin) + the form. */}
           <div className="px-5 pb-4 flex flex-col gap-2">
@@ -1969,16 +2013,34 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   buttons height, so the columns align without a hardcoded width
                   and the row stays button-height. Buttons overflow the cell
                   rightward into the empty spacer beside it; `relative` keeps
-                  those tails painted above (and clickable over) the spacer. */}
+                  those tails painted above (and clickable over) the spacer.
+                  EXCEPT while the send form is armed: the form occupies that
+                  spacer column, so the buttons keep their natural width (no
+                  w-0) and the cell grows to hold them — the tail would
+                  otherwise paint over (and steal clicks from) the input's left
+                  edge. Cost: the date drifts ~20px right of collect center
+                  while the form is open. */}
               <div className="grid flex-none">
                 <div aria-hidden className="invisible col-start-1 row-start-1 h-0 overflow-hidden">
                   {priceSupplyBox}
                 </div>
-                <div className="relative col-start-1 row-start-1 flex w-0 items-center gap-3">
+                <div className={`relative col-start-1 row-start-1 flex items-center gap-3 ${sendOpen ? '' : 'w-0'}`}>
                   {secondaryActionButtons}
                 </div>
               </div>
-              {alreadyOwned && <div aria-hidden className="flex-1" />}
+              {/* List-mirror column: an empty spacer normally; the send form
+                  when armed — sitting exactly between the send button and the
+                  sale date. min-w-[12rem] floors the input at a usable width:
+                  on panels too narrow to hold buttons + form + date in one
+                  line, the DATE (whose min-content exceeds its flex share
+                  first) wraps to its own centered line via the row's existing
+                  flex-wrap fallback instead of the input crushing to ~40px. */}
+              {alreadyOwned &&
+                (sendOpen ? (
+                  <div className="flex-1 min-w-[12rem]">{sendForm}</div>
+                ) : (
+                  <div aria-hidden className="flex-1" />
+                ))}
               {showSaleWindowRow && (
                 <div className="flex-1 flex justify-center">
                   <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
@@ -1996,42 +2058,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 {isFeatured ? 'unfeature' : 'feature'}
               </button>
             )}
-            {alreadyOwned && sendOpen && (
-              <div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={sendTo}
-                    onChange={(e) => setSendTo(e.target.value)}
-                    placeholder="0x address or name.eth"
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-surface border border-line px-3 py-2 text-xs font-mono text-ink placeholder-subtle focus:outline-none focus:border-muted"
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={!sendToValid || sending}
-                    className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
-                  >
-                    {sending ? '…' : 'confirm'}
-                  </button>
-                </div>
-                {trimmedSendTo && (
-                  <div className="mt-1.5 text-[10px] font-mono">
-                    {resolvingSendTo ? (
-                      <span className="text-muted">resolving…</span>
-                    ) : isSelfSend ? (
-                      <span className="text-red-400">cannot send to yourself</span>
-                    ) : sendToError ? (
-                      <span className="text-red-400">{sendToError}</span>
-                    ) : resolvedSendTo && looksLikeEns ? (
-                      <span className="text-muted">→ {shortAddress(resolvedSendTo)}</span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            )}
+            {/* Mobile-only: the armed form full-width below the row (desktop
+                shows it inline in the utility row above). */}
+            {alreadyOwned && sendOpen && <div className="sm:hidden">{sendForm}</div>}
           </div>
 
         </div>
