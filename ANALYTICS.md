@@ -428,6 +428,7 @@ Blind spots to keep in mind when reading the numbers:
 | `kismetart:royalty-credited:<listingId>` | Idempotency claims | Once per fill |
 | `kismetart:stats:secondary` | Resale-volume aggregate (`resales`; HASH eth/usdc/transactions/updatedAt) | Event-driven, one atomic increment per fill |
 | `kismetart:stats:secondary-counted:<listingId>` | Resale-volume idempotency claims | Once per fill |
+| `kismetart:stats:pending-credits` | Reconcile outbox — royalty/volume whose fill-time eval hard-failed, retried idempotently by the hourly cron (bounded, dropped after ~24 attempts) | On fill-eval failure; drained hourly |
 | `kismetart:stats:last-rebuild` | Shrink + value-jump guard baseline (counted, in-scope, eth, usdc) | After each successful rebuild |
 | `kismetart:stats:health:{rebuild,census}` | Pipeline heartbeat — last run/success/error per phase | Every sync-stats run outcome |
 | `kismetart:stats:{rebuild,census}-lock` | Single-flight locks (`lib/redisLock.ts`) | 900 s / 600 s TTL |

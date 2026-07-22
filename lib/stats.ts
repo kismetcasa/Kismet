@@ -1004,34 +1004,45 @@ export interface SecondaryVolume {
  * Record one Kismet-listing fill's GROSS sale price into the platform
  * secondary-volume aggregate. Called from the on-chain-verified listings PATCH.
  * Idempotent per listing (NX claim, atomic with the increment), so a retried or
- * concurrent fill counts once. Best-effort — returns false on a non-positive or
- * malformed price, empty id, or Redis error, and NEVER throws (it runs on the
- * sale-confirmation path and must never fail the fill). `priceBaseUnits` is the
- * raw base-units string (wei / 6-dp USDC); the parse lives INSIDE the try so a
- * legacy/malformed value degrades to "not counted", never an exception.
+ * concurrent fill counts once. NEVER throws (it runs on the sale-confirmation
+ * path and must never fail the fill). `priceBaseUnits` is the raw base-units
+ * string (wei / 6-dp USDC); the parse lives inside its own try.
+ *
+ * Returns { recorded, failed }: `recorded` is true only on the first write;
+ * `failed` is true ONLY when the Redis eval threw (the NX claim was NOT taken,
+ * so nothing was written and a retry is safe) — distinct from a duplicate
+ * (already counted) or a terminally-invalid price, both of which return
+ * failed:false. The caller enqueues a reconcile retry exactly when failed:true,
+ * so a transient blip on this no-webhook-backstop stat is healed, not lost.
  */
 export async function recordSecondaryVolume(args: {
   listingId: string
   currency: 'eth' | 'usdc'
   priceBaseUnits: string
-}): Promise<boolean> {
+}): Promise<{ recorded: boolean; failed: boolean }> {
   const { listingId, currency, priceBaseUnits } = args
-  if (!listingId) return false
+  if (!listingId) return { recorded: false, failed: false }
+  let price: number
   try {
-    const price =
+    price =
       currency === 'usdc'
         ? Number(formatUnits(BigInt(priceBaseUnits), 6))
         : Number(formatEther(BigInt(priceBaseUnits)))
-    if (!Number.isFinite(price) || price <= 0) return false
+  } catch {
+    // Malformed price (BigInt throw) — TERMINAL, a retry can't fix it.
+    return { recorded: false, failed: false }
+  }
+  if (!Number.isFinite(price) || price <= 0) return { recorded: false, failed: false }
+  try {
     const wrote = await redis.eval(
       RECORD_SECONDARY_LUA,
       [secondaryCountedKey(listingId), SECONDARY_VOLUME_KEY],
       [currency, String(price), String(Date.now())],
     )
-    return wrote === 1
+    return { recorded: wrote === 1, failed: false }
   } catch {
-    // Malformed price (BigInt throw) or Redis error — best-effort, never throws.
-    return false
+    // Redis eval failed transiently — claim not taken, so this is retryable.
+    return { recorded: false, failed: true }
   }
 }
 
@@ -1452,5 +1463,130 @@ async function resolveRoyaltySplitCredits(
     return null
   } catch {
     return null
+  }
+}
+
+// ── Reconcile backstop for event-driven credits ──────────────────────────────
+
+// The royalty credit and the resale-volume record run once per fill, on the
+// sale-confirmation PATCH, and — unlike the hourly rebuild's self-healing
+// absolute writes — are NEVER replayed. So if their Redis eval blips
+// transiently the figure is lost forever: the listing is already 'filled' (the
+// client won't retry, and a retry would 409), and nothing rebuilds these keys.
+//
+// This closes that gap with a small outbox: when a fill's credit/volume eval
+// hard-fails (NOT a duplicate — the NX claim wasn't taken, so a retry is safe),
+// the PATCH persists the retry args here, and the hourly cron drains the queue
+// through the SAME idempotent functions. Bounded: a poison entry is dropped
+// after PENDING_MAX_ATTEMPTS so the queue can't grow without limit. Best-effort
+// by nature — if the enqueue write ALSO fails (a TOTAL outage, not a single-call
+// blip) the figure is still lost, but the common transient case now heals.
+const PENDING_CREDITS_KEY = 'kismetart:stats:pending-credits'
+const PENDING_MAX_ATTEMPTS = 24 // ~1 day of hourly reconcile passes, then give up
+
+type PendingRoyalty = {
+  kind: 'royalty'
+  listingId: string
+  currency: 'eth' | 'usdc'
+  amount: number
+  receiver: string
+  collection?: string
+  tokenId?: string
+}
+type PendingVolume = {
+  kind: 'volume'
+  listingId: string
+  currency: 'eth' | 'usdc'
+  priceBaseUnits: string
+}
+type PendingCredit = (PendingRoyalty | PendingVolume) & { attempts: number; firstAt: number }
+
+// Persist a fill's failed credit/volume for later reconcile. Best-effort and
+// never-throws — it runs on the sale path and must not fail the fill. Keyed by
+// kind:listingId so a re-fired PATCH overwrites rather than duplicates.
+export async function enqueuePendingCredit(rec: PendingRoyalty | PendingVolume): Promise<void> {
+  try {
+    const id = `${rec.kind}:${rec.listingId}`
+    await redis.hset(PENDING_CREDITS_KEY, {
+      [id]: JSON.stringify({ ...rec, attempts: 0, firstAt: Date.now() }),
+    })
+  } catch {
+    // Enqueue itself failed (likely a broader outage) — accept the loss.
+  }
+}
+
+// Drain the pending-credit queue, retrying each through its idempotent path.
+// The NX claim guarantees a retry that races the original (or a already-healed
+// entry) is a no-op, so this can never double-credit. Removes an entry once it
+// no longer hard-fails (recorded, already-claimed, or terminally invalid), and
+// drops it after PENDING_MAX_ATTEMPTS. Called from the hourly sync-stats cron.
+export async function reconcilePendingCredits(): Promise<{
+  processed: number
+  healed: number
+  dropped: number
+  pending: number
+}> {
+  let processed = 0
+  let healed = 0
+  let dropped = 0
+  try {
+    const h = await redis.hgetall<Record<string, unknown>>(PENDING_CREDITS_KEY)
+    if (!h) return { processed: 0, healed: 0, dropped: 0, pending: 0 }
+    for (const [id, raw] of Object.entries(h)) {
+      let rec: PendingCredit | null = null
+      if (typeof raw === 'string') {
+        try {
+          rec = JSON.parse(raw) as PendingCredit
+        } catch {
+          rec = null
+        }
+      } else if (raw && typeof raw === 'object') {
+        rec = raw as PendingCredit
+      }
+      // Corrupt/unknown entry — remove so it can't wedge the queue.
+      if (!rec || (rec.kind !== 'royalty' && rec.kind !== 'volume')) {
+        await redis.hdel(PENDING_CREDITS_KEY, id).catch(() => {})
+        dropped++
+        continue
+      }
+      processed++
+      let stillFailed: boolean
+      if (rec.kind === 'royalty') {
+        const outcome = await creditListingRoyalty({
+          listingId: rec.listingId,
+          currency: rec.currency,
+          amount: rec.amount,
+          receiver: rec.receiver,
+          collection: rec.collection,
+          tokenId: rec.tokenId,
+        })
+        stillFailed = outcome.failed
+      } else {
+        const r = await recordSecondaryVolume({
+          listingId: rec.listingId,
+          currency: rec.currency,
+          priceBaseUnits: rec.priceBaseUnits,
+        })
+        stillFailed = r.failed
+      }
+      if (!stillFailed) {
+        await redis.hdel(PENDING_CREDITS_KEY, id).catch(() => {})
+        healed++
+      } else {
+        const attempts = (typeof rec.attempts === 'number' ? rec.attempts : 0) + 1
+        if (attempts >= PENDING_MAX_ATTEMPTS) {
+          await redis.hdel(PENDING_CREDITS_KEY, id).catch(() => {})
+          dropped++
+        } else {
+          await redis
+            .hset(PENDING_CREDITS_KEY, { [id]: JSON.stringify({ ...rec, attempts }) })
+            .catch(() => {})
+        }
+      }
+    }
+    const pending = (await redis.hlen(PENDING_CREDITS_KEY).catch(() => 0)) ?? 0
+    return { processed, healed, dropped, pending }
+  } catch {
+    return { processed, healed, dropped, pending: 0 }
   }
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import crypto from 'node:crypto'
-import { rebuildStats } from '@/lib/stats'
+import { rebuildStats, reconcilePendingCredits } from '@/lib/stats'
 import { rebuildCatalogCensus } from '@/lib/catalogCensus'
 import { recordStatsRun } from '@/lib/statsHealth'
 import { errorResponse } from '@/lib/apiResponse'
@@ -78,6 +78,18 @@ export async function GET(req: NextRequest) {
       } catch (err) {
         console.error('[sync-stats] census failed', err)
         await recordStatsRun('census', 'error', err instanceof Error ? err.message : String(err))
+      }
+
+      // Replay any event-driven credits/volume whose fill-time eval blipped
+      // (see enqueuePendingCredit). The durable backstop for the "no webhook
+      // replay" gap on royalty + resale-volume stats; usually an empty queue,
+      // idempotent, and never throws. Gated on !rebuildSkipped so two
+      // overlapping cron hits don't both drain it at once.
+      try {
+        const rec = await reconcilePendingCredits()
+        if (rec.processed > 0 || rec.pending > 0) console.log('[sync-stats] reconcile', rec)
+      } catch (err) {
+        console.error('[sync-stats] reconcile failed', err)
       }
     }
   })
