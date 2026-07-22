@@ -3,11 +3,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { trackFunnel } from '@/lib/funnel'
 import { MomentImage } from './MomentImage'
+import { SplitsEditor } from './SplitsEditor'
 import { useRouter } from 'next/navigation'
 import { useAccount, useReadContract, usePublicClient } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
-import { Upload, X, Plus, Trash2, ShieldCheck, ShieldAlert } from 'lucide-react'
+import { Upload, X, ShieldCheck, ShieldAlert } from 'lucide-react'
 import { parseEther, parseUnits, isAddress } from 'viem'
 import { shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
@@ -328,7 +329,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [saleStartFocused, setSaleStartFocused] = useState(false)
   const [saleEndFocused, setSaleEndFocused] = useState(false)
   const [splits, setSplits] = useState<Split[]>([])
-  const [splitInput, setSplitInput] = useState({ address: '', pct: '' })
   const [residenciesEnabled, setResidenciesEnabled] = useState(true)
   // Creator-chosen residencies cut (whole percent). Editable inline when the
   // toggle is on; `residenciesInput` is the transient edit buffer so typing
@@ -363,18 +363,47 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   )
 
   const splitsTotal = splits.reduce((s, r) => s + r.percentAllocation, 0)
-  // Upper bound on the residencies cut. With 2+ custom splits, buildFinalSplits
-  // scales them to sum to (100 − p), and roundToIntegerAllocations floors each
-  // recipient at 1% — so the cut can't exceed 100 − recipientCount or a
-  // recipient would be squeezed below 1% and the array couldn't sum to 100.
-  // With 0/1 splits only the creator shares the remainder, so the cap is 99.
-  // The recipient cap keeps splits.length ≤ MAX_SPLITS−1 while residencies is
-  // on, so this never drops below 51 — there's always room for a 1% cut.
-  const residenciesMax = splits.length >= 2 ? 100 - splits.length : 99
+  // Auto-absorb model: `splits` holds CUSTOM recipients only; the creator's
+  // share is the derived remainder, shown as the permanent "you" row in
+  // SplitsEditor. At payload time the creator joins the array as that
+  // remainder whenever custom rows exist and haven't claimed everything —
+  // so "add a collaborator at 20%" just works (you 80 / them 20), and a
+  // total ≠ 100 is unrepresentable in the editor. remainder = 0 with 2+
+  // rows is the give-it-all-away case (creator absent from the split,
+  // exactly as expressible before); remainder = 0 with ONE row is blocked
+  // (no valid payload — see handleMint). Zero rows keeps the cheaper
+  // payoutRecipient path (no SplitMain deploy).
+  const creatorRemainder = 100 - splitsTotal
+  const creatorJoinsSplit = splits.length > 0 && creatorRemainder > 0
+  // Entry count of the FINAL custom array (address-independent so it's
+  // stable pre-connect); drives the residencies cap below.
+  const effectiveCount = splits.length + (creatorJoinsSplit ? 1 : 0)
+  const effectiveCustomSplits: Split[] =
+    creatorJoinsSplit && address
+      ? [...splits, { address, percentAllocation: creatorRemainder }]
+      : splits
+  // Upper bound on the residencies cut. With 2+ effective recipients,
+  // buildFinalSplits scales them to sum to (100 − p), and
+  // roundToIntegerAllocations floors each recipient at 1% — so the cut can't
+  // exceed 100 − recipientCount or a recipient would be squeezed below 1%
+  // and the array couldn't sum to 100. With 0 rows only the creator shares
+  // the remainder, so the cap is 99. Counts the derived creator row too —
+  // it's a real recipient in the final array.
+  const residenciesMax = effectiveCount >= 2 ? 100 - effectiveCount : 99
   // Defense in depth: if the creator raised the % and then added recipients,
   // the committed value can exceed the live cap. Surface it inline and block
   // the mint until resolved (we don't silently mutate their chosen number).
   const residenciesOverCap = residenciesEnabled && residenciesPercent > residenciesMax
+  // "mints as" preview for SplitsEditor — the SAME composed array + pure
+  // function that build the payload, so preview and reality cannot drift.
+  // Rendered only when the final integers can DIFFER from the rows:
+  // residencies on (scaling + rounding) with rows present. Hidden while
+  // over-cap (the rounding guard would emit an off-target sum) and
+  // pre-connect (no creator address to compose with).
+  const splitsPreview =
+    address && residenciesEnabled && splits.length > 0 && !residenciesOverCap
+      ? computeFinalSplits(effectiveCustomSplits, true, residenciesPercent, address, RESIDENCIES_ADDRESS) ?? null
+      : null
   // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
   // the price input is hidden and the salesConfig price is forced to 0.
   // Media-only — text mode hides Supply, so a stale `1` from a prior
@@ -507,43 +536,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     return true
   }
 
-  function addSplit() {
-    const addr = splitInput.address.trim()
-    const pct = parseFloat(splitInput.pct)
-    if (!isAddress(addr)) { toast.error('Invalid address'); return }
-    if (isNaN(pct) || pct <= 0 || pct > 100) { toast.error('Allocation must be 1–100'); return }
-    if (splitsTotal + pct > 100) { toast.error('Total allocation exceeds 100%'); return }
-    // Cap recipient count to the server's MAX_SPLITS. When residencies is on
-    // it occupies one of those slots (buildFinalSplits appends it), so the
-    // custom-recipient limit drops by one — otherwise the final array would
-    // be MAX_SPLITS+1 and validateSplitsArray would reject the mint.
-    const recipientCap = residenciesEnabled ? MAX_SPLITS - 1 : MAX_SPLITS
-    if (splits.length >= recipientCap) {
-      toast.error(
-        residenciesEnabled
-          ? `Up to ${recipientCap} recipients with residencies on (${MAX_SPLITS} total)`
-          : `Up to ${recipientCap} split recipients`,
-      )
-      return
-    }
-    // EVM addresses are case-insensitive but 0xSplits' SplitMain rejects
-    // byte-level duplicates, so "0xABC" + "0xabc" would revert the deploy.
-    const lowerAddr = addr.toLowerCase()
-    if (splits.some((s) => s.address.toLowerCase() === lowerAddr)) {
-      toast.error('Address already added')
-      return
-    }
-    // When residencies is ON, buildFinalSplits auto-appends RESIDENCIES_ADDRESS
-    // at 5%. Letting the user add it manually creates a duplicate that
-    // SplitMain rejects.
-    if (residenciesEnabled && lowerAddr === RESIDENCIES_ADDRESS.toLowerCase()) {
-      toast.error('Residencies is already on below — disable the toggle first to set its allocation manually')
-      return
-    }
-    setSplits((prev) => [...prev, { address: addr, percentAllocation: pct }])
-    setSplitInput({ address: '', pct: '' })
-  }
-
   const TEXT_MAX = 5000
 
   // uploadJson with per-content reuse: identical JSON reuses the txid from
@@ -605,7 +597,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     if (clamped !== intval) {
       if (intval > upper) {
         toast.error(
-          splits.length >= 2
+          effectiveCount >= 2
             ? `Residencies capped at ${upper}% so each recipient keeps at least 1%`
             : `Residencies capped at ${upper}% so you keep at least 1%`,
         )
@@ -619,10 +611,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
   // Build the final splits array to send to inprocess: integer `percentAllocation`
   // summing to exactly 100% (or undefined when there's no split to make), with the
-  // residencies cut appended when the toggle is on. The pure math lives in
-  // lib/splitsMath (unit-verified by scripts/verify-mint.ts).
+  // residencies cut appended when the toggle is on. Feeds the COMPOSED array —
+  // custom rows plus the derived creator-remainder row (see effectiveCustomSplits)
+  // — so what mints is exactly what the editor's "mints as" line shows. The pure
+  // math lives in lib/splitsMath (unit-verified by scripts/verify-mint.ts).
   function buildFinalSplits(): Split[] | undefined {
-    return computeFinalSplits(splits, residenciesEnabled, residenciesPercent, address!, RESIDENCIES_ADDRESS)
+    return computeFinalSplits(effectiveCustomSplits, residenciesEnabled, residenciesPercent, address!, RESIDENCIES_ADDRESS)
   }
 
   async function handleMint(e: React.FormEvent) {
@@ -681,9 +675,28 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       toast.error(`Text exceeds ${TEXT_MAX.toLocaleString()} character limit`)
       return
     }
-    if (splits.length === 1) { toast.error('Splits require at least 2 recipients'); return }
-    if (splits.length > 1 && Math.round(splitsTotal * 100) !== 10000) {
-      toast.error(`Split allocations must sum to 100% (currently ${splitsTotal}%)`)
+    // Sole recipient holding all 100 — the one editor state with no valid
+    // payload: a 1-recipient split can't exist on-chain, and the residencies
+    // branch of computeFinalSplits would silently DROP the lone custom row.
+    // SplitsEditor shows this error live; this is the submit backstop.
+    if (splits.length === 1 && creatorRemainder === 0) {
+      toast.error("One recipient can't take the full 100% — add another or lower theirs so you keep a share")
+      return
+    }
+    // Wallet-switch drift: a custom row matching the connected wallet would
+    // duplicate the derived "you" row in the composed array (the server
+    // rejects duplicate addresses). The editor blocks adding your own
+    // address; this catches an account change made after the row existed.
+    if (splits.some((s) => s.address.toLowerCase() === address.toLowerCase())) {
+      toast.error('Remove your own address from the splits — your share is the "you" row')
+      return
+    }
+    // Backstop over the composed array. Auto-absorb makes a total ≠ 100
+    // unrepresentable in the editor (integer rows + derived remainder), so
+    // this can only fire on state drift — keep it as defense in depth.
+    const effectiveTotal = effectiveCustomSplits.reduce((s, r) => s + r.percentAllocation, 0)
+    if (effectiveCustomSplits.length >= 2 && effectiveTotal !== 100) {
+      toast.error(`Split allocations must sum to 100% (currently ${effectiveTotal}%)`)
       return
     }
     // Defense in depth: catches any state drift where residencies got into
@@ -1503,7 +1516,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setSaleStartInput('')
             setSaleEndInput('')
             setSplits([])
-            setSplitInput({ address: '', pct: '' })
           }}
           className="text-xs font-mono text-dim hover:text-ink underline"
         >
@@ -2004,62 +2016,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
       </div>
 
-      {/* Revenue splits */}
-      <div>
-        <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-2">
-          Revenue Splits
-        </label>
-        <div className="flex gap-2 mb-2">
-          <input
-            type="text"
-            value={splitInput.address}
-            onChange={(e) => setSplitInput((s) => ({ ...s, address: e.target.value }))}
-            placeholder="0x… address"
-            className="flex-1 bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
-          />
-          <input
-            type="number"
-            value={splitInput.pct}
-            onChange={(e) => setSplitInput((s) => ({ ...s, pct: e.target.value }))}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSplit() } }}
-            placeholder="%"
-            min="1"
-            max="100"
-            className="w-16 bg-surface border border-line px-2 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
-          />
-          <button
-            type="button"
-            onClick={addSplit}
-            className="px-3 border border-line text-dim hover:border-muted hover:text-ink transition-colors"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
-        {splits.length > 0 && (
-          <ul className="flex flex-col gap-1 mb-2">
-            {splits.map((s) => (
-              <li key={s.address} className="flex items-center justify-between bg-surface border border-line px-3 py-2">
-                <span className="text-xs font-mono text-dim truncate">{s.address}</span>
-                <div className="flex items-center gap-3 ml-2 flex-shrink-0">
-                  <span className="text-xs font-mono text-ink">{s.percentAllocation}%</span>
-                  <button
-                    type="button"
-                    onClick={() => setSplits((prev) => prev.filter((r) => r.address !== s.address))}
-                    className="text-muted hover:text-dim"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {splits.length > 0 && (
-          <p className={`text-xs font-mono ${splitsTotal === 100 ? 'text-muted' : 'accent-grad'}`}>
-            {splitsTotal}% allocated{splitsTotal < 100 ? ` — ${100 - splitsTotal}% remaining` : ' ✓'}
-          </p>
-        )}
-      </div>
+      {/* Revenue splits — extracted editor (derived "you" row, auto-absorb,
+          inline % edit, "mints as" preview). splits state + payload
+          composition stay here so the editor can't drift from the mint. */}
+      <SplitsEditor
+        splits={splits}
+        onChange={setSplits}
+        creatorAddress={address}
+        residenciesEnabled={residenciesEnabled}
+        residenciesPercent={residenciesPercent}
+        residenciesOverCap={residenciesOverCap}
+        remainder={creatorRemainder}
+        preview={splitsPreview}
+      />
 
       {/* Submit — swaps to a "collect from <name>" CTA when the gate is
           enabled and the wallet holds no valid Pass, but not while a mint is
@@ -2108,10 +2077,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 toast.error('Remove residencies from your custom splits before enabling the toggle')
                 return false
               }
-              // Residencies takes a recipient slot; if the custom list already
-              // fills MAX_SPLITS, enabling would make MAX_SPLITS+1 and the mint
+              // Residencies takes a recipient slot; if the composed array
+              // (custom rows + the derived creator row) already fills
+              // MAX_SPLITS, enabling would make MAX_SPLITS+1 and the mint
               // would be rejected server-side. Make the creator free a slot.
-              if (splits.length >= MAX_SPLITS) {
+              if (effectiveCount >= MAX_SPLITS) {
                 toast.error(`Remove a recipient first — ${MAX_SPLITS} is the max including residencies`)
                 return false
               }

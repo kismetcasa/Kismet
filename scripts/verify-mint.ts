@@ -69,6 +69,24 @@ check('finalSplits: on+2 (47.5 guard) integers/sum100/sorted',
 check('finalSplits: on+2 keeps residencies = 5%',
   !!on2 && on2.some((s) => s.address.toLowerCase() === RES && s.percentAllocation === 5))
 
+// ── 1c. UI absorb-contract pins — the mint form's SplitsEditor composes
+// [custom rows + derived creator remainder] and renders these EXACT integers
+// as its "mints as" preview, so the rounding tie-break order is load-bearing
+// display behavior, not math trivia. Pinned so a rounding-order change goes
+// red here instead of silently re-ordering artists' payouts vs the preview.
+const byAddr = (s: Split[] | undefined, a: string): number | undefined =>
+  s?.find((x) => x.address.toLowerCase() === a)?.percentAllocation
+const absorb2080 = computeFinalSplits(
+  [{ address: A, percentAllocation: 20 }, { address: CREATOR, percentAllocation: 80 }],
+  true, 5, CREATOR, RES)
+check('finalSplits pin: [A 20, creator 80] + res5 -> A 19 / creator 76 / res 5',
+  byAddr(absorb2080, A) === 19 && byAddr(absorb2080, CREATOR) === 76 && byAddr(absorb2080, RES) === 5,
+  JSON.stringify(absorb2080))
+const pin5050 = computeFinalSplits(c5050, true, 5, CREATOR, RES)
+check('finalSplits pin: [A 50, B 50] + res5 -> A 47 / B 48 / res 5 (later-added gets the point)',
+  byAddr(pin5050, A) === 47 && byAddr(pin5050, B) === 48 && byAddr(pin5050, RES) === 5,
+  JSON.stringify(pin5050))
+
 // ── 2. mint-intent message must carry EXACTLY the EIP-712 schema fields ──
 const body: MintBody = {
   account: CREATOR,
