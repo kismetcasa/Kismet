@@ -687,11 +687,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             Precedence: the FULL artist name wins over the meta. The artist link
             is shrink-0 (never squeezed to make the meta fit); when the name
             needs more than the left 45%, the meta zone wraps to a second flex
-            line that h-4 + overflow-hidden clips away entirely — the "cut the
-            meta, keep the name" rule, in pure CSS. h-4 also pins the row height
-            whether or not the meta got cut, so card heights never jitter. */}
+            line that h-4 + overflow-clip erases entirely — the "cut the meta,
+            keep the name" rule, in pure CSS. overflow-CLIP, not -hidden: hidden
+            makes the row a scroll container, so keyboard-focusing a clipped
+            chip link would scroll line 2 into view and shove the artist out;
+            clip cannot scroll. h-4 also pins the row height whether or not the
+            meta got cut, so card heights never jitter. Compact cards keep the
+            plain row — they never host an inline meta, and h-4 would inflate
+            their shorter (12px-avatar) row for nothing. */}
         {renderCreator && (
-          <div className="flex flex-wrap h-4 overflow-hidden items-center gap-2 max-w-full">
+          <div className={`flex items-center gap-2 max-w-full ${compact ? '' : 'flex-wrap h-4 overflow-clip'}`}>
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
