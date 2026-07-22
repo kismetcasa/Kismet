@@ -29,6 +29,7 @@ import {
   type StatsFeeRecipient,
 } from './statsMath'
 import type { EarningsAmounts } from './earningsFormat'
+import { isIsoDay, type DailyStatPoint } from './trendMath'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
@@ -1158,6 +1159,51 @@ async function recordDailyStats(fresh: {
     await redis.hset(DAILY_STATS_KEY, { [day]: JSON.stringify(point) })
   } catch {
     // Best-effort: the trend series is non-critical and self-heals next hour.
+  }
+}
+
+/** The full daily trend series (ascending by date), or [] before the first
+ *  recorded day / on error. Read by /api/stats/trend to feed the modal chart;
+ *  each field is tolerant-parsed (a corrupt day is skipped, not fatal) and
+ *  malformed keys are ignored so the series is always clean and sorted. */
+export async function getDailyStats(): Promise<DailyStatPoint[]> {
+  try {
+    const h = await redis.hgetall<Record<string, unknown>>(DAILY_STATS_KEY)
+    if (!h) return []
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : 0
+    }
+    const out: DailyStatPoint[] = []
+    for (const [date, raw] of Object.entries(h)) {
+      if (!isIsoDay(date)) continue
+      // Values are written as JSON strings; some Upstash reads auto-deserialize
+      // to an object. Accept both, skip anything that won't parse to an object.
+      let obj: unknown = raw
+      if (typeof raw === 'string') {
+        try {
+          obj = JSON.parse(raw)
+        } catch {
+          continue
+        }
+      }
+      if (!obj || typeof obj !== 'object') continue
+      const o = obj as Record<string, unknown>
+      out.push({
+        date,
+        volumeEth: num(o.volumeEth),
+        volumeUsdc: num(o.volumeUsdc),
+        artistEth: num(o.artistEth),
+        artistUsdc: num(o.artistUsdc),
+        platformEth: num(o.platformEth),
+        platformUsdc: num(o.platformUsdc),
+        ethUsd: num(o.ethUsd),
+      })
+    }
+    out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    return out
+  } catch {
+    return []
   }
 }
 

@@ -433,7 +433,7 @@ Blind spots to keep in mind when reading the numbers:
 | `kismetart:stats:{rebuild,census}-lock` | Single-flight locks (`lib/redisLock.ts`) | 900 s / 600 s TTL |
 | `kismetart:funnel:<event>:<YYYY-MM-DD>` | Funnel day counters | Per beacon; 90-day TTL |
 | `kismetart:stats:pass-exclude` | Patron `default_admin`+`payout` payees, unioned into the pass exclude set | Per rebuild; 7-day TTL |
-| `kismetart:stats:royalty-platform` | Patron/pass resale royalties owed the treasury (`platform.secondary`) | Event-driven per fill (idempotent) |
+| `kismetart:stats:royalty-platform` | Patron/pass resale royalties owed the treasury (`platform.secondary`) | Event-driven per fill — incremented inside the SAME atomic Lua + per-listing claim as the artist credit, so the treasury and creator slices commit together |
 | `kismetart:stats:daily` | Daily cumulative volume/artist/platform totals + ethUsd (trend-graph series) | Hourly overwrite of today's field |
 | `kismetart:ethusd` | Chainlink price cache | 60 s TTL |
 
@@ -442,8 +442,10 @@ Blind spots to keep in mind when reading the numbers:
 | Concern | File |
 | --- | --- |
 | Endpoint (shape, gating, caching) | `app/api/stats/platform/route.ts` |
-| Sales rebuild, snapshot, royalty credit, resale volume | `lib/stats.ts` |
+| Trend series endpoint (lazy chart feed, `getDailyStats`) | `app/api/stats/trend/route.ts` |
+| Sales rebuild, snapshot, royalty credit, resale volume, daily record/read | `lib/stats.ts` |
 | Pure per-row accumulation + attribution rules | `lib/statsMath.ts` (unit-verified by `scripts/verify-stats.ts`) |
+| Pure trend windowing + honest-historical denomination | `lib/trendMath.ts` (unit-verified by `scripts/verify-stats.ts`) |
 | Catalog census | `lib/catalogCensus.ts` |
 | Transfers feed reader | `lib/inprocessTransfers.ts` |
 | Single-flight lock (shared) | `lib/redisLock.ts` |

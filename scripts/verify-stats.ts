@@ -33,6 +33,11 @@ import {
   type StatsFeeRecipient,
   type StatsTransfer,
 } from '../lib/statsMath.ts'
+import {
+  shiftDateUtc,
+  windowTrendSeries,
+  type DailyStatPoint,
+} from '../lib/trendMath.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -716,6 +721,84 @@ check('storedSplitsToFeeRecipients: address→artist_address, percentAllocation�
   check('filterPassRoyaltyCredits: NON-pass passes through unchanged (art royalties keep crediting residencies)',
     filterPassRoyaltyCredits(credits, false, PLATFORM_SET).length === 2 &&
       filterPassRoyaltyCredits(credits, false, PLATFORM_SET) === credits)
+}
+
+// ── Trend windowing (lib/trendMath) ──────────────────────────────────────────
+// shiftDateUtc must cross month / year / leap boundaries in UTC — a local-time
+// shifter would slip a day under DST, and every window cutoff depends on it.
+check('shiftDateUtc: −1 across a month boundary', shiftDateUtc('2026-03-01', -1) === '2026-02-28')
+check('shiftDateUtc: −1 across a year boundary', shiftDateUtc('2026-01-01', -1) === '2025-12-31')
+check('shiftDateUtc: −1 lands on Feb 29 in a leap year', shiftDateUtc('2024-03-01', -1) === '2024-02-29')
+
+{
+  // A dense 40-day series whose value strictly climbs, so window edges and the
+  // cumulative passthrough are both checkable. i=0 → 2026-01-01, i=39 → 2026-02-09.
+  const days = 40
+  const series: DailyStatPoint[] = Array.from({ length: days }, (_, i) => {
+    const v = i + 1
+    return {
+      date: shiftDateUtc('2026-01-01', i),
+      volumeEth: v,
+      volumeUsdc: 0,
+      artistEth: v * 10,
+      artistUsdc: 0,
+      platformEth: v * 100,
+      platformUsdc: 0,
+      ethUsd: 2000,
+    }
+  })
+  const last = series[series.length - 1].date
+
+  const w7 = windowTrendSeries(series, 'volume', 'eth', '7d')
+  check('windowTrendSeries: 7d keeps exactly the last 7 points, inclusive',
+    w7.length === 7 && w7[0].date === shiftDateUtc(last, -6) && w7[6].date === last,
+    JSON.stringify(w7.map((p) => p.date)))
+  check('windowTrendSeries: 30d keeps the last 30; all keeps every point',
+    windowTrendSeries(series, 'volume', 'eth', '30d').length === 30 &&
+      windowTrendSeries(series, 'volume', 'eth', 'all').length === days)
+  check('windowTrendSeries: the window is measured from the series latest, not "now"',
+    w7[6].value === 40)
+
+  const artistAll = windowTrendSeries(series, 'artist', 'eth', 'all')
+  const platAll = windowTrendSeries(series, 'platform', 'eth', 'all')
+  check('windowTrendSeries: metric selects the volume / artist / platform legs',
+    artistAll[artistAll.length - 1].value === 400 && platAll[platAll.length - 1].value === 4000)
+}
+
+{
+  // Honest-historical denomination: USD values each day at ITS OWN price; ETH
+  // converts the usdc leg at the day's price and DROPS it when the price is 0.
+  const series: DailyStatPoint[] = [
+    { date: '2026-01-01', volumeEth: 1, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 1000 },
+    { date: '2026-01-02', volumeEth: 2, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 3000 },
+    { date: '2026-01-03', volumeEth: 1, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 0 },
+  ]
+  const usd = windowTrendSeries(series, 'volume', 'usd', 'all')
+  check('windowTrendSeries: USD values each day at its OWN recorded price (not today\'s)',
+    usd[0].value === 1 * 1000 + 500 && usd[1].value === 2 * 3000 + 500,
+    JSON.stringify(usd.map((p) => p.value)))
+  check('windowTrendSeries: USD with an unavailable (0) price contributes only the usdc leg',
+    usd[2].value === 500)
+
+  const eth = windowTrendSeries(series, 'volume', 'eth', 'all')
+  check('windowTrendSeries: ETH converts the usdc leg at the day price',
+    eth[0].value === 1 + 500 / 1000 && eth[1].value === 2 + 500 / 3000)
+  check('windowTrendSeries: ETH drops the usdc leg when the price is unavailable (never Infinity)',
+    eth[2].value === 1 && Number.isFinite(eth[2].value))
+}
+
+check('windowTrendSeries: empty series → []', windowTrendSeries([], 'volume', 'eth', 'all').length === 0)
+
+{
+  // Defensive sort — unsorted input must come back ascending by date.
+  const series: DailyStatPoint[] = [
+    { date: '2026-01-03', volumeEth: 3, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 1 },
+    { date: '2026-01-01', volumeEth: 1, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 1 },
+    { date: '2026-01-02', volumeEth: 2, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 1 },
+  ]
+  const w = windowTrendSeries(series, 'volume', 'eth', 'all')
+  check('windowTrendSeries: unsorted input is returned ascending by date',
+    w[0].date === '2026-01-01' && w[1].date === '2026-01-02' && w[2].date === '2026-01-03')
 }
 
 if (failures > 0) {

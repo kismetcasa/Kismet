@@ -24,6 +24,7 @@ import {
 } from '@/lib/discoverState'
 import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
+import { windowTrendSeries, type DailyStatPoint, type TrendRange } from '@/lib/trendMath'
 
 interface PlatformStats {
   /** VISIBLE (non-hidden) artworks minted — hidden work is excluded so the
@@ -147,6 +148,123 @@ const STATS_METRIC_LABEL: Record<StatsMetric, string> = {
   platform: 'total platform earnings',
 }
 
+const TREND_RANGES: { key: TrendRange; label: string }[] = [
+  { key: '7d', label: '7D' },
+  { key: '30d', label: '30D' },
+  { key: '90d', label: '90D' },
+  { key: 'all', label: 'ALL' },
+]
+
+// Inline SVG trend of the SELECTED headline metric, in the SELECTED
+// denomination — it tracks the number above it (tap the label to change metric,
+// the figure to flip USD↔ETH; the chart follows both). Cumulative line: each
+// stored day holds the all-time total, so the line climbs and the range toggle
+// only zooms the X window. Deliberately dependency-free (no chart lib): one
+// area path + one stroke, scaled by viewBox with a non-scaling stroke so the
+// 320px modal never distorts the line. Three honest states — loading skeleton
+// (series null), a "collecting" note (< 2 days), then the chart. Windowing +
+// the honest-historical denomination live in the tested lib/trendMath.
+function TrendChart({
+  series,
+  metric,
+  denom,
+}: {
+  /** null = fetch in flight; [] = no recorded days yet. */
+  series: DailyStatPoint[] | null
+  metric: StatsMetric
+  denom: 'usd' | 'eth'
+}) {
+  const [range, setRange] = useState<TrendRange>('30d')
+
+  if (series == null) {
+    return <div className="mt-4 h-20 animate-pulse rounded-sm bg-white/[0.03]" aria-hidden />
+  }
+
+  const pts = windowTrendSeries(series, metric, denom, range)
+  if (pts.length < 2) {
+    return (
+      <p className="mt-4 border-t border-line pt-4 font-mono text-[10px] leading-relaxed text-dim">
+        the daily trend appears here once a few days of history accrue.
+      </p>
+    )
+  }
+
+  // viewBox space; preserveAspectRatio="none" stretches it to the container, so
+  // the line uses a non-scaling stroke to stay an even weight.
+  const W = 300
+  const H = 72
+  const PAD = 6
+  const values = pts.map((p) => p.value)
+  let min = Math.min(...values)
+  let max = Math.max(...values)
+  if (min === max) {
+    // Flat window (nothing accrued) — center the line, avoid /0.
+    min -= 1
+    max += 1
+  }
+  const x = (i: number) => (i / (pts.length - 1)) * W
+  const y = (v: number) => PAD + (1 - (v - min) / (max - min)) * (H - PAD * 2)
+  const line = pts
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(2)} ${y(p.value).toFixed(2)}`)
+    .join(' ')
+  const area = `${line} L ${W.toFixed(2)} ${H} L 0 ${H} Z`
+
+  // Growth across the window. Cumulative totals only rise, so this is ≥ 0;
+  // null when the window opened at 0 (a percentage would be meaningless).
+  const first = pts[0]
+  const last = pts[pts.length - 1]
+  const delta = last.value - first.value
+  const pct = first.value > 0 ? (delta / first.value) * 100 : null
+  const rangeLabel = range === 'all' ? 'all time' : `last ${range}`
+
+  return (
+    <div className="mt-4 border-t border-line pt-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-dim">trend</span>
+        <div className="flex gap-2">
+          {TREND_RANGES.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => setRange(r.key)}
+              aria-pressed={range === r.key}
+              className={`font-mono text-[9px] tracking-wider transition-colors ${
+                range === r.key ? 'text-accent' : 'text-dim hover:text-ink'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        className="block h-20 w-full text-accent"
+        role="img"
+        aria-label={`${STATS_METRIC_LABEL[metric]} trend, ${rangeLabel}`}
+      >
+        <path d={area} fill="currentColor" fillOpacity={0.08} stroke="none" />
+        <path
+          d={line}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="mt-2 flex items-baseline justify-between font-mono text-[9px] text-dim">
+        <span className="tabular-nums">{first.date}</span>
+        {pct != null && delta > 0 && (
+          <span className="text-accent">▲ {pct.toFixed(pct >= 10 ? 0 : 1)}%</span>
+        )}
+        <span className="tabular-nums">{last.date}</span>
+      </div>
+    </div>
+  )
+}
+
 function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: () => void }) {
   useEscapeKey(onClose)
   useBodyScrollLock()
@@ -156,6 +274,24 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
   // The headline alternates between three all-time metrics: tapping the LABEL
   // cycles the metric, tapping the NUMBER flips USD ↔ ETH. Both reset per open.
   const [metric, setMetric] = useState<StatsMetric>('volume')
+  // Daily trend series for the chart — lazy-loaded once when the modal opens
+  // (kept OFF the hot /api/stats/platform payload), so it costs one request
+  // only when someone actually views stats. null = loading; [] = none yet.
+  const [trend, setTrend] = useState<DailyStatPoint[] | null>(null)
+  useEffect(() => {
+    let alive = true
+    fetch('/api/stats/trend')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { series?: unknown } | null) => {
+        if (alive) setTrend(Array.isArray(d?.series) ? (d.series as DailyStatPoint[]) : [])
+      })
+      .catch(() => {
+        if (alive) setTrend([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
   const count = (n: number | null | undefined) => (typeof n === 'number' ? n.toLocaleString() : '—')
   const metricValue =
     metric === 'volume'
@@ -260,6 +396,8 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
           />
         </div>
         <p className="mt-1 font-mono text-[10px] text-dim">primary + secondary</p>
+        {/* Trend of the SAME headline metric + denomination selected above. */}
+        <TrendChart series={trend} metric={metric} denom={denom} />
         <dl className="mt-5 space-y-2.5 border-t border-line pt-4">
           {rows.map(([label, value]) => (
             <div key={label} className="flex items-baseline justify-between gap-4">
