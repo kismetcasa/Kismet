@@ -34,6 +34,8 @@ import {
   type StatsTransfer,
 } from '../lib/statsMath.ts'
 import {
+  buildSparkline,
+  isValidIsoDay,
   shiftDateUtc,
   windowTrendSeries,
   type DailyStatPoint,
@@ -767,24 +769,44 @@ check('shiftDateUtc: −1 lands on Feb 29 in a leap year', shiftDateUtc('2024-03
 
 {
   // Honest-historical denomination: USD values each day at ITS OWN price; ETH
-  // converts the usdc leg at the day's price and DROPS it when the price is 0.
+  // converts the usdc leg at the day's price and drops it when the price is 0.
   const series: DailyStatPoint[] = [
     { date: '2026-01-01', volumeEth: 1, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 1000 },
     { date: '2026-01-02', volumeEth: 2, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 3000 },
-    { date: '2026-01-03', volumeEth: 1, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 0 },
+    { date: '2026-01-03', volumeEth: 3, volumeUsdc: 500, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 0 },
   ]
   const usd = windowTrendSeries(series, 'volume', 'usd', 'all')
   check('windowTrendSeries: USD values each day at its OWN recorded price (not today\'s)',
     usd[0].value === 1 * 1000 + 500 && usd[1].value === 2 * 3000 + 500,
     JSON.stringify(usd.map((p) => p.value)))
-  check('windowTrendSeries: USD with an unavailable (0) price contributes only the usdc leg',
-    usd[2].value === 500)
+  // The canyon fix: an unavailable-price (ethUsd 0) day is DROPPED from the USD
+  // series, never cratered to the usdc leg (which would tank the cumulative line
+  // and could explode the % delta). Mirrors the endpoint hiding the figure.
+  check('windowTrendSeries: USD DROPS an unavailable-price (ethUsd 0) day, no canyon',
+    usd.length === 2 && usd.every((p) => p.date !== '2026-01-03'),
+    JSON.stringify(usd.map((p) => [p.date, p.value])))
 
   const eth = windowTrendSeries(series, 'volume', 'eth', 'all')
   check('windowTrendSeries: ETH converts the usdc leg at the day price',
     eth[0].value === 1 + 500 / 1000 && eth[1].value === 2 + 500 / 3000)
-  check('windowTrendSeries: ETH drops the usdc leg when the price is unavailable (never Infinity)',
-    eth[2].value === 1 && Number.isFinite(eth[2].value))
+  check('windowTrendSeries: ETH KEEPS an unpriced day (eth leg honest, usdc dropped, never Infinity)',
+    eth.length === 3 && eth[2].value === 3 && Number.isFinite(eth[2].value))
+}
+
+{
+  // A LEADING unpriced USD day is dropped, so the % baseline is always a priced
+  // point (no divide-by-canyon-floor); a MIDDLE unpriced day just connects its
+  // priced neighbours.
+  const series: DailyStatPoint[] = [
+    { date: '2026-01-01', volumeEth: 100, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 0 },
+    { date: '2026-01-02', volumeEth: 100, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 3000 },
+    { date: '2026-01-03', volumeEth: 105, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 0 },
+    { date: '2026-01-04', volumeEth: 110, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 3200 },
+  ]
+  const usd = windowTrendSeries(series, 'volume', 'usd', 'all')
+  check('windowTrendSeries: leading + middle unpriced USD days dropped (priced baseline, no $0 dip)',
+    usd.length === 2 && usd[0].value === 300000 && usd[1].value === 352000 &&
+      usd.every((p) => p.value > 0))
 }
 
 check('windowTrendSeries: empty series → []', windowTrendSeries([], 'volume', 'eth', 'all').length === 0)
@@ -799,6 +821,52 @@ check('windowTrendSeries: empty series → []', windowTrendSeries([], 'volume', 
   const w = windowTrendSeries(series, 'volume', 'eth', 'all')
   check('windowTrendSeries: unsorted input is returned ascending by date',
     w[0].date === '2026-01-01' && w[1].date === '2026-01-02' && w[2].date === '2026-01-03')
+}
+
+// isValidIsoDay rejects calendar-invalid keys that the shape-only isIsoDay lets
+// through, and shiftDateUtc must DEGRADE (not throw) on an unparseable date —
+// together they stop a corrupt hash key from crashing the chart's window math.
+check('isValidIsoDay: rejects calendar-invalid, accepts real days',
+  !isValidIsoDay('9999-99-99') && !isValidIsoDay('2026-02-30') && !isValidIsoDay('0000-00-00') &&
+    isValidIsoDay('2026-07-22') && isValidIsoDay('2024-02-29') && !isValidIsoDay('2026-2-2'))
+check('shiftDateUtc: degrades (returns input) on an unparseable date instead of throwing',
+  shiftDateUtc('9999-99-99', -6) === '9999-99-99')
+{
+  // A bad date that slips into the array must not throw the windower (belt-and-
+  // suspenders behind getDailyStats' isValidIsoDay gate).
+  const series: DailyStatPoint[] = [
+    { date: '2026-01-01', volumeEth: 1, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 3000 },
+    { date: '9999-99-99', volumeEth: 2, volumeUsdc: 0, artistEth: 0, artistUsdc: 0, platformEth: 0, platformUsdc: 0, ethUsd: 3000 },
+  ]
+  let threw = false
+  try {
+    windowTrendSeries(series, 'volume', 'eth', '30d')
+  } catch {
+    threw = true
+  }
+  check('windowTrendSeries: a corrupt date key does not throw on the 30d window path', !threw)
+}
+
+// buildSparkline: the render math, now pure + tested. Must never emit NaN, must
+// null out < 2 points, and must pin a FLAT series to the baseline (not /0, not
+// mid-height).
+{
+  const W = 300, H = 72, PAD = 6
+  const noNaN = (s: { line: string; area: string } | null) =>
+    s != null && !s.line.includes('NaN') && !s.area.includes('NaN')
+  check('buildSparkline: < 2 points → null', buildSparkline([], W, H, PAD) === null && buildSparkline([5], W, H, PAD) === null)
+  const rising = buildSparkline([1, 2, 3], W, H, PAD)
+  check('buildSparkline: rising series is finite; min→baseline, max→top',
+    rising != null && rising.line === 'M 0.00 66.00 L 150.00 36.00 L 300.00 6.00')
+  const flatNonzero = buildSparkline([5, 5, 5], W, H, PAD)
+  check('buildSparkline: a FLAT series pins to the baseline (H-PAD), never NaN or mid-height',
+    flatNonzero != null &&
+      flatNonzero.line === 'M 0.00 66.00 L 150.00 66.00 L 300.00 66.00' &&
+      flatNonzero.area === 'M 0.00 66.00 L 150.00 66.00 L 300.00 66.00 L 300.00 72 L 0 72 Z')
+  check('buildSparkline: all-zero series is the baseline case, finite',
+    noNaN(buildSparkline([0, 0], W, H, PAD)))
+  check('buildSparkline: negative + huge values stay finite (no NaN/Infinity)',
+    noNaN(buildSparkline([-5, 0, 1e9], W, H, PAD)))
 }
 
 if (failures > 0) {

@@ -36,16 +36,31 @@ const RANGE_DAYS: Record<TrendRange, number | null> = {
 }
 
 /** Shift a 'YYYY-MM-DD' UTC day by whole days, returning the same format.
- *  Uses UTC-anchored parsing so DST / local offset can never slip a day. */
+ *  Uses UTC-anchored parsing so DST / local offset can never slip a day.
+ *  Degrades (returns the input unchanged) rather than throwing on an
+ *  unparseable input, so one corrupt series entry can't crash the caller —
+ *  `new Date('9999-99-99…').toISOString()` would otherwise throw RangeError. */
 export function shiftDateUtc(date: string, deltaDays: number): string {
   const d = new Date(`${date}T00:00:00Z`)
+  if (Number.isNaN(d.getTime())) return date
   d.setUTCDate(d.getUTCDate() + deltaDays)
   return d.toISOString().slice(0, 10)
 }
 
-/** True for a well-formed 'YYYY-MM-DD'. */
+/** True for a well-formed 'YYYY-MM-DD' SHAPE (not calendar validity). */
 export function isIsoDay(s: unknown): s is string {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
+}
+
+/** Shape AND real-calendar validity. isIsoDay is shape-only, so '2026-02-30'
+ *  or '9999-99-99' pass it; here a UTC round-trip rejects rolled-over / NaN
+ *  dates. getDailyStats gates on THIS so a corrupt or hand-edited hash field
+ *  can't become the (lexicographically latest) point that shiftDateUtc would
+ *  then choke on when computing a window cutoff. */
+export function isValidIsoDay(s: unknown): s is string {
+  if (!isIsoDay(s)) return false
+  const d = new Date(`${s}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
 }
 
 /**
@@ -79,15 +94,52 @@ export function windowTrendSeries(
     const cutoff = shiftDateUtc(latest, -(days - 1))
     windowed = sorted.filter((p) => p.date >= cutoff)
   }
-  return windowed.map((p) => {
-    const eth =
-      metric === 'volume' ? p.volumeEth : metric === 'artist' ? p.artistEth : p.platformEth
-    const usdc =
-      metric === 'volume' ? p.volumeUsdc : metric === 'artist' ? p.artistUsdc : p.platformUsdc
-    const value =
-      denom === 'usd'
-        ? eth * p.ethUsd + usdc
-        : eth + (p.ethUsd > 0 ? usdc / p.ethUsd : 0)
-    return { date: p.date, value }
-  })
+  return windowed
+    .map((p) => {
+      const eth =
+        metric === 'volume' ? p.volumeEth : metric === 'artist' ? p.artistEth : p.platformEth
+      const usdc =
+        metric === 'volume' ? p.volumeUsdc : metric === 'artist' ? p.artistUsdc : p.platformUsdc
+      // USD needs a price to value the (dominant) eth leg. A day whose price was
+      // unavailable is recorded ethUsd:0; valuing it would crater the CUMULATIVE
+      // line to the usdc leg alone — a false canyon that also drags the y-axis
+      // floor to ~0 and can explode the % delta if it's the window's first point.
+      // So DROP unpriced days from the USD series, mirroring the endpoint's
+      // honest-USD rule (hide the figure, never a silently usdc-only number).
+      // ETH keeps every day — the eth leg is always honest; the usdc leg simply
+      // isn't converted when the price is missing (a minor, bounded omission).
+      if (denom === 'usd') {
+        return p.ethUsd > 0 ? { date: p.date, value: eth * p.ethUsd + usdc } : null
+      }
+      return { date: p.date, value: eth + (p.ethUsd > 0 ? usdc / p.ethUsd : 0) }
+    })
+    .filter((p): p is { date: string; value: number } => p !== null)
+}
+
+/**
+ * Build the SVG line + area `d` strings for a sparkline from plotted values,
+ * in a `w`×`h` viewBox with `pad` vertical breathing room. Pure so the render
+ * math is unit-tested (finiteness, the flat-series case) instead of living
+ * untested inline in the component. Returns null for < 2 points (nothing to
+ * draw). A FLAT series (all values equal — e.g. a metric still at 0) is pinned
+ * to the BASELINE rather than divided by a zero range (which would be NaN) or
+ * floated to mid-height (which reads as a nonzero steady value); a flat line on
+ * the floor reads honestly as "nothing yet / no change". Inputs are assumed
+ * finite (windowTrendSeries guarantees it); no value is ever NaN/Infinity out.
+ */
+export function buildSparkline(
+  values: number[],
+  w: number,
+  h: number,
+  pad: number,
+): { line: string; area: string } | null {
+  if (values.length < 2) return null
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const flat = min === max
+  const x = (i: number) => (i / (values.length - 1)) * w
+  const y = (v: number) => (flat ? h - pad : pad + (1 - (v - min) / (max - min)) * (h - pad * 2))
+  const line = values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`).join(' ')
+  const area = `${line} L ${w.toFixed(2)} ${h} L 0 ${h} Z`
+  return { line, area }
 }

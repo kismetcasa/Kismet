@@ -24,7 +24,12 @@ import {
 } from '@/lib/discoverState'
 import type { Moment } from '@/lib/inprocess'
 import type { Listing } from '@/lib/listings'
-import { windowTrendSeries, type DailyStatPoint, type TrendRange } from '@/lib/trendMath'
+import {
+  buildSparkline,
+  windowTrendSeries,
+  type DailyStatPoint,
+  type TrendRange,
+} from '@/lib/trendMath'
 
 interface PlatformStats {
   /** VISIBLE (non-hidden) artworks minted — hidden work is excluded so the
@@ -162,8 +167,10 @@ const TREND_RANGES: { key: TrendRange; label: string }[] = [
 // only zooms the X window. Deliberately dependency-free (no chart lib): one
 // area path + one stroke, scaled by viewBox with a non-scaling stroke so the
 // 320px modal never distorts the line. Three honest states — loading skeleton
-// (series null), a "collecting" note (< 2 days), then the chart. Windowing +
-// the honest-historical denomination live in the tested lib/trendMath.
+// (series null), a range-aware empty note (< 2 plottable points), then the
+// chart. All the load-bearing math — windowing, honest-historical denomination,
+// and the SVG path building (finiteness + the flat-series case) — lives in the
+// unit-tested lib/trendMath, not inline here.
 function TrendChart({
   series,
   metric,
@@ -180,42 +187,37 @@ function TrendChart({
     return <div className="mt-4 h-20 animate-pulse rounded-sm bg-white/[0.03]" aria-hidden />
   }
 
+  const W = 300
+  const H = 72
+  const PAD = 6
   const pts = windowTrendSeries(series, metric, denom, range)
-  if (pts.length < 2) {
+  const spark = buildSparkline(pts.map((p) => p.value), W, H, PAD)
+  if (spark == null) {
+    // < 2 plottable points. Distinguish "no history yet" (genuinely empty) from
+    // "history exists but nothing in THIS window / denomination" — e.g. a
+    // resumed-after-outage series, or a USD view where the recent days were all
+    // price-unavailable — so a populated series never claims to be "collecting".
+    const hasHistory = series.length >= 2
     return (
       <p className="mt-4 border-t border-line pt-4 font-mono text-[10px] leading-relaxed text-dim">
-        the daily trend appears here once a few days of history accrue.
+        {hasHistory
+          ? `no ${denom === 'usd' ? 'priced ' : ''}data points in this range yet — try a wider one.`
+          : 'the daily trend appears here once a few days of history accrue.'}
       </p>
     )
   }
 
-  // viewBox space; preserveAspectRatio="none" stretches it to the container, so
-  // the line uses a non-scaling stroke to stay an even weight.
-  const W = 300
-  const H = 72
-  const PAD = 6
-  const values = pts.map((p) => p.value)
-  let min = Math.min(...values)
-  let max = Math.max(...values)
-  if (min === max) {
-    // Flat window (nothing accrued) — center the line, avoid /0.
-    min -= 1
-    max += 1
-  }
-  const x = (i: number) => (i / (pts.length - 1)) * W
-  const y = (v: number) => PAD + (1 - (v - min) / (max - min)) * (H - PAD * 2)
-  const line = pts
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(2)} ${y(p.value).toFixed(2)}`)
-    .join(' ')
-  const area = `${line} L ${W.toFixed(2)} ${H} L 0 ${H} Z`
-
-  // Growth across the window. Cumulative totals only rise, so this is ≥ 0;
-  // null when the window opened at 0 (a percentage would be meaningless).
+  // Growth across the window. Cumulative totals TYPICALLY rise, but the rebuild
+  // overwrites absolutely, so a re-scope/attribution change can lower a later
+  // point — hence the delta > 0 guard below (a decline is simply left unlabeled,
+  // never shown as a fake ▲). null when the window opened at 0 (a percentage
+  // would be meaningless). For 'all' the baseline is the first RECORDED day, not
+  // platform inception, so the label reads "since {date}", never "all time".
   const first = pts[0]
   const last = pts[pts.length - 1]
   const delta = last.value - first.value
   const pct = first.value > 0 ? (delta / first.value) * 100 : null
-  const rangeLabel = range === 'all' ? 'all time' : `last ${range}`
+  const rangeLabel = range === 'all' ? `since ${first.date}` : `last ${range}`
 
   return (
     <div className="mt-4 border-t border-line pt-4">
@@ -243,9 +245,9 @@ function TrendChart({
         role="img"
         aria-label={`${STATS_METRIC_LABEL[metric]} trend, ${rangeLabel}`}
       >
-        <path d={area} fill="currentColor" fillOpacity={0.08} stroke="none" />
+        <path d={spark.area} fill="currentColor" fillOpacity={0.08} stroke="none" />
         <path
-          d={line}
+          d={spark.line}
           fill="none"
           stroke="currentColor"
           strokeWidth={1.5}
