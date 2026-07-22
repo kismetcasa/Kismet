@@ -719,11 +719,19 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               </span>
             </Link>
             {/* Inline on full cards only. Compact cards route the slot to its own
-                row below. The zone is the position-standardizer: right 55% of
-                the row regardless of the artist's length (its left edge lands at
-                45% on every card), content centered ≈ over the collect button. */}
+                row below. The zone is the position-standardizer: MIN-width 55%
+                of the row (right-anchored), content centered — so any meta that
+                fits the zone sits at the same x on every card (edge 45%, center
+                72.5% ≈ over the collect button). min-w, not w: a collection
+                name LONGER than the zone grows the zone leftward into whatever
+                room a short artist leaves, showing the full name snapped to the
+                right edge instead of truncating — and when the artist isn't
+                short enough for the full name, flex line-breaking (which uses
+                the zone's un-shrunk size) wraps the zone out to the clipped
+                line: the cut rule, never a squeezed middle state. Dates are
+                always narrower than the zone, so they stay centered. */}
             {!compact && metaSlot && (
-              <div className="ml-auto w-[55%] shrink-0 flex justify-center">
+              <div className="ml-auto min-w-[55%] shrink-0 flex justify-center">
                 {renderMeta(true)}
               </div>
             )}
