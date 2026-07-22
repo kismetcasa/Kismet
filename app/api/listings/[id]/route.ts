@@ -11,7 +11,7 @@ import { writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
 import { serverBaseClient } from '@/lib/rpc'
 import { findFulfillmentInLogs } from '@/lib/seaport'
-import { creditListingRoyalty, recordSecondaryVolume } from '@/lib/stats'
+import { creditListingRoyalty, recordSecondaryVolume, enqueuePendingCredit } from '@/lib/stats'
 import { auditRoyaltyReceiver } from '@/lib/royaltyAudit'
 
 export async function PATCH(
@@ -201,6 +201,22 @@ export async function PATCH(
         collection: listing.collectionAddress,
         tokenId: listing.tokenId,
       })
+      // The eval hard-failed (claim not taken, nothing written) — the listing is
+      // already 'filled' so no client retry reaches here, and royalty zsets are
+      // never rebuilt. Persist the intent for the hourly reconcile pass to
+      // replay idempotently (see enqueuePendingCredit / reconcilePendingCredits),
+      // turning a transient blip from permanent loss into eventual heal.
+      if (outcome.failed) {
+        await enqueuePendingCredit({
+          kind: 'royalty',
+          listingId: listing.id,
+          currency: royalty.currency,
+          amount: royalty.amount,
+          receiver: listing.royaltyReceiver,
+          collection: listing.collectionAddress,
+          tokenId: listing.tokenId,
+        })
+      }
       // Instrumentation: record whether this royalty paid a wallet (itemizes
       // on the card directly) or a split contract, and for contracts what the
       // credit path ACTUALLY did (decomposed vs stranded) — the audit records
@@ -227,11 +243,22 @@ export async function PATCH(
     // idempotent per listing. Passes the raw base-units string; the parse and
     // all error handling live INSIDE recordSecondaryVolume, so a malformed
     // price can never throw this fill handler (it's already marked filled).
-    await recordSecondaryVolume({
+    const volResult = await recordSecondaryVolume({
       listingId: listing.id,
       currency: listing.currency,
       priceBaseUnits: listing.price,
     })
+    // Same backstop as the royalty credit: a transient eval failure (not a
+    // duplicate) is queued for the hourly reconcile pass, since this figure has
+    // no rebuild replay either.
+    if (volResult.failed) {
+      await enqueuePendingCredit({
+        kind: 'volume',
+        listingId: listing.id,
+        currency: listing.currency,
+        priceBaseUnits: listing.price,
+      })
+    }
 
     after(() =>
       writeNotification({

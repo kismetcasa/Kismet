@@ -29,7 +29,7 @@ Key properties:
 | Freshness | Snapshots rebuilt **hourly** by the `sync-stats` cron (`vercel.json`: `0 * * * *` → `/api/cron/sync-stats`, `CRON_SECRET`-protected); the edge cache only smooths bursts |
 | Nullability | Each block is `null` until its first successful computation — never fabricated zeros |
 | Chain scope | Base (chain id 8453) only |
-| Consumers | No in-repo UI consumes it; it is an operator/API surface |
+| Consumers | The Discover advanced-market stats modal + trend chart (`DiscoverMarketView`) read the public blocks; also an operator/API surface |
 
 ### Data flow
 
@@ -158,25 +158,23 @@ to the real artist(s) in the payout split — platform treasury/referral/
 residencies/operator wallets are excluded — so the treasury never appears as
 an "artist". Pass revenue is **not** inside `earnings.primary`.
 
-**Split source & exclude set (both stats-side, both mirroring the Patron page).**
-The pass split is read from the **authoritative mint-time stored split**
-(`getStoredSplits` — the same source `/api/moment/splits` serves the Patron
-page's artist credit), preferred over the feed's speculative `fee_recipients`,
+**Split source & exclude set.** The pass split is read from the **authoritative
+mint-time stored split** (`getStoredSplits` — the same source `/api/moment/splits`
+serves the Patron page), preferred over the feed's speculative `fee_recipients`,
 so a pass credits its real artist(s) even when the feed omits the split. The
 excluded-payee set is the static platform wallets **unioned with the Patron
-collection's own on-chain `default_admin` + `payout_recipient`** (resolved from
-inprocess `/collection`, 7-day TTL-cached at `kismetart:stats:pass-exclude`,
-best-effort → static-set fallback) — the identical set the Patron page's
-`deriveArtistsFromRecipients` excludes. This matters because a pass artist can
-be a **minority** holder (e.g. 20%): the older "the artist holds the dominant
-share, a slipped payee is harmless" reasoning does **not** hold, so the exclude
-set must be complete or an 80% payout would steal the sale-count and book its
-share as artist earnings. A pass edition whose split names **no** real artist
-(all payees are platform wallets) credits no card and is surfaced in the cron
-log via `passUnattributed` rather than dropped silently. **Sale-count semantics:**
-one edition's count goes to the single dominant real artist (not split across
-co-artists), preserving `Σ(artist sale-counts) = editions sold` — the same
-one-creator-per-edition rule the art path uses.
+collection's on-chain `default_admin`, `payout_recipient`, and `creator`**
+(resolved from inprocess `/collection`, 7-day TTL-cached at
+`kismetart:stats:pass-exclude`, best-effort → static-floor fallback) — a
+**superset** of the Patron page's `deriveArtistsFromRecipients` set (it also
+excludes `OPERATOR` + `creator`, both platform-side, so it never drops a real
+artist). Completeness matters because a pass artist can be a **minority** holder
+(e.g. 20%): a slipped 80% payout would otherwise steal the sale-count and book
+its share as artist earnings. A split naming **no** real artist credits no card
+and is surfaced via `passUnattributed`. **Sale-count semantics:** one edition's
+count goes to the single dominant real artist, preserving `Σ(artist sale-counts)
+= editions sold`. The secondary (resale-royalty) path applies the same set,
+read cache-only on the fill (`getCachedPassExclude`).
 
 ---
 
@@ -227,8 +225,10 @@ primary market, plus creator royalties on Kismet-listed resales.
 | Field | Meaning |
 | --- | --- |
 | `primary` | **Gross buyer payments** on primary art mints of tracked collections (what buyers paid, before artist splits and the platform cut). Passes excluded. Same snapshot as `sales`. |
-| `secondary` | Creator royalties on resales **filled through Kismet's own listings** — credited event-per-fill from the on-chain-verified listings PATCH handler (`creditListingRoyalty`), idempotent per listing (atomic claim + credit + per-fill ledger in `kismetart:stats:royalty-ledger`). When the EIP-2981 receiver is the moment's 0xSplits contract, the amount is decomposed pro-rata to the real member wallets. **On a Patron/Mint-Pass resale the same platform-payee exclusion as the primary pass path applies** (pass-scoped only — an art split legitimately pays residencies, which art royalties keep crediting), so a pass split's treasury share is never booked as "creator royalty"; a pass royalty going entirely to platform wallets credits nothing (the gross is still recorded in `resales`). |
-| `total` | `primary + secondary`, element-wise. |
+| `secondary` | Creator royalties on resales **filled through Kismet's own listings** — credited event-per-fill from the on-chain-verified listings PATCH handler (`creditListingRoyalty`), idempotent per listing (atomic claim + credit + per-fill ledger in `kismetart:stats:royalty-ledger`). When the EIP-2981 receiver is the moment's 0xSplits contract, the amount is decomposed pro-rata to the real member wallets. **On a Patron/Mint-Pass resale the same platform-payee exclusion as the primary pass path applies** (pass-scoped only — an art split legitimately pays residencies, which art royalties keep crediting), so a pass split's treasury share is never booked as "creator royalty" — it is **routed to `platform.secondary`** below (patron collection royalties). |
+| `total` | `primary + secondary`, element-wise (the GROSS figures above). |
+| `artist` | **Who netted it — artists.** `{primary, secondary, total}`: `primary` = Σ the per-artist `earned` zsets (every artist card's primary — art-mint + pass-split shares, a residency donation counted as the creator's directed allocation); `secondary` = the same creator royalties as `secondary` above. |
+| `platform` | **Who netted it — the platform.** `{primary, secondary, total}`: `primary` = the pass-treasury cut (`passes.eth − passes.artistEth`; an art split has no in-split platform recipient, so this is pass-only; `null` on a pre-field snapshot); `secondary` = patron collection resale royalties (`getPlatformRoyaltyTotals`). NOTE `artist.total + platform.total` ≠ the gross `total` — resale gross is mostly **seller proceeds** (in `resales`), which are neither. |
 | `ethUsd` | The Chainlink ETH/USD price (Base feed `0x7104…Bb70`, 60 s cache, 2.5 s timeout) used to derive the `usd` fields; `null` when unavailable. |
 
 Each of `primary`/`secondary`/`total` carries `{ eth, usdc, usd }`:
@@ -369,7 +369,7 @@ earnings from raw feed/chain data on its own:
 | Profile page (visitors, pinned-public earnings) | `/api/profile/[address]` payload | `getArtistEarnings` |
 | Profile OG share image (public earnings only) | server-side render | `getArtistEarnings` |
 | Profile "Sales" panel (owner/admin) | `/api/payments?artist=` | inprocess `/payments`, **filtered to Kismet-tracked collections** so it can never disagree with the card |
-| Platform aggregates | `/api/stats/platform` | `getPlatformSalesSnapshot` + `getRoyaltyTotals` + `getCatalogCensus` (no in-repo consumer — operator/API surface) |
+| Platform aggregates + trend | `/api/stats/platform` + `/api/stats/trend` (Discover stats modal + chart) | `getPlatformSalesSnapshot`, `getRoyaltyTotals`, `getPrimaryArtistTotals`, `getPlatformRoyaltyTotals`, `getSecondaryVolume`, `getCatalogCensus`, `getDailyStats` |
 | Split recipients panel | `/api/moment/splits` | stored mint-time splits |
 | Per-moment distribute | `/api/distribute` (`useMomentSplits`) | signed message bound to (collection, token, split, currency, caller, nonce) — verbatim match with the server's expected string |
 | Distribute-all | `/api/distribute-all` (`useDistributeAll`) | signed batch message, server resolves the caller's own splits |
@@ -401,9 +401,11 @@ Blind spots to keep in mind when reading the numbers:
   counted is pass invites, via Kismet's own records.
 - **Historical USD.** All `usd` fields are read-time valuations at the current
   ETH price; sale-time USD is not recorded.
-- **No public time series.** The public payload is lifetime totals refreshed
-  hourly; only the admin funnel has a daily series (14-day window, 90-day
-  retention).
+- **Only coarse public history.** The platform blocks are lifetime totals
+  refreshed hourly; the sole public time series is the daily trend
+  (`kismetart:stats:daily` → `/api/stats/trend`, one cumulative point/day for
+  volume/artist/platform, feeding the stats-modal chart). Finer history
+  (per-event, per-user) exists only in the admin funnel.
 - **Wallets ≠ people.** `collectors` counts wallets (smart-wallet→EOA folding
   removes one double-count class, but one human with several EOAs counts
   several times).
@@ -426,11 +428,14 @@ Blind spots to keep in mind when reading the numbers:
 | `kismetart:royalty-credited:<listingId>` | Idempotency claims | Once per fill |
 | `kismetart:stats:secondary` | Resale-volume aggregate (`resales`; HASH eth/usdc/transactions/updatedAt) | Event-driven, one atomic increment per fill |
 | `kismetart:stats:secondary-counted:<listingId>` | Resale-volume idempotency claims | Once per fill |
+| `kismetart:stats:pending-credits` | Reconcile outbox — royalty/volume whose fill-time eval hard-failed, retried idempotently by the hourly cron (bounded, dropped after ~24 attempts) | On fill-eval failure; drained hourly |
 | `kismetart:stats:last-rebuild` | Shrink + value-jump guard baseline (counted, in-scope, eth, usdc) | After each successful rebuild |
 | `kismetart:stats:health:{rebuild,census}` | Pipeline heartbeat — last run/success/error per phase | Every sync-stats run outcome |
 | `kismetart:stats:{rebuild,census}-lock` | Single-flight locks (`lib/redisLock.ts`) | 900 s / 600 s TTL |
 | `kismetart:funnel:<event>:<YYYY-MM-DD>` | Funnel day counters | Per beacon; 90-day TTL |
-| `kismetart:stats:pass-exclude` | Patron `default_admin`+`payout` payees, unioned into the pass exclude set | Per rebuild; 7-day TTL |
+| `kismetart:stats:pass-exclude` | Patron `default_admin`+`payout`+`creator` payees, unioned into the pass exclude set | Per rebuild; 7-day TTL |
+| `kismetart:stats:royalty-platform` | Patron/pass resale royalties owed the treasury (`platform.secondary`) | Event-driven per fill — incremented inside the SAME atomic Lua + per-listing claim as the artist credit, so the treasury and creator slices commit together |
+| `kismetart:stats:daily` | Daily cumulative volume/artist/platform totals + ethUsd (trend-graph series) | Hourly overwrite of today's field |
 | `kismetart:ethusd` | Chainlink price cache | 60 s TTL |
 
 ## 10. Source map
@@ -438,8 +443,10 @@ Blind spots to keep in mind when reading the numbers:
 | Concern | File |
 | --- | --- |
 | Endpoint (shape, gating, caching) | `app/api/stats/platform/route.ts` |
-| Sales rebuild, snapshot, royalty credit, resale volume | `lib/stats.ts` |
+| Trend series endpoint (lazy chart feed, `getDailyStats`) | `app/api/stats/trend/route.ts` |
+| Sales rebuild, snapshot, royalty credit, resale volume, daily series, reconcile outbox | `lib/stats.ts` |
 | Pure per-row accumulation + attribution rules | `lib/statsMath.ts` (unit-verified by `scripts/verify-stats.ts`) |
+| Pure trend windowing + honest-historical denomination | `lib/trendMath.ts` (unit-verified by `scripts/verify-stats.ts`) |
 | Catalog census | `lib/catalogCensus.ts` |
 | Transfers feed reader | `lib/inprocessTransfers.ts` |
 | Single-flight lock (shared) | `lib/redisLock.ts` |

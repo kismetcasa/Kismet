@@ -29,6 +29,7 @@ import {
   type StatsFeeRecipient,
 } from './statsMath'
 import type { EarningsAmounts } from './earningsFormat'
+import { isValidIsoDay, type DailyStatPoint } from './trendMath'
 
 // Per-artist primary-sale stats, rebuilt from the In•Process /transfers feed
 // (the canonical, complete, historical record — see rebuildStats). Native ETH
@@ -45,9 +46,12 @@ const USDC_KEY = 'kismetart:stats:earned:usdc'
 // which would wipe any royalties merged in. Royalties are event-driven instead —
 // credited once per fill from the on-chain-verified PATCH handler
 // (creditListingRoyalty) — so they accrue forward. Every credit is also
-// journaled into ROYALTY_LEDGER_KEY (an HSET keyed by listingId), giving a
-// durable per-fill record a future reconcile/rebuild pass can replay; the live
-// zsets remain the read path.
+// journaled into ROYALTY_LEDGER_KEY (an HSET keyed by listingId) as a per-fill
+// AUDIT trail; the live zsets remain the read path. Recovery from a transient
+// eval failure is handled separately by the pending-credits outbox
+// (enqueuePendingCredit / reconcilePendingCredits), not by replaying this
+// ledger — the ledger row is written inside the same eval, so a failed eval
+// leaves none.
 //
 // SCOPE LIMIT: only resales filled through Kismet's OWN listings observe this
 // path — an off-platform resale (OpenSea/Blur/Zora) pays the artist's EIP-2981
@@ -96,30 +100,27 @@ return 1
 // getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
 
-// Static platform-payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
-// credited to its real artist(s) — the known-platform set from config. This is
-// the FALLBACK / floor; resolvePassExcludeAddresses below UNIONS the Patron
-// collection's own on-chain default_admin + payout onto it so the stats exclude
-// set matches the Patron page's deriveArtistsFromRecipients EXACTLY (see
-// CollectionView). Extending it matters because the pass artist can be a
-// MINORITY holder (e.g. 20%), so the old "artist holds the dominant share, a
-// slipped platform payee doesn't matter" reasoning does NOT hold — a slipped
-// 80% payout would steal the sale-count and book its share as artist earnings.
-// Empty entries (unset env) are filtered so the set never contains ''.
+// Platform-payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
+// credited to its real artist(s), so a platform payee's share never lands on an
+// artist card. This static set is the FLOOR; resolvePassExcludeAddresses unions
+// the Patron collection's on-chain roles onto it. Matters because the pass
+// artist can be a MINORITY holder (e.g. 20%), so a slipped 80% payout would
+// steal the sale-count and book its share as artist earnings. Empty (unset-env)
+// entries are filtered so the set never contains ''.
 const PASS_PLATFORM_ADDRESSES: ReadonlySet<string> = new Set(
   [PLATFORM_FEE_RECIPIENT, CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET]
     .filter((a): a is string => typeof a === 'string' && a.length > 0)
     .map((a) => a.toLowerCase()),
 )
 
-// Cached union of the static set above with the Patron collection's own
-// non-artist payees (its on-chain default_admin + payout), so a pass sale's
-// artist attribution excludes exactly who the Patron page excludes. Sourced from
-// the inprocess /collection detail (what the collection page reads), TTL-cached
-// like the splitaddr cache — the roles are upstream-mutable, so bound the staleness
-// rather than pinning forever. Best-effort: any failure falls back to the static
-// set (== prior behavior) and self-heals next scan, so the resolved set is always
-// a SUPERSET of the static one and can never credit FEWER real artists.
+// Cached union of the static floor with the Patron collection's on-chain
+// non-artist roles (default_admin, payout_recipient, creator — all treasury-
+// side). This is a SUPERSET of the Patron page's exclude set: it also excludes
+// OPERATOR and creator, both platform-side, so it never drops a real artist
+// (only a hypothetical split naming one would disagree with the page — latent).
+// Sourced from the inprocess /collection detail, TTL-cached like splitaddr since
+// the roles are upstream-mutable. Best-effort: any failure falls back to the
+// static floor and self-heals next scan.
 const PASS_EXCLUDE_KEY = 'kismetart:stats:pass-exclude'
 const PASS_EXCLUDE_TTL_S = 7 * 24 * 60 * 60
 const HEX40 = /^0x[0-9a-f]{40}$/
@@ -165,6 +166,36 @@ async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
     }
   }
   return extra.size > 0 ? new Set([...PASS_PLATFORM_ADDRESSES, ...extra]) : PASS_PLATFORM_ADDRESSES
+}
+
+// Cache-ONLY read of the pass-exclude set for the credit path: creditListing-
+// Royalty runs awaited on the sale PATCH, so it READS the key the hourly rebuild
+// refreshes but never fetches (no 8s upstream block on a fill). Fixes the leak
+// where the static-only set mis-booked a payout_recipient's resale share as a
+// creator royalty. COLD-CACHE CAVEAT: before the first post-deploy rebuild (or
+// after a >7-day TTL lapse) it degrades to the static floor, so a pass resale in
+// that narrow window can still leak — and since royalty zsets aren't rebuilt,
+// that one fill doesn't self-heal (only the SET does, for future fills). Never
+// throws.
+async function getCachedPassExclude(): Promise<ReadonlySet<string>> {
+  try {
+    const cached = await redis.get<string | string[] | null>(PASS_EXCLUDE_KEY)
+    let arr: unknown = cached
+    if (typeof cached === 'string') {
+      try {
+        arr = JSON.parse(cached)
+      } catch {
+        arr = null
+      }
+    }
+    if (Array.isArray(arr)) {
+      const extra = arr.filter((a): a is string => typeof a === 'string' && HEX40.test(a))
+      if (extra.length) return new Set([...PASS_PLATFORM_ADDRESSES, ...extra])
+    }
+  } catch {
+    // fall through to the static floor
+  }
+  return PASS_PLATFORM_ADDRESSES
 }
 
 // Resolve a Patron/pass token's AUTHORITATIVE mint-time split (getStoredSplits —
@@ -802,6 +833,24 @@ async function runRebuild(): Promise<RebuildResult> {
       console.error('[stats] platform snapshot write failed (stale until next run)', err),
     )
 
+  // Record today's cumulative totals into the daily trend series (overwrites
+  // today's point, converging to end-of-day). The primary legs are handed the
+  // SAME in-memory totals just written above — never re-read — so a point can't
+  // mix this fresh scan with a stale snapshot or substitute 0 for a withheld
+  // figure. Best-effort; never throws (see fn).
+  await recordDailyStats({
+    artGrossEth: platform.eth,
+    artGrossUsdc: platform.usdc,
+    passGrossEth: platform.passes.eth,
+    passGrossUsdc: platform.passes.usdc,
+    passArtistEth: platform.passes.artistEth,
+    passArtistUsdc: platform.passes.artistUsdc,
+    // Σ per-artist earned exactly as getPrimaryArtistTotals sums the zsets
+    // (writeStatsAtomically persists only v > 0, so mirror that floor here).
+    artistPrimaryEth: [...ethFinal.values()].reduce((s, v) => s + (v > 0 ? v : 0), 0),
+    artistPrimaryUsdc: [...usdcFinal.values()].reduce((s, v) => s + (v > 0 ? v : 0), 0),
+  })
+
   return {
     skipped: false,
     artists,
@@ -933,34 +982,45 @@ export interface SecondaryVolume {
  * Record one Kismet-listing fill's GROSS sale price into the platform
  * secondary-volume aggregate. Called from the on-chain-verified listings PATCH.
  * Idempotent per listing (NX claim, atomic with the increment), so a retried or
- * concurrent fill counts once. Best-effort — returns false on a non-positive or
- * malformed price, empty id, or Redis error, and NEVER throws (it runs on the
- * sale-confirmation path and must never fail the fill). `priceBaseUnits` is the
- * raw base-units string (wei / 6-dp USDC); the parse lives INSIDE the try so a
- * legacy/malformed value degrades to "not counted", never an exception.
+ * concurrent fill counts once. NEVER throws (it runs on the sale-confirmation
+ * path and must never fail the fill). `priceBaseUnits` is the raw base-units
+ * string (wei / 6-dp USDC); the parse lives inside its own try.
+ *
+ * Returns { recorded, failed }: `recorded` is true only on the first write;
+ * `failed` is true ONLY when the Redis eval threw (the NX claim was NOT taken,
+ * so nothing was written and a retry is safe) — distinct from a duplicate
+ * (already counted) or a terminally-invalid price, both of which return
+ * failed:false. The caller enqueues a reconcile retry exactly when failed:true,
+ * so a transient blip on this no-webhook-backstop stat is healed, not lost.
  */
 export async function recordSecondaryVolume(args: {
   listingId: string
   currency: 'eth' | 'usdc'
   priceBaseUnits: string
-}): Promise<boolean> {
+}): Promise<{ recorded: boolean; failed: boolean }> {
   const { listingId, currency, priceBaseUnits } = args
-  if (!listingId) return false
+  if (!listingId) return { recorded: false, failed: false }
+  let price: number
   try {
-    const price =
+    price =
       currency === 'usdc'
         ? Number(formatUnits(BigInt(priceBaseUnits), 6))
         : Number(formatEther(BigInt(priceBaseUnits)))
-    if (!Number.isFinite(price) || price <= 0) return false
+  } catch {
+    // Malformed price (BigInt throw) — TERMINAL, a retry can't fix it.
+    return { recorded: false, failed: false }
+  }
+  if (!Number.isFinite(price) || price <= 0) return { recorded: false, failed: false }
+  try {
     const wrote = await redis.eval(
       RECORD_SECONDARY_LUA,
       [secondaryCountedKey(listingId), SECONDARY_VOLUME_KEY],
       [currency, String(price), String(Date.now())],
     )
-    return wrote === 1
+    return { recorded: wrote === 1, failed: false }
   } catch {
-    // Malformed price (BigInt throw) or Redis error — best-effort, never throws.
-    return false
+    // Redis eval failed transiently — claim not taken, so this is retryable.
+    return { recorded: false, failed: true }
   }
 }
 
@@ -1004,17 +1064,177 @@ export async function getRoyaltyTotals(): Promise<{ eth: number; usdc: number }>
   }
 }
 
+// Platform-wide PRIMARY artist earnings — the Σ over the per-artist `earned`
+// zsets, i.e. exactly what every artist card shows for primary (art mint shares
+// + pass split shares), summed. Small sets, one ZRANGE each on the same
+// auto-pipelined round trip as getRoyaltyTotals. This is the "total artist
+// earnings (primary)" figure; residencies' art share counts here because it is
+// a creator-DIRECTED donation credited to the artist's allocation — consistent
+// with the cards. Platform-primary earnings are then the derived remainder
+// (gross pass − pass artist = the treasury cut), so they need no separate sum.
+export async function getPrimaryArtistTotals(): Promise<{ eth: number; usdc: number }> {
+  try {
+    const [rawEth, rawUsdc] = await Promise.all([
+      redis.zrange(ETH_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+      redis.zrange(USDC_KEY, 0, -1, { withScores: true }) as Promise<(string | number)[]>,
+    ])
+    const sum = (raw: (string | number)[]) => {
+      let total = 0
+      for (const v of zpairsToMap(raw).values()) total += v
+      return total
+    }
+    return { eth: sum(rawEth), usdc: sum(rawUsdc) }
+  } catch {
+    return { eth: 0, usdc: 0 }
+  }
+}
+
+// Platform-treasury share of pass/Patron resale royalties (earnings.platform
+// secondary). creditListingRoyalty routes it here, incrementing this hash inside
+// the SAME atomic Lua and per-listing claim as the artist credit (see
+// CREDIT_ROYALTY_LUA) — so the treasury and creator slices of a fill commit
+// together, never a separate eval that could strand one, and a retry counts
+// once. Keeps the artist royalty zsets treasury-free. HASH of eth/usdc human
+// units; read by getPlatformRoyaltyTotals.
+const PLATFORM_ROYALTY_KEY = 'kismetart:stats:royalty-platform'
+
+/** Platform-treasury resale-royalty totals (patron collection royalties), or
+ *  zeros before the first pass resale / on error. */
+export async function getPlatformRoyaltyTotals(): Promise<{ eth: number; usdc: number }> {
+  try {
+    const h = await redis.hgetall<Record<string, string | number>>(PLATFORM_ROYALTY_KEY)
+    if (!h) return { eth: 0, usdc: 0 }
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : 0
+    }
+    return { eth: num(h.eth), usdc: num(h.usdc) }
+  } catch {
+    return { eth: 0, usdc: 0 }
+  }
+}
+
+// ── Daily time-series (trend-graph foundation) ───────────────────────────────
+
+// One cumulative point per UTC day for the three headline metrics — the history
+// a D/W/M/all-time trend graph needs, which the hourly snapshot alone can't give
+// (it only holds "now"). Piggybacks the rebuild: each hourly run OVERWRITES
+// today's field, so it converges to the end-of-day value with no separate cron.
+// Stored NATIVE (eth+usdc) plus the day's ethUsd so historical USD is honest
+// (valued at the time, not today's price). A HASH keyed by date; ~120 bytes/day
+// is negligible and effectively unbounded (years ≪ 1 MB), so no prune. Best-
+// effort — a failure just skips one day's point, healed on the next hourly run.
+const DAILY_STATS_KEY = 'kismetart:stats:daily'
+
+async function recordDailyStats(fresh: {
+  artGrossEth: number
+  artGrossUsdc: number
+  passGrossEth: number
+  passGrossUsdc: number
+  passArtistEth: number
+  passArtistUsdc: number
+  artistPrimaryEth: number
+  artistPrimaryUsdc: number
+}): Promise<void> {
+  try {
+    // Primary legs come FRESH from the rebuild's in-memory totals (passed in),
+    // never re-read — so a point can't mix a fresh scan with a stale snapshot,
+    // and it never substitutes 0 for a figure the live endpoint withholds. Only
+    // the event-driven legs (royalties, resale gross, price) are read here.
+    const [royalties, platformRoyalty, resaleVol, ethUsd] = await Promise.all([
+      getRoyaltyTotals(),
+      getPlatformRoyaltyTotals(),
+      getSecondaryVolume(),
+      getEthUsd(),
+    ])
+    // The SAME three metrics /api/stats/platform serves, in native units:
+    //   volume   = gross primary (art + pass) + gross resales
+    //   artist   = Σ earned zsets (primary) + creator royalties (secondary)
+    //   platform = pass-treasury primary + patron resale royalties (secondary)
+    const point = {
+      volumeEth: fresh.artGrossEth + fresh.passGrossEth + (resaleVol?.eth ?? 0),
+      volumeUsdc: fresh.artGrossUsdc + fresh.passGrossUsdc + (resaleVol?.usdc ?? 0),
+      artistEth: fresh.artistPrimaryEth + royalties.eth,
+      artistUsdc: fresh.artistPrimaryUsdc + royalties.usdc,
+      platformEth: fresh.passGrossEth - fresh.passArtistEth + platformRoyalty.eth,
+      platformUsdc: fresh.passGrossUsdc - fresh.passArtistUsdc + platformRoyalty.usdc,
+      ethUsd: ethUsd ?? 0,
+    }
+    const day = new Date().toISOString().slice(0, 10) // UTC date
+    await redis.hset(DAILY_STATS_KEY, { [day]: JSON.stringify(point) })
+  } catch {
+    // Best-effort: the trend series is non-critical and self-heals next hour.
+  }
+}
+
+/** The full daily trend series (ascending by date), or [] before the first
+ *  recorded day / on error. Read by /api/stats/trend to feed the modal chart;
+ *  each field is tolerant-parsed (a corrupt day is skipped, not fatal) and
+ *  malformed keys are ignored so the series is always clean and sorted. */
+export async function getDailyStats(): Promise<DailyStatPoint[]> {
+  try {
+    const h = await redis.hgetall<Record<string, unknown>>(DAILY_STATS_KEY)
+    if (!h) return []
+    const num = (v: unknown) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n : 0
+    }
+    const out: DailyStatPoint[] = []
+    for (const [date, raw] of Object.entries(h)) {
+      // Calendar-valid, not just shape-valid: a corrupt/hand-edited key like
+      // 2026-02-30 or 9999-99-99 must never enter the series, else it sorts as
+      // the latest point and the window-cutoff date math chokes on it.
+      if (!isValidIsoDay(date)) continue
+      // Values are written as JSON strings; some Upstash reads auto-deserialize
+      // to an object. Accept both, skip anything that won't parse to an object.
+      let obj: unknown = raw
+      if (typeof raw === 'string') {
+        try {
+          obj = JSON.parse(raw)
+        } catch {
+          continue
+        }
+      }
+      if (!obj || typeof obj !== 'object') continue
+      const o = obj as Record<string, unknown>
+      out.push({
+        date,
+        volumeEth: num(o.volumeEth),
+        volumeUsdc: num(o.volumeUsdc),
+        artistEth: num(o.artistEth),
+        artistUsdc: num(o.artistUsdc),
+        platformEth: num(o.platformEth),
+        platformUsdc: num(o.platformUsdc),
+        ethUsd: num(o.ethUsd),
+      })
+    }
+    out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    return out
+  } catch {
+    return []
+  }
+}
+
 // ── Secondary-royalty credit ─────────────────────────────────────────────────
 
-// Atomic claim + ledger + credit. SET NX takes the per-listing claim; only
-// when it wins do the ledger HSET and the per-member ZINCRBYs run — all inside
-// one Lua execution, so a transient failure leaves NOTHING (retryable) and a
-// success leaves everything. ARGV: [ledgerField, ledgerJson, member, amount,
-// member, amount, ...]. Returns 1 when credited, 0 when already claimed.
+// Atomic claim + ledger + platform-royalty + credit in one Lua execution: SET NX
+// takes the per-listing claim, and only on a win do the ledger HSET, the optional
+// treasury increment, and the per-member ZINCRBYs run — so a transient failure
+// leaves NOTHING (retryable) and a success leaves everything, and a pass resale's
+// treasury + creator slices commit together.
+// KEYS: [claim, royaltyZset, ledgerHash, platformRoyaltyHash].
+// ARGV: [ledgerField, ledgerJson, platformCurrency, platformShare, updatedAt,
+//        member, amount, ...]. platformShare '0' skips the HINCRBYFLOAT.
+// Returns 1 when claimed, 0 when already claimed (retry / concurrent fill).
 const CREDIT_ROYALTY_LUA = `
 if not redis.call('SET', KEYS[1], '1', 'NX') then return 0 end
 redis.call('HSET', KEYS[3], ARGV[1], ARGV[2])
-for i = 3, #ARGV, 2 do
+local pShare = tonumber(ARGV[4])
+if pShare and pShare > 0 then
+  redis.call('HINCRBYFLOAT', KEYS[4], ARGV[3], ARGV[4])
+  redis.call('HSET', KEYS[4], 'updatedAt', ARGV[5])
+end
+for i = 6, #ARGV, 2 do
   redis.call('ZINCRBY', KEYS[2], ARGV[i + 1], ARGV[i])
 end
 return 1
@@ -1107,38 +1327,65 @@ export async function creditListingRoyalty(args: {
       }
     }
 
-    // SECONDARY pass exclusion — the mirror of the primary pass earnings path:
-    // on a Patron/Mint-Pass resale, drop platform-payout members so the treasury's
-    // royalty share is NOT booked as "creator royalty", whether it arrived via the
-    // split decomposition above or as a bare platform-wallet receiver. Pass-scoped
-    // ONLY (isPatronCollection) — a legitimate ART split pays residencies, and art
-    // royalties must keep crediting it, so this must never fire for art. When a
-    // pass split names no real artist (all platform payees), credits filter to
-    // empty: credit nothing and DON'T claim, so no misleading ledger entry is
-    // written and the gross resale is still recorded by recordSecondaryVolume.
+    // SECONDARY pass split: on a Patron/Mint-Pass resale the treasury's royalty
+    // share is PLATFORM earnings, so route it to the platform aggregate and keep
+    // only real artists in `credits` (leaving earnings.secondary treasury-free).
+    // Pass-scoped ONLY — an ART split's residencies share stays credited (a
+    // creator-directed donation). An all-platform split records the share, no card.
+    let platformShare = 0
     const isPass = !!collection && isPatronCollection(collection)
-    credits = filterPassRoyaltyCredits(credits, isPass, PASS_PLATFORM_ADDRESSES)
-    if (credits.length === 0) {
+    if (isPass) {
+      // Same exclude set the primary path uses, read cache-only (never fetches,
+      // see getCachedPassExclude) so a resale slice to the dynamic
+      // payout_recipient is booked platform, not leaked to its card.
+      const exclude = await getCachedPassExclude()
+      platformShare = credits
+        .filter((c) => exclude.has(c.member))
+        .reduce((s, c) => s + c.amount, 0)
+      credits = filterPassRoyaltyCredits(credits, true, exclude)
+    }
+    // Nothing to record only when BOTH slices are empty (no real artist AND no
+    // treasury share). Otherwise fall through so the platform slice is still
+    // recorded — atomically, below — even for an all-platform split with zero
+    // artist credits.
+    if (credits.length === 0 && platformShare === 0) {
       return { credited: false, decomposed: matchedTokenId !== null, matchedTokenId, credits: [], failed: false }
     }
 
+    const now = Date.now()
     const ledgerEntry = JSON.stringify({
-      at: Date.now(),
+      at: now,
       listingId,
       currency,
       amount,
       receiver: member,
       credits,
+      ...(platformShare > 0 ? { platformShare } : {}),
       ...(collection ? { collection: collection.toLowerCase(), tokenId } : {}),
     })
     const zsetKey = currency === 'usdc' ? ROYALTY_USDC_KEY : ROYALTY_ETH_KEY
+    // One atomic claim covers the ledger, the platform-treasury slice, and every
+    // artist credit for this fill (see CREDIT_ROYALTY_LUA). platformShare '0'
+    // skips the treasury increment; an all-platform split still writes the ledger
+    // and treasury slice with zero artist credits.
     const wrote = await redis.eval(
       CREDIT_ROYALTY_LUA,
-      [royaltyCreditedKey(listingId), zsetKey, ROYALTY_LEDGER_KEY],
-      [listingId, ledgerEntry, ...credits.flatMap((c) => [c.member, String(c.amount)])],
+      [royaltyCreditedKey(listingId), zsetKey, ROYALTY_LEDGER_KEY, PLATFORM_ROYALTY_KEY],
+      [
+        listingId,
+        ledgerEntry,
+        currency,
+        String(platformShare),
+        String(now),
+        ...credits.flatMap((c) => [c.member, String(c.amount)]),
+      ],
     )
     return {
-      credited: wrote === 1,
+      // credited = an ARTIST royalty was written this call (claim won AND ≥1
+      // real-artist credit). An all-platform split records the treasury slice
+      // but credits no card, so it stays false — the same outcome the royalty
+      // audit consumed before the fold.
+      credited: wrote === 1 && credits.length > 0,
       decomposed: matchedTokenId !== null,
       matchedTokenId,
       credits,
@@ -1182,5 +1429,125 @@ async function resolveRoyaltySplitCredits(
     return null
   } catch {
     return null
+  }
+}
+
+// ── Reconcile backstop for event-driven credits ──────────────────────────────
+
+// Reconcile outbox for the two EVENT-DRIVEN stats — the royalty credit and the
+// resale-volume record — which run once per fill and, unlike the hourly
+// rebuild's self-healing absolute writes, are NEVER replayed. When a fill's eval
+// hard-fails (NOT a duplicate: the NX claim wasn't taken, so a retry is safe),
+// the PATCH persists the retry args here and the hourly cron drains them through
+// the SAME idempotent functions. Bounded — a poison entry is dropped after
+// PENDING_MAX_ATTEMPTS. Honest limit: if the enqueue ALSO fails (a total outage,
+// not a single-call blip) the figure is still lost.
+const PENDING_CREDITS_KEY = 'kismetart:stats:pending-credits'
+const PENDING_MAX_ATTEMPTS = 24 // ~1 day of hourly reconcile passes, then give up
+
+type PendingRoyalty = {
+  kind: 'royalty'
+  listingId: string
+  currency: 'eth' | 'usdc'
+  amount: number
+  receiver: string
+  collection?: string
+  tokenId?: string
+}
+type PendingVolume = {
+  kind: 'volume'
+  listingId: string
+  currency: 'eth' | 'usdc'
+  priceBaseUnits: string
+}
+type PendingCredit = (PendingRoyalty | PendingVolume) & { attempts: number; firstAt: number }
+
+// Persist a fill's failed credit/volume for later reconcile. Best-effort and
+// never-throws — it runs on the sale path and must not fail the fill. Keyed by
+// kind:listingId so a re-fired PATCH overwrites rather than duplicates.
+export async function enqueuePendingCredit(rec: PendingRoyalty | PendingVolume): Promise<void> {
+  try {
+    const id = `${rec.kind}:${rec.listingId}`
+    await redis.hset(PENDING_CREDITS_KEY, {
+      [id]: JSON.stringify({ ...rec, attempts: 0, firstAt: Date.now() }),
+    })
+  } catch {
+    // Enqueue itself failed (likely a broader outage) — accept the loss.
+  }
+}
+
+// Drain the pending-credit queue, retrying each through its idempotent path.
+// The NX claim guarantees a retry that races the original (or a already-healed
+// entry) is a no-op, so this can never double-credit. Removes an entry once it
+// no longer hard-fails (recorded, already-claimed, or terminally invalid), and
+// drops it after PENDING_MAX_ATTEMPTS. Called from the hourly sync-stats cron.
+export async function reconcilePendingCredits(): Promise<{
+  processed: number
+  healed: number
+  dropped: number
+  pending: number
+}> {
+  let processed = 0
+  let healed = 0
+  let dropped = 0
+  try {
+    const h = await redis.hgetall<Record<string, unknown>>(PENDING_CREDITS_KEY)
+    if (!h) return { processed: 0, healed: 0, dropped: 0, pending: 0 }
+    for (const [id, raw] of Object.entries(h)) {
+      let rec: PendingCredit | null = null
+      if (typeof raw === 'string') {
+        try {
+          rec = JSON.parse(raw) as PendingCredit
+        } catch {
+          rec = null
+        }
+      } else if (raw && typeof raw === 'object') {
+        rec = raw as PendingCredit
+      }
+      // Corrupt/unknown entry — remove so it can't wedge the queue.
+      if (!rec || (rec.kind !== 'royalty' && rec.kind !== 'volume')) {
+        await redis.hdel(PENDING_CREDITS_KEY, id).catch(() => {})
+        dropped++
+        continue
+      }
+      processed++
+      let stillFailed: boolean
+      if (rec.kind === 'royalty') {
+        const outcome = await creditListingRoyalty({
+          listingId: rec.listingId,
+          currency: rec.currency,
+          amount: rec.amount,
+          receiver: rec.receiver,
+          collection: rec.collection,
+          tokenId: rec.tokenId,
+        })
+        stillFailed = outcome.failed
+      } else {
+        const r = await recordSecondaryVolume({
+          listingId: rec.listingId,
+          currency: rec.currency,
+          priceBaseUnits: rec.priceBaseUnits,
+        })
+        stillFailed = r.failed
+      }
+      if (!stillFailed) {
+        await redis.hdel(PENDING_CREDITS_KEY, id).catch(() => {})
+        healed++
+      } else {
+        const attempts = (typeof rec.attempts === 'number' ? rec.attempts : 0) + 1
+        if (attempts >= PENDING_MAX_ATTEMPTS) {
+          await redis.hdel(PENDING_CREDITS_KEY, id).catch(() => {})
+          dropped++
+        } else {
+          await redis
+            .hset(PENDING_CREDITS_KEY, { [id]: JSON.stringify({ ...rec, attempts }) })
+            .catch(() => {})
+        }
+      }
+    }
+    const pending = (await redis.hlen(PENDING_CREDITS_KEY).catch(() => 0)) ?? 0
+    return { processed, healed, dropped, pending }
+  } catch {
+    return { processed, healed, dropped, pending: 0 }
   }
 }
