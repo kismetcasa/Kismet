@@ -19,7 +19,6 @@ import {
   inferCollectCurrency,
   shortAddress,
   getSaleWindow,
-  formatSaleWindowLabel,
   DEFAULT_COLLECT_COMMENT,
   type Moment,
 } from '@/lib/inprocess'
@@ -77,7 +76,10 @@ function OvalShell({
             <p className="min-w-0 flex-1 truncate font-mono text-[13px] text-ink">{title}</p>
             {titleRight && <span className="shrink-0 font-mono text-[10px] text-dim">{titleRight}</span>}
           </div>
-          <p className="truncate font-mono text-[10.5px] text-muted">{subtitle}</p>
+          {/* flex (not a truncating <p>) so a caller can pair a truncating
+              primary with a shrink-0 aside — e.g. the mint oval's supply line
+              that yields space to a fixed listing link. */}
+          <div className="flex min-w-0 items-center gap-1 font-mono text-[10.5px] text-muted">{subtitle}</div>
         </div>
       </div>
       {/* pointer-events-none so the price + gaps fall through to the stretched
@@ -165,8 +167,8 @@ const EXPIRES_SOON_MS = 48 * 60 * 60 * 1000
 // `ethUsd` (Chainlink rate from the page's one platform-stats read) powers a
 // hover-only USD approximation on ETH prices — a tooltip, never a sub-label,
 // so the price column can't layout-shift when the rate arrives.
-// `resaleCount` is the cross-market bridge: how many live resales this moment
-// has on the secondary market (from the page's one /api/listings?keys=1 read).
+// `resaleCount` is the cross-market bridge: how many live secondary listings
+// this moment has (from the page's one /api/listings?keys=1 read).
 function MomentOvalImpl({
   moment,
   ethUsd,
@@ -250,24 +252,15 @@ function MomentOvalImpl({
     maxSupply !== undefined && totalMinted !== undefined && !isOpenEdition(maxSupply) && totalMinted >= maxSupply
   // Sale-window state via the canonical classifier. Result-equivalent to
   // MomentCard's raw saleStart/saleEnd compares for the disable gate (verified:
-  // both read the max-uint64 "no end" sentinel as open-ended); used here because
-  // it ALSO yields the 'closing' state that drives the close-date label. This
-  // derivation is deliberately NOT shared with MomentCard — a shared hook would
-  // edit the feed's hottest component; isolation over DRY for a no-regression feature.
+  // both read the max-uint64 "no end" sentinel as open-ended); atSec also
+  // marks a dated window for the "timed edition" supply tag. This derivation
+  // is deliberately NOT shared with MomentCard — a shared hook would edit the
+  // feed's hottest component; isolation over DRY for a no-regression feature.
   const nowSec = Math.floor(Date.now() / 1000)
   const saleWindow = getSaleWindow(activeSale, nowSec)
   const saleNotStarted = saleWindow?.state === 'scheduled'
   const saleEnded = saleWindow?.state === 'ended'
   const uncapped = maxSupply !== undefined && isOpenEdition(maxSupply)
-  // Sold-out supersedes the clock: the close date is an urgency cue for a live
-  // collect action, and on a mint with nothing left it reads as "you have
-  // until X" — a dead promise. Cards drop it; the artwork page keeps the full
-  // window for provenance (MomentDetailView's SaleWindow is ungated).
-  const windowLabel = !mintedOut ? formatSaleWindowLabel(saleWindow, { withTime: false }) : null
-  // Uncapped editions carry the dated window INSIDE the supply line (it
-  // replaced the redundant "timed edition" tag), so the titleRight chip only
-  // serves capped rows — one dated edge per oval, never both.
-  const closeLabel = !uncapped && saleWindow?.state === 'closing' ? windowLabel : null
   const disabled = collecting || mintedOut || saleNotStarted || saleEnded
   const label = collecting
     ? 'collecting…'
@@ -282,20 +275,19 @@ function MomentOvalImpl({
             : 'collect'
 
   // Supply line: "sold" framing — "3/100 sold" for limited editions. An
-  // uncapped edition leads with its dated sale window when one exists
-  // ("sale ends Jul 31" / "opens Aug 1" / "ended Jun 25" — supply is set by
-  // the clock, and the words "timed edition" were redundant next to a visible
-  // date); only a truly unbounded one reads "open edition". Until the sale
-  // config resolves (same dwell fetch as the price) an uncapped edition reads
-  // "open edition" and upgrades in place — same progressive fill as the price
-  // slot. Lowercased to sit in the subtitle's register ("sale ends Jul 31",
-  // not "Sale ends Jul 31").
-  const lcFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
+  // uncapped edition whose sale has a dated window (scheduled / closing /
+  // ended — atSec set) reads "timed edition"; only a truly unbounded one
+  // reads "open edition". DELIBERATELY no dates on ovals — the compact tag,
+  // not "sale ends Jul 31": the dense discover rows keep the category signal
+  // and the moment page carries the actual window. Until the sale config
+  // resolves (same dwell fetch as the price) an uncapped edition reads
+  // "open edition" and upgrades in place — same progressive fill as the
+  // price slot.
   const supplyLabel =
     maxSupply === undefined
       ? '…'
       : uncapped
-        ? `${windowLabel ? lcFirst(windowLabel) : 'open edition'} · ${(totalMinted ?? 0n).toLocaleString()} sold`
+        ? `${saleWindow?.atSec != null ? 'timed edition' : 'open edition'} · ${(totalMinted ?? 0n).toLocaleString()} sold`
         : `${(totalMinted ?? 0n).toLocaleString()}/${maxSupply.toLocaleString()} sold`
 
   async function handleCollect() {
@@ -323,25 +315,30 @@ function MomentOvalImpl({
       rootRef={rootRef}
       href={`/moment/${moment.address}/${moment.token_id}`}
       title={meta.name || `#${moment.token_id}`}
-      // Sale close date to the right of the title (only for a real upcoming
-      // deadline — see closeLabel).
-      titleRight={closeLabel || undefined}
       subtitle={
         <>
-          {/* Market data only — no collection/prose segment. Long collection
-              names were truncating the supply figure (the line's whole job) on
-              real rows; collection context lives one click away on the moment
-              page, and the scope pill already splits solo vs collection drops. */}
-          {supplyLabel}
-          {/* Cross-market bridge: this mint has live secondary listings — the
-              whole oval already links to the moment page where they're buyable. */}
+          {/* Supply is the line's whole job — truncate IT, never the listing
+              link beside it. Long collection names were eating the supply
+              figure on real rows; collection context lives one click away on
+              the moment page. */}
+          <span className="min-w-0 truncate">{supplyLabel}</span>
+          {/* Cross-market bridge: this mint has live secondary listings. There
+              are no per-listing pages yet, so the arrow links to the market
+              (the floor listing is the future target). Rendered as just the ↗ —
+              not "N listings ↗" — so it can never crowd the supply figure; the
+              count rides in the title/aria-label. pointer-events-auto + z-10
+              wins the click over the oval's stretched link, like the action
+              button does. */}
           {!!resaleCount && (
-            <>
-              {' · '}
-              <span className="text-dim">
-                {resaleCount} resale{resaleCount > 1 ? 's' : ''} ↗
-              </span>
-            </>
+            <Link
+              href="/market"
+              prefetch={false}
+              title={`${resaleCount} listing${resaleCount > 1 ? 's' : ''} on the market`}
+              aria-label={`${resaleCount} listing${resaleCount > 1 ? 's' : ''} — view on the market`}
+              className="pointer-events-auto relative z-10 shrink-0 text-dim transition-colors hover:text-accent"
+            >
+              ↗
+            </Link>
           )}
         </>
       }
@@ -389,13 +386,13 @@ function MomentOvalImpl({
 }
 export const MomentOval = memo(MomentOvalImpl)
 
-// ── Secondary market oval (a resale listing) ─────────────────────────────────
+// ── Secondary market oval (a listing) ────────────────────────────────────────
 // Reuses BuyButton wholesale (the Seaport fulfill flow), so the action carries
 // its own price ("buy 0.01 ETH"). onRemove drops the oval from the grid once
-// the sale confirms (PaginatedGrid's optimistic remove). The subtitle is the
-// trade trust line: who's selling · the enforced royalty share — no collection
-// segment, same doctrine as the primary ovals (a long name truncated exactly
-// the seller/royalty data the line exists to carry).
+// the sale confirms (PaginatedGrid's optimistic remove). The subtitle names the
+// seller ("listed by …") — no collection segment, same doctrine as the primary
+// ovals. Royalty share is dropped from the row: it's the same on every listing
+// (creator royalties are always enforced on Kismet), so per-row it was noise.
 function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: () => void }) {
   const rootRef = useRef<HTMLElement>(null)
   const inView = useInViewDwell(rootRef, { rootMargin: '200px', dwellMs: 150 })
@@ -430,32 +427,13 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
     return hours <= 24 ? `expires ${hours}h` : `expires ${Math.ceil(hours / 24)}d`
   }, [listing.expiresAt])
 
-  // Royalty share of the sale price, from the stored display fields (never
-  // settlement math). Hidden when unparseable or zero.
-  const royaltyPct = useMemo(() => {
-    try {
-      const price = BigInt(listing.price)
-      if (price <= 0n) return null
-      const bps = Number((BigInt(listing.royaltyAmount) * 10000n) / price)
-      if (bps <= 0) return null
-      return bps % 100 === 0 ? String(bps / 100) : (bps / 100).toFixed(1)
-    } catch {
-      return null
-    }
-  }, [listing.price, listing.royaltyAmount])
-
   return (
     <OvalShell
       rootRef={rootRef}
       href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
       titleRight={expiresLabel || undefined}
-      subtitle={
-        <>
-          resale by {shortAddress(listing.seller)}
-          {royaltyPct && ` · ${royaltyPct}% royalty`}
-        </>
-      }
+      subtitle={<span className="min-w-0 truncate">listed by {shortAddress(listing.seller)}</span>}
       artwork={<OvalArt src={listing.image} alt={listing.name ?? 'artwork'} />}
       corner={
         <WatchStar
@@ -481,7 +459,9 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
               ↓ below mint
             </span>
           )}
-          <BuyButton listing={listing} compact className="pointer-events-auto" onBought={onRemove} />
+          {/* rounded-full: a sharp rectangle looked out of place inside the
+              rounded oval — matches the mint oval's stadium collect button. */}
+          <BuyButton listing={listing} compact className="pointer-events-auto rounded-full" onBought={onRemove} />
         </>
       }
     />

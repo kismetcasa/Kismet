@@ -570,25 +570,47 @@ export function soldOutKeysFromMulticall(
  * set (fail-open: serve the feed unfiltered rather than empty on an RPC blip);
  * per-row rules — including per-row failure isolation — live in
  * soldOutKeysFromMulticall.
+ *
+ * `timeoutMs` bounds the wait: the ending-soon feed awaits this read BEFORE it
+ * responds, so a slow/rate-limited RPC would otherwise stall the whole feed
+ * (viem's transport default is 10s). On timeout we resolve empty — the same
+ * fail-open as a read failure — and let the in-flight read settle unused, so
+ * the feed's added latency is capped at `timeoutMs` instead of the RPC's worst
+ * case. Omit it to wait on the transport default.
  */
 export async function resolveSoldOutKeys(
   client: AnyClient,
   items: { collection: Address; tokenId: bigint }[],
+  timeoutMs?: number,
 ): Promise<Set<string>> {
   if (items.length === 0) return new Set()
-  let res
+  const read = (async (): Promise<Set<string>> => {
+    let res
+    try {
+      res = await multicall(client, {
+        contracts: items.map((it) => ({
+          address: it.collection,
+          abi: ZORA_1155_TOKEN_INFO_ABI,
+          functionName: 'getTokenInfo' as const,
+          args: [it.tokenId] as const,
+        })),
+        allowFailure: true,
+      })
+    } catch {
+      return new Set<string>()
+    }
+    return soldOutKeysFromMulticall(res, items)
+  })()
+  if (!timeoutMs) return read
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const guard = new Promise<Set<string>>((resolve) => {
+    timer = setTimeout(() => resolve(new Set<string>()), timeoutMs)
+  })
+  // `read` never rejects (it catches its own multicall), so the race can't
+  // surface an unhandled rejection when the guard wins.
   try {
-    res = await multicall(client, {
-      contracts: items.map((it) => ({
-        address: it.collection,
-        abi: ZORA_1155_TOKEN_INFO_ABI,
-        functionName: 'getTokenInfo' as const,
-        args: [it.tokenId] as const,
-      })),
-      allowFailure: true,
-    })
-  } catch {
-    return new Set()
+    return await Promise.race([read, guard])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-  return soldOutKeysFromMulticall(res, items)
 }

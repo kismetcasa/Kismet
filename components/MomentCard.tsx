@@ -344,25 +344,28 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   const saleEndNum = activeSale?.saleEnd ? Number(activeSale.saleEnd) : 0
   const saleNotStarted = Number.isFinite(saleStartNum) && saleStartNum > saleNowSec
   const saleEnded = Number.isFinite(saleEndNum) && saleEndNum > 0 && saleEndNum <= saleNowSec
-  // Sale-window date + collection chip. The date now renders INLINE to the right
-  // of the creator name (non-compact) instead of on a meta row it shared
-  // exclusively with the chip, so a curated collection can show BOTH its chip
-  // AND its (live) sale window. The chip is no longer suppressed when the date
-  // shows — it renders whenever available; the date's own visibility rules are
-  // UNCHANGED from before (see showSaleDate), only its placement moved.
-  //   • chipAvailable — a curated-collection chip could render (non-compact,
-  //     curated, named).
+  // ONE secondary-metadata slot, sale window and collection chip mutually
+  // exclusive within it — never stacked. This is what keeps a collection card
+  // the same height as a solo-mint card (the "two-row problem"): a collection
+  // shows its chip OR its sale window, whichever the slot resolves to, but not
+  // both. The slot renders INLINE to the right of the artist name on full cards
+  // (its natural home — the row already carries the secondary identity) and
+  // falls back to its own row only where there's no artist row to host it
+  // (compact previews, showCreator=false).
+  //   • chipAvailable — a curated-collection chip could fill the slot (non-
+  //     compact, curated, named).
   //   • saleWindowState — mirrors SaleWindow's own classifier, `mounted`-gated
-  //     to match its client-only output, so the date only appears post-mount
-  //     (the chip is the stable server baseline; no hydration mismatch).
-  //   • showSaleDate — when the sale has a dated edge worth surfacing. Scheduled
-  //     ("Opens…") and closing ("Sale ends…") always qualify; an ENDED sale only
-  //     when there's no chip to fall back to (a collection keeps its identity
-  //     over a spent "Ended…"). A live open-ended sale has no date, and a
-  //     SOLD-OUT mint suppresses it ("Sale ends X" is a dead promise once
-  //     nothing's left — the button already says sold out). Identical predicate
-  //     to the pre-inline `saleWindowTakesRow`, so WHEN the date shows is
-  //     unchanged; the detail page keeps the full window (SaleWindow ungated).
+  //     to match its client-only output, so the slot's server baseline is the
+  //     chip and the date only swaps in post-mount (no hydration mismatch).
+  //   • showSaleDate — when the sale owns the slot: a dated edge worth surfacing.
+  //     Scheduled ("Opens…") / closing ("Sale ends…") always win it; an ENDED
+  //     sale yields to the chip when one exists (a collection keeps its identity
+  //     over a spent "Ended…"), taking the slot only on a solo mint. A live
+  //     open-ended sale has no date, and a SOLD-OUT mint suppresses it ("Sale
+  //     ends X" is a dead promise — the button already says sold out). Identical
+  //     predicate to the original `saleWindowTakesRow`.
+  //   • metaSlot — what actually fills the slot: the sale window when it wins,
+  //     else the collection chip when available, else nothing.
   const chipAvailable = !compact && isCuratedCollection && !!collectionName
   const saleWindowState = mounted ? (getSaleWindow(activeSale)?.state ?? null) : null
   const showSaleDate =
@@ -370,6 +373,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     (saleWindowState === 'scheduled' ||
       saleWindowState === 'closing' ||
       (saleWindowState === 'ended' && !chipAvailable))
+  const metaSlot: 'sale' | 'chip' | null = showSaleDate
+    ? 'sale'
+    : chipAvailable
+      ? 'chip'
+      : null
   const collectLabel = collecting
     ? 'collecting…'
     : mintedOut
@@ -397,6 +405,52 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       view profile
     </Link>
   )
+
+  // The single meta-slot element (see metaSlot) — the sale window or the
+  // collection chip. Position lives in the CALLER: the inline call site wraps
+  // this in the standardized right-55% zone (see the creator row), so `inline`
+  // here only means "constrain to the zone" (min-w-0 → inner truncate can
+  // clip); the own-row variant takes its natural width. Null when empty.
+  const renderMeta = (inline: boolean) => {
+    if (metaSlot === 'sale') {
+      return (
+        <SaleWindow
+          saleConfig={activeSale}
+          variant="card"
+          compact={compact}
+          className={inline ? 'min-w-0' : ''}
+        />
+      )
+    }
+    if (metaSlot === 'chip') {
+      return (
+        <Link
+          href={`/collection/${moment.address}`}
+          onClick={(e) => e.stopPropagation()}
+          className={`flex items-center gap-1.5 group/collection min-w-0 ${inline ? '' : 'w-fit'}`}
+          title={collectionName ?? undefined}
+          aria-label={collectionName ?? undefined}
+        >
+          {collectionImage && !collectionImageFailed && (
+            <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
+              <MomentImage
+                src={collectionImage}
+                alt=""
+                fill
+                className="object-cover"
+                sizes="16px"
+                onAllError={() => setCollectionImageFailed(true)}
+              />
+            </div>
+          )}
+          <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors truncate">
+            {collectionName}
+          </span>
+        </Link>
+      )
+    }
+    return null
+  }
 
   const media = resolveMomentMedia(meta)
   // Every Patron Collection moment is a physical-artwork scan whose source
@@ -624,22 +678,36 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             </div>
           )}
         </div>
-        {/* Creator row — the artist chip on the left, and (non-compact, post-
-            mount) the sale window's absolute date INLINE on the right ("Opens
-            Jul 3", "Sale ends Jul 8, 5:00 PM"). Inlining it here — instead of a
-            meta row it used to share exclusively with the collection chip — is
-            what lets a curated collection surface BOTH its chip (below) and its
-            sale window. The creator link takes the remaining width and truncates;
-            the date is capped and truncates past that so a long artist name and a
-            long date can't crowd each other off the row. Compact cards keep the
-            date on its own row (see the fallback below) — there's no chip to
-            coexist with there, so inlining would only cramp the tiny row. */}
+        {/* Creator row — artist chip on the left, and (full cards) the single
+            secondary-metadata slot at a STANDARDIZED position: a fixed zone
+            spanning the right 55% of the row (ml-auto), content centered — so
+            the sale window / collection chip sits at the same x on EVERY card
+            (~over the collect button in all action-row variants), instead of
+            drifting with the artist name's length.
+            Precedence: the FULL artist name wins over the meta. The artist link
+            is shrink-0 (never squeezed to make the meta fit); when the name
+            needs more than the left 45%, the meta zone wraps to a second flex
+            line that h-4 + overflow-clip erases entirely — the "cut the meta,
+            keep the name" rule, in pure CSS. overflow-CLIP, not -hidden: hidden
+            makes the row a scroll container, so keyboard-focusing a clipped
+            chip link would scroll line 2 into view and shove the artist out;
+            clip cannot scroll. h-4 also pins the row height whether or not the
+            meta got cut, so card heights never jitter. Compact cards keep the
+            plain row — they never host an inline meta, and h-4 would inflate
+            their shorter (12px-avatar) row for nothing. */}
         {renderCreator && (
-          <div className="flex items-center gap-2 max-w-full">
+          <div className={`flex items-center gap-2 max-w-full ${compact ? '' : 'flex-wrap h-4 overflow-clip'}`}>
             <Link
               href={`/profile/${moment.creator.address}`}
               onClick={(e) => e.stopPropagation()}
-              className="flex items-center gap-1.5 group/creator min-w-0 flex-1"
+              // compact routes the meta to its own row, so the artist fills the
+              // creator row there (flex-1); same when there's no meta at all.
+              // With an inline meta: shrink-0 gives the full name priority (the
+              // meta cuts before the name compresses), max-w-full still caps a
+              // name longer than the whole row (inner truncate clips it).
+              className={`flex items-center gap-1.5 group/creator min-w-0 ${
+                compact ? 'flex-1' : metaSlot ? 'shrink-0 max-w-full' : 'flex-1'
+              }`}
               title={moment.creator.address}
             >
               <ProfileAvatar address={moment.creator.address} avatarUrl={creatorAvatar} size={compact ? 12 : 16} />
@@ -650,63 +718,29 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 {creatorName}
               </span>
             </Link>
-            {!compact && showSaleDate && (
-              <SaleWindow
-                saleConfig={activeSale}
-                variant="card"
-                compact={compact}
-                className="shrink-0 max-w-[60%]"
-              />
+            {/* Inline on full cards only. Compact cards route the slot to its own
+                row below. The zone is the position-standardizer: MIN-width 55%
+                of the row (right-anchored), content centered — so any meta that
+                fits the zone sits at the same x on every card (edge 45%, center
+                72.5% ≈ over the collect button). min-w, not w: a collection
+                name LONGER than the zone grows the zone leftward into whatever
+                room a short artist leaves, showing the full name snapped to the
+                right edge instead of truncating — and when the artist isn't
+                short enough for the full name, flex line-breaking (which uses
+                the zone's un-shrunk size) wraps the zone out to the clipped
+                line: the cut rule, never a squeezed middle state. Dates are
+                always narrower than the zone, so they stay centered. */}
+            {!compact && metaSlot && (
+              <div className="ml-auto min-w-[55%] shrink-0 flex justify-center">
+                {renderMeta(true)}
+              </div>
             )}
           </div>
         )}
-        {/* Collection chip — shown only for a REAL curated collection (one
-            created via the Create Collection flow, or an existing collection
-            minted into). An individual mint auto-deploys a wrapper contract
-            named after its single piece; its "collection" is just that one
-            mint, so a chip there would be a 16px duplicate of the cover shown
-            large above, linking to a one-item /collection page — no
-            information value, and the lonely icon reads as noise where a
-            collection identity belongs. So those are suppressed entirely
-            rather than shown icon-only (the compact variant drops the chip in
-            every case). When the chip does render it always carries the name;
-            the icon is shown alongside when we have one.
-
-            No longer mutually exclusive with the sale window (which now sits
-            inline in the creator row above): the chip renders whenever it's
-            available, so a collection shows its identity AND its sale window. */}
-        {chipAvailable && (
-          <Link
-            href={`/collection/${moment.address}`}
-            onClick={(e) => e.stopPropagation()}
-            className="flex items-center gap-1.5 group/collection w-fit"
-            title={collectionName}
-            aria-label={collectionName}
-          >
-            {collectionImage && !collectionImageFailed && (
-              <div className="w-4 h-4 relative flex-shrink-0 bg-raised overflow-hidden">
-                <MomentImage
-                  src={collectionImage}
-                  alt=""
-                  fill
-                  className="object-cover"
-                  sizes="16px"
-                  onAllError={() => setCollectionImageFailed(true)}
-                />
-              </div>
-            )}
-            <span className="text-xs text-muted font-mono group-hover/collection:text-dim transition-colors">
-              {collectionName}
-            </span>
-          </Link>
-        )}
-        {/* Sale-window own-row — the original placement, kept for the cases the
-            inline date above doesn't cover: compact cards (grid + featured-row
-            preview, date-only) and any card with no creator row to host it
-            (showCreator=false). Exactly one of inline / this ever renders. */}
-        {showSaleDate && (compact || !renderCreator) && (
-          <SaleWindow saleConfig={activeSale} variant="card" compact={compact} />
-        )}
+        {/* Own-row meta slot — the fallback for what the inline slot above can't
+            host: compact cards (grid + featured-row preview) and cards with no
+            creator row (showCreator=false). Exactly one of inline / this renders. */}
+        {metaSlot && !(renderCreator && !compact) && renderMeta(false)}
       </div>
 
       {/* Actions row. Default: [price|supply] [list] [collect] in one flex

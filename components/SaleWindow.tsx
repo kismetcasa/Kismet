@@ -7,10 +7,10 @@ import { getSaleWindow, formatSaleWindowLabel } from '@/lib/inprocess'
 interface SaleWindowProps {
   /** The moment's sale config (saleStart/saleEnd unix-second strings). */
   saleConfig: { saleStart?: string; saleEnd?: string } | null | undefined
-  /** `detail` = roomy collect page (includes the timezone); `card` = compact
-   *  feed/grid badge (no zone, and date-only when also `compact`). */
+  /** `detail` = roomy collect page (full time + timezone); `card` = feed/grid
+   *  badge (date-only, no zone — the time lives one tap away on the detail). */
   variant?: 'card' | 'detail'
-  /** Compact grid card — smaller type + drops the time (tap through for it). */
+  /** Compact grid card — smaller type + icon (both card variants are date-only). */
   compact?: boolean
   /** Extra classes on the row wrapper (e.g. the detail page's padding). */
   className?: string
@@ -37,9 +37,11 @@ export function SaleWindow({ saleConfig, variant = 'card', compact = false, clas
   const info = getSaleWindow(saleConfig)
   if (!info) return null
   const label = formatSaleWindowLabel(info, {
-    // Compact cards show the date only — the full time + zone lives one tap
-    // away on the detail page, and a time would truncate at card width.
-    withTime: !(variant === 'card' && compact),
+    // Cards show the DATE ONLY ("Sale ends Jul 31") — the exact time + zone
+    // lives one tap away on the detail page. A time crowds the card line (and
+    // truncates outright on compact grid cards), and the day is the only part
+    // a browsing collector needs at a glance.
+    withTime: variant === 'detail',
     withTimeZone: variant === 'detail',
   })
   if (!label) return null

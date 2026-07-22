@@ -27,6 +27,8 @@ export interface DiscoverState {
   scope: 'standalone' | 'collections' | 'all'
   /** Only mints with a live secondary listing (the bridge as a filter). */
   resale: boolean
+  /** Only capped editions that have minted out (on-chain supply exhausted). */
+  soldOut: boolean
   /** Strict creator filter — one artist's work (timeline creator=, which
    *  expands to the artist's Farcaster sibling wallets server-side). */
   artist: string | null
@@ -52,6 +54,7 @@ const DEFAULT_DISCOVER_STATE: DiscoverState = {
   media: null,
   scope: 'standalone',
   resale: false,
+  soldOut: false,
   artist: null,
   watchlist: false,
   sortS: 'new',
@@ -108,6 +111,7 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   const scope = get('scope')
   if (scope === 'collections' || scope === 'all') s.scope = scope
   if (get('resale') === '1') s.resale = true
+  if (get('soldout') === '1') s.soldOut = true
   if (get('watch') === '1') s.watchlist = true
   const artist = get('artist')
   if (artist && ADDR.test(artist)) s.artist = artist.toLowerCase()
@@ -141,6 +145,7 @@ export function discoverUrl(s: DiscoverState): string {
   if (s.free) q.set('free', '1')
   if (s.media) q.set('media', s.media)
   if (s.resale) q.set('resale', '1')
+  if (s.soldOut) q.set('soldout', '1')
   if (s.artist) q.set('artist', s.artist)
   if (s.watchlist) q.set('watch', '1')
   if (s.sortS !== 'new') q.set('sort_s', s.sortS)
@@ -156,8 +161,8 @@ export function discoverUrl(s: DiscoverState): string {
   return str ? `/discover?${str}` : '/discover'
 }
 
-/** Primary feed apiUrl. Param order (scope, sort, free, media, resale) keeps
- *  the default byte-identical to the pre-filter era
+/** Primary feed apiUrl. Param order (scope, sort, free, media, resale, soldout)
+ *  keeps the default byte-identical to the pre-filter era
  *  ('/api/timeline?scope=standalone') so existing edge + react-query cache
  *  entries stay warm. */
 export function primaryApiUrl(s: DiscoverState): string {
@@ -166,6 +171,7 @@ export function primaryApiUrl(s: DiscoverState): string {
   if (s.free) url += '&free=1'
   if (s.media) url += `&media=${s.media}`
   if (s.resale) url += '&resale=1'
+  if (s.soldOut) url += '&soldout=1'
   if (s.artist) url += `&creator=${s.artist}`
   return url
 }
@@ -188,7 +194,7 @@ export function secondaryApiUrl(s: DiscoverState): string {
 
 export function hasActiveFilters(s: DiscoverState): boolean {
   return s.market === 'primary'
-    ? s.free || s.media !== null || s.scope !== 'standalone' || s.resale || s.artist !== null || s.watchlist
+    ? s.free || s.media !== null || s.scope !== 'standalone' || s.resale || s.soldOut || s.artist !== null || s.watchlist
     : s.currency !== null ||
         s.priceMin !== null ||
         s.priceMax !== null ||
