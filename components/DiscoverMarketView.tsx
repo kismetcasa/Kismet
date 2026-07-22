@@ -370,7 +370,7 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
             aria-pressed={denom === 'eth'}
             aria-label={denom === 'usd' ? 'Show the total in ETH' : 'Show the total in USD'}
             title={denom === 'usd' ? 'tap to show in ETH' : 'tap to show in USD'}
-            className="block font-mono text-3xl tabular-nums accent-grad decoration-dotted decoration-dim underline-offset-[6px] transition hover:underline hover:opacity-80"
+            className="block font-mono text-3xl tabular-nums accent-grad transition hover:opacity-80"
           >
             {headline}
           </button>
