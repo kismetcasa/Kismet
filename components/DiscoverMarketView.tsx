@@ -160,17 +160,13 @@ const TREND_RANGES: { key: TrendRange; label: string }[] = [
   { key: 'all', label: 'ALL' },
 ]
 
-// Inline SVG trend of the SELECTED headline metric, in the SELECTED
-// denomination — it tracks the number above it (tap the label to change metric,
-// the figure to flip USD↔ETH; the chart follows both). Cumulative line: each
-// stored day holds the all-time total, so the line climbs and the range toggle
-// only zooms the X window. Deliberately dependency-free (no chart lib): one
-// area path + one stroke, scaled by viewBox with a non-scaling stroke so the
-// 320px modal never distorts the line. Three honest states — loading skeleton
-// (series null), a range-aware empty note (< 2 plottable points), then the
-// chart. All the load-bearing math — windowing, honest-historical denomination,
-// and the SVG path building (finiteness + the flat-series case) — lives in the
-// unit-tested lib/trendMath, not inline here.
+// Inline SVG trend of the SELECTED headline metric + denomination — it tracks
+// the number above (tap the label to change metric, the figure to flip USD↔ETH).
+// Cumulative line: each stored day holds the all-time total, so the line climbs
+// and the range toggle only zooms X. Dependency-free (one area + one non-scaling
+// stroke, so the 320px modal never distorts it). Three states: loading skeleton,
+// a range-aware empty note, then the chart. All the load-bearing math (windowing,
+// honest-historical denomination, path building) lives in the tested lib/trendMath.
 function TrendChart({
   series,
   metric,
@@ -193,10 +189,9 @@ function TrendChart({
   const pts = windowTrendSeries(series, metric, denom, range)
   const spark = buildSparkline(pts.map((p) => p.value), W, H, PAD)
   if (spark == null) {
-    // < 2 plottable points. Distinguish "no history yet" (genuinely empty) from
-    // "history exists but nothing in THIS window / denomination" — e.g. a
-    // resumed-after-outage series, or a USD view where the recent days were all
-    // price-unavailable — so a populated series never claims to be "collecting".
+    // < 2 plottable points: distinguish "no history yet" from "history exists but
+    // nothing in THIS window/denomination" (resumed-after-outage, or an all-
+    // unpriced USD window) so a populated series never claims to be "collecting".
     const hasHistory = series.length >= 2
     return (
       <p className="mt-4 border-t border-line pt-4 font-mono text-[10px] leading-relaxed text-dim">
@@ -207,12 +202,10 @@ function TrendChart({
     )
   }
 
-  // Growth across the window. Cumulative totals TYPICALLY rise, but the rebuild
-  // overwrites absolutely, so a re-scope/attribution change can lower a later
-  // point — hence the delta > 0 guard below (a decline is simply left unlabeled,
-  // never shown as a fake ▲). null when the window opened at 0 (a percentage
-  // would be meaningless). For 'all' the baseline is the first RECORDED day, not
-  // platform inception, so the label reads "since {date}", never "all time".
+  // Growth over the window. Cumulative totals typically rise, but an absolute
+  // rebuild can lower a later point, so the ▲ shows only on delta > 0 (a decline
+  // stays unlabeled). null when the window opened at 0. For 'all' the baseline is
+  // the first RECORDED day, so the label is "since {date}", not "all time".
   const first = pts[0]
   const last = pts[pts.length - 1]
   const delta = last.value - first.value

@@ -46,13 +46,12 @@ const USDC_KEY = 'kismetart:stats:earned:usdc'
 // which would wipe any royalties merged in. Royalties are event-driven instead —
 // credited once per fill from the on-chain-verified PATCH handler
 // (creditListingRoyalty) — so they accrue forward. Every credit is also
-// journaled into ROYALTY_LEDGER_KEY (an HSET keyed by listingId) as a durable
-// per-fill AUDIT trail; the live zsets remain the read path. NOTE: this is a
-// record, not yet a recovery backstop — no reconcile/replay pass consumes the
-// ledger today (it is write-only), and the journal row is written INSIDE the
-// credit's own atomic eval, so a fill whose eval never ran leaves no ledger row
-// to replay. Building that replay pass is the clean fix for the best-effort
-// credit-loss window (see the fill handler's "no webhook backstop" note).
+// journaled into ROYALTY_LEDGER_KEY (an HSET keyed by listingId) as a per-fill
+// AUDIT trail; the live zsets remain the read path. Recovery from a transient
+// eval failure is handled separately by the pending-credits outbox
+// (enqueuePendingCredit / reconcilePendingCredits), not by replaying this
+// ledger — the ledger row is written inside the same eval, so a failed eval
+// leaves none.
 //
 // SCOPE LIMIT: only resales filled through Kismet's OWN listings observe this
 // path — an off-platform resale (OpenSea/Blur/Zora) pays the artist's EIP-2981
@@ -101,39 +100,27 @@ return 1
 // getPlatformSalesSnapshot.
 const PLATFORM_SALES_KEY = 'kismetart:stats:platform:sales'
 
-// Static platform-payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
-// credited to its real artist(s) — the known-platform set from config. This is
-// the FALLBACK / floor; resolvePassExcludeAddresses below UNIONS the Patron
-// collection's own on-chain roles onto it. The result is a SUPERSET of the
-// Patron page's deriveArtistsFromRecipients exclude set: it shares {PLATFORM_FEE,
-// CREATE_REFERRAL, RESIDENCIES, default_admin, payout} and ALSO excludes
-// OPERATOR_SMART_WALLET (a global platform wallet) and the collection `creator`
-// (the Patron collection's creator resolves to the treasury). Both extras are
-// platform-side, never a minting artist, so the wider set never drops a real
-// artist — but it means a hypothetical split naming OPERATOR/creator would show
-// $0 on the card while the Patron page still renders it as an artist chip (latent
-// only; see resolvePassExcludeAddresses). Extending the floor matters because the
-// pass artist can be a MINORITY holder (e.g. 20%), so a slipped 80% payout would
-// steal the sale-count and book its share as artist earnings.
-// Empty entries (unset env) are filtered so the set never contains ''.
+// Platform-payout wallets excluded when a PASS (Patron/Mint-Pass) sale is
+// credited to its real artist(s), so a platform payee's share never lands on an
+// artist card. This static set is the FLOOR; resolvePassExcludeAddresses unions
+// the Patron collection's on-chain roles onto it. Matters because the pass
+// artist can be a MINORITY holder (e.g. 20%), so a slipped 80% payout would
+// steal the sale-count and book its share as artist earnings. Empty (unset-env)
+// entries are filtered so the set never contains ''.
 const PASS_PLATFORM_ADDRESSES: ReadonlySet<string> = new Set(
   [PLATFORM_FEE_RECIPIENT, CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET]
     .filter((a): a is string => typeof a === 'string' && a.length > 0)
     .map((a) => a.toLowerCase()),
 )
 
-// Cached union of the static set above with the Patron collection's own
-// non-artist roles — its on-chain default_admin, payout_recipient, AND creator
-// (the last resolves to the treasury for the Patron collection). default_admin +
-// payout mirror the Patron page; creator is an EXTRA the Patron page doesn't
-// exclude, kept because it's the treasury (never a minting artist) and dropping
-// it could leave a treasury-paid slice credited as an artist royalty. Sourced
-// from the inprocess /collection detail (what the collection page reads), TTL-
-// cached like the splitaddr cache — the roles are upstream-mutable, so bound the
-// staleness rather than pinning forever. Best-effort: any failure falls back to
-// the static set (== prior behavior) and self-heals next scan, so the resolved
-// set is always a SUPERSET of the static one and can never credit FEWER real
-// artists.
+// Cached union of the static floor with the Patron collection's on-chain
+// non-artist roles (default_admin, payout_recipient, creator — all treasury-
+// side). This is a SUPERSET of the Patron page's exclude set: it also excludes
+// OPERATOR and creator, both platform-side, so it never drops a real artist
+// (only a hypothetical split naming one would disagree with the page — latent).
+// Sourced from the inprocess /collection detail, TTL-cached like splitaddr since
+// the roles are upstream-mutable. Best-effort: any failure falls back to the
+// static floor and self-heals next scan.
 const PASS_EXCLUDE_KEY = 'kismetart:stats:pass-exclude'
 const PASS_EXCLUDE_TTL_S = 7 * 24 * 60 * 60
 const HEX40 = /^0x[0-9a-f]{40}$/
@@ -181,24 +168,15 @@ async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
   return extra.size > 0 ? new Set([...PASS_PLATFORM_ADDRESSES, ...extra]) : PASS_PLATFORM_ADDRESSES
 }
 
-// Cache-ONLY read of the pass-exclude set for the latency-sensitive credit path.
-// The hourly rebuild's resolvePassExcludeAddresses refreshes PASS_EXCLUDE_KEY
-// (with the inprocess fetch); creditListingRoyalty runs awaited on the sale-
-// confirmation PATCH, so it only READS that cache — never fetches — and a resale
-// credit can't block on an 8s upstream call. Unions the static floor with the
-// cached Patron roles, so in STEADY STATE it excludes the same addresses the
-// primary path does. Using the static set here was the leak this fixes: a pass
-// resale whose share went to the collection's on-chain payout_recipient (not in
-// the static floor) was mis-booked as a creator royalty on that wallet's card.
-//
-// COLD-CACHE CAVEAT: before the first post-deploy rebuild populates the key (or
-// after a ≥7-day inprocess outage lapses its TTL), this degrades to the static
-// floor, which lacks the dynamic payout_recipient. A pass resale IN that window
-// re-opens the same leak, and because the credit is claim-committed and the
-// royalty zsets are never rebuilt, that ONE fill does NOT self-heal — only the
-// SET self-heals, for FUTURE fills, once the next rebuild warms the cache. The
-// window is narrow (≤1h post-deploy, cache warm hourly thereafter); pre-warming
-// PASS_EXCLUDE_KEY at deploy would close it entirely. Never throws.
+// Cache-ONLY read of the pass-exclude set for the credit path: creditListing-
+// Royalty runs awaited on the sale PATCH, so it READS the key the hourly rebuild
+// refreshes but never fetches (no 8s upstream block on a fill). Fixes the leak
+// where the static-only set mis-booked a payout_recipient's resale share as a
+// creator royalty. COLD-CACHE CAVEAT: before the first post-deploy rebuild (or
+// after a >7-day TTL lapse) it degrades to the static floor, so a pass resale in
+// that narrow window can still leak — and since royalty zsets aren't rebuilt,
+// that one fill doesn't self-heal (only the SET does, for future fills). Never
+// throws.
 async function getCachedPassExclude(): Promise<ReadonlySet<string>> {
   try {
     const cached = await redis.get<string | string[] | null>(PASS_EXCLUDE_KEY)
@@ -1111,17 +1089,13 @@ export async function getPrimaryArtistTotals(): Promise<{ eth: number; usdc: num
   }
 }
 
-// Platform-wide PLATFORM secondary earnings — patron/pass resale royalties that
-// belong to the platform treasury, not a creator. On a Patron/Mint-Pass resale
-// the split's platform-payee share would otherwise be booked as "creator
-// royalty"; instead creditListingRoyalty ROUTES it here, incrementing this hash
-// inside the SAME atomic Lua — and under the SAME per-listing claim — as the
-// artist credit (see CREDIT_ROYALTY_LUA). So the treasury share and the creator
-// shares of one fill commit together or not at all (no separate eval whose
-// silent failure could strand the platform slice while the artist credit
-// sticks), and a retried PATCH counts once. That leaves the artist royalty
-// zsets — and therefore earnings.secondary — treasury-free. A HASH of eth/usdc
-// human-unit totals; read by getPlatformRoyaltyTotals.
+// Platform-treasury share of pass/Patron resale royalties (earnings.platform
+// secondary). creditListingRoyalty routes it here, incrementing this hash inside
+// the SAME atomic Lua and per-listing claim as the artist credit (see
+// CREDIT_ROYALTY_LUA) — so the treasury and creator slices of a fill commit
+// together, never a separate eval that could strand one, and a retry counts
+// once. Keeps the artist royalty zsets treasury-free. HASH of eth/usdc human
+// units; read by getPlatformRoyaltyTotals.
 const PLATFORM_ROYALTY_KEY = 'kismetart:stats:royalty-platform'
 
 /** Platform-treasury resale-royalty totals (patron collection royalties), or
@@ -1243,18 +1217,15 @@ export async function getDailyStats(): Promise<DailyStatPoint[]> {
 
 // ── Secondary-royalty credit ─────────────────────────────────────────────────
 
-// Atomic claim + ledger + platform-royalty + credit. SET NX takes the per-
-// listing claim; only when it wins do the ledger HSET, the optional platform-
-// treasury increment, and the per-member ZINCRBYs run — all inside one Lua
-// execution, so a transient failure leaves NOTHING (retryable) and a success
-// leaves everything. On a pass resale the treasury slice and the creator slices
-// of the SAME fill thus commit together, closing the window where a separate
-// platform-royalty eval could fail silently after the artist credit stuck.
+// Atomic claim + ledger + platform-royalty + credit in one Lua execution: SET NX
+// takes the per-listing claim, and only on a win do the ledger HSET, the optional
+// treasury increment, and the per-member ZINCRBYs run — so a transient failure
+// leaves NOTHING (retryable) and a success leaves everything, and a pass resale's
+// treasury + creator slices commit together.
 // KEYS: [claim, royaltyZset, ledgerHash, platformRoyaltyHash].
 // ARGV: [ledgerField, ledgerJson, platformCurrency, platformShare, updatedAt,
-//        member, amount, member, amount, ...]. platformShare '0' = no treasury
-// slice (the HINCRBYFLOAT is skipped). Returns 1 when claimed, 0 when already
-// claimed (retry / concurrent fill).
+//        member, amount, ...]. platformShare '0' skips the HINCRBYFLOAT.
+// Returns 1 when claimed, 0 when already claimed (retry / concurrent fill).
 const CREDIT_ROYALTY_LUA = `
 if not redis.call('SET', KEYS[1], '1', 'NX') then return 0 end
 redis.call('HSET', KEYS[3], ARGV[1], ARGV[2])
@@ -1356,22 +1327,17 @@ export async function creditListingRoyalty(args: {
       }
     }
 
-    // SECONDARY pass split — the mirror of the primary pass earnings path: on a
-    // Patron/Mint-Pass resale the treasury's royalty share is PLATFORM earnings,
-    // not creator royalty, so ROUTE it to the platform-royalty aggregate (patron
-    // collection royalties) and keep only the real artists in `credits` — leaving
-    // the artist royalty zsets, and therefore earnings.secondary, treasury-free.
-    // Pass-scoped ONLY (isPatronCollection): a legitimate ART split pays
-    // residencies, which art royalties must keep crediting (a creator-directed
-    // donation), so this never fires for art. A pass split naming no real artist
-    // (all platform payees) records the platform share and then credits no card.
+    // SECONDARY pass split: on a Patron/Mint-Pass resale the treasury's royalty
+    // share is PLATFORM earnings, so route it to the platform aggregate and keep
+    // only real artists in `credits` (leaving earnings.secondary treasury-free).
+    // Pass-scoped ONLY — an ART split's residencies share stays credited (a
+    // creator-directed donation). An all-platform split records the share, no card.
     let platformShare = 0
     const isPass = !!collection && isPatronCollection(collection)
     if (isPass) {
-      // Cache-only union of the static floor with the Patron collection's own
-      // on-chain payees — the SAME set the primary path excludes, so a resale
-      // whose slice goes to the dynamic payout_recipient is booked as platform,
-      // not leaked onto that wallet's card. Never fetches (see getCachedPassExclude).
+      // Same exclude set the primary path uses, read cache-only (never fetches,
+      // see getCachedPassExclude) so a resale slice to the dynamic
+      // payout_recipient is booked platform, not leaked to its card.
       const exclude = await getCachedPassExclude()
       platformShare = credits
         .filter((c) => exclude.has(c.member))
@@ -1468,19 +1434,14 @@ async function resolveRoyaltySplitCredits(
 
 // ── Reconcile backstop for event-driven credits ──────────────────────────────
 
-// The royalty credit and the resale-volume record run once per fill, on the
-// sale-confirmation PATCH, and — unlike the hourly rebuild's self-healing
-// absolute writes — are NEVER replayed. So if their Redis eval blips
-// transiently the figure is lost forever: the listing is already 'filled' (the
-// client won't retry, and a retry would 409), and nothing rebuilds these keys.
-//
-// This closes that gap with a small outbox: when a fill's credit/volume eval
-// hard-fails (NOT a duplicate — the NX claim wasn't taken, so a retry is safe),
-// the PATCH persists the retry args here, and the hourly cron drains the queue
-// through the SAME idempotent functions. Bounded: a poison entry is dropped
-// after PENDING_MAX_ATTEMPTS so the queue can't grow without limit. Best-effort
-// by nature — if the enqueue write ALSO fails (a TOTAL outage, not a single-call
-// blip) the figure is still lost, but the common transient case now heals.
+// Reconcile outbox for the two EVENT-DRIVEN stats — the royalty credit and the
+// resale-volume record — which run once per fill and, unlike the hourly
+// rebuild's self-healing absolute writes, are NEVER replayed. When a fill's eval
+// hard-fails (NOT a duplicate: the NX claim wasn't taken, so a retry is safe),
+// the PATCH persists the retry args here and the hourly cron drains them through
+// the SAME idempotent functions. Bounded — a poison entry is dropped after
+// PENDING_MAX_ATTEMPTS. Honest limit: if the enqueue ALSO fails (a total outage,
+// not a single-call blip) the figure is still lost.
 const PENDING_CREDITS_KEY = 'kismetart:stats:pending-credits'
 const PENDING_MAX_ATTEMPTS = 24 // ~1 day of hourly reconcile passes, then give up
 

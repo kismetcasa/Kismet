@@ -100,14 +100,11 @@ export function windowTrendSeries(
         metric === 'volume' ? p.volumeEth : metric === 'artist' ? p.artistEth : p.platformEth
       const usdc =
         metric === 'volume' ? p.volumeUsdc : metric === 'artist' ? p.artistUsdc : p.platformUsdc
-      // USD needs a price to value the (dominant) eth leg. A day whose price was
-      // unavailable is recorded ethUsd:0; valuing it would crater the CUMULATIVE
-      // line to the usdc leg alone — a false canyon that also drags the y-axis
-      // floor to ~0 and can explode the % delta if it's the window's first point.
-      // So DROP unpriced days from the USD series, mirroring the endpoint's
-      // honest-USD rule (hide the figure, never a silently usdc-only number).
-      // ETH keeps every day — the eth leg is always honest; the usdc leg simply
-      // isn't converted when the price is missing (a minor, bounded omission).
+      // USD needs a price to value the (dominant) eth leg. An unpriced day
+      // (ethUsd 0) would crater the CUMULATIVE line to the usdc leg — a false
+      // canyon that squashes the axis and can explode the % delta — so DROP it
+      // from USD (mirroring the endpoint hiding the figure). ETH keeps every day:
+      // its eth leg is always honest, the usdc leg just isn't converted.
       if (denom === 'usd') {
         return p.ethUsd > 0 ? { date: p.date, value: eth * p.ethUsd + usdc } : null
       }
@@ -117,15 +114,12 @@ export function windowTrendSeries(
 }
 
 /**
- * Build the SVG line + area `d` strings for a sparkline from plotted values,
- * in a `w`×`h` viewBox with `pad` vertical breathing room. Pure so the render
- * math is unit-tested (finiteness, the flat-series case) instead of living
- * untested inline in the component. Returns null for < 2 points (nothing to
- * draw). A FLAT series (all values equal — e.g. a metric still at 0) is pinned
- * to the BASELINE rather than divided by a zero range (which would be NaN) or
- * floated to mid-height (which reads as a nonzero steady value); a flat line on
- * the floor reads honestly as "nothing yet / no change". Inputs are assumed
- * finite (windowTrendSeries guarantees it); no value is ever NaN/Infinity out.
+ * Build the SVG line + area `d` strings for a sparkline, in a `w`×`h` viewBox
+ * with `pad` vertical breathing room. Pure so the render math (finiteness, the
+ * flat case) is unit-tested rather than inline in the component. Returns null
+ * for < 2 points. A FLAT series (all equal — e.g. a metric still at 0) pins to
+ * the BASELINE, avoiding both a /0 NaN and the "floating mid-height" misread.
+ * Inputs are finite (windowTrendSeries guarantees it), so output is never NaN.
  */
 export function buildSparkline(
   values: number[],
