@@ -1,12 +1,24 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 import { isAddress } from 'viem'
 import { shortAddress, type Split } from '@/lib/inprocess'
 import { MAX_SPLITS } from '@/lib/splits'
 import { RESIDENCIES_ADDRESS } from '@/lib/config'
+import { ProfileAvatar } from './ProfileAvatar'
+import { fetchCreatorProfile } from '@/lib/profileCache'
+
+// A recipient's resolved Kismet identity — display name (username / farcaster
+// / ENS, server-collapsed) and avatar. `name` is undefined when the address
+// has no Kismet profile (fetchCreatorProfile returns its shortAddress
+// fallback, which we treat as "no identity" so the row falls back to the raw
+// address the artist can verify).
+interface Identity {
+  name?: string
+  avatarUrl?: string
+}
 
 // The mint form's revenue-splits editor (extracted from MintForm, which is
 // its only host). Controlled: `splits` holds COLLABORATORS only — the creator
@@ -19,6 +31,12 @@ import { RESIDENCIES_ADDRESS } from '@/lib/config'
 // drift. Empty state shows a purpose line and nothing else — no percentages
 // until a collaborator exists; residencies stays on its toggle below the mint
 // button.
+//
+// Each row resolves the recipient's Kismet profile (pfp + display name) via
+// the shared LRU cache — the same call SplitsPanel makes on artwork pages, so
+// one cheap deduped GET per unique address. A recipient with no Kismet profile
+// shows their full address instead; every row shows the full address for
+// on-chain verification regardless.
 interface SplitsEditorProps {
   splits: Split[]
   onChange: (next: Split[]) => void
@@ -45,6 +63,32 @@ export function SplitsEditor({
   // edited + its transient buffer, committed on blur/Enter, reverted on Escape.
   const [editingAddr, setEditingAddr] = useState<string | null>(null)
   const [editBuffer, setEditBuffer] = useState('')
+
+  // Resolved profiles keyed by lowercased address (you-row + each collaborator).
+  const [profiles, setProfiles] = useState<Record<string, Identity>>({})
+  // Re-runs only when the SET of addresses changes (not on % edits), so a
+  // rename or reorder doesn't refetch. fetchCreatorProfile is LRU-cached +
+  // deduped, so even a re-run is a cache hit with no network.
+  const addrKey = [creatorAddress ?? '', ...splits.map((s) => s.address)].join(',').toLowerCase()
+  useEffect(() => {
+    const addrs = [creatorAddress, ...splits.map((s) => s.address)].filter(
+      (a): a is string => !!a,
+    )
+    let cancelled = false
+    for (const a of addrs) {
+      void fetchCreatorProfile(a).then(({ name, avatarUrl }) => {
+        if (cancelled) return
+        // fetchCreatorProfile returns shortAddress as `name` when unresolved;
+        // treat that as "no identity" so the row shows the full address.
+        const resolvedName = name && name !== shortAddress(a) ? name : undefined
+        setProfiles((prev) => ({ ...prev, [a.toLowerCase()]: { name: resolvedName, avatarUrl } }))
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addrKey])
 
   const typedPct = parseInt(input.pct, 10)
   // Live over-allocation state — surfaces BEFORE the click (the + disables,
@@ -143,18 +187,20 @@ export function SplitsEditor({
           {/* Derived "you" row — non-removable, absorbs every change. Shows
               your true take: 100 − collaborators − residencies, i.e. exactly
               what mints. */}
-          <li className="flex items-center justify-between bg-surface border border-line px-3 py-2">
-            <span className="text-xs font-mono text-ink truncate">
-              you{creatorAddress ? <span className="text-subtle"> {shortAddress(creatorAddress)}</span> : null}
-            </span>
-            <span className={`text-xs font-mono flex-shrink-0 ml-2 ${remainder === 0 ? 'text-subtle' : 'text-ink'}`}>
+          <li className="flex items-center justify-between bg-surface border border-line px-3 py-2 gap-2">
+            <RecipientIdentity
+              address={creatorAddress}
+              profile={creatorAddress ? profiles[creatorAddress.toLowerCase()] : undefined}
+              isYou
+            />
+            <span className={`text-xs font-mono flex-shrink-0 ${remainder === 0 ? 'text-subtle' : 'text-ink'}`}>
               {remainder}%
             </span>
           </li>
           {splits.map((s) => (
-            <li key={s.address} className="flex items-center justify-between bg-surface border border-line px-3 py-2">
-              <span className="text-xs font-mono text-dim truncate">{s.address}</span>
-              <div className="flex items-center gap-3 ml-2 flex-shrink-0">
+            <li key={s.address} className="flex items-center justify-between bg-surface border border-line px-3 py-2 gap-2">
+              <RecipientIdentity address={s.address} profile={profiles[s.address.toLowerCase()]} />
+              <div className="flex items-center gap-3 flex-shrink-0">
                 {editingAddr === s.address ? (
                   <input
                     type="number"
@@ -247,6 +293,49 @@ export function SplitsEditor({
           only {remainder}% left — lower the % or remove a recipient
         </p>
       )}
+    </div>
+  )
+}
+
+// The left cell of a recipient row. When the address has a Kismet profile
+// (display name and/or avatar) it shows pfp + name on top with the full
+// address beneath for verification; otherwise just the full address. The
+// creator's own row (`isYou`) always carries a "you" marker and, once
+// connected, resolves the creator's own identity the same way.
+function RecipientIdentity({
+  address,
+  profile,
+  isYou = false,
+}: {
+  address?: string
+  profile?: Identity
+  isYou?: boolean
+}) {
+  // Pre-connect creator row: no address to resolve or verify yet.
+  if (!address) {
+    return <span className="text-xs font-mono text-ink">you</span>
+  }
+  const hasIdentity = !!profile?.name || !!profile?.avatarUrl
+  // No Kismet identity (and not the you-row): the full address IS the row, so
+  // the artist can verify exactly who they're paying. break-all keeps a long
+  // hex string from overflowing the row on narrow screens.
+  if (!hasIdentity && !isYou) {
+    return <span className="text-xs font-mono text-dim break-all min-w-0">{address}</span>
+  }
+  // Primary label: the display name, else "you", else the short address (an
+  // avatar-only recipient). A "· you" suffix marks the creator's own row even
+  // when their profile name is shown.
+  const primary = profile?.name ?? (isYou ? 'you' : shortAddress(address))
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={22} />
+      <div className="flex flex-col min-w-0">
+        <span className="text-xs font-mono text-ink truncate">
+          {primary}
+          {isYou && profile?.name ? <span className="text-subtle"> · you</span> : null}
+        </span>
+        <span className="text-[10px] font-mono text-subtle break-all leading-tight">{address}</span>
+      </div>
     </div>
   )
 }
