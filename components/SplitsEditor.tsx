@@ -297,11 +297,12 @@ export function SplitsEditor({
   )
 }
 
-// The left cell of a recipient row. When the address has a Kismet profile
-// (display name and/or avatar) it shows pfp + name on top with the full
-// address beneath for verification; otherwise just the full address. The
-// creator's own row (`isYou`) always carries a "you" marker and, once
-// connected, resolves the creator's own identity the same way.
+// The left cell of a recipient row. Every recipient shows an avatar — their
+// Kismet pfp when they have one, otherwise the address-derived gradient
+// ProfileAvatar always paints. With a display name, the name sits on top and
+// the full address beneath for verification; with no display name, the full
+// address takes the name's place. The creator's own row (`isYou`) carries a
+// "· you" marker.
 function RecipientIdentity({
   address,
   profile,
@@ -315,27 +316,22 @@ function RecipientIdentity({
   if (!address) {
     return <span className="text-xs font-mono text-ink">you</span>
   }
-  const hasIdentity = !!profile?.name || !!profile?.avatarUrl
-  // No Kismet identity (and not the you-row): the full address IS the row, so
-  // the artist can verify exactly who they're paying. break-all keeps a long
-  // hex string from overflowing the row on narrow screens.
-  if (!hasIdentity && !isYou) {
-    return <span className="text-xs font-mono text-dim break-all min-w-0">{address}</span>
-  }
-  // Primary label: the display name, else "you", else the short address (an
-  // avatar-only recipient). A "· you" suffix marks the creator's own row even
-  // when their profile name is shown.
-  const primary = profile?.name ?? (isYou ? 'you' : shortAddress(address))
+  const name = profile?.name
+  const youTag = isYou ? <span className="text-subtle"> · you</span> : null
   return (
     <div className="flex items-center gap-2 min-w-0">
       <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={22} />
-      <div className="flex flex-col min-w-0">
-        <span className="text-xs font-mono text-ink truncate">
-          {primary}
-          {isYou && profile?.name ? <span className="text-subtle"> · you</span> : null}
-        </span>
-        <span className="text-[10px] font-mono text-subtle break-all leading-tight">{address}</span>
-      </div>
+      {name ? (
+        // Named: name on top, full address beneath to verify.
+        <div className="flex flex-col min-w-0">
+          <span className="text-xs font-mono text-ink truncate">{name}{youTag}</span>
+          <span className="text-[10px] font-mono text-subtle break-all leading-tight">{address}</span>
+        </div>
+      ) : (
+        // No display name: the address stands in for it. break-all keeps a long
+        // hex string from overflowing the row on narrow screens.
+        <span className="text-xs font-mono text-dim break-all min-w-0">{address}{youTag}</span>
+      )}
     </div>
   )
 }
