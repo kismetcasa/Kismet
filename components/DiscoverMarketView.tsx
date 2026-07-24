@@ -269,6 +269,9 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
   // The headline alternates between three all-time metrics: tapping the LABEL
   // cycles the metric, tapping the NUMBER flips USD ↔ ETH. Both reset per open.
   const [metric, setMetric] = useState<StatsMetric>('volume')
+  // Hidden toggle: tapping the brand mark hides/shows the trend chart.
+  // Undiscoverable by design and unpersisted (resets to shown per open).
+  const [showTrend, setShowTrend] = useState(true)
   // Daily trend series for the chart — lazy-loaded once when the modal opens
   // (kept OFF the hot /api/stats/platform payload), so it costs one request
   // only when someone actually views stats. null = loading; [] = none yet.
@@ -311,14 +314,14 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
   // is hidden today, and un-counting it would misstate market history.
   const rows: Array<[string, string]> = [
     ['artists', count(stats?.artists)],
-    ['artworks minted', count(stats?.mints)],
+    ['artworks', count(stats?.mints)],
     // Distinct paying collectors on art sales (sales.collectors) — art-scoped
     // like every other counter here, so pass buyers don't inflate it.
     ['collectors', count(stats?.collectors)],
-    // "artworks sold" counts sold edition UNITS (each copy in a collector's
-    // wallet) — deliberately not distinct works, which is what "artworks
-    // minted" above already counts.
-    ['artworks sold', count(stats?.editionsSold)],
+    // "editions sold" counts sold edition UNITS (each copy in a collector's
+    // wallet) — deliberately not distinct works, which is what "artworks"
+    // above already counts.
+    ['editions sold', count(stats?.editionsSold)],
   ]
   // Portaled to <body>: this mounts inside the sticky header, whose z-40 +
   // position (sm+) makes it a stacking context — a fixed overlay declared
@@ -374,25 +377,36 @@ function StatsModal({ stats, onClose }: { stats: PlatformStats | null; onClose: 
           >
             {headline}
           </button>
-          {/* 40px is deliberate cache alignment, not just prominence: the
+          {/* The brand mark doubles as a hidden toggle for the trend chart
+              below — tap to hide/show it. No hover affordance (undiscoverable
+              by design); unpersisted, resetting to shown on reopen.
+              40px is deliberate cache alignment, not just prominence: the
               optimizer rounds 40px to the same srcset variants (w=48 / w=96)
               Nav's 36px logo already loaded, so the mark paints instantly
               from cache — at 32px the retina candidate was w=64, a variant
               nothing had fetched, which popped in on modal open. priority
               skips the lazy-load observer tick for the same reason. */}
-          <Image
-            src="/logo.png"
-            alt=""
-            width={40}
-            height={40}
-            className="object-contain"
-            aria-hidden
-            priority
-          />
+          <button
+            type="button"
+            onClick={() => setShowTrend((v) => !v)}
+            aria-label={showTrend ? 'Hide the trend chart' : 'Show the trend chart'}
+            className="block shrink-0"
+          >
+            <Image
+              src="/logo.png"
+              alt=""
+              width={40}
+              height={40}
+              className="object-contain"
+              aria-hidden
+              priority
+            />
+          </button>
         </div>
         <p className="mt-1 font-mono text-[10px] text-dim">primary + secondary</p>
-        {/* Trend of the SAME headline metric + denomination selected above. */}
-        <TrendChart series={trend} metric={metric} denom={denom} />
+        {/* Trend of the SAME headline metric + denomination selected above.
+            Hidden when the brand-mark toggle is off. */}
+        {showTrend && <TrendChart series={trend} metric={metric} denom={denom} />}
         <dl className="mt-5 space-y-2.5 border-t border-line pt-4">
           {rows.map(([label, value]) => (
             <div key={label} className="flex items-baseline justify-between gap-4">
@@ -573,7 +587,7 @@ export function DiscoverMarketView({
             : null
         setStats({
           // Visible-scoped (hidden artworks excluded) — the header glance line
-          // and the dialog's "artworks minted" must match what feeds show.
+          // and the dialog's "artworks" counter must match what feeds show.
           // Null-guarded per the deploy-window rule: a pre-field snapshot
           // renders '—' rather than silently falling back to the hidden-
           // inclusive total.
