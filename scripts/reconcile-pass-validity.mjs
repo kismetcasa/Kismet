@@ -220,9 +220,23 @@ async function main() {
   let mints
   let kismetCollections = null
   if (ONLY_ADDRESS) {
+    // "Kismet collections" for the collected backfill = the MASTER tracked set
+    // (kismetart:collections), the exact set the timeline fan-out uses — NOT
+    // kismetart:created-collections, which is only the curated Create-Collection
+    // subset. The master set includes every registered contract AND the shared
+    // PLATFORM_COLLECTION where all standalone mints land, so it captures the
+    // artworks a buyer collected outside a curated collection — precisely the
+    // "can't see collected" symptom. Filtering to Kismet collections (rather
+    // than every 1155/721 the wallet ever received) keeps non-Kismet NFTs out
+    // of the collected zset, whose members drive the Collected tab's fan-out.
+    const platformCollection = (
+      process.env.NEXT_PUBLIC_PLATFORM_COLLECTION ||
+      '0x349D3DA472BDD2FBeebf8e0bBAF4220160A62526'
+    ).toLowerCase()
     kismetCollections = new Set(
-      ((await redisCmd(['SMEMBERS', 'kismetart:created-collections'])) || []).map((s) => String(s).toLowerCase()),
+      ((await redisCmd(['SMEMBERS', 'kismetart:collections'])) || []).map((s) => String(s).toLowerCase()),
     )
+    kismetCollections.add(platformCollection)
     kismetCollections.add(passCollection)
     const transfers = await getAllTransfers({ toAddress: ONLY_ADDRESS })
     mints = mintRecords(transfers, { onlyTo: ONLY_ADDRESS, onlyCollections: kismetCollections })
