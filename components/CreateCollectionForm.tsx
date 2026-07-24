@@ -401,6 +401,11 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
         description: description.trim() || undefined,
         image: deployedImageUri,
         artist: address,
+        // Explicit intent: a deliberate Create Collection deploy, so it
+        // promotes into the curated set. Required — the server now fails
+        // CLOSED, so an omitted source would land this in the master set only
+        // and it would never surface as a collection.
+        source: 'create-form',
         coverTokenId: mintCover ? '1' : undefined,
         kismet_thumbhash: coverThumbhash,
       })
