@@ -3,10 +3,12 @@ import crypto from 'node:crypto'
 import { errorResponse } from '@/lib/apiResponse'
 import { getGateConfig } from '@/lib/gate'
 import { processTransfer } from '@/lib/pass-validity'
+import { recordCollected } from '@/lib/collected'
 
 export const runtime = 'nodejs'
 
 const SIGNING_KEY = process.env.ALCHEMY_WEBHOOK_SIGNING_KEY ?? ''
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 interface ActivityErc1155Metadata {
   tokenId?: string
@@ -151,6 +153,20 @@ export async function POST(req: NextRequest) {
         logIndex,
         subIndex,
       })
+
+      // Collected-list backstop for a Pass MINT, mirroring /api/collect's
+      // recordCollected. Fix A already backstops the validity credit from this
+      // same event; without this, a mint whose client-side /api/collect never
+      // ran (hung receipt wait / dropped POST) earns validity via the webhook
+      // but STILL never appears in the buyer's Collected tab — symptom 2 of the
+      // incident. Restricted to mints (from == 0x0): a secondary/P2P transfer is
+      // not a "collect" in the app's model, and an off-platform transfer must
+      // never populate the collected list. recordCollected is an idempotent
+      // ZADD, so the normal path (this AND /api/collect both fire) just updates
+      // the member's score. Best-effort — a failure here never fails the webhook.
+      if (from === ZERO_ADDRESS && to) {
+        await recordCollected(to, passContract, t.tokenId).catch(() => {})
+      }
     }
   }
 

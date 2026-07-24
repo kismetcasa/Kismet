@@ -321,12 +321,15 @@ async function getTaintedTokenIds(collection: string): Promise<Set<string>> {
  *     validity). Unconditional — applies to OpenSea, Seaport direct,
  *     P2P safeTransferFrom, burns. The platform-flag only affects the
  *     to-credit decision below, never the from-decrement.
- *  2. When `(to, tokenId)` is a flagged platform acquisition of this tx (Kismet
- *     mint / collect / airdrop / secondary fill) credit `to` via
- *     creditValidityOnce. Per-(recipient, tokenId), so a transfer co-bundled
- *     into the tx — to an unflagged wallet, OR of a different tokenId to a
- *     flagged wallet — is NOT credited. Direct-credit paths converge through
- *     the same idempotency key.
+ *  2. Credit `to` via creditValidityOnce when the transfer is a MINT
+ *     (from == 0x0 — the genesis of the Pass, always a valid acquisition, so
+ *     it needs no platform flag) OR when `(to, tokenId)` is a flagged platform
+ *     acquisition of this tx (Kismet collect / airdrop / secondary fill). The
+ *     mint arm makes the webhook self-sufficient when the client's /api/collect
+ *     never runs (dropped POST, hung receipt wait); the flag arm is
+ *     per-(recipient, tokenId), so a transfer co-bundled into the tx — to an
+ *     unflagged wallet, OR of a different tokenId to a flagged wallet — is NOT
+ *     credited. Direct-credit paths converge through the same idempotency key.
  *  3. OFF-PLATFORM non-mint transfer permanently taints the tokenId.
  *     A tainted tokenId can never confer validity again, even via a
  *     subsequent Kismet sale — creditValidityOnce refuses credit for
@@ -411,7 +414,27 @@ export async function processTransfer(params: {
       // a transient Redis failure and the next off-platform event.
     }
   }
-  // Credit only on platform-flagged txs. listedOnKismet is intentionally
+  // Credit when the acquisition is a MINT or a platform-verified transfer.
+  //
+  // MINT (isMint, from == 0x0): a Transfer from the zero address is the
+  // genesis of the Pass — a definitionally valid acquisition per the "valid
+  // pass" definition (mint / airdrop / Kismet secondary). There is no prior
+  // owner to launder from, so a mint needs no platform flag. Crediting mints
+  // unconditionally here makes the webhook SELF-SUFFICIENT: the client's
+  // /api/collect (which both sets the platform flag via recordPlatformTx AND
+  // direct-credits) can fail or never run — e.g. a desktop-browser mint whose
+  // post-mint waitForTransactionReceipt hangs or whose /api/collect POST is
+  // dropped on tab-close — and the buyer STILL earns validity from the
+  // on-chain event alone. This closes the permanent-loss gap where a
+  // minted-but-unflagged Pass credited no one (the webhook saw the mint,
+  // claimed its processed-key, and — with the old `if (platform)` — did
+  // nothing, losing the credit forever). creditValidityOnce shares the same
+  // keyCredited as /api/collect's synchronous credit, so the normal path
+  // (both fire) never double-credits; its taint check still refuses a mint of
+  // a previously-tainted tokenId, and its blacklist check still applies.
+  //
+  // PLATFORM (non-mint): a Kismet collect / airdrop / secondary fill, proven
+  // by the per-(recipient, tokenId) flag. listedOnKismet is intentionally
   // excluded from the credit condition: the listing PATCH handler calls
   // creditValidityOnce synchronously before the response (primary credit),
   // and recordPlatformTx in after() ensures the webhook converges via the
@@ -420,7 +443,7 @@ export async function processTransfer(params: {
   // transfer it off-platform to an accomplice; the webhook would see
   // listedOnKismet=true, skip taint, and credit the accomplice for free.
   // The flag's sole remaining job is taint prevention during the race window.
-  if (platform) {
+  if (platform || isMint) {
     await creditValidityOnce({ collection, address: to, txHash, tokenId, amount })
   }
 }

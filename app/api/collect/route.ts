@@ -166,6 +166,18 @@ export async function POST(req: NextRequest) {
 
   const verified = await verifyMintOnChain(txHash as Hex, collectionLower, tokenId, account)
   if (!verified) {
+    // Loud trace for what was previously a silent 403. The client POSTs only
+    // AFTER its own waitForTransactionReceipt, so a rejection here almost
+    // always means the server's RPC hasn't indexed the tx yet (lag) — the
+    // client now retries a few times to absorb that. A persistent failure is a
+    // genuinely lost record (collected list, trending, Pass validity) and the
+    // reconciliation script's job; without this log it left no trace at all.
+    console.warn('[collect] mint verification failed', {
+      txHash,
+      collection: collectionLower,
+      tokenId,
+      account,
+    })
     return errorResponse(403, 'Mint not verified on-chain')
   }
 

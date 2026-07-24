@@ -7,7 +7,7 @@
 //
 // Run: node --experimental-strip-types scripts/verify-mint.ts
 
-import { roundToIntegerAllocations, computeFinalSplits, type Split } from '../lib/splitsMath.ts'
+import { computeFinalSplits, type Split } from '../lib/splitsMath.ts'
 import { buildMintIntent, MINT_INTENT_TYPES, type MintBody } from '../lib/intent.ts'
 
 let failures = 0
@@ -29,63 +29,60 @@ const total = (xs: number[]): number => xs.reduce((a, b) => a + b, 0)
 const pcts = (s: Split[]): number[] => s.map((x) => x.percentAllocation)
 const sortedAsc = (s: Split[]): boolean =>
   s.every((x, i) => i === 0 || s[i - 1].address.toLowerCase() <= x.address.toLowerCase())
+const byAddr = (s: Split[] | undefined, a: string): number | undefined =>
+  s?.find((x) => x.address.toLowerCase() === a.toLowerCase())?.percentAllocation
 
-// ── 1a. roundToIntegerAllocations: integers, each >= 1, summing to target ──
-const roundCases: Array<{ v: number[]; t: number }> = [
-  { v: [80, 20], t: 100 },
-  { v: [47.5, 47.5], t: 95 }, // the literal 47.5 decimals that reverted on-chain
-  { v: [33.33, 33.33, 33.34], t: 100 },
-  { v: [99, 1], t: 100 },
-  { v: [0.5, 0.5, 94], t: 95 }, // skewed: tiny + large
-  { v: [50, 50], t: 100 },
-]
-for (const { v, t } of roundCases) {
-  const out = roundToIntegerAllocations(v, t)
-  const tag = `${JSON.stringify(v)}->${t}`
-  check(`round ${tag}: integers`, isInts(out), JSON.stringify(out))
-  check(`round ${tag}: sum==${t}`, total(out) === t, `got ${total(out)}`)
-  check(`round ${tag}: all>=1`, out.every((x) => x >= 1), JSON.stringify(out))
-}
-
-// ── 1b. computeFinalSplits: every path emits integers summing to EXACTLY 100 ──
+// ── 1. computeFinalSplits (subtraction model) ──────────────────────────────
+// Collaborators receive EXACTLY the percent typed; residencies (when on) comes
+// out of the CREATOR's share; the creator receives the remainder. Every path
+// emits whole percents summing to EXACTLY 100 with no rounding — so the mint
+// form's rows are byte-for-byte what mints. These pins lock that contract:
+// a change would silently re-route real payouts.
 const c2: Split[] = [{ address: A, percentAllocation: 80 }, { address: B, percentAllocation: 20 }]
-const c5050: Split[] = [{ address: A, percentAllocation: 50 }, { address: B, percentAllocation: 50 }]
 
-check('finalSplits: residencies off + 1 custom -> undefined',
+// No collaborators, residencies off → creator keeps 100% → payoutRecipient path.
+check('finalSplits: no collaborators + residencies off -> undefined',
+  computeFinalSplits([], false, 5, CREATOR, RES) === undefined)
+
+// Lone collaborator at 100%, residencies off → <2 recipients → undefined
+// (the form blocks this state; the pure fn just declines to build a 1-way split).
+check('finalSplits: lone collaborator 100% + off -> undefined',
   computeFinalSplits([{ address: A, percentAllocation: 100 }], false, 5, CREATOR, RES) === undefined)
 
+// Two collaborators summing to 100, residencies off → give-it-all-away: exactly
+// those two, creator absent, integers/sum100/sorted.
 const off2 = computeFinalSplits(c2, false, 5, CREATOR, RES)
-check('finalSplits: off+2 integers/sum100/sorted',
-  !!off2 && isInts(pcts(off2)) && total(pcts(off2)) === 100 && sortedAsc(off2), JSON.stringify(off2))
+check('finalSplits: off + collaborators==100 -> those two, creator absent, sum100/sorted',
+  !!off2 && off2.length === 2 && byAddr(off2, A) === 80 && byAddr(off2, B) === 20 &&
+  isInts(pcts(off2)) && total(pcts(off2)) === 100 && sortedAsc(off2), JSON.stringify(off2))
 
+// No collaborators, residencies on → [creator 100−p, residencies p].
 const on0 = computeFinalSplits([], true, 5, CREATOR, RES)
-check('finalSplits: on+0 -> [creator 95, residencies 5], sum100',
-  !!on0 && total(pcts(on0)) === 100 && on0.some((s) => s.address.toLowerCase() === RES && s.percentAllocation === 5),
+check('finalSplits: no collaborators + residencies on -> creator 95 / residencies 5',
+  byAddr(on0, CREATOR) === 95 && byAddr(on0, RES) === 5 && !!on0 && total(pcts(on0)) === 100,
   JSON.stringify(on0))
 
-const on2 = computeFinalSplits(c5050, true, 5, CREATOR, RES) // the 50/50 x 0.95 = 47.5 path
-check('finalSplits: on+2 (47.5 guard) integers/sum100/sorted',
-  !!on2 && isInts(pcts(on2)) && total(pcts(on2)) === 100 && sortedAsc(on2), JSON.stringify(on2))
-check('finalSplits: on+2 keeps residencies = 5%',
-  !!on2 && on2.some((s) => s.address.toLowerCase() === RES && s.percentAllocation === 5))
+// THE headline case: one collaborator at 20%, residencies 5% → collaborator
+// keeps EXACTLY 20, residencies 5, creator 75 (not 76 — no scaling). This is
+// the "show 75%" the you-row displays.
+const one20 = computeFinalSplits([{ address: A, percentAllocation: 20 }], true, 5, CREATOR, RES)
+check('finalSplits: [A 20] + res5 -> A 20 / you 75 / res 5 (collaborator exact, no scaling)',
+  byAddr(one20, A) === 20 && byAddr(one20, CREATOR) === 75 && byAddr(one20, RES) === 5 &&
+  !!one20 && total(pcts(one20)) === 100 && sortedAsc(one20), JSON.stringify(one20))
 
-// ── 1c. UI absorb-contract pins — the mint form's SplitsEditor composes
-// [custom rows + derived creator remainder] and renders these EXACT integers
-// as its "mints as" preview, so the rounding tie-break order is load-bearing
-// display behavior, not math trivia. Pinned so a rounding-order change goes
-// red here instead of silently re-ordering artists' payouts vs the preview.
-const byAddr = (s: Split[] | undefined, a: string): number | undefined =>
-  s?.find((x) => x.address.toLowerCase() === a)?.percentAllocation
-const absorb2080 = computeFinalSplits(
-  [{ address: A, percentAllocation: 20 }, { address: CREATOR, percentAllocation: 80 }],
-  true, 5, CREATOR, RES)
-check('finalSplits pin: [A 20, creator 80] + res5 -> A 19 / creator 76 / res 5',
-  byAddr(absorb2080, A) === 19 && byAddr(absorb2080, CREATOR) === 76 && byAddr(absorb2080, RES) === 5,
-  JSON.stringify(absorb2080))
-const pin5050 = computeFinalSplits(c5050, true, 5, CREATOR, RES)
-check('finalSplits pin: [A 50, B 50] + res5 -> A 47 / B 48 / res 5 (later-added gets the point)',
-  byAddr(pin5050, A) === 47 && byAddr(pin5050, B) === 48 && byAddr(pin5050, RES) === 5,
-  JSON.stringify(pin5050))
+// Two collaborators + residencies: both kept exact, creator absorbs the cut.
+const two = computeFinalSplits(
+  [{ address: A, percentAllocation: 50 }, { address: B, percentAllocation: 40 }], true, 5, CREATOR, RES)
+check('finalSplits: [A 50, B 40] + res5 -> A 50 / B 40 / you 5 / res 5',
+  byAddr(two, A) === 50 && byAddr(two, B) === 40 && byAddr(two, CREATOR) === 5 && byAddr(two, RES) === 5 &&
+  !!two && total(pcts(two)) === 100 && sortedAsc(two), JSON.stringify(two))
+
+// Collaborators claim everything below residencies → creator omitted (0 share),
+// array is collaborator + residencies, still sums to 100.
+const give = computeFinalSplits([{ address: A, percentAllocation: 95 }], true, 5, CREATOR, RES)
+check('finalSplits: [A 95] + res5 -> A 95 / res 5, creator omitted, sum100',
+  byAddr(give, A) === 95 && byAddr(give, RES) === 5 && byAddr(give, CREATOR) === undefined &&
+  !!give && give.length === 2 && total(pcts(give)) === 100, JSON.stringify(give))
 
 // ── 2. mint-intent message must carry EXACTLY the EIP-712 schema fields ──
 const body: MintBody = {

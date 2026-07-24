@@ -1,39 +1,54 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { Plus, Trash2 } from 'lucide-react'
 import { isAddress } from 'viem'
 import { shortAddress, type Split } from '@/lib/inprocess'
 import { MAX_SPLITS } from '@/lib/splits'
 import { RESIDENCIES_ADDRESS } from '@/lib/config'
+import { ProfileAvatar } from './ProfileAvatar'
+import { fetchCreatorProfile } from '@/lib/profileCache'
+
+// A recipient's resolved Kismet identity — display name (username / farcaster
+// / ENS, server-collapsed) and avatar. `name` is undefined when the address
+// has no Kismet profile (fetchCreatorProfile returns its shortAddress
+// fallback, which we treat as "no identity" so the row falls back to the raw
+// address the artist can verify).
+interface Identity {
+  name?: string
+  avatarUrl?: string
+}
 
 // The mint form's revenue-splits editor (extracted from MintForm, which is
-// its only host). Controlled: `splits` holds CUSTOM recipients only — the
-// creator is never stored. Their share is the derived remainder, rendered as
-// a permanent non-removable "you" row that auto-absorbs every add/edit/remove,
-// so a total ≠ 100 is unrepresentable here (MintForm keeps submit-time
-// backstops for state drift). Empty state shows a purpose line and nothing
-// else — no percentages until a collaborator exists; the residencies cut
-// surfaces through the mechanic + "mints as" lines the moment rows appear
-// (and via the toggle below the mint button, which stays where it is).
+// its only host). Controlled: `splits` holds COLLABORATORS only — the creator
+// is never stored. Collaborators receive the exact percent typed; the
+// residencies donation (when on) comes out of the creator's share; the creator
+// receives the remainder, shown as a permanent non-removable "you" row that
+// already nets out residencies. Because the model is subtraction (no scaling),
+// the rows are byte-for-byte what mints — no preview line needed. A total ≠ 100
+// is unrepresentable here; MintForm keeps submit-time backstops for state
+// drift. Empty state shows a purpose line and nothing else — no percentages
+// until a collaborator exists; residencies stays on its toggle below the mint
+// button.
+//
+// Each row resolves the recipient's Kismet profile (pfp + display name) via
+// the shared LRU cache — the same call SplitsPanel makes on artwork pages, so
+// one cheap deduped GET per unique address. A recipient with no Kismet profile
+// shows their full address instead; every row shows the full address for
+// on-chain verification regardless.
 interface SplitsEditorProps {
   splits: Split[]
   onChange: (next: Split[]) => void
   /** Connected wallet; undefined pre-connect (you-row shows a bare "you"). */
   creatorAddress?: string
   residenciesEnabled: boolean
-  residenciesPercent: number
-  residenciesOverCap: boolean
-  /** 100 − sum of custom rows — the derived "you" share (from MintForm). */
-  remainder: number
   /**
-   * computeFinalSplits output when the final integers can differ from the
-   * rows (residencies on + rows present + connected + not over-cap), else
-   * null. Composed in MintForm from the SAME array the payload uses, so the
-   * preview cannot drift from what actually mints.
+   * The derived "you" share: 100 − collaborators − residencies cut (from
+   * MintForm). Drives the you-row, auto-absorb, over-allocation, and edit
+   * clamps — all measured against what's left for the creator.
    */
-  preview: Split[] | null
+  remainder: number
 }
 
 export function SplitsEditor({
@@ -41,10 +56,7 @@ export function SplitsEditor({
   onChange,
   creatorAddress,
   residenciesEnabled,
-  residenciesPercent,
-  residenciesOverCap,
   remainder,
-  preview,
 }: SplitsEditorProps) {
   const [input, setInput] = useState({ address: '', pct: '' })
   // Inline % edit (same idiom as MintForm's residencies %): row address being
@@ -52,15 +64,43 @@ export function SplitsEditor({
   const [editingAddr, setEditingAddr] = useState<string | null>(null)
   const [editBuffer, setEditBuffer] = useState('')
 
+  // Resolved profiles keyed by lowercased address (you-row + each collaborator).
+  const [profiles, setProfiles] = useState<Record<string, Identity>>({})
+  // Re-runs only when the SET of addresses changes (not on % edits), so a
+  // rename or reorder doesn't refetch. fetchCreatorProfile is LRU-cached +
+  // deduped, so even a re-run is a cache hit with no network.
+  const addrKey = [creatorAddress ?? '', ...splits.map((s) => s.address)].join(',').toLowerCase()
+  useEffect(() => {
+    const addrs = [creatorAddress, ...splits.map((s) => s.address)].filter(
+      (a): a is string => !!a,
+    )
+    let cancelled = false
+    for (const a of addrs) {
+      void fetchCreatorProfile(a).then(({ name, avatarUrl }) => {
+        if (cancelled) return
+        // fetchCreatorProfile returns shortAddress as `name` when unresolved;
+        // treat that as "no identity" so the row shows the full address.
+        const resolvedName = name && name !== shortAddress(a) ? name : undefined
+        setProfiles((prev) => ({ ...prev, [a.toLowerCase()]: { name: resolvedName, avatarUrl } }))
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addrKey])
+
   const typedPct = parseInt(input.pct, 10)
   // Live over-allocation state — surfaces BEFORE the click (the + disables,
   // hint below explains) instead of a surprise toast. Rows-only: with no rows
-  // the remainder is 100 and the 1–100 add validation already covers it.
+  // the remainder is what's left for you and the 1–100 add validation covers it.
   const overAlloc = splits.length > 0 && Number.isFinite(typedPct) && typedPct > remainder
-  // The one editor state with no valid payload: a lone recipient holding all
-  // 100 (computeFinalSplits' residencies branch would silently DROP them, and
-  // with residencies off a 1-recipient split can't exist on-chain).
-  const soleFull = splits.length === 1 && remainder === 0
+  // The one editor state with no valid payload: a lone collaborator taking all
+  // 100 with residencies OFF (a 1-recipient split can't exist on-chain, and
+  // computeFinalSplits returns undefined → 100% would misroute to the creator).
+  // With residencies ON, the lone collaborator pairs with the residencies
+  // recipient into a valid 2-entry split, so it's allowed.
+  const soleFull = splits.length === 1 && remainder === 0 && !residenciesEnabled
 
   function addSplit() {
     const addr = input.address.trim()
@@ -128,24 +168,6 @@ export function SplitsEditor({
     onChange(splits.map((s) => (s.address === addr ? { ...s, percentAllocation: clamped } : s)))
   }
 
-  // "mints as" entries in reading order (you → rows as added → residencies),
-  // values looked up from the computed array. On-chain order is address-
-  // sorted; this order optimizes reading, the values are exact.
-  const previewEntries: Array<{ label: string; pct: number }> = []
-  if (preview) {
-    const byAddr = new Map(preview.map((p) => [p.address.toLowerCase(), p.percentAllocation]))
-    if (creatorAddress) {
-      const mine = byAddr.get(creatorAddress.toLowerCase())
-      if (mine !== undefined) previewEntries.push({ label: 'you', pct: mine })
-    }
-    for (const s of splits) {
-      const pct = byAddr.get(s.address.toLowerCase())
-      if (pct !== undefined) previewEntries.push({ label: shortAddress(s.address), pct })
-    }
-    const res = byAddr.get(RESIDENCIES_ADDRESS.toLowerCase())
-    if (res !== undefined) previewEntries.push({ label: 'residencies', pct: res })
-  }
-
   return (
     <div>
       <label className="block text-xs font-mono text-dim uppercase tracking-wider mb-1">
@@ -163,20 +185,22 @@ export function SplitsEditor({
       {splits.length > 0 && (
         <ul className="flex flex-col gap-1 mb-2">
           {/* Derived "you" row — non-removable, absorbs every change. Shows
-              the pre-cut share (the editing currency); the mints-as line
-              below carries the post-residencies truth. */}
-          <li className="flex items-center justify-between bg-surface border border-line px-3 py-2">
-            <span className="text-xs font-mono text-ink truncate">
-              you{creatorAddress ? <span className="text-subtle"> {shortAddress(creatorAddress)}</span> : null}
-            </span>
-            <span className={`text-xs font-mono flex-shrink-0 ml-2 ${remainder === 0 ? 'text-subtle' : 'text-ink'}`}>
+              your true take: 100 − collaborators − residencies, i.e. exactly
+              what mints. */}
+          <li className="flex items-center justify-between bg-surface border border-line px-3 py-2 gap-2">
+            <RecipientIdentity
+              address={creatorAddress}
+              profile={creatorAddress ? profiles[creatorAddress.toLowerCase()] : undefined}
+              isYou
+            />
+            <span className={`text-xs font-mono flex-shrink-0 ${remainder === 0 ? 'text-subtle' : 'text-ink'}`}>
               {remainder}%
             </span>
           </li>
           {splits.map((s) => (
-            <li key={s.address} className="flex items-center justify-between bg-surface border border-line px-3 py-2">
-              <span className="text-xs font-mono text-dim truncate">{s.address}</span>
-              <div className="flex items-center gap-3 ml-2 flex-shrink-0">
+            <li key={s.address} className="flex items-center justify-between bg-surface border border-line px-3 py-2 gap-2">
+              <RecipientIdentity address={s.address} profile={profiles[s.address.toLowerCase()]} />
+              <div className="flex items-center gap-3 flex-shrink-0">
                 {editingAddr === s.address ? (
                   <input
                     type="number"
@@ -228,7 +252,7 @@ export function SplitsEditor({
         </p>
       ) : remainder === 0 && splits.length >= 2 ? (
         <p className="text-xs font-mono text-muted mb-2">
-          you receive 0% — all revenue splits between the recipients above
+          you receive 0% — all proceeds go to the recipients above
         </p>
       ) : null}
 
@@ -269,31 +293,45 @@ export function SplitsEditor({
           only {remainder}% left — lower the % or remove a recipient
         </p>
       )}
+    </div>
+  )
+}
 
-      {/* Residencies echo — the toggle itself stays below the mint button
-          (settled product decision, commit 2910e74); these lines make its
-          effect visible where splits are edited. */}
-      {residenciesEnabled && splits.length > 0 && (
-        <p className="text-xs font-mono text-muted">
-          residencies takes {residenciesPercent}% off the top — shares scale to the
-          remaining {100 - residenciesPercent}%, in whole percents
-        </p>
+// The left cell of a recipient row. Every recipient shows an avatar — their
+// Kismet pfp when they have one, otherwise the address-derived gradient
+// ProfileAvatar always paints. With a display name, the name sits on top and
+// the full address beneath for verification; with no display name, the full
+// address takes the name's place. The creator's own row (`isYou`) carries a
+// "· you" marker.
+function RecipientIdentity({
+  address,
+  profile,
+  isYou = false,
+}: {
+  address?: string
+  profile?: Identity
+  isYou?: boolean
+}) {
+  // Pre-connect creator row: no address to resolve or verify yet.
+  if (!address) {
+    return <span className="text-xs font-mono text-ink">you</span>
+  }
+  const name = profile?.name
+  const youTag = isYou ? <span className="text-subtle"> · you</span> : null
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <ProfileAvatar address={address} avatarUrl={profile?.avatarUrl} size={22} />
+      {name ? (
+        // Named: name on top, full address beneath to verify.
+        <div className="flex flex-col min-w-0">
+          <span className="text-xs font-mono text-ink truncate">{name}{youTag}</span>
+          <span className="text-[10px] font-mono text-subtle break-all leading-tight">{address}</span>
+        </div>
+      ) : (
+        // No display name: the address stands in for it. break-all keeps a long
+        // hex string from overflowing the row on narrow screens.
+        <span className="text-xs font-mono text-dim break-all min-w-0">{address}{youTag}</span>
       )}
-      {previewEntries.length > 0 ? (
-        <p className="text-xs font-mono text-muted mt-1" aria-live="polite">
-          <span className="text-subtle">mints as:</span>{' '}
-          {previewEntries.map((e, i) => (
-            <span key={`${e.label}-${i}`} className="text-dim">
-              {i > 0 && <span className="text-subtle"> · </span>}
-              {e.label} {e.pct}%
-            </span>
-          ))}
-        </p>
-      ) : residenciesEnabled && splits.length > 0 && residenciesOverCap ? (
-        <p className="text-xs font-mono text-muted mt-1">
-          fix the residencies % below to see the final split
-        </p>
-      ) : null}
     </div>
   )
 }

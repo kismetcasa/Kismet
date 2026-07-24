@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
 import { trackFunnel } from '@/lib/funnel'
+import { reportClientError } from '@/lib/clientError'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useWalletRecovery } from '@/hooks/useWalletRecovery'
@@ -241,7 +242,10 @@ export function useDirectCollect(): UseDirectCollectReturn {
             })
 
             toast.loading('Confirming approval…', { id: TOAST_ID })
-            const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash })
+            const approveReceipt = await publicClient.waitForTransactionReceipt({
+              hash: approveHash,
+              timeout: 300_000,
+            })
             if (approveReceipt.status !== 'success') {
               throw new Error('USDC approval reverted')
             }
@@ -268,39 +272,77 @@ export function useDirectCollect(): UseDirectCollectReturn {
         setStatus('confirming')
         toast.loading('Confirming on-chain…', { id: TOAST_ID })
 
-        const receipt = await publicClient.waitForTransactionReceipt({ hash })
+        // Bounded wait: without a timeout this await can hang indefinitely on
+        // a stuck RPC/websocket, leaving the mint successful on-chain but the
+        // record (collected list, trending, Pass validity) never sent — the
+        // exact silent-loss that stranded a desktop-browser Pass buyer. 300s
+        // matches useCollectAll; a timeout throws into the catch below (visible
+        // error the user can retry) instead of an infinite "Confirming…" spinner.
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash,
+          timeout: 300_000,
+        })
         if (receipt.status !== 'success') {
           throw new Error('Mint reverted on-chain')
         }
 
-        // Best-effort post-mint hooks: trending score, collected list, creator
-        // notification. Failure here doesn't undo the mint — log and move on.
-        // Surface both network errors (catch) and non-2xx HTTP responses so
-        // support can trace dropped recordings; fetch only rejects on
-        // transport errors, so 429/403/500s would otherwise be silenced.
+        // Post-mint recording: trending score, collected list, creator
+        // notification, and — for a Pass — the validity credit. The mint has
+        // already succeeded on-chain, so a dropped record here is SILENT data
+        // loss (the buyer can't see the piece and, for a Pass, can't mint).
+        // Make it resilient:
+        //   • keepalive — a same-tap navigation still flushes the request
+        //     (plain fetch is abandoned on unload; this is a likely contributor
+        //     to the stranded desktop-browser Pass buyer),
+        //   • bounded retry — the server 403s until ITS RPC has indexed the tx;
+        //     a couple of spaced retries absorb that lag. /api/collect is
+        //     idempotent (per-tuple lock), so retries never double-count,
+        //   • reportClientError on total failure — a durable server-side trace
+        //     instead of a discarded console line, so the lost record can be
+        //     reconciled.
+        // Fix A (the webhook crediting mints unconditionally) and the
+        // reconciliation script are the last-resort backstops for Pass validity
+        // if the record is lost entirely.
         setStatus('recording')
-        try {
-          const res = await fetch('/api/collect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              moment: { collectionAddress, tokenId, chainId: base.id },
-              account,
-              amount: Number(quantity),
-              comment,
-              pricePerToken: pricePerToken.toString(),
-              currency,
-              txHash: hash,
-            }),
-          })
-          if (!res.ok) {
-            console.error('[direct-collect] /api/collect non-2xx', {
-              tokenId,
-              status: res.status,
+        const collectBody = JSON.stringify({
+          moment: { collectionAddress, tokenId, chainId: base.id },
+          account,
+          amount: Number(quantity),
+          comment,
+          pricePerToken: pricePerToken.toString(),
+          currency,
+          txHash: hash,
+        })
+        let recorded = false
+        for (let attempt = 0; attempt < 3 && !recorded; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 600 * attempt))
+          try {
+            const res = await fetch('/api/collect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: collectBody,
+              keepalive: true,
             })
+            if (res.ok) {
+              recorded = true
+            } else {
+              console.error('[direct-collect] /api/collect non-2xx', {
+                tokenId,
+                status: res.status,
+                attempt,
+              })
+            }
+          } catch (err) {
+            console.error('[direct-collect] /api/collect failed', { tokenId, attempt, err })
           }
-        } catch (err) {
-          console.error('[direct-collect] /api/collect failed', { tokenId, err })
+        }
+        if (!recorded) {
+          reportClientError('direct_collect.record_failed', {
+            tokenId,
+            collectionAddress,
+            txHash: hash,
+            account,
+          })
         }
 
         trackFunnel('collect_success')
