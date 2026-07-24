@@ -1800,18 +1800,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               inputMode="numeric"
               value={maxSupply}
               onChange={(e) => { const v = e.target.value; if (v === '' || /^[1-9]\d*$/.test(v)) setMaxSupply(v) }}
-              placeholder="open"
+              placeholder="open edition"
               className="w-full bg-surface border border-line px-3 py-2.5 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
             />
             {/* One vocabulary, every state explained. "open edition" is the
                 artist-community term (Zora/Manifold/OpenSea all use it;
                 "unlimited" appears in their docs only as its explanation), and
-                it's what Kismet's own market tags already say — the old
-                "unlimited" placeholder + "open edition" helper used two words
-                for one concept in a single field. The helper glosses each
-                state; finite supplies previously got no helper at all. */}
+                it's what Kismet's own market tags already say. The placeholder
+                names the default state ("open edition"); the helper glosses each
+                state ("no supply cap" here) — finite supplies previously got no
+                helper at all. */}
             {!maxSupply.trim() ? (
-              <p className="text-xs text-muted font-mono mt-1">open edition — no supply cap</p>
+              <p className="text-xs text-muted font-mono mt-1">no supply cap</p>
             ) : is11 ? (
               <p className="text-xs text-muted font-mono mt-1">1/1 minted to your wallet</p>
             ) : (
