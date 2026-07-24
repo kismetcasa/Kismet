@@ -291,16 +291,26 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     connectedAddress?.toLowerCase() === address.toLowerCase() ||
     fcIdentity?.address?.toLowerCase() === address.toLowerCase() ||
     (!!connectedAddress && !!profile?.fcWallets?.includes(connectedAddress.toLowerCase()))
-  // Edit-profile affordances (pencil, avatar edit, save) stay on the STRICT
-  // branches: the profile PUT verifies a raw wallet signature against the URL
-  // address, which a sibling wallet's signature can never satisfy — so the
-  // sibling-widened isOwner must not offer an edit whose save is guaranteed
-  // to fail. Same gate for the permissions banner: its grant flow sends
-  // transactions from the connected wallet, which only the strict-matched
-  // wallet can execute. Both keep exactly the pre-widening owner population.
+  // Connected-wallet-STRICT owner gate for the WRITE affordances — the
+  // profile edit (pencil / avatar / save) AND the permissions banner. Both
+  // require the CONNECTED wallet to BE this exact canonical address:
+  //   • the profile PUT verifies a raw wallet signature FROM `address`
+  //     (viem verifyMessage against the URL address in
+  //     app/api/profile/[address]/route.ts) — no other wallet, sibling or
+  //     FC-verified, can produce it;
+  //   • the permissions grant is an on-chain tx signed by the connected
+  //     wallet that only the collection's on-chain ADMIN can execute.
+  // So this excludes BOTH isOwner's fcWallets-sibling branch AND its
+  // fcIdentity branch. A Mini App owner whose connected wallet differs from
+  // their FC/profile address can satisfy NEITHER write — yet the fcIdentity
+  // branch used to surface a false "1 of your collections needs authorize"
+  // banner (useCollectionsPermissions reads the CONNECTED wallet's smart
+  // wallet, so it checked the wrong one — the collection was fine on-chain)
+  // and an edit pencil whose save 401s. Such owners keep the full owner VIEW
+  // via isOwner (which retains those branches); they edit/authorize from
+  // their canonical wallet. Server routes re-validate every write regardless.
   const canEditProfile =
-    connectedAddress?.toLowerCase() === address.toLowerCase() ||
-    fcIdentity?.address?.toLowerCase() === address.toLowerCase()
+    connectedAddress?.toLowerCase() === address.toLowerCase()
   // Curators get a Curate panel on their own profile, pinned as the last
   // section. The panel reuses the existing /api/featured plumbing.
   const showCurate = isOwner && isCurator
@@ -1052,13 +1062,15 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   }
 
   // ─── permissions banner gate ─────────────────────────────────────────────
-  // Owner-only entry point to the /permissions dashboard. We pass an
-  // empty list for non-owners so the wagmi multicall doesn't fire —
-  // visitors don't need (and shouldn't see) someone else's permission
-  // state. Strict gate (not the sibling-widened isOwner): the check reads
-  // the CONNECTED wallet's smart-wallet admin state, so for a sibling wallet
-  // it would report every canonical-deployed collection as missing admin and
-  // raise an alert whose grant flow that wallet cannot execute.
+  // Owner-only entry point to the /permissions dashboard. We pass an empty
+  // list for non-owners so the wagmi multicall doesn't fire — visitors don't
+  // need (and shouldn't see) someone else's permission state. Gated on the
+  // connected-wallet-STRICT canEditProfile (see its definition): the check
+  // reads the CONNECTED wallet's smart-wallet admin state, so any wallet that
+  // isn't this profile's owner — a sibling OR a Mini App wallet that differs
+  // from the FC/profile address — would report the owner's collections as
+  // missing admin and raise an alert whose grant flow that wallet cannot
+  // execute (the false positive this strict gate exists to prevent).
   const collectionAddressesForPerms = canEditProfile
     ? artistCollections.map((c) => c.contractAddress)
     : []
