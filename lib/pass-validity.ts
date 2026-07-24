@@ -1,7 +1,6 @@
 import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import { isPassBlacklisted } from './pass-blacklist'
-import { shouldCreditTransfer } from './passCredit'
 
 const PROCESSED_TTL = 30 * 24 * 60 * 60 // 30 days
 // Platform-tx flags live long enough to cover any plausible Alchemy
@@ -444,7 +443,7 @@ export async function processTransfer(params: {
   // transfer it off-platform to an accomplice; the webhook would see
   // listedOnKismet=true, skip taint, and credit the accomplice for free.
   // The flag's sole remaining job is taint prevention during the race window.
-  if (shouldCreditTransfer({ platform, isMint })) {
+  if (platform || isMint) {
     await creditValidityOnce({ collection, address: to, txHash, tokenId, amount })
   }
 }
