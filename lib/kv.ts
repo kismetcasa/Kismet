@@ -199,13 +199,17 @@ export async function markCreatedMint(address: string, tokenId: string): Promise
 
 export async function addTrackedCollection(
   address: string,
-  meta?: Omit<CollectionMeta, 'address'>,
-  source: CollectionSource = 'create-form',
+  meta: Omit<CollectionMeta, 'address'> | undefined,
+  source: CollectionSource,
 ): Promise<void> {
   try {
     const ops: Promise<unknown>[] = [redis.sadd(KEY, address)]
-    // Auto-deploy wrappers join only KEY — never the curator-blessed
-    // set, so they don't surface as collections.
+    // Auto-deploy wrappers join only KEY — never the curator-blessed set, so
+    // they don't surface as collections. `source` is REQUIRED (no default):
+    // the previous `= 'create-form'` default was a second fail-OPEN that would
+    // promote any caller who omitted the tag straight into the curated set.
+    // Only an explicit 'create-form' curates; the sole caller (the collections
+    // POST route) computes source fail-closed before calling in.
     if (source === 'create-form') {
       ops.push(redis.sadd(CREATED_COLLECTIONS_KEY, address))
     }

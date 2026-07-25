@@ -21,11 +21,17 @@ export interface RegisterCollectionPayload {
   description?: string
   image?: string
   artist?: string
-  // 'create-form' = explicit Create Collection form deploy (default).
-  // 'auto-deploy' = protocol auto-deployed wrapper from a first-mint
-  // without a selected collection. Auto-deploy is recorded in our tracked
-  // set for moment fan-out but excluded from collection-shaped surfaces.
-  source?: 'create-form' | 'auto-deploy'
+  // REQUIRED, load-bearing classification. The server fails CLOSED: only an
+  // explicit 'create-form' promotes into the curated set that every
+  // collection-shaped surface reads (profile Collections, mint picker,
+  // discovery feed, search, sitemap). Anything else lands in the master
+  // tracked set only — indexed for moment fan-out, never shown as a
+  // collection. Both deploy paths MUST therefore declare intent (this field
+  // is not optional precisely so a dropped tag can't silently mis-file a
+  // first-mint wrapper as a permanent, unremovable collection):
+  //  - 'create-form' = explicit Create Collection deploy → curated set.
+  //  - 'auto-deploy' = first-mint wrapper (no collection picked) → master only.
+  source: 'create-form' | 'auto-deploy'
   // tokenId of the cover artwork minted at deploy time, when applicable.
   // Server flags it as a created-mint so the cover surfaces in the Mints
   // feed alongside MintForm mints.

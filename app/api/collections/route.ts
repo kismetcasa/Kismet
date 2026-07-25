@@ -412,8 +412,12 @@ export async function POST(req: NextRequest) {
     image?: string
     description?: string
     artist?: string
-    // 'auto-deploy' marks MintForm's first-mint wrappers; default
-    // 'create-form' is the explicit Create Collection flow.
+    // Classification tag. Fail-closed (see the coercion below): only an
+    // explicit 'create-form' promotes into the curated set; anything else —
+    // including an omitted tag — is treated as a master-only 'auto-deploy'
+    // wrapper. MintForm sends 'auto-deploy'; CreateCollectionForm sends
+    // 'create-form'. Kept optional over the wire so an in-flight older client
+    // still registers (into master) rather than 400-ing out of tracking.
     source?: CollectionSource
     // tokenId minted as the collection's cover (Create Collection form
     // only). Marked as a created-mint so it surfaces in the Mints feed.
@@ -436,7 +440,26 @@ export async function POST(req: NextRequest) {
     return errorResponse(403, 'artist must match session address')
   }
 
-  const source: CollectionSource = body.source === 'auto-deploy' ? 'auto-deploy' : 'create-form'
+  // Fail CLOSED on classification: ONLY an explicit 'create-form' promotes a
+  // contract into the curated set (getUserCollections → every collection-shaped
+  // surface). A missing tag, an 'auto-deploy' wrapper, or any unrecognized value
+  // lands in the master tracked set only — inert for moment fan-out, never
+  // masquerading as a collection. This inverts the previous fail-OPEN default
+  // (anything !== 'auto-deploy' → curated), under which a first-mint wrapper
+  // whose source tag was dropped leaked in as a permanent, unremovable
+  // "collection" (there is no un-curate path). Mirrors the read side, which
+  // already fails closed (lib/hiddenCollections strictRead). CreateCollectionForm
+  // now sends 'create-form' explicitly, so the deliberate path is unaffected.
+  const source: CollectionSource = body.source === 'create-form' ? 'create-form' : 'auto-deploy'
+  if (body.source !== 'create-form' && body.source !== 'auto-deploy') {
+    // Surfaces client/tag drift: the only legitimate callers both send an
+    // explicit, valid source, so an ambiguous one means a stale bundle or a
+    // new caller that forgot to classify — worth seeing in logs.
+    console.warn('[collections POST] missing/unknown collection source — filing as auto-deploy (master-only)', {
+      address: body.address,
+      source: body.source,
+    })
+  }
 
   // Token gate — deliberate Create Collection deploys require a valid Pass,
   // the same platform policy lib/mint-proxy enforces on minting (and on
