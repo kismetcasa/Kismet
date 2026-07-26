@@ -12,7 +12,8 @@ import { SITE_URL } from '@/lib/siteUrl'
 //   - Post-collect: useDirectCollect attaches a Share action to its success
 //     toast, prefilling  collected "<artwork>" by @creator on @kismet
 //   - Moment page: the detail view's Share button, prefilling
-//     "<artwork>" by @creator on @kismet
+//     "<artwork>" by @creator — no "on @kismet" tail, since the cast already
+//     posts to /kismet and the channel mention would be redundant.
 // Both attach the moment URL as the embed (preview card) and post to /kismet.
 //
 // composeCast is a host action with no web equivalent, so callers offer it
@@ -44,11 +45,15 @@ export interface CollectShareContext {
  * name, and drop the "by" clause entirely rather than casting a raw
  * 0x12…34 fallback.
  *
- * Two formats, one shared tail (" by @creator on @kismet"):
- *   - titleLead — the moment-page Share: leads with the quoted artwork title
- *     and no opening verb, e.g. "Sunset" by @alice on @kismet.
+ * Two formats, differing in both opener AND channel tail:
+ *   - titleLead — the moment-page Share: leads with the quoted artwork title,
+ *     no opening verb, and NO "on @kismet" tail. The cast already posts to
+ *     /kismet from inside the Mini App, so naming the channel in the copy is
+ *     redundant — e.g. "Sunset" by @alice (or just "Sunset" when the creator
+ *     has no handle).
  *   - verb (default 'collected') — the post-collect prompt: a "<verb>
- *     <quoted title>" opener, e.g. collected "Sunset" by @alice on @kismet.
+ *     <quoted title>" opener that keeps the "on @kismet" tail (unchanged) —
+ *     e.g. collected "Sunset" by @alice on @kismet.
  */
 export function buildCollectCastText(opts: {
   momentName: string | null
@@ -58,15 +63,14 @@ export function buildCollectCastText(opts: {
 }): string {
   const title = opts.momentName?.trim()
   const subject = title ? `"${title}"` : 'an artwork'
-  const tail = opts.creatorHandle
-    ? ` by ${opts.creatorHandle} on @kismet`
-    : ' on @kismet'
-  // Moment-page Share: lead with the quoted title, no opening verb —
-  // e.g. "Sunset" by @alice on @kismet.
-  if (opts.titleLead) return `${subject}${tail}`
-  // Post-collect Share: "<verb> <quoted title>" opener (unchanged).
+  const by = opts.creatorHandle ? ` by ${opts.creatorHandle}` : ''
+  // Moment-page Share: lead with the quoted title, no opening verb, and no
+  // "on @kismet" tail — e.g. "Sunset" by @alice.
+  if (opts.titleLead) return `${subject}${by}`
+  // Post-collect Share: "<verb> <quoted title> … on @kismet" opener
+  // (unchanged) — e.g. collected "Sunset" by @alice on @kismet.
   const verb = opts.verb ?? 'collected'
-  return `${verb} ${subject}${tail}`
+  return `${verb} ${subject}${by} on @kismet`
 }
 
 /**
