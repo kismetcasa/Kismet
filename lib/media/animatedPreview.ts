@@ -41,7 +41,7 @@ const execFileAsync = promisify(execFile)
 // if a client won't animate WebP. Both encoders ship in the Alpine ffmpeg
 // build. Flip with FARCASTER_PREVIEW_FORMAT=gif — old-format files simply miss
 // the cache (keyed by extension) and age out via the LRU sweep.
-export const PREVIEW_FORMAT: 'webp' | 'gif' =
+const PREVIEW_FORMAT: 'webp' | 'gif' =
   process.env.FARCASTER_PREVIEW_FORMAT === 'gif' ? 'gif' : 'webp'
 export const PREVIEW_CONTENT_TYPE = PREVIEW_FORMAT === 'gif' ? 'image/gif' : 'image/webp'
 
@@ -84,7 +84,7 @@ function buildFfmpegArgs(inPath: string, outPath: string): string[] {
  * static card. ffmpeg probes the container from content, so the temp input is
  * written extensionless.
  */
-export async function generateAnimatedPreview(source: Buffer): Promise<Buffer> {
+async function generateAnimatedPreview(source: Buffer): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), 'fcpreview-'))
   const inPath = join(dir, 'in')
   const outPath = join(dir, `out.${PREVIEW_FORMAT}`)
@@ -119,7 +119,7 @@ function previewName(uri: string): string {
 }
 
 /** Cheap presence check (no read) — for generateMetadata's warm/serve gate. */
-export async function hasPreview(uri: string): Promise<boolean> {
+async function hasPreview(uri: string): Promise<boolean> {
   try {
     return (await stat(join(PREVIEW_CACHE_DIR, previewName(uri)))).isFile()
   } catch {
