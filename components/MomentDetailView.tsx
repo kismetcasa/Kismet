@@ -803,7 +803,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   // In a Mini App, share = open the Farcaster cast composer prefilled with the
-  // moment-page copy — "(<title>) by @creator on @kismet" — plus the moment
+  // moment-page copy — "<title>" by @creator on @kismet — plus the moment
   // embed, posted to /kismet (see lib/collectShare). On the web, share =
   // copy-to-clipboard (no host composer to call). The Mini App path falls
   // through to copy if the SDK throws so the button never becomes a dead click.

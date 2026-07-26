@@ -12,7 +12,7 @@ import { SITE_URL } from '@/lib/siteUrl'
 //   - Post-collect: useDirectCollect attaches a Share action to its success
 //     toast, prefilling  collected "<artwork>" by @creator on @kismet
 //   - Moment page: the detail view's Share button, prefilling
-//     (<artwork>) by @creator on @kismet
+//     "<artwork>" by @creator on @kismet
 // Both attach the moment URL as the embed (preview card) and post to /kismet.
 //
 // composeCast is a host action with no web equivalent, so callers offer it
@@ -45,8 +45,8 @@ export interface CollectShareContext {
  * 0x12…34 fallback.
  *
  * Two formats, one shared tail (" by @creator on @kismet"):
- *   - titleLead — the moment-page Share: leads with the artwork title in
- *     parentheses and no opening verb, e.g. (Sunset) by @alice on @kismet.
+ *   - titleLead — the moment-page Share: leads with the quoted artwork title
+ *     and no opening verb, e.g. "Sunset" by @alice on @kismet.
  *   - verb (default 'collected') — the post-collect prompt: a "<verb>
  *     <quoted title>" opener, e.g. collected "Sunset" by @alice on @kismet.
  */
@@ -57,17 +57,15 @@ export function buildCollectCastText(opts: {
   titleLead?: boolean
 }): string {
   const title = opts.momentName?.trim()
+  const subject = title ? `"${title}"` : 'an artwork'
   const tail = opts.creatorHandle
     ? ` by ${opts.creatorHandle} on @kismet`
     : ' on @kismet'
-  // Moment-page Share: lead with the title in parentheses, no verb.
-  // "(untitled)" keeps the parenthesized shape when a moment has no name.
-  if (opts.titleLead) {
-    return `${title ? `(${title})` : '(untitled)'}${tail}`
-  }
+  // Moment-page Share: lead with the quoted title, no opening verb —
+  // e.g. "Sunset" by @alice on @kismet.
+  if (opts.titleLead) return `${subject}${tail}`
   // Post-collect Share: "<verb> <quoted title>" opener (unchanged).
   const verb = opts.verb ?? 'collected'
-  const subject = title ? `"${title}"` : 'an artwork'
   return `${verb} ${subject}${tail}`
 }
 
