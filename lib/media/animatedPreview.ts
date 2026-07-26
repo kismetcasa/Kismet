@@ -200,21 +200,11 @@ async function computePreview(uri: string): Promise<Buffer | null> {
 }
 
 /**
- * Serve-path: return the preview bytes, computing them on a cold miss when a
- * slot is free. Cache hit → instant. Miss at capacity → null (caller serves
- * the static card); the SingleFlight lets concurrent callers for the same
- * moment share one encode.
- */
-export async function ensurePreview(uri: string): Promise<Buffer | null> {
-  const cached = await readPreview(uri)
-  if (cached) return cached
-  if (activePreviews >= MAX_CONCURRENT_PREVIEWS && !previewFlight.has(uri)) return null
-  return previewFlight.run(uri, () => computePreview(uri))
-}
-
-/**
- * Warm-path: best-effort background generation, never throws, never blocks.
- * Called from generateMetadata on a cold miss so the NEXT scrape animates.
+ * Best-effort background generation, never throws, never blocks. The ONLY
+ * entry point that runs ffmpeg — both the metadata gate (on a cold miss) and
+ * the serve route (on a cache miss) call this and then serve the static card,
+ * so Farcaster's fetch is never held on a transcode (its embed-image fetch
+ * times out faster than a browser's). The preview lands for the next scrape.
  */
 export function warmMomentPreview(uri: string): void {
   if (activePreviews >= MAX_CONCURRENT_PREVIEWS && !previewFlight.has(uri)) return
@@ -234,11 +224,17 @@ export function momentPreviewSource(
   metadata: Parameters<typeof resolveMomentMedia>[0] | undefined,
 ): string | null {
   if (!metadata) return null
-  const media = resolveMomentMedia(metadata)
-  if (media.kind !== 'video' && media.kind !== 'gif') return null
-  const src = media.src
-  if (!src || (!src.startsWith('ar://') && !src.startsWith('ipfs://'))) return null
-  return src
+  try {
+    const media = resolveMomentMedia(metadata)
+    if (media.kind !== 'video' && media.kind !== 'gif') return null
+    const src = media.src
+    if (!src || (!src.startsWith('ar://') && !src.startsWith('ipfs://'))) return null
+    return src
+  } catch {
+    // Malformed metadata must never break the moment's embed/OG block — treat
+    // it as "no animated preview" and fall back to the static card.
+    return null
+  }
 }
 
 /**

@@ -4,21 +4,23 @@ import { fetchMomentDetail } from '@/lib/momentDetail'
 import { SITE_URL } from '@/lib/siteUrl'
 import {
   momentPreviewSource,
-  ensurePreview,
+  readPreview,
+  warmMomentPreview,
   PREVIEW_CONTENT_TYPE,
 } from '@/lib/media/animatedPreview'
 
-// ffmpeg (native, via lib/media/animatedPreview) needs the Node runtime.
+// warmMomentPreview shells out to native ffmpeg — needs the Node runtime.
 export const runtime = 'nodejs'
-// A cold-miss transcode runs behind the module's serialization + timeout;
-// this bounds the whole request generously above that.
-export const maxDuration = 60
+// The handler only reads moment detail + the on-disk preview cache; any ffmpeg
+// warm it kicks runs in the background. Generous bound for the detail fetch.
+export const maxDuration = 30
 
 // Animated Farcaster embed thumbnail for a video/gif moment. generateMetadata
 // only points fc:miniapp.imageUrl here once the preview is cached, so the
-// common path is a cache read; anything else — not a video/gif, no fetchable
-// source, cold cache under load, or a transcode failure — 302s to the static
-// /opengraph-image card so the embed always resolves to a valid image.
+// common path is a fast cache read. Any other case — not a video/gif, no
+// fetchable source, or a cache miss (cold pod / eviction) — 302s to the static
+// /opengraph-image card (kicking a background warm on a miss) so the embed
+// always resolves to a valid image and never blocks on a transcode.
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ address: string; tokenId: string }> },
@@ -51,8 +53,14 @@ export async function GET(
   const src = momentPreviewSource(detail.metadata)
   if (!src) return fallback()
 
-  const preview = await ensurePreview(src)
-  if (!preview) return fallback()
+  // Cache read only — never block Farcaster's fetch on ffmpeg. A miss (cold
+  // pod, eviction, or a not-yet-warm moment) kicks a background warm and shows
+  // the static card now; the next scrape animates once the preview lands.
+  const preview = await readPreview(src)
+  if (!preview) {
+    warmMomentPreview(src)
+    return fallback()
+  }
 
   return new Response(new Uint8Array(preview), {
     status: 200,
