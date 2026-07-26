@@ -803,11 +803,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   }
 
   // In a Mini App, share = open the Farcaster cast composer prefilled with the
-  // same copy/format as the post-collect share — "enjoy "<title>" by @creator
-  // on @kismet" — plus the moment embed, posted to /kismet (see
-  // lib/collectShare). On the web, share = copy-to-clipboard (no host composer
-  // to call). The Mini App path falls through to copy if the SDK throws so the
-  // button never becomes a dead click.
+  // moment-page copy — "(<title>) by @creator on @kismet" — plus the moment
+  // embed, posted to /kismet (see lib/collectShare). On the web, share =
+  // copy-to-clipboard (no host composer to call). The Mini App path falls
+  // through to copy if the SDK throws so the button never becomes a dead click.
   async function handleShare() {
     const url = `${window.location.origin}/moment/${address}/${tokenId}`
     if (isInMiniApp) {
@@ -820,7 +819,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             creatorAddress: creatorAddress || null,
             creatorName,
           },
-          { verb: 'enjoy' },
+          { titleLead: true },
         )
         return
       } catch { /* fall through to clipboard */ }

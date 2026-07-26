@@ -1,5 +1,6 @@
 import { MarketView } from '@/components/MarketView'
 import { isMobileUA } from '@/lib/serverDevice'
+import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 
 // Own metadata: without it this page inherited the layout's generic "Kismet"
@@ -10,6 +11,19 @@ export const metadata = {
   description:
     'Buy and sell onchain art on the Kismet market — artworks listed by collectors and artists, settled on Base in ETH or USDC.',
   alternates: { canonical: `${SITE_URL}/market` },
+  // Farcaster Mini App embed for the /market surface. Casting the market URL
+  // renders a launchable card whose button reads "Enter Market" and opens the
+  // Mini App straight to the marketplace — vs the homepage's "Enjoy Kismet".
+  // Reuses the branded default embed image (market has no per-content share
+  // card) and inherits the manifest's splash, matching the moment/collection
+  // embeds. Setting `other` here replaces the layout's `other`, so the
+  // apex-only base:app_id tag is dropped — same as every other per-route embed.
+  other: buildFarcasterEmbed({
+    imageUrl:
+      process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
+    buttonTitle: 'Enter Market',
+    action: { url: `${SITE_URL}/market` },
+  }),
 }
 
 // Market is a top-level destination in the nav (alongside Enjoy and

@@ -7,13 +7,13 @@ import { SITE_URL } from '@/lib/siteUrl'
 
 // "share to /kismet" cast composer (Mini App only).
 //
-// Two surfaces share one format via composeMomentShareCast:
+// Two surfaces share the composer via composeMomentShareCast, with slightly
+// different opening copy:
 //   - Post-collect: useDirectCollect attaches a Share action to its success
 //     toast, prefilling  collected "<artwork>" by @creator on @kismet
 //   - Moment page: the detail view's Share button, prefilling
-//     enjoy "<artwork>" by @creator on @kismet
-// Only the opening verb differs; both attach the moment URL as the embed
-// (preview card) and post to /kismet.
+//     (<artwork>) by @creator on @kismet
+// Both attach the moment URL as the embed (preview card) and post to /kismet.
 //
 // composeCast is a host action with no web equivalent, so callers offer it
 // only inside a Mini App — the web success toast / copy-link path is unchanged.
@@ -42,23 +42,33 @@ export interface CollectShareContext {
  * Cast copy, per the product spec: prefer the creator's real FC @username
  * (the host renders it as a clickable mention), fall back to their display
  * name, and drop the "by" clause entirely rather than casting a raw
- * 0x12…34 fallback. Quotes around the title match the post-mint share copy.
+ * 0x12…34 fallback.
  *
- * `verb` opens the sentence and is the only thing that varies between
- * surfaces: 'collected' for the post-collect prompt, 'enjoy' for the moment
- * page's Share button. Both share this one format verbatim otherwise.
+ * Two formats, one shared tail (" by @creator on @kismet"):
+ *   - titleLead — the moment-page Share: leads with the artwork title in
+ *     parentheses and no opening verb, e.g. (Sunset) by @alice on @kismet.
+ *   - verb (default 'collected') — the post-collect prompt: a "<verb>
+ *     <quoted title>" opener, e.g. collected "Sunset" by @alice on @kismet.
  */
 export function buildCollectCastText(opts: {
   momentName: string | null
   creatorHandle: string | null
   verb?: string
+  titleLead?: boolean
 }): string {
-  const verb = opts.verb ?? 'collected'
   const title = opts.momentName?.trim()
+  const tail = opts.creatorHandle
+    ? ` by ${opts.creatorHandle} on @kismet`
+    : ' on @kismet'
+  // Moment-page Share: lead with the title in parentheses, no verb.
+  // "(untitled)" keeps the parenthesized shape when a moment has no name.
+  if (opts.titleLead) {
+    return `${title ? `(${title})` : '(untitled)'}${tail}`
+  }
+  // Post-collect Share: "<verb> <quoted title>" opener (unchanged).
+  const verb = opts.verb ?? 'collected'
   const subject = title ? `"${title}"` : 'an artwork'
-  return opts.creatorHandle
-    ? `${verb} ${subject} by ${opts.creatorHandle} on @kismet`
-    : `${verb} ${subject} on @kismet`
+  return `${verb} ${subject}${tail}`
 }
 
 /**
@@ -94,7 +104,7 @@ async function resolveCreatorHandle(ctx: CollectShareContext): Promise<string | 
  */
 export async function composeMomentShareCast(
   ctx: CollectShareContext,
-  opts: { verb?: string } = {},
+  opts: { verb?: string; titleLead?: boolean } = {},
 ) {
   const { sdk } = await import('@farcaster/miniapp-sdk')
   const creatorHandle = await resolveCreatorHandle(ctx)
@@ -102,6 +112,7 @@ export async function composeMomentShareCast(
     momentName: ctx.momentName,
     creatorHandle,
     verb: opts.verb,
+    titleLead: opts.titleLead,
   })
   const momentUrl = `${SITE_URL}/moment/${ctx.collectionAddress}/${ctx.tokenId}`
   return sdk.actions.composeCast({
