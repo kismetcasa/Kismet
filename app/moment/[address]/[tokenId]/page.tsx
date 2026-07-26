@@ -14,6 +14,7 @@ import { isWebKitOnlyUA } from '@/lib/serverDevice'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { resolveEmbedImageUrl } from '@/lib/media/animatedPreview'
 import { getListings } from '@/lib/listings'
 import { getListingVisibility } from '@/lib/hiddenListings'
 import { safeRead } from '@/lib/redisRead'
@@ -147,7 +148,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // images >5MB and the next/image optimizer 413's on sources past its
   // 50MB body cap.
   const canonicalUrl = `${SITE_URL}/moment/${address}/${tokenId}`
-  const embedImageUrl = `${canonicalUrl}/opengraph-image`
+  // Farcaster embed image: for a video/gif moment, the animated embed-preview
+  // route once its 3:2 looping preview is cached (so the feed card MOVES),
+  // else the static Satori card above while a background warm builds it — see
+  // lib/media/animatedPreview. og:image / twitter:image stay on the static
+  // route (Satori PNG) via the file convention; only the Farcaster imageUrl
+  // upgrades, since animated GIF/WebP is a Farcaster-specific embed capability.
+  const embedImageUrl = await resolveEmbedImageUrl(canonicalUrl, detail?.metadata)
   // Active marketplace listing → embed button reads "View Listing"
   // instead of "Collect <name>", since the destination conceptually
   // moves from primary-sale collect to secondary-market purchase. Same
