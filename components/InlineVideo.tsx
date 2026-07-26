@@ -46,6 +46,14 @@ interface InlineVideoProps {
    *  of emitting the direct url and flipping on hydration. Feed cards mount
    *  client-side (no SSR) so they leave this false. See videoGatewayUrls. */
   ssrProxyHint?: boolean
+  /** Fired whenever the "has a presentable first frame" state flips (true on
+   *  loadeddata, false on src change / feed release). MomentVideo drives its
+   *  poster-cover opacity from this: the <video> renders at opacity:1 from
+   *  mount and is NEVER self-hidden — an iOS WebKit <video> composited while
+   *  opacity:0 plays audio but paints a black frame forever ("I hear it but
+   *  the screen is black"). So the poster sits ON TOP and fades out on ready,
+   *  instead of the video fading in from hidden. */
+  onReadyChange?: (ready: boolean) => void
 }
 
 /**
@@ -69,10 +77,14 @@ interface InlineVideoProps {
  *   - currentTime resume across surfaces
  *   - feed quiets while a committed (detail) video is open (videoFocus)
  */
-export function InlineVideo({ src, controls = false, className, onError, ssrProxyHint = false }: InlineVideoProps) {
+export function InlineVideo({ src, controls = false, className, onError, ssrProxyHint = false, onReadyChange }: InlineVideoProps) {
   const ref = useRef<HTMLVideoElement>(null)
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
+  // Ref-held so mirroring `loaded` to the parent doesn't re-run the effect on
+  // every render when the callback identity changes (matches onErrorRef).
+  const onReadyChangeRef = useRef(onReadyChange)
+  onReadyChangeRef.current = onReadyChange
 
   // ssrProxyHint is a stable prop (identical server + client), so the proxy
   // decision is consistent through hydration for the surfaces the server can
@@ -157,7 +169,7 @@ export function InlineVideo({ src, controls = false, className, onError, ssrProx
     }
   }
 
-  // Reset the gateway walk + fade when the src changes.
+  // Reset the gateway walk + reveal when the src changes.
   useEffect(() => {
     setGatewayIndex(0)
     setLoaded(false)
@@ -165,6 +177,13 @@ export function InlineVideo({ src, controls = false, className, onError, ssrProx
     pendingResumeRef.current = null
     resumeAttemptsRef.current = 0
   }, [src])
+
+  // Mirror "first frame presentable" to the parent so MomentVideo can fade its
+  // poster cover out (on ready) and back in (on src change / release). The
+  // <video> itself is never hidden — see onReadyChange.
+  useEffect(() => {
+    onReadyChangeRef.current?.(loaded)
+  }, [loaded])
 
   // Feed playback is governed centrally by lib/media/feedPlayback: one
   // coordinator ranks every mounted feed video by distance to the viewport
@@ -403,8 +422,11 @@ export function InlineVideo({ src, controls = false, className, onError, ssrProx
       playsInline
       controls={controls}
       preload={controls || buffering ? 'auto' : 'none'}
-      // Fade in over the poster/thumbhash layer once the first frame is ready.
-      style={{ opacity: loaded ? 1 : 0, transition: 'opacity 0.2s ease' }}
+      // No opacity gate on the element itself: an iOS WebKit <video> composited
+      // while opacity:0 plays audio but paints a permanently black frame (the
+      // Mini App "I hear it but the screen is black" bug). The element stays
+      // visible from mount; MomentVideo's poster cover (driven by onReadyChange)
+      // hides the pre-decode black and fades out on the first frame instead.
       onError={handleError}
       onLoadedMetadata={handleLoadedMetadata}
       onLoadedData={() => setLoaded(true)}
