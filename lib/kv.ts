@@ -4,6 +4,7 @@ import { inprocessUrl } from './inprocess'
 import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
 import { memoize } from './memoCache'
+import { foldSearch, rankScore, RANK } from './searchText'
 
 // In-memory TTL for the hot collection-set getters below. These read
 // SMEMBERS on every request from a wide range of routes (timeline,
@@ -426,8 +427,11 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
   if (!addresses.length) return []
   const keys = addresses.map(keyCollectionMeta)
   const raws = await redis.mget<(string | CollectionMeta | null)[]>(...keys)
-  const q = query.toLowerCase()
-  const results: CollectionMeta[] = []
+  // Fold both sides so an ASCII query matches accented collection names (e.g.
+  // "aeternal" → "æternal"), and score every candidate so the best matches
+  // survive the 20-result cap instead of whichever 20 were scanned first.
+  const fq = foldSearch(query)
+  const scored: { meta: CollectionMeta; score: number }[] = []
   for (let i = 0; i < addresses.length; i++) {
     const raw = raws[i]
     if (!raw) continue
@@ -435,11 +439,16 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
     if (hiddenCollections.has(address)) continue
     const meta: CollectionMeta = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (meta.artist && hiddenUsers.has(meta.artist.toLowerCase())) continue
-    if (meta.name.toLowerCase().includes(q) || address.startsWith(q)) {
-      results.push(meta)
-      if (results.length >= 20) break
-    }
+    const tier = Math.max(
+      rankScore(meta.name, fq),
+      address.startsWith(fq) ? RANK.PREFIX : RANK.NONE,
+    )
+    if (tier === 0) continue
+    scored.push({ meta, score: tier })
   }
+  // Best matches first; a shorter name is the mild "more specific" tiebreak.
+  scored.sort((a, b) => b.score - a.score || (a.meta.name?.length ?? 0) - (b.meta.name?.length ?? 0))
+  const results = scored.slice(0, 20).map((s) => s.meta)
   // Backfill missing cover images from inprocess (scoped to matches).
   return Promise.all(
     results.map(async (meta) => {

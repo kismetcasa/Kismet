@@ -3,6 +3,7 @@ import { fetchCollectionMoments } from './inprocess'
 import { getHiddenMomentsSet } from './hiddenMoments'
 import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
+import { foldSearch, rankScore, RANK } from './searchText'
 
 export interface MomentSearchResult {
   id: string
@@ -51,11 +52,13 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
     ),
   )
   const all = settled.map((s) => (s.status === 'fulfilled' ? s.value : []))
-  const q = query.toLowerCase()
+  // Fold both sides so an ASCII query matches accented titles / creator handles,
+  // and score every candidate so the best matches survive the 20-result cap
+  // (the old first-20-scanned break dropped better matches found later).
+  const fq = foldSearch(query)
   const seen = new Set<string>()
-  const results: MomentSearchResult[] = []
+  const scored: { r: MomentSearchResult; score: number }[] = []
   for (const moment of all.flat()) {
-    if (results.length >= 20) break
     const addr = moment.address.toLowerCase()
     const key = `${addr}:${moment.token_id}`
     if (seen.has(key)) continue
@@ -67,12 +70,16 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
     if (hiddenMoments.has(key) || hiddenCollections.has(addr)) continue
     const creatorLower = (moment.creator?.address ?? '').toLowerCase()
     if (creatorLower && hiddenUsers.has(creatorLower)) continue
-    const name = (moment.metadata?.name ?? '').toLowerCase()
-    const desc = (moment.metadata?.description ?? '').toLowerCase()
-    const creator = (moment.creator?.address ?? '').toLowerCase()
-    const creatorName = (moment.creator?.username ?? '').toLowerCase()
-    if (name.includes(q) || desc.includes(q) || creator.startsWith(q) || creatorName.includes(q)) {
-      results.push({
+    const nameScore = rankScore(moment.metadata?.name, fq)
+    const creatorNameScore = rankScore(moment.creator?.username, fq)
+    const creatorAddrScore = fq && creatorLower.startsWith(fq) ? RANK.PREFIX : RANK.NONE
+    // Description is a weak signal — count it only as a substring hit, never a
+    // "top" match, so a stray word in a long description can't outrank a title.
+    const descScore = rankScore(moment.metadata?.description, fq) > 0 ? RANK.SUBSTRING : RANK.NONE
+    const tier = Math.max(nameScore, creatorNameScore, creatorAddrScore, descScore)
+    if (tier === 0) continue
+    scored.push({
+      r: {
         id: moment.id ?? key,
         address: moment.address,
         tokenId: moment.token_id,
@@ -85,8 +92,11 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
         // search thumbnail re-downloaded the full >50MB original every time.
         image: moment.metadata?.image,
         creatorAddress: moment.creator?.address,
-      })
-    }
+      },
+      // Title matches outrank creator/description matches at the same tier.
+      score: tier * 2 + (nameScore >= tier ? 1 : 0),
+    })
   }
-  return results
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, 20).map((s) => s.r)
 }
