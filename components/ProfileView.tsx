@@ -14,6 +14,7 @@ import { PaletteRing } from './PaletteRing'
 import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
+import { foldSearch } from '@/lib/searchText'
 import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
@@ -1383,11 +1384,15 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               ) : listAddresses.length === 0 ? (
                 <p className="px-5 py-6 text-xs font-mono text-muted">no {activeList} yet</p>
               ) : (() => {
+                // Raw for the address match (hex, no folding needed); folded for
+                // the name so this list filter matches accented display names too
+                // (same "gonz" vs "gønz" fix as global search).
                 const q = searchQuery.toLowerCase().trim()
+                const fq = foldSearch(searchQuery)
                 const filtered = q
                   ? listAddresses.filter((a) =>
                       a.toLowerCase().includes(q) ||
-                      (nameMapRef.current[a] ?? '').toLowerCase().includes(q)
+                      (fq !== '' && foldSearch(nameMapRef.current[a] ?? '').includes(fq))
                     )
                   : listAddresses
                 return filtered.length === 0
