@@ -51,5 +51,13 @@ check('no match → NONE', rankScore('unrelated', q) === RANK.NONE)
 check('empty query → NONE', rankScore('anything', '') === RANK.NONE)
 check('missing field → NONE', rankScore(undefined, q) === RANK.NONE)
 
+// ── typo tolerance: conservative (≥4 chars, edit-distance ≤1, ranked last) ──
+check('fuzzy: "kismt" (deletion) → "kismet"', rankScore('kismet', foldSearch('kismt')) === RANK.FUZZY)
+check('fuzzy: "gonzo" (substitution) matches "gonza"', rankScore('gonza', foldSearch('gonzo')) === RANK.FUZZY)
+check('fuzzy ranks below every clean match', RANK.FUZZY < RANK.SUBSTRING)
+check('a clean substring still beats a typo', rankScore('agonz', q) > rankScore('gonza', foldSearch('gonzo')))
+check('short queries (<4) do NOT fuzzy-match', rankScore('cat', foldSearch('bat')) === RANK.NONE)
+check('transpositions are NOT corrected (dist 2)', rankScore('gonz', foldSearch('ognz')) === RANK.NONE)
+
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nAll search checks passed')
 process.exit(failures ? 1 : 0)

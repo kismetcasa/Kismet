@@ -1,4 +1,4 @@
-import { redis } from './redis'
+import { redis, mgetChunked } from './redis'
 import { PLATFORM_COLLECTION } from './config'
 import { inprocessUrl } from './inprocess'
 import { getHiddenCollectionsSet } from './hiddenCollections'
@@ -426,7 +426,7 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
   ])
   if (!addresses.length) return []
   const keys = addresses.map(keyCollectionMeta)
-  const raws = await redis.mget<(string | CollectionMeta | null)[]>(...keys)
+  const raws = await mgetChunked<string | CollectionMeta>(keys)
   // Fold both sides so an ASCII query matches accented collection names (e.g.
   // "aeternal" → "æternal"), and score every candidate so the best matches
   // survive the 20-result cap instead of whichever 20 were scanned first.

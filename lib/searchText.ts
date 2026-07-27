@@ -63,15 +63,55 @@ export function foldSearch(input: string): string {
 }
 
 // Relevance tiers, higher wins. A typeahead should surface an exact/prefix hit
-// above a mid-string substring hit — which the old first-20-scanned logic
-// could not express.
+// above a mid-string substring hit, and a clean match above a typo-corrected
+// one — which the old first-20-scanned logic could not express. FUZZY sits
+// below every clean match so a typo hit only shows when nothing better exists.
 export const RANK = {
   NONE: 0,
-  SUBSTRING: 1,
-  WORD_PREFIX: 2,
-  PREFIX: 3,
-  EXACT: 4,
+  FUZZY: 1,
+  SUBSTRING: 2,
+  WORD_PREFIX: 3,
+  PREFIX: 4,
+  EXACT: 5,
 } as const
+
+/**
+ * True when `a` and `b` are within one edit — a single insertion, deletion, or
+ * substitution (Levenshtein ≤ 1; transpositions count as 2, deliberately not
+ * corrected). O(n) with early exit, no DP matrix. Used only as the typo-tolerance
+ * fallback in rankScore, and only against a comparable-length token, so it stays
+ * cheap and conservative.
+ */
+function withinEditDistanceOne(a: string, b: string): boolean {
+  const la = a.length
+  const lb = b.length
+  if (Math.abs(la - lb) > 1) return false
+  if (la === lb) {
+    let diff = 0
+    for (let i = 0; i < la; i++) {
+      if (a[i] !== b[i] && ++diff > 1) return false
+    }
+    return true
+  }
+  // Lengths differ by exactly one: the shorter must embed in the longer with a
+  // single skipped character.
+  const short = la < lb ? a : b
+  const long = la < lb ? b : a
+  let i = 0
+  let j = 0
+  let skipped = false
+  while (i < short.length && j < long.length) {
+    if (short[i] === long[j]) {
+      i++
+      j++
+    } else {
+      if (skipped) return false
+      skipped = true
+      j++ // consume one extra char from the longer string
+    }
+  }
+  return true
+}
 
 /**
  * Score how well `field` matches an ALREADY-FOLDED `foldedQuery`. Folds `field`
@@ -88,5 +128,16 @@ export function rankScore(field: string | null | undefined, foldedQuery: string)
   if (f.startsWith(foldedQuery)) return RANK.PREFIX
   if (f.includes(' ' + foldedQuery)) return RANK.WORD_PREFIX // query begins a later word
   if (f.includes(foldedQuery)) return RANK.SUBSTRING
+  // Typo tolerance, last resort. Gated to queries of 4+ chars (a single edit on
+  // a 1–3 char query matches far too much) and checked only against a
+  // comparable-length token of the field, so "kismt" finds "kismet" without
+  // "cat" finding "bat" on a 3-letter query. Ranked below every clean match.
+  if (foldedQuery.length >= 4) {
+    for (const token of f.split(' ')) {
+      if (Math.abs(token.length - foldedQuery.length) <= 1 && withinEditDistanceOne(token, foldedQuery)) {
+        return RANK.FUZZY
+      }
+    }
+  }
   return RANK.NONE
 }

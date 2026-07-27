@@ -1,4 +1,4 @@
-import { redis } from './redis'
+import { redis, mgetChunked } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
 import { getHiddenProfilesSet } from './hidden-profiles'
@@ -192,7 +192,7 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     // Filter indexed wallets by address prefix
     const matching = addresses.filter(a => a.startsWith(q) && !stripped(a))
     if (matching.length > 0) {
-      const raws = await redis.mget<(string | Profile | null)[]>(...matching.map(keyByAddress))
+      const raws = await mgetChunked<string | Profile>(matching.map(keyByAddress))
       for (const raw of raws) {
         if (!raw) continue
         const p: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
@@ -217,7 +217,7 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     // is SCORED and the best 20 kept, rather than the first 20 scanned — a
     // prefix/exact hit can no longer lose to earlier substring noise.
     if (!addresses.length) return []
-    const raws = await redis.mget<(string | Profile | null)[]>(...addresses.map(keyByAddress))
+    const raws = await mgetChunked<string | Profile>(addresses.map(keyByAddress))
     const fq = foldSearch(q)
     const scored: { p: Profile; score: number }[] = []
     for (let i = 0; i < addresses.length; i++) {

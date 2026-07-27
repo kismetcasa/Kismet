@@ -1,5 +1,6 @@
-import { getTrackedCollections } from './kv'
+import { getTrackedCollections, scanCreatedMints } from './kv'
 import { fetchCollectionMoments } from './inprocess'
+import { getMomentMetaBatch } from './notifications'
 import { getHiddenMomentsSet } from './hiddenMoments'
 import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
@@ -26,6 +27,14 @@ const MAX_SEARCH_COLLECTIONS = 10
 // better to return partial results in <3s than to hang for 10s+ on
 // one bad upstream response. Most warm-cache hits return in 50-200ms.
 const PER_COLLECTION_TIMEOUT_MS = 2500
+
+// Full-catalog coverage bound for the KV pass below. The inprocess fan-out only
+// reaches MAX_SEARCH_COLLECTIONS collections; this scans the created-mints
+// registry so a title in ANY collection is findable. Bounded so the per-search
+// cost can't grow without limit — beyond this, a moment index is the answer
+// (logged, never silently truncated). ~thousands of moments is one SSCAN page
+// plus one pipelined MGET; well within a rate-limited (30/min) search.
+const MAX_MOMENT_SEARCH_SCAN = 5000
 
 export async function searchMoments(query: string): Promise<MomentSearchResult[]> {
   const [allCollections, hiddenMoments, hiddenCollections, hiddenUsers] = await Promise.all([
@@ -97,6 +106,64 @@ export async function searchMoments(query: string): Promise<MomentSearchResult[]
       score: tier * 2 + (nameScore >= tier ? 1 : 0),
     })
   }
+
+  // ── Full-catalog coverage pass (KV) ──────────────────────────────────────
+  // The inprocess fan-out above only reaches the first MAX_SEARCH_COLLECTIONS
+  // collections, so a title in any other collection was unfindable (a creator's
+  // deeper mints never surfaced). The created-mints registry + moment-meta cover
+  // the WHOLE catalog with no HTTP — one bounded SSCAN + one pipelined MGET —
+  // matching title and creator ADDRESS. Two honest limits: moment-meta stores
+  // no creator USERNAME (so username→moments coverage stays with the inprocess
+  // pass and the profile result) and no image (ResultThumb falls back to an
+  // initial-letter chip). Best-effort: a KV blip must not fail the search the
+  // inprocess pass already populated.
+  try {
+    const registry = await scanCreatedMints(MAX_MOMENT_SEARCH_SCAN)
+    const pairs: { address: string; tokenId: string }[] = []
+    for (const k of registry) {
+      const sep = k.indexOf(':') // key is `${collectionAddress}:${tokenId}`; neither part carries a colon
+      if (sep < 0) continue
+      const address = k.slice(0, sep)
+      const tokenId = k.slice(sep + 1)
+      if (seen.has(`${address.toLowerCase()}:${tokenId}`)) continue // inprocess entry (has image) wins
+      pairs.push({ address, tokenId })
+    }
+    const metas = await getMomentMetaBatch(pairs)
+    for (let i = 0; i < pairs.length; i++) {
+      const meta = metas[i]
+      if (!meta) continue
+      const { address, tokenId } = pairs[i]
+      const addr = address.toLowerCase()
+      const key = `${addr}:${tokenId}`
+      if (seen.has(key)) continue
+      if (hiddenMoments.has(key) || hiddenCollections.has(addr)) continue
+      const creatorLower = (meta.creator ?? '').toLowerCase()
+      if (creatorLower && hiddenUsers.has(creatorLower)) continue
+      const nameScore = rankScore(meta.name, fq)
+      const creatorAddrScore = fq && creatorLower.startsWith(fq) ? RANK.PREFIX : RANK.NONE
+      const tier = Math.max(nameScore, creatorAddrScore)
+      if (tier === 0) continue
+      seen.add(key)
+      scored.push({
+        r: {
+          id: key,
+          address,
+          tokenId,
+          name: meta.name ?? `#${tokenId}`,
+          creatorAddress: meta.creator,
+        },
+        score: tier * 2 + (nameScore >= tier ? 1 : 0),
+      })
+    }
+    if (registry.length >= MAX_MOMENT_SEARCH_SCAN) {
+      console.warn(
+        `[search] moment coverage scan hit the ${MAX_MOMENT_SEARCH_SCAN}-key cap; titles beyond it are unsearchable until a moment index ships`,
+      )
+    }
+  } catch (err) {
+    console.error('[search] KV coverage pass failed', err instanceof Error ? err.message : String(err))
+  }
+
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, 20).map((s) => s.r)
 }
