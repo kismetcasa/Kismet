@@ -406,13 +406,18 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     </Link>
   )
 
-  // The collect / collect+ button, shared by the compact and full action rows
-  // so both stay in lockstep (same label, disabled gating, and sold-out /
-  // collected styling). `variant` only sizes it: compact is the stacked
-  // full-width pill (profile grids, discover grid, featured-row preview); full
-  // is the flex-1 cell that sits beside the price·supply badge or the list
-  // button. collectLabel already reads 'collect+' once owned/collected, so the
-  // same element serves the not-owned and owned cases in either layout.
+  // The collect / collect+ button, shared by every action row so they stay in
+  // lockstep (label, disabled gating, sold-out / collected styling). `variant`
+  // only sizes it: 'compact' is the full-width text-[10px] pill a not-owned
+  // compact card uses as its sole action; 'full' is the flex-1 text-xs cell that
+  // sits beside the price·supply badge or the list button — in the full card AND
+  // in the compact owner row, whose list button is text-xs too, so 'full' keeps
+  // the pair matched. collectLabel already reads 'collect+' once owned/collected.
+  //
+  // The resting 'collect' letters carry the brand gradient (accent-grad): the
+  // gradient now lives on the action, not on the price (which matches the plain
+  // supply color). 'collect+' keeps its filled-accent owner treatment, and a
+  // sold-out mint was already gradient — so every non-owned state reads gradient.
   const renderCollectButton = (variant: 'compact' | 'full') => (
     <button
       onClick={handleCollect}
@@ -426,7 +431,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ? 'accent-grad border-line'
           : hasCollected
             ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-            : `text-muted border-line accent-grad-hover ${variant === 'full' ? 'transition-all ' : ''}disabled:opacity-50`
+            : 'accent-grad border-line enabled:hover:border-accent disabled:opacity-50'
       }`}
     >
       {collectLabel}
@@ -780,7 +785,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         <div className="px-2 pb-2 flex flex-col gap-1 mt-auto">
           {!hidePriceSupply && owned === 0 && !collected && (
             <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
-              <span className={`text-[10px] font-mono truncate ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+              <span className="text-[10px] font-mono truncate text-subtle">{price ?? '…'}</span>
               <span className="text-[10px] font-mono text-subtle">·</span>
               <span className="text-[10px] font-mono text-subtle truncate">
                 {maxSupply === undefined
@@ -794,24 +799,27 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {showProfileCta ? (
             renderViewProfile('compact')
           ) : owned > 0 ? (
-            // Owner parity: list + collect+ stacked, matching the full card's
-            // [list][collect+] action row. The compact ternary used to render
-            // the list button ALONE, so an owned compact card (profile mints,
-            // discover grid, featured-row preview) dropped the collect+ that
-            // the wide card shows — the parity gap this fixes.
-            <>
-              <ListButton
-                collectionAddress={moment.address}
-                tokenId={moment.token_id}
-                name={meta.name}
-                image={meta.image ? resolveUri(meta.image) : undefined}
-                creatorAddress={moment.creator?.address}
-                contentUri={meta.content?.uri}
-                contentMime={meta.content?.mime}
-                stacked
-              />
-              {renderCollectButton('compact')}
-            </>
+            // Owner parity: list + collect+ SIDE BY SIDE (left→right) like the
+            // full card's [list][collect+] row — the compact card used to stack
+            // them. Both are text-xs (ListButton's size, matched by the 'full'
+            // collect variant) so the pair lines up; items-start lets the
+            // stacked list form grow down its own half without stretching the
+            // collect+ pill.
+            <div className="flex gap-1 items-start">
+              <div className="flex-1 min-w-0">
+                <ListButton
+                  collectionAddress={moment.address}
+                  tokenId={moment.token_id}
+                  name={meta.name}
+                  image={meta.image ? resolveUri(meta.image) : undefined}
+                  creatorAddress={moment.creator?.address}
+                  contentUri={meta.content?.uri}
+                  contentMime={meta.content?.mime}
+                  stacked
+                />
+              </div>
+              {renderCollectButton('full')}
+            </div>
           ) : (
             renderCollectButton('compact')
           )}
@@ -821,7 +829,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {!showProfileCta && !hidePriceSupply && owned === 0 && !collected && (
             <div className="flex border border-line flex-none">
               <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-                <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+                <span className="text-[11px] font-mono text-subtle">{price ?? '…'}</span>
               </div>
               <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
                 <span className="text-[11px] font-mono text-subtle">
