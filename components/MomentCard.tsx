@@ -408,11 +408,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
 
   // The collect / collect+ button, shared by every action row so they stay in
   // lockstep (label, disabled gating, sold-out / collected styling). `variant`
-  // only sizes it: 'compact' is the full-width text-[10px] pill a not-owned
-  // compact card uses as its sole action; 'full' is the flex-1 text-xs cell that
-  // sits beside the price·supply badge or the list button — in the full card AND
-  // in the compact owner row, whose list button is text-xs too, so 'full' keeps
-  // the pair matched. collectLabel already reads 'collect+' once owned/collected.
+  // only sizes it: 'compact' is the flex-1 text-[10px] cell beside a compact
+  // card's price·supply badge; 'full' is the flex-1 text-xs cell beside the
+  // price·supply box or the list button — in the full card AND the compact owner
+  // row, whose list button is text-xs too, so 'full' keeps the pair matched.
+  // collectLabel already reads 'collect+' once owned/collected.
   //
   // The resting 'collect' letters carry the brand gradient (accent-grad): the
   // gradient now lives on the action, not on the price (which matches the plain
@@ -424,9 +424,9 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       disabled={collecting || mintedOut || saleNotStarted || saleEnded}
       className={`${
         variant === 'compact'
-          ? 'w-full py-1.5 text-[10px]'
+          ? 'flex-1 min-w-[4rem] py-1.5 text-[10px]'
           : `flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs`
-      } font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+      } font-mono tracking-wider uppercase whitespace-nowrap border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
         soldOutUncollected
           ? 'accent-grad border-line'
           : hasCollected
@@ -783,28 +783,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           aligned (no-op when the card isn't stretched). */}
       {compact ? (
         <div className="px-2 pb-2 flex flex-col gap-1 mt-auto">
-          {!hidePriceSupply && owned === 0 && !collected && (
-            <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1">
-              <span className="text-[10px] font-mono truncate text-subtle">{price ?? '…'}</span>
-              <span className="text-[10px] font-mono text-subtle">·</span>
-              <span className="text-[10px] font-mono text-subtle truncate">
-                {maxSupply === undefined
-                  ? '…'
-                  : isOpenEdition(maxSupply)
-                    ? 'open'
-                    : maxSupply.toLocaleString()}
-              </span>
-            </div>
-          )}
           {showProfileCta ? (
             renderViewProfile('compact')
           ) : owned > 0 ? (
-            // Owner parity: list + collect+ SIDE BY SIDE (left→right) like the
-            // full card's [list][collect+] row — the compact card used to stack
-            // them. Both are text-xs (ListButton's size, matched by the 'full'
-            // collect variant) so the pair lines up; items-start lets the
-            // stacked list form grow down its own half without stretching the
-            // collect+ pill.
+            // Owner: list + collect+ SIDE BY SIDE (left→right), like the full
+            // card's [list][collect+] row. Both are text-xs (ListButton's size,
+            // matched by the 'full' collect variant); items-start lets the
+            // stacked list form open downward without stretching the collect+ pill.
             <div className="flex gap-1 items-start">
               <div className="flex-1 min-w-0">
                 <ListButton
@@ -821,7 +806,27 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               {renderCollectButton('full')}
             </div>
           ) : (
-            renderCollectButton('compact')
+            // Not owned: price·supply + collect SIDE BY SIDE, like the full /
+            // market cards (this row used to stack the badge ABOVE collect — the
+            // parity gap). flex-wrap drops collect below the badge ONLY when the
+            // card is too narrow to fit the pair (the dense ~175px discover /
+            // owner grids), degrading to stacked instead of overflowing.
+            <div className="flex flex-wrap gap-1 items-stretch">
+              {!hidePriceSupply && !collected && (
+                <div className="flex items-center justify-center gap-1 border border-line px-1.5 py-1.5 flex-none">
+                  <span className="text-[10px] font-mono text-subtle">{price ?? '…'}</span>
+                  <span className="text-[10px] font-mono text-subtle">·</span>
+                  <span className="text-[10px] font-mono text-subtle">
+                    {maxSupply === undefined
+                      ? '…'
+                      : isOpenEdition(maxSupply)
+                        ? 'open'
+                        : maxSupply.toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {renderCollectButton('compact')}
+            </div>
           )}
         </div>
       ) : (
