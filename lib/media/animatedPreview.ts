@@ -325,16 +325,21 @@ async function generatePreviewAssets(
  *  /api/img resize variants so the two eviction budgets don't interfere. */
 const PREVIEW_CACHE_DIR = join(process.cwd(), '.next', 'cache', 'kismet-fc-preview')
 // Versions the OUTPUT recipe: bump when the ffmpeg params change so stale
-// generations regenerate. p1 → p2: verified non-black sampling + still poster.
+// generations regenerate. History: p1 = t=0 sampling; p2 = the SHALLOW
+// offset sampler (3s blackdetect window, 2.5s cap) that ran in production
+// between the #638 merge and this fix — its files can still be black for
+// long-intro videos, so they must regenerate; p3 = verified non-black
+// sampling (candidate ladder + sharp check) + still poster + marker.
 //
-// A bump must NEVER cold-start the fleet: serving falls back to the previous
-// recipe's file while the current one regenerates (readPreview /
-// cachedPreviewVersion below). The p1→p2 deploy shipped without that fallback
-// and every working animated embed — gifs included — downgraded to the static
-// card until re-warmed AND re-scraped; that regression is why the fallback
-// now exists. Keep exactly one entry in LEGACY_RECIPE_VERSIONS per bump.
-const RECIPE_VERSION = 'p2'
-const LEGACY_RECIPE_VERSIONS = ['p1'] as const
+// A bump must NEVER cold-start the fleet: serving falls back to previous
+// recipes' files while the current one regenerates (readPreview /
+// cachedPreviewVersion below). The p1→p2 deploy shipped without that
+// fallback and every working animated embed — gifs included — downgraded to
+// the static card until re-warmed AND re-scraped; that regression is why the
+// fallback exists. List every still-plausible on-disk generation, newest
+// first, in LEGACY_RECIPE_VERSIONS.
+const RECIPE_VERSION = 'p3'
+const LEGACY_RECIPE_VERSIONS = ['p2', 'p1'] as const
 
 function srcHash(uri: string): string {
   return createHash('sha256').update(uri).digest('hex')
@@ -458,16 +463,24 @@ async function fetchBounded(
 /**
  * Warm-time poster decision: should the OG card prefer the video still over
  * this moment's poster? True when the poster is absent (or IS the video), or
- * when its actual bytes are a flat-black frame. Conservative on every failure
- * path — an unfetchable/undecodable poster reads as "keep the poster", so a
- * creator's cover can never be displaced by an error. Only content-addressed
- * posters are fetched (SSRF invariant, matches the source fetch).
+ * when its actual bytes are a flat-black frame; false when it decoded as real
+ * content (or is an origin we won't fetch), so a creator's cover can never be
+ * displaced. Returns NULL — decision deferred, marker NOT written — when the
+ * poster couldn't be FETCHED: content-addressed bytes make black/non-black
+ * deterministic, but a gateway blip is transient, and caching a guess from it
+ * would freeze a wrong answer until the next recipe bump (the exact
+ * transient-becomes-permanent class behind the p1→p2 cold-start). Only
+ * content-addressed posters are fetched (SSRF invariant, matches the source
+ * fetch).
  */
-async function computePreferStill(src: string, posterUri: string | null): Promise<boolean> {
+async function computePreferStill(
+  src: string,
+  posterUri: string | null,
+): Promise<boolean | null> {
   if (!posterUri || posterUri === src) return true
   if (!posterUri.startsWith('ar://') && !posterUri.startsWith('ipfs://')) return false
   const bytes = await fetchBounded(posterUri, MAX_POSTER_BYTES, POSTER_FETCH_BUDGET_MS)
-  if (!bytes) return false
+  if (!bytes) return null
   return isFlatBlackImage(bytes)
 }
 
@@ -504,11 +517,15 @@ async function computePreview(uri: string, posterUri: string | null | undefined)
 
     if (needMarker) {
       const preferStill = await computePreferStill(uri, posterUri ?? null)
-      await writeVariant(
-        PREVIEW_CACHE_DIR,
-        markerName(uri, posterUri ?? null),
-        Buffer.from(JSON.stringify({ preferStill })),
-      ).catch(() => {})
+      // null = the poster couldn't be fetched this round — leave the marker
+      // unwritten so the next warm retries, instead of freezing a guess.
+      if (preferStill !== null) {
+        await writeVariant(
+          PREVIEW_CACHE_DIR,
+          markerName(uri, posterUri ?? null),
+          Buffer.from(JSON.stringify({ preferStill })),
+        ).catch(() => {})
+      }
     }
 
     return existingPreview ?? (await readVariant(PREVIEW_CACHE_DIR, previewName(uri)))
