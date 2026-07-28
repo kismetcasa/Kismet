@@ -789,9 +789,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : owned > 0 ? (
             // Owner: list + collect+ SIDE BY SIDE (left→right), like the full
             // card's [list][collect+] row. Both are text-xs (ListButton's size,
-            // matched by the 'full' collect variant); items-start lets the
-            // stacked list form open downward without stretching the collect+ pill.
-            <div className="flex gap-1 items-start">
+            // matched by the 'full' collect variant), and items-STRETCH — same
+            // as the full card — so the two buttons are always the same height
+            // by construction (when the list form opens, collect+ stretches to
+            // match it, exactly like the full card behaves).
+            <div className="flex gap-1 items-stretch">
               <div className="flex-1 min-w-0">
                 <ListButton
                   collectionAddress={moment.address}
