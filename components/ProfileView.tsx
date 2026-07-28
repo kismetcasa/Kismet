@@ -860,7 +860,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
   const skeleton = (n: number) =>
     pinnedView ? (
-      // Showcase loading state: same swipe/four-up shell as the cards, capped
+      // Showcase loading state: same swipe/three-up shell as the cards, capped
       // at the per-category pin limit (4) so it doesn't flash extra tiles.
       <div className={SHOWCASE_ROW_CLASSES}>
         {Array.from({ length: Math.min(n, 4) }).map((_, i) => (

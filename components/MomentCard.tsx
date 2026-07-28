@@ -45,11 +45,12 @@ interface MomentCardProps {
    */
   priority?: boolean
   /**
-   * Compact mode for tight grids — the featured-collection-row's 10×2
-   * mints preview (~130px wide) and the discover/trending/market grid
-   * view (~150-200px wide at lg+). Drops the collection chip and
-   * copy-link button; action row stacks price·supply inline above the
-   * collect button so the 56px min-width chip doesn't overflow.
+   * Compact mode for tight grids — the featured-collection-row's mints
+   * preview, the discover/trending grid view (~150-200px wide at lg+),
+   * and the owner's dense profile dashboard. Drops the collection chip
+   * and copy-link button; the action row pairs the inline price·supply
+   * badge with the collect button left→right, flex-wrapping the button
+   * to its own full-width line only where the pair genuinely can't fit.
    */
   compact?: boolean
   /**
@@ -327,11 +328,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     totalMinted !== undefined &&
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
-  // Sold-out spotlight for viewers who HAVEN'T collected: the brand gradient
-  // moves from the price (a dead number once nothing's left) to the SOLD OUT
-  // label, which also skips the usual disabled dimming so it reads as a
-  // statement rather than a greyed-out control. Collected viewers keep the
-  // standard accent treatment — their sold-out state is a receipt, not a miss.
+  // Sold-out spotlight for viewers who HAVEN'T collected: the SOLD OUT label
+  // keeps its gradient letters but skips the usual disabled dimming, so it
+  // reads as a statement rather than a greyed-out control (the price is
+  // always the quiet subtle tier — the gradient belongs to the action). A
+  // collected viewer's sold-out card takes the normal disabled path instead —
+  // a dimmed 'sold out': a receipt, not a miss.
   const soldOutUncollected = mintedOut && !hasCollected
   // Sale-window gating. saleStart/saleEnd are unix-second strings on the
   // active sale config; absent, "0", or the max-uint64 sentinel mean "no
@@ -779,12 +781,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         {metaSlot && !(renderCreator && !compact) && renderMeta(false)}
       </div>
 
-      {/* Actions row. Default: [price|supply] [list] [collect] in one flex
-          row. Compact: stacked — [price · supply] inline above the collect
-          button — because the price/supply box's 56px min-widths combined
-          (112px) overflow a ~130px-wide compact card. mt-auto pins the row to
-          the card's bottom so equal-height grid rows keep their actions
-          aligned (no-op when the card isn't stretched). */}
+      {/* Actions row, always left→right. Full: [price|supply] [list] [collect]
+          in one items-stretch flex row (every box equal height). Compact
+          not-owned: [price·supply][collect] side by side, flex-wrap dropping
+          the collect button to its own full-width line only where the pair
+          can't fit (dense ~175px grids with long prices); compact owned:
+          [list][collect+], stretched equal. mt-auto pins the row to the
+          card's bottom so equal-height grid rows keep their actions aligned
+          (no-op when the card isn't stretched). */}
       {compact ? (
         <div className="px-2 pb-2 flex flex-col gap-1 mt-auto">
           {showProfileCta ? (
