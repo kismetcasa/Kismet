@@ -1388,7 +1388,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const priceSupplyBox = (
     <div className="flex border border-line flex-none">
       <div className="px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
-        <span className={`text-[11px] font-mono ${soldOutUncollected ? 'text-muted' : 'accent-grad'}`}>{price ?? '…'}</span>
+        <span className="text-[11px] font-mono text-subtle">{price ?? '…'}</span>
       </div>
       <div className="border-l border-line px-3 py-2 flex items-center justify-center min-w-[3.5rem]">
         <span className="text-[11px] font-mono text-subtle">
@@ -2022,7 +2022,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   ? 'accent-grad border-line'
                   : hasCollected
                     ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-                    : 'text-muted border-line accent-grad-hover disabled:opacity-50'
+                    : 'accent-grad border-line enabled:hover:border-accent disabled:opacity-50'
               }`}
             >
               {collectLabel}

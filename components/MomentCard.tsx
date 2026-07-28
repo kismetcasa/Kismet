@@ -431,7 +431,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ? 'accent-grad border-line'
           : hasCollected
             ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-            : 'accent-grad border-line hover:border-accent disabled:opacity-50'
+            : 'accent-grad border-line enabled:hover:border-accent disabled:opacity-50'
       }`}
     >
       {collectLabel}
