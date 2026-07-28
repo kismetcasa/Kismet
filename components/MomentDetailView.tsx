@@ -2020,9 +2020,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
                 soldOutUncollected
                   ? 'accent-grad border-line'
-                  : hasCollected
-                    ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-                    : 'accent-grad border-line enabled:hover:border-accent disabled:opacity-50'
+                  : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
               }`}
             >
               {collectLabel}
