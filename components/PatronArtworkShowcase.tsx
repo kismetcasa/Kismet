@@ -177,12 +177,15 @@ function PatronCollectButton({ moment }: { moment: Moment }) {
     <button
       onClick={handleCollect}
       disabled={unavailable || collecting}
+      // Same collect treatment as the cards: gradient letters, plain box,
+      // gradient fill on hover (accent-grad + accent-grad-hover compose via
+      // the globals.css combining rule).
       className={`shrink-0 border px-3 py-1.5 text-xs font-mono uppercase tracking-widest transition-colors ${
         unavailable
           ? 'border-line text-muted cursor-not-allowed'
           : collecting
-            ? 'border-accent/40 text-accent opacity-70 cursor-wait'
-            : 'border-accent/40 text-accent hover:border-accent hover:bg-accent/10'
+            ? 'accent-grad border-line opacity-70 cursor-wait'
+            : 'accent-grad accent-grad-hover border-line'
       }`}
     >
       {collecting ? 'collecting…' : unavailable ? 'sold out' : 'collect artwork'}

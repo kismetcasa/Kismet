@@ -201,10 +201,14 @@ export function BuyButton({ listing, onBought, className = '', compact = false }
     <button
       onClick={handleBuy}
       disabled={loading || bought}
+      // Same treatment as the collect buttons: gradient letters, plain box,
+      // gradient fill on hover (the globals.css combining rule) — the label
+      // carries the price, so it stays visible in the action. `bought` is NOT
+      // a differentiated accent box, mirroring the un-differentiated collect+.
       className={`${compact ? 'text-[10px] px-2 py-1.5' : 'text-xs px-4 py-2.5'} font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${loading ? 'cursor-not-allowed' : ''} ${
         bought
-          ? 'border-accent text-accent bg-accent/10'
-          : 'border-line text-dim hover:border-accent hover:text-accent'
+          ? 'accent-grad border-line'
+          : 'accent-grad accent-grad-hover border-line'
       } ${className}`}
     >
       {bought ? 'bought' : loading ? 'buying…' : `buy ${priceLabel}`}

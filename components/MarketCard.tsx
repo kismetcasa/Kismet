@@ -238,7 +238,7 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
                   {creatorName}
                 </Link>
               ) : <span />}
-              <p className="text-[10px] font-mono accent-grad flex-shrink-0">{priceLabel}</p>
+              <p className="text-[10px] font-mono text-subtle flex-shrink-0">{priceLabel}</p>
             </div>
           ) : (
             <>
@@ -262,7 +262,7 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
                 {Number(listing.royaltyAmount) > 0 ? (
                   <p className="text-xs font-mono text-subtle">{royaltyPct}% royalty</p>
                 ) : <span />}
-                <p className="text-xs font-mono accent-grad">{priceLabel}</p>
+                <p className="text-xs font-mono text-subtle">{priceLabel}</p>
               </div>
             </>
           )}
