@@ -414,10 +414,13 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // row, whose list button is text-xs too, so 'full' keeps the pair matched.
   // collectLabel already reads 'collect+' once owned/collected.
   //
-  // The resting 'collect' letters carry the brand gradient (accent-grad): the
-  // gradient now lives on the action, not on the price (which matches the plain
-  // supply color). 'collect+' keeps its filled-accent owner treatment, and a
-  // sold-out mint was already gradient — so every non-owned state reads gradient.
+  // Resting letters carry the brand gradient (accent-grad); hover fills the
+  // whole box with the same gradient + dark letters (accent-grad-hover — the
+  // two classes are made composable in globals.css, which un-clips the text
+  // gradient on hover so the fill can paint). 'collect+' (owned) is styled
+  // IDENTICALLY to 'collect' — ownership reads from the label's +, not a
+  // filled box. A sold-out uncollected mint keeps un-dimmed gradient letters
+  // with no hover fill (it's disabled): a statement, not a control.
   const renderCollectButton = (variant: 'compact' | 'full') => (
     <button
       onClick={handleCollect}
@@ -429,9 +432,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
       } font-mono tracking-wider uppercase whitespace-nowrap border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
         soldOutUncollected
           ? 'accent-grad border-line'
-          : hasCollected
-            ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-            : 'accent-grad border-line enabled:hover:border-accent disabled:opacity-50'
+          : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
       }`}
     >
       {collectLabel}
@@ -788,9 +789,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           ) : owned > 0 ? (
             // Owner: list + collect+ SIDE BY SIDE (left→right), like the full
             // card's [list][collect+] row. Both are text-xs (ListButton's size,
-            // matched by the 'full' collect variant); items-start lets the
-            // stacked list form open downward without stretching the collect+ pill.
-            <div className="flex gap-1 items-start">
+            // matched by the 'full' collect variant), and items-STRETCH — same
+            // as the full card — so the two buttons are always the same height
+            // by construction (when the list form opens, collect+ stretches to
+            // match it, exactly like the full card behaves).
+            <div className="flex gap-1 items-stretch">
               <div className="flex-1 min-w-0">
                 <ListButton
                   collectionAddress={moment.address}

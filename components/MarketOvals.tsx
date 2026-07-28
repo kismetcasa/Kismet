@@ -361,7 +361,8 @@ function MomentOvalImpl({
       }
       action={
         <>
-          <span title={usdTitle} className="font-mono text-[12px] accent-grad tabular-nums">{price ?? '…'}</span>
+          {/* Quiet price, gradient action — same emphasis as the cards. */}
+          <span title={usdTitle} className="font-mono text-[12px] text-subtle tabular-nums">{price ?? '…'}</span>
           <button
             onClick={handleCollect}
             disabled={disabled}
@@ -369,12 +370,13 @@ function MomentOvalImpl({
             // Re-enable pointer events only when the button is an actionable
             // target; a disabled button inherits the cluster's none and lets the
             // click fall through to the oval's navigate link.
+            // collect+ (hasCollected) is deliberately NOT differentiated — same
+            // pill as collect; ownership reads from the label's + alone,
+            // matching the card surfaces.
             className={`${disabled ? '' : 'pointer-events-auto'} rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
               mintedOut || saleEnded
                 ? 'border-line/60 text-subtle'
-                : hasCollected
-                  ? 'border-accent bg-accent/10 text-accent hover:bg-accent/20'
-                  : 'border-line text-dim accent-grad-hover disabled:opacity-50'
+                : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
             }`}
           >
             {label}

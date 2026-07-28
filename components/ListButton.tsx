@@ -86,10 +86,12 @@ export function ListButton({
   }, [priceInput, currency])
   const typedBelowFloor = priceTotalTyped !== null && isBelowListingFloor(priceTotalTyped)
 
-  // Live net-proceeds preview for the typed price: price − royalty − 1% fee,
-  // via the same computeSellerProceeds handleList encodes into the signed
-  // order — one arithmetic, so the preview cannot drift from what the seller
-  // actually signs. Only the royalty read is async; null = nothing to show.
+  // Net-proceeds check for the typed price: price − royalty − 1% fee, via the
+  // same computeSellerProceeds handleList encodes into the signed order. The
+  // everyday "you'll receive ≈ …" preview line was removed as noise; this now
+  // exists ONLY to catch the misconfigured/adversarial EIP-2981 edge where
+  // royalty + fees meet or exceed the price (the seller would net nothing) —
+  // silent for every normal listing. Only the royalty read is async.
   const [breakdown, setBreakdown] = useState<
     { proceeds: bigint; royalty: bigint; fee: bigint } | null
   >(null)
@@ -387,22 +389,18 @@ export function ListButton({
         </button>
       </div>
     </div>
-    {/* Floor notice renders synchronously from the typed price (no debounce
-        lag); the proceeds line waits on the debounced royalty read. A
-        royalty that meets/exceeds the price (misconfigured or adversarial
-        EIP-2981) gets an explicit warning — never a negative or "free"
-        payout presented as the seller's net. */}
+    {/* Error-only notices — the everyday proceeds preview is gone. The floor
+        notice is synchronous validation (below it /api/listings POST rejects
+        the order, so warn BEFORE gas + signature); the zero-proceeds line
+        fires only on the royalty-swallows-price edge. Normal listings render
+        neither. */}
     {typedBelowFloor ? (
       <p className="mt-1 text-[10px] font-mono text-red-400">
         {`minimum ${formatPrice(MIN_LISTING_PRICE_BASE_UNITS.toString(), currency)} — below it the 1% fee rounds to zero`}
       </p>
-    ) : breakdown && (
-      <p className={`mt-1 text-[10px] font-mono ${breakdown.proceeds <= 0n ? 'text-red-400' : 'text-muted'}`}>
-        {breakdown.proceeds <= 0n
-          ? `royalty + fees meet or exceed this price — you'd receive nothing; raise the price`
-          : breakdown.royalty > 0n
-            ? `you'll receive ≈ ${formatPrice(breakdown.proceeds.toString(), currency)} — after ${formatPrice(breakdown.royalty.toString(), currency)} royalty + ${formatPrice(breakdown.fee.toString(), currency)} platform fee (1%)`
-            : `you'll receive ≈ ${formatPrice(breakdown.proceeds.toString(), currency)} — after the 1% platform fee`}
+    ) : breakdown && breakdown.proceeds <= 0n && (
+      <p className="mt-1 text-[10px] font-mono text-red-400">
+        {`royalty + fees meet or exceed this price — you'd receive nothing; raise the price`}
       </p>
     )}
     </div>

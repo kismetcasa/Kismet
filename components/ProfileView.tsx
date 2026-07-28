@@ -840,17 +840,19 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
   // Curated showcase layout (visitor view / owner "public view"), mirroring
   // the featured tab's CollectionRow: a horizontal snap-swipe of fixed-width
-  // cards on phones, and a four-up row on web (lg+). A section holds at most
-  // MAX_PINS_PER_CATEGORY (4) cards — keep the lg column count and the skeleton
-  // cap below in sync with that cap (and the hint copy). The dense dashboard
-  // grid (GRID_CLASSES) still drives the owner's full mint/collected lists.
+  // cards on phones, and a three-up row on web (lg+) — the same column count
+  // as the discover feed, so showcase cards render at the platform's standard
+  // full-card scale. (Was four-up to match the 4-pin cap, but ~270px cards
+  // read too small next to every other surface; a 4-pin showcase now wraps
+  // 3+1 like any feed.) The dense dashboard grid (GRID_CLASSES) still drives
+  // the owner's full mint/collected lists.
   const SHOWCASE_ROW_CLASSES =
-    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-4 lg:gap-4 lg:overflow-visible'
+    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-3 lg:gap-4 lg:overflow-visible'
   // grid grid-rows-1 makes the card fill the cell so every box in a section
   // row is the same height regardless of content (price loaded, owned, text
   // moment): the row stretches items to the tallest, this stretches the card
   // to fill that height in turn.
-  const SHOWCASE_ITEM_CLASSES = 'grid grid-rows-1 w-64 flex-shrink-0 snap-start lg:w-auto'
+  const SHOWCASE_ITEM_CLASSES = 'grid grid-rows-1 w-72 flex-shrink-0 snap-start lg:w-auto'
   // ~3 rows worth of compact cards across breakpoints — a single value
   // is approximate (row height varies with card width) but lands close
   // enough that users see ~3 rows on mobile and ~3 rows on desktop.
@@ -969,7 +971,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : renderCardCollection(
             displayMoments,
-            (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} isMobile={isMobile} {...ownerPinProps('mints', m.address, m.token_id)} />,
+            // Pinned showcase renders the STANDARD full card (the same card as
+            // the discover feed — full action row, meta slot, copy/open
+            // affordances) at feed scale; compact stays for the owner's dense
+            // dashboard grid only.
+            (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact={!pinnedView} showCreator priority={index < 6} isMobile={isMobile} {...ownerPinProps('mints', m.address, m.token_id)} />,
             (m) => m.id ?? `${m.address}-${m.token_id}`,
           )
     ),
@@ -977,7 +983,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           displayCollected,
-          (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact showCreator priority={index < 6} passBadge={passBadge ?? undefined} isMobile={isMobile} {...ownerPinProps('collected', m.address, m.token_id)} />,
+          (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact={!pinnedView} showCreator priority={index < 6} passBadge={passBadge ?? undefined} isMobile={isMobile} {...ownerPinProps('collected', m.address, m.token_id)} />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : displayListings.length === 0
@@ -994,7 +1000,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             <MarketCard
               listing={l}
               onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))}
-              compact
+              compact={!pinnedView}
               showCreator
               priority={index < 6}
               {...ownerPinProps('listings', l.collectionAddress, l.tokenId)}
