@@ -49,6 +49,24 @@ export const redis = new Redis({
   },
 })
 
+/**
+ * MGET that is safe on an unbounded key list. Upstash rejects any single REST
+ * request over 10MB ("ERR max request size exceeded"), so a full-set scan
+ * (all profiles, all collections) that MGETs every key in one call breaks as
+ * the set grows. Chunking keeps each request small; auto-pipelining (above)
+ * still collapses the chunks into ONE HTTP round trip, so latency and billed
+ * commands are unchanged. Shared so every full-set read gets the guarantee
+ * getMomentMetaBatch already bakes in for the feed path.
+ */
+export async function mgetChunked<T>(keys: string[], chunkSize = 512): Promise<(T | null)[]> {
+  if (keys.length === 0) return []
+  if (keys.length <= chunkSize) return redis.mget<(T | null)[]>(...keys)
+  const chunks: string[][] = []
+  for (let i = 0; i < keys.length; i += chunkSize) chunks.push(keys.slice(i, i + chunkSize))
+  const results = await Promise.all(chunks.map((c) => redis.mget<(T | null)[]>(...c)))
+  return results.flat()
+}
+
 export const FEATURED_KEY = 'kismetart:featured'
 export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 // Mint Pass Display — individual mints curated to render at collection scale

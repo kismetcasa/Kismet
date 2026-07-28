@@ -1,8 +1,9 @@
-import { redis } from './redis'
+import { redis, mgetChunked } from './redis'
 import { bestEffort } from './bestEffort'
 import { getHiddenUsersSet } from './hidden-users'
 import { getHiddenProfilesSet } from './hidden-profiles'
 import { randomHex } from './random'
+import { foldSearch, rankScore } from './searchText'
 import type { ProfileSocials } from './socials'
 
 export interface Profile {
@@ -191,7 +192,7 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
     // Filter indexed wallets by address prefix
     const matching = addresses.filter(a => a.startsWith(q) && !stripped(a))
     if (matching.length > 0) {
-      const raws = await redis.mget<(string | Profile | null)[]>(...matching.map(keyByAddress))
+      const raws = await mgetChunked<string | Profile>(matching.map(keyByAddress))
       for (const raw of raws) {
         if (!raw) continue
         const p: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
@@ -208,19 +209,36 @@ export async function searchProfiles(query: string): Promise<Profile[]> {
       results.unshift(await getProfile(q))
     }
   } else {
-    // Username search across all indexed profiles
+    // Username + social-handle search across all indexed profiles. Fold both
+    // sides (foldSearch) so a plain-ASCII query matches accented display names —
+    // the "gonz" vs "gønz" miss, where ø neither lowercases nor NFKD-decomposes
+    // to o. Also matches X / Farcaster / Instagram handles, so someone findable
+    // only by their socials (e.g. @kapoooowwwww) still surfaces. Every candidate
+    // is SCORED and the best 20 kept, rather than the first 20 scanned — a
+    // prefix/exact hit can no longer lose to earlier substring noise.
     if (!addresses.length) return []
-    const raws = await redis.mget<(string | Profile | null)[]>(...addresses.map(keyByAddress))
+    const raws = await mgetChunked<string | Profile>(addresses.map(keyByAddress))
+    const fq = foldSearch(q)
+    const scored: { p: Profile; score: number }[] = []
     for (let i = 0; i < addresses.length; i++) {
       const raw = raws[i]
       if (!raw) continue
       if (stripped(addresses[i])) continue
       const p: Profile = typeof raw === 'string' ? JSON.parse(raw) : raw
-      if ((p.username ?? '').toLowerCase().includes(q)) {
-        results.push(p)
-        if (results.length >= 20) break
-      }
+      const nameScore = rankScore(p.username, fq)
+      const socialScore = Math.max(
+        rankScore(p.socials?.x, fq),
+        rankScore(p.socials?.farcaster, fq),
+        rankScore(p.socials?.instagram, fq),
+      )
+      const tier = Math.max(nameScore, socialScore)
+      if (tier === 0) continue
+      // Tier dominates; a username hit outranks a social-only hit at the same
+      // tier; recency (updatedAt) breaks the final tie.
+      scored.push({ p, score: tier * 2 + (nameScore >= socialScore ? 1 : 0) })
     }
+    scored.sort((a, b) => b.score - a.score || b.p.updatedAt - a.p.updatedAt)
+    for (const s of scored.slice(0, 20)) results.push(s.p)
   }
 
   return results
