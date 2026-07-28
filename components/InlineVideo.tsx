@@ -430,6 +430,17 @@ export function InlineVideo({ src, controls = false, className, onError, ssrProx
       onError={handleError}
       onLoadedMetadata={handleLoadedMetadata}
       onLoadedData={() => setLoaded(true)}
+      // Belt-and-suspenders reveal: WKWebView can skip loadeddata for a
+      // streaming source even though play() succeeds — audio runs while the
+      // poster cover never fades ("stuck on the poster"). playing fires the
+      // moment playback actually starts, so reveal there too. Gated on a real
+      // video track (videoWidth>0): an audio-only "video" on the detail page
+      // should KEEP the poster cover, matching the pre-cover behavior where
+      // the invisible element left the poster showing.
+      onPlaying={() => {
+        const el = ref.current
+        if (el && el.videoWidth > 0) setLoaded(true)
+      }}
       // Retry the deferred resume BEFORE starting playback so the video
       // begins at the restored position when the seek is already possible.
       onCanPlay={() => {

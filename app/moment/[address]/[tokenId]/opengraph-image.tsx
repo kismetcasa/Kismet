@@ -3,8 +3,8 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchMomentDetail } from '@/lib/momentDetail'
 import { getMomentContent } from '@/lib/momentContent'
-import { shareImageSource, posterIsFlatBlack } from '@/lib/media/shareImage'
-import { readMomentStill } from '@/lib/media/animatedPreview'
+import { shareImageSource } from '@/lib/media/shareImage'
+import { readPreferredStill } from '@/lib/media/animatedPreview'
 import {
   shareCard,
   SHARE_CARD_SIZE,
@@ -82,15 +82,18 @@ export default async function Image({ params }: Props) {
       // Satori never re-downloads a multi-MB original mid-render (the
       // failure that blanked this class's Farcaster embeds).
       imageUrl = await shareImageSource(detail.metadata?.image, detail.metadata?.animation_url)
-      // Video moment whose poster is a black fade-in frame (or absent): prefer a
-      // representative still extracted from the video (cached alongside the
-      // animated preview) so the share card never leads with black. Byte-
-      // identical fallback — no cached still, or a non-black creator cover →
-      // imageUrl stays exactly as shareImageSource resolved it. readMomentStill
-      // is a no-op (null) for non-video/gif metadata, so the label gate is just
-      // a cheap pre-filter that avoids the poster luma probe on stills/writing.
-      if (label === 'VIDEO' && (await posterIsFlatBlack(detail.metadata?.image))) {
-        const still = await readMomentStill(detail.metadata)
+      // Video/gif moment whose poster the warm-time marker judged flat-black
+      // (or absent, or the video itself): prefer the representative still
+      // extracted from the video at a VERIFIED non-black offset (cached
+      // alongside the animated preview). The marker is decided from the actual
+      // poster bytes during the background warm — never inline here — so this
+      // stays a pure cache read on the crawler path. Byte-identical fallback:
+      // cold cache or a real (non-black) creator cover → imageUrl stays
+      // exactly as shareImageSource resolved it. readPreferredStill is a no-op
+      // (null) for non-video/gif metadata; the label gate just skips the reads
+      // for stills/writing.
+      if (label === 'VIDEO') {
+        const still = await readPreferredStill(detail.metadata)
         if (still) imageUrl = `data:image/jpeg;base64,${still.toString('base64')}`
       }
       // Text-only card → pull the writing body's first line from the KV
