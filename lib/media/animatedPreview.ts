@@ -36,7 +36,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createHash } from 'node:crypto'
-import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
@@ -279,43 +279,39 @@ async function encodeOutput(args: string[], outPath: string): Promise<Buffer> {
 }
 
 /**
- * Transcode already-fetched source bytes (an MP4, or an animated GIF) into the
+ * Transcode an on-disk source file (an MP4, or an animated GIF) into the
  * short looping animated preview AND the representative still, both sampled at
  * the verified non-black offset. Requires `ffmpeg` on PATH. Throws only if the
  * preview itself can't be produced (caller → static card); the still is
  * best-effort (null on any failure — the OG route just keeps meta.image).
- * ffmpeg probes the container from content, so the temp input is extensionless.
+ * ffmpeg probes the container from content, so the input is extensionless.
+ * The caller owns `workDir` (creation and cleanup) — the source was streamed
+ * there directly, never held in RAM.
  */
 async function generatePreviewAssets(
-  source: Buffer,
+  inPath: string,
+  workDir: string,
 ): Promise<{ preview: Buffer; still: Buffer | null }> {
-  const dir = await mkdtemp(join(tmpdir(), 'fcpreview-'))
-  const inPath = join(dir, 'in')
-  const previewOut = join(dir, `out.${PREVIEW_FORMAT}`)
-  const stillOut = join(dir, 'still.jpg')
-  try {
-    await writeFile(inPath, source)
-    const offset = await pickVerifiedOffset(inPath)
+  const previewOut = join(workDir, `out.${PREVIEW_FORMAT}`)
+  const stillOut = join(workDir, 'still.jpg')
+  const offset = await pickVerifiedOffset(inPath)
 
-    // Animated preview. If an offset seek lands past a short clip's end and
-    // yields nothing, retry from 0 so we never regress to an empty preview.
-    let preview = await encodeOutput(buildFfmpegArgs(inPath, previewOut, offset), previewOut)
-    if (preview.byteLength === 0 && offset > 0) {
-      preview = await encodeOutput(buildFfmpegArgs(inPath, previewOut, 0), previewOut)
-    }
-    if (preview.byteLength === 0) throw new Error('ffmpeg produced empty preview')
-
-    // Representative still — best-effort, same retry, never fatal to the preview.
-    let still: Buffer | null = await encodeOutput(buildStillArgs(inPath, stillOut, offset), stillOut)
-    if (still.byteLength === 0 && offset > 0) {
-      still = await encodeOutput(buildStillArgs(inPath, stillOut, 0), stillOut)
-    }
-    if (still.byteLength === 0) still = null
-
-    return { preview, still }
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  // Animated preview. If an offset seek lands past a short clip's end and
+  // yields nothing, retry from 0 so we never regress to an empty preview.
+  let preview = await encodeOutput(buildFfmpegArgs(inPath, previewOut, offset), previewOut)
+  if (preview.byteLength === 0 && offset > 0) {
+    preview = await encodeOutput(buildFfmpegArgs(inPath, previewOut, 0), previewOut)
   }
+  if (preview.byteLength === 0) throw new Error('ffmpeg produced empty preview')
+
+  // Representative still — best-effort, same retry, never fatal to the preview.
+  let still: Buffer | null = await encodeOutput(buildStillArgs(inPath, stillOut, offset), stillOut)
+  if (still.byteLength === 0 && offset > 0) {
+    still = await encodeOutput(buildStillArgs(inPath, stillOut, 0), stillOut)
+  }
+  if (still.byteLength === 0) still = null
+
+  return { preview, still }
 }
 
 // ── Cache (reuses the imgVariantCache disk store: atomic write, LRU eviction,
@@ -373,6 +369,25 @@ function readStill(uri: string): Promise<Buffer | null> {
   return readVariant(PREVIEW_CACHE_DIR, stillName(uri))
 }
 
+// TTL'd failure note for a source whose fetch/encode failed — stops every
+// scrape from re-downloading a dead or (transiently) oversize source, without
+// ever freezing the failure permanently (FAIL_RETRY_TTL_MS). Deleted on the
+// next successful preview write.
+function failName(uri: string): string {
+  return `${RECIPE_VERSION}-fail-${srcHash(uri)}.json`
+}
+
+async function failMarkerFresh(uri: string): Promise<boolean> {
+  const buf = await readVariant(PREVIEW_CACHE_DIR, failName(uri))
+  if (!buf) return false
+  try {
+    const t = (JSON.parse(buf.toString('utf8')) as { t?: unknown }).t
+    return typeof t === 'number' && Date.now() - t < FAIL_RETRY_TTL_MS
+  } catch {
+    return false
+  }
+}
+
 async function readMarker(uri: string, posterUri: string | null): Promise<{ preferStill: boolean } | null> {
   const buf = await readVariant(PREVIEW_CACHE_DIR, markerName(uri, posterUri))
   if (!buf) return null
@@ -416,23 +431,97 @@ let activePreviews = 0
 // crawler burst can't stack encodes and OOM the shared box. Excess callers get
 // null (→ static card) and retry on a later scrape.
 const MAX_CONCURRENT_PREVIEWS = 1
-// Bound one source download's RAM. Kismet's own mints are short GIF-derived
-// MP4s (a few MB); a source past this cap skips the preview (→ static card),
-// which is exactly its behavior today.
-const MAX_SOURCE_BYTES = 100 * 1024 * 1024
-// Posters are small JPEGs; bound their marker fetch far tighter.
+// Bound one source download's DISK use. Streamed straight to the temp file
+// ffmpeg reads (never buffered in RAM), so the cap can afford long-form
+// artist videos — the old 100MB cap existed only because the fetch buffered
+// in memory, and it silently exempted exactly the reported "long video"
+// class from ever getting a preview or still (→ permanently black embed for
+// a fade-in long video; a documented 186MB real moment exists). Transient
+// disk cost, one compute at a time.
+const MAX_SOURCE_BYTES = 500 * 1024 * 1024
+// Posters are small JPEGs; their marker fetch stays RAM-buffered and far
+// tighter.
 const MAX_POSTER_BYTES = 10 * 1024 * 1024
 const POSTER_FETCH_BUDGET_MS = 15_000
 // Reject an output over this — a safety margin under Farcaster's 10MB embed
 // cap. With the tuned recipe real outputs land single-digit MB at most.
 const MAX_PREVIEW_BYTES = 9 * 1024 * 1024
-// Wall-clock for the whole source download across the gateway walk.
-const SOURCE_FETCH_BUDGET_MS = 60_000
+// Wall-clock for the whole source download across the gateway walk — sized
+// for the raised byte cap.
+const SOURCE_FETCH_BUDGET_MS = 120_000
+// A source that couldn't be fetched/encoded is retried no sooner than this.
+// A TTL, not a permanent flag (transient failures must never freeze — the
+// p1→p2 lesson): oversize-at-the-time or gateway-dead sources stop costing a
+// full re-download on EVERY scrape, but heal on their own within a day.
+const FAIL_RETRY_TTL_MS = 6 * 60 * 60 * 1000
 
 /**
- * Download an ar://ipfs:// resource across the gateway pool, hard-capped on
- * ACTUAL bytes (Content-Length is advisory on chunked gateways). Returns null
- * on any failure/oversize so the caller degrades gracefully.
+ * Stream a fetched body to `destPath`, hard-capped on ACTUAL bytes written
+ * (Content-Length is advisory on chunked gateways). Returns the byte count,
+ * or null on overflow (partial file removed). Never buffers the body in RAM.
+ */
+async function streamBodyToFile(
+  body: AsyncIterable<Uint8Array>,
+  destPath: string,
+  maxBytes: number,
+): Promise<number | null> {
+  const fh = await open(destPath, 'w')
+  let written = 0
+  try {
+    for await (const chunk of body) {
+      written += chunk.byteLength
+      if (written > maxBytes) return null
+      await fh.write(chunk)
+    }
+    return written
+  } finally {
+    // Overflow or a mid-stream throw leaves a partial file behind this close —
+    // fetchSourceToFile removes it so a later attempt can't mistake it for a
+    // complete download.
+    await fh.close().catch(() => {})
+  }
+}
+
+/**
+ * Download an ar://ipfs:// source across the gateway pool STRAIGHT TO DISK at
+ * `destPath` (ffmpeg reads from disk anyway — RAM never holds the file).
+ * Returns true on success; false on failure/oversize, with any partial file
+ * removed, so the caller degrades gracefully.
+ */
+async function fetchSourceToFile(uri: string, destPath: string): Promise<boolean> {
+  const urls = gatewayUrls(uri)
+  const deadline = Date.now() + SOURCE_FETCH_BUDGET_MS
+  for (const url of urls) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(remaining) })
+      if (!res.ok || !res.body) continue
+      const written = await streamBodyToFile(
+        res.body as unknown as AsyncIterable<Uint8Array>,
+        destPath,
+        MAX_SOURCE_BYTES,
+      )
+      if (written === null) {
+        // Oversize is a property of the content, not this gateway — stop.
+        await rm(destPath, { force: true }).catch(() => {})
+        return false
+      }
+      if (written > 0) return true
+    } catch {
+      // Truncated/failed transfer — remove the partial and try the next
+      // gateway (each attempt reopens the file with 'w', but a final failed
+      // attempt must not leave debris).
+      await rm(destPath, { force: true }).catch(() => {})
+    }
+  }
+  await rm(destPath, { force: true }).catch(() => {})
+  return false
+}
+
+/**
+ * Download a SMALL ar://ipfs:// resource (poster marker fetch) into RAM,
+ * hard-capped on actual bytes. Returns null on any failure/oversize.
  */
 async function fetchBounded(
   uri: string,
@@ -500,18 +589,42 @@ async function computePreview(uri: string, posterUri: string | null | undefined)
     // the marker rather than write a wrong one.
     const needMarker =
       posterUri !== undefined && (await readMarker(uri, posterUri)) === null
-    const needEncode = !existingPreview || !existingStill
+    const needEncode = (!existingPreview || !existingStill) && !(await failMarkerFresh(uri))
 
     if (needEncode) {
-      const source = await fetchBounded(uri, MAX_SOURCE_BYTES, SOURCE_FETCH_BUDGET_MS)
-      if (source) {
-        const { preview, still } = await generatePreviewAssets(source)
-        if (preview.byteLength > 0 && preview.byteLength <= MAX_PREVIEW_BYTES) {
-          await writeVariant(PREVIEW_CACHE_DIR, previewName(uri), preview)
+      // Source streams to disk in a temp dir this block owns; ffmpeg reads it
+      // from there. On any failure — fetch, oversize, or encode — write the
+      // TTL'd fail note so the next scrapes skip the re-download until the
+      // TTL lapses; a success deletes it.
+      let encodeFailed = false
+      const dir = await mkdtemp(join(tmpdir(), 'fcpreview-'))
+      try {
+        const inPath = join(dir, 'in')
+        if (!(await fetchSourceToFile(uri, inPath))) {
+          encodeFailed = true
+        } else {
+          const { preview, still } = await generatePreviewAssets(inPath, dir)
+          if (preview.byteLength > 0 && preview.byteLength <= MAX_PREVIEW_BYTES) {
+            await writeVariant(PREVIEW_CACHE_DIR, previewName(uri), preview)
+            await rm(join(PREVIEW_CACHE_DIR, failName(uri)), { force: true }).catch(() => {})
+          } else {
+            encodeFailed = true
+          }
+          if (still && still.byteLength > 0 && still.byteLength <= MAX_PREVIEW_BYTES) {
+            await writeVariant(PREVIEW_CACHE_DIR, stillName(uri), still).catch(() => {})
+          }
         }
-        if (still && still.byteLength > 0 && still.byteLength <= MAX_PREVIEW_BYTES) {
-          await writeVariant(PREVIEW_CACHE_DIR, stillName(uri), still).catch(() => {})
-        }
+      } catch {
+        encodeFailed = true
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {})
+      }
+      if (encodeFailed) {
+        await writeVariant(
+          PREVIEW_CACHE_DIR,
+          failName(uri),
+          Buffer.from(JSON.stringify({ t: Date.now() })),
+        ).catch(() => {})
       }
     }
 
@@ -635,3 +748,7 @@ export async function readPreferredStill(
   warmMomentPreview(src, posterUri)
   return null
 }
+
+// Exported for the verify script only (streaming-to-disk byte cap) — not part
+// of the module API.
+export const __test = { streamBodyToFile }
