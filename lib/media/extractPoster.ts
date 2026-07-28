@@ -1,10 +1,17 @@
 'use client'
 
 import { reportClientError } from '@/lib/clientError'
+import { seekToFirstNonBlackFrame } from '@/lib/media/representativeFrame'
 
 /**
- * Extract the first frame of a video file as a JPEG File, suitable for
+ * Extract a representative frame of a video file as a JPEG File, suitable for
  * uploading to Arweave as a moment's `image` poster.
+ *
+ * Not literally frame 0: a video that fades in from black would yield a black
+ * poster (and, downstream, a black feed/embed card), so we seek past any
+ * leading flat-black run to the first frame with real content first
+ * (seekToFirstNonBlackFrame — a no-op that stays at t=0 for videos that open on
+ * content or that are uniformly dark).
  *
  * Browser-native (HTMLVideoElement → canvas → JPEG blob), so it has no
  * FFmpeg.wasm dependency and works on long videos that would exceed the
@@ -44,6 +51,9 @@ export async function extractVideoPoster(file: File): Promise<File | null> {
       video.addEventListener('loadeddata', () => resolve(), { once: true })
       video.addEventListener('error', () => reject(new Error('video decode failed')), { once: true })
     })
+    // Park past any leading fade-from-black so the poster isn't a black frame.
+    // Best-effort and bounded; leaves the video at t=0 on any failure.
+    await seekToFirstNonBlackFrame(video)
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight

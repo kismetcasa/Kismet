@@ -1,5 +1,6 @@
 import { rgbaToThumbHash, thumbHashToDataURL, thumbHashToApproximateAspectRatio, thumbHashToAverageRGBA } from 'thumbhash'
 import { LRUCache } from '@/lib/lruCache'
+import { seekToFirstNonBlackFrame } from '@/lib/media/representativeFrame'
 
 // Decoded blur data-URLs keyed by the source base64 thumbhash. The decode is
 // a synchronous pure-JS PNG encode (~0.5-2ms each) that the feed otherwise
@@ -44,6 +45,10 @@ async function extractFirstFrameBitmap(file: File): Promise<ImageBitmap> {
         v.addEventListener('loadeddata', () => resolve(), { once: true })
         v.addEventListener('error', () => reject(new Error('video decode failed')), { once: true })
       })
+      // Match extractVideoPoster: seek past any leading fade-from-black so the
+      // blur placeholder isn't a black tile. Best-effort; stays at t=0 on
+      // failure or for content that opens bright / is uniformly dark.
+      await seekToFirstNonBlackFrame(v)
       const c = new OffscreenCanvas(v.videoWidth, v.videoHeight)
       c.getContext('2d')!.drawImage(v, 0, 0)
       return createImageBitmap(c)
