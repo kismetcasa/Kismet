@@ -406,6 +406,33 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     </Link>
   )
 
+  // The collect / collect+ button, shared by the compact and full action rows
+  // so both stay in lockstep (same label, disabled gating, and sold-out /
+  // collected styling). `variant` only sizes it: compact is the stacked
+  // full-width pill (profile grids, discover grid, featured-row preview); full
+  // is the flex-1 cell that sits beside the price·supply badge or the list
+  // button. collectLabel already reads 'collect+' once owned/collected, so the
+  // same element serves the not-owned and owned cases in either layout.
+  const renderCollectButton = (variant: 'compact' | 'full') => (
+    <button
+      onClick={handleCollect}
+      disabled={collecting || mintedOut || saleNotStarted || saleEnded}
+      className={`${
+        variant === 'compact'
+          ? 'w-full py-1.5 text-[10px]'
+          : `flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs`
+      } font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
+        soldOutUncollected
+          ? 'accent-grad border-line'
+          : hasCollected
+            ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
+            : `text-muted border-line accent-grad-hover ${variant === 'full' ? 'transition-all ' : ''}disabled:opacity-50`
+      }`}
+    >
+      {collectLabel}
+    </button>
+  )
+
   // The single meta-slot element (see metaSlot) — the sale window or the
   // collection chip. Position lives in the CALLER: the inline call site wraps
   // this in the standardized right-55% zone (see the creator row), so `inline`
@@ -767,30 +794,26 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {showProfileCta ? (
             renderViewProfile('compact')
           ) : owned > 0 ? (
-            <ListButton
-              collectionAddress={moment.address}
-              tokenId={moment.token_id}
-              name={meta.name}
-              image={meta.image ? resolveUri(meta.image) : undefined}
-              creatorAddress={moment.creator?.address}
-              contentUri={meta.content?.uri}
-              contentMime={meta.content?.mime}
-              stacked
-            />
+            // Owner parity: list + collect+ stacked, matching the full card's
+            // [list][collect+] action row. The compact ternary used to render
+            // the list button ALONE, so an owned compact card (profile mints,
+            // discover grid, featured-row preview) dropped the collect+ that
+            // the wide card shows — the parity gap this fixes.
+            <>
+              <ListButton
+                collectionAddress={moment.address}
+                tokenId={moment.token_id}
+                name={meta.name}
+                image={meta.image ? resolveUri(meta.image) : undefined}
+                creatorAddress={moment.creator?.address}
+                contentUri={meta.content?.uri}
+                contentMime={meta.content?.mime}
+                stacked
+              />
+              {renderCollectButton('compact')}
+            </>
           ) : (
-            <button
-              onClick={handleCollect}
-              disabled={collecting || mintedOut || saleNotStarted || saleEnded}
-              className={`w-full py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
-                soldOutUncollected
-                  ? 'accent-grad border-line'
-                  : hasCollected
-                    ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-                    : 'text-muted border-line accent-grad-hover disabled:opacity-50'
-              }`}
-            >
-              {collectLabel}
-            </button>
+            renderCollectButton('compact')
           )}
         </div>
       ) : (
@@ -827,19 +850,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
               />
             </div>
           ) : null}
-          <button
-            onClick={handleCollect}
-            disabled={collecting || mintedOut || saleNotStarted || saleEnded}
-            className={`flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
-              soldOutUncollected
-                ? 'accent-grad border-line'
-                : hasCollected
-                  ? 'text-accent bg-accent/10 border-accent hover:bg-accent/20 disabled:opacity-50'
-                  : 'text-muted border-line accent-grad-hover transition-all disabled:opacity-50'
-            }`}
-          >
-            {collectLabel}
-          </button>
+          {renderCollectButton('full')}
         </div>
       )}
     </article>
