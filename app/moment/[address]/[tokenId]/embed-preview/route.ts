@@ -4,6 +4,7 @@ import { fetchMomentDetail } from '@/lib/momentDetail'
 import { SITE_URL } from '@/lib/siteUrl'
 import {
   momentPreviewSource,
+  momentPosterUri,
   readPreview,
   warmMomentPreview,
   PREVIEW_CONTENT_TYPE,
@@ -53,12 +54,15 @@ export async function GET(
   const src = momentPreviewSource(detail.metadata)
   if (!src) return fallback()
 
-  // Cache read only — never block Farcaster's fetch on ffmpeg. A miss (cold
-  // pod, eviction, or a not-yet-warm moment) kicks a background warm and shows
-  // the static card now; the next scrape animates once the preview lands.
+  // Cache read only — never block Farcaster's fetch on ffmpeg. readPreview
+  // serves the current recipe when present and falls back to the previous
+  // generation, so a recipe bump keeps every working embed animating while
+  // the regenerate is pending. A total miss (cold pod, eviction, or a
+  // not-yet-warm moment) kicks a background warm and shows the static card
+  // now; the next scrape animates once the preview lands.
   const preview = await readPreview(src)
   if (!preview) {
-    warmMomentPreview(src)
+    warmMomentPreview(src, momentPosterUri(detail.metadata))
     return fallback()
   }
 

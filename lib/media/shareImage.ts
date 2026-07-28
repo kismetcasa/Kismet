@@ -107,39 +107,8 @@ export async function shareImageSource(
   return url
 }
 
-/**
- * True when a moment's `meta.image` poster is a flat near-black frame — the
- * black fade-in a video's t=0 poster extraction produced — or is absent. The
- * moment OG route uses it to decide whether to prefer a representative video
- * still (lib/media/animatedPreview) over the poster.
- *
- * Reuses the SAME disk-cached /api/img 2048 variant shareImageSource inlines, so
- * it adds no network fetch: a poster whose variant isn't cached yet reads as
- * "not black" (no override), self-healing once a viewer warms the variant. A
- * non-black creator cover, or any decode failure, also reads as "not black" —
- * so the override can only ever REPLACE a genuinely flat-black poster.
- *
- * `cacheDir` is injectable for tests; production callers omit it.
- */
-export async function posterIsFlatBlack(
-  imageUri: string | undefined,
-  cacheDir: string = VARIANT_CACHE_DIR,
-): Promise<boolean> {
-  if (!imageUri) return true // absent poster → prefer a still when one exists
-  if (!imageUri.startsWith('ar://') && !imageUri.startsWith('ipfs://')) return false
-  try {
-    const variant = await readVariant(cacheDir, variantFileName(imageUri, bucketWidth(2048)))
-    if (!variant) return false // not cached → can't cheaply tell → keep poster
-    const { channels } = await sharp(variant).stats()
-    if (channels.length < 3) return false
-    const [r, g, b] = channels
-    // Rec.601 luma of the channel means + the mean channel std-dev. A flat black
-    // frame is ~0 on both; a dark-but-textured frame clears the std gate; a
-    // brighter poster clears the luma gate. Mirrors representativeFrame.ts.
-    const luma = 0.299 * r!.mean + 0.587 * g!.mean + 0.114 * b!.mean
-    const std = (r!.stdev + g!.stdev + b!.stdev) / 3
-    return luma <= 16 && std <= 6
-  } catch {
-    return false
-  }
-}
+// NOTE: the "is this poster flat black?" decision used to live here, reading
+// the /api/img 2048 disk variant — but video posters render via MomentImg
+// skipProxy and never populate that cache, so the check was dead in the common
+// case. It now lives in lib/media/animatedPreview as a warm-time marker
+// computed from the actual poster bytes (computePreferStill).
