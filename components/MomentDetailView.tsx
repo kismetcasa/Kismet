@@ -2014,16 +2014,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 />
               </div>
             )}
+            {/* Gradient on the inner span, not the button box — see
+                MomentCard.renderCollectButton (Chromium seam with
+                background-clip:text on bordered flex boxes). */}
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
                 soldOutUncollected
-                  ? 'accent-grad border-line'
-                  : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
+                  ? 'border-line'
+                  : 'accent-grad-hover border-line disabled:opacity-50'
               }`}
             >
-              {collectLabel}
+              <span className="accent-grad">{collectLabel}</span>
             </button>
           </div>
 

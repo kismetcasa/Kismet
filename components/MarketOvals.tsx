@@ -376,10 +376,12 @@ function MomentOvalImpl({
             className={`${disabled ? '' : 'pointer-events-auto'} rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed ${
               mintedOut || saleEnded
                 ? 'border-line/60 text-subtle'
-                : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
+                : 'accent-grad-hover border-line disabled:opacity-50'
             }`}
           >
-            {label}
+            {/* Gradient on an inner span, not the pill box — see MomentCard's
+                renderCollectButton (Chromium background-clip:text seam). */}
+            <span className={mintedOut || saleEnded ? undefined : 'accent-grad'}>{label}</span>
           </button>
         </>
       }

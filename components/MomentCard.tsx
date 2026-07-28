@@ -414,13 +414,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // row, whose list button is text-xs too, so 'full' keeps the pair matched.
   // collectLabel already reads 'collect+' once owned/collected.
   //
-  // Resting letters carry the brand gradient (accent-grad); hover fills the
-  // whole box with the same gradient + dark letters (accent-grad-hover — the
-  // two classes are made composable in globals.css, which un-clips the text
-  // gradient on hover so the fill can paint). 'collect+' (owned) is styled
-  // IDENTICALLY to 'collect' — ownership reads from the label's +, not a
-  // filled box. A sold-out uncollected mint keeps un-dimmed gradient letters
-  // with no hover fill (it's disabled): a statement, not a control.
+  // Resting letters carry the brand gradient — on an inner SPAN, never the
+  // button box: background-clip:text on a bordered flex box leaks a 1-device-
+  // pixel seam of raw gradient at the box edge at fractional widths (Chromium
+  // — showed as a thin orange line on a card's collect border). The span
+  // shrink-wraps the glyphs, so nothing leaks. Hover fills the box via
+  // accent-grad-hover; a globals.css descendant rule flips the span's letters
+  // dark under the fill. 'collect+' (owned) is styled IDENTICALLY to
+  // 'collect' — ownership reads from the label's +, not a filled box. A
+  // sold-out uncollected mint keeps un-dimmed gradient letters with no hover
+  // fill (it's disabled): a statement, not a control.
   const renderCollectButton = (variant: 'compact' | 'full') => (
     <button
       onClick={handleCollect}
@@ -431,11 +434,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           : `flex-1 ${hidePriceSupply ? 'py-2' : 'py-2.5'} text-xs`
       } font-mono tracking-wider uppercase whitespace-nowrap border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
         soldOutUncollected
-          ? 'accent-grad border-line'
-          : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
+          ? 'border-line'
+          : 'accent-grad-hover border-line disabled:opacity-50'
       }`}
     >
-      {collectLabel}
+      <span className="accent-grad">{collectLabel}</span>
     </button>
   )
 
