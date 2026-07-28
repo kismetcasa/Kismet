@@ -142,16 +142,18 @@ input[type='number'] {
   color: #0d0d0d;
 }
 
-/* Composable with .accent-grad. An element carrying BOTH (the collect
- * buttons: gradient letters at rest, gradient fill on hover) needs the
- * hover to undo .accent-grad's text clip — otherwise the "fill" stays
- * clipped inside the letters and the box never paints. Un-clip and flip
- * the letters dark (text-fill-color, since .accent-grad's transparent
- * fill overrides plain `color`), matching every other accent-grad-hover
- * surface's hover state. */
-.accent-grad.accent-grad-hover:not(:disabled):hover {
-  -webkit-background-clip: border-box;
-  background-clip: border-box;
+/* Gradient-lettered buttons (collect / collect+ / buy) put .accent-grad on
+ * an inner <span>, NOT the button box. background-clip:text on a bordered,
+ * fractionally-sized flex box leaks a ~1-device-pixel seam of the raw
+ * gradient at the box edge in Chromium — seen as a thin orange line on a
+ * card's collect-button border (the gradient's right stop is orange). A
+ * span shrink-wraps the glyphs, so there is no box edge to leak at. On
+ * hover the button's accent-grad-hover fill takes over: this descendant
+ * rule kills the span's own gradient and flips its letters dark
+ * (text-fill-color, since the span's transparent fill overrides plain
+ * `color`), matching every other fill-hover surface. */
+.accent-grad-hover:not(:disabled):hover .accent-grad {
+  background: none;
   -webkit-text-fill-color: #0d0d0d;
 }
 

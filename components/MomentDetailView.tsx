@@ -774,8 +774,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !isOpenEdition(maxSupply) &&
     totalMinted >= maxSupply
   // Sold-out spotlight for viewers who HAVEN'T collected — mirrors MomentCard:
-  // gradient moves price → SOLD OUT label (no disabled dimming on it).
-  // Collected viewers keep today's treatment, including the gradient price.
+  // the SOLD OUT label keeps its gradient letters with no disabled dimming (a
+  // statement, not a greyed-out control); the price stays the quiet subtle
+  // tier. A collected viewer's sold-out state takes the normal dimmed path.
   const soldOutUncollected = mintedOut && !hasCollected
   // Sale-window gating — see MomentCard for the rationale. saleStart/saleEnd
   // are unix-second strings on detail.saleConfig; absent, "0", or the max-
@@ -2014,16 +2015,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 />
               </div>
             )}
+            {/* Gradient on the inner span, not the button box — see
+                MomentCard.renderCollectButton (Chromium seam with
+                background-clip:text on bordered flex boxes). */}
             <button
               onClick={handleCollect}
               disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
                 soldOutUncollected
-                  ? 'accent-grad border-line'
-                  : 'accent-grad accent-grad-hover border-line disabled:opacity-50'
+                  ? 'border-line'
+                  : 'accent-grad-hover border-line disabled:opacity-50'
               }`}
             >
-              {collectLabel}
+              <span className="accent-grad">{collectLabel}</span>
             </button>
           </div>
 
