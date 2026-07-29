@@ -140,7 +140,18 @@ export function offerAmount(
   }
   const trimmed = decimal.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
   if (trimmed === '' || trimmed === '0') return null
-  return { price: trimmed, priceCurrency: currency === 'usdc' ? 'USDC' : 'ETH' }
+  // Currency codes, per Google's merchant-listing validation (ISO 4217):
+  //   usdc → 'USD'. The value is already in dollar units (6dp formatUnits)
+  //   and the page renders it as "$5", so USD matches both the instrument's
+  //   denomination and the visible price — and makes USDC listings eligible
+  //   for price rich results ('USDC' fails ISO 4217 validation).
+  //   eth → 'ETH' stays. schema.org sanctions crypto tickers for
+  //   priceCurrency; converting to USD would misstate the settlement
+  //   currency and desync schema from the visible "0.1 ETH". Google flags
+  //   ETH offers as invalid for its (fiat-oriented) merchant program —
+  //   expected and accepted; the accurate ETH price remains readable by
+  //   AI/agent consumers of the JSON-LD.
+  return { price: trimmed, priceCurrency: currency === 'usdc' ? 'USD' : 'ETH' }
 }
 
 export interface MomentJsonLdInput {
