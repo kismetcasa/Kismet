@@ -26,6 +26,16 @@ const LEGACY_MOMENT_URL = '^\\/moment\\/'
 const LEGACY_MOMENT_ABS = 'kismet\\.art\\/moment\\/'
 const LEGACY_URL_MSG = 'Build /artwork links — /moment is a redirect-only legacy path (see the rename redirect in next.config.mjs).'
 
+// The page rename did NOT move the API: Kismet's internal routes stay
+// /api/moment/* by design (lib/inprocess.ts TERMINOLOGY), and no redirect
+// covers /api/*, so a phantom /api/artwork/* fetch 404s silently. The
+// migration branch itself shipped exactly that — the activity feed went
+// dark platform-wide — so this shape has earned its own selector too.
+const PHANTOM_ARTWORK_API = '\\/api\\/artwork\\/'
+// NB: worded without a trailing slash after "artwork" so the message string
+// cannot match the selector regex it accompanies.
+const PHANTOM_API_MSG = 'Kismet’s internal API namespace is /api/moment/* — no /api/artwork routes exist, so the fetch 404s (see lib/inprocess.ts TERMINOLOGY).'
+
 const config = [
   {
     // public/ffmpeg-core/* is the third-party UMD bundle copied in by postinstall.
@@ -56,6 +66,8 @@ const config = [
         { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_URL}/]`, message: LEGACY_URL_MSG },
         { selector: `Literal[value=/${LEGACY_MOMENT_ABS}/]`, message: LEGACY_URL_MSG },
         { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_ABS}/]`, message: LEGACY_URL_MSG },
+        { selector: `Literal[value=/${PHANTOM_ARTWORK_API}/]`, message: PHANTOM_API_MSG },
+        { selector: `TemplateElement[value.raw=/${PHANTOM_ARTWORK_API}/]`, message: PHANTOM_API_MSG },
       ],
     },
   },

@@ -78,6 +78,28 @@ const nextConfig = {
     ]
   },
 
+  // Compatibility alias for the phantom /api/artwork/* namespace. The 2026-07
+  // page rename briefly shipped client bundles fetching /api/artwork/* even
+  // though the API stayed /api/moment/* by design — those fetches 404ed and
+  // the activity feed went dark. The code is reverted, but any long-lived tab
+  // or webview still running that bundle keeps calling the phantom paths;
+  // this rewrite makes them work without a reload. A rewrite, not a redirect:
+  // transparent (no extra round trip) and method-preserving for the POST
+  // endpoints (hide, update-uri). Default (afterFiles) phase, so if real
+  // /api/artwork routes are ever created the filesystem wins and this rule
+  // goes dormant. New code must still call /api/moment/* — the
+  // no-restricted-syntax guard in eslint.config.mjs bans the alias in code;
+  // this rule is the only sanctioned appearance of the string.
+  async rewrites() {
+    return [
+      {
+        // eslint-disable-next-line no-restricted-syntax -- the stale-bundle alias source itself
+        source: '/api/artwork/:path*',
+        destination: '/api/moment/:path*',
+      },
+    ]
+  },
+
   async headers() {
     return [
       { source: '/:path*', headers: SECURITY_HEADERS },
