@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { cache } from 'react'
 import { cookies } from 'next/headers'
-import { notFound } from 'next/navigation'
+import { notFound, unstable_rethrow } from 'next/navigation'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { resolveUri, shortAddress } from '@/lib/inprocess'
 import { isVideoMoment } from '@/lib/media/isVideo'
@@ -104,9 +104,26 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // title so the page still renders with degraded SEO/embed.
   try {
   const { address, tokenId } = await params
-  if (!isAddress(address) || !isValidTokenId(tokenId)) {
-    return { title: 'Artwork — Kismet' }
-  }
+  // Structurally impossible URL → render the not-found page, not a stub of the
+  // artwork page. MEASURED BEHAVIOUR (don't "fix" this without re-measuring):
+  // this route has a loading.tsx, so Next flushes the Suspense shell with
+  // HTTP 200 before metadata can influence the status — notFound() here yields
+  // 200 + the not-found page + Next's injected `noindex`, NOT a 404 status.
+  // The control case proves the mechanism: /learn/[slug] has no loading.tsx and
+  // does return a true 404.
+  //
+  // Keeping it anyway, because it fixes what it can: the visitor gets a real
+  // not-found page instead of a broken artwork shell, and the noindex keeps
+  // junk URLs out of the index. The residual cost is soft-404 entries in Search
+  // Console. A true 404 would require either dropping loading.tsx (losing the
+  // streaming UX on the highest-traffic route) or adding middleware (per-request
+  // overhead on every request) — both worse trades for URLs that only arise
+  // from malformed links and are never in the sitemap.
+  //
+  // Scoped to STRUCTURAL invalidity (isAddress/isValidTokenId): deterministic
+  // local checks no upstream outage can flip, so indexer lag can never take a
+  // real artwork down. Well-formed-but-unindexed keeps the noindex path below.
+  if (!isAddress(address) || !isValidTokenId(tokenId)) notFound()
   const [detail, fallback] = await Promise.all([
     fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
@@ -199,7 +216,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     other: fcEmbed,
   }
   } catch (err) {
-    console.error('[generateMetadata] moment', err)
+    // Let Next control-flow errors (the notFound() above) propagate — without
+    // this the catch would swallow it and hand back the generic fallback
+    // metadata instead of the not-found page.
+    unstable_rethrow(err)
+    console.error('[generateMetadata] artwork', err)
     return { title: 'Artwork — Kismet' }
   }
 }
@@ -301,6 +322,10 @@ export default async function MomentPage({ params }: Props) {
           url: `${SITE_URL}/profile/${creator}`,
         }
       : undefined,
+    // Content type → artMedium + encodingFormat in the schema (factual, never
+    // guessed; omitted when the token has no declared MIME).
+    mime: detail?.metadata?.content?.mime,
+    hasAnimation: !!detail?.metadata?.animation_url,
     collection: initialCollectionMeta?.name
       ? { name: initialCollectionMeta.name, url: `${SITE_URL}/collection/${address.toLowerCase()}` }
       : undefined,

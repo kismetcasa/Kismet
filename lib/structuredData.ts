@@ -96,6 +96,33 @@ export function discoverJsonLd(): Record<string, unknown> {
   }
 }
 
+// The /about entity page. An AboutPage whose mainEntity IS the Organization —
+// the pattern search engines and answer engines read to resolve "who runs this
+// site", which is the concrete E-E-A-T signal a marketplace otherwise lacks.
+// Includes the full Organization node (not just an @id reference) so the page
+// is self-describing to a crawler that fetches it in isolation.
+export function aboutJsonLd(): Record<string, unknown> {
+  const url = `${SITE_URL}/about`
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'AboutPage',
+        '@id': `${url}#about`,
+        url,
+        name: 'About Kismet',
+        isPartOf: { '@id': WEBSITE_ID },
+        mainEntity: { '@id': ORG_ID },
+      },
+      organizationNode(),
+      breadcrumbNode([
+        { name: 'Kismet', url: `${SITE_URL}/` },
+        { name: 'About', url },
+      ]),
+    ],
+  }
+}
+
 // BreadcrumbList from an ordered list of {name, url}. Every url must be a real,
 // crawlable page (Google drops breadcrumbs whose items don't resolve).
 export function breadcrumbNode(
@@ -154,6 +181,18 @@ export function offerAmount(
   return { price: trimmed, priceCurrency: currency === 'usdc' ? 'USD' : 'ETH' }
 }
 
+// Media MIME → schema.org artMedium. Art search is named-entity and
+// attribute-driven, so stating the medium explicitly is disproportionately
+// valuable for a marketplace; deriving it from the token's own content type
+// keeps it factual (never guessed). Unknown/absent MIME yields no artMedium
+// rather than a fabricated one.
+function artMediumFor(mime: string | undefined, hasAnimation: boolean): string | undefined {
+  if (mime?.startsWith('image/')) return 'Digital image'
+  if (mime?.startsWith('video/') || hasAnimation) return 'Digital video'
+  if (mime === 'text/plain') return 'Digital text'
+  return undefined
+}
+
 export interface MomentJsonLdInput {
   url: string // canonical moment URL (absolute)
   name: string
@@ -163,6 +202,11 @@ export interface MomentJsonLdInput {
   collection?: { name: string; url: string }
   // Live listing, if any. Only a non-null offerAmount() result produces an Offer.
   listing?: { price: string; currency: 'eth' | 'usdc' } | null
+  // Token content type (e.g. 'image/png', 'video/mp4', 'text/plain') and
+  // whether an animation_url is present — together they yield artMedium +
+  // encodingFormat. Both omitted when unknown.
+  mime?: string
+  hasAnimation?: boolean
 }
 
 // A moment = a digital artwork that may also be for sale. We type the node as
@@ -174,12 +218,20 @@ export function momentJsonLd(input: MomentJsonLdInput): Record<string, unknown> 
     ? offerAmount(input.listing.price, input.listing.currency)
     : null
 
+  const artMedium = artMediumFor(input.mime, !!input.hasAnimation)
+
   const artwork: Record<string, unknown> = {
     '@type': offer ? ['VisualArtwork', 'Product'] : 'VisualArtwork',
     '@id': `${input.url}#artwork`,
     name: input.name,
     url: input.url,
     artform: 'Digital art',
+    // Medium + encoding come from the token's own content type — concrete
+    // attributes are what drive AI citation and art-vertical relevance, and
+    // deriving them keeps the markup factual. Omitted entirely when the MIME
+    // is unknown rather than guessed.
+    ...(artMedium ? { artMedium } : {}),
+    ...(input.mime ? { encodingFormat: input.mime } : {}),
     ...(input.description ? { description: input.description } : {}),
     ...(input.image ? { image: input.image } : {}),
     ...(input.creator

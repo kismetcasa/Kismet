@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
-import { notFound, redirect } from 'next/navigation'
+import { notFound, redirect, unstable_rethrow } from 'next/navigation'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, resolveUri, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
@@ -117,6 +117,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // even when the KV/inprocess fetch fails.
   try {
   const { address } = await params
+  // Structurally impossible URL → not-found page instead of a collection stub,
+  // and — the concrete win — this runs BEFORE the three lookups below (two
+  // Redis reads plus an 8s-timeout inprocess call), so a malformed URL no
+  // longer spends an upstream round trip on a page that can never resolve.
+  // Status stays 200 (this route has a loading.tsx); see the artwork page for
+  // the measured rationale.
+  if (!isAddress(address)) notFound()
   // KV is written at deploy time and is always fast; only fall back to
   // inprocess (fetchCollectionMeta) when KV has nothing.
   const [kvMeta, inprocessMeta, hidden] = await Promise.all([
@@ -174,6 +181,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     other: fcEmbed,
   }
   } catch (err) {
+    // Let Next control-flow errors (the notFound() above) propagate — without
+    // this the catch would swallow it and hand back the generic fallback
+    // metadata instead of the not-found page.
+    unstable_rethrow(err)
     console.error('[generateMetadata] collection', err)
     return { title: 'Collection — Kismet' }
   }

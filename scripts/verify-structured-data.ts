@@ -55,7 +55,7 @@ check(
 
 // 2. No listing → VisualArtwork only.
 const unlisted = momentJsonLd({
-  url: 'https://kismet.art/artwork/0xabc/1',
+  url: 'https://kismet.art/moment/0xabc/1',
   name: 'Sunrise',
   description: 'A generative piece',
   creator: { name: 'alice', url: 'https://kismet.art/profile/0xa11ce' },
@@ -68,7 +68,7 @@ check('unlisted has no offers', !('offers' in unlistedArt))
 
 // 3. Listing → [VisualArtwork, Product] + InStock Offer.
 const listed = momentJsonLd({
-  url: 'https://kismet.art/artwork/0xabc/2',
+  url: 'https://kismet.art/moment/0xabc/2',
   name: 'Dusk',
   creator: { name: 'bob' },
   listing: { price: oneTenthEthWei, currency: 'eth' },
@@ -86,11 +86,46 @@ check('listed carries InStock Offer at matching price',
   listedOffer?.priceCurrency === 'ETH' &&
   listedOffer?.availability === 'https://schema.org/InStock')
 
+// 3b. artMedium/encodingFormat are DERIVED from the token's MIME — factual,
+// and absent (never fabricated) when the MIME is unknown. Attribute-rich
+// artwork markup is what earns art-vertical relevance and AI citation; a
+// guessed medium would be exactly the schema-vs-page mismatch that risks a
+// manual action.
+const imageArt = momentJsonLd({
+  url: 'https://kismet.art/moment/0xabc/3',
+  name: 'Still',
+  mime: 'image/png',
+}) as { '@graph': Record<string, unknown>[] }
+const videoArt = momentJsonLd({
+  url: 'https://kismet.art/moment/0xabc/4',
+  name: 'Motion',
+  mime: 'video/mp4',
+  hasAnimation: true,
+}) as { '@graph': Record<string, unknown>[] }
+const unknownArt = momentJsonLd({
+  url: 'https://kismet.art/moment/0xabc/5',
+  name: 'Unknown medium',
+}) as { '@graph': Record<string, unknown>[] }
+check(
+  'image MIME → artMedium "Digital image" + encodingFormat',
+  imageArt['@graph'][0].artMedium === 'Digital image' &&
+    imageArt['@graph'][0].encodingFormat === 'image/png',
+)
+check(
+  'video MIME → artMedium "Digital video"',
+  videoArt['@graph'][0].artMedium === 'Digital video',
+)
+check(
+  'unknown MIME → NO artMedium/encodingFormat (never fabricated)',
+  !('artMedium' in unknownArt['@graph'][0]) &&
+    !('encodingFormat' in unknownArt['@graph'][0]),
+)
+
 // 4. Breadcrumb positions and order.
 const crumb = breadcrumbNode([
   { name: 'Kismet', url: 'https://kismet.art/' },
   { name: 'Dawn', url: 'https://kismet.art/collection/0xcol' },
-  { name: 'Dusk', url: 'https://kismet.art/artwork/0xabc/2' },
+  { name: 'Dusk', url: 'https://kismet.art/moment/0xabc/2' },
 ]) as { itemListElement: { position: number; name: string; item: string }[] }
 check('breadcrumb positions are 1..n', crumb.itemListElement.every((e, i) => e.position === i + 1))
 check('breadcrumb deepest last', crumb.itemListElement[2]?.name === 'Dusk')
