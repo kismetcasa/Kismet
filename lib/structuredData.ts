@@ -72,7 +72,7 @@ export function homeJsonLd(): Record<string, unknown> {
 // page whose purpose is to list a collection of items — tied to the WebSite
 // entity, plus a Home › Discover breadcrumb. Page-level only (no per-item
 // ItemList): individual moments are indexed via the sitemap + their own
-// server-rendered /moment pages, so this stays resilient and can't drift from a
+// server-rendered /artwork pages, so this stays resilient and can't drift from a
 // client-fetched feed's live contents.
 export function discoverJsonLd(): Record<string, unknown> {
   const url = `${SITE_URL}/discover`

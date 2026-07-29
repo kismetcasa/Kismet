@@ -40,7 +40,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | --- | --- | --- |
 | Discover / manifest | Direct GET | `web_request` if allowlisted, else user-pasted GET |
 | Collect / buy / list (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
-| Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/moment/<collection>/<tokenId>` |
+| Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Record settlement | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
 
 ## Endpoints
@@ -118,7 +118,7 @@ The batched `approve` + action execute atomically in one user approval.
 ## Example Prompts
 
 ```text
-Collect this artwork: https://kismet.art/moment/0xabc…/42
+Collect this artwork: https://kismet.art/artwork/0xabc…/42
 ```
 1. `get_wallets` → address. 2. `GET /api/agent/prepare-collect?url=…&account=…`.
 3. Show summary/price → `send_calls`. 4. Approval → `get_request_status` →

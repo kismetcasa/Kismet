@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
   if (account && !isAddress(account)) return errorResponse(400, 'Invalid account address')
   if (excludeCollectedBy && !isAddress(excludeCollectedBy)) return errorResponse(400, 'Invalid excludeCollectedBy address')
 
-  const momentUrl = (c: string, t: string) => `${origin}/moment/${c}/${t}`
+  const momentUrl = (c: string, t: string) => `${origin}/artwork/${c}/${t}`
   const accountBody = account ? { account } : {}
 
   if (kind === 'collect') {

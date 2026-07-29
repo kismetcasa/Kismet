@@ -35,7 +35,7 @@ function notificationHref(n: Notification): string {
     case 'listing_created':
     case 'airdrop':
     case 'payout':
-      return n.tokenAddress && n.tokenId ? `/moment/${n.tokenAddress}/${n.tokenId}` : '/'
+      return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
 

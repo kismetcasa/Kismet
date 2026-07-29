@@ -33,6 +33,7 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid offset')
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- In Process wire path, not a Kismet page URL (see lib/inprocess.ts TERMINOLOGY)
   const url = inprocessUrl('/moment/comments', {
     collectionAddress,
     tokenId,

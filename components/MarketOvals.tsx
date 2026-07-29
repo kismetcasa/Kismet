@@ -313,7 +313,7 @@ function MomentOvalImpl({
   return (
     <OvalShell
       rootRef={rootRef}
-      href={`/moment/${moment.address}/${moment.token_id}`}
+      href={`/artwork/${moment.address}/${moment.token_id}`}
       title={meta.name || `#${moment.token_id}`}
       subtitle={
         <>
@@ -434,7 +434,7 @@ function ListingOvalImpl({ listing, onRemove }: { listing: Listing; onRemove?: (
   return (
     <OvalShell
       rootRef={rootRef}
-      href={`/moment/${listing.collectionAddress}/${listing.tokenId}`}
+      href={`/artwork/${listing.collectionAddress}/${listing.tokenId}`}
       title={listing.name || `#${listing.tokenId}`}
       titleRight={expiresLabel || undefined}
       subtitle={<span className="min-w-0 truncate">listed by {shortAddress(listing.seller)}</span>}

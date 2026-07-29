@@ -578,7 +578,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (!force) setCommentsLoading(true)
     try {
       const params = new URLSearchParams({ collectionAddress: address, tokenId, chainId: '8453' })
-      const res = await fetch(`/api/moment/comments?${params}`)
+      const res = await fetch(`/api/artwork/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
         const fetched: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
@@ -621,7 +621,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         chainId: '8453',
         offset: String(startOffset),
       })
-      const res = await fetch(`/api/moment/comments?${params}`)
+      const res = await fetch(`/api/artwork/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
         const page: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
@@ -811,7 +811,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // path falls through to copy if the SDK throws so the button never becomes a
   // dead click.
   async function handleShare() {
-    const url = `${window.location.origin}/moment/${address}/${tokenId}`
+    const url = `${window.location.origin}/artwork/${address}/${tokenId}`
     if (isInMiniApp) {
       try {
         await composeMomentShareCast(
@@ -844,12 +844,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     const next = !isHidden
     setHidePending(true)
     try {
-      // /api/moment/hide reads the Kismet session cookie. Wallet-connect
+      // /api/artwork/hide reads the Kismet session cookie. Wallet-connect
       // alone doesn't create one — ensureSession prompts a one-time
       // signature when the cookie is missing, matching the edit-metadata
       // flow on this same page.
       await ensureSession()
-      const res = await fetch('/api/moment/hide', {
+      const res = await fetch('/api/artwork/hide', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -1193,7 +1193,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       const signature = await signMessageAsync({ message })
 
       toast.loading('Updating on-chain…', { id: 'edit-meta' })
-      const res = await fetch('/api/moment/update-uri', {
+      const res = await fetch('/api/artwork/update-uri', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1526,11 +1526,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <h1 className="text-sm font-mono text-ink leading-snug">
                 {inOverlay ? (
                   // Hard-nav anchor (not <Link>) so the click bypasses the
-                  // intercepting route at app/@modal/(.)moment and lands on
+                  // intercepting route at app/@modal/(.)artwork and lands on
                   // the canonical full-page detail route instead of just
                   // re-opening the overlay we're already in.
                   <a
-                    href={`/moment/${address}/${tokenId}`}
+                    href={`/artwork/${address}/${tokenId}`}
                     title="open full details page"
                     className="hover:text-dim transition-colors"
                   >

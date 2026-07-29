@@ -198,7 +198,7 @@ export function SearchBar({ onOpenModal }: SearchBarProps) {
               {results.mints.map((mint) => (
                 <Link
                   key={mint.id}
-                  href={`/moment/${mint.address}/${mint.tokenId}`}
+                  href={`/artwork/${mint.address}/${mint.tokenId}`}
                   onClick={close}
                   className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#1e1e1e] transition-colors"
                 >
