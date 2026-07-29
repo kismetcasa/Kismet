@@ -19,6 +19,11 @@ const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/li
 // sanctioned exceptions (the next.config redirect source and the wire's
 // '/moment/comments' path) carry inline disables at the site.
 const LEGACY_MOMENT_URL = '^\\/moment\\/'
+// Absolute form — catches `https://kismet.art/moment/…` (fixtures, docs
+// strings, share URLs), which the start-anchored selector can't see. This
+// exact shape was reintroduced by a parallel branch within a day of the
+// migration landing, so it has earned its own selector.
+const LEGACY_MOMENT_ABS = 'kismet\\.art\\/moment\\/'
 const LEGACY_URL_MSG = 'Build /artwork links — /moment is a redirect-only legacy path (see the rename redirect in next.config.mjs).'
 
 const config = [
@@ -49,6 +54,8 @@ const config = [
         // dual-accept parsers) have non-string values and never match.
         { selector: `Literal[value=/${LEGACY_MOMENT_URL}/]`, message: LEGACY_URL_MSG },
         { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_URL}/]`, message: LEGACY_URL_MSG },
+        { selector: `Literal[value=/${LEGACY_MOMENT_ABS}/]`, message: LEGACY_URL_MSG },
+        { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_ABS}/]`, message: LEGACY_URL_MSG },
       ],
     },
   },
