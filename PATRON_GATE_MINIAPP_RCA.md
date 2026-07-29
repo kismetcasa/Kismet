@@ -11,8 +11,12 @@ Validated end-to-end against code and git history. Live-production probes
 lists the exact two-minute confirmation commands to run from any normal
 machine. Everything else below is deterministic from code.
 
-> **STATUS: ANALYSIS — fix not yet implemented.** §6 is the recommended fix
-> with design rationale; §7 is the no-deploy remediation for the affected user.
+> **STATUS: FIXED ON THIS BRANCH (2026-07-29).** The §6 design shipped as the
+> identity-union gate — see **§9 Resolution** for exactly what changed. §§1–5
+> describe the pre-fix state and are retained as the incident record and the
+> design rationale the code comments cite. §7 (per-user remediation) is only
+> needed if the §4 probes reveal the Scenario-B lost-credit case, which this
+> fix does not (and must not) paper over.
 
 **Verdict in one line:** the pass gate is evaluated against the
 **wagmi-connected signer wallet**, and inside a Mini App that signer is the
@@ -251,4 +255,51 @@ blacklist, and revocation stay per-wallet and untouched; only the
   (`617a48a`), synchronous `/api/collect` credit, reconciliation script
   (`ebceea8`). Losses predating this need the script.
 - **2026-07-29** — this report: Mini App signer/identity split surfaces as
-  "already collected but still prompted".
+  "already collected but still prompted". Identity-union gate implemented
+  (§9).
+
+## 9. Resolution (what shipped)
+
+The §6 design, implemented as a read-time identity union with per-wallet
+provenance untouched:
+
+- **`lib/passUnion.ts`** (new, pure/redis-free — the `lib/gateFlags` testable
+  pattern): `planUnionCheck` (lowercase, first-seen dedup, caller-first,
+  capped at `MAX_UNION_WALLETS = 10`) and `parseLedgerBalance` (Upstash
+  string/number dual-form parse, clamp at 0 — now shared by
+  `getValidBalance`).
+- **`lib/addressUnion.ts` → `expandToGateWallets(address)`**: the caller plus
+  its FC-verified siblings via the existing `expandToFidSiblings`, planned and
+  capped; **fails degraded to `[address]`** on any lookup failure (the union
+  only ever widens access from affirmative FC data). Smart wallets excluded —
+  validity credits only ever land on recipient EOAs.
+- **`lib/pass-validity.ts`**: `getValidBalances` (ONE MGET for N wallets) and
+  `hasValidPassForAny` — MGET ledger prefilter, then the full `hasValidPass`
+  (blacklist + taint + live `balanceOfBatch` clamp) only on positive-ledger
+  wallets. The prefilter is exact, not heuristic: the ledger never reconciles
+  upward, so `ledger <= 0 ⇒ hasValidPass = false` and skipping cannot change
+  the verdict. Single-wallet input delegates straight to `hasValidPass` — a
+  non-FC caller's path is byte-identical to before.
+- **`lib/gate.ts` `hasGateAccess`**: unchanged admin / disabled /
+  pass-collection-target bypasses, then `expandToGateWallets` →
+  **identity-scoped pass-blacklist** (any listed union member denies — with
+  union grants, a signer-only blacklist would be hoppable via a sibling
+  wallet; same closure principle as hidden-profiles) →
+  `hasValidPassForAny`. One choke point fixes every enforcement caller:
+  `/api/mint`, `/api/write` (mint-proxy), `/api/collections` (create-form),
+  `/api/agent/prepare-mint` — and dissolves the §3 signer-vs-session
+  inconsistency, since both subjects resolve to the same union.
+- **`/api/pass-validity?scope=identity`**: union-summed ledger read, zeroed if
+  any union member is pass-blacklisted — mirrors `hasGateAccess` exactly so
+  the CTA can never disagree with the server verdict. The default per-address
+  scope is untouched (ProfileView's per-token badge is genuinely per-wallet).
+- **`hooks/usePassGate.ts`**: probes with `scope=identity`.
+- **`scripts/verify-pass-union.ts`** (wired into `verify:flows`): pins the
+  plan ordering/dedup/cap invariants and the Upstash dual-representation
+  parse (the same regression class `verify-gate-flags.ts` guards).
+
+Deliberately NOT done, per §6's rejected-alternatives table: no on-chain
+balance shortcut, no mirror credits to the host wallet, no session-subject
+swap in mint-proxy. Scenario-B lost credits (§4) remain a data repair
+(`scripts/reconcile-pass-validity.mjs` / admin grant), not a code path — the
+union must not launder a wallet whose credit was legitimately never earned.

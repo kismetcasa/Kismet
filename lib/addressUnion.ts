@@ -8,6 +8,7 @@ import { getCachedSmartWallets } from './smartWalletCache'
 import { getFidProfile, getProfile, type FidProfile, type Profile } from './profile'
 import { fetchHiddenProfilesSet } from './hidden-profiles'
 import { memoize } from './memoCache'
+import { planUnionCheck } from './passUnion'
 
 /**
  * Expand an Ethereum address into the set of all addresses controlled by
@@ -69,6 +70,45 @@ export async function expandToEarningsWallets(address: string): Promise<string[]
     if (sw) all.add(sw.toLowerCase())
   }
   return Array.from(all)
+}
+
+/**
+ * The wallets whose Pass validity may authorize `address` at the creator
+ * gate: the caller plus its FC-verified siblings — deduped, caller first,
+ * capped at MAX_UNION_WALLETS (lib/passUnion).
+ *
+ * This applies the union doctrine above to the one entitlement surface that
+ * historically missed it (see PATRON_GATE_MINIAPP_RCA.md): inside a Mini App
+ * the connected signer is the HOST's embedded wallet, while the user's Pass
+ * lives on the wallet they collected with elsewhere. The host wallet is
+ * FC-verified onto the same FID, so the union carries the entitlement across
+ * — the same person passes the gate from every surface.
+ *
+ * Trust chain: the caller address is proven upstream (intent signature on
+ * mint/write, Quick-Auth session on create-collection); address → FID and
+ * FID → siblings come from Farcaster's on-protocol signed verifications
+ * (Redis-cached ~1h). Sibling entitlement is therefore exactly as
+ * trustworthy as FC verification itself — the trust this platform already
+ * extends for earnings attribution and hidden-profile ownership.
+ *
+ * Smart wallets are deliberately EXCLUDED (contrast expandToEarningsWallets):
+ * validity credits only ever land on recipient EOAs (collect / airdrop /
+ * listing-fill all credit the buyer address), so including payment-alias
+ * contracts would add per-wallet check cost without ever adding validity.
+ *
+ * Fails DEGRADED, never open: any lookup failure collapses the union to
+ * `[address]` — exactly the pre-union signer-only check. The union only ever
+ * widens access from affirmative FC data, so the lenient sibling read
+ * (getVerifiedAddressesByFid returns [] on failure) is safe here.
+ */
+export async function expandToGateWallets(address: string): Promise<string[]> {
+  const lower = address.toLowerCase()
+  try {
+    const union = planUnionCheck(await expandToFidSiblings(lower))
+    return union.length > 0 ? union : [lower]
+  } catch {
+    return [lower]
+  }
 }
 
 /**
