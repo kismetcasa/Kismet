@@ -201,8 +201,18 @@ export default async function CollectionPage({ params }: Props) {
   // can't see this call).
   const lowerAddr = address.toLowerCase()
   const userCreated = await getUserCollections()
-  const isCurated = userCreated.some((a) => a.toLowerCase() === lowerAddr)
-  if (!isCurated) {
+  // The Patron Collection is curated by definition. It was platform-deployed
+  // outside the create-form flow, so it never enters the KV curated set
+  // (POST /api/collections deliberately fails CLOSED on classification) —
+  // without this exemption every route to its page bounced to token 1.
+  const isCurated =
+    isPatronCollection(address) || userCreated.some((a) => a.toLowerCase() === lowerAddr)
+  // Empty curated set = a Redis blip (getUserCollections swallows errors to []
+  // and memoizes ~15min) or an empty platform. Either way, rendering the
+  // collection page beats redirecting EVERY collection to its first artwork
+  // for a full memo window — same fall-through-over-dead-end philosophy as
+  // findFirstMomentTokenId's null path below.
+  if (!isCurated && userCreated.length > 0) {
     const tokenId = await findFirstMomentTokenId(address)
     if (tokenId) redirect(`/artwork/${address}/${tokenId}`)
   }
