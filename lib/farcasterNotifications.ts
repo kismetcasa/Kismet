@@ -335,7 +335,7 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
 
   const tokenName = n.tokenName?.trim() || null
   const momentUrl =
-    n.tokenAddress && n.tokenId ? `${SITE_URL}/moment/${n.tokenAddress}/${n.tokenId}` : SITE_URL
+    n.tokenAddress && n.tokenId ? `${SITE_URL}/artwork/${n.tokenAddress}/${n.tokenId}` : SITE_URL
 
   switch (n.type) {
     case 'collect': {

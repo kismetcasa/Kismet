@@ -28,7 +28,7 @@ export async function GET(
 ) {
   const { address, tokenId } = await params
   // Lowercased to match the canonical moment URL (page.tsx alternates.canonical).
-  const staticCard = `${SITE_URL}/moment/${address.toLowerCase()}/${tokenId}/opengraph-image`
+  const staticCard = `${SITE_URL}/artwork/${address.toLowerCase()}/${tokenId}/opengraph-image`
   // no-store on the redirect: the common path only points imageUrl here when the
   // preview is cached, so a 302 means a cold edge case (e.g. evicted between
   // metadata gen and this fetch) — must not be cached, or a stale 302 would

@@ -55,7 +55,7 @@ check(
 
 // 2. No listing → VisualArtwork only.
 const unlisted = momentJsonLd({
-  url: 'https://kismet.art/moment/0xabc/1',
+  url: 'https://kismet.art/artwork/0xabc/1',
   name: 'Sunrise',
   description: 'A generative piece',
   creator: { name: 'alice', url: 'https://kismet.art/profile/0xa11ce' },
@@ -68,7 +68,7 @@ check('unlisted has no offers', !('offers' in unlistedArt))
 
 // 3. Listing → [VisualArtwork, Product] + InStock Offer.
 const listed = momentJsonLd({
-  url: 'https://kismet.art/moment/0xabc/2',
+  url: 'https://kismet.art/artwork/0xabc/2',
   name: 'Dusk',
   creator: { name: 'bob' },
   listing: { price: oneTenthEthWei, currency: 'eth' },
@@ -90,7 +90,7 @@ check('listed carries InStock Offer at matching price',
 const crumb = breadcrumbNode([
   { name: 'Kismet', url: 'https://kismet.art/' },
   { name: 'Dawn', url: 'https://kismet.art/collection/0xcol' },
-  { name: 'Dusk', url: 'https://kismet.art/moment/0xabc/2' },
+  { name: 'Dusk', url: 'https://kismet.art/artwork/0xabc/2' },
 ]) as { itemListElement: { position: number; name: string; item: string }[] }
 check('breadcrumb positions are 1..n', crumb.itemListElement.every((e, i) => e.position === i + 1))
 check('breadcrumb deepest last', crumb.itemListElement[2]?.name === 'Dusk')

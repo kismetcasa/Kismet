@@ -87,23 +87,23 @@ check(
 )
 check(
   'moment in creator-hidden collection dropped',
-  !has(`${SITE}/moment/${CREATOR_HIDDEN.toLowerCase()}/1`),
+  !has(`${SITE}/artwork/${CREATOR_HIDDEN.toLowerCase()}/1`),
 )
 check(
   'moment under artist-hidden collection dropped',
-  !has(`${SITE}/moment/${ARTIST_HIDDEN.toLowerCase()}/5`),
+  !has(`${SITE}/artwork/${ARTIST_HIDDEN.toLowerCase()}/5`),
 )
 
 // 4. Visible collection + its moments present, lowercased.
 check('visible collection present (lowercased)', has(`${SITE}/collection/${VISIBLE.toLowerCase()}`))
-check('visible moment #1 present (lowercased)', has(`${SITE}/moment/${VISIBLE.toLowerCase()}/1`))
-check('visible moment #2 present (lowercased)', has(`${SITE}/moment/${VISIBLE.toLowerCase()}/2`))
+check('visible moment #1 present (lowercased)', has(`${SITE}/artwork/${VISIBLE.toLowerCase()}/1`))
+check('visible moment #2 present (lowercased)', has(`${SITE}/artwork/${VISIBLE.toLowerCase()}/2`))
 check('no uppercase leaks into any URL', urls.every((u) => u === u.toLowerCase() || !/0x[0-9a-fA-F]*[A-F]/.test(u)))
 
 // 3. Malformed members skipped — exactly the two valid moments, no junk.
-const momentCount = urls.filter((u) => u.includes('/moment/')).length
+const momentCount = urls.filter((u) => u.includes('/artwork/')).length
 check('exactly the 2 valid moments emitted', momentCount === 2, `got ${momentCount}`)
-check('no colon-less junk URL', !urls.some((u) => u.endsWith('/moment/') || u.includes('garbage')))
+check('no colon-less junk URL', !urls.some((u) => u.endsWith('/artwork/') || u.includes('garbage')))
 
 // 8. Artist profiles: visible-collection artists only, deduped, closure-filtered.
 check('visible artist profile present', has(`${SITE}/profile/${ARTIST_OK.toLowerCase()}`))
@@ -159,7 +159,7 @@ const capResult = buildSitemapEntries({
     capped = max
   },
 })
-const cappedMoments = capResult.filter((e) => e.url.includes('/moment/')).length
+const cappedMoments = capResult.filter((e) => e.url.includes('/artwork/')).length
 check('moment cap bounds output', cappedMoments === 3, `got ${cappedMoments}`)
 check('onCap fired at the limit', capped === 3)
 

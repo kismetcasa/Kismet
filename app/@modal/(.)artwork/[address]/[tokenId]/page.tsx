@@ -13,14 +13,14 @@ interface Props {
 }
 
 /**
- * Intercepting route for /moment/[address]/[tokenId]. Fires when the
+ * Intercepting route for /artwork/[address]/[tokenId]. Fires when the
  * user navigates to a moment URL from inside the app (e.g. clicking a
  * card on the feed). Renders the detail view as an overlay over the
  * still-mounted feed — feed scroll position is preserved and the card's
  * video keeps playing underneath while the detail's own video opens above.
  *
  * Direct URL loads (refresh, share link) bypass interception and hit
- * the canonical /moment/[address]/[tokenId]/page.tsx instead, which
+ * the canonical /artwork/[address]/[tokenId]/page.tsx instead, which
  * renders the full-page version with the same data.
  *
  * Kept intentionally lean — only the SSR work strictly necessary for
@@ -66,7 +66,7 @@ export default async function ModalMomentPage({ params }: Props) {
   // through a profile/collection page into moment B forces a fresh
   // mount — without it React would reuse the existing ModalOverlay
   // instance (same route segment, new params) and the pathname
-  // snapshot inside would still point at /moment/A, leaving the
+  // snapshot inside would still point at /artwork/A, leaving the
   // overlay stuck rendering null over moment B's content.
   const overlayKey = `${address}/${tokenId}`
 

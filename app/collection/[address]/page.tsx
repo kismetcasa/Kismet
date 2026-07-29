@@ -204,7 +204,7 @@ export default async function CollectionPage({ params }: Props) {
   const isCurated = userCreated.some((a) => a.toLowerCase() === lowerAddr)
   if (!isCurated) {
     const tokenId = await findFirstMomentTokenId(address)
-    if (tokenId) redirect(`/moment/${address}/${tokenId}`)
+    if (tokenId) redirect(`/artwork/${address}/${tokenId}`)
   }
 
   // Resolve the viewer so we can decide whether a hidden collection should
