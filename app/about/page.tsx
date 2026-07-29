@@ -34,25 +34,6 @@ interface Section {
 
 const SECTIONS: Section[] = [
   {
-    heading: 'What Kismet is',
-    body: (
-      <>
-        <p>
-          Kismet is an onchain art platform and marketplace on{' '}
-          <span className="text-ink">Base</span>, an Ethereum Layer 2 network.
-          Artists mint artworks as ERC-1155 tokens, group them into collections,
-          and set their own terms. Collectors discover, collect, and trade that
-          work directly from a crypto wallet.
-        </p>
-        <p>
-          Every mint and sale is recorded onchain, and artwork media is stored
-          permanently on Arweave — so provenance and the work itself persist
-          independently of any single company, including ours.
-        </p>
-      </>
-    ),
-  },
-  {
     heading: 'Who runs Kismet',
     body: (
       <>
@@ -66,15 +47,17 @@ const SECTIONS: Section[] = [
           >
             Kismet Casa
           </a>
-          , a hybrid residency program for artists and developers producing work
-          that bridges the physical and the onchain. Kismet is the platform side
-          of that program: the place the residency&apos;s artists — and anyone
-          else — publish and sell onchain work.
+          , a hybrid residency program for artists and developers producing
+          experiences that bridge IRL and onchain.
         </p>
         <p>
-          That relationship is why the platform is opinionated about artists
-          first: royalties, self-custody, and permanent storage are defaults, not
-          upsells.
+          Kismet was developed during our residency at FarCon Rome out of our
+          need for a home for our programming&apos;s collaborations and
+          residency&apos;s artists work. That relationship is why the platform is
+          dedicated to allowing artists to capture the value they create by
+          setting a 0% mint fee, sponsoring gas on Base and Arweave uploads on
+          mints for permanent storage, and enforcing royalties on secondary
+          market.
         </p>
       </>
     ),
@@ -137,14 +120,21 @@ export default function AboutPage() {
 
         <h1 className="mb-4 text-xl text-ink">About Kismet</h1>
 
-        {/* Front-loaded direct answer — the paragraph an answer engine lifts
-            when asked "what is Kismet". */}
-        <p className="mb-8 text-base text-dim">
-          Kismet is an onchain art platform and marketplace on Base, built by
-          Kismet Casa. Artists mint artworks as tokens and set their own terms;
-          collectors discover, collect and trade that work from their own wallet,
-          with every mint and sale recorded onchain.
-        </p>
+        {/* Headingless lead — the "what is Kismet" answer sits directly under
+            the h1, which is the passage an answer engine lifts. */}
+        <div className="mb-8 space-y-3">
+          <p>
+            Kismet is an onchain art platform where artists mint artworks as
+            ERC-1155 tokens, group them into collections, and set their own
+            terms. Collectors discover, collect, and trade that work directly
+            from their wallet.
+          </p>
+          <p>
+            Every mint and sale is recorded onchain, and artwork media is stored
+            permanently on Arweave — so provenance and the work itself persist
+            independently of any single entity, including ours.
+          </p>
+        </div>
 
         {SECTIONS.map((s) => (
           <section key={s.heading} className="mb-8">
