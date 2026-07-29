@@ -22,6 +22,7 @@ import { SITE_URL } from '@/lib/siteUrl'
 import { MomentDetailView } from '@/components/MomentDetailView'
 import { JsonLd } from '@/components/JsonLd'
 import { momentJsonLd } from '@/lib/structuredData'
+import { metaDescription } from '@/lib/metaDescription'
 
 interface Props {
   params: Promise<{ address: string; tokenId: string }>
@@ -147,7 +148,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
   const name = meta.name ?? `#${tokenId}`
   const title = `${name} — Kismet`
-  const description = meta.description ?? 'View this artwork on Kismet'
+  // Normalized to the 25–160 char window engines want (Bing errors outside
+  // it) — artist-written descriptions arrive at any length. `isEmpty` below
+  // stays keyed on the RAW description, so this fallback never masks a
+  // truly empty token.
+  const description = metaDescription(
+    meta.description,
+    `${name} — artwork on Kismet, the onchain art platform on Base`,
+  )
   // A moment with no title, description, AND no image has nothing indexable —
   // usually indexer lag or a broken token. noindex it so crawl budget goes to
   // real artworks. Deliberately narrow: a titled or image-bearing moment (the

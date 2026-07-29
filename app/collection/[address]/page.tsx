@@ -14,6 +14,7 @@ import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { SITE_URL } from '@/lib/siteUrl'
 import { isMobileUA } from '@/lib/serverDevice'
+import { metaDescription } from '@/lib/metaDescription'
 
 interface Props {
   params: Promise<{ address: string }>
@@ -137,7 +138,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (hidden) return { title: 'Collection — Kismet', robots: { index: false } }
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
-  const description = meta?.description || 'View collection on Kismet'
+  const description = metaDescription(
+    meta?.description,
+    `${name} — collection on Kismet, the onchain art platform on Base`,
+  )
   // Single share image for every surface: the /opengraph-image route.
   // og:image + twitter:image are auto-wired to it by Next's file
   // convention (we deliberately don't set openGraph.images), and the
