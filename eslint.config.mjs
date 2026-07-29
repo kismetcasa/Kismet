@@ -9,8 +9,10 @@ const __dirname = path.dirname(__filename)
 const compat = new FlatCompat({ baseDirectory: __dirname })
 
 // Block reintroducing hex literals that have a design token in tailwind.config.ts.
-// New rare hex stays allowed; only the tokenized palette is locked.
-const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|444|333|a3a3a3|808080|8b5cf6|c084fc)\\]'
+// New rare hex stays allowed; only the tokenized palette is locked. The list
+// also keeps a few RETIRED hexes banned (888/444 = pre-WCAG grays, 8b5cf6/
+// c084fc = the abandoned purple accent) so they can't sneak back untokenized.
+const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|444|333|a3a3a3|808080|8b5cf6|c084fc|ff87ce)\\]'
 const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/line/ink/dim/muted/subtle/faint/accent) instead of this hex literal.'
 
 // /moment is redirect-only legacy since the /artwork rename: app code must

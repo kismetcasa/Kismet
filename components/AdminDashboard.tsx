@@ -197,6 +197,13 @@ type ParsedTarget =
   | { type: 'collection'; address: string }
   | { type: 'profile'; address: string }
 
+// `type` is a wire tag — render it via targetLabel(), never raw: the
+// user-facing noun for 'moment' is "artwork", and an expression-position
+// discriminant is invisible to the no-user-facing-moment lint rule.
+function targetLabel(t: ParsedTarget['type']): string {
+  return t === 'moment' ? 'Artwork' : t === 'collection' ? 'Collection' : 'Profile'
+}
+
 // Match the moment/collection/profile segment in either a full URL or a bare
 // path — the leading `/` anchor handles both forms, so we don't need to
 // URL-parse. Anything after the address/tokenId (query strings, fragments)
@@ -488,8 +495,7 @@ function HideContentCard() {
       // when a moment is toggled, and a profile hide's matched entry is
       // now the pasted address (or gone).
       setRefresh((v) => v + 1)
-      const label =
-        target.type === 'moment' ? 'Artwork' : target.type === 'collection' ? 'Collection' : 'Profile'
+      const label = targetLabel(target.type)
       toast.success(next ? `${label} hidden` : `${label} restored`, { id: 'admin-hide' })
     } catch (err) {
       toastError(next ? 'Hide' : 'Unhide', err, { id: 'admin-hide' })
@@ -624,7 +630,7 @@ function HideContentCard() {
         <div className="border border-line bg-[#0a0a0a] p-2 text-[10px] font-mono text-dim flex flex-col gap-1">
           <div>
             <span className="text-muted uppercase tracking-wider mr-2">type</span>
-            {target.type}
+            {targetLabel(target.type).toLowerCase()}
           </div>
           <div className="break-all">
             <span className="text-muted uppercase tracking-wider mr-2">address</span>

@@ -9,10 +9,10 @@ import { consumeUserQuota } from '@/lib/userQuota'
 
 export const runtime = 'nodejs'
 
-// Hard cap on uploaded JSON metadata size. Mirrors the client-side 50 MB cap
-// in MintForm, but enforced server-side too — a direct caller with a valid
-// session shouldn't be able to drain Turbo credit with arbitrarily large
-// uploads.
+// Hard cap on uploaded JSON metadata size, enforced server-side only (the
+// client builds this JSON itself and stays far under it) — a direct caller
+// with a valid session shouldn't be able to drain Turbo credit with
+// arbitrarily large uploads.
 const MAX_BODY_BYTES = 50 * 1024 * 1024
 
 function getTurbo() {
