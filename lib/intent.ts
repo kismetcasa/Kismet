@@ -46,6 +46,15 @@ export interface MintBody {
     mintToCreatorCount?: unknown
   } | unknown
   splits?: unknown
+  /**
+   * MintForm's "Enable raffle" toggle. Consumed server-side in the post-mint
+   * hooks (lib/mint-proxy enables the raffle beside setMomentMeta) and stripped
+   * before the upstream forward. Deliberately NOT part of the signed intent
+   * slots: the intent already authenticates the minter, and enabling a raffle
+   * on one's own mint is an action the creator is independently authorized to
+   * take (and reverse) at any time via /api/raffle/manage.
+   */
+  enableRaffle?: unknown
 }
 
 /**

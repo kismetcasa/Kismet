@@ -26,7 +26,7 @@ import { formatPrice } from '@/lib/inprocess'
 
 type ListCurrency = 'eth' | 'usdc'
 
-interface ListButtonProps {
+export interface ListButtonProps {
   collectionAddress: string
   tokenId: string
   name?: string

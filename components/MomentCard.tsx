@@ -24,7 +24,7 @@ import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
-import { ListButton } from './ListButton'
+import { CollectedActions } from './CollectedActions'
 import { SaleWindow } from './SaleWindow'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
@@ -394,6 +394,11 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   // Gated on a resolvable creator address so a malformed moment falls back
   // to the normal collect/list buttons rather than linking to /profile/undefined.
   const showProfileCta = !!profileCta && !!moment.creator?.address
+  // The owner's own profile is the only surface that passes onTogglePin (the
+  // pin affordance ProfileView hands to owner cards). There we keep the "list"
+  // action even when the moment hosts a raffle, so a holder can still list
+  // their edition from their profile; every other surface shows "enter raffle".
+  const keepListAction = !!onTogglePin
   const renderViewProfile = (variant: 'compact' | 'full') => (
     <Link
       href={`/profile/${moment.creator?.address}`}
@@ -794,15 +799,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           {showProfileCta ? (
             renderViewProfile('compact')
           ) : owned > 0 ? (
-            // Owner: list + collect+ SIDE BY SIDE (left→right), like the full
-            // card's [list][collect+] row. Both are text-xs (ListButton's size,
-            // matched by the 'full' collect variant), and items-STRETCH — same
-            // as the full card — so the two buttons are always the same height
-            // by construction (when the list form opens, collect+ stretches to
-            // match it, exactly like the full card behaves).
+            // Owner: list/raffle + collect+ SIDE BY SIDE (left→right), like the
+            // full card's row. CollectedActions renders the "enter raffle" action
+            // when the moment hosts a raffle, else the normal list form. Both are
+            // text-xs and items-STRETCH — same as the full card — so the two
+            // buttons stay the same height by construction.
             <div className="flex gap-1 items-stretch">
               <div className="flex-1 min-w-0">
-                <ListButton
+                <CollectedActions
                   collectionAddress={moment.address}
                   tokenId={moment.token_id}
                   name={meta.name}
@@ -810,6 +814,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                   creatorAddress={moment.creator?.address}
                   contentUri={meta.content?.uri}
                   contentMime={meta.content?.mime}
+                  keepList={keepListAction}
                   stacked
                 />
               </div>
@@ -861,7 +866,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             renderViewProfile('full')
           ) : owned > 0 ? (
             <div className="flex-1 min-w-0">
-              <ListButton
+              <CollectedActions
                 collectionAddress={moment.address}
                 tokenId={moment.token_id}
                 name={meta.name}
@@ -870,6 +875,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
                 contentUri={meta.content?.uri}
                 contentMime={meta.content?.mime}
                 buttonClassName={hidePriceSupply ? 'py-3' : 'py-2'}
+                keepList={keepListAction}
               />
             </div>
           ) : null}

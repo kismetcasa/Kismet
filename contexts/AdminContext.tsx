@@ -49,6 +49,16 @@ interface AdminContextValue {
   // Display. Promoting also features the mint (DISPLAY ⊆ FEATURED); demoting
   // leaves it featured.
   toggleMintPassDisplay: (collectionAddress: string, tokenId: string) => Promise<void>
+  // Mints that have a raffle (active or ended), keyed `<addr>:<tokenId>`
+  // (lowercase addr). Loaded once on mount from /api/raffle/enabled (public),
+  // the same way featuredKeys loads — so owned-edition surfaces
+  // (CollectedActions) can choose "enter raffle" vs "list" synchronously with no
+  // per-card request. The set is mutated by applyRaffleEnabled after a signed,
+  // self-serve manage call (creator/admin); the mint form writes it too.
+  raffleEnabledKeys: Set<string>
+  // Sync the local raffle-enabled set after a successful signed manage call
+  // (useRaffleManage). Pure local mutation — not the network write.
+  applyRaffleEnabled: (collectionAddress: string, tokenId: string, enabled: boolean) => void
   // Run `fn` with a valid privileged session in scope. Auto-prompts a
   // one-time SIWE signature + login round-trip if no session is active.
   // Returns whatever `fn` returns, or null if unprivileged / cancelled.
@@ -69,6 +79,8 @@ const AdminContext = createContext<AdminContextValue>({
   toggleFeatured: async () => {},
   toggleFeaturedCollection: async () => {},
   toggleMintPassDisplay: async () => {},
+  raffleEnabledKeys: new Set(),
+  applyRaffleEnabled: () => {},
   withSession: async () => null,
 })
 
@@ -87,6 +99,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
   const [featuredKeys, setFeaturedKeys] = useState<Set<string>>(new Set())
   const [featuredCollectionAddrs, setFeaturedCollectionAddrs] = useState<Set<string>>(new Set())
   const [mintPassKeys, setMintPassKeys] = useState<Set<string>>(new Set())
+  const [raffleEnabledKeys, setRaffleEnabledKeys] = useState<Set<string>>(new Set())
   // Curation-change counter. Bumped by the toggles below (not the initial
   // fetch) so the featured tab can key off it to remount-and-refetch on a real
   // change without the wasteful double-fetch when the sets first populate.
@@ -176,6 +189,27 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
           setMintPassKeys(
             new Set(
               d.mintPassDisplays.map(
+                (f: { collectionAddress: string; tokenId: string }) =>
+                  `${f.collectionAddress.toLowerCase()}:${f.tokenId}`,
+              ),
+            ),
+          )
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  // Fetch raffle-enabled moments on mount (public). Mirrors the featured load
+  // above: the whole set lives client-side so surfaces decide "enter raffle"
+  // vs "list" without a per-card request.
+  useEffect(() => {
+    fetch('/api/raffle/enabled')
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.enabled)) {
+          setRaffleEnabledKeys(
+            new Set(
+              d.enabled.map(
                 (f: { collectionAddress: string; tokenId: string }) =>
                   `${f.collectionAddress.toLowerCase()}:${f.tokenId}`,
               ),
@@ -372,6 +406,25 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
     [address, isAdmin, isCurator, ensureSession, mintPassKeys, bumpFeaturedRevision],
   )
 
+  // Reflect a raffle enable/disable in the client set so owned-edition surfaces
+  // swap "list"/"enter raffle" without a reload. The privileged write itself is
+  // a signed, self-serve call in useRaffleManage (authorized per-moment for the
+  // creator / moment admin / platform admin) — this just syncs local state after
+  // it succeeds, which is why it's a plain mutator, not a network call.
+  const applyRaffleEnabled = useCallback(
+    (collectionAddress: string, tokenId: string, enabled: boolean) => {
+      const key = `${collectionAddress.toLowerCase()}:${tokenId}`
+      setRaffleEnabledKeys((prev) => {
+        if (enabled === prev.has(key)) return prev
+        const next = new Set(prev)
+        if (enabled) next.add(key)
+        else next.delete(key)
+        return next
+      })
+    },
+    [],
+  )
+
   const withSession = useCallback(
     async <T,>(fn: () => Promise<T>): Promise<T | null> => {
       if (!address || (!isAdmin && !isCurator)) return null
@@ -435,13 +488,16 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       toggleFeatured,
       toggleFeaturedCollection,
       toggleMintPassDisplay,
+      raffleEnabledKeys,
+      applyRaffleEnabled,
       withSession,
     }),
     [
       isAdmin, isCurator, session, address,
       startSession,
       featuredKeys, featuredCollectionAddrs, mintPassKeys, featuredRevision,
-      toggleFeatured, toggleFeaturedCollection, toggleMintPassDisplay, withSession,
+      toggleFeatured, toggleFeaturedCollection, toggleMintPassDisplay,
+      raffleEnabledKeys, applyRaffleEnabled, withSession,
     ],
   )
 

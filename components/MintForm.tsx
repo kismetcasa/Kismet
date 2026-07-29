@@ -42,6 +42,7 @@ import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { usePassGate } from '@/hooks/usePassGate'
+import { useAdmin } from '@/contexts/AdminContext'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { KISMET_CHANNEL_KEY } from '@/lib/collectShare'
 import { SITE_URL } from '@/lib/siteUrl'
@@ -266,6 +267,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // lib/mint-proxy runs the authoritative hasGateAccess on every request.
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
+  // A creator can flag their own mint to host the off-chain raffle. The flag
+  // rides the mint request itself (`enableRaffle` in the body) and the server
+  // enables it in the post-mint hooks (lib/mint-proxy, beside the setMomentMeta
+  // that records the creator) — no extra wallet signature and no race against
+  // that KV record. applyRaffleEnabled just syncs the local set on success.
+  const { applyRaffleEnabled } = useAdmin()
+
   const [mintMode, setMintMode] = useState<MintMode>('media')
   const {
     file,
@@ -336,6 +344,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [residenciesPercent, setResidenciesPercent] = useState(DEFAULT_RESIDENCIES_PERCENT)
   const [editingResidencies, setEditingResidencies] = useState(false)
   const [residenciesInput, setResidenciesInput] = useState(String(DEFAULT_RESIDENCIES_PERCENT))
+  // Self-serve: flag this mint to host the raffle. Rides the mint body; the
+  // server enables it in the post-mint hooks (lib/mint-proxy) once the new
+  // (contractAddress, tokenId) exists — no extra signature.
+  const [enableRaffle, setEnableRaffle] = useState(false)
   const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
@@ -888,7 +900,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         const res = await fetch('/api/write', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, intent }),
+          body: JSON.stringify({ ...payload, intent, enableRaffle }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -902,6 +914,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
+        if (enableRaffle && data.contractAddress && data.tokenId) {
+          // The mint request carried enableRaffle — the server enabled it in the
+          // post-mint hooks (lib/mint-proxy). Sync the local set so the new
+          // moment shows its raffle without a reload.
+          applyRaffleEnabled(data.contractAddress, data.tokenId, true)
+        }
         if (isAutoDeploy && data.contractAddress) {
           // Text moments don't have a media file, so the new
           // collection's cover stays unset (image: undefined). User
@@ -1319,7 +1337,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         const res = await fetch('/api/mint', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, intent }),
+          body: JSON.stringify({ ...payload, intent, enableRaffle }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -1333,6 +1351,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         }
         if (!data.tokenId) throw new Error('Mint succeeded but no tokenId returned')
         setResult(data)
+        if (enableRaffle && data.contractAddress && data.tokenId) {
+          // The mint request carried enableRaffle — the server enabled it in the
+          // post-mint hooks (lib/mint-proxy). Sync the local set so the new
+          // moment shows its raffle without a reload.
+          applyRaffleEnabled(data.contractAddress, data.tokenId, true)
+        }
         if (isAutoDeploy && data.contractAddress) {
           // The moment's media doubles as the collection cover for
           // first-mint UX; pass the cover URI (poster when transcoded,
@@ -1503,6 +1527,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setSaleStartInput('')
             setSaleEndInput('')
             setSplits([])
+            setEnableRaffle(false)
           }}
           className="text-xs font-mono text-dim hover:text-ink underline"
         >
@@ -2134,6 +2159,34 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           {residenciesMax}% max — that’s what’s left after your collaborators; lower the % or a recipient
         </p>
       )}
+
+      {/* Flag this mint to host the off-chain raffle. The flag rides the mint
+          request and the server enables it in the post-mint hooks — no extra
+          signature. It can also be turned on/off later from the moment's page.
+          Entries auto-close at the sale end if one is set. */}
+      <div className="flex items-start justify-between gap-3 border border-line px-3 py-2.5">
+        <div className="min-w-0">
+          <label className="block text-xs font-mono text-dim uppercase tracking-wider">
+            Enable raffle
+          </label>
+          <p className="text-xs text-muted font-mono mt-1">
+            {enableRaffle
+              ? 'holders of this edition can enter to win the physical'
+              : 'no raffle — holders get the standard list action'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setEnableRaffle((v) => !v)}
+          aria-pressed={enableRaffle}
+          aria-label="Enable raffle for this artwork"
+          className="flex-shrink-0 mt-0.5"
+        >
+          <div className={`relative w-8 h-4 rounded-full transition-colors ${enableRaffle ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${enableRaffle ? 'translate-x-4' : 'translate-x-0'}`} />
+          </div>
+        </button>
+      </div>
     </form>
   )
 }

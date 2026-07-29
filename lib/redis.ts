@@ -120,3 +120,11 @@ export function zpairsToMap(raw: (string | number)[]): Map<string, number> {
 // read forever. Far above anything the UI shows, so the cap never bites a
 // legitimate curation.
 export const MAX_FEATURED = 1000
+
+// Per-moment raffle enablement. A zset of `<addr>:<tokenId>` members (score =
+// enabledAt) marking which mints have a raffle (active or ended). The moment's
+// creator/admin toggles it per moment via the signed /api/raffle/manage route;
+// the client learns the whole set once on mount (AdminContext.raffleEnabledKeys),
+// the same way it learns FEATURED_KEY, so owned-edition surfaces can choose
+// "enter raffle" vs "list" synchronously.
+export const RAFFLE_ENABLED_KEY = 'kismetart:raffle-enabled'

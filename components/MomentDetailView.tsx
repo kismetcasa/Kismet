@@ -9,7 +9,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, getSaleWindow, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, parseRealSaleEnd, DEFAULT_COLLECT_COMMENT, getSaleWindow, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -44,7 +44,8 @@ import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
-import { ListButton } from './ListButton'
+import { CollectedActions } from './CollectedActions'
+import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
@@ -2004,7 +2005,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             {priceSupplyBox}
             {alreadyOwned && (
               <div className="flex-1 min-w-0">
-                <ListButton
+                <CollectedActions
                   collectionAddress={address}
                   tokenId={tokenId}
                   name={meta.name}
@@ -2123,6 +2124,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             {alreadyOwned && sendOpen && <div className="sm:hidden">{sendForm}</div>}
           </div>
 
+          {/* Per-moment raffle controls — self-serve for the moment's creator /
+              a moment admin / the platform admin (self-hides for anyone else).
+              Enabling snapshots the sale end as the entries auto-close time.
+              (The feature/unfeature toggle lives in the action toolbar above.) */}
+          {(isCreator || isMomentAdmin || isAdmin) && (
+            <div className="px-5 pb-4">
+              <RaffleAdminPanel
+                collection={address}
+                tokenId={tokenId}
+                canManage
+                defaultCloseAt={parseRealSaleEnd(detail?.saleConfig?.saleEnd)}
+              />
+            </div>
+          )}
         </div>
       </div>
 
