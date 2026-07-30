@@ -26,8 +26,8 @@ const TOAST_ID = 'onchain-comment'
  * Post an on-chain comment to Zora's Comments contract for a token the user
  * already holds — the "comment after you collected" path. The contract itself
  * gates on ownership, so there's no Kismet-side gate/store; the user pays one
- * spark + gas. In Process indexes the emitted `Commented` event into
- * /moment/comments, so the comment surfaces in the activity feed once indexed.
+ * spark + gas. In Process indexes comment events into GET /comments, so the
+ * comment surfaces in the activity feed once indexed.
  *
  * Mirrors useDirectCollect's shape (wagmi write → receipt → toast), minus the
  * price/currency machinery — a comment has no sale, just the fixed spark value.

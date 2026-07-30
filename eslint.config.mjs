@@ -17,9 +17,11 @@ const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/li
 
 // /moment is redirect-only legacy since the /artwork rename: app code must
 // build /artwork links. Start-anchored so /api/moment/* (Kismet's internal
-// API) and the In Process wire's bare '/moment' endpoint stay legal; the two
-// sanctioned exceptions (the next.config redirect source and the wire's
-// '/moment/comments' path) carry inline disables at the site.
+// API) and the In Process wire's bare '/moment' endpoint stay legal; the one
+// sanctioned exception (the next.config redirect source) carries an inline
+// disable at the site. (The wire's old '/moment/comments' path — the other
+// historical exception — was removed upstream in the 2026-07 comments
+// migration; reads now go to '/comments', which no selector matches.)
 const LEGACY_MOMENT_URL = '^\\/moment\\/'
 // Absolute form — catches `https://kismet.art/moment/…` (fixtures, docs
 // strings, share URLs), which the start-anchored selector can't see. This

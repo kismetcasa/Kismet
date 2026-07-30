@@ -10,7 +10,10 @@ import { USDC_BASE } from './zoraMint'
 // and deliberately does NOT cross this wire boundary. So, on purpose and
 // permanently, the In Process contract keeps "moment" here:
 //   • endpoint paths:  moment/create, moment/create/writing,
-//                      /moment (GET + PATCH), /moment/comments
+//                      /moment (GET + PATCH)
+//     (comment READS moved off the moment namespace entirely: In Process's
+//      2026-07 comments-contract migration removed /moment/comments and
+//      serves GET /comments instead — same params and envelope)
 //   • response keys:   `moments` (timeline array), `momentAdmins`
 //   • request key:     the `moment: {…}` wrapper in the PATCH /moment body
 //   • the `Moment` / `MomentDetail` interfaces below mirror In Process's JSON
