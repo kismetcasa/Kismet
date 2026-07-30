@@ -1,9 +1,11 @@
 import { isAddress } from '@/lib/address'
 import { isFlagSet } from './gateFlags'
 import { redis } from './redis'
-import { hasValidPass } from './pass-validity'
-import { getCollectionMeta } from './kv'
+import { hasValidPassForAny } from './pass-validity'
+import { isPassBlacklisted } from './pass-blacklist'
+import { expandToGateWallets } from './addressUnion'
 import { ADMIN_ADDRESS } from './config'
+import { getCollectionMeta } from './kv'
 
 const KEY_ENABLED = 'kismetart:gate:enabled'
 const KEY_PASS_COLLECTION = 'kismetart:gate:pass-collection'
@@ -108,6 +110,26 @@ export async function setGateConfig(config: GateConfig): Promise<void> {
  * can issue passes and everyone else is rejected on-chain; minting into any
  * OTHER collection defers to the provenance-aware validity ledger.
  *
+ * The validity check runs over the caller's IDENTITY UNION — the caller plus
+ * its FC-verified sibling wallets (expandToGateWallets): the person passes if
+ * ANY of their verified wallets holds a valid Pass. This is what lets a Mini
+ * App user mint: there the caller is the host's embedded wallet, while their
+ * Pass lives on the wallet they collected with on web — both verified to the
+ * same FID (see PATRON_GATE_MINIAPP_RCA.md). It also converges this check
+ * with /api/collections' create gate, which passes the Quick-Auth session
+ * address rather than the signer: both now resolve to the same union, so the
+ * two endpoints can no longer disagree about the same person. Provenance
+ * stays strictly per-wallet — the union is a read-time OR over hasValidPass,
+ * never a credit transfer, so transferring the Pass out still revokes for
+ * the whole identity via the holding wallet's ledger.
+ *
+ * The pass-blacklist closes over the SAME union: once validity flows across
+ * sibling wallets, a signer-only blacklist would be hoppable by re-entering
+ * from any verified sibling — moderation must deny the identity wherever the
+ * grant would admit it (the hidden-profiles sibling closure is the same
+ * principle). Cheap: isPassBlacklisted reads a memoized full-set cache, so
+ * the loop is in-process after one SMEMBERS per window.
+ *
  * Mint-proxy wires this in *addition* to main's existing on-chain Zora
  * ADMIN check (`checkSmartWalletAdmin`) — so the caller must (a) hold a
  * Pass (platform policy) AND (b) have on-chain admin on the target
@@ -135,7 +157,19 @@ export async function hasGateAccess(
   // Admin bypasses above.
   if (targetCollection.toLowerCase() === config.passCollection) return true
 
-  return hasValidPass(config.passCollection, addrLower)
+  // Identity union — fail-degraded: on any sibling-lookup failure this is
+  // [addrLower] and the check reduces to the signer-only behavior.
+  const wallets = await expandToGateWallets(addrLower)
+
+  // Identity-scoped moderation: any pass-blacklisted wallet in the union
+  // denies the whole identity (rationale in the docstring above). Admin is
+  // exempt inside isPassBlacklisted, so an identity containing the admin
+  // address can never be denied by this loop.
+  for (const wallet of wallets) {
+    if (await isPassBlacklisted(wallet)) return false
+  }
+
+  return hasValidPassForAny(config.passCollection, wallets)
 }
 
 /** Returns true if the platform is paused AND the caller is not admin.

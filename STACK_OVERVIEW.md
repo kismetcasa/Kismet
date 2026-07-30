@@ -894,7 +894,14 @@ backstop. Off-platform transfer → the Alchemy webhook (HMAC-verified) runs
 the (recipient,tokenId) pair was platform-flagged, and **permanently taints** the
 tokenId if the transfer wasn't platform-flagged and wasn't Kismet-listed. Enforcement
 (`hasValidPass`) reads `balanceOfBatch` excluding tainted ids and clamps the ledger
-down; the `usePassGate` client read is a UX hint only.
+down; the `usePassGate` client read is a UX hint only. The gate decision
+(`hasGateAccess`) runs over the caller's **identity union** — the signer plus its
+FC-verified sibling wallets (`expandToGateWallets`, capped, fail-degraded to
+signer-only) — so a Mini App user whose connected signer is the host wallet still
+passes on the Pass they collected with their web wallet; the pass-blacklist denies
+across the same union (a signer-only blacklist would be sibling-hoppable). Credits,
+taint, and revocation stay strictly per-wallet — the union is a read-time OR, never
+a credit transfer (see PATRON_GATE_MINIAPP_RCA.md).
 
 ### 4.5 Media upload → delivery → playback
 On the primary upload path media bytes go **browser→Turbo→Arweave without touching
