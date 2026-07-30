@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { getMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import {
   buildRaffleEntryMessage,
@@ -95,6 +96,16 @@ export async function POST(req: NextRequest) {
   // Idempotent: already in → success without a redundant on-chain read.
   if (await isEntered(collection, tokenId, address)) {
     return NextResponse.json({ entered: true, already: true })
+  }
+
+  // The artwork's creator can't enter their own raffle — the physical is
+  // "gifted to one collector", and a creator in the pool only dilutes real
+  // entrants (or, worse, lets them draw themselves). Server-authoritative via
+  // the KV mint-meta creator (the same signal manage-route auth trusts);
+  // RaffleButton also hides "enter" client-side for the creator, best-effort.
+  const meta = await getMomentMeta(collection, tokenId)
+  if (meta?.creator?.toLowerCase() === address) {
+    return errorResponse(403, "The artwork's creator can't enter their own raffle")
   }
 
   if (!(await holdsEdition(collection, tokenId, address))) {

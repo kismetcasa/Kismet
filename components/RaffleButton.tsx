@@ -170,6 +170,17 @@ export function RaffleButton({
   if (status && !status.entriesOpen) return renderList()
   // Not a holder and not entered → nothing to do here (list if available).
   if (!holdsToken) return renderList()
+  // The artwork's creator can't enter their own raffle (the enter route
+  // rejects it via the KV creator record) — show them the list action instead
+  // of a button that would 403. Best-effort: compares the feed creator, so a
+  // feed/KV mismatch still falls through to the server's authoritative check.
+  if (
+    !!address &&
+    !!listProps.creatorAddress &&
+    address.toLowerCase() === listProps.creatorAddress.toLowerCase()
+  ) {
+    return renderList()
+  }
 
   // Holder, entries open, not entered → enter.
   return (

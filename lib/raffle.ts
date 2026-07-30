@@ -59,18 +59,32 @@ export async function isRaffleEnabled(
   return score != null
 }
 
+// Ceiling for the enabled-raffles zset — write-trimmed on every enable and
+// used to bound the read below, mirroring MAX_FEATURED (lib/redis.ts): without
+// both, this was the one zset a self-serve action could grow unboundedly
+// (every enable is creator-gated but there's no cap on moments per creator),
+// and getEnabledRaffles ships the WHOLE set to every client on mount. Far
+// above any plausible simultaneous-raffle count, so the cap never bites a
+// legitimate raffle; if it ever did, the oldest-enabled entries drop first.
+const MAX_ENABLED_RAFFLES = 1000
+
 /** Enable the raffle for one moment (self-serve via /api/raffle/manage).
  *  Idempotent (re-stamps the enabled-at score). Does NOT touch
  *  entrants/winner/state — re-enabling a previously-disabled raffle restores its
- *  entrants as they were. */
+ *  entrants as they were. zadd + rank-trim in one atomic MULTI — the
+ *  /api/featured zaddCapped pattern. */
 export async function setRaffleEnabled(
   collection: string,
   tokenId: string,
 ): Promise<void> {
-  await redis.zadd(RAFFLE_ENABLED_KEY, {
-    score: Date.now(),
-    member: enabledMember(collection, tokenId),
-  })
+  await redis
+    .multi()
+    .zadd(RAFFLE_ENABLED_KEY, {
+      score: Date.now(),
+      member: enabledMember(collection, tokenId),
+    })
+    .zremrangebyrank(RAFFLE_ENABLED_KEY, 0, -(MAX_ENABLED_RAFFLES + 1))
+    .exec()
 }
 
 /** Disable the raffle for one moment. Leaves entrant/winner data intact so it
@@ -82,10 +96,11 @@ export async function clearRaffleEnabled(
   await redis.zrem(RAFFLE_ENABLED_KEY, enabledMember(collection, tokenId))
 }
 
-/** All raffle-enabled moments, newest first. Powers the public GET that the
- *  client loads once on mount (AdminContext.raffleEnabledKeys). */
+/** All raffle-enabled moments, newest first (bounded — see MAX_ENABLED_RAFFLES).
+ *  Powers the public GET that the client loads once on mount
+ *  (AdminContext.raffleEnabledKeys). */
 export async function getEnabledRaffles(): Promise<EnabledRaffle[]> {
-  const raw = (await redis.zrange(RAFFLE_ENABLED_KEY, 0, -1, {
+  const raw = (await redis.zrange(RAFFLE_ENABLED_KEY, 0, MAX_ENABLED_RAFFLES - 1, {
     rev: true,
     withScores: true,
   })) as (string | number)[]
@@ -149,28 +164,48 @@ export async function holdsEdition(
   }
 }
 
-/** One-RPC balanceOfBatch for the eligibility draw (getEligibleEntrants, ≤100
- *  entrants). Maps lowercased address -> currently-holds. Fails closed (all
- *  false) on error. */
+// balanceOfBatch chunk size. Entrant count is bounded only by real holders, so
+// a popular open edition can exceed what one eth_call comfortably carries;
+// 200 addresses ≈ 200 SLOADs + a ~13KB calldata payload per call — far inside
+// node limits — and chunks fan out concurrently.
+const HOLDS_BATCH_CHUNK = 200
+
+/** Chunked balanceOfBatch for the eligibility draw (getEligibleEntrants).
+ *  Maps lowercased address -> currently-holds. Fails closed (ALL false) if ANY
+ *  chunk fails — deliberately all-or-nothing: a partial result would silently
+ *  exclude one chunk's real holders and draw a "winner" from the remainder,
+ *  which is worse than aborting the draw (the route 400s on zero eligible and
+ *  the artist just retries). */
 export async function holdsEditionBatch(
   collection: string,
   tokenId: string,
   addresses: string[],
 ): Promise<Record<string, boolean>> {
   if (addresses.length === 0) return {}
+  const chunks: string[][] = []
+  for (let i = 0; i < addresses.length; i += HOLDS_BATCH_CHUNK) {
+    chunks.push(addresses.slice(i, i + HOLDS_BATCH_CHUNK))
+  }
   try {
-    const balances = (await serverBaseClient().readContract({
-      address: collection as `0x${string}`,
-      abi: BALANCE_OF_BATCH_ABI,
-      functionName: 'balanceOfBatch',
-      args: [
-        addresses.map((a) => a as `0x${string}`),
-        addresses.map(() => BigInt(tokenId)),
-      ],
-    })) as readonly bigint[]
+    const perChunk = await Promise.all(
+      chunks.map(
+        (chunk) =>
+          serverBaseClient().readContract({
+            address: collection as `0x${string}`,
+            abi: BALANCE_OF_BATCH_ABI,
+            functionName: 'balanceOfBatch',
+            args: [
+              chunk.map((a) => a as `0x${string}`),
+              chunk.map(() => BigInt(tokenId)),
+            ],
+          }) as Promise<readonly bigint[]>,
+      ),
+    )
     const out: Record<string, boolean> = {}
-    addresses.forEach((a, i) => {
-      out[norm(a)] = (balances[i] ?? 0n) > 0n
+    chunks.forEach((chunk, ci) => {
+      chunk.forEach((a, i) => {
+        out[norm(a)] = (perChunk[ci][i] ?? 0n) > 0n
+      })
     })
     return out
   } catch {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { getMomentMeta } from '@/lib/notifications'
 import { authorizeRaffleManager } from '@/lib/raffleAuth'
 import type { RaffleAction } from '@/lib/raffleManageMessage'
 import {
@@ -93,14 +94,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, entriesCloseAt: closeAt })
 
     case 'drawAndEnd': {
-      const eligible = await getEligibleEntrants(collection, tokenId)
+      // Defense in depth on the enter route's creator exclusion: even if a
+      // creator entry ever landed (pre-rule data, KV creator recorded late),
+      // the creator can't be drawn — or manually picked — as their own winner.
+      const [allEligible, meta] = await Promise.all([
+        getEligibleEntrants(collection, tokenId),
+        getMomentMeta(collection, tokenId),
+      ])
+      const creatorLower = meta?.creator?.toLowerCase() ?? null
+      const eligible = allEligible.filter((e) => e.address !== creatorLower)
       if (winner) {
-        // Manual pick — must be an entrant who still holds the edition.
+        // Manual pick — must be an eligible entrant (still holds, not creator).
         if (!(await isEntered(collection, tokenId, winner))) {
           return errorResponse(400, 'That address is not an entrant')
         }
         if (!eligible.some((e) => e.address === winner)) {
-          return errorResponse(400, 'That entrant no longer holds the edition')
+          return errorResponse(400, 'That entrant is not eligible to win')
         }
         await endRaffle(collection, tokenId, winner)
         return NextResponse.json({ ok: true, ended: true, winner })
