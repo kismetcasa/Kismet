@@ -59,7 +59,7 @@ function OvalShell({
 }) {
   return (
     <article ref={rootRef} className={OVAL_CLASS}>
-      {/* Stretched link — one crawlable /moment anchor covering the whole
+      {/* Stretched link — one crawlable /artwork anchor covering the whole
           oval. data-oval-nav is the j/k keyboard-navigation hook; the ring
           renders only for keyboard focus (focus-visible), never on click. */}
       <Link

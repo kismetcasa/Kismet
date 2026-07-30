@@ -239,7 +239,7 @@ avoid killing slow-but-alive loads.
 - Detail-page `<link rel="preload" as="video">` always points at the **direct**
   gateway URL while WebKit/iframe surfaces play via the proxy URL — duplicate
   full-file download on the most constrained surfaces
-  (`app/moment/[address]/[tokenId]/page.tsx:238-245`).
+  (`app/artwork/[address]/[tokenId]/page.tsx`, the `<link rel="preload" as="video">` block).
 - CDN in front of `/api/img` (`OPS_RUNBOOK.md §3`) remains unapplied; after F1, a CDN
   must be configured to preserve `Range`/`206` behavior (the runbook already covers
   this).

@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
-import { notFound, redirect } from 'next/navigation'
+import { notFound, redirect, unstable_rethrow } from 'next/navigation'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, resolveUri, shortAddress } from '@/lib/inprocess'
 import { CollectionView } from '@/components/CollectionView'
@@ -14,6 +14,7 @@ import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { SITE_URL } from '@/lib/siteUrl'
 import { isMobileUA } from '@/lib/serverDevice'
+import { metaDescription } from '@/lib/metaDescription'
 
 interface Props {
   params: Promise<{ address: string }>
@@ -117,6 +118,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // even when the KV/inprocess fetch fails.
   try {
   const { address } = await params
+  // Structurally impossible URL → not-found page instead of a collection stub,
+  // and — the concrete win — this runs BEFORE the three lookups below (two
+  // Redis reads plus an 8s-timeout inprocess call), so a malformed URL no
+  // longer spends an upstream round trip on a page that can never resolve.
+  // Status stays 200 (this route has a loading.tsx); see the artwork page for
+  // the measured rationale.
+  if (!isAddress(address)) notFound()
   // KV is written at deploy time and is always fast; only fall back to
   // inprocess (fetchCollectionMeta) when KV has nothing.
   const [kvMeta, inprocessMeta, hidden] = await Promise.all([
@@ -130,7 +138,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (hidden) return { title: 'Collection — Kismet', robots: { index: false } }
   const meta = kvMeta ?? inprocessMeta
   const name = meta?.name || `Collection ${shortAddress(address)}`
-  const description = meta?.description || 'View collection on Kismet'
+  const description = metaDescription(
+    meta?.description,
+    `${name} — collection on Kismet, the onchain art platform on Base`,
+  )
   // Single share image for every surface: the /opengraph-image route.
   // og:image + twitter:image are auto-wired to it by Next's file
   // convention (we deliberately don't set openGraph.images), and the
@@ -174,6 +185,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     other: fcEmbed,
   }
   } catch (err) {
+    // Let Next control-flow errors (the notFound() above) propagate — without
+    // this the catch would swallow it and hand back the generic fallback
+    // metadata instead of the not-found page.
+    unstable_rethrow(err)
     console.error('[generateMetadata] collection', err)
     return { title: 'Collection — Kismet' }
   }
@@ -201,8 +216,18 @@ export default async function CollectionPage({ params }: Props) {
   // can't see this call).
   const lowerAddr = address.toLowerCase()
   const userCreated = await getUserCollections()
-  const isCurated = userCreated.some((a) => a.toLowerCase() === lowerAddr)
-  if (!isCurated) {
+  // The Patron Collection is curated by definition. It was platform-deployed
+  // outside the create-form flow, so it never enters the KV curated set
+  // (POST /api/collections deliberately fails CLOSED on classification) —
+  // without this exemption every route to its page bounced to token 1.
+  const isCurated =
+    isPatronCollection(address) || userCreated.some((a) => a.toLowerCase() === lowerAddr)
+  // Empty curated set = a Redis blip (getUserCollections swallows errors to []
+  // and memoizes ~15min) or an empty platform. Either way, rendering the
+  // collection page beats redirecting EVERY collection to its first artwork
+  // for a full memo window — same fall-through-over-dead-end philosophy as
+  // findFirstMomentTokenId's null path below.
+  if (!isCurated && userCreated.length > 0) {
     const tokenId = await findFirstMomentTokenId(address)
     if (tokenId) redirect(`/artwork/${address}/${tokenId}`)
   }

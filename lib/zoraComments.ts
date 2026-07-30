@@ -5,9 +5,9 @@ import { KISMET_REFERRAL } from './zoraMint'
 // vanity address (impl 0xE37B9036440Fe6C189285629AaD8F4b31AD93F31, deployed
 // block 21374808). Lets a holder comment on a token they already own as its own
 // transaction — separate from minting — which is the "leave a comment after you
-// collected" path. In Process indexes the emitted `Commented` event into
-// /moment/comments alongside the mint comments the collect flow already writes,
-// so posted comments surface in the activity feed with no Kismet-side store.
+// collected" path. In Process indexes comment events into GET /comments
+// alongside the mint comments the collect flow already writes, so posted
+// comments surface in the activity feed with no Kismet-side store.
 // Source: ourzora/zora-protocol packages/comments (IComments / CommentsImpl).
 export const ZORA_COMMENTS: Address = '0x7777777C2B3132e03a65721a41745C07170a5877'
 

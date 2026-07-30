@@ -8,6 +8,9 @@ Kismet also runs as a Farcaster Mini App and can be operated from an AI assistan
 
 - [Learn: how to mint and collect onchain art](https://kismet.art/learn): Guide and FAQs explaining onchain art, how to mint artwork, how collecting and trading work, fees, wallets, and the Base network.
 - [Discover onchain art](https://kismet.art/): The latest artworks and collections minted on Kismet.
+- [Browse every mint and resale](https://kismet.art/discover): The full market browser — every artwork minted and listed on Kismet in chronological order, across the primary mint market and the secondary resale market.
+
+- [About Kismet](https://kismet.art/about): Who runs Kismet (built by Kismet Casa, a hybrid artist/developer residency), what the platform is, and how minting, collecting and resale work.
 
 ## Guides
 

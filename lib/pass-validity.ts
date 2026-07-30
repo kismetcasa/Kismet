@@ -1,6 +1,7 @@
 import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import { isPassBlacklisted } from './pass-blacklist'
+import { parseLedgerBalance } from './passUnion'
 
 const PROCESSED_TTL = 30 * 24 * 60 * 60 // 30 days
 // Platform-tx flags live long enough to cover any plausible Alchemy
@@ -221,11 +222,64 @@ export async function clearKismetListed(
 
 export async function getValidBalance(collection: string, address: string): Promise<number> {
   const v = await redis.get<string | number>(keyValidBalance(collection, address))
-  if (v == null) return 0
-  const n = typeof v === 'number' ? v : parseInt(v, 10) || 0
-  // Clamp at read time. Stored value may briefly be negative due to
-  // out-of-order webhook events; never return negatives to callers.
-  return Math.max(0, n)
+  // parseLedgerBalance clamps at read time: the stored value may briefly be
+  // negative due to out-of-order webhook events; never return negatives.
+  return parseLedgerBalance(v)
+}
+
+/** Batched ledger read: ONE MGET for many addresses (Upstash bills per
+ *  command, and the gate's identity union makes multi-address reads the
+ *  common case). Same eventually-consistent, clamped-at-0 contract as
+ *  getValidBalance, index-aligned with `addresses`. Throws on Redis failure
+ *  so each caller picks its own degradation (hasValidPassForAny falls back
+ *  to per-wallet fail-closed checks; /api/pass-validity 500s and the client
+ *  hint fails open — both match their single-address behavior). */
+export async function getValidBalances(
+  collection: string,
+  addresses: string[],
+): Promise<number[]> {
+  if (addresses.length === 0) return []
+  const values = await redis.mget<(string | number | null)[]>(
+    ...addresses.map((a) => keyValidBalance(collection, a)),
+  )
+  return addresses.map((_, i) => parseLedgerBalance(values[i]))
+}
+
+/** True when ANY of `addresses` holds a valid Pass — the read backing the
+ *  gate's identity union (hasGateAccess over expandToGateWallets). Callers
+ *  pass a pre-planned list (lowercased, deduped, capped — lib/passUnion).
+ *
+ *  Cost shape: one MGET prefilter, then the full hasValidPass (blacklist +
+ *  taint + live balanceOfBatch clamp) ONLY on wallets with a positive
+ *  ledger — usually exactly one. The prefilter is exact, not heuristic:
+ *  hasValidPass never reconciles the ledger UPWARD (on-chain holding without
+ *  a platform-provenance credit never grants validity, and an admin grant
+ *  always stores a positive balance), so ledger <= 0 implies hasValidPass
+ *  is false and skipping it cannot change the verdict.
+ *
+ *  A failed prefilter falls back to checking every wallet — each
+ *  hasValidPass fails closed on its own Redis/RPC errors, so a Redis outage
+ *  still denies rather than admits. */
+export async function hasValidPassForAny(
+  collection: string,
+  addresses: string[],
+): Promise<boolean> {
+  if (addresses.length === 0) return false
+  // Single wallet — exactly the pre-union check, no MGET overhead. This is
+  // every non-Farcaster caller.
+  if (addresses.length === 1) return hasValidPass(collection, addresses[0])
+
+  let candidates = addresses
+  try {
+    const balances = await getValidBalances(collection, addresses)
+    candidates = addresses.filter((_, i) => balances[i] > 0)
+  } catch {
+    // MGET flake — check every wallet; each fails closed independently.
+  }
+  for (const address of candidates) {
+    if (await hasValidPass(collection, address)) return true
+  }
+  return false
 }
 
 async function adjustValidBalance(collection: string, address: string, delta: number): Promise<void> {

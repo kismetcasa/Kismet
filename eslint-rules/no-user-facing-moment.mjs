@@ -10,7 +10,7 @@
 // Known blind spot: a bare single-token string ('MOMENT') passes as an
 // identifier-string — e.g. a share-card label. Nothing cheap distinguishes
 // it from the ~1900 legitimate token uses, so label sites carry a comment
-// instead (see app/moment/[address]/[tokenId]/opengraph-image.tsx).
+// instead (see app/artwork/[address]/[tokenId]/opengraph-image.tsx).
 
 const WORD = /\bmoments?\b/i
 
@@ -28,7 +28,7 @@ function isIntentional(raw, allowSingleToken) {
   const t = String(raw).trim()
   if (!WORD.test(t)) return true
   if (allowSingleToken && !/\s/.test(t)) return true // single token: identifier-string / union tag / path / key / op-label
-  if (/\/moment/i.test(t)) return true               // /moment, /api/moment, kismet.art/moment
+  if (/\/moment/i.test(t)) return true               // /moment (legacy redirect), /api/moment, kismet.art/moment (legacy)
   if (/kismetart:/i.test(t)) return true             // kismetart:* Redis key or DOM CustomEvent
   if (/["']moments?["']/i.test(t)) return true       // a quoted wire-token reference inside a message
   if (IDIOM.test(t)) return true                     // ordinary English word

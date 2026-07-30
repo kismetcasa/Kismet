@@ -24,7 +24,7 @@
 // degrades to the static card. Content is content-addressed (ar:///ipfs://
 // txid), so a preview computed once is valid forever.
 //
-// Wiring: generateMetadata points imageUrl at /moment/<a>/<id>/embed-preview
+// Wiring: generateMetadata points imageUrl at /artwork/<a>/<id>/embed-preview
 // when a preview is cached (current-recipe URLs carry ?v=<recipe> so
 // Farcaster's immutable edge cache re-fetches after a recipe change);
 // otherwise it keeps the static card and warms the preview for the next

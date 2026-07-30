@@ -271,7 +271,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   function prefetchComments() {
     if (getCachedComments(moment.address, moment.token_id)) return
     const params = new URLSearchParams({ collectionAddress: moment.address, tokenId: moment.token_id, chainId: '8453' })
-    fetch(`/api/artwork/comments?${params}`)
+    fetch(`/api/moment/comments?${params}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (data) setCachedComments(moment.address, moment.token_id, data.comments ?? []) })
       .catch(() => {})

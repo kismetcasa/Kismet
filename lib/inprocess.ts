@@ -10,7 +10,10 @@ import { USDC_BASE } from './zoraMint'
 // and deliberately does NOT cross this wire boundary. So, on purpose and
 // permanently, the In Process contract keeps "moment" here:
 //   • endpoint paths:  moment/create, moment/create/writing,
-//                      /moment (GET + PATCH), /moment/comments
+//                      /moment (GET + PATCH)
+//     (comment READS moved off the moment namespace entirely: In Process's
+//      2026-07 comments-contract migration removed /moment/comments and
+//      serves GET /comments instead — same params and envelope)
 //   • response keys:   `moments` (timeline array), `momentAdmins`
 //   • request key:     the `moment: {…}` wrapper in the PATCH /moment body
 //   • the `Moment` / `MomentDetail` interfaces below mirror In Process's JSON
@@ -20,6 +23,12 @@ import { USDC_BASE } from './zoraMint'
 // intentionally left as-is: renaming them buys no user-visible change and In
 // Process can't observe them either way. When editing here, keep every wire
 // token above intact and rebrand only what a user reads.
+//
+// URLs (2026-07 migration): Kismet's public pages live at /artwork/… —
+// /moment/… is a permanent 308 redirect kept forever (next.config.mjs), and
+// inbound-URL parsers accept both forms. Kismet's own /api/moment/* routes
+// are internal machine endpoints and keep their paths. ESLint bans building
+// new /moment links (eslint.config.mjs no-restricted-syntax).
 // ───────────────────────────────────────────────────────────────────────────
 
 export const INPROCESS_API = 'https://api.inprocess.world/api'

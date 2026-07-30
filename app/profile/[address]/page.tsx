@@ -43,7 +43,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // the page rather than just degrade SEO.
   try {
   const { address } = await params
-  if (!isAddress(address)) return { title: 'Profile — Kismet' }
+  // Structurally impossible URL → render the not-found page rather than a
+  // profile stub. MEASURED: this route has a loading.tsx, so the Suspense shell
+  // flushes 200 before metadata can set the status — this yields 200 + the
+  // not-found page + Next's injected `noindex`, not a 404 status (see the
+  // artwork page for the full rationale and the /learn/[slug] control case).
+  // The catch below already unstable_rethrow()s, so this propagates.
+  if (!isAddress(address)) notFound()
 
   // Canonical resolution drives BOTH the share-card content and the
   // canonical URL we hand back to crawlers. The page itself also

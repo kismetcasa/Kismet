@@ -33,8 +33,14 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid offset')
   }
 
-  // eslint-disable-next-line no-restricted-syntax -- In Process wire path, not a Kismet page URL (see lib/inprocess.ts TERMINOLOGY)
-  const url = inprocessUrl('/moment/comments', {
+  // In Process's 2026-07 comments-contract migration removed /moment/comments
+  // (it now returns their deployment's 404 page) and serves GET /comments —
+  // same query params and {comments:[…]} envelope. Rows carry the same
+  // sender/comment/timestamp(ms) fields the client renders, plus new
+  // username/commentId/replyToId/nonce/replyCount/replies fields that pass
+  // through this proxy opaquely. Mint-time collect comments ride along with
+  // commentId:null, so the who-collected rows keep flowing from one source.
+  const url = inprocessUrl('/comments', {
     collectionAddress,
     tokenId,
     chainId,

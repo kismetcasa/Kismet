@@ -358,7 +358,7 @@ only covers splits Kismet minted and stored; the Redis mirror can drift from cha
 #### C1. inprocess.world API integration (`inprocess-api`)
 **What.** Kismet's entire backend — a Zora-on-Base indexer + ERC-4337 relay reached
 at `https://api.inprocess.world/api`. **Reads** (`/timeline`, `/moment`,
-`/collection(s)`, `/moment/comments`, `/payments`, `/transfers`, `/smartwallet`) are
+`/collection(s)`, `/comments`, `/payments`, `/transfers`, `/smartwallet`) are
 keyless with 8 s timeouts (10 s for `/smartwallet`); **writes** (`/moment/create[/writing]`, `/distribute`,
 `PATCH /moment`) carry `x-api-key: INPROCESS_API_KEY` and execute a gas-sponsored
 userOp as the caller's per-creator smart wallet (45–60 s timeouts).
@@ -894,7 +894,14 @@ backstop. Off-platform transfer → the Alchemy webhook (HMAC-verified) runs
 the (recipient,tokenId) pair was platform-flagged, and **permanently taints** the
 tokenId if the transfer wasn't platform-flagged and wasn't Kismet-listed. Enforcement
 (`hasValidPass`) reads `balanceOfBatch` excluding tainted ids and clamps the ledger
-down; the `usePassGate` client read is a UX hint only.
+down; the `usePassGate` client read is a UX hint only. The gate decision
+(`hasGateAccess`) runs over the caller's **identity union** — the signer plus its
+FC-verified sibling wallets (`expandToGateWallets`, capped, fail-degraded to
+signer-only) — so a Mini App user whose connected signer is the host wallet still
+passes on the Pass they collected with their web wallet; the pass-blacklist denies
+across the same union (a signer-only blacklist would be sibling-hoppable). Credits,
+taint, and revocation stay strictly per-wallet — the union is a read-time OR, never
+a credit transfer (see PATRON_GATE_MINIAPP_RCA.md).
 
 ### 4.5 Media upload → delivery → playback
 On the primary upload path media bytes go **browser→Turbo→Arweave without touching

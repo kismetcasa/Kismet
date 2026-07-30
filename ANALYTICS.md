@@ -6,7 +6,8 @@ computed, how fresh it is, what qualifies it, and what is deliberately *not*
 captured.
 
 Companion docs: `REDIS_IMPLEMENTATION_REVIEW.md` (key inventory),
-`OPS_RUNBOOK.md` (cron operations).
+`OPS_RUNBOOK.md` (deploy/CDN operations; the stats cron itself is documented
+in §11 below and in the Vercel config).
 
 ---
 

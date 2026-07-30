@@ -42,7 +42,7 @@ const fiveUsdcBase = '5000000' // 5 USDC (6dp)
 const ethOffer = offerAmount(oneTenthEthWei, 'eth')
 const usdcOffer = offerAmount(fiveUsdcBase, 'usdc')
 check('wei → ETH price', ethOffer?.price === '0.1' && ethOffer?.priceCurrency === 'ETH', JSON.stringify(ethOffer))
-check('base units → USDC price', usdcOffer?.price === '5' && usdcOffer?.priceCurrency === 'USDC', JSON.stringify(usdcOffer))
+check('base units → USDC price (emitted as ISO-4217 USD)', usdcOffer?.price === '5' && usdcOffer?.priceCurrency === 'USD', JSON.stringify(usdcOffer))
 check('decimal string passthrough', offerAmount('0.25', 'eth')?.price === '0.25')
 check('zero → no offer', offerAmount('0', 'eth') === null && offerAmount('0.0', 'eth') === null)
 check('missing/garbage → no offer', offerAmount(undefined) === null && offerAmount('abc', 'eth') === null)
@@ -85,6 +85,41 @@ check('listed carries InStock Offer at matching price',
   listedOffer?.price === '0.1' &&
   listedOffer?.priceCurrency === 'ETH' &&
   listedOffer?.availability === 'https://schema.org/InStock')
+
+// 3b. artMedium/encodingFormat are DERIVED from the token's MIME — factual,
+// and absent (never fabricated) when the MIME is unknown. Attribute-rich
+// artwork markup is what earns art-vertical relevance and AI citation; a
+// guessed medium would be exactly the schema-vs-page mismatch that risks a
+// manual action.
+const imageArt = momentJsonLd({
+  url: 'https://kismet.art/artwork/0xabc/3',
+  name: 'Still',
+  mime: 'image/png',
+}) as { '@graph': Record<string, unknown>[] }
+const videoArt = momentJsonLd({
+  url: 'https://kismet.art/artwork/0xabc/4',
+  name: 'Motion',
+  mime: 'video/mp4',
+  hasAnimation: true,
+}) as { '@graph': Record<string, unknown>[] }
+const unknownArt = momentJsonLd({
+  url: 'https://kismet.art/artwork/0xabc/5',
+  name: 'Unknown medium',
+}) as { '@graph': Record<string, unknown>[] }
+check(
+  'image MIME → artMedium "Digital image" + encodingFormat',
+  imageArt['@graph'][0].artMedium === 'Digital image' &&
+    imageArt['@graph'][0].encodingFormat === 'image/png',
+)
+check(
+  'video MIME → artMedium "Digital video"',
+  videoArt['@graph'][0].artMedium === 'Digital video',
+)
+check(
+  'unknown MIME → NO artMedium/encodingFormat (never fabricated)',
+  !('artMedium' in unknownArt['@graph'][0]) &&
+    !('encodingFormat' in unknownArt['@graph'][0]),
+)
 
 // 4. Breadcrumb positions and order.
 const crumb = breadcrumbNode([
