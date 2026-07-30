@@ -99,20 +99,21 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
   share card (`…/opengraph-image`). Other unscoped routes (e.g. /mint,
   /market) still inherit the homepage embed — acceptable, and fixable the same
   way if ever desired.
-- **Public artwork URL intentionally stays `/moment/<address>/<tokenId>`.** The
-  UI rebrands the term "moment" → "artwork" (see the terminology note in
-  `lib/inprocess.ts`), but the URL slug is deliberately NOT migrated to
-  `/artwork/`. Rationale: the slug is a durable identifier, not user-facing copy
-  (collectors reach artworks via cards/overlays, not by reading the path);
-  keeping it preserves every historical cast, notification deep-link, shared
-  link, and search-index entry with zero redirect machinery and no reindex
-  wobble; and provenance is recorded onchain + on Arweave keyed by
-  (contract address, tokenId) — never by the page URL — so the URL word is
-  immaterial to it. Revisit only if a brand decision requires the address-bar
-  slug to read `/artwork`; the full migration (route rename + `(.)moment`→
-  `(.)artwork` intercepting-route rename + a permanent catch-all 301 +
-  widening the paste-URL parsers + sitemap/canonical updates) is understood and
-  can ship as its own change.
+- **Public artwork URL is `/artwork/<address>/<tokenId>`** (migrated from
+  `/moment/…`, 2026-07). The slug now matches the user-facing noun (see the
+  terminology note in `lib/inprocess.ts`). Every historical `/moment/…` link —
+  casts, notification deep-links, shared URLs, search-index entries — rides a
+  permanent 308 in `next.config.mjs` kept forever, covering the page, its
+  opengraph-image/embed-preview children, and query strings, so old links
+  never break and ranking signals consolidate on the `/artwork` form.
+  Canonicals, sitemap entries, OG/JSON-LD, and every internal emitter build
+  `/artwork` directly (lint-enforced via `no-restricted-syntax` in
+  `eslint.config.mjs`); the paste-URL parsers (agent refs, CuratePanel,
+  AdminDashboard) accept both forms forever. The internal API deliberately
+  stayed `/api/moment/*` — it is a wire path, not a user-facing surface — and
+  `/api/artwork/*` exists only as a compatibility rewrite for stale bundles.
+  Provenance is unaffected: recorded onchain + on Arweave keyed by
+  (contract address, tokenId), never by page URL.
 
 ## Realistic timelines
 

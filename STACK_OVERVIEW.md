@@ -358,7 +358,7 @@ only covers splits Kismet minted and stored; the Redis mirror can drift from cha
 #### C1. inprocess.world API integration (`inprocess-api`)
 **What.** Kismet's entire backend — a Zora-on-Base indexer + ERC-4337 relay reached
 at `https://api.inprocess.world/api`. **Reads** (`/timeline`, `/moment`,
-`/collection(s)`, `/moment/comments`, `/payments`, `/transfers`, `/smartwallet`) are
+`/collection(s)`, `/comments`, `/payments`, `/transfers`, `/smartwallet`) are
 keyless with 8 s timeouts (10 s for `/smartwallet`); **writes** (`/moment/create[/writing]`, `/distribute`,
 `PATCH /moment`) carry `x-api-key: INPROCESS_API_KEY` and execute a gas-sponsored
 userOp as the caller's per-creator smart wallet (45–60 s timeouts).

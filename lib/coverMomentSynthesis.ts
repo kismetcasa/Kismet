@@ -8,8 +8,9 @@ import { getMomentMeta } from './notifications'
  * indexer. The deploy transaction is chain-direct — frontend writes
  * factory.createContract(..., setupActions) — with no server-to-server
  * call to inprocess's /moment/create that backs the regular MintForm
- * path. /moment/<addr>/<tokenId> still resolves because inprocess reads
- * chain on demand for that endpoint, but every by-collection fan-out
+ * path. The artwork detail page (/artwork/<addr>/<tokenId>) still resolves
+ * because inprocess's /moment endpoint reads chain on demand, but every
+ * by-collection fan-out
  * surface (collection page, artists tab, mints feed, profile, discover)
  * is blind to cover-mints.
  *

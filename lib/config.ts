@@ -8,7 +8,10 @@ export const PLATFORM_COLLECTION =
 // - createReferral cut from Zora when a collection is deployed via the factory
 // - mintReferral cut from Zora on every direct collect (see lib/zoraMint.ts
 //   KISMET_REFERRAL — kept in lockstep with this address)
-// Override per-deployment with NEXT_PUBLIC_CREATE_REFERRAL.
+// Override per-deployment with NEXT_PUBLIC_CREATE_REFERRAL — but note the
+// lockstep only holds at the defaults: KISMET_REFERRAL is hardcoded and does
+// not follow the env override, so overriding this splits create vs mint
+// referral recipients (TREASURY-CRITICAL; nothing asserts the two match).
 export const CREATE_REFERRAL =
   process.env.NEXT_PUBLIC_CREATE_REFERRAL ||
   '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'

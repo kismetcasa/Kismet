@@ -9,15 +9,19 @@ const __dirname = path.dirname(__filename)
 const compat = new FlatCompat({ baseDirectory: __dirname })
 
 // Block reintroducing hex literals that have a design token in tailwind.config.ts.
-// New rare hex stays allowed; only the tokenized palette is locked.
-const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|444|333|a3a3a3|808080|8b5cf6|c084fc)\\]'
+// New rare hex stays allowed; only the tokenized palette is locked. The list
+// also keeps a few RETIRED hexes banned (888/444 = pre-WCAG grays, 8b5cf6/
+// c084fc = the abandoned purple accent) so they can't sneak back untokenized.
+const TOKENIZED_HEX = '\\[#(111|1a1a1a|2a2a2a|efefef|888|555|444|333|a3a3a3|808080|8b5cf6|c084fc|ff87ce)\\]'
 const TOKEN_MSG = 'Use a design token from tailwind.config.ts (surface/raised/line/ink/dim/muted/subtle/faint/accent) instead of this hex literal.'
 
 // /moment is redirect-only legacy since the /artwork rename: app code must
 // build /artwork links. Start-anchored so /api/moment/* (Kismet's internal
-// API) and the In Process wire's bare '/moment' endpoint stay legal; the two
-// sanctioned exceptions (the next.config redirect source and the wire's
-// '/moment/comments' path) carry inline disables at the site.
+// API) and the In Process wire's bare '/moment' endpoint stay legal; the one
+// sanctioned exception (the next.config redirect source) carries an inline
+// disable at the site. (The wire's old '/moment/comments' path — the other
+// historical exception — was removed upstream in the 2026-07 comments
+// migration; reads now go to '/comments', which no selector matches.)
 const LEGACY_MOMENT_URL = '^\\/moment\\/'
 // Absolute form — catches `https://kismet.art/moment/…` (fixtures, docs
 // strings, share URLs), which the start-anchored selector can't see. This

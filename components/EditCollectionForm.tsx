@@ -19,8 +19,10 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { toastError } from '@/lib/toast'
 
-// Mirrors the server caps in /api/collection/update-meta. Description matches
-// OpenSea's 1000-char collection limit; name is short (it's stored on-chain).
+// Name/description mirror the server caps in /api/collection/update-meta;
+// the image cap is a client-side preflight only (no server counterpart).
+// Description matches OpenSea's 1000-char collection limit; name is short
+// (it's stored on-chain).
 const MAX_NAME = 64
 const MAX_DESCRIPTION = 1000
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024
