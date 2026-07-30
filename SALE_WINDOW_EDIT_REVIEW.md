@@ -1,7 +1,13 @@
 # Editing Moment Sale Windows — Upstream Review & Integration Design
 
 **Date:** 2026-07-30
-**Status:** Review / design. No product code changed — this document is the deliverable.
+**Status:** IMPLEMENTED (v1, window edits only) — §3 shipped as designed. The build:
+`lib/saleEdit.ts` (pure read/merge/encode core) + `hooks/useUpdateMomentSale.ts` (direct
+user-signed `callSale`) + `useMomentSaleEditPermission` (ADMIN|SALES gate,
+`lib/permissions.ts`) + the inline sale editor in `components/MomentDetailView.tsx` +
+`app/api/moment/sale-refresh/route.ts` (chain-read re-sync of the Redis sale indexes) +
+`scripts/verify-sale-edit.ts` (pins the §3.1/§3.3 invariants; wired into `npm run check`).
+Price / per-address cap / fundsRecipient edits stay out of scope per §3.5.
 **Question answered:** In Process can now edit a moment's sale after mint. How exactly do
 they do it, and how should Kismet support the same?
 
