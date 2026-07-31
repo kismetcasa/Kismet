@@ -1,10 +1,12 @@
 /**
- * `<input type="datetime-local">` value helpers, shared by the mint form's
- * sale-window inputs and the detail page's sale editor so the two surfaces
+ * `<input type="datetime-local">` value helpers for the sale-window surfaces
+ * (MintForm's inputs and the detail page's sale editor), hoisted so the two
  * can't drift on format or timezone semantics. datetime-local carries NO
  * timezone — values are the creator's local wall-clock, so both directions
  * go through the local-time Date accessors, never toISOString (which would
- * shift by the UTC offset).
+ * shift by the UTC offset). MintForm consumes toLocalInput today and keeps
+ * its long-standing inline parse (pinned by verify-mint; migrating it buys
+ * no behavior change); the editor consumes both helpers.
  */
 
 /** Format a Date as a datetime-local input value (minute precision). */

@@ -953,12 +953,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     const nowSec = Math.floor(Date.now() / 1000)
     const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
     const realEnd = parseRealSaleEnd(saleConfig.saleEnd)
+    // prefill guards: a hand-crafted on-chain row can hold a "real" (sub-
+    // sentinel) instant past JS Date range (~year 275760); toLocalInput on an
+    // Invalid Date would prefill NaN garbage. Such fields prefill empty and
+    // stay 'keep' (untouched ≠ dirty), so the bogus value is never rewritten.
+    const startDate = new Date(startNum * 1000)
     setSaleStartInput(
-      Number.isFinite(startNum) && startNum > nowSec
-        ? toLocalInput(new Date(startNum * 1000))
+      Number.isFinite(startNum) && startNum > nowSec && !Number.isNaN(startDate.getTime())
+        ? toLocalInput(startDate)
         : '',
     )
-    setSaleEndInput(realEnd !== null ? toLocalInput(new Date(realEnd * 1000)) : '')
+    const endDate = realEnd !== null ? new Date(realEnd * 1000) : null
+    setSaleEndInput(endDate && !Number.isNaN(endDate.getTime()) ? toLocalInput(endDate) : '')
     setSaleStartDirty(false)
     setSaleEndDirty(false)
     setEndSaleArmed(false)
