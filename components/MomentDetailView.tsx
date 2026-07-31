@@ -466,9 +466,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // authorizes. Skipped for the creator, whose pencil shows regardless.
   const canEditMeta = useMomentEditPermission(address, tokenId, { skip: isCreator })
   // Sale-window edit authorization — the ADMIN|SALES twin of canEditMeta,
-  // mirroring the exact bits Zora's callSale enforces so the affordance can't
-  // show for a wallet whose edit tx would revert (and vice versa).
-  const canEditSale = useMomentSaleEditPermission(address, tokenId, { skip: isCreator })
+  // mirroring the exact bits Zora's callSale enforces. Deliberately NO
+  // `skip: isCreator` shortcut (unlike the metadata pencil): update-uri has a
+  // server preflight that turns an unauthorized creator into a clean 403, but
+  // a sale edit is a direct wallet write whose only backstop is a gas-
+  // estimation revert — so the affordance must not outrun the on-chain read.
+  // A resolved creator without the bits (e.g. a MINTER-only grant in someone
+  // else's collection) correctly sees no button instead of a wallet error.
+  const canEditSale = useMomentSaleEditPermission(address, tokenId)
   const { updateWindow: updateSaleWindow, endNow: endSaleNow } = useUpdateMomentSale()
   const queryClient = useQueryClient()
 
@@ -1718,7 +1723,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     chain, so the two affordances gate independently. Hidden
                     when there's no sale row to edit (saleConfig null) or the
                     edition is minted out (a window edit can't revive supply). */}
-                {(isCreator || canEditSale) && !editingSale && detail && saleConfig && !mintedOut && (
+                {canEditSale && !editingSale && detail && saleConfig && !mintedOut && (
                   <button
                     onClick={openSaleEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1992,18 +1997,23 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     {savingSale ? 'saving…' : 'save sale'}
                   </button>
                   {/* Two-tap destructive action: first tap arms, second sends.
-                      Disarmed on close so a stale arm can't survive a reopen. */}
-                  <button
-                    onClick={handleEndSaleNow}
-                    disabled={savingSale}
-                    className={`text-xs font-mono tracking-wider uppercase px-3 py-2 border transition-colors disabled:opacity-40 ${
-                      endSaleArmed
-                        ? 'border-red-400 text-red-400'
-                        : 'border-line text-muted hover:border-muted hover:text-dim'
-                    }`}
-                  >
-                    {endSaleArmed ? 'confirm end' : 'end sale now'}
-                  </button>
+                      Disarmed on close so a stale arm can't survive a reopen.
+                      Hidden once the sale is already over — "ending" an ended
+                      sale would only move its close forward to now, a pure
+                      gas-for-nothing tx (reopening is the save path instead). */}
+                  {!saleEnded && (
+                    <button
+                      onClick={handleEndSaleNow}
+                      disabled={savingSale}
+                      className={`text-xs font-mono tracking-wider uppercase px-3 py-2 border transition-colors disabled:opacity-40 ${
+                        endSaleArmed
+                          ? 'border-red-400 text-red-400'
+                          : 'border-line text-muted hover:border-muted hover:text-dim'
+                      }`}
+                    >
+                      {endSaleArmed ? 'confirm end' : 'end sale now'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}

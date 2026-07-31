@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import { usePublicClient, useWriteContract } from 'wagmi'
 import { base } from 'wagmi/chains'
 import type { Address, Hash } from 'viem'
@@ -49,7 +48,6 @@ export function useUpdateMomentSale() {
   const publicClient = usePublicClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
   const ensureBase = useEnsureBase()
-  const [busy, setBusy] = useState(false)
 
   async function submit(
     collection: Address,
@@ -61,38 +59,33 @@ export function useUpdateMomentSale() {
     onTxSubmitted?: () => void,
   ): Promise<UpdateSaleOutcome> {
     if (!publicClient) throw new Error('No network client available')
-    setBusy(true)
-    try {
-      const current = await readFullOnchainSale(publicClient, collection, tokenId)
-      if (!current) throw new Error('No active sale to edit for this artwork')
-      const nowSec = Math.floor(Date.now() / 1000)
-      // resolveWindow throws user-facing validation errors (toastError-ready).
-      const window = resolveWindow(current, nowSec)
-      if (
-        window.saleStart === current.saleStart &&
-        window.saleEnd === current.saleEnd
-      ) {
-        return { status: 'unchanged' }
-      }
-      const { strategy, setSaleData } = buildSaleUpdateCall(tokenId, current, window)
-      await ensureBase()
-      const hash = await writeContractAsync({
-        chainId: base.id,
-        address: collection,
-        abi: COLLECTION_ABI,
-        functionName: 'callSale',
-        args: [tokenId, strategy, setSaleData],
-        dataSuffix: BUILDER_DATA_SUFFIX,
-      })
-      // Wallet prompt cleared — let the caller flip its toast copy from
-      // "confirm in wallet" to "updating" while the receipt confirms.
-      onTxSubmitted?.()
-      const receipt = await publicClient.waitForTransactionReceipt({ hash })
-      if (receipt.status !== 'success') throw new Error('Sale update reverted on-chain')
-      return { status: 'updated', hash, config: saleToDisplayConfig(current, window) }
-    } finally {
-      setBusy(false)
+    const current = await readFullOnchainSale(publicClient, collection, tokenId)
+    if (!current) throw new Error('No active sale to edit for this artwork')
+    const nowSec = Math.floor(Date.now() / 1000)
+    // resolveWindow throws user-facing validation errors (toastError-ready).
+    const window = resolveWindow(current, nowSec)
+    if (
+      window.saleStart === current.saleStart &&
+      window.saleEnd === current.saleEnd
+    ) {
+      return { status: 'unchanged' }
     }
+    const { strategy, setSaleData } = buildSaleUpdateCall(tokenId, current, window)
+    await ensureBase()
+    const hash = await writeContractAsync({
+      chainId: base.id,
+      address: collection,
+      abi: COLLECTION_ABI,
+      functionName: 'callSale',
+      args: [tokenId, strategy, setSaleData],
+      dataSuffix: BUILDER_DATA_SUFFIX,
+    })
+    // Wallet prompt cleared — let the caller flip its toast copy from
+    // "confirm in wallet" to "updating" while the receipt confirms.
+    onTxSubmitted?.()
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    if (receipt.status !== 'success') throw new Error('Sale update reverted on-chain')
+    return { status: 'updated', hash, config: saleToDisplayConfig(current, window) }
   }
 
   /** Apply the editor's start/end field edits (tri-state per field). */
@@ -131,10 +124,5 @@ export function useUpdateMomentSale() {
       req.onTxSubmitted,
     )
 
-  return {
-    updateWindow,
-    endNow,
-    /** True while the pre-read, wallet prompt, or receipt wait is in flight. */
-    busy,
-  }
+  return { updateWindow, endNow }
 }
