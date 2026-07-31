@@ -1714,7 +1714,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     locality (you edit what you're looking at). Share +
                     send moved to a single row beneath the action panel
                     so secondary actions group together visually. */}
-                {(isCreator || canEditMeta) && !editing && detail && (
+                {(isCreator || canEditMeta) && !editing && !editingSale && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1729,7 +1729,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     chain, so the two affordances gate independently. Hidden
                     when there's no sale row to edit (saleConfig null) or the
                     edition is minted out (a window edit can't revive supply). */}
-                {canEditSale && !editingSale && detail && saleConfig && !mintedOut && (
+                {/* !editing too: while a metadata draft is open, switching
+                    panels would silently discard typed title/description
+                    (openEditor re-seeds from detail) — so each affordance
+                    hides while the sibling panel is open, and the openers'
+                    mutual setX(false) lines stay as defense in depth. */}
+                {canEditSale && !editing && !editingSale && detail && saleConfig && !mintedOut && (
                   <button
                     onClick={openSaleEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1974,6 +1979,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     min={toLocalInput(new Date())}
                     onChange={(e) => { setSaleStartInput(e.target.value); setSaleStartDirty(true) }}
                     disabled={savingSale}
+                    aria-label="Sale opens"
                     className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink focus:outline-none focus:border-muted disabled:opacity-50 [color-scheme:dark]"
                   />
                   <p className="text-[10px] font-mono text-subtle">
@@ -1988,6 +1994,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     min={saleStartInput || toLocalInput(new Date())}
                     onChange={(e) => { setSaleEndInput(e.target.value); setSaleEndDirty(true) }}
                     disabled={savingSale}
+                    aria-label="Sale closes"
                     className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink focus:outline-none focus:border-muted disabled:opacity-50 [color-scheme:dark]"
                   />
                   <p className="text-[10px] font-mono text-subtle">
