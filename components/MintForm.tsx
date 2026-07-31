@@ -10,7 +10,8 @@ import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Upload, X, ShieldCheck, ShieldAlert } from 'lucide-react'
 import { parseEther, parseUnits, isAddress } from 'viem'
-import { shortAddress, type CreateMomentPayload, type Split } from '@/lib/inprocess'
+import { shortAddress, OPEN_ENDED_SALE_SENTINEL, type CreateMomentPayload, type Split } from '@/lib/inprocess'
+import { toLocalInput } from '@/lib/datetimeLocal'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
@@ -722,7 +723,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // on) has no public sale, so it stays open-ended regardless of any stale
     // input. datetime-local has no timezone, so new Date() reads it as the
     // creator's local wall-clock.
-    const OPEN_ENDED_SALE = '18446744073709551615' // max uint64
+    const OPEN_ENDED_SALE = OPEN_ENDED_SALE_SENTINEL.toString() // max uint64
     // saleStart in seconds; 0 = opens-now (clock-skew-safe, see above). A future
     // value is only set when self-mint is OFF (no setup copy to revert). No
     // `!is11` term: is11 is defined with `&& artistMintEnabled`, so it is
@@ -2150,11 +2151,6 @@ function formatUsdApprox(usd: number): string {
 // browser's local time — used for the sale-window inputs' `min` affordance.
 // Local (not UTC) so it lines up with how new Date() parses the same input
 // string back into a timestamp at submit.
-function toLocalInput(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
 function stepLabel(step: string, progress: number): string {
   switch (step) {
     case 'preparing-media': return progress > 0 ? `optimizing animation… ${progress}%` : 'optimizing animation…'
