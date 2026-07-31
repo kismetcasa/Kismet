@@ -47,6 +47,7 @@ import { proxyUrl } from '@/lib/media/gateway'
 import { CollectedActions } from './CollectedActions'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
+import { RaffleCallout } from './RaffleCallout'
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
@@ -152,7 +153,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const ensureConnected = useEnsureConnected()
   const armPendingAction = usePendingAction()
   const { signMessageAsync } = useSignMessage()
-  const { isAdmin, featuredKeys, toggleFeatured } = useAdmin()
+  const { isAdmin, featuredKeys, toggleFeatured, raffleEnabledKeys } = useAdmin()
   const { isInMiniApp } = useFarcaster()
 
   const [detail, setDetail] = useState<MomentDetail | null>(
@@ -1339,7 +1340,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // desktop date column reserves space when there's no date to show. atSec is
   // set for scheduled/closing/ended and null for a live open-ended sale, so this
   // is false exactly when SaleWindow would render null.
-  const showSaleWindowRow = mounted && getSaleWindow(detail?.saleConfig)?.atSec != null
+  //
+  // A live raffle also claims this slot (RaffleCallout replaces the date with
+  // "Collect to enter raffle …"), so the row must render for raffle-enabled
+  // artworks even when the sale is open-ended and there'd be no date. The set
+  // is synchronous (loaded once by AdminContext), so no extra request here.
+  const hasRaffle = raffleEnabledKeys.has(`${address.toLowerCase()}:${tokenId}`)
+  const showSaleWindowRow =
+    mounted && (getSaleWindow(detail?.saleConfig)?.atSec != null || hasRaffle)
 
   // The armed send form (input + confirm + resolver hint). One definition, two
   // breakpoint-exclusive positions: INLINE in the desktop utility row (between
@@ -2041,7 +2049,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               open-ended sale. */}
           {showSaleWindowRow && (
             <div className="px-5 pt-1 pb-3 flex justify-center sm:hidden">
-              <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+              <RaffleCallout
+                collection={address}
+                tokenId={tokenId}
+                fallback={<SaleWindow saleConfig={detail?.saleConfig} variant="detail" />}
+              />
             </div>
           )}
 
@@ -2104,7 +2116,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 ))}
               {showSaleWindowRow && (
                 <div className="flex-1 flex justify-center">
-                  <SaleWindow saleConfig={detail?.saleConfig} variant="detail" />
+                  <RaffleCallout
+                    collection={address}
+                    tokenId={tokenId}
+                    fallback={<SaleWindow saleConfig={detail?.saleConfig} variant="detail" />}
+                  />
                 </div>
               )}
             </div>

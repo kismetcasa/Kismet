@@ -14,16 +14,24 @@ export const ALL_NOTIFICATION_TYPES = [
   'payout',
   'authorized',
   'agent_collect',
+  // Raffle outcome fan-out (written by /api/raffle/manage drawAndEnd):
+  // raffle_win → the drawn winner; raffle_ended → every other entrant, so the
+  // raffle resolves with closure instead of buttons silently changing state.
+  'raffle_win',
+  'raffle_ended',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
 
 // Money-bearing types bypass actor-mute at read time and per-type mute at
-// write time. Muting payouts is a footgun, not a preference.
+// write time. Muting payouts is a footgun, not a preference. raffle_win
+// qualifies: it awards the physical artwork, and a winner who muted it would
+// simply never learn they won.
 export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
   'sale',
   'airdrop',
   'payout',
+  'raffle_win',
 ])
 
 export const MUTEABLE_TYPES: readonly NotificationType[] =

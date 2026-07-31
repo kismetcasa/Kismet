@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { Sparkles, Clock, Coins, Key, Bot, Send } from 'lucide-react'
+import { Sparkles, Clock, Coins, Key, Bot, Send, Trophy } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment } from '@/lib/inprocess'
@@ -35,6 +35,8 @@ function notificationHref(n: Notification): string {
     case 'listing_created':
     case 'airdrop':
     case 'payout':
+    case 'raffle_win':
+    case 'raffle_ended':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
@@ -178,6 +180,30 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           </p>
         </>
       )
+    case 'raffle_win':
+      // Accent headline — this is the raffle's payoff moment (the physical
+      // work), the counterpart of the "you won ✓" state on the artwork button.
+      return (
+        <>
+          <p className="text-xs font-mono text-accent truncate">
+            you won the raffle for {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            the artist will be in touch about the physical work · {time}
+          </p>
+        </>
+      )
+    case 'raffle_ended':
+      return (
+        <>
+          <p className="text-xs font-mono text-ink truncate">
+            the raffle for {n.tokenName ? `"${n.tokenName}"` : 'an artwork'} has ended
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            you weren&rsquo;t drawn this time — you keep your edition · {time}
+          </p>
+        </>
+      )
     default: {
       // Exhaustiveness: if a new NotificationType is added without a case
       // above, TS will fail to assign `n.type` to `never` here.
@@ -202,6 +228,9 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   if (n.type === 'agent_collect') return badge(<Bot size={iconSize} className="text-accent" />)
   if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
   if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-accent" />)
+  // The raffle's payoff moment gets a trophy; raffle_ended falls through to
+  // the artist-avatar default below (the artist announced the result).
+  if (n.type === 'raffle_win') return badge(<Trophy size={iconSize} className="text-accent" />)
   if (n.type === 'listing_expired' && !n.tokenImage) {
     return badge(<Clock size={iconSize} className="text-muted" />)
   }

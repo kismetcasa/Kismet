@@ -42,6 +42,8 @@ const FILTER_LABEL: Record<TypeFilter, string> = {
   payout: 'payouts',
   authorized: 'authorized',
   agent_collect: 'agent',
+  raffle_win: 'raffle',
+  raffle_ended: 'raffle',
 }
 
 const ORDER_KEY = 'kismetart:notif-tab-order'

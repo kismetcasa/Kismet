@@ -1,8 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
+import { ArrowUpRight } from 'lucide-react'
 import { toastError } from '@/lib/toast'
 import { shortAddress } from '@/lib/inprocess'
+import { fetchCreatorProfile } from '@/lib/profileCache'
 import { useRaffleManage } from '@/hooks/useRaffleManage'
 
 interface RaffleStatus {
@@ -60,6 +63,26 @@ export function RaffleAdminPanel({
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [closeInput, setCloseInput] = useState('')
+  // Resolved display name for the drawn winner — the artist's next job is
+  // contacting them, so the ended state links to their profile by name.
+  const [winnerName, setWinnerName] = useState<string | null>(null)
+
+  useEffect(() => {
+    const w = status?.winner
+    if (!w) {
+      setWinnerName(null)
+      return
+    }
+    let cancelled = false
+    fetchCreatorProfile(w)
+      .then(({ name }) => {
+        if (!cancelled && name) setWinnerName(name)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [status?.winner])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -209,13 +232,27 @@ export function RaffleAdminPanel({
             </>
           )}
 
-          {/* Ended → winner + recovery controls. */}
+          {/* Ended → winner (linked to their profile — the artist's next job is
+              reaching out to arrange the physical) + recovery controls. */}
           {status?.enabled && status.ended && (
             <>
-              <div className="border border-accent/50 bg-accent/10 px-3 py-2">
-                <span className="text-xs font-mono text-accent">
-                  {status.winner ? `winner: ${shortAddress(status.winner)}` : 'ended — no eligible winner'}
-                </span>
+              <div className="border border-accent/50 bg-accent/10 px-3 py-2 flex flex-col gap-1">
+                {status.winner ? (
+                  <>
+                    <Link
+                      href={`/profile/${status.winner}`}
+                      className="inline-flex items-center gap-1 text-xs font-mono text-accent hover:underline w-fit"
+                    >
+                      winner: {winnerName ?? shortAddress(status.winner)}
+                      <ArrowUpRight size={12} strokeWidth={1.5} />
+                    </Link>
+                    <span className="text-[10px] font-mono text-muted">
+                      winner notified — open their profile to arrange delivery of the physical work
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs font-mono text-accent">ended — no eligible winner</span>
+                )}
               </div>
               <div className="flex items-center justify-between gap-2">
                 <button

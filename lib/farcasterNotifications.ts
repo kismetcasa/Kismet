@@ -478,6 +478,25 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: `${SITE_URL}/profile/${n.recipient}`,
       }
     }
+    case 'raffle_win': {
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      return {
+        title: truncate('You won the raffle', TITLE_MAX),
+        body: truncate(
+          `You won the raffle for ${subject} — the artist will be in touch about the physical work`,
+          BODY_MAX,
+        ),
+        targetUrl: momentUrl,
+      }
+    }
+    case 'raffle_ended': {
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      return {
+        title: truncate('Raffle ended', TITLE_MAX),
+        body: truncate(`The raffle for ${subject} has ended — you keep your edition`, BODY_MAX),
+        targetUrl: momentUrl,
+      }
+    }
     default: {
       // Exhaustiveness — TS errors if NotificationType grows without a
       // new case here. Matches NotificationRow's same guard.
