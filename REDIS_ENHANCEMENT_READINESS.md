@@ -28,6 +28,34 @@ any further enhancement can claim "no regressions."_
 
 ---
 
+## 0.1 Validation status of every claim in this document
+
+Re-validated 2026-08-01. "Executed" means a runnable probe produced the result,
+not that source was read.
+
+| # | Claim | Method | Status |
+|---|---|---|---|
+| 1.1 | `smembers`/`zrange` bypass auto-pipelining; `get`/`mget`/`smismember` do not | **Executed** against `@upstash/redis@1.38.0` with a stubbed `fetch` counting HTTP requests | **CONFIRMED** — 3×`smembers` → 3 requests, 2×`zrange` → 2, 3×`get` → 1 pipeline, 2×`mget` → 1, 2×`smismember` → 1 |
+| 1.2 | Reads and writes use separate pipelines | Executed | **CONFIRMED** — 2 reads + 2 writes → 2 requests: `PIPELINE[get,get]`, `PIPELINE[set,set]` |
+| 1.3a | `eval` is auto-pipelined | Executed | **CONFIRMED** — `eval`+`set` → one `PIPELINE[eval,set]` |
+| 1.3b | Retry re-sends the whole pipeline body incl. non-idempotent commands | Executed (injected network failure) | **CONFIRMED** — 2 attempts, both `[eval,incr,zincrby]` |
+| 1.3c | A 5xx response is **not** retried | Executed (injected 500) | **CONFIRMED** — 1 attempt, throws `UpstashError` |
+| 1.4 | `searchCollections` costs 3 requests + 1 pipeline | Executed (replicated shape) | **CONFIRMED** — 4 HTTP requests total |
+| 2.1 | `getCollectionsByArtist` reads the full curated set via unchunked `mget` | Source | **CONFIRMED** — `lib/kv.ts:379,383` |
+| 2.1 | `getListingsBatch` is unchunked behind an unbounded index | Source, all 4 callers traced | **CONFIRMED, NARROWED** — `sweepExpiredListings` and the market feed bound via `zrange(KEY_ALL, 0, MAX_LISTINGS_SCAN-1)` (500). Only `getListingsBySeller:416` and `deleteListingsBySeller:477` are unbounded (`smembers` on the seller index). The second is admin-only erase. |
+| 2.5 | July = 3.4M cmds / $6.88 | Arithmetic cross-check | **CONFIRMED** — implies $0.202/100K vs Upstash PAYG list $0.20/100K; storage+bandwidth ≈ $0.08 of the bill. Cost is ~99% command-driven, so the $10.50 projection rests on command count alone. |
+| 2.5 | The 07-27 search commit is not the GET driver | Source | **CONFIRMED** — `lib/search.ts:121,131` uses `scanCreatedMints` (SSCAN) + `getMomentMetaBatch` (MGET). Neither is GET. |
+| 2.5.2 | Fix #5 (gate collapse) stays rejected | Source | **CONFIRMED** — `lib/gate.ts:44` has a 15s in-process cache; the 9-GET burst does not occur |
+| **NEW** | `kismetart:auto-deploy-collections` is a **dead key** | Source + git | **CONFIRMED** — zero references in the tree; writer removed by `106fdf9`. Same class as `debug:ua-seen`. Visible in your Data Browser screenshot. |
+| 2.5.3 | Misses exceed hits | Console chart | **OBSERVED, UNATTRIBUTED** — cannot be explained without §4.1 |
+| 2.5.3 | Jul 31 19:54 was a deploy | — | **INFERRED ONLY** — counter reset is the tell; needs your confirmation |
+| 2.5 | Mid-July step change | Arithmetic on two console readings | **SOUND BUT COARSE** — 579K@day-13 vs 3.4M@month-end implies 157K/day for Jul 14–31; it does not localise the step within that window |
+
+Two claims carry no independent validation and are flagged as such above. Everything
+else in this document is either executed or traced to a `file:line`.
+
+---
+
 ## 1. The three SDK findings (primary-source verified)
 
 These matter because `lib/redis.ts` is the single most load-bearing comment block
@@ -284,19 +312,26 @@ traffic; we cannot tell whether that is session validation, moment-meta reads,
 identity resolution, or a poll loop. Every remaining prioritization decision
 depends on that split, and **no amount of console data will produce it.**
 
-Two ways to get it, in order of preference:
+Three ways to get it, cheapest first:
 
-- **A counting wrapper around the client** (~30 lines): a dev/staging-gated proxy
-  over `redis` that tallies `{command, label}` into an in-process map, exposed on
+- **The console's `Monitor` tab** *(no code — start here)*. It streams live
+  commands with their keys. Two or three minutes of capture during normal
+  traffic, bucketed by key prefix against the §4.2 inventory, gives a real GET
+  breakdown for free. **Caveats:** it shows *full* keys, which for this keyspace
+  means wallet addresses and session tokens — treat the capture as secret, don't
+  paste it raw, and send prefix counts rather than the log. It also samples
+  whatever happens to be running, so it will miss cron-driven and low-frequency
+  paths.
+- **A counting wrapper around the client** (~30 lines): a flag-gated proxy over
+  `redis` that tallies `{command, keyPrefix}` into an in-process map, exposed on
   an admin-gated route. Labels already exist at most call sites via `safeRead`/
-  `strictRead`. Zero production behaviour change if flag-gated, and it answers
-  the question in a day of real traffic.
-- **A one-off sampling window**: log every `redis.get` key *prefix* (never the
-  full key — addresses and tokens are PII/secret) at 1-in-N sampling for an hour.
-  Cruder, faster, no new surface.
+  `strictRead`. Zero production behaviour change when the flag is off, and it
+  covers a full traffic cycle including crons — which `Monitor` cannot.
+- **1-in-N prefix sampling** into the existing logs. Crudest, no new surface.
 
-I would build the first. It is also the artifact that makes the *next* review
-cheap instead of another five-agent sweep.
+Run `Monitor` first; it may answer the question outright. Build the wrapper if
+the answer is ambiguous or you want the number tracked over time — it is also the
+artifact that makes the *next* review cheap instead of another five-agent sweep.
 
 ### 4.2 The cardinality block — still outstanding
 
@@ -331,6 +366,28 @@ The diagnostics route from `768b140` (removed after the 07-13 measurement) is th
 precedented way to collect all of this in one call, and it composes with the
 counter in §4.1 — one temporary admin surface, both answers.
 
+### 4.2.1 Dead-key sweep (new, actionable now)
+
+Your Data Browser screenshot surfaced **`kismetart:auto-deploy-collections`**,
+which has **zero references anywhere in the tree** — its writer was removed by
+`106fdf9` when heuristic auto-deploy backfill was replaced with positive
+write-time tracking. It is the same class as `debug:ua-seen` from the 07-13
+review: safe to `DEL`, no code change.
+
+There may be more. The full inventory of key prefixes the code actually uses is
+**117 entries**, extractable from the tree at any time with:
+
+```
+grep -rhoE "'kismetart:[a-z0-9:-]*" --include='*.ts' --include='*.tsx' lib app scripts \
+  | sed "s/^'//" | sort -u
+```
+
+Diff that against the Data Browser listing and anything present in Redis but
+absent from the list is dead. Note two families deliberately fall outside the
+`kismetart:` namespace and won't appear in either side of that diff —
+**`verify:*`** and **`img:total:*`** (the 07-13 review's deferred item #13).
+Include them manually.
+
 ### 4.3 Operational confirmations
 
 - **Is the `$20` cap still set, and is there an alert below it?** Per §2.5.1 this
@@ -343,6 +400,29 @@ counter in §4.1 — one temporary admin surface, both answers.
 - **A fresh RTT measurement** — 10 timed `PING`s from inside the app container via
   the Coolify web terminal. Still outstanding; the console's service-time numbers
   measure something different (server-side processing, not network).
+
+### 4.3.1 Where each remaining item lives in the console
+
+Tabs on the `kismet` database page: `Details · Usage · CLI · Data Browser ·
+Search · Monitor · Backups · ACL · Settings`. Account-level items are under
+avatar → **Personal Settings**.
+
+| Gap | Exact location | What to send back |
+|---|---|---|
+| §4.1 command attribution | **Monitor** tab, 2–3 min capture | prefix→count tally (**not** the raw log — full keys contain addresses/tokens) |
+| §4.2 cardinalities | **CLI** tab, paste the `SCARD`/`ZCARD` block | the raw output; it's just integers |
+| §4.2.1 dead keys | **Data Browser**, scroll the key list | the full prefix list, or just names not in the 117-entry inventory |
+| §4.3 budget cap + alert | **Personal Settings → Billing** (the cap is account-level, not per-database) | current cap value, and whether any alert threshold exists below it |
+| §4.3 Daily Backup | **Backups** tab | enabled? most recent successful backup timestamp |
+| §4.3 eviction / max size | **Details** tab | eviction policy and max data size — an eviction policy other than `noeviction` on a database holding Class A state would be a finding in its own right |
+| §4.3 Jul 31 19:54 | your deploy log, not the console | was there a deploy/restart? |
+| §4.3 RTT | Coolify app terminal, not the console | 10 timed `PING`s from inside the container |
+
+One item on that list I'd check even though nobody has flagged it: the
+**eviction policy** on the Details tab. This database holds signed Seaport
+orders, the pass-validity ledger, and splits — none of which can be
+regenerated. If eviction is set to anything that can drop keys under memory
+pressure, that is a durability hole independent of everything else here.
 
 ### 4.4 Scope and intent
 
