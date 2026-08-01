@@ -138,6 +138,91 @@ table says.
 
 ---
 
+## 2.5 Measured state, 2026-08-01 (console figures supplied)
+
+| Metric | 2026-07-13 | 2026-08-01 | Δ |
+|---|---|---|---|
+| Commands/day | ~50–70K | **~170K** (215/160/155/150K Tue–Fri) | **~3×** |
+| Bandwidth/day | ~20MB | **~55–92MB** | **~3–4×** |
+| Data size | 336KB | **641KB** | **1.9×** |
+| Keyspace | not recorded | **~4,000 keys** (flat/slightly declining) | — |
+| Month-to-date | 579K cmds / $1.16 @ day 13 | **3.4M cmds / $6.88** (full July) | — |
+| Region / plan | us-east-1, PAYG, Global | unchanged | — |
+
+**The step change was mid-July, not the 07-27 search commit.** July 1–13 ran at
+45K/day (579K over 13 days); the remaining 18 days implies **157K/day**. The
+0727 search work is MGET/SSCAN-shaped, and MGET reads near-zero on the Top
+Commands chart — so it is not the driver. The increase is GET-shaped, which is
+what per-request auth/identity/meta reads look like when traffic grows.
+Attribution beyond that is **not possible from console data** (see §4.1).
+
+### 2.5.1 The finding that actually matters: cap headroom collapsed
+
+At 170K commands/day the August projection is **~5.3M commands ≈ $10.50/mo**
+(PAYG, $0.2/100K), against the **$20 budget cap set on 07-13**. Upstash **stops
+the database** at the cap.
+
+- 07-13, at ~$3–4/mo run rate, the review recorded "~5–6× headroom."
+- 08-01, at ~$10.50/mo projected, headroom is **~1.9×**.
+
+This degraded silently — no code changed, no alert fired, the cap did its job by
+existing. **Any 2× event now reaches a hard stop**: a launch, a viral moment, a
+bot, or a retry loop. And per §1.3, one retried pipeline re-sends up to 1000
+commands, so a network-flaky window is itself a command-count amplifier.
+
+This is an **availability** risk, not a cost one. $10/mo is immaterial; a stopped
+database is a total outage. It is also the one thing on this list that can be
+fixed in a single console action, and it is the only item here I would treat as
+time-sensitive.
+
+### 2.5.2 What the command mix says about where the wins are
+
+The Top Commands chart shows **GET dominating everything else by roughly 10:1**.
+MGET, EVAL, INCR, EXPIRE, MULTI, EXEC, DEL, HGETALL, RENAME are all flat near
+zero at that axis. (Careful: "flat at a 100K axis" bounds them below ~10K — it
+does not prove they are negligible.)
+
+That re-ranks the fix table meaningfully. The MGET chunking and pipelining work —
+the entire optimization arc from `a89e6ca` through `40032d5` — operates on a slice
+of traffic that barely registers. **The command budget is spent on point GETs**,
+and the only fixes that touch point GETs are the ones the 07-13 review rejected
+on cost/latency grounds:
+
+| Fix | 07-13 disposition | Status under 08-01 data |
+|---|---|---|
+| #2 session micro-cache | rejected ("no problem at 4.4ms/$3–4") | **Reopens.** 1 GET/authed request is the single highest-frequency GET in the app. |
+| #1 in-process rate limiter | rejected, same basis | Weak — EVAL reads near-zero. Lower value than the review assumed. |
+| #12 identity-chain coalescing | rejected, same basis | Reopens on command-count grounds (it was rejected on latency grounds). |
+| #5 gate-config collapse | rejected as cosmetic | **Stays rejected** — verified `getGateConfig` has a 15s in-process cache (`lib/gate.ts:44`); the 9-GET burst does not occur. |
+
+The rejections were argued from **cost and latency**. Both are still fine in
+absolute terms. What changed is **cap proximity**, which is a different argument
+the review never made — so these are not "the review was wrong," they are "the
+premise moved."
+
+### 2.5.3 Two anomalies worth explaining before acting
+
+1. **Misses exceed hits at every traffic spike** (misses 15–21/sec vs hits
+   0–8/sec). A keyspace of only ~4,000 keys serving a miss-dominated read
+   pattern says a large share of GETs are for keys that do not exist. That is
+   consistent with the negative-cache/sentinel design (`smartWalletCache`,
+   `ensCache`, `farcasterProfile`) — but it could equally be an un-cached
+   lookup repeatedly missing. Worth attributing, because a miss is a billed
+   command that produced nothing.
+
+2. **A discontinuity at Jul 31 ~19:54–20:00** — command counters reset to zero
+   and write p99 stepped from ~2.1ms to ~5.3ms afterward. This reads as a
+   deploy/restart (counter reset is the tell), and the p99 step is plausibly
+   low-volume noise. **Confirm it was a deploy**; if it was not, it is an
+   incident that needs its own look. Note also that Saturday reading ~0 on the
+   daily charts is just the UTC day having barely started — not an outage.
+
+Server-side service time is healthy and not a concern: read p99 ≈ 0.1ms, write
+mean ≈ 0.7ms. The 4.4ms figure from 07-13 is network RTT; these are disjoint
+measurements and the RTT re-measure is still outstanding.
+
+---
+
 ## 3. What the commit history actually tells us
 
 The 128-commit story has a consistent shape, and it is the strongest available
@@ -186,16 +271,38 @@ leaving a deferred trigger unchecked after it has silently fired.
 
 ---
 
-## 4. What I need from you
+## 4. What is still missing
 
-The code is fully mapped and I can act on it. What I cannot obtain from the
-repository is **current runtime state**, and every remaining decision is gated on
-it. In rough priority order:
+Tier 2 of the original brief (usage, cost, storage, region, plan) is **answered**
+by the 08-01 console figures in §2.5. Four gaps remain, and they are now the only
+things standing between here and a defensible enhancement plan.
 
-### Tier 1 — blocking (the deferred triggers)
+### 4.1 Command attribution — the biggest gap, and it needs code
 
-The review deferred six fixes behind **numeric triggers**. Nothing should ship
-until we know which have fired. From the **Upstash console → CLI tab**:
+The console reports command *types*, never *call sites*. We know GET is ~90% of
+traffic; we cannot tell whether that is session validation, moment-meta reads,
+identity resolution, or a poll loop. Every remaining prioritization decision
+depends on that split, and **no amount of console data will produce it.**
+
+Two ways to get it, in order of preference:
+
+- **A counting wrapper around the client** (~30 lines): a dev/staging-gated proxy
+  over `redis` that tallies `{command, label}` into an in-process map, exposed on
+  an admin-gated route. Labels already exist at most call sites via `safeRead`/
+  `strictRead`. Zero production behaviour change if flag-gated, and it answers
+  the question in a day of real traffic.
+- **A one-off sampling window**: log every `redis.get` key *prefix* (never the
+  full key — addresses and tokens are PII/secret) at 1-in-N sampling for an hour.
+  Cruder, faster, no new surface.
+
+I would build the first. It is also the artifact that makes the *next* review
+cheap instead of another five-agent sweep.
+
+### 4.2 The cardinality block — still outstanding
+
+Keyspace ≈ 4,000 keys is a useful bound (it means no key family has exploded in
+*count*), but the deferred triggers are on **member counts inside single keys**,
+which a keyspace total cannot show. From the **Upstash console → CLI tab**:
 
 ```
 DBSIZE
@@ -220,50 +327,53 @@ count — the largest few of each:
   (trigger: >500)
 - active listings total (trigger: >300 → listings record split)
 
-If you'd rather not run these by hand, I can write an admin-gated diagnostics
-route that reports all of it in one call — the 07-13 branch had exactly that
-(`768b140`) and removed it after use; re-adding it temporarily is a clean
-pattern and precedented.
+The diagnostics route from `768b140` (removed after the 07-13 measurement) is the
+precedented way to collect all of this in one call, and it composes with the
+counter in §4.1 — one temporary admin surface, both answers.
 
-### Tier 2 — needed to re-decide anything the measurements rejected
+### 4.3 Operational confirmations
 
-- **Current Upstash console Usage figures**: commands/day, read/write split,
-  bandwidth/day, total data size, current month's cost.
-- **Whether the `$20` budget cap and Daily Backup are still set** (both were
-  turned on 07-13; a cap hit *stops the database*, so this is availability-
-  relevant, not just billing).
-- **A fresh RTT measurement** — 10 timed `PING`s from inside the app container
-  via the Coolify web terminal. The 4.4ms figure is what shelved the topology
-  work; if the box or the Upstash region moved, that conclusion reopens.
+- **Is the `$20` cap still set, and is there an alert below it?** Per §2.5.1 this
+  is now the sharpest edge in the system. A cap with no alert underneath it is a
+  trap: the first signal is the outage.
+- **Is Daily Backup still enabled?** (On as of 07-13.) Data size nearly doubled;
+  Class A state — signed Seaport orders, the pass ledger, splits — is
+  irreplaceable.
+- **Was Jul 31 ~19:54 a deploy?** (§2.5.3.)
+- **A fresh RTT measurement** — 10 timed `PING`s from inside the app container via
+  the Coolify web terminal. Still outstanding; the console's service-time numbers
+  measure something different (server-side processing, not network).
 
-### Tier 3 — scope and constraint
+### 4.4 Scope and intent
 
-- **Is the deployment still single-instance?** Enormous amount rests on this:
-  the 15-min memoize TTLs, `redisHealth`'s module-scoped timestamp, the
-  in-process caches, and the review's "free consistency at single-instance"
-  reasoning. Any multi-pod plan changes the answer to roughly half the
-  deferred items.
-- **What problem are you actually trying to solve?** The honest read of the
-  evidence is that this implementation is in good shape and **not currently
-  cost- or latency-bound** — so "enhancement" could mean latency, cost,
-  robustness/cliffs, or preparing for a specific growth event. These point at
-  different fixes, and some are mutually exclusive. If there is a *symptom*
-  (a slow page, a cost jump, an incident), that's more useful than a target.
-- **Any Redis-attributed incidents since 2026-07-13** that aren't in the commit
-  log.
+- **Is the deployment still single-instance?** A great deal rests on this: the
+  15-min memoize TTLs, `redisHealth`'s module-scoped timestamp, every in-process
+  cache, and the review's "free consistency at single-instance" reasoning. A
+  multi-pod plan changes the answer to roughly half the deferred items — and
+  would make the §2.5.2 in-process caching fixes *worse*, not better.
+- **What drove the mid-July 3×?** If you know of a launch, a campaign, or a
+  traffic source that changed around Jul 14–20, that single fact would save the
+  attribution work in §4.1. Organic growth and a runaway loop look identical on
+  these charts and call for opposite responses.
+- **Any Redis-attributed incidents since 07-13** not visible in the commit log.
 
 ### What I do *not* need
 
 The keyspace inventory, call-site attribution, failure-policy map, and atomicity
-inventory are all current and verified — `REDIS_IMPLEMENTATION_REVIEW.md` Parts
-I–IV stand. No need to re-supply any of that.
+inventory are current and verified — `REDIS_IMPLEMENTATION_REVIEW.md` Parts I–IV
+stand. No need to re-supply any of that.
 
 ---
 
 ## 5. Recommended sequencing
 
-Independent of the numbers above, three items are safe now because they are
-either doc-accuracy or exact-parity-with-an-existing-guard:
+**Now, no data required.**
+
+0. **Raise the budget cap and add an alert beneath it** (§2.5.1). Console-only,
+   no code. This is the one time-sensitive item on the list.
+
+**Now, code, safe on current evidence** — each is doc-accuracy or exact parity
+with a guard that already exists elsewhere in the tree:
 
 1. **Correct the `lib/redis.ts` comments** (§1.1–1.3). Zero runtime change;
    removes three false premises that future work would build on.
@@ -272,7 +382,17 @@ either doc-accuracy or exact-parity-with-an-existing-guard:
 3. **Chunk `getListingsBatch`** — same guard, same class, closes the unbounded
    seller-index MGET.
 
-Everything else waits on Tier 1. That ordering is deliberate: it matches the
-history's own standard of shipping only what has been validated as
-zero-regression, and it avoids re-deciding measured-and-rejected items on stale
-data.
+**Next, to earn the right to do anything else:**
+
+4. **Build the command counter** (§4.1) + the cardinality block (§4.2). Until GET
+   is attributed, any work aimed at command volume is guesswork — and §2.5.2
+   shows command volume is now the axis that matters.
+
+**Then, and only then:** re-open #2/#12 with attribution in hand, and re-check
+the deferred trigger table against real cardinalities.
+
+This ordering is deliberate. It matches the history's own standard — ship only
+what has been validated as zero-regression — and it specifically avoids
+re-deciding the 07-13 rejections on *inferred* attribution, which is exactly the
+mistake the 07-13 review avoided by falsifying its own `splitaddr` finding
+rather than trusting the sweep.
