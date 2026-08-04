@@ -183,10 +183,14 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'raffle_win':
       // Accent headline — this is the raffle's payoff moment (the physical
       // work), the counterpart of the "you won ✓" state on the artwork button.
+      // The title is bold, not quoted; the row itself is the link to the
+      // moment (notificationHref), so the title IS clickable — a nested
+      // anchor here would be invalid HTML.
       return (
         <>
           <p className="text-xs font-mono text-accent truncate">
-            You won {n.tokenName ? `"${n.tokenName}"` : 'the raffle'}!
+            You won {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'the raffle'}
+            !
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             You will be contacted to receive the physical piece. · {time}
@@ -196,12 +200,13 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
     case 'raffle_ended':
       // Winner announcement to the other entrants — `actor` IS the winner
       // (set by drawAndEnd's fan-out), so the resolved name + avatar show who
-      // won rather than who ran the draw.
+      // won rather than who ran the draw. Bold title, row-link to the moment,
+      // same as raffle_win.
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
             {actorLabel ?? 'someone'} has won the physical edition of{' '}
-            {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}!
+            {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'an artwork'}!
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
