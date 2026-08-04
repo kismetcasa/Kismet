@@ -19,9 +19,11 @@ type PublicClientLike = {
 //
 //   ADMIN     = 1<<1 = 2
 //   MINTER    = 1<<2 = 4
+//   SALES     = 1<<3 = 8
 //   METADATA  = 1<<4 = 16
 export const PERMISSION_BIT_ADMIN = 2n
 export const PERMISSION_BIT_MINTER = 4n
+export const PERMISSION_BIT_SALES = 8n
 export const PERMISSION_BIT_METADATA = 16n
 
 // The two bits Zora's 1155 honors for `updateTokenURI`. Shared by the
@@ -34,6 +36,19 @@ export const METADATA_EDIT_MASK = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
 /** True when `perms` grants moment-metadata edit rights (ADMIN or METADATA). */
 export function canEditMomentMetadata(perms: bigint): boolean {
   return (perms & METADATA_EDIT_MASK) !== 0n
+}
+
+// The two bits Zora's 1155 honors for `callSale` (onlyAdminOrRole(tokenId,
+// PERMISSION_BIT_SALES)) — the gate a sale-window edit must clear. Distinct
+// from METADATA_EDIT_MASK on purpose: a METADATA-only co-admin can edit the
+// title but must not touch the sale, and a SALES-only holder the reverse.
+// Shared by the client affordance gate (useMomentSaleEditPermission) and any
+// future server preflight so the two can't drift.
+export const SALE_EDIT_MASK = PERMISSION_BIT_ADMIN | PERMISSION_BIT_SALES
+
+/** True when `perms` grants sale-config edit rights (ADMIN or SALES). */
+export function canEditMomentSale(perms: bigint): boolean {
+  return (perms & SALE_EDIT_MASK) !== 0n
 }
 
 const COLLECTION_PERMISSIONS_ABI = [

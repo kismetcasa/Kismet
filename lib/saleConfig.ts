@@ -11,7 +11,9 @@ import {
 // FixedPriceSaleStrategy.sale(target, tokenId) — the canonical view returning
 // the SalesConfig struct (see zora protocol-deployments). Tokens whose sale
 // row is unset return zeros, which we treat as "no ETH sale configured".
-const FPSS_SALE_ABI = [
+// Exported for lib/saleEdit's full-struct read (the sale-window editor must
+// carry every field it doesn't change), so the tuple stays single-source.
+export const FPSS_SALE_ABI = [
   {
     name: 'sale',
     type: 'function',
@@ -47,7 +49,8 @@ const FPSS_SALE_ABI = [
 //   cast interface 0xE27d9Dc88dAB82ACa3ebC49895c663C6a0CfA014 --rpc-url base
 // If the on-chain ABI ever drifts, the USDC path returns [] — the ETH leg
 // keeps working, so this fails closed (graceful degradation).
-const ERC20_MINTER_SALE_ABI = [
+// Exported for lib/saleEdit's full-struct read (same reason as FPSS_SALE_ABI).
+export const ERC20_MINTER_SALE_ABI = [
   {
     name: 'sale',
     type: 'function',

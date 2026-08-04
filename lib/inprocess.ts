@@ -347,9 +347,12 @@ export function formatRelativeTime(timestamp: number): string {
 }
 
 // Max-uint64 "never expires" sentinel the mint form writes for an open-ended
-// sale (components/MintForm.tsx). Any saleEnd at or above this is not a real
-// deadline — it must never render as a countdown ("closes in 5e11 years").
-const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
+// sale (components/MintForm.tsx) and the sale-window editor re-writes when a
+// close date is cleared (lib/saleEdit.ts). Any saleEnd at or above this is not
+// a real deadline — it must never render as a countdown ("closes in 5e11
+// years"). Exported so mint + edit share one constant and can't drift; on
+// chain uint64 can't exceed it, so open-ended ⇔ saleEnd == sentinel exactly.
+export const OPEN_ENDED_SALE_SENTINEL = 18446744073709551615n
 
 /**
  * Parse a saleConfig.saleEnd string to a real deadline in unix seconds, or

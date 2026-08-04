@@ -6,10 +6,11 @@ import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
-import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, parseRealSaleEnd, DEFAULT_COLLECT_COMMENT, getSaleWindow, type MomentDetail, type MomentComment } from '@/lib/inprocess'
+import { useQueryClient } from '@tanstack/react-query'
+import { resolveUri, formatPrice, shortAddress, formatRelativeTime, inferCollectCurrency, isPlatformCollectComment, normalizeTimestampMs, DEFAULT_COLLECT_COMMENT, getSaleWindow, parseRealSaleEnd, type MomentDetail, type MomentComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -26,7 +27,11 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
-import { useMomentEditPermission } from '@/hooks/useMomentEditPermission'
+import { useMomentEditPermission, useMomentSaleEditPermission } from '@/hooks/useMomentEditPermission'
+import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
+import type { WindowFieldEdit } from '@/lib/saleEdit'
+import type { OnchainSaleConfig } from '@/lib/saleConfig'
+import { toLocalInput, parseLocalInputSec } from '@/lib/datetimeLocal'
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
@@ -279,6 +284,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     onTooLarge: () => toast.error('Cover too large', { description: 'Max 100 MB' }),
   })
   const [savingMeta, setSavingMeta] = useState(false)
+  // Edit-sale flow: visible only to holders of the on-chain ADMIN|SALES bits
+  // (a different gate than the metadata pencil — see useMomentSaleEditPermission).
+  // Inputs are datetime-local strings; the dirty flags distinguish "untouched
+  // prefill" (keep the on-chain value exactly) from "cleared" (open now /
+  // never expires) — the prefill is minute-granular, so parsing it back would
+  // drift by the dropped seconds and misread a no-op as an edit.
+  const [editingSale, setEditingSale] = useState(false)
+  const [saleStartInput, setSaleStartInput] = useState('')
+  const [saleEndInput, setSaleEndInput] = useState('')
+  const [saleStartDirty, setSaleStartDirty] = useState(false)
+  const [saleEndDirty, setSaleEndDirty] = useState(false)
+  const [savingSale, setSavingSale] = useState(false)
+  // Two-tap confirm for "end sale now" — closing a live sale is the one
+  // destructive action in the panel, so the first tap only arms it.
+  const [endSaleArmed, setEndSaleArmed] = useState(false)
   const { ensureSession } = useUploadSession()
 
   const { data: ownedBalance, refetch: refetchOwnedBalance } = useReadContract({
@@ -447,6 +467,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // creator) see the edit affordance, matching what the backend already
   // authorizes. Skipped for the creator, whose pencil shows regardless.
   const canEditMeta = useMomentEditPermission(address, tokenId, { skip: isCreator })
+  // Sale-window edit authorization — the ADMIN|SALES twin of canEditMeta,
+  // mirroring the exact bits Zora's callSale enforces. Deliberately NO
+  // `skip: isCreator` shortcut (unlike the metadata pencil): update-uri has a
+  // server preflight that turns an unauthorized creator into a clean 403, but
+  // a sale edit is a direct wallet write whose only backstop is a gas-
+  // estimation revert — so the affordance must not outrun the on-chain read.
+  // A resolved creator without the bits (e.g. a MINTER-only grant in someone
+  // else's collection) correctly sees no button instead of a wallet error.
+  const canEditSale = useMomentSaleEditPermission(address, tokenId)
+  const { updateWindow: updateSaleWindow, endNow: endSaleNow } = useUpdateMomentSale()
+  const queryClient = useQueryClient()
 
   // Moment admin per inprocess's momentAdmins (unordered; may include the
   // operator smart wallet — harmless, the distribute API's signature gate is
@@ -900,6 +931,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     setMediaMode('upload')
     setExistingMediaUrl('')
     setExistingMediaType('video')
+    setEditingSale(false) // one inline panel at a time
     setEditing(true)
   }
 
@@ -910,6 +942,139 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     setExistingMediaUrl('')
     setExistingMediaType('video')
     setEditing(false)
+  }
+
+  // Pre-populate the sale editor from the displayed saleConfig: a SCHEDULED
+  // start prefills its date (an already-open sale shows an empty "opens" —
+  // there is nothing scheduled to show), a REAL close date prefills, and an
+  // open-ended sale shows an empty "closes" (= never expires). parseRealSaleEnd
+  // is the shared classifier, so the prefill can't disagree with the SaleWindow
+  // pill about which sales have a real deadline.
+  function openSaleEditor() {
+    if (!detail || !saleConfig) return
+    const nowSec = Math.floor(Date.now() / 1000)
+    const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
+    const realEnd = parseRealSaleEnd(saleConfig.saleEnd)
+    // prefill guards: a hand-crafted on-chain row can hold a "real" (sub-
+    // sentinel) instant past JS Date range (~year 275760); toLocalInput on an
+    // Invalid Date would prefill NaN garbage. Such fields prefill empty and
+    // stay 'keep' (untouched ≠ dirty), so the bogus value is never rewritten.
+    const startDate = new Date(startNum * 1000)
+    setSaleStartInput(
+      Number.isFinite(startNum) && startNum > nowSec && !Number.isNaN(startDate.getTime())
+        ? toLocalInput(startDate)
+        : '',
+    )
+    const endDate = realEnd !== null ? new Date(realEnd * 1000) : null
+    setSaleEndInput(endDate && !Number.isNaN(endDate.getTime()) ? toLocalInput(endDate) : '')
+    setSaleStartDirty(false)
+    setSaleEndDirty(false)
+    setEndSaleArmed(false)
+    setEditing(false) // one inline panel at a time
+    setEditingSale(true)
+  }
+
+  function closeSaleEditor() {
+    setEndSaleArmed(false)
+    setEditingSale(false)
+  }
+
+  // Post-edit propagation — the receipt is on-chain truth, so reflect it
+  // everywhere the old window could linger:
+  //  1. optimistic detail swap (this page + the no-TTL client detail LRU,
+  //     which the refetch effect early-returns on);
+  //  2. react-query price cache (feed cards' useMomentSale entry);
+  //  3. fire-and-forget server re-sync of the Redis sale indexes from chain
+  //     (ending-soon / free feeds — browse-time write-through would otherwise
+  //     only converge when someone next browses this token).
+  // Collect correctness needs none of this: useDirectCollect re-reads chain
+  // at click time. Everything here is display freshness.
+  function applySaleOutcome(config: OnchainSaleConfig) {
+    if (detail) {
+      const optimistic: MomentDetail = { ...detail, saleConfig: config }
+      setCachedDetail(address, tokenId, optimistic)
+      setDetail(optimistic)
+    }
+    queryClient.invalidateQueries({
+      queryKey: ['moment-sale', `${address.toLowerCase()}:${tokenId}`],
+    })
+    void fetch('/api/moment/sale-refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collectionAddress: address, tokenId }),
+    }).catch(() => {})
+  }
+
+  async function handleSaveSale() {
+    if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    if (!detail || !saleConfig || savingSale) return
+    // Dirty-flag mapping: untouched → keep the on-chain value exactly;
+    // cleared → the field's open semantics; typed → the picked instant.
+    let start: WindowFieldEdit = { kind: 'keep' }
+    if (saleStartDirty) {
+      if (!saleStartInput) {
+        start = { kind: 'clear' }
+      } else {
+        const sec = parseLocalInputSec(saleStartInput)
+        if (sec === null) { toast.error('Invalid sale start'); return }
+        start = { kind: 'set', sec }
+      }
+    }
+    let end: WindowFieldEdit = { kind: 'keep' }
+    if (saleEndDirty) {
+      if (!saleEndInput) {
+        end = { kind: 'clear' }
+      } else {
+        const sec = parseLocalInputSec(saleEndInput)
+        if (sec === null) { toast.error('Invalid sale end'); return }
+        end = { kind: 'set', sec }
+      }
+    }
+    setSavingSale(true)
+    try {
+      toast.loading('Confirm in wallet…', { id: 'edit-sale' })
+      const outcome = await updateSaleWindow({
+        collection: address as `0x${string}`,
+        tokenId: BigInt(tokenId),
+        start,
+        end,
+        onTxSubmitted: () => toast.loading('Updating sale…', { id: 'edit-sale' }),
+      })
+      if (outcome.status === 'unchanged') {
+        toast.success('Sale unchanged', { id: 'edit-sale' })
+      } else {
+        applySaleOutcome(outcome.config)
+        toast.success('Sale updated', { id: 'edit-sale' })
+      }
+      closeSaleEditor()
+    } catch (err) {
+      toastError('Sale update', err, { id: 'edit-sale' })
+    } finally {
+      setSavingSale(false)
+    }
+  }
+
+  async function handleEndSaleNow() {
+    if (!connectedAddress) { toast.error('Wallet not connected'); return }
+    if (!detail || !saleConfig || savingSale) return
+    if (!endSaleArmed) { setEndSaleArmed(true); return }
+    setSavingSale(true)
+    try {
+      toast.loading('Confirm in wallet…', { id: 'edit-sale' })
+      const outcome = await endSaleNow({
+        collection: address as `0x${string}`,
+        tokenId: BigInt(tokenId),
+        onTxSubmitted: () => toast.loading('Ending sale…', { id: 'edit-sale' }),
+      })
+      if (outcome.status === 'updated') applySaleOutcome(outcome.config)
+      toast.success('Sale ended', { id: 'edit-sale' })
+      closeSaleEditor()
+    } catch (err) {
+      toastError('End sale', err, { id: 'edit-sale' })
+    } finally {
+      setSavingSale(false)
+      setEndSaleArmed(false)
+    }
   }
 
   async function handleSaveMetadata() {
@@ -1558,7 +1723,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     locality (you edit what you're looking at). Share +
                     send moved to a single row beneath the action panel
                     so secondary actions group together visually. */}
-                {(isCreator || canEditMeta) && !editing && detail && (
+                {(isCreator || canEditMeta) && !editing && !editingSale && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1566,6 +1731,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   >
                     <Pencil size={11} />
                     edit
+                  </button>
+                )}
+                {/* Edit sale — gated on the ADMIN|SALES bits (canEditSale),
+                    NOT the metadata mask: the two authorizations differ on
+                    chain, so the two affordances gate independently. Hidden
+                    when there's no sale row to edit (saleConfig null) or the
+                    edition is minted out (a window edit can't revive supply). */}
+                {/* !editing too: while a metadata draft is open, switching
+                    panels would silently discard typed title/description
+                    (openEditor re-seeds from detail) — so each affordance
+                    hides while the sibling panel is open, and the openers'
+                    mutual setX(false) lines stay as defense in depth. */}
+                {canEditSale && !editing && !editingSale && detail && saleConfig && !mintedOut && (
+                  <button
+                    onClick={openSaleEditor}
+                    className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
+                    title="edit sale window"
+                  >
+                    <Clock size={11} />
+                    sale
                   </button>
                 )}
                 {isCreator && detail && (
@@ -1768,6 +1953,89 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   >
                     cancel
                   </button>
+                </div>
+              </div>
+            )}
+
+            {/* Inline sale editor — the sale-window sibling of the metadata
+                panel above (one open at a time; openers close the other).
+                Window ONLY: price / per-address cap / payout recipient are
+                deliberately read-only here — a price edit would desync the
+                frozen mintPrice snapshots on open listings (lib/listings),
+                and the payout recipient is the splits contract on split
+                artworks. The write carries all of those through unchanged
+                (lib/saleEdit). Empty fields read as the open semantics the
+                mint form established: no start = open immediately, no close
+                = never expires. */}
+            {editingSale && detail && saleConfig && (
+              <div className="flex flex-col gap-3 border border-line p-3 bg-[#0a0a0a]">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-dim">edit sale</p>
+                  <button
+                    onClick={closeSaleEditor}
+                    disabled={savingSale}
+                    className="text-muted hover:text-dim transition-colors disabled:opacity-40"
+                    title="cancel"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">sale opens</label>
+                  <input
+                    type="datetime-local"
+                    value={saleStartInput}
+                    min={toLocalInput(new Date())}
+                    onChange={(e) => { setSaleStartInput(e.target.value); setSaleStartDirty(true) }}
+                    disabled={savingSale}
+                    aria-label="Sale opens"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink focus:outline-none focus:border-muted disabled:opacity-50 [color-scheme:dark]"
+                  />
+                  <p className="text-[10px] font-mono text-subtle">
+                    {saleStartInput ? 'scheduled start' : 'open immediately'}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-muted">sale closes</label>
+                  <input
+                    type="datetime-local"
+                    value={saleEndInput}
+                    min={saleStartInput || toLocalInput(new Date())}
+                    onChange={(e) => { setSaleEndInput(e.target.value); setSaleEndDirty(true) }}
+                    disabled={savingSale}
+                    aria-label="Sale closes"
+                    className="bg-surface border border-line px-2.5 py-2 text-xs font-mono text-ink focus:outline-none focus:border-muted disabled:opacity-50 [color-scheme:dark]"
+                  />
+                  <p className="text-[10px] font-mono text-subtle">
+                    {saleEndInput ? 'closes at this date' : 'never expires'}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSaveSale}
+                    disabled={savingSale}
+                    className="flex-1 text-xs font-mono tracking-wider uppercase py-2 btn-accent disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {savingSale ? 'saving…' : 'save sale'}
+                  </button>
+                  {/* Two-tap destructive action: first tap arms, second sends.
+                      Disarmed on close so a stale arm can't survive a reopen.
+                      Hidden once the sale is already over — "ending" an ended
+                      sale would only move its close forward to now, a pure
+                      gas-for-nothing tx (reopening is the save path instead). */}
+                  {!saleEnded && (
+                    <button
+                      onClick={handleEndSaleNow}
+                      disabled={savingSale}
+                      className={`text-xs font-mono tracking-wider uppercase px-3 py-2 border transition-colors disabled:opacity-40 ${
+                        endSaleArmed
+                          ? 'border-red-400 text-red-400'
+                          : 'border-line text-muted hover:border-muted hover:text-dim'
+                      }`}
+                    >
+                      {endSaleArmed ? 'confirm end' : 'end sale now'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}
