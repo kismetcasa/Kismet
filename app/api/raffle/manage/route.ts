@@ -106,11 +106,17 @@ export async function POST(req: NextRequest) {
       const eligible = allEligible.filter((e) => e.address !== creatorLower)
 
       // Announce the outcome post-response (best-effort): the winner gets
-      // raffle_win, every other entrant gets raffle_ended closure — otherwise
-      // the winner only learns by revisiting the artwork. The FULL entrant
-      // list is notified (not just still-eligible holders): everyone who
-      // entered deserves to see the raffle resolve. Addresses on both sides
-      // are lowercased; writeNotification self-filters actor==recipient.
+      // raffle_win, every other entrant gets a raffle_ended winner
+      // announcement ("<winner> has won the physical edition of <artwork>!")
+      // — otherwise the winner only learns by revisiting the artwork. The
+      // FULL entrant list is notified (not just still-eligible holders):
+      // everyone who entered deserves to see the raffle resolve.
+      //
+      // Actor semantics: raffle_win carries the drawing artist/admin as actor
+      // (informational); raffle_ended carries the WINNER as actor, so the
+      // notification row + push resolve "[profile] has won …" to the winner's
+      // name and avatar. The winner is never a raffle_ended recipient, so the
+      // actor==recipient self-filter in writeNotification can't misfire.
       const announceOutcome = (drawnWinner: string) => {
         after(async () => {
           try {
@@ -120,7 +126,7 @@ export async function POST(req: NextRequest) {
                 writeNotification({
                   type: e.address === drawnWinner ? 'raffle_win' : 'raffle_ended',
                   recipient: e.address,
-                  actor: auth.caller,
+                  actor: e.address === drawnWinner ? auth.caller : drawnWinner,
                   tokenAddress: collection,
                   tokenId,
                   tokenName: meta?.name,

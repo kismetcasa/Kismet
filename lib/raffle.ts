@@ -315,6 +315,25 @@ export async function getEntrants(
     .sort((a, b) => (a.enteredAt ?? 0) - (b.enteredAt ?? 0))
 }
 
+/**
+ * The n most-recent entrant addresses, newest first — the public
+ * social-proof strip on the artwork page (RaffleCallout via /api/raffle/
+ * status). Entrant addresses are deliberately public: entries are the
+ * raffle's transparency story (the winner is announced publicly already),
+ * and addresses are pseudonymous.
+ */
+export async function getRecentEntrants(
+  collection: string,
+  tokenId: string,
+  n = 6,
+): Promise<string[]> {
+  const entrants = await getEntrants(collection, tokenId)
+  return entrants
+    .slice(-n)
+    .reverse()
+    .map((e) => e.address)
+}
+
 export async function getWinner(
   collection: string,
   tokenId: string,

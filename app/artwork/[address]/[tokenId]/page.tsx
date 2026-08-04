@@ -14,6 +14,7 @@ import { isWebKitOnlyUA } from '@/lib/serverDevice'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { entriesOpen, isRaffleEnabled } from '@/lib/raffle'
 import { resolveEmbedImageUrl } from '@/lib/media/animatedPreview'
 import { getListings } from '@/lib/listings'
 import { getListingVisibility } from '@/lib/hiddenListings'
@@ -187,11 +188,21 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // surfaced for purchase. Shared (React-cached) with the page's Offer
   // JSON-LD so the button label and the structured price agree.
   const hasActiveListing = !!(await getActiveListing(address, tokenId))
+  // A raffle with open entries beats both labels: casts sharing this artwork
+  // (incl. the post-entry share prompt) render "collect to enter" — the
+  // campaign IS the reason the link is being passed around. One cheap zscore
+  // read for the common no-raffle case; entriesOpen only runs when enabled.
+  const raffleLive =
+    (await isRaffleEnabled(address, tokenId)) && (await entriesOpen(address, tokenId))
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
     // buildFarcasterEmbed truncates at 32 chars per the FC spec, so a
     // long moment name won't break the embed — it'll just be elided.
-    buttonTitle: hasActiveListing ? 'View Listing' : `Collect ${name}`,
+    buttonTitle: raffleLive
+      ? 'collect to enter'
+      : hasActiveListing
+        ? 'View Listing'
+        : `Collect ${name}`,
     action: {
       url: canonicalUrl,
     },

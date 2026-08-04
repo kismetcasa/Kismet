@@ -9,6 +9,7 @@ import { ERC1155_ABI } from '@/lib/seaport'
 import { toastError } from '@/lib/toast'
 import { buildRaffleEntryMessage } from '@/lib/raffleMessage'
 import { ListButton, type ListButtonProps } from './ListButton'
+import { RaffleEntryModal } from './RaffleEntryModal'
 
 interface RaffleButtonProps {
   collectionAddress: string
@@ -63,6 +64,9 @@ export function RaffleButton({
 
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<RaffleStatus | null>(null)
+  // Post-entry celebration + follow/share prompt (RaffleEntryModal), opened
+  // on a FRESH entry only — re-renders of an already-entered state don't nag.
+  const [entryModalOpen, setEntryModalOpen] = useState(false)
 
   // Editions the wallet holds. Gates whether the button shows at all; an
   // entrant still sees their state even if they later transfer the edition.
@@ -119,7 +123,10 @@ export function RaffleButton({
       })
       const data = (await r.json().catch(() => ({}))) as { error?: string }
       if (!r.ok) throw new Error(data.error ?? 'Could not enter the raffle')
-      toast.success('You’re in the raffle!', { id: 'raffle' })
+      // The celebration modal (follow @kismet / share) is the success feedback
+      // — a toast on top of it would be double confirmation.
+      toast.dismiss('raffle')
+      setEntryModalOpen(true)
       await fetchStatus()
     } catch (err) {
       toastError('Raffle', err, { id: 'raffle' })
@@ -127,6 +134,17 @@ export function RaffleButton({
       setBusy(false)
     }
   }
+
+  // Rendered alongside whichever button state is active below, so the modal
+  // survives the post-entry re-render into the "raffle ✓" state.
+  const entryModal = entryModalOpen ? (
+    <RaffleEntryModal
+      collectionAddress={collectionAddress}
+      tokenId={tokenId}
+      creatorAddress={listProps.creatorAddress}
+      onClose={() => setEntryModalOpen(false)}
+    />
+  ) : null
 
   // No raffle (or just disabled) → the normal listing action.
   if (status && !status.enabled) return renderList()
@@ -151,17 +169,20 @@ export function RaffleButton({
   // --- Entered, awaiting the draw. ---
   if (entered) {
     return (
-      <button
-        disabled
-        className={`${className} border border-accent/50 text-accent cursor-default`}
-        title={
-          status && !status.entriesOpen
-            ? 'Entries closed — the winner is drawn next'
-            : 'You’re entered — the winner is drawn after entries close'
-        }
-      >
-        raffle ✓
-      </button>
+      <>
+        <button
+          disabled
+          className={`${className} border border-accent/50 text-accent cursor-default`}
+          title={
+            status && !status.entriesOpen
+              ? 'Entries closed — the winner is drawn next'
+              : 'You’re entered — the winner is drawn after entries close'
+          }
+        >
+          raffle ✓
+        </button>
+        {entryModal}
+      </>
     )
   }
 
@@ -184,13 +205,16 @@ export function RaffleButton({
 
   // Holder, entries open, not entered → enter.
   return (
-    <button
-      onClick={enterRaffle}
-      disabled={busy}
-      className={`${className} border border-line text-muted enabled:hover:border-accent enabled:hover:text-accent disabled:opacity-50`}
-      title="Enter the raffle — a free signature; your edition stays in your wallet"
-    >
-      {busy ? 'entering…' : 'enter raffle'}
-    </button>
+    <>
+      <button
+        onClick={enterRaffle}
+        disabled={busy}
+        className={`${className} border border-line text-muted enabled:hover:border-accent enabled:hover:text-accent disabled:opacity-50`}
+        title="Enter the raffle — a free signature; your edition stays in your wallet"
+      >
+        {busy ? 'entering…' : 'enter raffle'}
+      </button>
+      {entryModal}
+    </>
   )
 }

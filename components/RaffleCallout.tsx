@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Ticket } from 'lucide-react'
 import { useAdmin } from '@/contexts/AdminContext'
+import { ProfileAvatar } from './ProfileAvatar'
 
 interface RaffleCalloutStatus {
   enabled: boolean
@@ -10,6 +11,7 @@ interface RaffleCalloutStatus {
   entriesOpen: boolean
   entriesCloseAt: number | null
   entrantCount: number
+  recentEntrants?: string[]
 }
 
 // "Aug 12" — month + day in the viewer's locale. Client-only by construction
@@ -80,12 +82,30 @@ export function RaffleCallout({
         .join(' · ')
     : 'Raffle entries closed · winner announced soon'
 
+  // Recent-entrants social proof — a restrained overlapping-avatar cluster
+  // under the copy line, only while entries are open and someone's entered.
+  // Addresses come with the status payload (no extra request); cap at 6.
+  const recent = status.entriesOpen ? (status.recentEntrants ?? []).slice(0, 6) : []
+
   return (
-    <div className="flex items-center gap-1.5 min-w-0">
-      <Ticket size={11} className="flex-shrink-0 text-accent" />
-      <span className="text-[10px] font-mono uppercase tracking-widest text-dim text-center">
-        {label}
-      </span>
+    <div className="flex flex-col items-center gap-1.5 min-w-0">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <Ticket size={11} className="flex-shrink-0 text-accent" />
+        <span className="text-[10px] font-mono uppercase tracking-widest text-dim text-center">
+          {label}
+        </span>
+      </div>
+      {recent.length > 0 && (
+        // Square avatars (the house ProfileAvatar shape), overlapped with a
+        // background-colored ring so each edge stays readable in the stack.
+        <div className="flex items-center -space-x-1.5" aria-label="recent raffle entrants">
+          {recent.map((a) => (
+            <div key={a} className="ring-2 ring-[#0d0d0d]">
+              <ProfileAvatar address={a} size={16} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

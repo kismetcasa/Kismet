@@ -6,16 +6,18 @@ import {
   getEntrantCount,
   getEntriesCloseAt,
   getRaffleState,
+  getRecentEntrants,
   getWinner,
   isEntered,
   isRaffleEnabled,
 } from '@/lib/raffle'
 
 /**
- * Public raffle status for a (collection, tokenId). Drives RaffleButton and the
- * /patron page. With `address`, also reports whether that wallet is entered and
- * whether it is the announced winner. The winner address is returned for public
- * transparency (the result is an announcement).
+ * Public raffle status for a (collection, tokenId). Drives RaffleButton and
+ * RaffleCallout. With `address`, also reports whether that wallet is entered
+ * and whether it is the announced winner. The winner address and the recent
+ * entrant addresses are returned for public transparency (the result is an
+ * announcement, and entries are the raffle's social proof).
  */
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
@@ -35,12 +37,13 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid address')
   }
 
-  const [enabled, state, entrantCount, winner, closeAt] = await Promise.all([
+  const [enabled, state, entrantCount, winner, closeAt, recentEntrants] = await Promise.all([
     isRaffleEnabled(collection, tokenId),
     getRaffleState(collection, tokenId),
     getEntrantCount(collection, tokenId),
     getWinner(collection, tokenId),
     getEntriesCloseAt(collection, tokenId),
+    getRecentEntrants(collection, tokenId),
   ])
   const entered = address ? await isEntered(collection, tokenId, address) : false
   const isWinner = !!address && !!winner && winner.toLowerCase() === address
@@ -58,5 +61,6 @@ export async function GET(req: NextRequest) {
     entered,
     winner,
     isWinner,
+    recentEntrants,
   })
 }

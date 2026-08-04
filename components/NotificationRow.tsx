@@ -186,22 +186,24 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-accent truncate">
-            you won the raffle for {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
+            You won {n.tokenName ? `"${n.tokenName}"` : 'the raffle'}!
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            the artist will be in touch about the physical work · {time}
+            You will be contacted to receive the physical piece. · {time}
           </p>
         </>
       )
     case 'raffle_ended':
+      // Winner announcement to the other entrants — `actor` IS the winner
+      // (set by drawAndEnd's fan-out), so the resolved name + avatar show who
+      // won rather than who ran the draw.
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            the raffle for {n.tokenName ? `"${n.tokenName}"` : 'an artwork'} has ended
+            {actorLabel ?? 'someone'} has won the physical edition of{' '}
+            {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}!
           </p>
-          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            you weren&rsquo;t drawn this time — you keep your edition · {time}
-          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
     default: {

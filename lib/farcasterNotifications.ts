@@ -479,21 +479,24 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       }
     }
     case 'raffle_win': {
-      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      const subject = tokenName ? `"${tokenName}"` : 'the raffle'
       return {
         title: truncate('You won the raffle', TITLE_MAX),
         body: truncate(
-          `You won the raffle for ${subject} — the artist will be in touch about the physical work`,
+          `You won ${subject}! You will be contacted to receive the physical piece.`,
           BODY_MAX,
         ),
         targetUrl: momentUrl,
       }
     }
     case 'raffle_ended': {
+      // `actor` is the WINNER (drawAndEnd's fan-out), so actorName announces
+      // who won — mirroring NotificationRow's raffle_ended copy.
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      const who = actorName ?? 'someone'
       return {
         title: truncate('Raffle ended', TITLE_MAX),
-        body: truncate(`The raffle for ${subject} has ended — you keep your edition`, BODY_MAX),
+        body: truncate(`${who} has won the physical edition of ${subject}!`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }
