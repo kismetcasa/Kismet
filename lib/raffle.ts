@@ -175,8 +175,8 @@ const HOLDS_BATCH_CHUNK = 200
  *  chunk fails — deliberately all-or-nothing: a partial result would silently
  *  exclude one chunk's real holders and draw a "winner" from the remainder,
  *  which is worse than aborting the draw (the route 400s on zero eligible and
- *  the artist just retries). */
-export async function holdsEditionBatch(
+ *  the artist just retries). Module-private: only the eligibility filter needs it. */
+async function holdsEditionBatch(
   collection: string,
   tokenId: string,
   addresses: string[],
@@ -224,7 +224,9 @@ export async function getRaffleState(
   return s === 'ended' || s === 'closed' ? 'ended' : 'open'
 }
 
-export async function setRaffleState(
+// Module-private: state transitions only happen through endRaffle/reopenRaffle,
+// which keep the winner key and the state in step.
+async function setRaffleState(
   collection: string,
   tokenId: string,
   state: RaffleState,

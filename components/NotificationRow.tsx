@@ -236,7 +236,8 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
   if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-accent" />)
   // The raffle's payoff moment gets a trophy; raffle_ended falls through to
-  // the artist-avatar default below (the artist announced the result).
+  // the actor-avatar default below — and its actor is the WINNER, so the
+  // announcement is fronted by the winner's face.
   if (n.type === 'raffle_win') return badge(<Trophy size={iconSize} className="text-accent" />)
   if (n.type === 'listing_expired' && !n.tokenImage) {
     return badge(<Clock size={iconSize} className="text-muted" />)

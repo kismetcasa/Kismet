@@ -37,13 +37,12 @@ export async function GET(req: NextRequest) {
     return errorResponse(400, 'Invalid address')
   }
 
-  const [enabled, state, entrantCount, winner, closeAt, recentEntrants] = await Promise.all([
+  const [enabled, state, entrantCount, winner, closeAt] = await Promise.all([
     isRaffleEnabled(collection, tokenId),
     getRaffleState(collection, tokenId),
     getEntrantCount(collection, tokenId),
     getWinner(collection, tokenId),
     getEntriesCloseAt(collection, tokenId),
-    getRecentEntrants(collection, tokenId),
   ])
   const entered = address ? await isEntered(collection, tokenId, address) : false
   const isWinner = !!address && !!winner && winner.toLowerCase() === address
@@ -51,6 +50,11 @@ export async function GET(req: NextRequest) {
   const now = Math.floor(Date.now() / 1000)
   // Entries are accepted only while live and before the close time passes.
   const isEntriesOpen = !ended && (closeAt == null || now < closeAt)
+  // Only read the entrant set when the social-proof strip can actually show
+  // (live raffle, entries open) — otherwise it's SMEMBERS + HGETALL wasted on
+  // every ended/closed status call, forever.
+  const recentEntrants =
+    enabled && isEntriesOpen ? await getRecentEntrants(collection, tokenId) : []
 
   return NextResponse.json({
     enabled,

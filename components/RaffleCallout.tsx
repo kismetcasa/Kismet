@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Ticket } from 'lucide-react'
 import { useAdmin } from '@/contexts/AdminContext'
+import { fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { ProfileAvatar } from './ProfileAvatar'
 
 interface RaffleCalloutStatus {
@@ -48,6 +49,9 @@ export function RaffleCallout({
   const { raffleEnabledKeys } = useAdmin()
   const hasRaffle = raffleEnabledKeys.has(`${collection.toLowerCase()}:${tokenId}`)
   const [status, setStatus] = useState<RaffleCalloutStatus | null>(null)
+  // address (lowercased) → avatarUrl, so entrants show their real pfp like
+  // every other ProfileAvatar surface (gradient identicon only as fallback).
+  const [avatars, setAvatars] = useState<Record<string, string | undefined>>({})
 
   useEffect(() => {
     if (!hasRaffle) return
@@ -63,6 +67,28 @@ export function RaffleCallout({
       cancelled = true
     }
   }, [hasRaffle, collection, tokenId])
+
+  // Resolve the strip's real avatar images (batched, LRU-cached client-side —
+  // one /api/profiles call for all six at most). Keyed lowercased, matching
+  // fetchCreatorProfilesBatch's output.
+  useEffect(() => {
+    const addrs = (status?.entriesOpen ? (status.recentEntrants ?? []) : []).slice(0, 6)
+    if (addrs.length === 0) return
+    let cancelled = false
+    fetchCreatorProfilesBatch(addrs)
+      .then((profiles) => {
+        if (cancelled) return
+        setAvatars(
+          Object.fromEntries(
+            addrs.map((a) => [a.toLowerCase(), profiles[a.toLowerCase()]?.avatarUrl]),
+          ),
+        )
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [status])
 
   // No raffle, still loading, or already resolved → the normal sale window.
   // (While the status fetch is in flight the fallback shows; a live raffle
@@ -97,11 +123,11 @@ export function RaffleCallout({
       </div>
       {recent.length > 0 && (
         // Square avatars (the house ProfileAvatar shape), overlapped with a
-        // background-colored ring so each edge stays readable in the stack.
+        // page-background ring so each edge stays readable in the stack.
         <div className="flex items-center -space-x-1.5" aria-label="recent raffle entrants">
           {recent.map((a) => (
             <div key={a} className="ring-2 ring-[#0d0d0d]">
-              <ProfileAvatar address={a} size={16} />
+              <ProfileAvatar address={a} avatarUrl={avatars[a.toLowerCase()]} size={16} />
             </div>
           ))}
         </div>
