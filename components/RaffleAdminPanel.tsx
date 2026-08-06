@@ -145,20 +145,38 @@ export function RaffleAdminPanel({
             </button>
           </div>
 
-          {/* Not enabled → offer to turn it on (prefilling the sale end). */}
+          {/* Not enabled → offer to turn it on. The sale end prefills the
+              auto-close time ONLY while it's still in the future — an elapsed
+              sale end would create a raffle that is born closed (nothing to
+              enter, "winner announced soon" forever); the server rejects that
+              too, this just keeps the panel's happy path happy. */}
           {status && !status.enabled && (
             <>
-              <p className="text-xs font-mono text-muted">
-                Enable the raffle so holders of this edition can enter.
-                {defaultCloseAt != null && ` Entries will auto-close at the sale end (${fmt(defaultCloseAt)}).`}
-              </p>
-              <button
-                onClick={() => void after(enable(defaultCloseAt))}
-                disabled={busy}
-                className="self-start text-[10px] font-mono uppercase tracking-widest text-accent hover:text-ink transition-colors disabled:opacity-50"
-              >
-                {busy ? '…' : 'enable raffle'}
-              </button>
+              {(() => {
+                const futureCloseAt =
+                  defaultCloseAt != null && defaultCloseAt > Math.floor(Date.now() / 1000)
+                    ? defaultCloseAt
+                    : null
+                return (
+                  <>
+                    <p className="text-xs font-mono text-muted">
+                      Enable the raffle so holders of this edition can enter.
+                      {futureCloseAt != null
+                        ? ` Entries will auto-close at the sale end (${fmt(futureCloseAt)}).`
+                        : defaultCloseAt != null
+                          ? ' The sale has already ended — entries stay open until you close them.'
+                          : ''}
+                    </p>
+                    <button
+                      onClick={() => void after(enable(futureCloseAt))}
+                      disabled={busy}
+                      className="self-start text-[10px] font-mono uppercase tracking-widest text-accent hover:text-ink transition-colors disabled:opacity-50"
+                    >
+                      {busy ? '…' : 'enable raffle'}
+                    </button>
+                  </>
+                )
+              })()}
             </>
           )}
 
@@ -257,7 +275,15 @@ export function RaffleAdminPanel({
               <div className="flex items-center justify-between gap-2">
                 <button
                   onClick={() => {
-                    if (window.confirm('Reopen this raffle? The winner is cleared and entries reopen.'))
+                    // Reopen can't retract anything already sent: the drawn
+                    // winner was told "you won — you will be contacted", and
+                    // that bell row + push stay delivered. Make the operator
+                    // acknowledge that before clearing the result.
+                    if (
+                      window.confirm(
+                        'Reopen this raffle? The drawn winner was already notified they won, and that notification cannot be retracted — drawing again may leave two people who were told they won. The result is cleared and entries reopen.',
+                      )
+                    )
                       void after(reopen())
                   }}
                   disabled={busy}

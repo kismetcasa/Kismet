@@ -35,6 +35,8 @@ const stateKey = (c: string, t: string) => `${base(c, t)}:state`
 // Unix seconds at which entries auto-close (snapshotted from the moment's sale
 // end at enable time; editable). Absent → entries never auto-close.
 const entriesCloseAtKey = (c: string, t: string) => `${base(c, t)}:entries-close-at`
+// Single-flight guard for the draw's finalize step (see acquireDrawLock).
+const drawLockKey = (c: string, t: string) => `${base(c, t)}:draw-lock`
 
 /** Member form for the cross-moment RAFFLE_ENABLED_KEY zset. */
 const enabledMember = (c: string, t: string) => `${norm(c)}:${t}`
@@ -379,11 +381,31 @@ export async function endRaffle(
   await setRaffleState(collection, tokenId, 'ended')
 }
 
-/** Un-end: clear the winner and reopen entries (recover from a mistaken draw). */
+/**
+ * Sub-second double-submit guard for the draw: SET NX with a short TTL (the
+ * writeNotification lock pattern). The manage route's state check catches the
+ * stale-panel case (drawing an already-ended raffle); this closes the
+ * remaining window where two concurrent draws both validate against 'open'
+ * and would otherwise both write a winner — the loser 409s instead of
+ * silently overwriting the result and double-notifying. Taken only after all
+ * validation passes, so a rejected draw never leaves the lock held.
+ */
+export async function acquireDrawLock(
+  collection: string,
+  tokenId: string,
+): Promise<boolean> {
+  return (
+    (await redis.set(drawLockKey(collection, tokenId), '1', { nx: true, ex: 30 })) === 'OK'
+  )
+}
+
+/** Un-end: clear the winner and reopen entries (recover from a mistaken draw).
+ *  Also releases the draw lock so a reopen-then-redraw isn't blocked for the
+ *  lock's remaining TTL. */
 export async function reopenRaffle(
   collection: string,
   tokenId: string,
 ): Promise<void> {
-  await redis.del(winnerKey(collection, tokenId))
+  await redis.del(winnerKey(collection, tokenId), drawLockKey(collection, tokenId))
   await setRaffleState(collection, tokenId, 'open')
 }

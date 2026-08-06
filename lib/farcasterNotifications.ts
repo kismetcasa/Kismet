@@ -2,9 +2,9 @@ import { redis } from './redis'
 import { getFarcasterProfileByAddress } from './farcasterProfile'
 import { formatPrice, isPlatformCollectComment } from './inprocess'
 import {
+  ACTOR_MUTE_EXEMPT_TYPES,
   ALL_NOTIFICATION_TYPES,
   isActorMuted,
-  NON_MUTEABLE_TYPES,
   type Notification,
   type NotificationType,
 } from './notifications'
@@ -593,14 +593,15 @@ export async function dispatchFarcasterPush(n: Notification): Promise<void> {
     // from muted actors at read time. If the user muted someone, we
     // should also suppress the FC push — otherwise muting in feed
     // leaves a louder transport untouched, breaking the user's
-    // expectation that "mute X" silences X everywhere. Financial types
-    // bypass actor-mute here for the same reason loadAndAnnotate does:
-    // money-bearing events must reach the user regardless of mutes.
+    // expectation that "mute X" silences X everywhere. Exempt types
+    // (ACTOR_MUTE_EXEMPT_TYPES) bypass actor-mute here for the same reason
+    // loadAndAnnotate does: money-bearing events — and the raffle outcome,
+    // whose actor is the announced winner — must reach the user regardless.
     // Address-keyed (matches muteActor/unmuteActor), not FID-keyed —
     // a user might mute another address that has no FC identity.
     if (
       n.actor &&
-      !NON_MUTEABLE_TYPES.has(n.type) &&
+      !ACTOR_MUTE_EXEMPT_TYPES.has(n.type) &&
       (await isActorMuted(n.recipient, n.actor))
     ) {
       return
