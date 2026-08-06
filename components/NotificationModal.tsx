@@ -23,6 +23,8 @@ const TYPE_LABELS: Record<string, string> = {
   listing_created: 'Listings by people you follow',
   authorized: 'Creator authorizations',
   agent_collect: 'Agent Collect',
+  // raffle_win is non-muteable (never listed here); only the closure notice is.
+  raffle_ended: 'Raffle results',
 }
 
 // Labels used in the FC push section. We surface every type here (the
@@ -39,6 +41,8 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   payout: 'Splits and payouts',
   authorized: 'Creator authorizations',
   agent_collect: 'Agent Collect',
+  raffle_win: 'Raffle wins',
+  raffle_ended: 'Raffle results',
 }
 
 type ModalTab = 'feed' | 'settings'
