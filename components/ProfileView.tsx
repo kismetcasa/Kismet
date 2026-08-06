@@ -396,10 +396,13 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Set once the owner toggles a pin, so the initial GET (which runs on mount
   // and may still be in flight) can't overwrite an optimistic toggle.
   const pinsTouched = useRef(false)
-  // Owner-chosen default for what visitors see: the curated showcase or the
-  // full profile with pinned items first. Arrives with the pins payload;
-  // seeded 'curated' — harmless, since the public view renders no sections at
-  // all until pinsLoaded, so the seed never paints the wrong mode.
+  // What visitors see: the full profile with pinned items first ('full', the
+  // resolved default) or the curated showcase ('curated' — explicit choice,
+  // or the grandfathered default for profiles that pinned before the setting
+  // existed; the server resolves all of that and sends one value). Seeded
+  // 'curated' — the fail-private value, and harmless either way: the public
+  // view renders no sections at all until pinsLoaded, so the seed never
+  // paints the wrong mode.
   const [publicView, setPublicView] = useState<PublicViewMode>('curated')
   // Mirrors pinsTouched for the mode. Tracked separately: a mode toggle must
   // not block the pins payload from applying, nor a pin toggle the mode.
@@ -524,7 +527,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           listings: Array.isArray(d?.pins?.listings) ? d.pins.listings : [],
         })
         // Same optimistic-write guard for the mode; anything unexpected in
-        // the payload reads as the 'curated' default.
+        // the payload reads as 'curated' (fail-private, matching the server).
         if (!viewTouched.current) setPublicView(d?.publicView === 'full' ? 'full' : 'curated')
       })
       .catch(() => { if (!pinsTouched.current) setPins(EMPTY_PINS) })
@@ -1351,10 +1354,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                       role="group"
                       aria-label="What visitors see by default"
                     >
+                      {/* Disabled until the resolved mode is known — the chips
+                          act on (and display) server truth, never the seed. */}
                       <span className="text-[11px] font-mono text-muted">visitors see</span>
                       <button
                         onClick={() => saveViewMode('curated')}
-                        disabled={savingView}
+                        disabled={savingView || !pinsLoaded}
                         aria-pressed={publicView === 'curated'}
                         className={`text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
                           publicView === 'curated'
@@ -1366,7 +1371,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                       </button>
                       <button
                         onClick={() => saveViewMode('full')}
-                        disabled={savingView}
+                        disabled={savingView || !pinsLoaded}
                         aria-pressed={publicView === 'full'}
                         className={`text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
                           publicView === 'full'
@@ -1609,6 +1614,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             {publicView === 'full' ? (
               <>
                 Visitors see your full profile. Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature up to 4 in each section — pinned artworks show first.
+                {' '}<span className="text-dim">Prefer a minimal page? Open public view and choose showcase.</span>
               </>
             ) : (
               <>

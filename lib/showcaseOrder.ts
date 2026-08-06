@@ -6,15 +6,31 @@
 
 /**
  * How a profile renders for VISITORS (and for the owner/admin "public view"
- * preview): the curated pinned showcase ('curated', the default — only pinned
- * artworks show), or the full profile with the pinned items surfaced first in
- * each section ('full'). Owner-set via POST /api/profile/[address]/public-view
- * and delivered alongside the pins payload; an unset profile is 'curated'.
+ * preview): the full profile with the pinned items surfaced first in each
+ * section ('full', the default), or the curated pinned showcase ('curated' —
+ * only pinned artworks show). Owner-set via
+ * POST /api/profile/[address]/public-view and delivered alongside the pins
+ * payload. A profile that never chose is resolved server-side via
+ * derivePublicViewMode below.
  */
 export type PublicViewMode = 'curated' | 'full'
 
 export function isPublicViewMode(value: unknown): value is PublicViewMode {
   return value === 'curated' || value === 'full'
+}
+
+/**
+ * Default-mode policy for a profile with no stored choice: 'full' — complete,
+ * browsable profiles out of the box — EXCEPT when the profile already has
+ * pins. Pinners built their public page under the original showcase-only
+ * model, where pinning was the act of choosing what visitors see; resolving
+ * them to 'full' would silently republish everything they'd deliberately left
+ * out. They stay 'curated' until they switch by hand. (lib/showcase.ts
+ * materializes this verdict and locks 'full' in before a first-ever pin, so
+ * post-rollout pinning reorders the full profile rather than flipping it.)
+ */
+export function derivePublicViewMode(hasPins: boolean): PublicViewMode {
+  return hasPins ? 'curated' : 'full'
 }
 
 /**

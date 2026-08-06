@@ -11,10 +11,13 @@
 //      no pins (or none loaded) returns the array unchanged.
 //   3. isPublicViewMode accepts exactly the two modes the pins payload /
 //      public-view route may carry.
+//   4. derivePublicViewMode — the never-chose default policy: pins present →
+//      'curated' (grandfathered showcase-era pinners keep their curation),
+//      no pins → 'full' (new profiles are browsable out of the box).
 //
 // Run: node --experimental-strip-types scripts/verify-showcase-order.ts
 
-import { isPublicViewMode, orderByPins, pinsFirst } from '../lib/showcaseOrder.ts'
+import { derivePublicViewMode, isPublicViewMode, orderByPins, pinsFirst } from '../lib/showcaseOrder.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -63,6 +66,10 @@ check("isPublicViewMode: accepts 'curated'", isPublicViewMode('curated'))
 check("isPublicViewMode: accepts 'full'", isPublicViewMode('full'))
 check('isPublicViewMode: rejects other strings', !isPublicViewMode('showcase') && !isPublicViewMode(''))
 check('isPublicViewMode: rejects non-strings', !isPublicViewMode(undefined) && !isPublicViewMode(null) && !isPublicViewMode(1))
+
+// ── 4. derivePublicViewMode — unset-profile default policy ──────────────────
+check("derive: pinned profile (grandfathered) -> 'curated'", derivePublicViewMode(true) === 'curated')
+check("derive: pinless profile -> 'full' (the new default)", derivePublicViewMode(false) === 'full')
 
 if (failures > 0) {
   console.error(`\nverify-showcase-order: ${failures} check(s) failed`)

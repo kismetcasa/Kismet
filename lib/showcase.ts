@@ -1,5 +1,6 @@
 import { redis } from './redis'
-import type { PublicViewMode } from './showcaseOrder'
+import { bestEffort } from './bestEffort'
+import { derivePublicViewMode, type PublicViewMode } from './showcaseOrder'
 
 // Per-owner "pinned showcase" ZSETs — one per profile section a user can
 // curate. Mirrors lib/collected.ts: members are "<collection>:<tokenId>"
@@ -73,43 +74,105 @@ export async function removePin(
 }
 
 // ── public-view mode ─────────────────────────────────────────────────────────
-// Owner-chosen default for what VISITORS see on this profile: the curated
-// pinned showcase ('curated', the default) or the full profile with the pinned
-// items surfaced first in each section ('full'). Stored only when opted into
-// 'full' — absence IS the default, so the keyspace stays tiny and the default
-// can't drift. Keyed by the canonical address like the pin ZSETs above (it
-// configures the same surface, and the admin erase clears them together).
+// What VISITORS see on this profile: the full profile with the pinned items
+// surfaced first in each section ('full', the default) or the curated pinned
+// showcase ('curated'). Keyed by the canonical address like the pin ZSETs
+// above (it configures the same surface, and the admin erase clears them
+// together).
+//
+// An ABSENT key means "never chose", and resolves via derivePublicViewMode:
+// pins present → 'curated' (pinners from the showcase-only era built their
+// public page by pinning; the default flip must not republish what they left
+// out — they switch by hand), no pins → 'full'. Two rules keep that verdict
+// from drifting as pins churn:
+//   • the read path MATERIALIZES a derived-'curated' verdict (background
+//     SET), so a grandfathered profile stays curated even after the owner
+//     later unpins everything;
+//   • pin writes call ensureViewModeForPinChange FIRST, so a first-ever pin
+//     locks 'full' in (post-rollout pinning REORDERS the full profile rather
+//     than flipping it to showcase-only) and a legacy profile's next pin
+//     action locks 'curated' even if nothing ever read it.
+// Only pre-rollout profiles can sit in the ambiguous pins-and-no-key state,
+// so the grandfather rule needs no migration script and no cutoff timestamp.
+//
+// FAILURE POLICY: every unknown resolves to 'curated' — fail-private. A
+// transient Redis error must never expose a full profile the owner may not
+// have chosen; the degraded curated view (with pins also unavailable → the
+// recent-mints fallback) is the pre-feature rendering. Materialization only
+// happens on a SUCCESSFUL read of both the mode and the pins.
 
 const viewKey = (address: string) =>
   `kismetart:profile-public-view:${address.toLowerCase()}`
 
 /**
- * Read the owner's public-view mode. Degrades to 'curated' on any error —
- * the privacy-preserving default (visitors see only what's pinned), and the
- * same mode every profile had before this setting existed.
+ * Resolve the mode a viewer should get. Takes the IN-FLIGHT pins read
+ * (never-rejecting; `null` = that read failed) rather than its value so this
+ * function's own GET issues in the same tick — auto-pipelining folds all
+ * four commands into the one round trip the route always cost. Stored choice
+ * wins; otherwise derive from the pins — and persist a derived 'curated' so
+ * the grandfathered state survives future unpinning. Derived 'full' is NOT
+ * persisted here: the pinless long tail would turn every profile view into a
+ * write, and ensureViewModeForPinChange pins the verdict down at the only
+ * moment it could change (a pin write).
  */
-export async function getPublicViewMode(address: string): Promise<PublicViewMode> {
+export async function resolvePublicViewMode(
+  address: string,
+  pinsRead: Promise<Record<PinCategory, string[]> | null>,
+): Promise<PublicViewMode> {
+  let stored: unknown
   try {
-    const raw = await redis.get<string>(viewKey(address))
-    return raw === 'full' ? 'full' : 'curated'
+    stored = await redis.get<string>(viewKey(address))
   } catch {
     return 'curated'
   }
-}
-
-export async function setPublicViewMode(address: string, mode: PublicViewMode): Promise<void> {
-  if (mode === 'full') await redis.set(viewKey(address), 'full')
-  else await redis.del(viewKey(address))
+  if (stored === 'full' || stored === 'curated') return stored
+  const pins = await pinsRead
+  if (pins === null) return 'curated'
+  const mode = derivePublicViewMode(
+    pins.mints.length + pins.collected.length + pins.listings.length > 0,
+  )
+  if (mode === 'curated') {
+    redis.set(viewKey(address), 'curated').catch(bestEffort('showcase.materializeViewMode'))
+  }
+  return mode
 }
 
 /**
- * All three pin sets for a profile, each newest-pinned first. Empty arrays
- * on any error so the profile view degrades to the full (non-pinned) layout
- * rather than throwing.
+ * Pin-write prelude: if the profile has no stored mode, persist the one its
+ * CURRENT pins derive to, before the pin mutation changes that basis. First
+ * pin ever → 'full' (so pinning under the new default means "float these
+ * first", not "hide the rest"); existing pins (a legacy profile acting before
+ * any read materialized it) → 'curated'. Best-effort: on any failure the
+ * profile just stays unset and the read path resolves it later.
  */
-export async function getAllPins(
+export async function ensureViewModeForPinChange(address: string): Promise<void> {
+  try {
+    const [stored, ...counts] = await Promise.all([
+      redis.get<string>(viewKey(address)),
+      ...CATEGORIES.map((c) => redis.zcard(key(c, address))),
+    ])
+    if (stored === 'full' || stored === 'curated') return
+    await redis.set(viewKey(address), derivePublicViewMode(counts.some((n) => n > 0)))
+  } catch (err) {
+    bestEffort('showcase.ensureViewMode')(err)
+  }
+}
+
+/** Owner's explicit choice — both values persist (absence means "derive"). */
+export async function setPublicViewMode(address: string, mode: PublicViewMode): Promise<void> {
+  await redis.set(viewKey(address), mode)
+}
+
+/**
+ * All three pin sets for a profile, each newest-pinned first. Returns null on
+ * any error ("checked" contract, like the FC lookups): the route serves empty
+ * arrays either way, but resolvePublicViewMode must be able to tell truly-
+ * pinless (may derive 'full') from pins-unknown (must fail private to
+ * 'curated', and must NOT materialize a verdict off a failed read).
+ */
+export async function getAllPinsChecked(
   address: string,
-): Promise<Record<PinCategory, string[]>> {
+): Promise<Record<PinCategory, string[]> | null> {
   try {
     const [mints, collected, listings] = await Promise.all([
       redis.zrange(key('mints', address), 0, -1, { rev: true }) as Promise<string[]>,
@@ -118,6 +181,6 @@ export async function getAllPins(
     ])
     return { mints, collected, listings }
   } catch {
-    return { mints: [], collected: [], listings: [] }
+    return null
   }
 }

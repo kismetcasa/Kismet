@@ -6,11 +6,14 @@ import { setPublicViewMode } from '@/lib/showcase'
 import { isPublicViewMode } from '@/lib/showcaseOrder'
 
 // POST /api/profile/[address]/public-view — owner-only. Sets what VISITORS
-// see by default on this profile: { mode: 'curated' } (the pinned showcase —
-// the default) or { mode: 'full' } (the full profile, pinned items first in
-// each section). Session-cookie auth + canonical match, same model as the
-// pins route. Read back via GET /api/profile/[address]/pins, which carries
-// `publicView` alongside the pin refs.
+// see on this profile: { mode: 'full' } (the full profile, pinned items first
+// in each section — the default for profiles that never pinned) or
+// { mode: 'curated' } (the pinned showcase — the resolved default for
+// profiles that pinned before choosing). An explicit choice always sticks;
+// only unset profiles get the derived default (lib/showcase). Session-cookie
+// auth + canonical match, same model as the pins route. Read back via
+// GET /api/profile/[address]/pins, which carries the resolved `publicView`
+// alongside the pin refs.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ address: string }> },
