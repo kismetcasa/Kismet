@@ -15,6 +15,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import { foldSearch } from '@/lib/searchText'
+import { orderByPins, pinsFirst, type PublicViewMode } from '@/lib/showcaseOrder'
 import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
@@ -154,18 +155,12 @@ type PinCategory = 'mints' | 'collected' | 'listings'
 type PinSets = Record<PinCategory, string[]>
 const EMPTY_PINS: PinSets = { mints: [], collected: [], listings: [] }
 
-// Reduce `items` to the pinned ones, ordered by pin recency (`order` is the
-// newest-pinned-first ref list from /api/profile/[address]/pins). Items absent
-// from `order` — a pin buried past the profile's 50-item fetch window, or a
-// listing that's since been delisted — simply fall away, which is what lets
-// the visitor's curated view degrade gracefully to the full profile.
-function orderByPins<T>(items: T[], keyOf: (t: T) => string, order: string[]): T[] {
-  if (order.length === 0) return []
-  const rank = new Map(order.map((k, i) => [k, i] as const))
-  return items
-    .filter((it) => rank.has(keyOf(it)))
-    .sort((a, b) => (rank.get(keyOf(a)) ?? 0) - (rank.get(keyOf(b)) ?? 0))
-}
+// Ordering (orderByPins for the curated showcase, pinsFirst for the full
+// profile) lives in lib/showcaseOrder — pure, Redis-free, and CI-verified by
+// scripts/verify-showcase-order.ts. The ref keys mirror lib/showcase's
+// "<collection>:<tokenId>" member form.
+const momentPinKey = (m: Moment) => `${m.address.toLowerCase()}:${m.token_id}`
+const listingPinKey = (l: Listing) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`
 
 // ─── follow row (lazy-loads display name) ────────────────────────────────────
 
@@ -401,6 +396,15 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Set once the owner toggles a pin, so the initial GET (which runs on mount
   // and may still be in flight) can't overwrite an optimistic toggle.
   const pinsTouched = useRef(false)
+  // Owner-chosen default for what visitors see: the curated showcase or the
+  // full profile with pinned items first. Arrives with the pins payload;
+  // seeded 'curated' — harmless, since the public view renders no sections at
+  // all until pinsLoaded, so the seed never paints the wrong mode.
+  const [publicView, setPublicView] = useState<PublicViewMode>('curated')
+  // Mirrors pinsTouched for the mode. Tracked separately: a mode toggle must
+  // not block the pins payload from applying, nor a pin toggle the mode.
+  const viewTouched = useRef(false)
+  const [savingView, setSavingView] = useState(false)
 
   const [followingCount, setFollowingCount] = useState<number | null>(null)
   const [followerCount, setFollowerCount] = useState<number | null>(null)
@@ -497,22 +501,32 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       .finally(() => setLoadingMoments(false))
   }, [address])
 
-  // Pinned showcase refs — Tier 1 because the render mode (pinned-only vs
-  // full) depends on it. Tiny payload; degrades to no-pins on any failure.
+  // Pinned showcase refs + the owner's public-view mode — Tier 1 because the
+  // render mode (curated showcase vs full-with-pins-first) depends on both,
+  // and they travel in the one payload so the mode can never flip after the
+  // sections have painted. Tiny payload; degrades to no-pins + 'curated' (the
+  // pre-setting behavior) on any failure.
   useEffect(() => {
     pinsTouched.current = false
+    viewTouched.current = false
     setPins(EMPTY_PINS)
+    setPublicView('curated')
     setPinsLoaded(false)
     fetch(`/api/profile/${address}/pins`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       // Normalize per-category so a partial/garbled payload can't leave a
       // category undefined (pins[cat].includes / .length would then throw).
       // Skip if the owner already toggled — don't clobber an optimistic pin.
-      .then((d) => { if (!pinsTouched.current) setPins({
-        mints: Array.isArray(d?.pins?.mints) ? d.pins.mints : [],
-        collected: Array.isArray(d?.pins?.collected) ? d.pins.collected : [],
-        listings: Array.isArray(d?.pins?.listings) ? d.pins.listings : [],
-      }) })
+      .then((d) => {
+        if (!pinsTouched.current) setPins({
+          mints: Array.isArray(d?.pins?.mints) ? d.pins.mints : [],
+          collected: Array.isArray(d?.pins?.collected) ? d.pins.collected : [],
+          listings: Array.isArray(d?.pins?.listings) ? d.pins.listings : [],
+        })
+        // Same optimistic-write guard for the mode; anything unexpected in
+        // the payload reads as the 'curated' default.
+        if (!viewTouched.current) setPublicView(d?.publicView === 'full' ? 'full' : 'curated')
+      })
       .catch(() => { if (!pinsTouched.current) setPins(EMPTY_PINS) })
       // Mark loaded on both paths — on error we fall back to no-pins, which
       // (for an artist with mints) is exactly when the recent-mints default
@@ -764,6 +778,33 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     }
   }
 
+  // Owner control for the visitor default (curated showcase vs full profile).
+  // Optimistic like togglePin; the chips disable while a save is in flight so
+  // opposite taps can't interleave into a state/server mismatch.
+  async function saveViewMode(mode: PublicViewMode) {
+    if (mode === publicView || savingView) return
+    viewTouched.current = true // from here, optimistic state wins over the GET
+    const prev = publicView
+    setPublicView(mode)
+    setSavingView(true)
+    try {
+      const res = await fetch(`/api/profile/${address}/public-view`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d.error ?? 'Failed')
+      }
+    } catch (err) {
+      setPublicView(prev)
+      toastError('Save', err)
+    } finally {
+      setSavingView(false)
+    }
+  }
+
   // Owner-write-chrome gate. True for anyone who isn't the owner (incl. an
   // admin viewing someone else) OR an owner previewing the public view. Edit /
   // pin / curate affordances gate on `!asVisitor`, so they only ever show to
@@ -771,42 +812,31 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const asVisitor = !isOwner || previewPublic
   // Render-mode gate, deliberately separate from write-chrome: show the full
   // owner-style dashboard (every section incl. Sales/Airdrops, un-curated
-  // lists) vs the curated public showcase. Owners and admins can see full;
-  // `previewPublic` flips either of them to the public view. Everyone else is
-  // locked to the showcase. A future per-artist "default my own profile to the
-  // public view" preference is just a different seed for `previewPublic` — the
-  // machinery here doesn't change.
+  // lists) vs the owner's chosen public view. Owners and admins see the
+  // dashboard; `previewPublic` flips either of them to the public view.
+  // Everyone else gets the public view.
   const fullView = canViewFull && !previewPublic
 
-  // Owner-only pin props for a card; {} for visitors so MomentCard/MarketCard
-  // render no toggle and keep their memoized identity in every non-owner feed.
-  // Membership is a plain .includes over the capped (≤4) ref array — no Set.
-  function ownerPinProps(
-    category: PinCategory,
-    collectionAddress: string,
-    tokenId: string,
-  ): { pinned?: boolean; onTogglePin?: () => void } {
-    if (asVisitor) return {}
-    return {
-      pinned: pins[category].includes(`${collectionAddress.toLowerCase()}:${tokenId}`),
-      onTogglePin: () => togglePin(category, collectionAddress, tokenId),
-    }
-  }
+  // Public-view split. What the public view SHOWS is the owner's saved
+  // preference (`publicView`, delivered with the pins payload):
+  //   'curated' — the showcase: ONLY pinned moments, filtered from the
+  //     already-loaded arrays, which keeps the render self-validating (a pin
+  //     can only show content the owner truly minted/collected/listed). With
+  //     no pins it has no sections at all — just the profile header — except
+  //     the recent-mints fallback below.
+  //   'full' — the full profile: every artwork section complete, with the
+  //     pinned items floated to the front of each grid (pinsFirst).
+  // Sales / Airdrops / owner chrome stay dashboard-only in BOTH modes.
+  const showcaseView = !fullView && publicView === 'curated'
+  const publicFullView = !fullView && publicView === 'full'
+  // Gated on pinsLoaded so the owner's zero-pin hint can't flash while the
+  // initial pins GET is still in flight.
+  const ownerHasNoPins =
+    isOwner && pinsLoaded && pins.mints.length + pins.collected.length + pins.listings.length === 0
 
-  // Pinned-showcase derivations. The curated showcase (`pinnedView`) is what a
-  // visitor — or an owner/admin who toggled the public-view preview — sees:
-  // ONLY the owner's pinned moments, filtered from the already-loaded arrays,
-  // which keeps the render self-validating (a pin can only show content the
-  // owner truly minted/collected/listed). Owners AND admins in the full view
-  // (`fullView`) see the whole dashboard instead. With no pins, the showcase
-  // has no sections at all — just the profile header (identity only).
-  // orderByPins runs only on the showcase path; off it the full arrays pass
-  // straight through.
-  const pinnedView = !fullView
-  const ownerHasNoPins = isOwner && pins.mints.length + pins.collected.length + pins.listings.length === 0
-
-  // Un-pinned mints fallback. An artist who hasn't pinned any mints still gets
-  // a populated showcase — their up-to-4 most-recent mints — so a new artist's
+  // Un-pinned mints fallback (curated mode only — the full profile already
+  // shows everything). An artist who hasn't pinned any mints still gets a
+  // populated showcase — their up-to-4 most-recent mints — so a new artist's
   // public profile isn't blank. Scoped to mints only (the artist's own work);
   // collected/listings stay curated-only, preserving the blank-until-pinned
   // philosophy for pure collectors. `moments` is already loaded for every
@@ -814,19 +844,45 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // extra fetch. The moment the artist pins one mint, pins.mints.length > 0
   // flips this off and the pinned set replaces the default. (4 matches the
   // per-category pin cap / showcase-row width.)
-  const mintsFallback = pinnedView && pinsLoaded && pins.mints.length === 0
+  const mintsFallback = showcaseView && pinsLoaded && pins.mints.length === 0
 
-  const displayMoments = pinnedView
-    ? (mintsFallback
-        ? moments.slice(0, 4)
-        : orderByPins(moments, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.mints))
-    : moments
-  const displayCollected = pinnedView ? orderByPins(collected, (m) => `${m.address.toLowerCase()}:${m.token_id}`, pins.collected) : collected
-  const displayListings = pinnedView ? orderByPins(listings, (l) => `${l.collectionAddress.toLowerCase()}:${l.tokenId}`, pins.listings) : listings
+  const displayMoments = showcaseView
+    ? (mintsFallback ? moments.slice(0, 4) : orderByPins(moments, momentPinKey, pins.mints))
+    : publicFullView
+      ? pinsFirst(moments, momentPinKey, pins.mints)
+      : moments
+  const displayCollected = showcaseView
+    ? orderByPins(collected, momentPinKey, pins.collected)
+    : publicFullView
+      ? pinsFirst(collected, momentPinKey, pins.collected)
+      : collected
+  const displayListings = showcaseView
+    ? orderByPins(listings, listingPinKey, pins.listings)
+    : publicFullView
+      ? pinsFirst(listings, listingPinKey, pins.listings)
+      : listings
   const pinSectionLoading: Record<PinCategory, boolean> = {
     mints: loadingMoments,
     collected: loadingCollected,
     listings: loadingListings,
+  }
+
+  // Pin props for a card. Owner dashboard: the live toggle. Visitor-facing
+  // FULL profile: a read-only `pinned` marker on the featured items so the
+  // pins-first ordering is legible. Curated showcase and every other case:
+  // {} — no pin chrome, and the memoized card identity stays intact.
+  // Membership is a plain .includes over the capped (≤4) ref array — no Set.
+  function cardPinProps(
+    category: PinCategory,
+    collectionAddress: string,
+    tokenId: string,
+  ): { pinned?: boolean; onTogglePin?: () => void } {
+    const isPinned = pins[category].includes(`${collectionAddress.toLowerCase()}:${tokenId}`)
+    if (!asVisitor) {
+      return { pinned: isPinned, onTogglePin: () => togglePin(category, collectionAddress, tokenId) }
+    }
+    if (publicFullView && isPinned) return { pinned: true }
+    return {}
   }
 
   // ─── section content map ──────────────────────────────────────────────────
@@ -859,7 +915,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const SCROLL_BOX_CLASSES = 'max-h-[52rem] overflow-y-auto'
 
   const skeleton = (n: number) =>
-    pinnedView ? (
+    showcaseView ? (
       // Showcase loading state: same swipe/three-up shell as the cards, capped
       // at the per-category pin limit (4) so it doesn't flash extra tiles.
       <div className={SHOWCASE_ROW_CLASSES}>
@@ -899,14 +955,15 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     curate: null,
   }
   // Card-based sections render one of two layouts. The curated SHOWCASE
-  // (visitor / public-view, ≤4 cards) is a horizontal snap-swipe on phones and
-  // a four-up row on web — no scroll-box or lazy-mount needed at that size. The
-  // owner DASHBOARD (full mint/collected/listing lists) keeps the dense grid
-  // inside a scroll-clipped box; `index` lets callers flag the first row (lg+ =
-  // 6 cards) as priority, and each item is MaybeLazy so mobile defers mount of
-  // items past the eager window (desktop renders inline via lazy=false).
+  // (public view in 'curated' mode, ≤4 cards) is a horizontal snap-swipe on
+  // phones and a three-up row on web — no scroll-box or lazy-mount needed at
+  // that size. FULL lists (the owner dashboard AND the public view in 'full'
+  // mode) keep the dense grid inside a scroll-clipped box; `index` lets
+  // callers flag the first row (lg+ = 6 cards) as priority, and each item is
+  // MaybeLazy so mobile defers mount of items past the eager window (desktop
+  // renders inline via lazy=false).
   function renderCardCollection<T>(items: T[], renderCard: (item: T, index: number) => React.ReactNode, getItemKey: (item: T) => string) {
-    if (pinnedView) {
+    if (showcaseView) {
       return (
         <div className={SHOWCASE_ROW_CLASSES}>
           {items.map((it, index) => (
@@ -931,7 +988,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   }
 
   const sectionContent: Record<SectionId, React.ReactNode> = {
-    mints: collectionsMode && !pinnedView ? (
+    mints: collectionsMode && fullView ? (
       loadingCollections ? skeleton(6) : artistCollections.length === 0 ? (
         <p className="text-muted font-mono text-xs">no collections yet</p>
       ) : renderCardCollection(
@@ -971,11 +1028,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         ? <p className="text-muted font-mono text-xs">no mints yet</p>
         : renderCardCollection(
             displayMoments,
-            // Pinned showcase renders the STANDARD full card (the same card as
-            // the discover feed — full action row, meta slot, copy/open
-            // affordances) at feed scale; compact stays for the owner's dense
-            // dashboard grid only.
-            (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact={!pinnedView} showCreator priority={index < 6} isMobile={isMobile} {...ownerPinProps('mints', m.address, m.token_id)} />,
+            // Curated showcase renders the STANDARD full card (the same card
+            // as the discover feed — full action row, meta slot, copy/open
+            // affordances) at feed scale; compact is for the dense grids (the
+            // owner dashboard and the visitor-facing full profile).
+            (m, index) => <MomentCard moment={m} hidePriceSupply={!showcaseView} compact={!showcaseView} showCreator priority={index < 6} isMobile={isMobile} {...cardPinProps('mints', m.address, m.token_id)} />,
             (m) => m.id ?? `${m.address}-${m.token_id}`,
           )
     ),
@@ -983,7 +1040,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       ? <p className="text-muted font-mono text-xs">none collected yet</p>
       : renderCardCollection(
           displayCollected,
-          (m, index) => <MomentCard moment={m} hidePriceSupply={!pinnedView} compact={!pinnedView} showCreator priority={index < 6} passBadge={passBadge ?? undefined} isMobile={isMobile} {...ownerPinProps('collected', m.address, m.token_id)} />,
+          (m, index) => <MomentCard moment={m} hidePriceSupply={!showcaseView} compact={!showcaseView} showCreator priority={index < 6} passBadge={passBadge ?? undefined} isMobile={isMobile} {...cardPinProps('collected', m.address, m.token_id)} />,
           (m) => m.id ?? `${m.address}-${m.token_id}`,
         ),
     listings: loadingListings ? skeleton(3) : displayListings.length === 0
@@ -1000,10 +1057,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             <MarketCard
               listing={l}
               onRemove={() => setListings((prev) => prev.filter((x) => x.id !== l.id))}
-              compact={!pinnedView}
+              compact={!showcaseView}
               showCreator
               priority={index < 6}
-              {...ownerPinProps('listings', l.collectionAddress, l.tokenId)}
+              {...cardPinProps('listings', l.collectionAddress, l.tokenId)}
             />
           ),
           (l) => l.id,
@@ -1272,18 +1329,56 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             {theme && <ProvenanceChip theme={theme} />}
             {/* "Public view" toggle — always under the follower count. Shown to
                 anyone who can see the full profile (owner or admin) so they can
-                flip between the full view and the curated public view. Flips to
-                the exit control while previewing: the one piece of chrome kept
-                visible so the preview stays escapable. Customize is owner-only
-                (it writes the profile theme). */}
+                flip between the full view and the public view. While previewing,
+                the exit control stays visible so the preview is escapable — and
+                the OWNER also gets the "visitors see" chooser right here, where
+                its effect is live on screen: the preview re-renders in whichever
+                mode is picked, and the choice saves immediately as the profile's
+                visitor default. Customize is owner-only (it writes the profile
+                theme). */}
             {canViewFull &&
               (previewPublic ? (
-                <button
-                  onClick={() => setPreviewPublic(false)}
-                  className="self-start mt-3 text-xs font-mono px-2.5 py-1 border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors"
-                >
-                  exit public view
-                </button>
+                <div className="self-start mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setPreviewPublic(false)}
+                    className="text-xs font-mono px-2.5 py-1 border border-accent/40 text-accent hover:border-accent hover:bg-accent/10 transition-colors"
+                  >
+                    exit public view
+                  </button>
+                  {isOwner && (
+                    <div
+                      className="flex items-center gap-1.5"
+                      role="group"
+                      aria-label="What visitors see by default"
+                    >
+                      <span className="text-[11px] font-mono text-muted">visitors see</span>
+                      <button
+                        onClick={() => saveViewMode('curated')}
+                        disabled={savingView}
+                        aria-pressed={publicView === 'curated'}
+                        className={`text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
+                          publicView === 'curated'
+                            ? 'border-accent/40 text-accent'
+                            : 'border-line text-muted hover:border-dim hover:text-dim'
+                        }`}
+                      >
+                        showcase
+                      </button>
+                      <button
+                        onClick={() => saveViewMode('full')}
+                        disabled={savingView}
+                        aria-pressed={publicView === 'full'}
+                        className={`text-xs font-mono px-2.5 py-1 border transition-colors disabled:opacity-40 ${
+                          publicView === 'full'
+                            ? 'border-accent/40 text-accent'
+                            : 'border-line text-muted hover:border-dim hover:text-dim'
+                        }`}
+                      >
+                        full profile
+                      </button>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="self-start mt-3 flex items-center gap-2">
                   <button
@@ -1501,14 +1596,29 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
       {/* Owner-only curation hint, shown only when nothing is pinned: an owner
           only ever sees this (full) dashboard, so without it they'd have no
-          prompt to feature artworks on their otherwise detail-only profile.
-          Also tells them what visitors currently see by default (their recent
-          mints) so the un-pinned state isn't a mystery. */}
-      {ownerHasNoPins && !previewPublic && (
+          prompt to shape their public profile. Gated on pinsLoaded (inside
+          ownerHasNoPins) so it can't flash while the pins GET is in flight,
+          and on having something pinnable so an empty profile isn't nudged
+          toward a pin it can't make. The copy tracks what visitors ACTUALLY
+          see right now — recent mints (artist), header only (collector with
+          nothing pinned), or the full profile — so the un-pinned state is
+          never a mystery, and it points at the public-view chooser. */}
+      {ownerHasNoPins && !previewPublic && moments.length + collected.length + listings.length > 0 && (
         <div className="border border-line bg-surface/40 px-4 py-3 mb-4">
           <p className="text-xs font-mono text-muted leading-relaxed">
-            Until you pin, visitors see your 4 most recent mints. Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it instead.
-            {' '}<span className="text-dim">Pin</span> up to 4 of your mints, collects and listings.
+            {publicView === 'full' ? (
+              <>
+                Visitors see your full profile. Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature up to 4 in each section — pinned artworks show first.
+              </>
+            ) : (
+              <>
+                {moments.length > 0
+                  ? 'Until you pin, visitors see your 4 most recent mints. '
+                  : 'Until you pin, visitors see only your profile header. '}
+                Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it — up to 4 each of your mints, collects and listings.
+                {' '}<span className="text-dim">Prefer to show everything? Open public view and switch visitors to your full profile.</span>
+              </>
+            )}
           </p>
         </div>
       )}
@@ -1517,27 +1627,38 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           appended last for the curator on their own profile and is not
           drag-reorderable — it stays pinned to the bottom. */}
       <div ref={sectionContainerRef} className="flex flex-col">
-        {pinnedView ? (
-          // Public showcase: the owner's featured Mints / Collected / Listings,
-          // renamed and always-expanded (a curated reel — no collapse), empty
-          // categories hidden, fixed order, non-draggable.
+        {!fullView ? (
+          // Public view — what visitors see, in the owner's chosen mode.
+          // 'curated': the featured Mints / Collected / Listings showcase,
+          // renamed, ≤4 full-size cards each, empty categories hidden.
+          // 'full': the same three sections complete — dense grid, pinned
+          // items first, dashboard labels + counts. Sales / Airdrops stay
+          // dashboard-only in both. Fixed order, always expanded (a public
+          // reel — no collapse), non-draggable.
           (['mints', 'collected', 'listings'] as const)
-            // Categories the owner pinned into — plus the un-pinned mints
-            // fallback (artist's recent work). Show a skeleton while that
+            // Curated keeps categories the owner pinned into — plus the
+            // un-pinned mints fallback (artist's recent work); full keeps any
+            // category with content. Either way, show a skeleton while the
             // category's source loads, then hide it if nothing renders.
             .filter((section) => {
-              const active = pins[section].length > 0 || (section === 'mints' && mintsFallback)
+              const active =
+                publicFullView || pins[section].length > 0 || (section === 'mints' && mintsFallback)
               return active && (pinSectionLoading[section] || (sectionCount[section] ?? 0) > 0)
             })
             .map((section) => {
               const count = sectionCount[section]
-              // Un-pinned mints aren't artist-curated, so label them honestly
-              // as recent work rather than "Featured Mints".
-              const label =
-                section === 'mints' && mintsFallback ? 'Recent Mints' : showcaseSectionLabel[section]
+              // Curated sections re-frame the categories as a highlight reel —
+              // with the honest "Recent Mints" label when the un-pinned
+              // fallback (not the artist's curation) is what's showing. The
+              // full profile keeps the plain dashboard names.
+              const label = publicFullView
+                ? sectionLabel[section]
+                : section === 'mints' && mintsFallback
+                  ? 'Recent Mints'
+                  : showcaseSectionLabel[section]
               return (
                 <div key={section} className="border-t border-line">
-                  {/* Featured sections don't collapse — always expanded, no chevron. */}
+                  {/* Public sections don't collapse — always expanded, no chevron. */}
                   <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
                     {label}{count !== null ? ` (${count})` : ''}
                   </h2>

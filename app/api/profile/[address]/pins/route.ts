@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { authorizeProfileOwner } from '@/lib/profileOwner'
 import { errorResponse } from '@/lib/apiResponse'
-import { addPin, removePin, getAllPins, isPinCategory } from '@/lib/showcase'
+import { addPin, removePin, getAllPins, getPublicViewMode, isPinCategory } from '@/lib/showcase'
 
 // GET /api/profile/[address]/pins — public. Returns the owner's pinned
-// showcase refs per category, newest-pinned first. Served fresh (uncached,
-// like /api/featured) so a just-pinned moment is visible to other viewers
-// immediately — it's three small ZRANGEs.
+// showcase refs per category, newest-pinned first, plus their public-view
+// mode ('curated' showcase vs 'full' profile) — the client picks the visitor
+// render mode the moment this payload lands, so both travel in the one
+// Tier-1 fetch. Served fresh (uncached, like /api/featured) so a just-pinned
+// moment or a just-flipped mode is visible to other viewers immediately —
+// it's three small ZRANGEs and a GET.
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ address: string }> },
@@ -18,8 +21,11 @@ export async function GET(
   // The profile page redirects to the canonical address, so callers reach
   // this with the canonical key already — no per-request resolution needed
   // on the hot read path.
-  const pins = await getAllPins(address)
-  return NextResponse.json({ pins })
+  const [pins, publicView] = await Promise.all([
+    getAllPins(address),
+    getPublicViewMode(address),
+  ])
+  return NextResponse.json({ pins, publicView })
 }
 
 interface PinBody {

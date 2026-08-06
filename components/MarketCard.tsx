@@ -39,9 +39,11 @@ interface MarketCardProps {
    */
   priority?: boolean
   /**
-   * Owner-only "pin to profile" affordance, mirroring MomentCard. Provided
-   * by ProfileView only on the owner's own Listings; `pinned` drives the
-   * filled/outline pushpin overlaid bottom-left of the thumbnail.
+   * "Pin to profile" affordance, mirroring MomentCard. `onTogglePin` comes
+   * from ProfileView only on the owner's own Listings; `pinned` drives the
+   * filled/outline pushpin overlaid bottom-left of the thumbnail. `pinned`
+   * without the toggle renders the read-only filled pin the visitor-facing
+   * full profile uses to mark featured listings.
    */
   pinned?: boolean
   onTogglePin?: () => void
@@ -160,9 +162,10 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
     <div className="bg-[#161616] border border-line flex flex-col">
       {/* Thumbnail */}
       <div className="relative aspect-square bg-surface overflow-hidden">
-        {/* Owner-only "pin to profile" toggle — see MomentCard. The thumbnail
-            isn't a navigation link here, so stopPropagation alone suffices. */}
-        {onTogglePin && (
+        {/* "Pin to profile" corner — see MomentCard. Owner: toggle button
+            (the thumbnail isn't a navigation link here, so stopPropagation
+            alone suffices). Visitor full profile: read-only featured pin. */}
+        {onTogglePin ? (
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -176,7 +179,15 @@ export function MarketCard({ listing, onRemove, compact, showCreator, priority, 
           >
             <Pin size={15} fill={pinned ? 'currentColor' : 'none'} strokeWidth={1.5} />
           </button>
-        )}
+        ) : pinned ? (
+          <span
+            role="img"
+            aria-label="Pinned by this profile"
+            className="pointer-events-none absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center text-accent"
+          >
+            <Pin size={15} fill="currentColor" strokeWidth={1.5} />
+          </span>
+        ) : null}
         {listing.image ? (
           <MomentImage
             src={listing.image}

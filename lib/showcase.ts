@@ -1,4 +1,5 @@
 import { redis } from './redis'
+import type { PublicViewMode } from './showcaseOrder'
 
 // Per-owner "pinned showcase" ZSETs — one per profile section a user can
 // curate. Mirrors lib/collected.ts: members are "<collection>:<tokenId>"
@@ -25,10 +26,13 @@ export function isPinCategory(value: unknown): value is PinCategory {
 const key = (category: PinCategory, address: string) =>
   `kismetart:pins:${category}:${address.toLowerCase()}`
 
-/** Delete every pinned-showcase category for an address (all three keys).
- *  Admin profile-erase only. */
+/** Delete every pinned-showcase key for an address: the three category ZSETs
+ *  plus the public-view mode. Admin profile-erase only. */
 export async function clearAllPins(address: string): Promise<void> {
-  await Promise.all(CATEGORIES.map((c) => redis.del(key(c, address))))
+  await Promise.all([
+    ...CATEGORIES.map((c) => redis.del(key(c, address))),
+    redis.del(viewKey(address)),
+  ])
 }
 
 const member = (collection: string, tokenId: string) =>
@@ -66,6 +70,36 @@ export async function removePin(
   tokenId: string,
 ): Promise<void> {
   await redis.zrem(key(category, address), member(collection, tokenId))
+}
+
+// ── public-view mode ─────────────────────────────────────────────────────────
+// Owner-chosen default for what VISITORS see on this profile: the curated
+// pinned showcase ('curated', the default) or the full profile with the pinned
+// items surfaced first in each section ('full'). Stored only when opted into
+// 'full' — absence IS the default, so the keyspace stays tiny and the default
+// can't drift. Keyed by the canonical address like the pin ZSETs above (it
+// configures the same surface, and the admin erase clears them together).
+
+const viewKey = (address: string) =>
+  `kismetart:profile-public-view:${address.toLowerCase()}`
+
+/**
+ * Read the owner's public-view mode. Degrades to 'curated' on any error —
+ * the privacy-preserving default (visitors see only what's pinned), and the
+ * same mode every profile had before this setting existed.
+ */
+export async function getPublicViewMode(address: string): Promise<PublicViewMode> {
+  try {
+    const raw = await redis.get<string>(viewKey(address))
+    return raw === 'full' ? 'full' : 'curated'
+  } catch {
+    return 'curated'
+  }
+}
+
+export async function setPublicViewMode(address: string, mode: PublicViewMode): Promise<void> {
+  if (mode === 'full') await redis.set(viewKey(address), 'full')
+  else await redis.del(viewKey(address))
 }
 
 /**

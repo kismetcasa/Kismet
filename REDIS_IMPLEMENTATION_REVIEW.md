@@ -213,7 +213,8 @@ S = swallowed/best-effort, LKG = last-known-good.
 | `kismetart:profiles` | set | SADD on upsert/track (`:108,140,164,171`); SREM erase | **SMEMBERS ALL in `searchProfiles`** (`:183`) + MGET all for username search (`:213`); SISMEMBER in isPriority (`notifications.ts:155`) | **unbounded** (+1/wallet ever) | O |
 | `kismetart:stats-public` | set (addr \| `fid:N`) | ▶ SADD/SREM; FC pin = MULTI move (`earningsVisibility.ts:125-148`) | SMEMBERS **memoized 60s** (`:52,58`) — profile route, OG image | none | read O; **write C** |
 | `kismetart:profile-theme:{addr}` | string JSON | ▶ SET/DEL owner (`profileTheme.ts:65,69`) | 🔥 GET per profile SSR + OG (`:57` safeRead) | none | O |
-| `kismetart:pins:{cat}:{addr}` | zset | ▶ ZADD (ZCARD+ZSCORE soft cap 4); ZREM; DEL ×3 erase (`showcase.ts`) | 3× ZRANGE per pins fetch (`:81-83`) | ≤4/cat | O |
+| `kismetart:pins:{cat}:{addr}` | zset | ▶ ZADD (ZCARD+ZSCORE soft cap 4); ZREM; DEL ×4 erase incl. view mode (`showcase.ts`) | 3× ZRANGE per pins fetch | ≤4/cat | O |
+| `kismetart:profile-public-view:{addr}` | string `'full'` | ▶ SET 'full' / DEL back-to-curated, owner route (`showcase.ts`); DEL erase | GET per pins fetch (batched with the 3 ZRANGEs) | none; absent = curated | O (reads degrade to curated) |
 | `kismetart:creator-lists` | hash | 🔧 HSET/HDEL (`creatorLists.ts:142,149`) | HGETALL homepage (`:72`); HGET one (`:119`) | none | O |
 | `kismetart:ens:{addr}` | string | SET EX 1h/1h-''/5m-fail (`ensCache.ts:38-48`) | GET per cold profile resolve (`:25`) | 1h / 5m; forward-verified | O |
 | `kismetart:fc:profile:{fid}` | string JSON/'' | SET EX 1h/5m/**30s transient** (`farcasterProfile.ts:146`) | 🔥 GET per identity resolve (`:72`) | 1h/5m/30s | O |
