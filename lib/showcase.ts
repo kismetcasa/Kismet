@@ -147,9 +147,11 @@ export async function resolvePublicViewMode(
  */
 export async function ensureViewModeForPinChange(address: string): Promise<void> {
   try {
-    const [stored, ...counts] = await Promise.all([
+    // Nested Promise.all keeps the tuple types exact; all four commands still
+    // issue in the same tick, so auto-pipelining folds them into one trip.
+    const [stored, counts] = await Promise.all([
       redis.get<string>(viewKey(address)),
-      ...CATEGORIES.map((c) => redis.zcard(key(c, address))),
+      Promise.all(CATEGORIES.map((c) => redis.zcard(key(c, address)))),
     ])
     if (stored === 'full' || stored === 'curated') return
     await redis.set(viewKey(address), derivePublicViewMode(counts.some((n) => n > 0)))
