@@ -112,6 +112,14 @@ export function RaffleAdminPanel({
     return ok
   }
 
+  // The sale-end prefill rule, shared by the enable copy and the enable call:
+  // the sale end only prefills the entries auto-close time while it's still
+  // in the future. A function (not a captured value) so both evaluate fresh.
+  const futureSaleEnd = () =>
+    defaultCloseAt != null && defaultCloseAt > Math.floor(Date.now() / 1000)
+      ? defaultCloseAt
+      : null
+
   return (
     <div className="mt-4 border border-line">
       <button
@@ -149,34 +157,27 @@ export function RaffleAdminPanel({
               auto-close time ONLY while it's still in the future — an elapsed
               sale end would create a raffle that is born closed (nothing to
               enter, "winner announced soon" forever); the server rejects that
-              too, this just keeps the panel's happy path happy. */}
+              too, this just keeps the panel's happy path happy. futureSaleEnd
+              is re-evaluated AT CLICK TIME (not captured at render) so a
+              panel left open across the sale-end boundary can't send a
+              just-elapsed timestamp the server would 400. */}
           {status && !status.enabled && (
             <>
-              {(() => {
-                const futureCloseAt =
-                  defaultCloseAt != null && defaultCloseAt > Math.floor(Date.now() / 1000)
-                    ? defaultCloseAt
-                    : null
-                return (
-                  <>
-                    <p className="text-xs font-mono text-muted">
-                      Enable the raffle so holders of this edition can enter.
-                      {futureCloseAt != null
-                        ? ` Entries will auto-close at the sale end (${fmt(futureCloseAt)}).`
-                        : defaultCloseAt != null
-                          ? ' The sale has already ended — entries stay open until you close them.'
-                          : ''}
-                    </p>
-                    <button
-                      onClick={() => void after(enable(futureCloseAt))}
-                      disabled={busy}
-                      className="self-start text-[10px] font-mono uppercase tracking-widest text-accent hover:text-ink transition-colors disabled:opacity-50"
-                    >
-                      {busy ? '…' : 'enable raffle'}
-                    </button>
-                  </>
-                )
-              })()}
+              <p className="text-xs font-mono text-muted">
+                Enable the raffle so holders of this edition can enter.
+                {futureSaleEnd() != null
+                  ? ` Entries will auto-close at the sale end (${fmt(futureSaleEnd())}).`
+                  : defaultCloseAt != null
+                    ? ' The sale has already ended — entries stay open until you close them.'
+                    : ''}
+              </p>
+              <button
+                onClick={() => void after(enable(futureSaleEnd()))}
+                disabled={busy}
+                className="self-start text-[10px] font-mono uppercase tracking-widest text-accent hover:text-ink transition-colors disabled:opacity-50"
+              >
+                {busy ? '…' : 'enable raffle'}
+              </button>
             </>
           )}
 
@@ -265,7 +266,7 @@ export function RaffleAdminPanel({
                       <ArrowUpRight size={12} strokeWidth={1.5} />
                     </Link>
                     <span className="text-[10px] font-mono text-muted">
-                      winner notified — open their profile to arrange delivery of the physical work
+                      winner notification sent — open their profile to arrange delivery of the physical work
                     </span>
                   </>
                 ) : (
