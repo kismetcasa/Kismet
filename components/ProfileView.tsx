@@ -1156,15 +1156,34 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       style={theme ? themeCssVars(theme) : undefined}
     >
       {/* Admin full-view banner — shown only to an admin viewing someone
-          else's profile. Signals that this is the owner-style full profile
-          (all sections incl. Sales/Airdrops), read-only, and NOT the public
-          view — so the extra sections aren't mistaken for what visitors see. */}
+          else's profile. Says which of the two surfaces is on screen — the
+          owner-style full dashboard (all sections incl. Sales/Airdrops,
+          read-only) vs the public-view preview — and names the profile's
+          RESOLVED visitor mode (curated showcase vs full profile) once the
+          pins payload lands, so the admin can tell the artist's choice at a
+          glance instead of diffing layouts (a full-mode preview looks close
+          to the dashboard; the mode label is what disambiguates). Falls back
+          to the modeless wording until resolution so it never claims a mode
+          it doesn't know. */}
       {isAdmin && !isOwner && (
         <div className="border border-accent/40 bg-accent/5 px-3 py-2 flex items-center gap-2">
           <ShieldAlert size={13} className="text-accent flex-shrink-0" />
           <p className="text-[11px] font-mono text-dim">
-            Admin view — full profile (read-only).
-            {previewPublic ? ' Previewing the public view.' : ' This is not the public view.'}
+            {previewPublic
+              ? `Admin preview (read-only) — the public view${
+                  pinsLoaded
+                    ? publicView === 'full'
+                      ? ': full profile, pinned artworks first'
+                      : ': curated showcase'
+                    : ''
+                }.`
+              : `Admin view — full profile (read-only). ${
+                  pinsLoaded
+                    ? publicView === 'full'
+                      ? 'Visitors see the full profile, pinned artworks first.'
+                      : 'Visitors see the curated showcase.'
+                    : 'This is not the public view.'
+                }`}
           </p>
         </div>
       )}
