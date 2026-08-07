@@ -84,11 +84,13 @@ interface MomentCardProps {
    */
   profileCta?: boolean
   /**
-   * Owner-only "pin to profile" affordance. When `onTogglePin` is provided
-   * (ProfileView passes it only on the owner's own profile) a pushpin button
-   * overlays the image bottom-left; `pinned` drives its filled/outline state.
-   * Visitors never receive these, so the React.memo equality (and the price/
-   * collection lookups) stay intact for every feed and non-owner profile.
+   * "Pin to profile" affordance. When `onTogglePin` is provided (ProfileView
+   * passes it only on the owner's own profile) a pushpin button overlays the
+   * image bottom-left; `pinned` drives its filled/outline state. `pinned`
+   * WITHOUT the toggle renders a read-only filled pin — ProfileView marks the
+   * owner's featured items that way on the visitor-facing full profile, so
+   * the pins-first ordering is legible. Feeds pass neither, so the React.memo
+   * equality (and the price/collection lookups) stay intact everywhere else.
    */
   pinned?: boolean
   onTogglePin?: () => void
@@ -570,11 +572,14 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             <EyeOff size={10} className="text-muted" />
           </span>
         )}
-        {/* Owner-only "pin to profile" toggle. Bottom-left — the one image
-            corner no other overlay claims (admin star = top-left, hidden
-            badge = top-right, valid-Pass = bottom-right). preventDefault
-            stops the wrapping <Link> from navigating on tap. */}
-        {onTogglePin && (
+        {/* "Pin to profile" corner. Bottom-left — the one image corner no
+            other overlay claims (admin star = top-left, hidden badge =
+            top-right, valid-Pass = bottom-right). Owner: a toggle button
+            (preventDefault stops the wrapping <Link> from navigating on
+            tap). Visitor full profile: a read-only filled pin marking the
+            owner's featured items — non-interactive so the card link
+            underneath keeps the tap. */}
+        {onTogglePin ? (
           <button
             onClick={(e) => {
               e.preventDefault()
@@ -589,7 +594,15 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           >
             <Pin size={15} fill={pinned ? 'currentColor' : 'none'} strokeWidth={1.5} />
           </button>
-        )}
+        ) : pinned ? (
+          <span
+            role="img"
+            aria-label="Pinned by this profile"
+            className="pointer-events-none absolute bottom-1.5 left-1.5 z-10 min-w-9 min-h-9 flex items-center justify-center text-accent"
+          >
+            <Pin size={15} fill="currentColor" strokeWidth={1.5} />
+          </span>
+        ) : null}
         {/* Valid-Pass overlay. Shown on the holder's profile collected list
             so they can confirm at a glance that their Pass currently grants
             mint access. Hidden when this moment isn't in the gate's

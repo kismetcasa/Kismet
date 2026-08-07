@@ -2,12 +2,23 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { authorizeProfileOwner } from '@/lib/profileOwner'
 import { errorResponse } from '@/lib/apiResponse'
-import { addPin, removePin, getAllPins, isPinCategory } from '@/lib/showcase'
+import {
+  addPin,
+  removePin,
+  ensureViewModeForPinChange,
+  getAllPinsChecked,
+  resolvePublicViewMode,
+  isPinCategory,
+} from '@/lib/showcase'
 
 // GET /api/profile/[address]/pins — public. Returns the owner's pinned
-// showcase refs per category, newest-pinned first. Served fresh (uncached,
-// like /api/featured) so a just-pinned moment is visible to other viewers
-// immediately — it's three small ZRANGEs.
+// showcase refs per category, newest-pinned first, plus the RESOLVED
+// public-view mode ('full' profile with pins first vs 'curated' showcase;
+// stored choice, else derived — see lib/showcase) — the client picks the
+// visitor render mode the moment this payload lands, so both travel in the
+// one Tier-1 fetch. Served fresh (uncached, like /api/featured) so a
+// just-pinned moment or a just-flipped mode is visible to other viewers
+// immediately — three small ZRANGEs and a GET.
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ address: string }> },
@@ -17,9 +28,16 @@ export async function GET(
 
   // The profile page redirects to the canonical address, so callers reach
   // this with the canonical key already — no per-request resolution needed
-  // on the hot read path.
-  const pins = await getAllPins(address)
-  return NextResponse.json({ pins })
+  // on the hot read path. Mode resolution shares this pins read (checked, so
+  // a failed read fails private instead of deriving 'full' off missing data);
+  // both issued same-tick, so auto-pipelining keeps it one round trip.
+  const pinsRead = getAllPinsChecked(address)
+  const publicView = await resolvePublicViewMode(address, pinsRead)
+  const pins = await pinsRead
+  return NextResponse.json({
+    pins: pins ?? { mints: [], collected: [], listings: [] },
+    publicView,
+  })
 }
 
 interface PinBody {
@@ -55,6 +73,10 @@ export async function POST(
   const parsed = parsePinBody(await req.json().catch(() => null))
   if ('error' in parsed) return errorResponse(400, parsed.error)
 
+  // Lock the unset profile's mode to what its pins derive to BEFORE this pin
+  // changes that basis — a first-ever pin under the 'full' default must mean
+  // "float this first", never "flip me to showcase-only". See lib/showcase.
+  await ensureViewModeForPinChange(auth.canonical)
   const ok = await addPin(parsed.category, auth.canonical, parsed.collectionAddress, parsed.tokenId)
   if (!ok) return errorResponse(409, 'Pin limit reached — unpin one first')
   return NextResponse.json({ pinned: true })
@@ -74,6 +96,9 @@ export async function DELETE(
   const parsed = parsePinBody(await req.json().catch(() => null))
   if ('error' in parsed) return errorResponse(400, parsed.error)
 
+  // Same prelude as POST: a legacy profile unpinning its last pin stays
+  // 'curated' (grandfathered) rather than silently resolving to 'full'.
+  await ensureViewModeForPinChange(auth.canonical)
   await removePin(parsed.category, auth.canonical, parsed.collectionAddress, parsed.tokenId)
   return NextResponse.json({ pinned: false })
 }
