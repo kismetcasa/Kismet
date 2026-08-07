@@ -16,7 +16,7 @@ import { fetchCreatorProfile, fetchCreatorProfilesBatch } from '@/lib/profileCac
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent } from '@/lib/textCache'
-import { getCachedDetail, setCachedDetail, getCachedComments, setCachedComments } from '@/lib/momentCache'
+import { getCachedDetail, setCachedDetail, getCachedComments, getCachedCommentsHasMore, setCachedComments } from '@/lib/momentCache'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
@@ -186,12 +186,20 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     () => getCachedComments(address, tokenId) === undefined
   )
   const [loadingMoreComments, setLoadingMoreComments] = useState(false)
-  // Seeded true when comments come from the shared cache (depth is unknown, so
-  // allow a load-more that self-terminates on the first empty page); a cold
-  // page-0 fetch overwrites this with the real signal.
-  const [hasMoreComments, setHasMoreComments] = useState(
-    () => (getCachedComments(address, tokenId)?.length ?? 0) > 0
-  )
+  // Seeded from the shared cache under the same rule fetchComments applies to
+  // a live page 0: a real (non-airdrop) comment row must exist for the offset
+  // cursor to advance past, and the route's hasMore (recorded by the cache
+  // writer — MomentCard's hover-prefetch or a prior visit here) must not have
+  // said "no". An entry whose writer never saw the field (response predates
+  // it) passes the second check and degrades to the old self-terminating
+  // behavior. A cold page-0 fetch overwrites this either way.
+  const [hasMoreComments, setHasMoreComments] = useState(() => {
+    const cached = getCachedComments(address, tokenId)
+    return (
+      (cached?.some((c) => c.kind !== 'airdrop') ?? false) &&
+      getCachedCommentsHasMore(address, tokenId) !== false
+    )
+  })
   // Row offset into inprocess's comment feed for the NEXT page. Excludes the
   // airdrop rows the route folds onto page 0, and advances by each page's RAW
   // returned count (never the deduped/displayed count) so a boundary re-fetch
@@ -620,8 +628,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         // Next page starts after page 0's real comments; airdrop rows live only
         // in Kismet's fold, not inprocess's offset space, so exclude them.
         commentOffsetRef.current = fetched.filter((c) => c.kind !== 'airdrop').length
-        setHasMoreComments(fetched.some((c) => c.kind !== 'airdrop'))
-        setCachedComments(address, tokenId, deduped)
+        // More pages exist only when the route's raw-page-length signal says so
+        // (hasMore — computed upstream of its hidden-user filter, so a
+        // shortened page can't read as feed-end) AND page 0 carries a real
+        // comment for the offset cursor to advance past — an airdrop-only page
+        // 0 would refetch offset 0 forever. A response without the field (older
+        // route during a deploy) degrades to the any-real-comment heuristic,
+        // which load-more self-terminates.
+        const hasMore = fetched.some((c) => c.kind !== 'airdrop') && data.hasMore !== false
+        setHasMoreComments(hasMore)
+        setCachedComments(address, tokenId, deduped, hasMore)
         setComments(deduped)
       }
     } catch {
@@ -661,37 +677,47 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         // Advance by the RAW page size before deduping so an all-duplicate
         // boundary page still moves the cursor forward.
         commentOffsetRef.current = startOffset + page.length
-        // An empty page is the end of the feed. Immune to the route's per-page
-        // hidden-user filtering, which can shorten a page without ending it.
-        if (page.length === 0) {
-          setHasMoreComments(false)
-        } else {
-          const fresh = page.filter((c) => {
-            const k = activityRowKey(c)
-            if (seen.has(k)) return false
-            seen.add(k)
-            return true
+        // The feed continues only while rows keep arriving AND the route's
+        // raw-page-length signal (hasMore, computed before its hidden-user
+        // filter can shorten a page) hasn't declared upstream exhausted — so
+        // the final short page retires the button without a dead click. An
+        // empty page still terminates unconditionally: the cursor advances by
+        // received rows, so a page filtered down to nothing can't move it and
+        // retrying would refetch the same page forever. A response without
+        // hasMore (older route during a deploy) keeps the old empty-page-only
+        // termination.
+        const nextHasMore = page.length > 0 && data.hasMore !== false
+        setHasMoreComments(nextHasMore)
+        const fresh = page.filter((c) => {
+          const k = activityRowKey(c)
+          if (seen.has(k)) return false
+          seen.add(k)
+          return true
+        })
+        if (fresh.length > 0) {
+          setComments((prev) => {
+            const next = [...prev, ...fresh]
+            // Airdrop rows are folded onto page 0 only, so a later (older)
+            // comment page can carry rows that belong BELOW an already-shown
+            // airdrop. Re-sort by normalized timestamp — the exact comparator
+            // the route applies to page 0 (lib inprocess normalizeTimestampMs,
+            // `|| 0` NaN guard) — but only when an airdrop is present, so pure-
+            // comment feeds keep inprocess's order untouched and never reflow.
+            if (next.some((c) => c.kind === 'airdrop')) {
+              next.sort(
+                (x, y) =>
+                  (normalizeTimestampMs(y.timestamp) || 0) -
+                  (normalizeTimestampMs(x.timestamp) || 0),
+              )
+            }
+            setCachedComments(address, tokenId, next, nextHasMore)
+            return next
           })
-          if (fresh.length > 0) {
-            setComments((prev) => {
-              const next = [...prev, ...fresh]
-              // Airdrop rows are folded onto page 0 only, so a later (older)
-              // comment page can carry rows that belong BELOW an already-shown
-              // airdrop. Re-sort by normalized timestamp — the exact comparator
-              // the route applies to page 0 (lib inprocess normalizeTimestampMs,
-              // `|| 0` NaN guard) — but only when an airdrop is present, so pure-
-              // comment feeds keep inprocess's order untouched and never reflow.
-              if (next.some((c) => c.kind === 'airdrop')) {
-                next.sort(
-                  (x, y) =>
-                    (normalizeTimestampMs(y.timestamp) || 0) -
-                    (normalizeTimestampMs(x.timestamp) || 0),
-                )
-              }
-              setCachedComments(address, tokenId, next)
-              return next
-            })
-          }
+        } else if (!nextHasMore) {
+          // Nothing new to append, but the feed just ended — record the
+          // terminal hasMore so a remount inside the cache TTL doesn't
+          // resurrect the button.
+          setCachedComments(address, tokenId, comments, nextHasMore)
         }
       }
     } catch {

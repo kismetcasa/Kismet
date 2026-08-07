@@ -275,7 +275,18 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
     const params = new URLSearchParams({ collectionAddress: moment.address, tokenId: moment.token_id, chainId: '8453' })
     fetch(`/api/moment/comments?${params}`)
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data) setCachedComments(moment.address, moment.token_id, data.comments ?? []) })
+      .then((data) => {
+        if (!data) return
+        // Forward the route's hasMore only when it's a real boolean, so the
+        // detail view's load-more seeding can tell "no more pages" from
+        // "signal unknown" (a response that predates the field).
+        setCachedComments(
+          moment.address,
+          moment.token_id,
+          data.comments ?? [],
+          typeof data.hasMore === 'boolean' ? data.hasMore : undefined,
+        )
+      })
       .catch(() => {})
   }
 

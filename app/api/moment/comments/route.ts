@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
+import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
 import { getAirdropsByMoment } from '@/lib/airdrops'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
@@ -83,6 +83,19 @@ export async function GET(req: NextRequest) {
     return errorResponse(502, 'upstream error')
   }
 
+  // Whether another upstream page exists, judged from the RAW page length —
+  // captured here, before the hidden-user filter below can shorten the page
+  // (a filtered page must not read as feed-end) and before the airdrop fold
+  // can pad page 0. Upstream's envelope has no total/hasMore of its own, so a
+  // full page (INPROCESS_COMMENTS_PAGE_SIZE rows) is the only keep-paging
+  // signal there is. Computed only for a well-formed 2xx body; anything else
+  // passes through untouched, hasMore-free, like today.
+  let upstreamHasMore: boolean | null = null
+  if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
+    const rows = (data as Record<string, unknown>).comments
+    if (Array.isArray(rows)) upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
+  }
+
   // No own-profile exception here: comments live in a public per-moment
   // thread, not on the commenter's own profile, so the "user sees their
   // own content" carve-out used in timeline / airdrops / payments
@@ -131,5 +144,12 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Stamped after the filter/fold mutations so those can't disturb it. The
+  // client keys its "load more" button off this instead of guessing from row
+  // counts — a page-0 shorter than one upstream page means the button never
+  // appears for a feed with nothing more to load.
+  if (upstreamHasMore !== null) {
+    ;(data as Record<string, unknown>).hasMore = upstreamHasMore
+  }
   return NextResponse.json(data, { status: res.status })
 }
