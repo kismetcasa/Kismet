@@ -154,7 +154,7 @@ reads; move list-shaped truth off Redis).
   mints, price 0): per-pod seen-cache, 10k rank-trim on the shared throttled sweep,
   read as a bounded member set to drop free mints from the Latest/Most Sales feeds.
 - Notifications capped 200; pass-validity flags 30–90-day TTLs; rate-limit/nonce/session/
-  quota/leader-lock keys all TTL'd; showcase 4/category; airdrops 500/sender.
+  quota/leader-lock keys all TTL'd; showcase 6/category; airdrops 500/sender.
 
 ### 4c. Per-request command volume
 

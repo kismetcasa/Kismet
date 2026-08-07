@@ -1,6 +1,10 @@
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
-import { derivePublicViewMode, type PublicViewMode } from './showcaseOrder'
+import {
+  derivePublicViewMode,
+  MAX_PINS_PER_CATEGORY,
+  type PublicViewMode,
+} from './showcaseOrder'
 
 // Per-owner "pinned showcase" ZSETs — one per profile section a user can
 // curate. Mirrors lib/collected.ts: members are "<collection>:<tokenId>"
@@ -15,10 +19,9 @@ export type PinCategory = 'mints' | 'collected' | 'listings'
 
 const CATEGORIES: readonly PinCategory[] = ['mints', 'collected', 'listings']
 
-// One curated row of the profile's grid per section — a showcase is a tight
-// highlight reel, not a second feed. Small by design (and in line with how
-// other products cap pins: IG 3, GitHub 6); the cap also bounds the read.
-export const MAX_PINS_PER_CATEGORY = 4
+// Per-category cap — defined in lib/showcaseOrder (client-safe home, with
+// the sizing rationale); re-exported here so server callers keep one import.
+export { MAX_PINS_PER_CATEGORY } from './showcaseOrder'
 
 export function isPinCategory(value: unknown): value is PinCategory {
   return typeof value === 'string' && (CATEGORIES as readonly string[]).includes(value)
