@@ -204,13 +204,19 @@ console.log('S9 total outage  (expect one logged best-effort line)')
   check('ensure swallows the failure (pin op may proceed)', !ensureThrew)
 }
 
-// ── S10: the 4-per-category cap is untouched ────────────────────────────────
+// ── S10: the per-category cap is enforced at MAX_PINS_PER_CATEGORY ──────────
+// Derived from the real export so this suite always exercises the shipped
+// cap; the explicit value check pins the product decision (6).
 console.log('S10 pin cap')
 {
   const a = '0xaab0'
+  const CAP = sc.MAX_PINS_PER_CATEGORY as number
+  check('MAX_PINS_PER_CATEGORY is 6', CAP === 6)
   await sc.ensureViewModeForPinChange(a)
-  for (let i = 1; i <= 4; i++) check(`pin ${i} accepted`, await sc.addPin('mints', a, '0xCafe', String(i)) === true)
-  check('5th distinct pin rejected (409 path)', await sc.addPin('mints', a, '0xCafe', '5') === false)
+  for (let i = 1; i <= CAP; i++) {
+    check(`pin ${i} accepted`, await sc.addPin('mints', a, '0xCafe', String(i)) === true)
+  }
+  check(`pin ${CAP + 1} (distinct) rejected (409 path)`, await sc.addPin('mints', a, '0xCafe', String(CAP + 1)) === false)
   check('re-pin of existing member at cap allowed', await sc.addPin('mints', a, '0xCafe', '2') === true)
 }
 

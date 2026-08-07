@@ -15,7 +15,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import { foldSearch } from '@/lib/searchText'
-import { orderByPins, pinsFirst, type PublicViewMode } from '@/lib/showcaseOrder'
+import { orderByPins, pinsFirst, MAX_PINS_PER_CATEGORY, type PublicViewMode } from '@/lib/showcaseOrder'
 import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
@@ -313,7 +313,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Full-profile view capability. Owners always see their full dashboard;
   // admins get that same full view of ANY profile so they can monitor and
   // curate the platform — every mint/collect/listing card renders, so the
-  // per-card FeatureStar can feature anything, not just the ≤4 a visitor sees.
+  // per-card FeatureStar can feature anything, not just what a visitor sees.
   // This is a READ capability only: edit/pin/curate chrome stays gated on
   // isOwner / canEditProfile, so an admin viewing someone else is read-only.
   const canViewFull = isOwner || isAdmin
@@ -839,18 +839,19 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
   // Un-pinned mints fallback (curated mode only — the full profile already
   // shows everything). An artist who hasn't pinned any mints still gets a
-  // populated showcase — their up-to-4 most-recent mints — so a new artist's
-  // public profile isn't blank. Scoped to mints only (the artist's own work);
-  // collected/listings stay curated-only, preserving the blank-until-pinned
-  // philosophy for pure collectors. `moments` is already loaded for every
-  // visitor (Tier 1) and sorted newest-first, so this is a plain slice — no
-  // extra fetch. The moment the artist pins one mint, pins.mints.length > 0
-  // flips this off and the pinned set replaces the default. (4 matches the
-  // per-category pin cap / showcase-row width.)
+  // populated showcase — their most-recent mints, up to the pin cap — so a
+  // new artist's public profile isn't blank. Scoped to mints only (the
+  // artist's own work); collected/listings stay curated-only, preserving the
+  // blank-until-pinned philosophy for pure collectors. `moments` is already
+  // loaded for every visitor (Tier 1) and sorted newest-first, so this is a
+  // plain slice — no extra fetch. The moment the artist pins one mint,
+  // pins.mints.length > 0 flips this off and the pinned set replaces the
+  // default. (The slice matches MAX_PINS_PER_CATEGORY so the fallback fills
+  // the same showcase footprint a fully-pinned section would.)
   const mintsFallback = showcaseView && pinsLoaded && pins.mints.length === 0
 
   const displayMoments = showcaseView
-    ? (mintsFallback ? moments.slice(0, 4) : orderByPins(moments, momentPinKey, pins.mints))
+    ? (mintsFallback ? moments.slice(0, MAX_PINS_PER_CATEGORY) : orderByPins(moments, momentPinKey, pins.mints))
     : publicFullView
       ? pinsFirst(moments, momentPinKey, pins.mints)
       : moments
@@ -874,7 +875,8 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // FULL profile: a read-only `pinned` marker on the featured items so the
   // pins-first ordering is legible. Curated showcase and every other case:
   // {} — no pin chrome, and the memoized card identity stays intact.
-  // Membership is a plain .includes over the capped (≤4) ref array — no Set.
+  // Membership is a plain .includes over the ref array (capped at
+  // MAX_PINS_PER_CATEGORY) — no Set.
   function cardPinProps(
     category: PinCategory,
     collectionAddress: string,
@@ -901,10 +903,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // the featured tab's CollectionRow: a horizontal snap-swipe of fixed-width
   // cards on phones, and a three-up row on web (lg+) — the same column count
   // as the discover feed, so showcase cards render at the platform's standard
-  // full-card scale. (Was four-up to match the 4-pin cap, but ~270px cards
-  // read too small next to every other surface; a 4-pin showcase now wraps
-  // 3+1 like any feed.) The dense dashboard grid (GRID_CLASSES) still drives
-  // the owner's full mint/collected lists.
+  // full-card scale. (Was four-up to match the original 4-pin cap, but
+  // ~270px cards read too small next to every other surface; at the 6-pin
+  // cap the three-up grid fills exactly two rows.) The dense dashboard grid
+  // (GRID_CLASSES) still drives the owner's full mint/collected lists.
   const SHOWCASE_ROW_CLASSES =
     'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-3 lg:gap-4 lg:overflow-visible'
   // grid grid-rows-1 makes the card fill the cell so every box in a section
@@ -920,9 +922,9 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const skeleton = (n: number) =>
     showcaseView ? (
       // Showcase loading state: same swipe/three-up shell as the cards, capped
-      // at the per-category pin limit (4) so it doesn't flash extra tiles.
+      // at the per-category pin limit so it doesn't flash extra tiles.
       <div className={SHOWCASE_ROW_CLASSES}>
-        {Array.from({ length: Math.min(n, 4) }).map((_, i) => (
+        {Array.from({ length: Math.min(n, MAX_PINS_PER_CATEGORY) }).map((_, i) => (
           <div key={i} className={`${SHOWCASE_ITEM_CLASSES} aspect-square bg-surface animate-pulse border border-raised`} />
         ))}
       </div>
@@ -958,9 +960,9 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     curate: null,
   }
   // Card-based sections render one of two layouts. The curated SHOWCASE
-  // (public view in 'curated' mode, ≤4 cards) is a horizontal snap-swipe on
-  // phones and a three-up row on web — no scroll-box or lazy-mount needed at
-  // that size. FULL lists (the owner dashboard AND the public view in 'full'
+  // (public view in 'curated' mode, ≤6 cards) is a horizontal snap-swipe on
+  // phones and a three-up grid (two full rows when a section is pinned to
+  // the cap) on web — no scroll-box or lazy-mount needed at that size. FULL lists (the owner dashboard AND the public view in 'full'
   // mode) keep the dense grid inside a scroll-clipped box; `index` lets
   // callers flag the first row (lg+ = 6 cards) as priority, and each item is
   // MaybeLazy so mobile defers mount of items past the eager window (desktop
@@ -1632,15 +1634,15 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           <p className="text-xs font-mono text-muted leading-relaxed">
             {publicView === 'full' ? (
               <>
-                Visitors see your full profile. Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature up to 4 in each section — pinned artworks show first.
+                Visitors see your full profile. Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature up to {MAX_PINS_PER_CATEGORY} in each section — pinned artworks show first.
                 {' '}<span className="text-dim">Prefer a minimal page? Open public view and choose showcase.</span>
               </>
             ) : (
               <>
                 {moments.length > 0
-                  ? 'Until you pin, visitors see your 4 most recent mints. '
+                  ? `Until you pin, visitors see your ${MAX_PINS_PER_CATEGORY} most recent mints. `
                   : 'Until you pin, visitors see only your profile header. '}
-                Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it — up to 4 each of your mints, collects and listings.
+                Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it — up to {MAX_PINS_PER_CATEGORY} each of your mints, collects and listings.
                 {' '}<span className="text-dim">Prefer to show everything? Open public view and switch visitors to your full profile.</span>
               </>
             )}
@@ -1655,7 +1657,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         {!fullView ? (
           // Public view — what visitors see, in the owner's chosen mode.
           // 'curated': the featured Mints / Collected / Listings showcase,
-          // renamed, ≤4 full-size cards each, empty categories hidden.
+          // renamed, ≤6 full-size cards each, empty categories hidden.
           // 'full': the same three sections complete — dense grid, pinned
           // items first, dashboard labels + counts. Sales / Airdrops stay
           // dashboard-only in both. Fixed order, always expanded (a public

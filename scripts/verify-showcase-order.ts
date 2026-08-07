@@ -17,7 +17,7 @@
 //
 // Run: node --experimental-strip-types scripts/verify-showcase-order.ts
 
-import { derivePublicViewMode, isPublicViewMode, orderByPins, pinsFirst } from '../lib/showcaseOrder.ts'
+import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, orderByPins, pinsFirst } from '../lib/showcaseOrder.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -70,6 +70,17 @@ check('isPublicViewMode: rejects non-strings', !isPublicViewMode(undefined) && !
 // ── 4. derivePublicViewMode — unset-profile default policy ──────────────────
 check("derive: pinned profile (grandfathered) -> 'curated'", derivePublicViewMode(true) === 'curated')
 check("derive: pinless profile -> 'full' (the new default)", derivePublicViewMode(false) === 'full')
+
+// ── 5. the per-category cap ─────────────────────────────────────────────────
+// The product decision (6 — two full showcase rows on lg+, one full row of
+// the six-column dense grid) plus a cap-width ordering pass so the widest
+// legal pin set exercises both orderers.
+check('MAX_PINS_PER_CATEGORY is 6', MAX_PINS_PER_CATEGORY === 6)
+const sixPins = ['j', 'e', 'b', 'g', 'a', 'd']
+check('orderByPins at cap width', keys(orderByPins(feed, keyOf, sixPins)) === 'j,e,b,g,a,d')
+const fullSix = pinsFirst(feed, keyOf, sixPins)
+check('pinsFirst at cap width: pins are the first 6, pin order', keys(fullSix.slice(0, 6)) === 'j,e,b,g,a,d')
+check('pinsFirst at cap width: remainder keeps feed order', keys(fullSix.slice(6)) === 'c,f,h,i')
 
 if (failures > 0) {
   console.error(`\nverify-showcase-order: ${failures} check(s) failed`)

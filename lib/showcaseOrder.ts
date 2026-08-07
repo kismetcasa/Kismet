@@ -15,6 +15,19 @@
  */
 export type PublicViewMode = 'curated' | 'full'
 
+/**
+ * Per-category pin cap. A showcase is a tight highlight reel, not a second
+ * feed — small by design (GitHub pins 6 repos; IG 3 posts) and the cap also
+ * bounds every pins read. 6 fills the curated showcase's lg+ three-column
+ * grid with exactly two full rows (the old cap of 4 left a 3+1 orphan), and
+ * is exactly one full row of the lg+ six-column dense grid where the full
+ * profile floats pins first. Lives HERE (not lib/showcase) so the client can
+ * import it without touching the Redis module; the server re-exports it and
+ * enforces it in addPin. Raising it is purely permissive for existing pin
+ * sets; lowering it would need a trim migration.
+ */
+export const MAX_PINS_PER_CATEGORY = 6
+
 export function isPublicViewMode(value: unknown): value is PublicViewMode {
   return value === 'curated' || value === 'full'
 }

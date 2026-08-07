@@ -213,7 +213,7 @@ S = swallowed/best-effort, LKG = last-known-good.
 | `kismetart:profiles` | set | SADD on upsert/track (`:108,140,164,171`); SREM erase | **SMEMBERS ALL in `searchProfiles`** (`:183`) + MGET all for username search (`:213`); SISMEMBER in isPriority (`notifications.ts:155`) | **unbounded** (+1/wallet ever) | O |
 | `kismetart:stats-public` | set (addr \| `fid:N`) | ▶ SADD/SREM; FC pin = MULTI move (`earningsVisibility.ts:125-148`) | SMEMBERS **memoized 60s** (`:52,58`) — profile route, OG image | none | read O; **write C** |
 | `kismetart:profile-theme:{addr}` | string JSON | ▶ SET/DEL owner (`profileTheme.ts:65,69`) | 🔥 GET per profile SSR + OG (`:57` safeRead) | none | O |
-| `kismetart:pins:{cat}:{addr}` | zset | ▶ ZADD (ZCARD+ZSCORE soft cap 4); ZREM; DEL ×4 erase incl. view mode (`showcase.ts`) | 3× ZRANGE per pins fetch | ≤4/cat | O |
+| `kismetart:pins:{cat}:{addr}` | zset | ▶ ZADD (ZCARD+ZSCORE soft cap 6); ZREM; DEL ×4 erase incl. view mode (`showcase.ts`) | 3× ZRANGE per pins fetch | ≤6/cat | O |
 | `kismetart:profile-public-view:{addr}` | string `'full'`\|`'curated'` | ▶ SET owner choice; SET-once materialization of the derived verdict (read path when derived-curated; pin-write prelude — `showcase.ts`); DEL erase | GET per pins fetch (batched with the 3 ZRANGEs); absent → derived: pins→curated (grandfather), none→full | none | O; unknowns fail private to curated |
 | `kismetart:creator-lists` | hash | 🔧 HSET/HDEL (`creatorLists.ts:142,149`) | HGETALL homepage (`:72`); HGET one (`:119`) | none | O |
 | `kismetart:ens:{addr}` | string | SET EX 1h/1h-''/5m-fail (`ensCache.ts:38-48`) | GET per cold profile resolve (`:25`) | 1h / 5m; forward-verified | O |
