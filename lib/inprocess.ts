@@ -62,6 +62,19 @@ export const DEFAULT_COLLECT_COMMENT = 'collected on kismet'
 export const AIRDROP_INVITE_COMMENT = 'invited to kismet'
 export const AIRDROP_GENERIC_COMMENT = 'airdropped on kismet'
 
+// Upstream page size of GET /comments. In Process's route hardcodes p_limit =
+// COMMENTS_PAGE_SIZE = 20 into its Supabase RPC (in_process_api,
+// src/lib/supabase/in_process_moment_comments/getMomentCommentsRpc.ts) and the
+// {comments:[…]} envelope carries no total/hasMore of its own, so "raw page
+// length >= this" is the only more-pages-exist signal available to the comments
+// proxy route. `>=` (not `===`) tolerates an upstream limit+1-style overshoot.
+// If In Process RAISES its page size, feeds whose total lands between the two
+// values regress to a dead load-more click (self-terminating — degraded, not
+// broken); if they LOWER it, full pages stop reaching this threshold and deeper
+// rows would become unreachable — re-verify this constant on any comments
+// migration audit (cf. the 2026-07 /moment/comments → /comments move).
+export const INPROCESS_COMMENTS_PAGE_SIZE = 20
+
 // Legacy default-comment strings still present in historical on-chain data
 // and the upstream comments feed: pre-rename ("collected via Kismet Art") and
 // the post-brand-rename interim ("collected via Kismet"). Used by the activity

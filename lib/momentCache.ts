@@ -29,6 +29,12 @@ const COMMENTS_TTL = 60_000
 
 interface CommentsEntry {
   comments: MomentComment[]
+  // The comments route's hasMore as of the last page merged into `comments`
+  // (raw upstream page length vs INPROCESS_COMMENTS_PAGE_SIZE, computed
+  // server-side before hidden-user filtering). undefined = the writer didn't
+  // see the field (response predates it) — readers fall back to their own
+  // conservative default instead of trusting an absent signal.
+  hasMore?: boolean
   ts: number
 }
 
@@ -36,16 +42,25 @@ interface CommentsEntry {
 // session could pin every visited moment's comments in memory.
 const commentsStore = new LRUCache<string, CommentsEntry>(50)
 
-export function getCachedComments(address: string, tokenId: string): MomentComment[] | undefined {
+function getCommentsEntry(address: string, tokenId: string): CommentsEntry | undefined {
   const entry = commentsStore.get(detailKey(address, tokenId))
   if (!entry || Date.now() - entry.ts > COMMENTS_TTL) return undefined
-  return entry.comments
+  return entry
+}
+
+export function getCachedComments(address: string, tokenId: string): MomentComment[] | undefined {
+  return getCommentsEntry(address, tokenId)?.comments
+}
+
+export function getCachedCommentsHasMore(address: string, tokenId: string): boolean | undefined {
+  return getCommentsEntry(address, tokenId)?.hasMore
 }
 
 export function setCachedComments(
   address: string,
   tokenId: string,
   comments: MomentComment[],
+  hasMore?: boolean,
 ): void {
-  commentsStore.set(detailKey(address, tokenId), { comments, ts: Date.now() })
+  commentsStore.set(detailKey(address, tokenId), { comments, hasMore, ts: Date.now() })
 }
