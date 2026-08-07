@@ -14,20 +14,40 @@ export const ALL_NOTIFICATION_TYPES = [
   'payout',
   'authorized',
   'agent_collect',
+  // Raffle outcome fan-out (written by /api/raffle/manage drawAndEnd):
+  // raffle_win → the drawn winner; raffle_ended → every other entrant, so the
+  // raffle resolves with closure instead of buttons silently changing state.
+  'raffle_win',
+  'raffle_ended',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
 
 // Money-bearing types bypass actor-mute at read time and per-type mute at
-// write time. Muting payouts is a footgun, not a preference.
+// write time. Muting payouts is a footgun, not a preference. raffle_win
+// qualifies: it awards the physical artwork, and a winner who muted it would
+// simply never learn they won.
 export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
   'sale',
   'airdrop',
   'payout',
+  'raffle_win',
 ])
 
 export const MUTEABLE_TYPES: readonly NotificationType[] =
   ALL_NOTIFICATION_TYPES.filter((t) => !NON_MUTEABLE_TYPES.has(t))
+
+// Actor-mute exemptions at delivery time (feed read + FC push): the
+// non-muteable money types, plus raffle_ended — the one muteable type whose
+// actor is not the event's author but its announced subject (the WINNER).
+// Having muted that wallet months ago as feed noise shouldn't hide the
+// outcome of a raffle the user entered. Type-level muting ("Raffle results"
+// in NotificationModal) still applies — this exempts only the actor
+// dimension.
+export const ACTOR_MUTE_EXEMPT_TYPES: ReadonlySet<NotificationType> = new Set([
+  ...NON_MUTEABLE_TYPES,
+  'raffle_ended',
+])
 
 export interface Notification {
   id: string
@@ -340,8 +360,9 @@ async function loadAndAnnotate(address: string): Promise<Notification[]> {
   for (const raw of raws) {
     try {
       const n = typeof raw === 'string' ? (JSON.parse(raw) as Notification) : (raw as Notification)
-      // Money-bearing types bypass actor-mute (see NON_MUTEABLE_TYPES).
-      if (n.actor && muted.has(n.actor.toLowerCase()) && !NON_MUTEABLE_TYPES.has(n.type)) continue
+      // Money-bearing types (and raffle_ended, whose actor is the announced
+      // winner) bypass actor-mute — see ACTOR_MUTE_EXEMPT_TYPES.
+      if (n.actor && muted.has(n.actor.toLowerCase()) && !ACTOR_MUTE_EXEMPT_TYPES.has(n.type)) continue
       const read = n.timestamp <= lastReadTs || readIds.has(n.id)
       all.push({ ...n, read })
     } catch {

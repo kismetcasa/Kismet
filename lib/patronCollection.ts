@@ -20,6 +20,21 @@ export function isPatronCollection(address?: string | null): boolean {
 }
 
 /**
+ * Turro — the Patron Collection's artist. The moment records' `creator`
+ * resolves to the platform treasury, so Patron raffle surfaces (the
+ * post-entry modal + share copy) name Turro from this curated config instead
+ * of the creator record. Address matches the FeaturedMoment display override.
+ */
+export const PATRON_ARTIST = {
+  name: 'Turro',
+  address: '0x099b9bbe0937428e145a3003ddf58e7e0cf69801',
+  /** Farcaster handle, without the @. */
+  fcHandle: 'turro',
+  /** X (Twitter) handle, without the @. */
+  xHandle: 'MOTEMT3',
+} as const
+
+/**
  * Reduce per-moment split-recipient lists to a deduped, first-seen-ordered
  * list of artist addresses, dropping every address in `exclude` (the platform
  * treasury, residencies, referral, and the collection owner/payout). All

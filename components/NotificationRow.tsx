@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { Sparkles, Clock, Coins, Key, Bot, Send } from 'lucide-react'
+import { Sparkles, Clock, Coins, Key, Bot, Send, Trophy } from 'lucide-react'
 import { ProfileAvatar } from './ProfileAvatar'
 import { MomentImage } from './MomentImage'
 import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment } from '@/lib/inprocess'
@@ -35,6 +35,8 @@ function notificationHref(n: Notification): string {
     case 'listing_created':
     case 'airdrop':
     case 'payout':
+    case 'raffle_win':
+    case 'raffle_ended':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
@@ -178,6 +180,37 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           </p>
         </>
       )
+    case 'raffle_win':
+      // Accent headline — this is the raffle's payoff moment (the physical
+      // work), the counterpart of the "you won ✓" state on the artwork button.
+      // The title is bold, not quoted; the row itself is the link to the
+      // moment (notificationHref), so the title IS clickable — a nested
+      // anchor here would be invalid HTML.
+      return (
+        <>
+          <p className="text-xs font-mono text-accent truncate">
+            You won {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'the raffle'}
+            !
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            You will be contacted to receive the physical piece. · {time}
+          </p>
+        </>
+      )
+    case 'raffle_ended':
+      // Winner announcement to the other entrants — `actor` IS the winner
+      // (set by drawAndEnd's fan-out), so the resolved name + avatar show who
+      // won rather than who ran the draw. Bold title, row-link to the moment,
+      // same as raffle_win.
+      return (
+        <>
+          <p className="text-xs font-mono text-ink truncate">
+            {actorLabel ?? 'someone'} has won the physical edition of{' '}
+            {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'an artwork'}!
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
+        </>
+      )
     default: {
       // Exhaustiveness: if a new NotificationType is added without a case
       // above, TS will fail to assign `n.type` to `never` here.
@@ -202,6 +235,10 @@ function NotificationLeft({ n, size }: { n: Notification; size: number }) {
   if (n.type === 'agent_collect') return badge(<Bot size={iconSize} className="text-accent" />)
   if (n.type === 'payout') return badge(<Coins size={iconSize} className="text-[#10B981]" />)
   if (n.type === 'authorized') return badge(<Key size={iconSize} className="text-accent" />)
+  // The raffle's payoff moment gets a trophy; raffle_ended falls through to
+  // the actor-avatar default below — and its actor is the WINNER, so the
+  // announcement is fronted by the winner's face.
+  if (n.type === 'raffle_win') return badge(<Trophy size={iconSize} className="text-accent" />)
   if (n.type === 'listing_expired' && !n.tokenImage) {
     return badge(<Clock size={iconSize} className="text-muted" />)
   }
