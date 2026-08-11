@@ -156,9 +156,71 @@ design; if priced, it appears the moment someone collects it on Kismet.
 
 ---
 
-*Investigation from a session without production egress: code + git history
-fully validated; live Redis/API state pending the §4 run. The one
-empirically unverified assumption is that the piece is visible on the
-artist's profile feed — if it is not, W4/G1 (untracked wrapper — near-certain
-for an agent-flow first mint) is the leading diagnosis instead of W1-W3/G4,
-and the same script call resolves the ambiguity.*
+## 6. Incident resolution + chosen design (2026-08-11)
+
+**Confirmed root cause.** The §4 script ran in production against
+`0x4a90f5a9…b51`: the missing piece is `0x4dd71c80…8f66:2` ("37 bulders",
+`image/gif`, minted 2026-08-09) — **not a text mint**; both of the artist's
+`text/plain` pieces pass every gate. The piece failed exactly G4
+(`created-mints: NO`) with `moment-meta: MISSING` and every other gate green —
+i.e. **minted off-platform** (In Process directly) into the collection Kismet
+auto-created for the artist's 2026-07-30 mint. It even had 2 Kismet collects
+(latest 2026-08-10T07:57Z), so it was *ranked* in latest-sales yet excluded by
+the same scope filter. Repaired in production with
+`SADD kismetart:created-mints 0x4dd71c80a42b6d186ef921fd4ab4dbf917e98f66:2`
+(result 1). W3 was the incident; W1/W2/W4 remain open latent classes.
+
+**Going-forward policy** (matches the operator's expectation that surfaced
+this): *a moment minted into a Kismet-registered collection **after** that
+collection joined Kismet belongs in the Mints surface, whichever In Process
+client minted it.* Moments predating registration stay excluded — the
+"legacy" exclusion the strict scope was built for.
+
+**Options weighed:**
+
+| Option | Verdict |
+|---|---|
+| D0 — status quo, manual `SADD` per incident | Recurs on every cross-post; whack-a-mole |
+| A — read-path classifier only (admit `created_at ≥` registration at filter time, no writes) | Policy lands instantly, but membership state diverges from the other consumers (sitemap `scanCreatedMints`, reconcile mint-counts, the future Mints ZSET of `REDIS_IMPLEMENTATION_REVIEW.md` #3), and every future consumer must re-implement the rule |
+| B — cron reconciler (`/api/cron` + `CRON_SECRET` infra exists) | Converges membership but adds a scheduled component, up-to-interval staleness, and a duplicate In Process fan-out the feed already performs constantly |
+| **C — write-through admission in the timeline route (chosen)** | The route already fans out to every tracked collection, already batch-reads every candidate's moment-meta, and already hosts two write-through stitches on this exact path (`pinMomentCreatedAtBatch`; `recordSaleEnds` on `/api/moments`). Admission is the third: zero new infra, zero staleness, membership stays the single materialized truth |
+
+**C in one paragraph.** In the `scope=standalone` filter
+(`app/api/timeline/route.ts:503`): for a candidate **not** in
+`created-mints`, read its collection's registration stamp
+(`collection-meta.createdAt` — deploy-time, first-write-wins, so the boundary
+is stable; one MGET of the merge's unique collection addresses, memoizable
+15 min since stamps are immutable). If the moment's `created_at` ≥ the stamp,
+keep the row in this response **and** `after()`-SADD it into
+`kismetart:created-mints` (chunked batch + per-pod seen-cache + `bestEffort`
+— the exact shape of the createdAt-pin stitch). Fail-closed everywhere: no
+meta record, no stamp, or unparseable `created_at` ⇒ excluded, i.e. today's
+behavior.
+
+**Accepted residuals** (documented, not blocking):
+- In Process's reindex-on-edit can bump a *meta-less* legacy row's
+  `created_at` past the boundary → admitted permanently. Rare, and the
+  moment-meta pin already protects every Kismet-minted row; an edited legacy
+  piece surfacing is defensible behavior.
+- Admission inherits In Process's rate limits rather than Kismet's mint
+  quotas: an artist spamming their own collection off-platform now reaches
+  home. Bounded per response by the fan-out's per-collection sample; the
+  hide-user/collection/moment levers remove instantly.
+- Admitted rows stay meta-less (no fabricated creator — the laundering rule
+  in the pin stitch holds), so their ordering rides In Process `created_at`.
+
+**Ship alongside (source-side hardening, §5 F1):** await
+`markCreatedMint` + `setMomentMeta` *before* the mint-proxy response (two
+Redis calls appended to a ≤60 s upstream request; the heavy fan-out stays in
+`after()`); register auto-deploy wrappers server-side
+(`addTrackedCollection(…, 'auto-deploy')` — closes the agent-mint G1 hole,
+where no browser exists to call `/api/collections`); `console.error` when a
+2xx upstream body lacks `contractAddress`/`tokenId`, with a verify-script pin.
+The admission stitch is the net; the hardening keeps Kismet-minted pieces
+from ever needing it.
+
+*Investigation notes: production state was validated 2026-08-11 via the §4
+script run in-container (egress from the original investigation sandbox was
+policy-blocked). The upstream rows also carry a truthy top-level `hidden`
+field with In Process semantics — already defended in `MomentCard.tsx:163-167`
+(badge only for `isOwnMoment`), no action needed.*
