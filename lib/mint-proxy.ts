@@ -10,7 +10,7 @@ import { bestEffort } from './bestEffort'
 import { fanoutToFollowers, setMomentMeta, writeNotification } from './notifications'
 import { setMomentContent } from './momentContent'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
-import { markCreatedMint } from './kv'
+import { addTrackedCollection, markCreatedMint } from './kv'
 import { runDropCoordination } from './agent/scout/dropCoordinator'
 import { SITE_URL } from './siteUrl'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
@@ -338,6 +338,20 @@ export async function proxyMintRequest(
     const tokenId = r.tokenId
     const txHash = r.hash
 
+    // Tripwire, not a silent skip: every post-mint KV write below keys off
+    // these two fields, so a 2xx upstream response without them means the
+    // mint succeeded on-chain but Kismet records nothing — the moment would
+    // vanish from the home/trending feeds with no trace. If In Process ever
+    // drifts this response shape (cf. its 2026-07 comments-contract
+    // migration), this line is the difference between one log-grep and a
+    // multi-day "mints aren't showing up" investigation.
+    if (!contractAddress || !tokenId) {
+      console.error('[mint-proxy] upstream 2xx missing contractAddress/tokenId — feed registration skipped', {
+        endpoint,
+        keys: data && typeof data === 'object' ? Object.keys(data as object) : typeof data,
+      })
+    }
+
     if (contractAddress && tokenId) {
       // Only writing moments carry tokenContent; media mints forward
       // tokenMetadataURI instead.
@@ -392,24 +406,56 @@ export async function proxyMintRequest(
         }
       }
 
+      // Feed-visibility writes, AWAITED before the response rather than
+      // deferred to after(): created-mints membership is the home/trending
+      // scope gate and moment-meta carries the creator + createdAt pin, and
+      // an after() callback dies with a deploy restart or pod crash — which
+      // permanently hid successful mints from the main feeds (confirmed
+      // production incident class, 2026-08-11). Two-three Redis REST calls
+      // (~ms) appended to a request that already waited up to 60s on
+      // inprocess. Errors are still swallowed+logged: the mint IS real
+      // on-chain, so a Redis blip must degrade to the old best-effort
+      // behavior, never fail the mint response.
+      //
+      // Auto-deploy requests additionally register the fresh wrapper into the
+      // tracked set server-side. Previously only the BROWSER did this
+      // (registerCollectionWithBackoff after the response) — so a closed tab
+      // lost the registration, and the agent mint path (no browser at all)
+      // NEVER registered, leaving those collections invisible to the feed
+      // fan-out entirely. The client call remains as meta enrichment
+      // (image/thumbhash); addTrackedCollection is idempotent on the set and
+      // preserves the first-write createdAt stamp, so the two writers compose.
+      const isAutoDeployMint = !hasAddress && hasNameAndUri
+      await Promise.all([
+        markCreatedMint(contractAddress, tokenId).catch(bestEffort('mint-proxy.markCreatedMint', { contractAddress, tokenId })),
+        setMomentMeta(contractAddress, tokenId, {
+          creator: account,
+          name: displayName,
+          // Pin the mint instant so feed ordering survives inprocess's
+          // reindex-on-edit rewriting the row's created_at (see MomentMeta).
+          createdAt: new Date().toISOString(),
+          // Optional video duration probed client-side at mint time.
+          // Validated as a finite positive number here; the helper
+          // drops anything else from the persisted record.
+          ...(typeof body.durationSec === 'number' &&
+            Number.isFinite(body.durationSec) &&
+            body.durationSec > 0
+            ? { durationSec: body.durationSec }
+            : {}),
+        }).catch(bestEffort('mint-proxy.setMomentMeta', { contractAddress, tokenId, account })),
+        ...(isAutoDeployMint
+          ? [
+              addTrackedCollection(
+                contractAddress,
+                { name: (contractField!.name as string).trim(), artist: account },
+                'auto-deploy',
+              ),
+            ]
+          : []),
+      ])
+
       after(async () => {
         const tasks: Promise<unknown>[] = [
-          markCreatedMint(contractAddress, tokenId).catch(bestEffort('mint-proxy.markCreatedMint', { contractAddress, tokenId })),
-          setMomentMeta(contractAddress, tokenId, {
-            creator: account,
-            name: displayName,
-            // Pin the mint instant so feed ordering survives inprocess's
-            // reindex-on-edit rewriting the row's created_at (see MomentMeta).
-            createdAt: new Date().toISOString(),
-            // Optional video duration probed client-side at mint time.
-            // Validated as a finite positive number here; the helper
-            // drops anything else from the persisted record.
-            ...(typeof body.durationSec === 'number' &&
-              Number.isFinite(body.durationSec) &&
-              body.durationSec > 0
-              ? { durationSec: body.durationSec }
-              : {}),
-          }).catch(bestEffort('mint-proxy.setMomentMeta', { contractAddress, tokenId, account })),
           writeNotification({
             type: 'mint',
             recipient: account,

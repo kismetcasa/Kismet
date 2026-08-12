@@ -316,11 +316,11 @@ async function diagnoseMoment({ address, tokenId }, ctx) {
     say('    ✗ Hidden by a moderation/creator hide — working as designed for public feeds.')
   } else if (HAS_REDIS && !createdMint) {
     say('    ✗ ROOT CAUSE for home + trending: not a member of kismetart:created-mints.')
-    say('      The strict Mints scope (scope=standalone) only shows moments minted through Kismet\'s relay')
-    say('      (lib/mint-proxy.ts after() → markCreatedMint) or Create-Collection covers. This piece shows on')
-    say('      profile/collection surfaces but is filtered from the home + trending tabs.')
-    say('      Possible causes: minted off-platform (inprocess.world or another client), or the after() write')
-    say('      was lost (deploy restart / Redis blip / upstream response missing contractAddress|tokenId).')
+    say('      The strict Mints scope (scope=standalone) shows created-mints members plus post-epoch')
+    say('      off-platform mints in tracked collections (lib/feedAdmission — admitted at read time and')
+    say('      materialized into the set). If this moment is post-2026-08-01 and the collection is tracked,')
+    say('      a deployment running the admission fix will self-admit it on the next home-feed request —')
+    say('      seeing FAIL here means the fix is not deployed yet, or the moment predates the epoch.')
     say(`      Remedy (one-off): SADD ${KEY_CREATED_MINTS} ${member}`)
   } else {
     if (inHome) say('    ✓ Passes every home-feed gate and is present in the home rows scanned.')
