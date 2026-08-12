@@ -73,8 +73,9 @@ const DEFAULT_RATIO = 1.5
 const MIN_RATIO = 0.2
 const MAX_RATIO = 5
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
-// Box background — a desaturated dusty pink. Dark text clears ~9:1 on it. One knob.
-const DISPLAY_BG = '#d2a9b3'
+// Box background — a burnt orange lifted from the featured video's glitch
+// palette, darkened a touch. Dark text clears ~6.3:1 on it (AA). One knob.
+const DISPLAY_BG = '#d2801f'
 
 // Manual credit overrides for the featured mint pass display, keyed by creator
 // address (lowercase). Stopgap for artists whose minting wallet has no Kismet
@@ -91,12 +92,23 @@ const CREDIT_PROFILE_OVERRIDES: Record<string, string> = {
   '0x099b9bbe0937428e145a3003ddf58e7e0cf69801': '0x6c1cbe8cfc32a74188a9d3bf364945ea53b01b04',
 }
 
+// Manual right-column overrides for the mint pass display, keyed by collection
+// address (lowercase). Rendered stacked (one span per line) in place of the
+// fetched collection name — a presenting-partner credit for a curated takeover.
+// Same stopgap tier as CREDIT_OVERRIDES: graduate to admin-set copy when the
+// need generalizes. The column still links to the collection page either way.
+const COLLECTION_LABEL_OVERRIDES: Record<string, string[]> = {
+  // Dúo Dø — "Mi Amor por Ti": presented by Kismet Casa × FarCon Rome.
+  '0xbc87bdbd5dbd9253f37237911c50717de4dec94f': ['Kismet Casa', 'FarCon Rome'],
+}
+
 /**
  * Mint Pass Display — the single curated mint atop the featured tab, in two
  * presentations:
  *   • lg and up → a rich three-column hero: [title · by · @artist] | artwork |
- *     [collection] on a soft-gold box, the box hugging the artwork's aspect
- *     ratio (no crop, no letterbox) with the flanking columns matching height.
+ *     [collection / curated credit] on a burnt-orange box, the box hugging the
+ *     artwork's aspect ratio (no crop, no letterbox) with the flanking columns
+ *     matching height.
  *   • below lg  → an ordinary <MomentCard>, identical to any other feed card.
  *
  * On desktop both are mounted and `hidden lg:flex` / `lg:hidden` CSS-toggle
@@ -159,17 +171,22 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       .catch(() => {})
   }, [creatorAddress, creatorUsername, creditOverride])
 
+  // Curated right-column credit for this collection, when configured. Module
+  // constant, so the reference is stable across renders (safe as an effect dep).
+  const collectionLabel = COLLECTION_LABEL_OVERRIDES[address.toLowerCase()]
+
   // Collection label — falls back to the short contract address. Hero-only: the
   // right column reads `collection`, and the mobile <MomentCard> resolves its
   // own chip. So skip the fetch + re-render on mobile, where the hero never
   // mounts (the `isMobile` early return below). SSR-stable flag, so a desktop
-  // device never wrongly skips it.
+  // device never wrongly skips it. Also skipped when a curated credit override
+  // supplies the column's text — the fetched name would never render.
   useEffect(() => {
-    if (isMobile) return
+    if (isMobile || collectionLabel) return
     fetchCollectionChip(address)
       .then(({ name }) => setCollection(name ?? shortAddress(address)))
       .catch(() => setCollection(shortAddress(address)))
-  }, [address, isMobile])
+  }, [address, isMobile, collectionLabel])
 
   // Hero artwork source. Seed from the featured-timeline moment when present so
   // the lg+ hero paints before /api/moment resolves; `detail` wins once it
@@ -368,9 +385,11 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
 
         {/* Center — artwork, sized to its own ratio so the box hugs it (no dead
             space). Height follows the ratio up to DESKTOP_H; width is capped at
-            ART_MAX_W so the flanking text always has room. */}
+            ART_MAX_W so the flanking text always has room. Clicking the artwork
+            opens the moment — the page where it can be collected — not the
+            collection; the right column covers that. */}
         <Link
-          href={`/collection/${address}`}
+          href={momentHref}
           className="relative flex-none block overflow-hidden"
           style={{
             width: `min(calc(${DESKTOP_H}px * ${aspectRatio}), ${ART_MAX_W})`,
@@ -431,12 +450,21 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
           <FeatureStar address={address} tokenId={tokenId} className="absolute top-2 left-2" />
         </Link>
 
-        {/* Right — collection → collection page */}
+        {/* Right — curated credit when configured (static, so it never shows a
+            loading pulse), otherwise the fetched collection name. Either way the
+            column links to the collection page. */}
         <Link
           href={`/collection/${address}`}
-          className="flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6 hover:bg-black/5 transition-colors"
+          className="group flex-1 min-w-0 flex flex-col items-center justify-center text-center gap-1 px-6 hover:bg-black/5 transition-colors"
         >
-          {loading ? (
+          {collectionLabel ? (
+            collectionLabel.map((line) => (
+              // a11y-ok: dark text on the light hero panel (DISPLAY_BG), not the #111 surface
+              <span key={line} className="font-mono text-[#0d0d0d] text-base xl:text-lg leading-snug group-hover:underline">
+                {line}
+              </span>
+            ))
+          ) : loading ? (
             <span aria-hidden className="h-4 w-1/2 bg-black/15 animate-pulse" />
           ) : collection ? (
             // a11y-ok: dark text on the light hero panel (DISPLAY_BG), not the #111 surface
