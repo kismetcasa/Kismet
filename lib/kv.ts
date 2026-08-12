@@ -36,9 +36,13 @@ const KEY = 'kismetart:collections'
 // of truth for collection-shaped surfaces. Plain SET; the Discover
 // feed sorts by inprocess `created_at` (mirrors the Mints pattern).
 const CREATED_COLLECTIONS_KEY = 'kismetart:created-collections'
-// Mints minted via Kismet's MintForm or as a Create Collection cover.
-// Members are `<addr>:<tokenId>` strings. Source of truth for the
-// Mints feed; the timeline route filters scope=standalone by membership.
+// Mints minted via Kismet's MintForm, Create Collection covers, and —
+// since the off-platform admission shipped (lib/feedAdmission) — moments
+// the timeline route admits into the Mints scope because they were minted
+// into a tracked collection on/after the admission epoch from another In
+// Process client. Members are `<addr>:<tokenId>` strings. Source of truth
+// for the Mints feed; the timeline route filters scope=standalone by
+// membership and write-through materializes its admissions here.
 const CREATED_MINTS_KEY = 'kismetart:created-mints'
 
 export interface CollectionMeta {

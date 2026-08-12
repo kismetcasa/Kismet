@@ -117,13 +117,15 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
-# Prod-maintenance scripts (reconcile-*.mjs) are self-contained — Node built-ins
-# only (fetch + node:http), no traced deps — but Next's standalone output doesn't
-# include them. Ship them so ops can run one-off Redis reconciliations INSIDE the
-# container, where UPSTASH_REDIS_REST_* are already in the environment, e.g.
+# Prod-maintenance scripts (reconcile-*.mjs, diagnose-*.mjs) are self-contained —
+# Node built-ins only (fetch + node:http), no traced deps — but Next's standalone
+# output doesn't include them. Ship them so ops can run one-off Redis
+# reconciliations and read-only diagnoses INSIDE the container, where
+# UPSTASH_REDIS_REST_* are already in the environment, e.g.
 #   node scripts/reconcile-curated-collections.mjs --address 0x… --commit
-# Scoped to reconcile-*.mjs so dev/CI verify scripts stay out of the runtime image.
-COPY --from=builder --chown=nextjs:nodejs /app/scripts/reconcile-*.mjs ./scripts/
+#   node scripts/diagnose-feed-visibility.mjs --creator 0x…
+# Scoped to those prefixes so dev/CI verify scripts stay out of the runtime image.
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/reconcile-*.mjs /app/scripts/diagnose-*.mjs ./scripts/
 
 # Pre-create .next/cache with the right owner so Coolify's persistent
 # volume mount works without permission errors at first write. Without

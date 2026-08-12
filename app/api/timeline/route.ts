@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server'
-import { getTrackedCollectionsByScope, getCreatedMintsMembership, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCreatedMintsMembership, markCreatedMint, type CollectionScope } from '@/lib/kv'
+import { admitsOffPlatformMint } from '@/lib/feedAdmission'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds, getFreeMoments } from '@/lib/saleEnds'
@@ -86,6 +87,12 @@ let lastThinningWarnAt = 0
 // pattern — a clear only costs some redundant re-pins).
 const MAX_PINNED_SEEN = 20_000
 const pinnedCreatedAtSeen = new Set<string>()
+
+// Per-pod memory of members already admitted into created-mints by the
+// standalone filter's off-platform admission below — same shape/cap as the
+// pin cache above, and the same recovery story: a clear or pod recycle only
+// costs a redundant idempotent SADD.
+const admittedMintSeen = new Set<string>()
 
 async function fetchCollection(collection: string, limit: number, fresh: boolean): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
@@ -486,10 +493,12 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Strict Mints surface: only moments tracked in created-mints (mints
-  // via MintForm + covers minted at Create-Collection time) appear.
-  // Profile/Roster/Featured/Collected stay cross-cut so legacy moments
-  // remain visible in user-history surfaces.
+  // Strict Mints surface: moments tracked in created-mints (mints via
+  // MintForm + covers minted at Create-Collection time) appear, plus
+  // post-epoch off-platform mints in tracked collections (admitted below via
+  // lib/feedAdmission and materialized into the same set). Pre-epoch legacy
+  // moments stay excluded. Profile/Roster/Featured/Collected stay cross-cut
+  // so legacy moments remain visible in user-history surfaces.
   //
   // Membership is checked via bounded SMISMEMBER over just this request's
   // merged candidates (getCreatedMintsMembership) — never a full SMEMBERS
@@ -507,7 +516,45 @@ export async function GET(req: NextRequest) {
         return `${moment.address?.toLowerCase()}:${moment.token_id}`
       })
       const createdMints = await getCreatedMintsMembership(candidateKeys)
-      merged = merged.filter((_m: unknown, i: number) => createdMints.has(candidateKeys[i]))
+      // Off-platform admission (lib/feedAdmission): a NON-member minted into a
+      // tracked collection on/after the epoch is kept — an artist minting from
+      // another In Process client must still surface here — and write-through
+      // materialized into created-mints so every other consumer of the set
+      // (sitemap, reconcile tooling) converges on the same answer and the row
+      // stops re-classifying on every request. created_at here is post-stitch,
+      // so a Kismet mint whose membership write was lost but whose meta pin
+      // survived self-heals off its pinned mint instant. Members are untouched;
+      // rows without a usable created_at stay excluded (fail-closed, like the
+      // other browse filters).
+      const admitDue: { address: string; tokenId: string; key: string }[] = []
+      merged = merged.filter((m: unknown, i: number) => {
+        if (createdMints.has(candidateKeys[i])) return true
+        const moment = m as { address?: string; token_id?: string; created_at?: string }
+        if (!moment.address || moment.token_id == null) return false
+        if (!admitsOffPlatformMint(moment.created_at)) return false
+        if (!admittedMintSeen.has(candidateKeys[i])) {
+          admitDue.push({
+            address: moment.address,
+            tokenId: String(moment.token_id),
+            key: candidateKeys[i],
+          })
+        }
+        return true
+      })
+      if (admitDue.length > 0) {
+        // Seen-cache marked optimistically (pin-stitch pattern): a lost batch
+        // just re-admits after a pod recycle — the SADD is idempotent. Fired
+        // post-response; same-tick SADDs auto-pipeline into one REST trip.
+        if (admittedMintSeen.size + admitDue.length > MAX_PINNED_SEEN) admittedMintSeen.clear()
+        for (const a of admitDue) admittedMintSeen.add(a.key)
+        console.log('[timeline] off-platform admission', {
+          count: admitDue.length,
+          members: admitDue.slice(0, 10).map((a) => a.key),
+        })
+        after(() =>
+          Promise.all(admitDue.map((a) => markCreatedMint(a.address, a.tokenId))).catch(() => {}),
+        )
+      }
     } catch (err) {
       console.warn('[timeline] standalone filter skipped (Redis unavailable):', err)
     }
