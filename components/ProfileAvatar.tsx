@@ -9,6 +9,11 @@ interface ProfileAvatarProps {
   editable?: boolean
   onEdit?: () => void
   clickable?: boolean
+  // Opt-in for avatars inside long scrollable lists (e.g. the moment
+  // activity panel): defers image fetch + decode until the row nears the
+  // scrollport, so appending a page of rows doesn't burst a page of image
+  // loads into one frame. Default stays eager — see the loading note below.
+  lazy?: boolean
 }
 
 function addressToGradient(address: string): { from: string; to: string; angle: number } {
@@ -32,7 +37,7 @@ function addressToGradient(address: string): { from: string; to: string; angle: 
   }
 }
 
-export function ProfileAvatar({ address, avatarUrl, size = 40, editable = false, onEdit, clickable = false }: ProfileAvatarProps) {
+export function ProfileAvatar({ address, avatarUrl, size = 40, editable = false, onEdit, clickable = false, lazy = false }: ProfileAvatarProps) {
   const [imgError, setImgError] = useState(false)
   const grad = addressToGradient(address)
 
@@ -72,10 +77,13 @@ export function ProfileAvatar({ address, avatarUrl, size = 40, editable = false,
           // older clients) by center-cropping to the circle.
           width={size}
           height={size}
-          // loading=eager: avatar is above-the-fold in nav and
-          // profile pages, never lazy. decoding=async: lets the decode
-          // run off the main thread so it doesn't block paint.
-          loading="eager"
+          // Default loading=eager: avatar is above-the-fold in nav and
+          // profile pages; list rows opt into lazy via the prop (the
+          // browser resolves visibility against the nearest scrollport,
+          // so it works inside overflow containers). decoding=async:
+          // lets the decode run off the main thread so it doesn't block
+          // paint.
+          loading={lazy ? 'lazy' : 'eager'}
           decoding="async"
           style={{
             width: '100%',
