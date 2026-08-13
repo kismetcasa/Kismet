@@ -80,3 +80,21 @@ export function pinsFirst<T>(items: T[], keyOf: (t: T) => string, order: string[
   pinned.sort((a, b) => (rank.get(keyOf(a)) ?? 0) - (rank.get(keyOf(b)) ?? 0))
   return [...pinned, ...rest]
 }
+
+/**
+ * Public-view source filter: drop rows the server flagged `hidden`. Owner-
+ * scoped payloads deliberately include the owner's own hidden content so
+ * the dashboard can badge it and offer unhide — the timeline flags hidden
+ * mints on the creator's own feed, and the seller-scope listings GET flags
+ * content-hidden rows the same way — but a VISITOR's fetch drops those rows
+ * server-side. Every public-view render (including the owner/admin preview,
+ * which re-renders the owner's arrays in place) must therefore pass its
+ * source through this, or the preview shows artworks visitors never see.
+ * Admin author-level shadow-hides (hidden-users) arrive UNflagged by
+ * design — the preview deliberately doesn't reveal those. Returns `items`
+ * unchanged when nothing is flagged (the visitor case: payloads arrive
+ * pre-filtered, so this is one scan and no copy), mirroring pinsFirst.
+ */
+export function visibleToPublic<T extends { hidden?: boolean }>(items: T[]): T[] {
+  return items.some((it) => it.hidden) ? items.filter((it) => !it.hidden) : items
+}

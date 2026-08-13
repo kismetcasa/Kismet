@@ -15,7 +15,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import { foldSearch } from '@/lib/searchText'
-import { orderByPins, pinsFirst, MAX_PINS_PER_CATEGORY, type PublicViewMode } from '@/lib/showcaseOrder'
+import { orderByPins, pinsFirst, visibleToPublic, MAX_PINS_PER_CATEGORY, type PublicViewMode } from '@/lib/showcaseOrder'
 import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
@@ -352,8 +352,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const [addrCopied, setAddrCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   // Owner-only "public view" preview: render the profile exactly as a visitor
-  // sees it (no pushpins / edit / curate / owner-only sections) so the owner
-  // can check their curation, then toggle back out.
+  // sees it (no pushpins / edit / curate / owner-only sections — and no
+  // hidden artworks: the owner's payloads include their own hidden content
+  // for the dashboard, so the preview renders from the visibleToPublic
+  // sources below) so the owner can check their curation, then toggle back
+  // out.
   const [previewPublic, setPreviewPublic] = useState(false)
   // Theme as state (seeded from the SSR prop) so the Customize panel applies a
   // new theme live — the re-skin, avatar ring, and backdrop update with no reload.
@@ -850,10 +853,29 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // the same showcase footprint a fully-pinned section would.)
   const mintsFallback = showcaseView && pinsLoaded && pins.mints.length === 0
 
+  // Visitor-parity sources for the two public-view modes. The OWNER's own
+  // payloads deliberately include their hidden content — /api/timeline
+  // returns the creator's hidden mints flagged `hidden: true` (so the
+  // dashboard can badge them for unhide), and the seller-scope /api/listings
+  // flags content-hidden rows the same way — while a real visitor's fetch
+  // drops those rows server-side. The public view (and the owner/admin
+  // preview, which is this same client re-rendering the owner's arrays) must
+  // render from the filtered sources, or the preview shows mints visitors
+  // never see and its section counts overcount. Ordering runs AFTER the
+  // filter so the recent-mints fallback slice backfills with the next
+  // VISIBLE mint — exactly what a visitor's pre-filtered feed slices — and a
+  // pinned-but-hidden ref falls away like any stale ref. Dashboard branches
+  // keep the raw arrays: surfacing your own hidden work there is the point.
+  // `collected` needs no filter — the collector feed drops hidden moments
+  // for every viewer, owner included. For visitors both filters are identity
+  // no-ops (their payloads arrive pre-filtered, nothing is flagged).
+  const publicMoments = visibleToPublic(moments)
+  const publicListings = visibleToPublic(listings)
+
   const displayMoments = showcaseView
-    ? (mintsFallback ? moments.slice(0, MAX_PINS_PER_CATEGORY) : orderByPins(moments, momentPinKey, pins.mints))
+    ? (mintsFallback ? publicMoments.slice(0, MAX_PINS_PER_CATEGORY) : orderByPins(publicMoments, momentPinKey, pins.mints))
     : publicFullView
-      ? pinsFirst(moments, momentPinKey, pins.mints)
+      ? pinsFirst(publicMoments, momentPinKey, pins.mints)
       : moments
   const displayCollected = showcaseView
     ? orderByPins(collected, momentPinKey, pins.collected)
@@ -861,9 +883,9 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
       ? pinsFirst(collected, momentPinKey, pins.collected)
       : collected
   const displayListings = showcaseView
-    ? orderByPins(listings, listingPinKey, pins.listings)
+    ? orderByPins(publicListings, listingPinKey, pins.listings)
     : publicFullView
-      ? pinsFirst(listings, listingPinKey, pins.listings)
+      ? pinsFirst(publicListings, listingPinKey, pins.listings)
       : listings
   const pinSectionLoading: Record<PinCategory, boolean> = {
     mints: loadingMoments,
@@ -1639,7 +1661,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               </>
             ) : (
               <>
-                {moments.length > 0
+                {/* publicMoments, not moments: hidden mints never reach the
+                    visitor fallback, so an artist whose visible work is all
+                    hidden gets the header-only wording. */}
+                {publicMoments.length > 0
                   ? `Until you pin, visitors see your ${MAX_PINS_PER_CATEGORY} most recent mints. `
                   : 'Until you pin, visitors see only your profile header. '}
                 Tap the <Pin size={14} strokeWidth={1.5} className="inline align-middle text-dim" aria-label="pin" /> on any artwork below to feature it — up to {MAX_PINS_PER_CATEGORY} each of your mints, collects and listings.

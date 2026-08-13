@@ -14,10 +14,15 @@
 //   4. derivePublicViewMode — the never-chose default policy: pins present →
 //      'curated' (grandfathered showcase-era pinners keep their curation),
 //      no pins → 'full' (new profiles are browsable out of the box).
+//   5. visibleToPublic — the public view (owner preview included) renders
+//      only rows a visitor's server-filtered payload would carry: `hidden`-
+//      flagged rows drop BEFORE any ordering/slicing, so the recent-mints
+//      fallback backfills with the next visible mint and a pinned-but-hidden
+//      ref falls away like a stale one.
 //
 // Run: node --experimental-strip-types scripts/verify-showcase-order.ts
 
-import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, orderByPins, pinsFirst } from '../lib/showcaseOrder.ts'
+import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, orderByPins, pinsFirst, visibleToPublic } from '../lib/showcaseOrder.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -71,7 +76,42 @@ check('isPublicViewMode: rejects non-strings', !isPublicViewMode(undefined) && !
 check("derive: pinned profile (grandfathered) -> 'curated'", derivePublicViewMode(true) === 'curated')
 check("derive: pinless profile -> 'full' (the new default)", derivePublicViewMode(false) === 'full')
 
-// ── 5. the per-category cap ─────────────────────────────────────────────────
+// ── 5. visibleToPublic — hidden rows never reach a public surface ───────────
+// The owner's payload carries their own hidden content flagged `hidden: true`
+// (timeline: creator's own feed; listings: seller-scope own view) so the
+// dashboard can badge it; a visitor's payload arrives with those rows already
+// dropped server-side. The public view — including the owner's in-place
+// preview — must render the owner's arrays down to the visitor set.
+interface Row { key: string; hidden?: boolean }
+const rowKeys = (rows: Row[]) => rows.map((r) => r.key).join(',')
+const ownerFeed: Row[] = [
+  { key: 'a' }, { key: 'b', hidden: true }, { key: 'c' }, { key: 'd', hidden: true }, { key: 'e' },
+]
+check('visibleToPublic: drops flagged rows, keeps order', rowKeys(visibleToPublic(ownerFeed)) === 'a,c,e')
+check('visibleToPublic: does not mutate the input', rowKeys(ownerFeed) === 'a,b,c,d,e')
+const visitorFeed: Row[] = [{ key: 'a' }, { key: 'c' }]
+check('visibleToPublic: pre-filtered payload -> identity (same array back)', visibleToPublic(visitorFeed) === visitorFeed)
+check('visibleToPublic: empty -> empty', visibleToPublic([]).length === 0)
+// The reported bug verbatim: curated mode, nothing pinned → the fallback
+// slices the most-recent mints. Filtering must precede the slice so the
+// owner's preview slice equals a visitor's slice of their pre-filtered feed
+// (hidden newest mint drops, next visible one backfills, count matches).
+check(
+  'fallback contract: filter THEN slice matches the visitor slice',
+  rowKeys(visibleToPublic(ownerFeed).slice(0, 2)) === 'a,c',
+)
+// Composition with the orderers: a pinned-but-hidden ref behaves exactly
+// like a stale ref — absent from the curated showcase, inert in pins-first.
+check(
+  'orderByPins over visibleToPublic: hidden pin falls away',
+  rowKeys(orderByPins(visibleToPublic(ownerFeed), (r) => r.key, ['b', 'e'])) === 'e',
+)
+check(
+  'pinsFirst over visibleToPublic: hidden pin inert, rest keeps order',
+  rowKeys(pinsFirst(visibleToPublic(ownerFeed), (r) => r.key, ['b', 'e'])) === 'e,a,c',
+)
+
+// ── 6. the per-category cap ─────────────────────────────────────────────────
 // The product decision (6 — two full showcase rows on lg+, one full row of
 // the six-column dense grid) plus a cap-width ordering pass so the widest
 // legal pin set exercises both orderers.

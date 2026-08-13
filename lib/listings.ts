@@ -54,6 +54,12 @@ export interface Listing {
   // the filter can drift from the badge if the artist reprices after listing.
   mintPrice?: string
   mintPriceCurrency?: 'eth' | 'usdc'
+  // Response-only, never stored: the seller-scope GET sets this on the
+  // seller's OWN rows that are content-hidden (admin per-listing hide, or
+  // the hidden moment/collection cascade) — the rows a visitor's filtered
+  // response omits. Mirrors Moment.hidden from the timeline so the profile's
+  // public-view preview can drop exactly what visitors don't see.
+  hidden?: boolean
 }
 
 const KEY_ALL = 'kismetart:listings'
