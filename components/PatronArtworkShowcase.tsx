@@ -13,7 +13,7 @@ import { useMomentSale } from '@/hooks/useMomentSale'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { MaybeLazy } from './LazyMount'
-import { PATRON_PASS_DESCRIPTION } from '@/lib/patronCollection'
+import { PATRON_PASS_INFO } from '@/lib/patronCollection'
 
 // Pre-load guess until the thumbhash (then the loaded image) reports the real
 // shape — mirrors the Mint Pass Display so the box never letterboxes.
@@ -111,10 +111,12 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
 }
 
 /**
- * The Patron Pass Description panel's "collect artwork" CTA — an inline collect
- * for the primary artwork (the same edition tapping the artwork above would
+ * A Patron Pass Description panel's "collect artwork" CTA — an inline collect
+ * for that panel's drop (the same edition tapping the artwork above it would
  * collect), NOT a link to the moment page. Flips to a disabled "sold out" once
- * the bounded edition is fully minted OR its sale window has closed.
+ * the bounded edition is fully minted OR its sale window has closed. Drops
+ * whose mint is permanently closed don't mount this at all — their panel
+ * renders a static "sale ended" instead (see PatronPassPanel).
  *
  * State sources mirror MomentCard/MomentDetailView so the label agrees with the
  * rest of the app: supply from the on-chain getTokenInfo read, the sale window
@@ -196,11 +198,66 @@ function PatronCollectButton({ moment }: { moment: Moment }) {
   )
 }
 
+// Linkify the first "Kismet Casa" occurrence in a pass description (some
+// drops' copy names it, some doesn't); the rest of the text renders verbatim.
+function renderKismetCasaLink(text: string) {
+  const label = 'Kismet Casa'
+  const idx = text.indexOf(label)
+  if (idx === -1) return text
+  return (
+    <>
+      {text.slice(0, idx)}
+      <a
+        href="https://kismetcasa.xyz"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline hover:text-ink transition-colors"
+      >
+        {label}
+      </a>
+      {text.slice(idx + label.length)}
+    </>
+  )
+}
+
+/**
+ * The "Patron Pass Description" panel for one drop — its curated copy from
+ * PATRON_PASS_INFO plus the collect CTA: the live PatronCollectButton, or a
+ * static disabled "sale ended" for a permanently closed mint (saleEnded —
+ * styled like the collect button's disabled state, without mounting on-chain
+ * reads for a sale that can never reopen). Renders nothing for a token with
+ * no configured copy.
+ */
+function PatronPassPanel({ moment }: { moment: Moment }) {
+  const info = PATRON_PASS_INFO[moment.token_id]
+  if (!info) return null
+  return (
+    <div className="border border-line bg-[#0d0d0d] p-4 sm:p-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-xs font-mono text-muted uppercase tracking-widest">
+          patron pass description
+        </h3>
+        {info.saleEnded ? (
+          <span className="shrink-0 border border-line px-3 py-1.5 text-xs font-mono uppercase tracking-widest text-muted cursor-not-allowed select-none">
+            sale ended
+          </span>
+        ) : (
+          <PatronCollectButton moment={moment} />
+        )}
+      </div>
+      <p className="text-sm font-mono text-dim leading-relaxed whitespace-pre-line">
+        {renderKismetCasaLink(info.description)}
+      </p>
+    </div>
+  )
+}
+
 /**
  * Patron Collection showcase — the bespoke presentation for the Kismet Patron
- * Collection page: every artwork gets the same large borderless display (the
- * standard for this collection, so there's no per-moment discrepancy), followed
- * once by the "Patron Pass Description" panel.
+ * Collection page: every drop gets the same large borderless display (the
+ * standard for this collection, so there's no per-moment discrepancy), each
+ * followed by its own "Patron Pass Description" panel when copy is configured
+ * for that token (exhibit + label, so the collection reads drop by drop).
  *
  * Only the first artwork loads eagerly as the LCP (priority={i === 0}). On
  * mobile the rest are windowed via MaybeLazy so they don't all mount at once:
@@ -210,19 +267,13 @@ function PatronCollectButton({ moment }: { moment: Moment }) {
  * saturating the iframe's shared HTTP/2 pool (the same failure mode the
  * featured-tab fixes target). MaybeLazy defers MOUNT past EAGER_MOUNT_COUNT, so
  * a lazy artwork never even creates its MomentImage until it nears the viewport.
- * Harmless today (this collection is a single token, so only the LCP renders)
- * but keeps the surface correct if it grows to multiple distinct artworks.
  * Desktop runs lazy=false and mounts every artwork eagerly, unchanged.
  */
 export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: Moment[]; isMobile?: boolean }) {
-  // The description panel's "collect artwork" CTA collects the primary artwork
-  // inline (see PatronCollectButton). Guarded so it never renders without a
-  // moment if the showcase is ever handed an empty list.
-  const primaryMoment = moments[0]
   return (
     <div className="flex flex-col gap-6">
       {moments.map((m, i) => (
-        // Key on MaybeLazy itself, not PatronArtwork — its mounted/placeholder
+        // Key on MaybeLazy itself, not the pair — its mounted/placeholder
         // branches are different React types, so the key must live on the stable
         // outer position (see LazyMount).
         <MaybeLazy
@@ -230,31 +281,17 @@ export function PatronArtworkShowcase({ moments, isMobile = false }: { moments: 
           index={i}
           lazy={isMobile}
         >
-          {() => <PatronArtwork moment={m} priority={i === 0} />}
+          {() => (
+            // Artwork + its pass panel as one column, so the pair keeps its
+            // internal gap even inside a LazyMount wrapper (5+ drops on
+            // mobile); the outer flex's gap separates the pairs identically.
+            <div className="flex flex-col gap-6">
+              <PatronArtwork moment={m} priority={i === 0} />
+              <PatronPassPanel moment={m} />
+            </div>
+          )}
         </MaybeLazy>
       ))}
-
-      {/* Patron Pass Description */}
-      <div className="border border-line bg-[#0d0d0d] p-4 sm:p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-xs font-mono text-muted uppercase tracking-widest">
-            patron pass description
-          </h3>
-          {primaryMoment && <PatronCollectButton moment={primaryMoment} />}
-        </div>
-        <p className="text-sm font-mono text-dim leading-relaxed whitespace-pre-line">
-          {PATRON_PASS_DESCRIPTION.split('Kismet Casa')[0]}
-          <a
-            href="https://kismetcasa.xyz"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:text-ink transition-colors"
-          >
-            Kismet Casa
-          </a>
-          {PATRON_PASS_DESCRIPTION.split('Kismet Casa')[1]}
-        </p>
-      </div>
     </div>
   )
 }

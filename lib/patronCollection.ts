@@ -1,10 +1,11 @@
 /**
  * Kismet Patron Collection — the first official platform release. Its
  * collection page gets a bespoke presentation instead of the generic grid
- * (see PatronArtworkShowcase + the CollectionView special-casing): a single
- * full-bleed artwork, a "Patron Pass Description" panel, and an artist credit
- * derived from each moment's on-chain split recipients — the moment creator
- * resolves to the platform treasury, so the split is the real attribution.
+ * (see PatronArtworkShowcase + the CollectionView special-casing): each drop
+ * as a full-bleed artwork with its own "Patron Pass Description" panel, and
+ * an artist credit derived from each moment's on-chain split recipients —
+ * the moment creator resolves to the platform treasury, so the split is the
+ * real attribution.
  * The credit shows each artist's own resolved profile (no hardcoded label);
  * the only curated "turro" override lives in FeaturedMoment for the featured
  * Mint Pass Display.
@@ -20,10 +21,12 @@ export function isPatronCollection(address?: string | null): boolean {
 }
 
 /**
- * Turro — the Patron Collection's artist. The moment records' `creator`
+ * Turro — the Patron Collection's debut artist. The moment records' `creator`
  * resolves to the platform treasury, so Patron raffle surfaces (the
  * post-entry modal + share copy) name Turro from this curated config instead
  * of the creator record. Address matches the FeaturedMoment display override.
+ * Collection-scoped, not per-token: if a raffle is ever run for a later drop
+ * (Tornado onward), this config needs to graduate to a per-token map first.
  */
 export const PATRON_ARTIST = {
   name: 'Turro',
@@ -60,12 +63,40 @@ export function deriveArtistsFromRecipients(
 }
 
 /**
- * Body copy for the Patron Pass Description panel. Rendered with
- * `whitespace-pre-line`, so the line breaks below are preserved verbatim.
+ * Per-drop copy for the Patron Pass Description panels, keyed by token id
+ * within the Patron collection (Zora 1155 ids are sequential from 1; each
+ * curated drop takes the next id). A token with no entry renders no panel —
+ * add the copy here when a new drop is prepared, so it attaches the moment
+ * the mint lands. Rendered with `whitespace-pre-line` (line breaks preserved
+ * verbatim); the first "Kismet Casa" occurrence, when present, is linkified
+ * by the panel.
+ *
+ * `saleEnded: true` freezes the panel's CTA as a disabled "sale ended" in
+ * place of the live collect button — for drops whose mint is permanently
+ * closed (Patron sale windows are one-shot, per the copy). Deliberately
+ * static: it also skips the on-chain supply/sale reads a live button would
+ * mount for a sale that can never reopen.
  */
-export const PATRON_PASS_DESCRIPTION = `Turro’s artwork "Facing Desolation" marks the debut of the Kismet Patron Collection. Facing Desolation is a physical Artwork commissioned by Kismet Casa to gift to one collector of the digital edition.
+export interface PatronPassInfo {
+  description: string
+  saleEnded?: boolean
+}
 
-There will only ever be 100 editions available of which up to 20 are reserved for Turro to invite artists to the platform. At the end of the sale, any remaining editions will be permanently unavailable to mint.`
+export const PATRON_PASS_INFO: Record<string, PatronPassInfo> = {
+  // Token 1 — Turro, "Facing Desolation" (debut drop; mint closed).
+  '1': {
+    description: `Turro’s artwork Facing Desolation marked the debut of the Kismet Patron Collection. It is a physical work commissioned by Kismet Casa and gifted to one collector of the digital edition.
+
+A total of 19 editions were minted: 15 were collected during the public sale, while 4 were used by Turro to invite other artists to the platform. The mint is now closed.`,
+    saleEnded: true,
+  },
+  // Token 2 — Tornado, "Toxic Heritage: The Wounded Martyr’s Trip" (second drop).
+  '2': {
+    description: `Toxic Heritage: The Wounded Martyr’s Trip by Tornado marks the second drop in the Kismet Patron Collection.
+
+There are only 100 editions available to collect. At the end of the sale, any remaining editions will be permanently unavailable to mint.`,
+  },
+}
 
 /**
  * Content for the "Mint Pass Ruleset" modal, surfaced from the Patron

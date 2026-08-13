@@ -109,10 +109,10 @@ export function CollectAllAction({
   const batchSize = Math.min(totalCount, MAX_COLLECT_ALL_BATCH)
   // "collect all" reads wrong for a lone artwork → drop to "collect" (no
   // count). Detect "one artwork" by DISTINCT token id, not ethCount+usdcCount:
-  // CollectionView feeds the same id list to both legs (each token's currency
-  // is resolved on-chain at click time), so a single token appears in both
-  // lists and would otherwise look like two. The union is the true count; for
-  // callers with disjoint eth/usdc lists (cards, rows) it's just their sum.
+  // every caller feeds fetchEligibleTokens-resolved per-currency lists, and a
+  // token configured on BOTH strategies (an FPSS sale and an ERC20Minter sale)
+  // lands in both lists — it would otherwise look like two. The union is the
+  // true artwork count; for the usual disjoint lists it's just their sum.
   const isSingle =
     new Set([...ethEligibleTokenIds, ...usdcEligibleTokenIds]).size === 1
   const baseLabel = isSingle ? 'collect' : 'collect all'
