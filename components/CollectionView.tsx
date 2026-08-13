@@ -5,12 +5,13 @@ import { MomentImage } from './MomentImage'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useReadContracts } from 'wagmi'
-import { mainnet } from 'wagmi/chains'
+import { base, mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { isAddress } from 'viem'
 import { ArrowLeft, Star, Eye, EyeOff, ShieldCheck, Trash2, Copy, Check, Pencil, Info, ChevronDown, ChevronUp } from 'lucide-react'
 import { shortAddress, type Moment } from '@/lib/inprocess'
-import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
+import { ZORA_1155_TOKEN_INFO_ABI } from '@/lib/zoraMint'
+import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { toastError } from '@/lib/toast'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -21,7 +22,7 @@ import { useAuthorizedCreators } from '@/hooks/useAuthorizedCreators'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
-import { resolveAddressOrEns } from '@/lib/address'
+import { isValidTokenId, resolveAddressOrEns } from '@/lib/address'
 import { MomentCard } from './MomentCard'
 import { MaybeLazy } from './LazyMount'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -730,16 +731,46 @@ export function CollectionView({
     0,
   )
 
-  // Collect-all candidates: tokens not yet sold out, from the same getTokenInfo
-  // read used above. useCollectAll resolves each token's currency + live sale
-  // eligibility on-chain at click time, so the same id list feeds both legs.
-  const collectableIds: string[] = []
-  loadedMoments.forEach((m, i) => {
-    const info = tokenInfos?.[i]
-    if (info?.status !== 'success' || !info.result) return
-    const { maxSupply, totalMinted } = info.result as { maxSupply: bigint; totalMinted: bigint }
-    if (isOpenEdition(maxSupply) || totalMinted < maxSupply) collectableIds.push(m.token_id)
-  })
+  // Collect-all candidates — resolved by the SAME live-sale filter every other
+  // collect-all surface uses (fetchEligibleTokens: sale window open per chain
+  // time, not sold out, USDC leg currency-checked), split per currency leg
+  // exactly like the server hydrators feed the card/row surfaces. That keeps
+  // the label rule truthful here too: hidden when nothing's collectable,
+  // "collect" for one piece, "collect all" for more. The previous supply-only
+  // filter (getTokenInfo) kept ended-window sales in the list, so a collection
+  // with one live and one ended sale still read "collect all" while its
+  // discover card already said "collect". No `account` on purpose: the resting
+  // label stays stable across connect/disconnect like the account-less server
+  // cards; per-wallet caps stay a click-time concern (useCollectAll re-checks
+  // with the account). null while resolving or on read failure → button
+  // hidden, same as the pre-resolve window before; the click-time re-check
+  // remains the authority on what actually mints.
+  const baseClient = usePublicClient({ chainId: base.id })
+  const [collectAllEligible, setCollectAllEligible] =
+    useState<{ eth: string[]; usdc: string[] } | null>(null)
+  useEffect(() => {
+    setCollectAllEligible(null)
+    if (!baseClient || !moments || moments.length === 0) return
+    // Malformed ids would throw in BigInt(); drop them like useCollectAll does.
+    const ids = moments.map((m) => m.token_id).filter(isValidTokenId).map(BigInt)
+    if (ids.length === 0) return
+    let cancelled = false
+    Promise.all([
+      fetchEligibleTokens(baseClient, address as `0x${string}`, ids, 'eth'),
+      fetchEligibleTokens(baseClient, address as `0x${string}`, ids, 'usdc'),
+    ])
+      .then(([eth, usdc]) => {
+        if (cancelled) return
+        setCollectAllEligible({
+          eth: eth.map((e) => e.tokenId.toString()),
+          usdc: usdc.map((e) => e.tokenId.toString()),
+        })
+      })
+      // fetchEligibleTokens fails soft ([]), so this only guards future edits;
+      // a null state just keeps the button hidden (fail-safe, no dead CTA).
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [baseClient, address, moments])
 
   async function handleShare() {
     const url = `${window.location.origin}/collection/${address}`
@@ -1228,12 +1259,13 @@ export function CollectionView({
           <h2 className="text-xs font-mono text-muted uppercase tracking-widest">
             artworks{loadedMoments.length > 0 ? ` (${loadedMoments.length})` : ''}
           </h2>
-          {collectableIds.length > 0 && (
+          {collectAllEligible &&
+            (collectAllEligible.eth.length > 0 || collectAllEligible.usdc.length > 0) && (
             <CollectAllAction
               plain
               collectionAddress={address}
-              ethEligibleTokenIds={collectableIds}
-              usdcEligibleTokenIds={collectableIds}
+              ethEligibleTokenIds={collectAllEligible.eth}
+              usdcEligibleTokenIds={collectAllEligible.usdc}
             />
           )}
         </div>

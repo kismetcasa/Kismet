@@ -45,11 +45,13 @@ const TOAST_ID = 'collect-all'
 
 export interface CollectAllArgs {
   collectionAddress: Address
-  // Server-pre-filtered ETH-eligible token IDs from collection hydrators.
-  // Re-checked client-side at click time (sale state may have shifted).
+  // ETH-eligible candidate token IDs, pre-filtered through fetchEligibleTokens
+  // by the caller (server hydrators for cards/rows; CollectionView resolves
+  // client-side). Re-checked here at click time regardless (sale state may
+  // have shifted since the caller's resolve).
   ethCandidateTokenIds: string[]
-  // Server-pre-filtered USDC-eligible token IDs (currency === USDC_BASE).
-  // Same re-check semantics as the ETH list.
+  // USDC-eligible candidate token IDs (currency === USDC_BASE). Same
+  // pre-filter provenance and re-check semantics as the ETH list.
   usdcCandidateTokenIds: string[]
 }
 
