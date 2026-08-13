@@ -73,9 +73,8 @@ const DEFAULT_RATIO = 1.5
 const MIN_RATIO = 0.2
 const MAX_RATIO = 5
 const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
-// Box background — a burnt orange lifted from the featured video's glitch
-// palette, darkened a touch. Dark text clears ~6.3:1 on it (AA). One knob.
-const DISPLAY_BG = '#d2801f'
+// Box background — a soft light pink. Dark text clears ~14.5:1 on it. One knob.
+const DISPLAY_BG = '#ffd3e3'
 
 // Manual credit overrides for the featured mint pass display, keyed by creator
 // address (lowercase). Stopgap for artists whose minting wallet has no Kismet
@@ -106,7 +105,7 @@ const COLLECTION_LABEL_OVERRIDES: Record<string, string[]> = {
  * Mint Pass Display — the single curated mint atop the featured tab, in two
  * presentations:
  *   • lg and up → a rich three-column hero: [title · by · @artist] | artwork |
- *     [collection / curated credit] on a burnt-orange box, the box hugging the
+ *     [collection / curated credit] on a soft-pink box, the box hugging the
  *     artwork's aspect ratio (no crop, no letterbox) with the flanking columns
  *     matching height.
  *   • below lg  → an ordinary <MomentCard>, identical to any other feed card.
