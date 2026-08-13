@@ -63,13 +63,22 @@ export function deriveArtistsFromRecipients(
 }
 
 /**
- * Per-drop copy for the Patron Pass Description panels, keyed by token id
- * within the Patron collection (Zora 1155 ids are sequential from 1; each
- * curated drop takes the next id). A token with no entry renders no panel —
- * add the copy here when a new drop is prepared, so it attaches the moment
- * the mint lands. Rendered with `whitespace-pre-line` (line breaks preserved
- * verbatim); the first "Kismet Casa" occurrence, when present, is linkified
- * by the panel.
+ * Per-drop copy for the Patron Pass Description panels.
+ *
+ * Matching: a drop's panel attaches to the moment whose token id equals the
+ * entry's `tokenId` (when pinned) OR whose metadata name contains any of its
+ * `titleMatch` substrings (lowercased containment). Title is the durable key
+ * here: the collection's token ids are NOT contiguous — token 2 is a hidden
+ * slot, so the Tornado drop is token 3 — which is what silently broke the
+ * original id-keyed map (it assumed Tornado = 2). The artwork's title is
+ * what the curator writing this copy always knows; `tokenId` pins ids
+ * confirmed in production (Turro 1, Tornado 3). Keep `titleMatch`
+ * distinctive per entry; first match wins.
+ *
+ * A moment matching no entry renders no panel — add an entry when a new
+ * drop is prepared, and it attaches the moment the mint lands. `description`
+ * renders with `whitespace-pre-line` (line breaks preserved verbatim); the
+ * first "Kismet Casa" occurrence, when present, is linkified by the panel.
  *
  * `saleEnded: true` freezes the panel's CTA as a disabled "sale ended" in
  * place of the live collect button — for drops whose mint is permanently
@@ -78,24 +87,49 @@ export function deriveArtistsFromRecipients(
  * mount for a sale that can never reopen.
  */
 export interface PatronPassInfo {
+  /** Exact token id, when proven in production. Pin only, never required. */
+  tokenId?: string
+  /** Lowercase substrings; any hit on the moment's metadata name matches. */
+  titleMatch: string[]
   description: string
   saleEnded?: boolean
 }
 
-export const PATRON_PASS_INFO: Record<string, PatronPassInfo> = {
-  // Token 1 — Turro, "Facing Desolation" (debut drop; mint closed).
-  '1': {
+export const PATRON_PASS_INFO: PatronPassInfo[] = [
+  // Turro — "Facing Desolation" (debut drop, token 1; mint closed).
+  {
+    tokenId: '1',
+    titleMatch: ['facing desolation'],
     description: `Turro’s artwork Facing Desolation marked the debut of the Kismet Patron Collection. It is a physical work commissioned by Kismet Casa and gifted to one collector of the digital edition.
 
 A total of 19 editions were minted: 15 were collected during the public sale, while 4 were used by Turro to invite other artists to the platform. The mint is now closed.`,
     saleEnded: true,
   },
-  // Token 2 — Tornado, "Toxic Heritage: The Wounded Martyr’s Trip" (second drop).
-  '2': {
+  // Tornado — "Toxic Heritage: The Wounded Martyr’s Trip" (second drop;
+  // token 3, the collection's third mint — token 2 is a hidden slot). Title
+  // match kept as the secondary key; either half of the long title hits.
+  {
+    tokenId: '3',
+    titleMatch: ['toxic heritage', 'wounded martyr'],
     description: `Toxic Heritage: The Wounded Martyr’s Trip by Tornado marks the second drop in the Kismet Patron Collection.
 
 There are only 100 editions available to collect. At the end of the sale, any remaining editions will be permanently unavailable to mint.`,
   },
+]
+
+/**
+ * Resolve the curated pass copy for a Patron moment — token-id pin first,
+ * then title containment — or undefined when the drop has no entry (the
+ * panel then renders nothing).
+ */
+export function patronPassInfoFor(
+  tokenId: string,
+  name?: string,
+): PatronPassInfo | undefined {
+  const lower = (name ?? '').toLowerCase()
+  return PATRON_PASS_INFO.find(
+    (e) => (e.tokenId !== undefined && e.tokenId === tokenId) || e.titleMatch.some((m) => lower.includes(m)),
+  )
 }
 
 /**

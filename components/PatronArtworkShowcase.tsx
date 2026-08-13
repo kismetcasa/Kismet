@@ -13,7 +13,7 @@ import { useMomentSale } from '@/hooks/useMomentSale'
 import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { MaybeLazy } from './LazyMount'
-import { PATRON_PASS_INFO } from '@/lib/patronCollection'
+import { patronPassInfoFor } from '@/lib/patronCollection'
 
 // Pre-load guess until the thumbhash (then the loaded image) reports the real
 // shape — mirrors the Mint Pass Display so the box never letterboxes.
@@ -221,15 +221,17 @@ function renderKismetCasaLink(text: string) {
 }
 
 /**
- * The "Patron Pass Description" panel for one drop — its curated copy from
- * PATRON_PASS_INFO plus the collect CTA: the live PatronCollectButton, or a
- * static disabled "sale ended" for a permanently closed mint (saleEnded —
- * styled like the collect button's disabled state, without mounting on-chain
- * reads for a sale that can never reopen). Renders nothing for a token with
- * no configured copy.
+ * The "Patron Pass Description" panel for one drop — its curated copy
+ * resolved via patronPassInfoFor (token-id pin or artwork-title match — the
+ * collection's ids are not contiguous, so the title is the durable key),
+ * plus the collect CTA: the live PatronCollectButton, or a static disabled
+ * "sale ended" for a permanently closed mint (saleEnded — styled like the
+ * collect button's disabled state, without mounting on-chain reads for a
+ * sale that can never reopen). Renders nothing for a drop with no
+ * configured copy.
  */
 function PatronPassPanel({ moment }: { moment: Moment }) {
-  const info = PATRON_PASS_INFO[moment.token_id]
+  const info = patronPassInfoFor(moment.token_id, moment.metadata?.name)
   if (!info) return null
   return (
     <div className="border border-line bg-[#0d0d0d] p-4 sm:p-5">
