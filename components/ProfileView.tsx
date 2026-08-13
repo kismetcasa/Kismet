@@ -863,12 +863,16 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // render from the filtered sources, or the preview shows mints visitors
   // never see and its section counts overcount. Ordering runs AFTER the
   // filter so the recent-mints fallback slice backfills with the next
-  // VISIBLE mint — exactly what a visitor's pre-filtered feed slices — and a
-  // pinned-but-hidden ref falls away like any stale ref. Dashboard branches
-  // keep the raw arrays: surfacing your own hidden work there is the point.
-  // `collected` needs no filter — the collector feed drops hidden moments
-  // for every viewer, owner included. For visitors both filters are identity
-  // no-ops (their payloads arrive pre-filtered, nothing is flagged).
+  // VISIBLE mint and a pinned-but-hidden ref falls away like a stale ref —
+  // matching the visitor render exactly within the 50-item fetch window.
+  // (The server filters before its page slice, so past 50 moments a
+  // visitor's window backfills deeper; the preview can then at most
+  // under-show the tail — same bounded degradation as pins beyond the
+  // window — never reveal hidden work.) Dashboard branches keep the raw
+  // arrays: surfacing your own hidden work there is the point. `collected`
+  // needs no filter — the collector feed drops hidden moments for every
+  // viewer, owner included. For visitors both filters are identity no-ops
+  // (their payloads arrive pre-filtered, nothing is flagged).
   const publicMoments = visibleToPublic(moments)
   const publicListings = visibleToPublic(listings)
 
