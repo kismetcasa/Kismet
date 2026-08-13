@@ -155,6 +155,10 @@ export interface Moment {
   metadata?: MomentMetadataInline
   // Set to true by the timeline API when a hidden moment is returned to its
   // creator on their own profile feed, so the UI can show the hidden badge.
+  // ENFORCED at the route: upstream inprocess rows can arrive with their own
+  // `hidden` value, and the timeline strips it (normalizeHiddenFlag) so this
+  // field only ever carries Kismet's verdict — consumers (the badge, the
+  // public-view visibleToPublic filter) may trust it as-is.
   hidden?: boolean
   // Optional sale config. NOTE: /api/timeline does NOT currently stitch this
   // — server-side per-moment enrichment was reverted because the cold-cache

@@ -8,6 +8,7 @@ import { getCollectedMembers } from '@/lib/collected'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { normalizeHiddenFlag } from '@/lib/showcaseOrder'
 import { getSessionAddress } from '@/lib/session'
 import { getMomentMetaBatch, pinMomentCreatedAtBatch, type MomentMeta } from '@/lib/notifications'
 import { resolveMomentCreator } from '@/lib/statsMath'
@@ -852,32 +853,44 @@ export async function GET(req: NextRequest) {
     // from any of their wallets.
     const isOwnProfile =
       viewerLower !== null && !!creatorSet && creatorSet.has(viewerLower)
-    merged = merged
-      .filter((m: unknown) => {
-        const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
-        const addr = moment.address?.toLowerCase() ?? ''
-        const creatorAddr = moment.creator?.address?.toLowerCase() ?? ''
-        const key = `${addr}:${moment.token_id}`
-        // Hidden-user filter: drop content from admin-hidden creators
-        // EXCEPT when the viewer is the creator themselves on their own
-        // profile. Same "creator sees their own hidden content"
-        // exception as the per-content hide above — the hide is from
-        // PUBLIC feeds, the user themselves can still see what's there.
-        if (hiddenUsers.has(creatorAddr)) {
-          if (!(isOwnProfile && creatorAddr === viewerLower)) return false
-        }
-        const isHidden = hiddenSet.has(key) || hiddenColls.has(addr)
-        if (!isHidden) return true
-        return isOwnProfile && creatorAddr === viewerLower
-      })
-      .map((m: unknown) => {
-        const moment = m as { address?: string; token_id?: string }
-        const addr = moment.address?.toLowerCase() ?? ''
-        const key = `${addr}:${moment.token_id}`
-        if (hiddenSet.has(key) || hiddenColls.has(addr)) return { ...(m as object), hidden: true }
-        return m
-      })
+    merged = merged.filter((m: unknown) => {
+      const moment = m as { address?: string; token_id?: string; creator?: { address?: string } }
+      const addr = moment.address?.toLowerCase() ?? ''
+      const creatorAddr = moment.creator?.address?.toLowerCase() ?? ''
+      const key = `${addr}:${moment.token_id}`
+      // Hidden-user filter: drop content from admin-hidden creators
+      // EXCEPT when the viewer is the creator themselves on their own
+      // profile. Same "creator sees their own hidden content"
+      // exception as the per-content hide above — the hide is from
+      // PUBLIC feeds, the user themselves can still see what's there.
+      if (hiddenUsers.has(creatorAddr)) {
+        if (!(isOwnProfile && creatorAddr === viewerLower)) return false
+      }
+      const isHidden = hiddenSet.has(key) || hiddenColls.has(addr)
+      if (!isHidden) return true
+      return isOwnProfile && creatorAddr === viewerLower
+    })
   }
+
+  // Kismet OWNS the `hidden` field on this response — set it from Kismet's
+  // hide sets alone and STRIP any value the upstream rows arrived with, the
+  // same override /api/moment applies (lib/momentDetail spreads upstream
+  // data, then overwrites `hidden` from the Kismet KV). Upstream inprocess
+  // rows can carry their own `hidden: true` on moments Kismet never hid;
+  // forwarded bare, that stray flag put a false "hidden" badge on the
+  // creator's own visible work and — once ProfileView's visitor-parity
+  // filter started honoring the flag — blanked visible mints out of public
+  // profiles for every viewer. Runs UNCONDITIONALLY (not inside the guard
+  // above): the strip must hold even when every Kismet hide set is empty.
+  // After the filter above, Kismet-flagged rows only survive on the
+  // creator's own feed, so the flag keeps its documented meaning
+  // (lib/inprocess.ts Moment.hidden).
+  merged = merged.map((m: unknown) => {
+    const moment = m as { address?: string; token_id?: string; hidden?: unknown }
+    const addr = moment.address?.toLowerCase() ?? ''
+    const key = `${addr}:${moment.token_id}`
+    return normalizeHiddenFlag(moment, hiddenSet.has(key) || hiddenColls.has(addr))
+  })
 
   // Hidden-PROFILE (identity) NAME suppression is applied downstream in
   // enrichMomentsWithKismetMeta (the single creator-chip choke point), not
