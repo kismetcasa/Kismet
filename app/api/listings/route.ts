@@ -419,7 +419,13 @@ export async function GET(req: NextRequest) {
   // never see hidden listings. The seller sees their own list unfiltered —
   // including admin-hidden entries — so they can still cancel them: the
   // same own-content exception the timeline applies to hidden moments,
-  // authenticated by the session cookie / Farcaster bearer.
+  // authenticated by the session cookie / Farcaster bearer. And like the
+  // timeline, the own-view rows a visitor would NOT get are flagged
+  // `hidden: true` — content-level hides only (the per-listing hide plus
+  // the hidden moment/collection cascade) — so the profile's public-view
+  // preview can drop exactly what visitors' filter drops while the
+  // dashboard still shows everything. Author-level (hidden-user) hides
+  // stay unflagged on purpose: shadow semantics, same as the timeline.
   if (seller && !collection && !tokenId) {
     const [hiddenUsers, viewer] = await Promise.all([
       getHiddenUsersSet(),
@@ -430,7 +436,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ listings: [], pagination: { page: 1, limit: 0, total: 0, total_pages: 1 } })
     }
     const all = await getListingsBySeller(seller)
-    const listings = isOwnView ? all : all.filter((l) => !visibility.feedHidden(l))
+    const listings = isOwnView
+      ? all.map((l) => (visibility.contentHidden(l) ? { ...l, hidden: true } : l))
+      : all.filter((l) => !visibility.feedHidden(l))
     return NextResponse.json({ listings, pagination: { page: 1, limit: listings.length, total: listings.length, total_pages: 1 } })
   }
 
