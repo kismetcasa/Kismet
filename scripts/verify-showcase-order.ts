@@ -19,10 +19,15 @@
 //      flagged rows drop BEFORE any ordering/slicing, so the recent-mints
 //      fallback backfills with the next visible mint and a pinned-but-hidden
 //      ref falls away like a stale one.
+//   6. normalizeHiddenFlag — the producer side of that same contract: the
+//      API owns `hidden`, setting it from Kismet's hide sets alone and
+//      stripping any value the upstream feed smuggled in. Regression-pins
+//      the incident where a stray upstream `hidden: true` on a VISIBLE mint
+//      blanked it out of public profiles once visibleToPublic trusted it.
 //
 // Run: node --experimental-strip-types scripts/verify-showcase-order.ts
 
-import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, orderByPins, pinsFirst, visibleToPublic } from '../lib/showcaseOrder.ts'
+import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, normalizeHiddenFlag, orderByPins, pinsFirst, visibleToPublic } from '../lib/showcaseOrder.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -111,7 +116,38 @@ check(
   rowKeys(pinsFirst(visibleToPublic(ownerFeed), (r) => r.key, ['b', 'e'])) === 'e,a,c',
 )
 
-// ── 6. the per-category cap ─────────────────────────────────────────────────
+// ── 6. normalizeHiddenFlag — the API owns `hidden` ──────────────────────────
+// Producer contract for the flag section 5 consumes. The regression this
+// pins: upstream inprocess rows arrived with `hidden: true` on mints Kismet
+// never hid; forwarded bare, visibleToPublic dropped them from PUBLIC
+// profiles (visitors included) and the owner dashboard showed a false
+// "hidden" badge with nothing to unhide.
+{
+  // Kismet-hidden: flag set regardless of what upstream sent.
+  const kismetHidden = normalizeHiddenFlag({ key: 'k', hidden: undefined }, true)
+  check('normalize: Kismet-hidden -> hidden:true', kismetHidden.hidden === true)
+  // Upstream stray flag on a Kismet-visible row: stripped, other fields kept.
+  const upstream = { key: 'u', name: 'toxic-heritage', hidden: true as unknown }
+  const cleaned = normalizeHiddenFlag(upstream, false)
+  check('normalize: upstream flag stripped', !('hidden' in cleaned))
+  check('normalize: other fields survive the strip', (cleaned as { name?: string }).name === 'toxic-heritage')
+  check('normalize: does not mutate the input row', upstream.hidden === true)
+  // Clean row: identity (no copy on the common path).
+  const clean = { key: 'c' } as { key: string; hidden?: unknown }
+  check('normalize: clean row -> same reference', normalizeHiddenFlag(clean, false) === clean)
+  // The incident end-to-end: an upstream-flagged VISIBLE mint must reach the
+  // public view once normalized; a Kismet-hidden one must not.
+  const served = [
+    normalizeHiddenFlag({ key: 'failed-mint', hidden: undefined }, true),
+    normalizeHiddenFlag({ key: 'toxic-heritage', hidden: true as unknown }, false),
+  ] as { key: string; hidden?: boolean }[]
+  check(
+    'normalize -> visibleToPublic: visible mint survives, hidden mint drops',
+    visibleToPublic(served).map((r) => r.key).join(',') === 'toxic-heritage',
+  )
+}
+
+// ── 7. the per-category cap ─────────────────────────────────────────────────
 // The product decision (6 — two full showcase rows on lg+, one full row of
 // the six-column dense grid) plus a cap-width ordering pass so the widest
 // legal pin set exercises both orderers.

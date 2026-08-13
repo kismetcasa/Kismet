@@ -1,4 +1,5 @@
-// Pure pinned-showcase logic shared by the client (ProfileView) and CI
+// Pure pinned-showcase logic shared by the client (ProfileView), the
+// timeline route (hidden-flag ownership), and CI
 // (scripts/verify-showcase-order.ts). Deliberately Redis-free: lib/showcase.ts
 // owns pin/mode STORAGE; this module owns the type + ordering rules, so a
 // client component can import it without dragging the server Redis client
@@ -94,7 +95,36 @@ export function pinsFirst<T>(items: T[], keyOf: (t: T) => string, order: string[
  * design — the preview deliberately doesn't reveal those. Returns `items`
  * unchanged when nothing is flagged (the visitor case: payloads arrive
  * pre-filtered, so this is one scan and no copy), mirroring pinsFirst.
+ *
+ * This filter is only sound because the API OWNS the flag it reads —
+ * normalizeHiddenFlag below is the producer side of that contract.
  */
 export function visibleToPublic<T extends { hidden?: boolean }>(items: T[]): T[] {
   return items.some((it) => it.hidden) ? items.filter((it) => !it.hidden) : items
+}
+
+/**
+ * Producer side of the `hidden` contract visibleToPublic consumes: Kismet
+ * OWNS the flag on its API responses. Upstream inprocess rows can arrive
+ * with their own `hidden: true` on moments Kismet never hid (the long-
+ * observed leak MomentCard's isOwnMoment badge gate defends against);
+ * passed through bare, that stray flag blanked VISIBLE mints out of public
+ * profiles the moment visibleToPublic started honoring it — while a
+ * Kismet-hidden mint's flag is load-bearing (the owner-dashboard badge and
+ * the visitor-parity filter both read it). So: `kismetHidden` (from
+ * Kismet's own hide sets) sets the flag; anything else is stripped, never
+ * forwarded. Mirrors /api/moment, which spreads upstream data then
+ * overwrites `hidden` from the Kismet KV (lib/momentDetail). Rows with no
+ * flag return unchanged (same reference), so the common clean row costs
+ * one property check and no copy.
+ */
+export function normalizeHiddenFlag<T extends { hidden?: unknown }>(
+  row: T,
+  kismetHidden: boolean,
+): T {
+  if (kismetHidden) return { ...row, hidden: true } as T
+  if (row.hidden === undefined) return row
+  const rest = { ...row }
+  delete rest.hidden
+  return rest
 }
