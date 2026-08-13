@@ -68,13 +68,12 @@ export function deriveArtistsFromRecipients(
  * Matching: a drop's panel attaches to the moment whose token id equals the
  * entry's `tokenId` (when pinned) OR whose metadata name contains any of its
  * `titleMatch` substrings (lowercased containment). Title is the durable key
- * here: the collection's token ids are NOT contiguous — the Tornado drop
- * landed on an id other than 2 (a slot between the drops never became a
- * visible moment), which silently broke the original id-keyed map — while
- * the artwork's title is what the curator writing this copy always knows.
- * `tokenId` remains as an optional pin for ids proven live in production
- * (Turro's debut is token 1). Keep `titleMatch` distinctive per entry;
- * first match wins.
+ * here: the collection's token ids are NOT contiguous — token 2 is a hidden
+ * slot, so the Tornado drop is token 3 — which is what silently broke the
+ * original id-keyed map (it assumed Tornado = 2). The artwork's title is
+ * what the curator writing this copy always knows; `tokenId` pins ids
+ * confirmed in production (Turro 1, Tornado 3). Keep `titleMatch`
+ * distinctive per entry; first match wins.
  *
  * A moment matching no entry renders no panel — add an entry when a new
  * drop is prepared, and it attaches the moment the mint lands. `description`
@@ -106,10 +105,11 @@ export const PATRON_PASS_INFO: PatronPassInfo[] = [
 A total of 19 editions were minted: 15 were collected during the public sale, while 4 were used by Turro to invite other artists to the platform. The mint is now closed.`,
     saleEnded: true,
   },
-  // Tornado — "Toxic Heritage: The Wounded Martyr’s Trip" (second drop).
-  // Id deliberately un-pinned: it is not 2 (see the header note); either half
-  // of the title matches so a metadata variant of the long title still hits.
+  // Tornado — "Toxic Heritage: The Wounded Martyr’s Trip" (second drop;
+  // token 3, the collection's third mint — token 2 is a hidden slot). Title
+  // match kept as the secondary key; either half of the long title hits.
   {
+    tokenId: '3',
     titleMatch: ['toxic heritage', 'wounded martyr'],
     description: `Toxic Heritage: The Wounded Martyr’s Trip by Tornado marks the second drop in the Kismet Patron Collection.
 
