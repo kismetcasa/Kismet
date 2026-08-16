@@ -113,7 +113,32 @@ export function AdminDashboard() {
       <HideContentCard />
       <TokenGateCard />
       <AirdropQuotaCard />
+      <BroadcastCard />
     </div>
+  )
+}
+
+/** Single-link card for the Farcaster push broadcast sub-page. Separate from
+ *  the moderation cards: this is outbound comms, not access control. */
+function BroadcastCard() {
+  return (
+    <section className="border border-line bg-[#161616] p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-ink font-mono text-sm">Push broadcast</h2>
+        <p className="text-[11px] font-mono text-dim mt-1 leading-relaxed">
+          Send one native Farcaster push to every user who added Kismet with
+          notifications on. Dry-run reach estimate, then send; re-sends with
+          the same id only reach users missed the first time.
+        </p>
+      </div>
+      <Link
+        href="/admin/broadcast"
+        className="block border border-line bg-[#0a0a0a] px-3 py-2.5 hover:border-muted transition-colors"
+      >
+        <div className="text-xs font-mono text-ink uppercase tracking-wider">Broadcast</div>
+        <div className="text-[10px] font-mono text-dim mt-1">estimate reach and send an announcement.</div>
+      </Link>
+    </section>
   )
 }
 
