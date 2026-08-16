@@ -1,4 +1,5 @@
 import { redis } from './redis'
+import { acquireLock } from './redisLock'
 import { getFarcasterProfileByAddress } from './farcasterProfile'
 import { formatPrice, isPlatformCollectComment } from './inprocess'
 import {
@@ -55,12 +56,28 @@ const keyPushMaster = (fid: number) => `kismetart:fc:push-master:${fid}`
 const keyPushSeeded = (fid: number) => `kismetart:fc:push-seeded:${fid}`
 const keyIdempotency = (fid: number, notificationId: string) =>
   `kismetart:fc:notif-sent:${fid}:${notificationId}`
+// Index of every FID that MIGHT hold a token — the enumerable surface for
+// broadcasts. Maintained by registerToken (SADD) / clearTokens (SREM) and
+// backfilled once by scripts/backfill-fc-push-fids.mjs. A member is a HINT,
+// not a guarantee: the per-FID token SET can lapse on its own 365d TTL while
+// the index member remains, so broadcast enumeration re-checks each FID and
+// lazily prunes empties. No TTL on the index itself — same posture as the
+// created-mints registry (persistent, self-healing membership).
+const KEY_PUSH_FIDS = 'kismetart:fc:push-fids'
+// Per-run broadcast stats, keyed by the run's notificationId — the first
+// observability signal this transport has (STACK_OVERVIEW G4 gap).
+const keyBroadcastRecord = (notificationId: string) => `kismetart:fc:broadcast:${notificationId}`
+// Single-flight lock for broadcast runs. Host-side (FID, notificationId)
+// dedupe makes concurrent runs harmless, so this only prevents wasted
+// duplicate POST volume, not correctness bugs.
+const BROADCAST_LOCK_KEY = 'kismetart:fc:broadcast-lock'
 
 const IDEMPOTENCY_TTL_SECS = 24 * 60 * 60
 const TOKENS_TTL_SECS = 365 * 24 * 60 * 60
 const PUSH_TYPES_TTL_SECS = 365 * 24 * 60 * 60
 const PUSH_MASTER_TTL_SECS = 365 * 24 * 60 * 60
 const PUSH_SEEDED_TTL_SECS = 5 * 365 * 24 * 60 * 60
+const BROADCAST_RECORD_TTL_SECS = 30 * 24 * 60 * 60
 
 // Per the canonical sendNotificationRequestSchema (@farcaster/miniapp-core,
 // schemas/notifications): tokens: z.string().array().max(100). One FID
@@ -114,6 +131,9 @@ export async function registerToken(fid: number, details: NotificationToken): Pr
     .multi()
     .sadd(keyTokens(fid), member)
     .expire(keyTokens(fid), TOKENS_TTL_SECS)
+    // Keep the broadcast index in the same atomic write as the token so the
+    // two can't drift on a partial failure.
+    .sadd(KEY_PUSH_FIDS, String(fid))
     .exec()
 
   // Has this FID ever been seeded? If yes, skip seed regardless of the
@@ -175,7 +195,10 @@ async function unregisterToken(fid: number, details: NotificationToken): Promise
 
 /** Drop ALL tokens for an FID (miniapp_removed or notifications_disabled). */
 export async function clearTokens(fid: number): Promise<void> {
-  await redis.del(keyTokens(fid))
+  // Deleting the tokens without the index SREM would leave a stale (but
+  // harmless — broadcast re-checks and prunes) member; pairing them in one
+  // MULTI keeps the index honest on the common path.
+  await redis.multi().del(keyTokens(fid)).srem(KEY_PUSH_FIDS, String(fid)).exec()
 }
 
 /**
@@ -193,6 +216,7 @@ export async function clearFarcasterPushState(fid: number): Promise<void> {
     redis.del(keyPushTypes(fid)),
     redis.del(keyPushMaster(fid)),
     redis.del(keyPushSeeded(fid)),
+    redis.srem(KEY_PUSH_FIDS, String(fid)),
   ])
 }
 
@@ -692,5 +716,511 @@ export async function hasAnyToken(fid: number): Promise<boolean> {
     return (await redis.scard(keyTokens(fid))) > 0
   } catch {
     return false
+  }
+}
+
+// ---------- Broadcast (admin announcement to every opted-in user) ----------
+//
+// Sends ONE notification to every FID that (a) holds at least one live
+// notification token — i.e. added Kismet in a Farcaster host with
+// notifications enabled — and (b) has the Kismet master push toggle on.
+//
+// Design decisions, in spec terms (farcasterxyz/miniapps notifications spec):
+//   - Recipients are FIDs, not addresses. Many token-holding FIDs have no
+//     Kismet session/address, so a broadcast deliberately does NOT write
+//     in-app bell entries — it is a pure FC-push transport.
+//   - Per-type opt-ins are NOT consulted: those gate the 12 event-driven
+//     types; a broadcast is an operator announcement, not an event class.
+//     The master toggle (the user's explicit "no Kismet push") IS honored,
+//     and the host-level control (user disables notifications → tokens
+//     invalidated) always applies before us.
+//   - No local (fid, notificationId) SETNX: hosts MUST dedupe on
+//     (FID, notificationId) for 24h — that server-side key is the spec's
+//     retry mechanism. Re-running the same notificationId re-attempts
+//     tokens that were rate-limited or unreachable, while already-notified
+//     users are deduped host-side. A local SETNX would break exactly that.
+//   - One POST per (host url, ≤100 tokens) batch, same notificationId in
+//     every batch (explicitly sanctioned by the spec's batching guidance).
+//   - `invalidTokens` in a response are GC'd immediately, like dispatch.
+//     `rateLimitedTokens` stay put — a later re-run redelivers.
+
+/** Spec caps (sendNotificationRequestSchema, @farcaster/miniapp-core). */
+export const BROADCAST_LIMITS = {
+  notificationId: 128,
+  title: 32,
+  body: 128,
+  targetUrl: 1024,
+  tokensPerRequest: MAX_TOKENS_PER_REQUEST,
+} as const
+
+// Enumeration hard cap — far above the realistic index size; if it ever
+// trips, the run reports `truncated: true` and logs, never silently drops
+// (repo rule: no silent caps).
+const BROADCAST_MAX_FIDS = 100_000
+// In-flight POST bound. Each request can hold a connection for up to
+// SEND_TIMEOUT_MS; 4-wide keeps a full 100-batch run well under the route's
+// 300s window while staying gentle on the host endpoint.
+const BROADCAST_SEND_CONCURRENCY = 4
+const BROADCAST_LOCK_TTL_SECS = 10 * 60
+
+export interface BroadcastInput {
+  notificationId: string
+  title: string
+  body: string
+  /** Defaults to SITE_URL. Host MUST equal SITE_URL's host or the Farcaster
+   *  client permanently invalidates the affected tokens (target_url_mismatch). */
+  targetUrl?: string
+}
+
+export type BroadcastValidation =
+  | { ok: true; notificationId: string; title: string; body: string; targetUrl: string }
+  | { ok: false; error: string }
+
+/**
+ * Validate + normalize a broadcast request against the spec caps. Pure —
+ * exercised by scripts/verify-fc-broadcast.ts.
+ *
+ * Overlong title/body are REJECTED, not truncated: compose() truncation is
+ * the right behavior for machine-composed event copy, but an announcement is
+ * hand-written — the admin should shorten it intentionally, not discover a
+ * mid-word ellipsis in production.
+ */
+export function validateBroadcastInput(input: BroadcastInput): BroadcastValidation {
+  const notificationId = input.notificationId?.trim() ?? ''
+  if (!notificationId) return { ok: false, error: 'notificationId is required' }
+  if (/\s/.test(notificationId)) {
+    return { ok: false, error: 'notificationId must not contain whitespace' }
+  }
+  if (notificationId.length > BROADCAST_LIMITS.notificationId) {
+    return { ok: false, error: `notificationId exceeds ${BROADCAST_LIMITS.notificationId} chars` }
+  }
+
+  const title = input.title?.trim() ?? ''
+  if (!title) return { ok: false, error: 'title is required' }
+  if (title.length > BROADCAST_LIMITS.title) {
+    return { ok: false, error: `title exceeds ${BROADCAST_LIMITS.title} chars (spec cap)` }
+  }
+
+  const body = input.body?.trim() ?? ''
+  if (!body) return { ok: false, error: 'body is required' }
+  if (body.length > BROADCAST_LIMITS.body) {
+    return { ok: false, error: `body exceeds ${BROADCAST_LIMITS.body} chars (spec cap)` }
+  }
+
+  const targetUrl = input.targetUrl?.trim() || SITE_URL
+  if (targetUrl.length > BROADCAST_LIMITS.targetUrl) {
+    return { ok: false, error: `targetUrl exceeds ${BROADCAST_LIMITS.targetUrl} chars (spec cap)` }
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(targetUrl)
+  } catch {
+    return { ok: false, error: 'targetUrl is not a valid URL' }
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, error: 'targetUrl must be https' }
+  }
+  // Exact-host equality, subdomains included. A www./subdomain drift doesn't
+  // merely fail delivery — the host answers target_url_mismatch and
+  // PERMANENTLY invalidates every token in the request. This guard is the
+  // reason the field can't be free-form.
+  const siteHost = new URL(SITE_URL).hostname
+  if (parsed.hostname !== siteHost) {
+    return { ok: false, error: `targetUrl host must be exactly ${siteHost}` }
+  }
+
+  return { ok: true, notificationId, title, body, targetUrl }
+}
+
+export interface BroadcastTarget {
+  fid: number
+  url: string
+  token: string
+}
+
+/**
+ * Group flat (fid, url, token) triples into per-host batches of at most 100
+ * tokens (spec cap on `tokens`). Pure — exercised by the verify script.
+ * Batches keep the full triple so a response's `invalidTokens` (returned as
+ * bare token strings) can be mapped back to the owning FID for GC.
+ */
+export function groupTargetsForSend(
+  targets: BroadcastTarget[],
+): { url: string; batches: BroadcastTarget[][] }[] {
+  const byUrl = new Map<string, BroadcastTarget[]>()
+  for (const t of targets) {
+    const list = byUrl.get(t.url) ?? []
+    list.push(t)
+    byUrl.set(t.url, list)
+  }
+  return [...byUrl.entries()].map(([url, list]) => ({
+    url,
+    batches: chunk(list, MAX_TOKENS_PER_REQUEST),
+  }))
+}
+
+interface CollectedTargets {
+  targets: BroadcastTarget[]
+  /** FIDs contributing ≥1 token to `targets`. */
+  eligibleFids: number
+  /** FIDs holding tokens but with the Kismet master toggle off — skipped. */
+  skippedMasterOff: number
+  /** Stale index members (empty/expired token SETs) pruned this pass. */
+  prunedNoTokens: number
+  scannedFids: number
+  truncated: boolean
+}
+
+/**
+ * Walk the push-fids index and resolve every sendable (fid, url, token).
+ * SSCAN cursor loop (same shape as scanCreatedMints) so the index never has
+ * to fit in one reply; per-page reads fan out through Promise.all, which
+ * @upstash/redis auto-pipelines into a handful of REST round-trips.
+ */
+async function collectBroadcastTargets(): Promise<CollectedTargets> {
+  const out: CollectedTargets = {
+    targets: [],
+    eligibleFids: 0,
+    skippedMasterOff: 0,
+    prunedNoTokens: 0,
+    scannedFids: 0,
+    truncated: false,
+  }
+
+  // SCAN-family cursors guarantee at-least-once, not exactly-once — a member
+  // can repeat across pages when the set is written mid-scan (live webhook
+  // registrations). Dedupe so stats stay exact and no token is POSTed twice
+  // in one run.
+  const seen = new Set<number>()
+  let cursor: string | number = 0
+  do {
+    const [next, page] = (await redis.sscan(KEY_PUSH_FIDS, cursor, {
+      count: 1000,
+    })) as [string | number, (string | number)[]]
+    cursor = next
+
+    // Upstash may hand members back as numbers (JSON round-trip); normalize
+    // and prune anything that doesn't parse as a positive integer FID.
+    const fids: number[] = []
+    const malformed: string[] = []
+    for (const raw of page) {
+      const fid = Number(raw)
+      if (Number.isInteger(fid) && fid > 0) {
+        if (!seen.has(fid)) {
+          seen.add(fid)
+          fids.push(fid)
+        }
+      } else {
+        malformed.push(String(raw))
+      }
+    }
+    if (malformed.length > 0) {
+      out.prunedNoTokens += malformed.length
+      await redis.srem(KEY_PUSH_FIDS, ...malformed).catch(() => {})
+    }
+
+    out.scannedFids += fids.length
+    if (fids.length > 0) {
+      const masters = await Promise.all(fids.map((fid) => getPushMaster(fid)))
+      const masterOnFids = fids.filter((_, i) => masters[i] === 'on')
+      out.skippedMasterOff += fids.length - masterOnFids.length
+
+      const tokenLists = await Promise.all(masterOnFids.map((fid) => getTokens(fid)))
+      const stale: string[] = []
+      masterOnFids.forEach((fid, i) => {
+        const tokens = tokenLists[i]
+        if (tokens.length === 0) {
+          // Token SET expired (365d TTL) or was emptied by GC — the index
+          // member is stale. Prune so future runs shrink toward truth.
+          stale.push(String(fid))
+          return
+        }
+        out.eligibleFids++
+        for (const t of tokens) out.targets.push({ fid, url: t.url, token: t.token })
+      })
+      if (stale.length > 0) {
+        out.prunedNoTokens += stale.length
+        await redis.srem(KEY_PUSH_FIDS, ...stale).catch(() => {})
+      }
+    }
+
+    if (out.scannedFids >= BROADCAST_MAX_FIDS) {
+      out.truncated = true
+      console.warn(
+        `[fc-broadcast] index scan hit the ${BROADCAST_MAX_FIDS}-fid cap; remaining fids skipped this run`,
+      )
+      break
+    }
+  } while (String(cursor) !== '0')
+
+  return out
+}
+
+export interface BroadcastReach {
+  eligibleFids: number
+  tokens: number
+  /** Token count per host notification endpoint (e.g. the Farcaster client
+   *  vs the Base app) — the broadcast POSTs to every one of these. */
+  hosts: Record<string, number>
+  skippedMasterOff: number
+  prunedNoTokens: number
+  truncated: boolean
+}
+
+/** Dry-run: enumerate who a broadcast would reach without sending anything. */
+export async function estimateBroadcastReach(): Promise<BroadcastReach> {
+  const collected = await collectBroadcastTargets()
+  const hosts: Record<string, number> = {}
+  for (const t of collected.targets) hosts[t.url] = (hosts[t.url] ?? 0) + 1
+  return {
+    eligibleFids: collected.eligibleFids,
+    tokens: collected.targets.length,
+    hosts,
+    skippedMasterOff: collected.skippedMasterOff,
+    prunedNoTokens: collected.prunedNoTokens,
+    truncated: collected.truncated,
+  }
+}
+
+export interface BroadcastRunResult {
+  ok: true
+  notificationId: string
+  eligibleFids: number
+  skippedMasterOff: number
+  prunedNoTokens: number
+  /** POSTs attempted / POSTs that got no usable 200 (network, timeout, 4xx/5xx). */
+  requests: number
+  failedRequests: number
+  successfulTokens: number
+  /** Tokens the hosts declared dead — GC'd from storage during this run. */
+  invalidTokens: number
+  /** Tokens deferred by host rate limits — kept; re-run ≥30s later to retry. */
+  rateLimitedTokens: number
+  truncated: boolean
+  durationMs: number
+}
+
+export type BroadcastOutcome =
+  | BroadcastRunResult
+  | { ok: false; error: 'locked' }
+  | { ok: false; error: 'invalid-input'; detail: string }
+
+/** Fixed-width worker pool — bounds in-flight POSTs without a dependency. */
+async function runBounded<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      await worker(items[i])
+    }
+  })
+  await Promise.all(lanes)
+}
+
+/**
+ * Send an announcement to every eligible user. Admin-triggered (see
+ * /api/admin/broadcast); errors propagate to the caller — unlike
+ * dispatchFarcasterPush this is not fire-and-forget infrastructure, the
+ * operator is watching and a failed run must be visible.
+ *
+ * Safe to re-run with the SAME notificationId: hosts dedupe delivered
+ * (FID, notificationId) pairs for 24h, so a re-run only reaches tokens that
+ * were rate-limited, unreachable, or newly registered.
+ */
+export async function broadcastFarcasterPush(input: BroadcastInput): Promise<BroadcastOutcome> {
+  const validated = validateBroadcastInput(input)
+  if (!validated.ok) return { ok: false, error: 'invalid-input', detail: validated.error }
+
+  const lock = await acquireLock(BROADCAST_LOCK_KEY, BROADCAST_LOCK_TTL_SECS)
+  if (!lock.acquired) return { ok: false, error: 'locked' }
+
+  const started = Date.now()
+  try {
+    const collected = await collectBroadcastTargets()
+    const grouped = groupTargetsForSend(collected.targets)
+
+    const result: BroadcastRunResult = {
+      ok: true,
+      notificationId: validated.notificationId,
+      eligibleFids: collected.eligibleFids,
+      skippedMasterOff: collected.skippedMasterOff,
+      prunedNoTokens: collected.prunedNoTokens,
+      requests: 0,
+      failedRequests: 0,
+      successfulTokens: 0,
+      invalidTokens: 0,
+      rateLimitedTokens: 0,
+      truncated: collected.truncated,
+      durationMs: 0,
+    }
+
+    const jobs = grouped.flatMap(({ url, batches }) =>
+      batches.map((batch) => ({ url, batch })),
+    )
+
+    await runBounded(jobs, BROADCAST_SEND_CONCURRENCY, async ({ url, batch }) => {
+      result.requests++
+      const res = await sendOne(
+        url,
+        batch.map((t) => t.token),
+        validated.notificationId,
+        validated.title,
+        validated.body,
+        validated.targetUrl,
+      )
+      if (!res?.result) {
+        // Delivery uncertain (timeout / network / non-200). Tokens are NOT
+        // GC'd — a re-run retries them and host dedupe absorbs any overlap.
+        result.failedRequests++
+        return
+      }
+      result.successfulTokens += res.result.successfulTokens?.length ?? 0
+      result.rateLimitedTokens += res.result.rateLimitedTokens?.length ?? 0
+      const invalid = res.result.invalidTokens ?? []
+      if (invalid.length === 0) return
+      result.invalidTokens += invalid.length
+      // Map bare token strings back to owners within this batch for GC. The
+      // GC is best-effort: a Redis blip here must not abort the remaining
+      // batches of a run whose sends are already in flight — an un-GC'd dead
+      // token just resurfaces in the next run's invalidTokens.
+      const byToken = new Map(batch.map((t) => [t.token, t.fid]))
+      await Promise.all(
+        invalid.map((tok) => {
+          const fid = byToken.get(tok)
+          return fid
+            ? unregisterToken(fid, { url, token: tok }).catch(() => {})
+            : Promise.resolve()
+        }),
+      )
+    })
+
+    result.durationMs = Date.now() - started
+
+    // Best-effort observability: per-run record (30d) + one summary log line
+    // (OPS_RUNBOOK watches the [fc-broadcast] prefix). Record write failure
+    // must not fail a run whose sends already happened.
+    try {
+      await redis.set(
+        keyBroadcastRecord(validated.notificationId),
+        JSON.stringify({ ...result, title: validated.title, ts: Date.now() }),
+        { ex: BROADCAST_RECORD_TTL_SECS },
+      )
+    } catch {
+      // Stats are advisory; the log line below still records the run.
+    }
+    console.log(
+      '[fc-broadcast] run complete',
+      JSON.stringify({
+        notificationId: validated.notificationId,
+        eligibleFids: result.eligibleFids,
+        requests: result.requests,
+        failedRequests: result.failedRequests,
+        successful: result.successfulTokens,
+        invalid: result.invalidTokens,
+        rateLimited: result.rateLimitedTokens,
+        ms: result.durationMs,
+      }),
+    )
+
+    return result
+  } finally {
+    await lock.release()
+  }
+}
+
+export interface BroadcastTestResult {
+  ok: true
+  fid: number
+  tokens: number
+  successfulTokens: number
+  invalidTokens: number
+  rateLimitedTokens: number
+  failedRequests: number
+}
+
+export type BroadcastTestOutcome =
+  | BroadcastTestResult
+  | { ok: false; error: 'invalid-input'; detail: string }
+  | { ok: false; error: 'no-tokens' }
+  | { ok: false; error: 'master-off' }
+
+/**
+ * Send the announcement to a SINGLE FID — the smoke test before a real
+ * broadcast. Identical validation, identical gates (master toggle included:
+ * a test must never become a consent bypass, admin-only or not), identical
+ * send path; only the enumeration is skipped.
+ *
+ * The caller should use a scratch notificationId (the admin UI appends
+ * `-test`): hosts dedupe (FID, notificationId) for 24h, so testing with the
+ * REAL id would suppress the tester's copy of the actual broadcast.
+ */
+export async function sendBroadcastTestTo(
+  fid: number,
+  input: BroadcastInput,
+): Promise<BroadcastTestOutcome> {
+  const validated = validateBroadcastInput(input)
+  if (!validated.ok) return { ok: false, error: 'invalid-input', detail: validated.error }
+
+  if (!(await isPushMasterOn(fid))) return { ok: false, error: 'master-off' }
+  const tokens = await getTokens(fid)
+  if (tokens.length === 0) return { ok: false, error: 'no-tokens' }
+
+  const result: BroadcastTestResult = {
+    ok: true,
+    fid,
+    tokens: tokens.length,
+    successfulTokens: 0,
+    invalidTokens: 0,
+    rateLimitedTokens: 0,
+    failedRequests: 0,
+  }
+
+  // One FID can hold tokens on multiple hosts (Farcaster app + Base app);
+  // reuse the broadcast grouping so the test exercises the same code path.
+  for (const { url, batches } of groupTargetsForSend(
+    tokens.map((t) => ({ fid, url: t.url, token: t.token })),
+  )) {
+    for (const batch of batches) {
+      const res = await sendOne(
+        url,
+        batch.map((t) => t.token),
+        validated.notificationId,
+        validated.title,
+        validated.body,
+        validated.targetUrl,
+      )
+      if (!res?.result) {
+        result.failedRequests++
+        continue
+      }
+      result.successfulTokens += res.result.successfulTokens?.length ?? 0
+      result.rateLimitedTokens += res.result.rateLimitedTokens?.length ?? 0
+      const invalid = res.result.invalidTokens ?? []
+      result.invalidTokens += invalid.length
+      await Promise.all(
+        invalid.map((tok) => unregisterToken(fid, { url, token: tok }).catch(() => {})),
+      )
+    }
+  }
+
+  return result
+}
+
+/** Fetch a stored per-run stats record (30d retention). */
+export async function getBroadcastRecord(
+  notificationId: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await redis.get(keyBroadcastRecord(notificationId))
+    if (raw == null) return null
+    if (typeof raw === 'object') return raw as Record<string, unknown>
+    return JSON.parse(String(raw)) as Record<string, unknown>
+  } catch {
+    return null
   }
 }

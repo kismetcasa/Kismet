@@ -767,11 +767,22 @@ watermark or per-id read set); priority-and-unread cached badge count with
 DEL-on-write invalidation; lazy 60-day TTL retention; two-axis mute with a
 money-bearing bypass (`sale`/`airdrop`/`payout` reach the user regardless); FC push
 is fire-and-forget behind 7 short-circuit gates ending in a `SET NX` idempotency key;
-signed inbound webhook (ed25519 + Hub app-key).
+signed inbound webhook (ed25519 + Hub app-key). **Admin broadcast** (push-only, no
+bell entries — recipients are FIDs, many with no Kismet address): enumerates the
+self-healing `fc:push-fids` index (SSCAN, maintained atomically with token writes,
+backfilled once by `scripts/backfill-fc-push-fids.mjs`), honors the master toggle but
+deliberately not per-type opt-ins, sends per-host ≤100-token batches 4-wide under a
+single-flight lock, and relies on host-side `(FID, notificationId)` 24h dedupe instead
+of a local SETNX — so re-running the same id is the sanctioned retry for rate-limited/
+failed sends. Surface: `/admin/broadcast` → `/api/admin/broadcast` (dry-run reach +
+send + 30d per-run stats record).
 
 **Risks.** `MAX_PER_USER=200` hard cap silently drops oldest; `loadAndAnnotate`
-loads all entries on every page (in-memory pagination); push delivery is best-effort
-and unobservable.
+loads all entries on every page (in-memory pagination); organic push delivery is
+best-effort and unobservable (broadcasts now record per-run stats —
+`kismetart:fc:broadcast:{id}`, 30d — but per-event dispatch still doesn't); a
+broadcast `targetUrl` host mismatch would permanently invalidate tokens
+(rejected at validation, guarded by `verify:fc-broadcast`).
 
 #### G5. Feeds: Discover / Featured / Search / Timeline / Stats (`feeds-discover`)
 **What.** The content-surface layer: cross-collection Discover/Trending/Mints feeds,
