@@ -8,6 +8,7 @@ import {
   broadcastFarcasterPush,
   estimateBroadcastReach,
   getBroadcastRecord,
+  sendBroadcastTestTo,
   validateBroadcastInput,
 } from '@/lib/farcasterNotifications'
 
@@ -17,6 +18,7 @@ import {
 // lib/farcasterNotifications.ts for the full recipient/idempotency model.
 //
 // POST { dryRun: true }                          → reach estimate, no sends
+// POST { testFid, notificationId, … }            → smoke test: send to ONE fid
 // POST { notificationId, title, body, targetUrl? } → send; returns run stats
 // GET  ?notificationId=…                          → stored stats for a past run
 //
@@ -59,6 +61,7 @@ export async function POST(req: NextRequest) {
 
   const body = (await req.json().catch(() => null)) as {
     dryRun?: boolean
+    testFid?: number
     notificationId?: string
     title?: string
     body?: string
@@ -78,6 +81,29 @@ export async function POST(req: NextRequest) {
     title: body.title ?? '',
     body: body.body ?? '',
     targetUrl: body.targetUrl,
+  }
+
+  if (body.testFid !== undefined) {
+    // Smoke test: deliver the exact payload to one FID through the same
+    // validation + send path, so "it buzzed on my phone" is evidence for
+    // the full run. Gated identically (master toggle included) so a test
+    // can never notify a user who opted out.
+    if (!Number.isInteger(body.testFid) || body.testFid <= 0) {
+      return errorResponse(400, 'testFid must be a positive integer FID')
+    }
+    const test = await sendBroadcastTestTo(body.testFid, input)
+    if (!test.ok) {
+      if (test.error === 'invalid-input') return errorResponse(400, test.detail)
+      if (test.error === 'master-off') {
+        return errorResponse(409, `FID ${body.testFid} has the Kismet push master toggle off`)
+      }
+      return errorResponse(404, `No notification tokens stored for FID ${body.testFid}`)
+    }
+    await recordAdminAction('fc-broadcast.test', {
+      actor: auth.signer,
+      meta: { testFid: body.testFid, notificationId: input.notificationId.trim() },
+    })
+    return NextResponse.json({ ok: true, test })
   }
   // Pre-validate for a precise 400 before doing any Redis work; the lib
   // re-validates internally (single source of truth for the spec caps).

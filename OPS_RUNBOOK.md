@@ -141,7 +141,9 @@ One-time setup after the feature deploys: run
 `node scripts/backfill-fc-push-fids.mjs` (dry-run report), then `--commit`, so
 users who granted notifications before the `fc:push-fids` index existed are
 reachable. From then on the index maintains itself. To send: `/admin/broadcast`
-→ **estimate reach** (dry-run; also self-heals stale index entries) → send.
+→ **estimate reach** (dry-run; also self-heals stale index entries) →
+**send test** to your own FID (same payload through the real path, scratch
+`-test` id) and confirm it lands on the device → send.
 If the result shows rate-limited or failed sends, re-send with the **same**
 notification id ≥1 min later — hosts dedupe `(FID, id)` for 24h, so only the
 missed users are retried. Per-run stats persist 30d

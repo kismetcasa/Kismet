@@ -1133,6 +1133,84 @@ export async function broadcastFarcasterPush(input: BroadcastInput): Promise<Bro
   }
 }
 
+export interface BroadcastTestResult {
+  ok: true
+  fid: number
+  tokens: number
+  successfulTokens: number
+  invalidTokens: number
+  rateLimitedTokens: number
+  failedRequests: number
+}
+
+export type BroadcastTestOutcome =
+  | BroadcastTestResult
+  | { ok: false; error: 'invalid-input'; detail: string }
+  | { ok: false; error: 'no-tokens' }
+  | { ok: false; error: 'master-off' }
+
+/**
+ * Send the announcement to a SINGLE FID — the smoke test before a real
+ * broadcast. Identical validation, identical gates (master toggle included:
+ * a test must never become a consent bypass, admin-only or not), identical
+ * send path; only the enumeration is skipped.
+ *
+ * The caller should use a scratch notificationId (the admin UI appends
+ * `-test`): hosts dedupe (FID, notificationId) for 24h, so testing with the
+ * REAL id would suppress the tester's copy of the actual broadcast.
+ */
+export async function sendBroadcastTestTo(
+  fid: number,
+  input: BroadcastInput,
+): Promise<BroadcastTestOutcome> {
+  const validated = validateBroadcastInput(input)
+  if (!validated.ok) return { ok: false, error: 'invalid-input', detail: validated.error }
+
+  if (!(await isPushMasterOn(fid))) return { ok: false, error: 'master-off' }
+  const tokens = await getTokens(fid)
+  if (tokens.length === 0) return { ok: false, error: 'no-tokens' }
+
+  const result: BroadcastTestResult = {
+    ok: true,
+    fid,
+    tokens: tokens.length,
+    successfulTokens: 0,
+    invalidTokens: 0,
+    rateLimitedTokens: 0,
+    failedRequests: 0,
+  }
+
+  // One FID can hold tokens on multiple hosts (Farcaster app + Base app);
+  // reuse the broadcast grouping so the test exercises the same code path.
+  for (const { url, batches } of groupTargetsForSend(
+    tokens.map((t) => ({ fid, url: t.url, token: t.token })),
+  )) {
+    for (const batch of batches) {
+      const res = await sendOne(
+        url,
+        batch.map((t) => t.token),
+        validated.notificationId,
+        validated.title,
+        validated.body,
+        validated.targetUrl,
+      )
+      if (!res?.result) {
+        result.failedRequests++
+        continue
+      }
+      result.successfulTokens += res.result.successfulTokens?.length ?? 0
+      result.rateLimitedTokens += res.result.rateLimitedTokens?.length ?? 0
+      const invalid = res.result.invalidTokens ?? []
+      result.invalidTokens += invalid.length
+      await Promise.all(
+        invalid.map((tok) => unregisterToken(fid, { url, token: tok }).catch(() => {})),
+      )
+    }
+  }
+
+  return result
+}
+
 /** Fetch a stored per-run stats record (30d retention). */
 export async function getBroadcastRecord(
   notificationId: string,

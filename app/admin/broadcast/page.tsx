@@ -51,6 +51,9 @@ export default function BroadcastAdminPage() {
   const [sending, setSending] = useState(false)
   const [armed, setArmed] = useState(false)
   const [result, setResult] = useState<RunResult | null>(null)
+  const [testFid, setTestFid] = useState('')
+  const [testing, setTesting] = useState(false)
+  const [testOutcome, setTestOutcome] = useState<string | null>(null)
 
   // Prefill a date-scoped id in an effect (not a useState initializer) so the
   // SSR pass and hydration render identical markup. A stable per-announcement
@@ -88,6 +91,54 @@ export default function BroadcastAdminPage() {
       toastError('Estimate', err)
     } finally {
       setEstimating(false)
+    }
+  }
+
+  async function handleTest() {
+    const fid = Number(testFid)
+    if (!Number.isInteger(fid) || fid <= 0) {
+      toast.error('Enter a valid FID (positive integer)')
+      return
+    }
+    if (!title.trim() || !body.trim() || !notificationId.trim()) {
+      toast.error('notificationId, title and body are required')
+      return
+    }
+    setTesting(true)
+    setTestOutcome(null)
+    try {
+      const outcome = await withSession(async () => {
+        const res = await fetch('/api/admin/broadcast', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            testFid: fid,
+            // Scratch id: hosts dedupe (fid, id) for 24h, so testing with
+            // the REAL id would suppress this fid's copy of the actual send.
+            notificationId: `${notificationId.trim()}-test`,
+            title: title.trim(),
+            body: body.trim(),
+            ...(targetUrl.trim() ? { targetUrl: targetUrl.trim() } : {}),
+          }),
+        })
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean
+          test?: { successfulTokens: number; tokens: number; rateLimitedTokens: number }
+          error?: string
+        }
+        if (!res.ok || !json.ok || !json.test) throw new Error(json.error ?? 'Test failed')
+        return json.test
+      })
+      if (!outcome) return
+      setTestOutcome(
+        `delivered to ${outcome.successfulTokens}/${outcome.tokens} token(s) for fid ${fid}` +
+          (outcome.rateLimitedTokens > 0 ? ` (${outcome.rateLimitedTokens} rate-limited — wait 30s)` : ''),
+      )
+      toast.success('Test sent — check the device')
+    } catch (err) {
+      toastError('Test', err)
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -262,6 +313,33 @@ export default function BroadcastAdminPage() {
         <p className="text-[10px] font-mono text-muted mt-1.5">
           must be on kismet.art — a wrong host permanently invalidates notification tokens, so the server rejects anything else.
         </p>
+      </div>
+
+      <div className="border border-line px-3 py-3 flex flex-col gap-2">
+        <span className="text-xs font-mono text-dim uppercase tracking-wider">test delivery first</span>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            inputMode="numeric"
+            value={testFid}
+            onChange={(e) => setTestFid(e.target.value.trim())}
+            placeholder="your FID"
+            className="flex-1 bg-[#0a0a0a] border border-line px-3 py-2 text-sm text-ink font-mono placeholder-subtle focus:outline-none focus:border-muted"
+          />
+          <button
+            onClick={handleTest}
+            disabled={testing || title.length > TITLE_MAX || body.length > BODY_MAX}
+            className="px-3 py-2 text-[10px] font-mono uppercase tracking-widest border border-line hover:border-muted transition-colors disabled:opacity-50"
+          >
+            {testing ? 'sending…' : 'send test'}
+          </button>
+        </div>
+        <p className="text-[10px] font-mono text-muted">
+          sends this exact payload to one FID through the real path (uses a
+          &quot;-test&quot; id so it can&apos;t suppress that user&apos;s copy of the real
+          send). the FID needs Kismet added + push on.
+        </p>
+        {testOutcome && <p className="text-[11px] font-mono text-dim">{testOutcome}</p>}
       </div>
 
       <button
