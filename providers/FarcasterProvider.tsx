@@ -577,6 +577,23 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         const notificationsEnabled = !!ctx?.client?.notificationDetails
         addEligibilityRef.current = { known: ctx != null, added, notificationsEnabled }
 
+        // Token self-heal: the context carries the live notification
+        // (url, token) for this (host, user) — the same pair the grant
+        // webhook delivers. Forward it so token storage converges with
+        // reality even when a webhook was missed (the hub-sunset incident
+        // left months of grants unstored; this repopulates them one app
+        // open at a time). Fire-and-forget on the post-ready path: rides
+        // the JWT interceptor for auth, server-side SADD is idempotent,
+        // and a failure just means the next open retries.
+        const details = ctx?.client?.notificationDetails
+        if (details?.url && details?.token) {
+          void fetch('/api/farcaster/register-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: details.url, token: details.token }),
+          }).catch(() => {})
+        }
+
         // Host capability probe — post-paint, so the round-trip costs
         // nothing visible. Bounded like the other bridge awaits; a timeout
         // or rejection (hosts predating getCapabilities) reads as unknown
