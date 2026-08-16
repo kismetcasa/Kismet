@@ -58,7 +58,7 @@ const keyIdempotency = (fid: number, notificationId: string) =>
   `kismetart:fc:notif-sent:${fid}:${notificationId}`
 // Index of every FID that MIGHT hold a token — the enumerable surface for
 // broadcasts. Maintained by registerToken (SADD) / clearTokens (SREM) and
-// backfilled once by scripts/backfill-fc-push-fids.mjs. A member is a HINT,
+// backfilled once by scripts/reconcile-fc-push-fids.mjs. A member is a HINT,
 // not a guarantee: the per-FID token SET can lapse on its own 365d TTL while
 // the index member remains, so broadcast enumeration re-checks each FID and
 // lazily prunes empties. No TTL on the index itself — same posture as the

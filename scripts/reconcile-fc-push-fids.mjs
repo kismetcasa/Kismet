@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * backfill-fc-push-fids.mjs
+ * reconcile-fc-push-fids.mjs
  * ---------------------------------------------------------------------------
  * One-time backfill for the Farcaster push broadcast index.
  *
@@ -22,8 +22,13 @@
  * members, registerToken adds new ones atomically).
  *
  * Usage:
- *   node scripts/backfill-fc-push-fids.mjs            # dry-run: report only
- *   node scripts/backfill-fc-push-fids.mjs --commit   # write the index
+ *   node scripts/reconcile-fc-push-fids.mjs            # dry-run: report only
+ *   node scripts/reconcile-fc-push-fids.mjs --commit   # write the index
+ *
+ * Where to run: the reconcile-*.mjs glob ships this file into the runtime
+ * image (see Dockerfile), so the intended place is the Coolify container
+ * console, where the env below is already set. Any shell with the prod env
+ * vars works identically (self-contained — Node built-ins only).
  *
  * Env (same names the app reads):
  *   UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
