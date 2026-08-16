@@ -27,11 +27,24 @@ import { clearTokens, registerToken } from '@/lib/farcasterNotifications'
 // this gate anyone could POST a forged "miniapp_added" claiming any FID
 // and direct future notifications for that user to a malicious URL.
 //
-// Hub: defaults to https://hub.farcaster.xyz. Override with FARCASTER_HUB_URL
-// for a private hub (Neynar / self-hosted). Hub call is the only network
-// dependency on the critical path of this endpoint; everything else is Redis.
+// Hub: defaults to the public Snapchain node's HTTP API — the endpoint
+// @farcaster/miniapp-node's own test suite verifies against. Override with
+// FARCASTER_HUB_URL for a private node (Neynar / self-hosted). This call is
+// the only network dependency on the critical path of this endpoint;
+// everything else is Redis.
+//
+// HISTORY: the previous default, https://hub.farcaster.xyz, stopped resolving
+// when hubs were sunset in the Snapchain migration — every webhook then died
+// at verification (fetch throws → 401 → host retries → gives up), so NO
+// notification token was ever stored, silently. If verification breaks again,
+// that is the failure signature to check first: `[fc-webhook] signature
+// verification failed: VerifyJsonFarcasterSignature.VerifyAppKeyError` in the
+// logs, paired with an empty kismetart:fc:tokens:* keyspace. The client-side
+// context self-heal (app/api/farcaster/register-token) keeps tokens flowing
+// for active users even while webhook verification is down, but webhook
+// events remain the only path that observes REMOVALS.
 
-const HUB_URL = process.env.FARCASTER_HUB_URL?.replace(/\/$/, '') ?? 'https://hub.farcaster.xyz'
+const HUB_URL = process.env.FARCASTER_HUB_URL?.replace(/\/$/, '') ?? 'https://snap.farcaster.xyz:3381'
 
 // VerifyAppKey constructor is sync; reuse one instance for connection
 // keep-alive and to avoid per-request allocation.

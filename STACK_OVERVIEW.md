@@ -767,10 +767,17 @@ watermark or per-id read set); priority-and-unread cached badge count with
 DEL-on-write invalidation; lazy 60-day TTL retention; two-axis mute with a
 money-bearing bypass (`sale`/`airdrop`/`payout` reach the user regardless); FC push
 is fire-and-forget behind 7 short-circuit gates ending in a `SET NX` idempotency key;
-signed inbound webhook (ed25519 + Hub app-key). **Admin broadcast** (push-only, no
+signed inbound webhook (ed25519 app-key check against Snapchain, default
+`snap.farcaster.xyz:3381` — the old `hub.farcaster.xyz` default stopped resolving in
+the Snapchain sunset and silently 401'd every grant webhook, zeroing token
+acquisition until caught 2026-08); client-side token **self-heal**
+(`/api/farcaster/register-token`): every miniapp open forwards the context's
+`client.notificationDetails` (Quick-Auth-verified to the caller's own FID), so token
+storage converges with reality even across webhook loss — webhooks remain the only
+observer of REMOVALS. **Admin broadcast** (push-only, no
 bell entries — recipients are FIDs, many with no Kismet address): enumerates the
 self-healing `fc:push-fids` index (SSCAN, maintained atomically with token writes,
-backfilled once by `scripts/backfill-fc-push-fids.mjs`), honors the master toggle but
+backfilled once by `scripts/reconcile-fc-push-fids.mjs`), honors the master toggle but
 deliberately not per-type opt-ins, sends per-host ≤100-token batches 4-wide under a
 single-flight lock, and relies on host-side `(FID, notificationId)` 24h dedupe instead
 of a local SETNX — so re-running the same id is the sanctioned retry for rate-limited/

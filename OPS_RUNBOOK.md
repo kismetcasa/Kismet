@@ -137,8 +137,10 @@ logs for `[notifications] large fan-out` (≥1k followers → start SCALING.md B
 rate-limited counts).
 
 ### Farcaster push broadcast (admin announcement to all opted-in users)
-One-time setup after the feature deploys: run
-`node scripts/backfill-fc-push-fids.mjs` (dry-run report), then `--commit`, so
+One-time setup after the feature deploys — from the **Coolify container
+console** (Application → Terminal; the reconcile-*.mjs glob ships the script
+into the runtime image and `UPSTASH_REDIS_REST_*` are already set there): run
+`node scripts/reconcile-fc-push-fids.mjs` (dry-run report), then `--commit`, so
 users who granted notifications before the `fc:push-fids` index existed are
 reachable. From then on the index maintains itself. To send: `/admin/broadcast`
 → **estimate reach** (dry-run; also self-heals stale index entries) →
