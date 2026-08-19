@@ -123,9 +123,15 @@ export const ZORA_MULTICALL_ABI = parseAbi([
   'function multicall(bytes[] data) returns (bytes[] results)',
 ])
 
-// Zora 1155: returns the splits contract address for a token (set as the
-// per-token royaltyRecipient when inprocess deploys a splits contract at
-// mint time). Used to auto-resolve the split address for distribution.
+// Zora 1155: the token-level fundsRecipient (falling back to the collection's,
+// then owner()). This is where Zora's protocol CREATOR REWARDS land, and it is
+// what inprocess points at the 0xSplits wallet when Kismet mints with splits.
+//
+// It is NOT the only payout pointer a moment has: paid mint proceeds go to the
+// active sale strategy's own `salesConfig.fundsRecipient`, which can now be
+// repointed independently from In Process's moment-manage page. Resolve the
+// full set with payoutTargetCalls + decodePayoutTargets rather than this alone
+// — see the header block above decodePayoutTargets (lib/distributePlan.ts).
 export const ZORA_CREATOR_REWARD_RECIPIENT_ABI = parseAbi([
   'function getCreatorRewardRecipient(uint256 tokenId) view returns (address)',
 ])
@@ -146,6 +152,14 @@ export const MAX_COLLECT_ALL_BATCH = 20
 //
 // Verified canonical on Base via @zoralabs/protocol-sdk's apis/multicall3.ts.
 export const MULTICALL3_ADDRESS: Address = '0xcA11bde05977b3631167028862bE2a173976CA11'
+
+// Multicall3's native-balance reader. Lets a batch of ETH balances ride in the
+// same aggregate3 as ERC20 balanceOf reads, so resolving every payout target's
+// ETH + USDC balance costs one round-trip. Shared by the server roll-up
+// (lib/pending.ts) and the moment distribute panel (hooks/useMomentSplits.ts).
+export const MULTICALL3_BALANCE_ABI = parseAbi([
+  'function getEthBalance(address addr) view returns (uint256)',
+])
 
 // aggregate3Value entry: `[(target, allowFailure, value, callData)[]]` →
 // `(success, returnData)[]`. We use `allowFailure: false` so any inner

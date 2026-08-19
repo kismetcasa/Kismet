@@ -8,9 +8,13 @@ import {
   jobArtistUsd,
   jobCurrencies,
   dedupeBySplitAddress,
+  decodePayoutTargets,
+  filterDistributableTargets,
+  INPROCESS_SPLIT_BYTECODE,
   DISTRIBUTE_ALL_CAP,
   type SplitJob,
 } from '../lib/distributePlan.ts'
+import { upstreamReason } from '../lib/upstreamReason.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -179,6 +183,130 @@ check('currencies: both when both balances present',
   JSON.stringify(jobCurrencies(job('1', 100, ETH, USDC))) === JSON.stringify(['eth', 'usdc']))
 check('currencies: eth only', JSON.stringify(jobCurrencies(job('1', 100, ETH, 0n))) === JSON.stringify(['eth']))
 check('currencies: usdc only', JSON.stringify(jobCurrencies(job('1', 100, 0n, USDC))) === JSON.stringify(['usdc']))
+
+// ── decodePayoutTargets ──────────────────────────────────────────────────────
+// Shapes mirror a viem/wagmi multicall result set for payoutTargetCalls:
+// [getCreatorRewardRecipient, FPSS.sale, ERC20Minter.sale].
+const REWARD = '0xAAaaAAaaAAaAAaAAaAAAaaAAaaaaAaaAAaAAAAA1'
+const SALE_SPLIT = '0xBbbBbBBbBBbbBBbBbbbbBbbBBbbBBBbBBbbbBbB2'
+const ZERO = '0x0000000000000000000000000000000000000000'
+const ok = (result: unknown) => ({ status: 'success' as const, result })
+const bad = () => ({ status: 'failure' as const })
+const saleRow = (fundsRecipient: string) => ok({
+  saleStart: 0n, saleEnd: 0n, maxTokensPerAddress: 0n, pricePerToken: 0n, fundsRecipient,
+})
+
+check('targets: both pointers agreeing collapse to ONE (the Kismet mint case)',
+  JSON.stringify(decodePayoutTargets([ok(REWARD), saleRow(REWARD), saleRow(ZERO)])) ===
+    JSON.stringify([REWARD.toLowerCase()]))
+
+check('targets: a diverged sale fundsRecipient is ALSO returned, reward first',
+  JSON.stringify(decodePayoutTargets([ok(REWARD), saleRow(SALE_SPLIT), saleRow(ZERO)])) ===
+    JSON.stringify([REWARD.toLowerCase(), SALE_SPLIT.toLowerCase()]))
+
+check('targets: the USDC strategy row is read too',
+  JSON.stringify(decodePayoutTargets([ok(REWARD), saleRow(ZERO), saleRow(SALE_SPLIT)])) ===
+    JSON.stringify([REWARD.toLowerCase(), SALE_SPLIT.toLowerCase()]))
+
+check('targets: zero addresses (unset sale row) drop out',
+  JSON.stringify(decodePayoutTargets([ok(REWARD), saleRow(ZERO), saleRow(ZERO)])) ===
+    JSON.stringify([REWARD.toLowerCase()]))
+
+check('targets: a failed reward read still yields the sale fundsRecipient',
+  JSON.stringify(decodePayoutTargets([bad(), saleRow(SALE_SPLIT), bad()])) ===
+    JSON.stringify([SALE_SPLIT.toLowerCase()]))
+
+check('targets: positionally-decoded tuples (index 4) are accepted',
+  JSON.stringify(decodePayoutTargets([ok(REWARD), ok([0n, 0n, 0n, 0n, SALE_SPLIT]), bad()])) ===
+    JSON.stringify([REWARD.toLowerCase(), SALE_SPLIT.toLowerCase()]))
+
+check('targets: garbage results resolve to nothing rather than throwing',
+  decodePayoutTargets([ok('not-an-address'), ok(null), ok(42)]).length === 0)
+
+check('targets: no reads at all → empty', decodePayoutTargets([]).length === 0)
+
+// ── upstreamReason (leak guard) ──────────────────────────────────────────────
+// Surfacing WHY a distribute failed must never re-leak the upstream body that
+// `1bf7b1b` closed off: no URLs, no hostnames, no paths, no HTML, bounded.
+check('reason: pulls the message out of a JSON envelope',
+  upstreamReason('{"error":"split not found"}') === 'split not found')
+check('reason: nested { error: { message } } envelope',
+  upstreamReason('{"error":{"message":"insufficient balance"}}') === 'insufficient balance')
+check('reason: falls through to message/detail keys',
+  upstreamReason('{"detail":"relay wallet is not an admin"}') === 'relay wallet is not an admin')
+check('reason: an HTML error page carries no reason',
+  upstreamReason('<!doctype html><html><body>500</body></html>') === '')
+check('reason: an empty body carries no reason', upstreamReason('') === '')
+check('reason: a stack dump carries no reason',
+  upstreamReason('Error: boom\n    at f (x.js:1:1)') === '')
+check('reason: URLs are stripped',
+  !/https?:/.test(upstreamReason('{"error":"POST https://api.example.com/api/distribute failed"}')),
+  upstreamReason('{"error":"POST https://api.example.com/api/distribute failed"}'))
+check('reason: bare hostnames are stripped',
+  !/example\.com/.test(upstreamReason('{"error":"api.example.com refused the request"}')),
+  upstreamReason('{"error":"api.example.com refused the request"}'))
+check('reason: filesystem paths are stripped',
+  !upstreamReason('{"error":"cannot read /var/task/index.js"}').includes('/var/task'),
+  upstreamReason('{"error":"cannot read /var/task/index.js"}'))
+check('reason: long bodies are capped', upstreamReason(JSON.stringify({ error: 'x'.repeat(500) })).length <= 140)
+check('reason: a short plain-text body is passed through',
+  upstreamReason('Internal Server Error') === 'Internal Server Error')
+
+// ── filterDistributableTargets (async — stub getCode client) ────────────────
+// The probe mirrors In Process's isSplitContract gate: EXACT bytecode equality
+// with their v2 PullSplit clone. trustPrimary lets a Kismet-recorded primary
+// through unprobed (legacy behavior, zero RPC); everything else must match.
+{
+  const SPLIT_A = '0x' + 'c1'.repeat(20)
+  const EOA = '0x' + 'c2'.repeat(20)
+  const SPLIT_B = '0x' + 'c3'.repeat(20)
+  let probes = 0
+  const stub = (codeByAddr: Record<string, string | undefined>) => ({
+    getCode: async ({ address }: { address: string }) => {
+      probes++
+      const code = codeByAddr[address.toLowerCase()]
+      if (code === 'THROW') throw new Error('rpc down')
+      return code as `0x${string}` | undefined
+    },
+  })
+
+  probes = 0
+  const single = await filterDistributableTargets(stub({}), [SPLIT_A], { trustPrimary: true })
+  check('probe: trusted single primary passes through with ZERO probes',
+    JSON.stringify(single) === JSON.stringify([SPLIT_A]) && probes === 0, `probes=${probes}`)
+
+  probes = 0
+  const mixed = await filterDistributableTargets(
+    stub({ [SPLIT_B]: INPROCESS_SPLIT_BYTECODE, [EOA]: undefined }),
+    [SPLIT_A, SPLIT_B, EOA],
+    { trustPrimary: true },
+  )
+  check('probe: trusted primary kept unprobed; split-bytecode extra kept; EOA extra dropped',
+    JSON.stringify(mixed) === JSON.stringify([SPLIT_A, SPLIT_B]) && probes === 2,
+    `${JSON.stringify(mixed)} probes=${probes}`)
+
+  const untrusted = await filterDistributableTargets(
+    stub({ [SPLIT_A]: '0xdeadbeef', [SPLIT_B]: INPROCESS_SPLIT_BYTECODE.toUpperCase().replace('0X', '0x') as string }),
+    [SPLIT_A, SPLIT_B],
+    { trustPrimary: false },
+  )
+  check('probe: untrusted primary must match too; comparison is case-insensitive',
+    JSON.stringify(untrusted) === JSON.stringify([SPLIT_B]), JSON.stringify(untrusted))
+
+  const rpcDown = await filterDistributableTargets(
+    stub({ [SPLIT_B]: 'THROW' }),
+    [SPLIT_A, SPLIT_B],
+    { trustPrimary: true },
+  )
+  check('probe: a getCode failure drops ONLY that target (fail closed, admit-only)',
+    JSON.stringify(rpcDown) === JSON.stringify([SPLIT_A]), JSON.stringify(rpcDown))
+
+  check('probe: empty target list → empty',
+    (await filterDistributableTargets(stub({}), [], { trustPrimary: false })).length === 0)
+
+  check('probe: bytecode constant embeds the In Process PullSplit implementation',
+    INPROCESS_SPLIT_BYTECODE.includes('1e2086a7e84a32482ac03000d56925f607ccb708'))
+}
 
 if (failures > 0) {
   console.error(`\n${failures} distribute check(s) FAILED`)

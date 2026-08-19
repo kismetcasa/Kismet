@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
-import { INPROCESS_API } from '@/lib/inprocess'
+import { inprocessUrl } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { consumeUserQuota } from '@/lib/userQuota'
@@ -13,6 +13,7 @@ import { getEthUsd } from '@/lib/ethPrice'
 import { acquireLock } from '@/lib/redisLock'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { errorResponse } from '@/lib/apiResponse'
+import { upstreamReason } from '@/lib/upstreamReason'
 import { isPlatformPausedFor } from '@/lib/gate'
 
 export const dynamic = 'force-dynamic'
@@ -29,14 +30,14 @@ export const maxDuration = 300
 // "Distribute all": settle the caller's undistributed split balances in one
 // gesture. The caller signs ONCE; the server resolves the splits they're a
 // payee on, selects the DISTRIBUTE_ALL_CAP most-valuable (by their $ share),
-// and fans out to inprocess /distribute per split×currency. 40 moments → click
+// and fans out to inprocess distribute (GET /splits) per split×currency. 40 moments → click
 // once for the top 20, again for the next 20 (the drained ones drop out of the
 // balance>0 filter). Distribution is permissionless on 0xSplits (it can only
 // pay the split's fixed recipients, never redirect), so authorization here just
 // scopes the fan-out to the caller's own splits and bounds platform-sponsored
 // gas — via THREE independent limits: a per-artist single-flight lock (no
 // concurrent double-distribute of the same split by one artist — inprocess
-// /distribute is non-idempotent), the platform-wide in-flight governor (a burst
+// distribute is non-idempotent), the platform-wide in-flight governor (a burst
 // of artists queues instead of flooding the single relay), and the per-user
 // daily quota (consumed per call).
 
@@ -50,47 +51,67 @@ const perArtistLockKey = (addr: string) => `kismetart:distribute-all-lock:${addr
 // × 30s upstream timeout ≈ 400s). At the previous 90s the lock lapsed mid-run,
 // letting a second click overlap the first and fire duplicate sponsored txs at
 // still-funded splits — gas waste only (0xSplits can only pay its fixed
-// recipients), but inprocess /distribute is non-idempotent, so never invite it.
+// recipients), but inprocess distribute is non-idempotent, so never invite it.
 const LOCK_TTL_S = 600
 
+/**
+ * One sponsored distribute call. Returns null on success, or a short sanitized
+ * reason on failure — the fan-out surfaces those to the caller, because a bare
+ * "(2 failed)" toast is unactionable for the artist and gives support nothing
+ * to go on without pulling server logs. The raw body stays server-side only
+ * (it embeds upstream topology).
+ */
 async function distributeOne(
   apiKey: string,
   splitAddress: string,
   currency: 'eth' | 'usdc',
-): Promise<boolean> {
+): Promise<string | null> {
   try {
-    const res = await fetch(`${INPROCESS_API}/distribute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
+    // GET /splits with query params — In Process deleted POST /distribute on
+    // 2026-08-18 (see the sibling comment in app/api/distribute/route.ts for
+    // the full migration note and response contract).
+    const res = await fetch(
+      inprocessUrl('/splits', {
         splitAddress,
         chainId: 8453,
         ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
       }),
-      // Per inprocess docs /distribute is NOT idempotent, so a timeout is
-      // INDETERMINATE — never auto-retry (the per-call balance-gate at plan
-      // time already ensures we only ask for funded splits, and a genuinely
-      // missed one is retried by the artist's next click, which re-reads
-      // balances). Bounded so one slow split can't pin the whole fan-out.
-      signal: AbortSignal.timeout(30_000),
-    })
+      {
+        method: 'GET',
+        headers: {
+          'x-api-key': apiKey,
+          Accept: 'application/json',
+        },
+        // A GET in name only — upstream submits a sponsored on-chain userOp,
+        // NOT idempotent, so a timeout is INDETERMINATE — never auto-retry
+        // (the per-call balance-gate at plan time already ensures we only ask
+        // for funded splits, and a genuinely missed one is retried by the
+        // artist's next click, which re-reads balances). Bounded so one slow
+        // split can't pin the whole fan-out.
+        signal: AbortSignal.timeout(30_000),
+      },
+    )
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.error(
         `[distribute-all] upstream ${res.status} for ${splitAddress} (${currency}): ${body.slice(0, 200)}`,
       )
-      return false
+      return upstreamReason(body) || `rejected upstream (HTTP ${res.status})`
     }
-    return true
+    // A 2xx settles it. The body is not parsed at all here: inprocess has
+    // returned empty and non-JSON 2xx bodies, and /distribute is NOT
+    // idempotent, so a body-shape check could only ever manufacture a false
+    // failure and invite a duplicate payout on the next click.
+    return null
   } catch (err) {
     console.error(
       `[distribute-all] upstream error for ${splitAddress} (${currency}): ${err instanceof Error ? err.message : String(err)}`,
     )
-    return false
+    // A timeout is INDETERMINATE (the tx may have landed) — say so rather than
+    // implying nothing happened, since the artist's next click would re-fire.
+    return err instanceof Error && err.name === 'TimeoutError'
+      ? 'timed out — the payout may still have gone through'
+      : 'could not reach the payout relay'
   }
 }
 
@@ -191,6 +212,9 @@ export async function POST(req: NextRequest) {
     let failed = 0
     let quotaBlocked = 0
     let next = 0
+    // Distinct failure reasons, in first-seen order. A fan-out usually fails
+    // the same way for every unit, so this collapses to one line.
+    const reasons = new Set<string>()
     const worker = async (): Promise<void> => {
       while (next < units.length) {
         const u = units[next++]
@@ -201,9 +225,12 @@ export async function POST(req: NextRequest) {
           quotaBlocked++
           continue
         }
-        const ok = await distributeOne(apiKey, u.splitAddress, u.currency)
-        if (ok) distributed++
-        else failed++
+        const reason = await distributeOne(apiKey, u.splitAddress, u.currency)
+        if (reason === null) distributed++
+        else {
+          failed++
+          reasons.add(reason)
+        }
       }
     }
     await Promise.all(
@@ -234,6 +261,9 @@ export async function POST(req: NextRequest) {
       requested: units.length,
       distributed,
       failed,
+      // Sanitized, deduped — capped so a pathological fan-out can't return a
+      // wall of text. Empty when nothing failed.
+      reasons: [...reasons].slice(0, 3),
       quotaBlocked,
       // Funded splits beyond this invocation's cap — the artist clicks again to
       // settle them (the drained ones will have dropped out by then).

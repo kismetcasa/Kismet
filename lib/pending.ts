@@ -1,15 +1,22 @@
-import { parseAbi, formatEther, formatUnits } from 'viem'
+import { formatEther, formatUnits } from 'viem'
 import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import { getEthUsd } from './ethPrice'
 import { isAddress } from './address'
 import { getRecipientSplits, type RecipientSplit } from './splits'
 import { expandToFidSiblings } from './addressUnion'
-import { dedupeBySplitAddress, type SplitJob } from './distributePlan'
+import {
+  dedupeBySplitAddress,
+  decodePayoutTargets,
+  filterDistributableTargets,
+  type SplitJob,
+} from './distributePlan'
+import { payoutTargetCalls, PAYOUT_TARGET_CALLS_PER_MOMENT } from './payoutTargets'
 import {
   ERC20_ABI,
   USDC_BASE,
   MULTICALL3_ADDRESS,
+  MULTICALL3_BALANCE_ABI,
   ZORA_CREATOR_REWARD_RECIPIENT_ABI,
 } from './zoraMint'
 
@@ -29,12 +36,6 @@ export interface ArtistPending {
 }
 
 const EMPTY: ArtistPending = { eth: 0, usdc: 0, usd: 0, count: 0 }
-
-// Multicall3's native-balance reader — batches ETH balances into the same
-// aggregate3 as the USDC balanceOf reads, so all balances cost one round-trip.
-const MULTICALL3_BALANCE_ABI = parseAbi([
-  'function getEthBalance(address addr) view returns (uint256)',
-])
 
 // A token's split address is its on-chain creator-reward-recipient. Kismet
 // sets it once at mint (via inprocess) and never changes it — but on Zora
@@ -56,7 +57,7 @@ const RECIPIENT_READ_TIMEOUT_MS = 3000
 
 /**
  * Single-token creator-reward-recipient, through the SAME TTL-bounded
- * kismetart:splitaddr:* cache resolveSplitAddresses maintains — so the
+ * kismetart:splitaddr:* cache resolvePayoutTargets maintains — so the
  * listings fill path (creditListingRoyalty's split decomposition) reuses
  * mappings the pending roll-up already paid for, and vice versa. Bounded and
  * best-effort: null on miss + RPC failure/timeout, never throws. The mapping
@@ -115,49 +116,94 @@ const COMPUTE_TIMEOUT_MS = 4000
 const pendingCacheKey = (address: string) => `kismetart:pending:${address.toLowerCase()}`
 const CACHE_TTL_S = 60
 
-// Resolve each moment's split (creator-reward-recipient) address, reading the
-// Redis cache first and batching cache-misses into one multicall.
-async function resolveSplitAddresses(
-  moments: RecipientSplit[],
-): Promise<(string | undefined)[]> {
+// Cache the moment's FULL payout-target list (creator-reward recipient + both
+// sale strategies' fundsRecipient — see decodePayoutTargets). Kept alongside,
+// not instead of, the single-address kismetart:splitaddr:* cache that the
+// royalty-decomposition path reads through getCachedCreatorRewardRecipient;
+// that key is still written below from the primary target so the two stay warm
+// off one multicall. Same TTL and the same reason: BOTH pointers are
+// admin-mutable on-chain (In Process's moment-manage page repoints
+// fundsRecipient), so a hit is authoritative only within the TTL.
+const payoutTargetsKey = (collection: string, tokenId: string) =>
+  `kismetart:payouts:${collection.toLowerCase()}:${tokenId}`
+// "Resolved, and this moment has no usable payout target" — distinct from a
+// cache miss, so a dead moment doesn't re-multicall on every 60 s roll-up.
+// Held for MINUTES, not the 7-day TTL a resolved list gets: a target can also
+// come back empty because the split probe hit a transient RPC failure, and
+// pinning that for a week would take a real split's distribute button away.
+const NO_TARGETS = '-'
+const NO_TARGETS_TTL_S = 10 * 60
+
+// Resolve every moment's payout targets, reading the Redis cache first and
+// batching cache-misses into one multicall (PAYOUT_TARGET_CALLS_PER_MOMENT
+// entries each, in the order decodePayoutTargets expects).
+async function resolvePayoutTargets(moments: RecipientSplit[]): Promise<string[][]> {
   const cached = (await redis
-    .mget<(string | null)[]>(...moments.map((m) => splitAddrKey(m.collection, m.tokenId)))
+    .mget<(string | null)[]>(...moments.map((m) => payoutTargetsKey(m.collection, m.tokenId)))
     .catch(() => moments.map(() => null))) as (string | null)[]
 
-  const out: (string | undefined)[] = moments.map((_, i) => cached[i] ?? undefined)
-  // Migrate legacy no-TTL entries (written before SPLIT_ADDR_TTL_S) to the
-  // 7-day bound so the whole existing corpus — not just moments first resolved
-  // after this shipped — re-resolves and can pick up an admin-changed on-chain
-  // recipient. NX leaves an already-set expiry alone (no sliding). One
-  // auto-pipelined round trip over the cache HITS, best-effort.
-  const hitKeys = moments
-    .map((m, i) => (out[i] ? splitAddrKey(m.collection, m.tokenId) : null))
-    .filter((k): k is string => k !== null)
-  if (hitKeys.length) {
-    await Promise.all(hitKeys.map((k) => redis.expire(k, SPLIT_ADDR_TTL_S, 'NX').catch(() => {})))
-  }
-  const missing = moments.map((m, i) => ({ m, i })).filter(({ i }) => !out[i])
+  const out: string[][] = moments.map(() => [])
+  const missing: { m: RecipientSplit; i: number }[] = []
+  moments.forEach((m, i) => {
+    const raw = cached[i]
+    if (typeof raw === 'string' && raw.length > 0) {
+      out[i] = raw === NO_TARGETS ? [] : raw.split(',').filter((a) => isAddress(a))
+    } else {
+      missing.push({ m, i })
+    }
+  })
   if (!missing.length) return out
 
   const res = await serverBaseClient().multicall({
-    contracts: missing.map(({ m }) => ({
-      address: m.collection as `0x${string}`,
-      abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
-      functionName: 'getCreatorRewardRecipient' as const,
-      args: [BigInt(m.tokenId)] as const,
-    })),
+    contracts: missing.flatMap(({ m }) =>
+      payoutTargetCalls(m.collection as `0x${string}`, BigInt(m.tokenId)),
+    ),
   })
 
   await Promise.all(
     missing.map(async ({ m, i }, k) => {
-      const r = res[k]
-      if (r.status !== 'success') return
-      const addr = String(r.result).toLowerCase()
-      if (!isAddress(addr) || addr === ZERO_ADDR) return
-      out[i] = addr
-      await redis
-        .set(splitAddrKey(m.collection, m.tokenId), addr, { ex: SPLIT_ADDR_TTL_S })
-        .catch(() => {})
+      const slice = res.slice(
+        k * PAYOUT_TARGET_CALLS_PER_MOMENT,
+        (k + 1) * PAYOUT_TARGET_CALLS_PER_MOMENT,
+      )
+      // Every read failing means the RPC was unhappy, NOT that the moment has
+      // no payout target — leave the cache untouched so the next roll-up
+      // retries instead of pinning an empty list.
+      if (!slice.some((r) => r.status === 'success')) return
+
+      // The creator-reward recipient specifically, decoded on its own: it is
+      // the pointer the legacy single-address cache (and the royalty
+      // decomposition reading through it) means. When it resolved, it is by
+      // construction decoded[0], and — every moment here having a Kismet split
+      // record (membership in the recipient index implies one) — it is trusted
+      // unprobed, matching the exact pre-payout-targets behaviour. When the
+      // reward read failed, slot 0 is a sale pointer and must prove itself.
+      const primary = decodePayoutTargets([slice[0]])[0] ?? null
+      const decoded = decodePayoutTargets(slice)
+      const targets = await filterDistributableTargets(serverBaseClient(), decoded, {
+        trustPrimary: primary !== null,
+      })
+      out[i] = targets
+      // A probe DROP gets the short negative TTL, not the 7-day one: the drop
+      // is either a transient getCode failure (must retry soon, or a real
+      // diverged split stays hidden for a week) or a genuine non-split sale
+      // pointer (rare; re-verifying one slice every 10 min is cheap).
+      const fullyResolved = targets.length > 0 && targets.length === decoded.length
+      await Promise.all([
+        redis
+          .set(
+            payoutTargetsKey(m.collection, m.tokenId),
+            targets.length ? targets.join(',') : NO_TARGETS,
+            { ex: fullyResolved ? SPLIT_ADDR_TTL_S : NO_TARGETS_TTL_S },
+          )
+          .catch(() => {}),
+        // Keep the legacy single-address cache warm for the royalty path.
+        primary
+          ? redis
+              .set(splitAddrKey(m.collection, m.tokenId), primary, { ex: SPLIT_ADDR_TTL_S })
+              .catch(() => {})
+          : Promise.resolve(),
+      ])
     }),
   )
   return out
@@ -211,11 +257,17 @@ export async function resolveArtistSplitJobs(
   // moment (the N× pending inflation and duplicate distribute calls fixed
   // 2026-07-17; see dedupeBySplitAddress and ANALYTICS.md §7b). The first-seen
   // moment stays as the pot's representative (collection, tokenId).
-  const addrs = await resolveSplitAddresses(moments)
+  //
+  // A moment can now contribute MORE than one target: the token-level
+  // creator-reward recipient and the sale strategy's fundsRecipient are
+  // independent pointers that In Process's moment-manage page can drive apart
+  // (see decodePayoutTargets). Both are expanded here; the dedupe collapses
+  // them back to one job whenever they agree, which is the common case.
+  const targetsPerMoment = await resolvePayoutTargets(moments)
   const withAddr = dedupeBySplitAddress(
-    moments
-      .map((m, i) => ({ m, splitAddress: addrs[i], pct: m.pct }))
-      .filter((x): x is { m: RecipientSplit; splitAddress: string; pct: number } => !!x.splitAddress),
+    moments.flatMap((m, i) =>
+      targetsPerMoment[i].map((splitAddress) => ({ m, splitAddress, pct: m.pct })),
+    ),
   )
   if (!withAddr.length) return []
 

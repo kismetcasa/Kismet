@@ -202,7 +202,7 @@ requests are already stateless.
 - **Reads:** `/timeline` (fanned out, §2), `/moment`, `/collection`, `/collections`,
   `/payments`, smart-wallet resolution.
 - **Writes/relay:** `/moment/create`, `/moment/create/writing`, `/airdrop`,
-  `/distribute` — sponsored userOps under the shared `INPROCESS_API_KEY`.
+  `GET /splits` (distribute) — sponsored userOps under the shared `INPROCESS_API_KEY`.
 - **Timeouts — ✅ mostly resolved.** Mint relay 60 s, distribute 45 s, and the
   previously-unbounded `/api/moment`, `/api/payments`, `/api/moment/comments`, and
   timeline fan-out now all carry `AbortSignal.timeout(8s)` (`lib/inprocess.ts:431`
