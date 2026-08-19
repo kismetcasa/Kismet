@@ -2,10 +2,11 @@
 // import-free so scripts/verify-distribute.ts can pin it without pulling in
 // next/server — it guards a known leak regression (`1bf7b1b`), so its
 // behaviour needs a test, not just a comment.
-// Anything that could carry server topology out to a client: absolute URLs,
-// bare hostnames, and file paths. Stripped from upstream reasons below —
-// `1bf7b1b` stopped /api/distribute's 502 leaking the raw upstream body, and
-// that must stay true even now that we surface a reason.
+
+// Everything that could carry server topology out to a client: absolute URLs,
+// bare hostnames, and file paths. Stripped below — `1bf7b1b` closed
+// /api/distribute's 502 leaking the raw upstream body, and that must stay
+// true even now that a reason is surfaced.
 // Ordered: absolute URL, then filesystem path (no \b — the char before a
 // leading '/' is usually a space, which is not a word boundary), then bare
 // host:port/path. The host alternative demands an alphabetic ≥2-char final
@@ -13,7 +14,10 @@
 const TOPOLOGY_RE =
   /(?:https?:\/\/\S+|\/(?:home|var|usr|opt|app|tmp|root|srv)\/\S*|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?(?:\/\S*)?)/gi
 const UPSTREAM_REASON_MAX = 140
-// Keys upstream error envelopes actually use, most-specific first.
+// Keys upstream error envelopes actually use, most-specific first. Order
+// validated against in_process_api's distribute failure envelope
+// ({ status: 'error', message: '<generic sentence>', error: '<detail>' }):
+// `error` carries the actionable detail there, `message` the boilerplate.
 const REASON_KEYS = ['error', 'message', 'detail', 'details', 'reason', 'description']
 
 /**

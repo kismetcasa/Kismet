@@ -9,8 +9,8 @@ import {
   MULTICALL3_BALANCE_ABI,
   USDC_BASE,
 } from '@/lib/zoraMint'
-import { decodePayoutTargets } from '@/lib/distributePlan'
-import { payoutTargetCalls, filterDistributableTargets } from '@/lib/payoutTargets'
+import { decodePayoutTargets, filterDistributableTargets } from '@/lib/distributePlan'
+import { payoutTargetCalls } from '@/lib/payoutTargets'
 import { formatPrice } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
 import type { SplitRecipient } from '@/lib/splits'
@@ -57,6 +57,9 @@ interface SplitsState {
   pendingFormatted: string | undefined
   // The connected wallet's share of `pendingFormatted` (balance × their %).
   // undefined when the viewer isn't a recipient or the reads are pending.
+  // Display-only approximation: the stored pct is applied across ALL targets,
+  // but it is only authoritative for the recorded (mint-time) pot — an
+  // upstream-configured second pot can carry a different allocation.
   pendingShareFormatted: string | undefined
   // True when there's a non-zero balance to distribute. Gates the button so
   // we don't sponsor a no-op tx.
@@ -143,8 +146,8 @@ export function useMomentSplits({
     // Which candidates are really distributable — see
     // filterDistributableTargets. `hasSplits` (a Kismet mint-time record) is
     // what lets the primary pointer through unprobed; without it every
-    // candidate must prove it is a 0xSplits wallet, so a plain payout wallet
-    // never surfaces as "to distribute".
+    // candidate must prove it is an In Process split contract, so a plain
+    // payout wallet never surfaces as "to distribute".
     const fallback = hasSplits ? decoded.slice(0, 1) : []
     const settle = publicClient
       ? filterDistributableTargets(publicClient, decoded, { trustPrimary: hasSplits })

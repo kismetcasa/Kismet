@@ -110,12 +110,15 @@ export function jobCurrencies(job: SplitJob): ('eth' | 'usdc')[] {
 //      ERC20Minter for USDC) — where PAID MINT PROCEEDS land.
 //
 // Kismet's own mint flow sets both to the same 0xSplits wallet, which is why
-// every read here used to resolve (1) alone. In Process's moment-manage page
-// now lets an artist point a moment's fundsRecipient at a split AFTER mint, and
-// nothing guarantees it writes both pointers — so the two can diverge, leaving
-// real proceeds on a contract Kismet never looks at ("nothing to distribute" on
-// a funded split, or a distribute aimed at the wrong pot). Resolve BOTH
-// everywhere and let the balance filter decide which actually holds money.
+// every read here used to resolve (1) alone. In Process's moment-manage
+// Splits tab (in_process_web `b68d0d3`, 2026-08-19) now creates a split
+// post-mint and points ONLY pointer (2) at it — its handleCreate calls
+// `setSale(..., { fundsRecipient: splitAddress })` and never touches the
+// token-level recipient — so the two pointers diverge on exactly the moments
+// that feature touches, leaving real proceeds on a contract Kismet never
+// looked at ("nothing to distribute" on a funded split, or a distribute aimed
+// at the wrong pot). Resolve BOTH everywhere and let the balance filter
+// decide which actually holds money.
 //
 // Pure + import-free like the rest of this module so scripts/verify-distribute
 // covers it without viem/redis.
@@ -164,4 +167,84 @@ export function decodePayoutTargets(results: readonly ContractRead[]): string[] 
     else push((r.result as { fundsRecipient?: unknown }).fundsRecipient)
   }
   return out
+}
+
+// The EXACT runtime bytecode of an In Process split contract on Base: a
+// Splits v2 minimal proxy delegating to the implementation embedded in the
+// code (0x1e2086…b708; In Process's SplitV2Client leaves the SDK's default
+// split type, Pull, so these are PullSplits). VERBATIM COPY
+// of the reference constant in In Process's own gate — in_process_api,
+// src/lib/splits/isSplitContract.ts — which their GET /splits distribute
+// endpoint checks before distributing anything ("Invalid split contract
+// address" otherwise). Mirroring their constant byte-for-byte means our
+// "distributable" predicate can never admit an address their endpoint would
+// reject, nor hide one it would accept.
+//
+// NOT v1: In Process creates every split (mint-time via processSplits AND the
+// manage page via POST /splits) with @0xsplits/splits-sdk's SplitV2Client, so
+// a v1-style splitMain() probe would reject every real In Process split. If
+// In Process ever migrates implementations, this constant must move in
+// lockstep with theirs — the failure mode is fail-closed (an unprobed split
+// stops being offered), never a wrong distribute.
+export const INPROCESS_SPLIT_BYTECODE =
+  '0x36602c57343d527f9e4ac34f21c619cefc926c8bd93b54bf5a39c7ab2127a895af1cc0691d7e3dff593da1005b3d3d3d3d363d3d37363d731e2086a7e84a32482ac03000d56925f607ccb7085af43d3d93803e605757fd5bf3'
+
+/** The one viem-client capability the probe needs, stated structurally so
+ *  this module stays import-free (verified by scripts/verify-distribute.ts);
+ *  both the server client and wagmi's usePublicClient satisfy it. */
+export interface TargetProbeClient {
+  getCode: (args: { address: `0x${string}` }) => Promise<`0x${string}` | undefined>
+}
+
+/** True when `addr` is a split contract In Process's distribute endpoint will
+ *  accept — its exact bytecode-equality gate, mirrored. Any failure (EOA,
+ *  other contract, RPC hiccup) is false: this only ever ADMITS targets, so
+ *  failing closed can't take away coverage that already exists. */
+async function isInProcessSplit(client: TargetProbeClient, addr: string): Promise<boolean> {
+  try {
+    const code = await client.getCode({ address: addr as `0x${string}` })
+    return typeof code === 'string' && code.toLowerCase() === INPROCESS_SPLIT_BYTECODE
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Narrow a moment's on-chain payout targets to the ones that can actually be
+ * distributed.
+ *
+ * `trustPrimary` says a Kismet mint-time split record exists for this moment.
+ * When it does, the PRIMARY target (creator-reward recipient, index 0) passes
+ * through unprobed — that is the pointer every read here has used since splits
+ * shipped, so behaviour on the entire existing corpus is unchanged (and zero
+ * extra RPC in the common case). Every other candidate has to earn its place
+ * by matching In Process's split bytecode:
+ *
+ *   • an ADDITIONAL target (a sale strategy's fundsRecipient) is new here, and
+ *     if a moment's sale row still points at the artist's own wallet, admitting
+ *     it would surface that wallet's whole balance as "to distribute" and burn
+ *     distribute quota on calls upstream rejects;
+ *   • with NO record, the primary is just as likely to be a plain payout wallet
+ *     — the Redis record used to be the only thing standing between a
+ *     non-split moment and a distribute button over the creator's own balance.
+ *
+ * Costs nothing in the common case: the two pointers agree on a Kismet split
+ * mint, so `targets` has length 1, `trustPrimary` is true, and no probe runs.
+ */
+export async function filterDistributableTargets(
+  client: TargetProbeClient,
+  targets: readonly string[],
+  // No default on purpose: whether the primary is trusted is a per-call-site
+  // security decision (it hinges on a Kismet record existing), and a silent
+  // default would default in the permissive direction.
+  opts: { trustPrimary: boolean },
+): Promise<string[]> {
+  if (targets.length === 0) return []
+  if (opts.trustPrimary && targets.length === 1) return [...targets]
+  const probed = await Promise.all(
+    targets.map(async (t, i) =>
+      opts.trustPrimary && i === 0 ? t : (await isInProcessSplit(client, t)) ? t : null,
+    ),
+  )
+  return probed.filter((t): t is string => t !== null)
 }

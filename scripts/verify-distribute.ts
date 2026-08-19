@@ -9,6 +9,8 @@ import {
   jobCurrencies,
   dedupeBySplitAddress,
   decodePayoutTargets,
+  filterDistributableTargets,
+  INPROCESS_SPLIT_BYTECODE,
   DISTRIBUTE_ALL_CAP,
   type SplitJob,
 } from '../lib/distributePlan.ts'
@@ -249,6 +251,62 @@ check('reason: filesystem paths are stripped',
 check('reason: long bodies are capped', upstreamReason(JSON.stringify({ error: 'x'.repeat(500) })).length <= 140)
 check('reason: a short plain-text body is passed through',
   upstreamReason('Internal Server Error') === 'Internal Server Error')
+
+// ── filterDistributableTargets (async — stub getCode client) ────────────────
+// The probe mirrors In Process's isSplitContract gate: EXACT bytecode equality
+// with their v2 PullSplit clone. trustPrimary lets a Kismet-recorded primary
+// through unprobed (legacy behavior, zero RPC); everything else must match.
+{
+  const SPLIT_A = '0x' + 'c1'.repeat(20)
+  const EOA = '0x' + 'c2'.repeat(20)
+  const SPLIT_B = '0x' + 'c3'.repeat(20)
+  let probes = 0
+  const stub = (codeByAddr: Record<string, string | undefined>) => ({
+    getCode: async ({ address }: { address: string }) => {
+      probes++
+      const code = codeByAddr[address.toLowerCase()]
+      if (code === 'THROW') throw new Error('rpc down')
+      return code as `0x${string}` | undefined
+    },
+  })
+
+  probes = 0
+  const single = await filterDistributableTargets(stub({}), [SPLIT_A], { trustPrimary: true })
+  check('probe: trusted single primary passes through with ZERO probes',
+    JSON.stringify(single) === JSON.stringify([SPLIT_A]) && probes === 0, `probes=${probes}`)
+
+  probes = 0
+  const mixed = await filterDistributableTargets(
+    stub({ [SPLIT_B]: INPROCESS_SPLIT_BYTECODE, [EOA]: undefined }),
+    [SPLIT_A, SPLIT_B, EOA],
+    { trustPrimary: true },
+  )
+  check('probe: trusted primary kept unprobed; split-bytecode extra kept; EOA extra dropped',
+    JSON.stringify(mixed) === JSON.stringify([SPLIT_A, SPLIT_B]) && probes === 2,
+    `${JSON.stringify(mixed)} probes=${probes}`)
+
+  const untrusted = await filterDistributableTargets(
+    stub({ [SPLIT_A]: '0xdeadbeef', [SPLIT_B]: INPROCESS_SPLIT_BYTECODE.toUpperCase().replace('0X', '0x') as string }),
+    [SPLIT_A, SPLIT_B],
+    { trustPrimary: false },
+  )
+  check('probe: untrusted primary must match too; comparison is case-insensitive',
+    JSON.stringify(untrusted) === JSON.stringify([SPLIT_B]), JSON.stringify(untrusted))
+
+  const rpcDown = await filterDistributableTargets(
+    stub({ [SPLIT_B]: 'THROW' }),
+    [SPLIT_A, SPLIT_B],
+    { trustPrimary: true },
+  )
+  check('probe: a getCode failure drops ONLY that target (fail closed, admit-only)',
+    JSON.stringify(rpcDown) === JSON.stringify([SPLIT_A]), JSON.stringify(rpcDown))
+
+  check('probe: empty target list → empty',
+    (await filterDistributableTargets(stub({}), [], { trustPrimary: false })).length === 0)
+
+  check('probe: bytecode constant embeds the In Process PullSplit implementation',
+    INPROCESS_SPLIT_BYTECODE.includes('1e2086a7e84a32482ac03000d56925f607ccb708'))
+}
 
 if (failures > 0) {
   console.error(`\n${failures} distribute check(s) FAILED`)

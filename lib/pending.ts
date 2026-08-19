@@ -8,13 +8,10 @@ import { expandToFidSiblings } from './addressUnion'
 import {
   dedupeBySplitAddress,
   decodePayoutTargets,
+  filterDistributableTargets,
   type SplitJob,
 } from './distributePlan'
-import {
-  payoutTargetCalls,
-  filterDistributableTargets,
-  PAYOUT_TARGET_CALLS_PER_MOMENT,
-} from './payoutTargets'
+import { payoutTargetCalls, PAYOUT_TARGET_CALLS_PER_MOMENT } from './payoutTargets'
 import {
   ERC20_ABI,
   USDC_BASE,
@@ -160,12 +157,12 @@ async function resolvePayoutTargets(moments: RecipientSplit[]): Promise<string[]
   const res = await serverBaseClient().multicall({
     contracts: missing.flatMap(({ m }) =>
       payoutTargetCalls(m.collection as `0x${string}`, BigInt(m.tokenId)),
-    ) as never,
+    ),
   })
 
   await Promise.all(
     missing.map(async ({ m, i }, k) => {
-      const slice = (res as unknown as { status: 'success' | 'failure'; result?: unknown }[]).slice(
+      const slice = res.slice(
         k * PAYOUT_TARGET_CALLS_PER_MOMENT,
         (k + 1) * PAYOUT_TARGET_CALLS_PER_MOMENT,
       )
@@ -176,21 +173,28 @@ async function resolvePayoutTargets(moments: RecipientSplit[]): Promise<string[]
 
       // The creator-reward recipient specifically, decoded on its own: it is
       // the pointer the legacy single-address cache (and the royalty
-      // decomposition reading through it) means, and the one
-      // filterDistributableTargets may pass through unprobed. Both would be
-      // wrong if a failed reward read let a sale fundsRecipient take slot 0.
+      // decomposition reading through it) means. When it resolved, it is by
+      // construction decoded[0], and — every moment here having a Kismet split
+      // record (membership in the recipient index implies one) — it is trusted
+      // unprobed, matching the exact pre-payout-targets behaviour. When the
+      // reward read failed, slot 0 is a sale pointer and must prove itself.
       const primary = decodePayoutTargets([slice[0]])[0] ?? null
       const decoded = decodePayoutTargets(slice)
       const targets = await filterDistributableTargets(serverBaseClient(), decoded, {
-        trustPrimary: primary !== null && decoded[0] === primary,
+        trustPrimary: primary !== null,
       })
       out[i] = targets
+      // A probe DROP gets the short negative TTL, not the 7-day one: the drop
+      // is either a transient getCode failure (must retry soon, or a real
+      // diverged split stays hidden for a week) or a genuine non-split sale
+      // pointer (rare; re-verifying one slice every 10 min is cheap).
+      const fullyResolved = targets.length > 0 && targets.length === decoded.length
       await Promise.all([
         redis
           .set(
             payoutTargetsKey(m.collection, m.tokenId),
             targets.length ? targets.join(',') : NO_TARGETS,
-            { ex: targets.length ? SPLIT_ADDR_TTL_S : NO_TARGETS_TTL_S },
+            { ex: fullyResolved ? SPLIT_ADDR_TTL_S : NO_TARGETS_TTL_S },
           )
           .catch(() => {}),
         // Keep the legacy single-address cache warm for the royalty path.

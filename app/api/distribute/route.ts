@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { INPROCESS_API, inprocessUrl } from '@/lib/inprocess'
+import { inprocessUrl } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { getStoredSplits } from '@/lib/splits'
-import { decodePayoutTargets } from '@/lib/distributePlan'
-import { payoutTargetCalls, filterDistributableTargets } from '@/lib/payoutTargets'
+import { decodePayoutTargets, filterDistributableTargets } from '@/lib/distributePlan'
+import { payoutTargetCalls } from '@/lib/payoutTargets'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
@@ -19,9 +19,8 @@ import { isPlatformPausedFor } from '@/lib/gate'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
- * Inprocess submits the on-chain tx and pays gas via the platform smart wallet
- * tied to our INPROCESS_API_KEY — meaning a leaked endpoint costs us, not the
- * caller. Three gates:
+ * Inprocess submits the on-chain tx and pays gas via its relay smart wallet —
+ * meaning a leaked endpoint costs the platform, not the caller. Three gates:
  *   1. Signed message tying caller to the specific (collection, tokenId, split)
  *   2. Caller is creator OR admin of that moment (verified via inprocess)
  *   3. `splitAddress` is one of the token's own on-chain payout targets
@@ -52,10 +51,9 @@ export async function POST(req: NextRequest) {
     splitAddress?: string
     collectionAddress?: string
     tokenId?: string
-    // 'eth' (default) or 'usdc'. Maps to the inprocess `tokenAddress` field
-    // — required for USDC distributions per their docs (otherwise the call
-    // defaults to native ETH and distributes nothing from a USDC splits
-    // contract).
+    // 'eth' (default) or 'usdc'. Maps to the inprocess `tokenAddress` query
+    // param — required for USDC distributions (an absent tokenAddress means
+    // native ETH upstream, distributing nothing from a USDC-funded split).
     currency?: 'eth' | 'usdc'
     callerAddress?: string
     signature?: string
@@ -180,16 +178,23 @@ export async function POST(req: NextRequest) {
   // Checking only the former rejected a distribute aimed at the contract that
   // actually holds the mint proceeds. See decodePayoutTargets.
   try {
-    const reads = await serverBaseClient().multicall({
-      contracts: payoutTargetCalls(collectionAddress as `0x${string}`, BigInt(tokenId)) as never,
-    })
+    const reads = (await serverBaseClient().multicall({
+      contracts: payoutTargetCalls(collectionAddress as `0x${string}`, BigInt(tokenId)),
+    })) as { status: 'success' | 'failure'; result?: unknown }[]
+    // Every read failing is an RPC problem, not a token with no payout targets
+    // — 502 so the client retries later, never the 403 below (which reads as
+    // "this artwork can't be distributed", permanently, to the artist).
+    if (!reads.some((r) => r.status === 'success')) {
+      return errorResponse(502, 'Could not verify split address')
+    }
     const targets = await filterDistributableTargets(
       serverBaseClient(),
-      decodePayoutTargets(reads as unknown as { status: 'success' | 'failure'; result?: unknown }[]),
+      decodePayoutTargets(reads),
       // With a Kismet mint-time record the primary pointer IS the split, by
-      // construction. Without one, every candidate has to prove it's a 0xSplits
-      // wallet — otherwise "no record" would open distribute over a plain
-      // payout wallet, which is exactly what the old hasSplits gate prevented.
+      // construction. Without one, every candidate has to prove it's an
+      // In Process split contract — otherwise "no record" would open
+      // distribute over a plain payout wallet, which is exactly what the old
+      // hasSplits gate prevented.
       { trustPrimary: stored.hasSplits },
     )
     if (targets.length === 0) {
@@ -230,11 +235,20 @@ export async function POST(req: NextRequest) {
     balanceBefore = 0n
   }
 
-  // Forward only the specific fields inprocess expects — never relay arbitrary
-  // body keys, which could ride along to undocumented upstream parameters.
-  // Per inprocess docs (payments/distribute): tokenAddress is required for
-  // ERC20 distributions (defaults to native ETH if omitted).
-  const upstreamBody = {
+  // Distribution endpoint: GET /splits with query params. In Process DELETED
+  // POST /distribute on 2026-08-18 (in_process_api 6fc5967, "Add POST /splits
+  // and move distribute to GET /splits") — POSTs to the old path 404 with a
+  // non-JSON body, which is exactly the "upstream error" incident of
+  // 2026-08-19. Same semantics as before: tokenAddress absent = native ETH,
+  // tokenAddress=USDC for USDC; success is 200 {status:'success', hash};
+  // failure is 500 {status:'error', message, error} (`error` carries the
+  // real detail, `message` is a generic sentence — upstreamReason reads them
+  // in that order). Only these three params are ever forwarded — never
+  // arbitrary caller input, which could ride along to undocumented upstream
+  // parameters. The x-api-key header is kept although the current upstream
+  // route doesn't check one: it's how every other inprocess write
+  // authenticates, so it survives them re-adding auth.
+  const upstreamParams = {
     splitAddress,
     chainId: 8453,
     ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
@@ -242,19 +256,16 @@ export async function POST(req: NextRequest) {
 
   let res: Response
   try {
-    res = await fetch(`${INPROCESS_API}/distribute`, {
-      method: 'POST',
+    res = await fetch(inprocessUrl('/splits', upstreamParams), {
+      method: 'GET',
       headers: {
-        'Content-Type': 'application/json',
         'x-api-key': apiKey,
         Accept: 'application/json',
       },
-      body: JSON.stringify(upstreamBody),
-      // Generous timeout — distribution submits an on-chain tx, legitimately
-      // slow. Per inprocess docs this call is NOT idempotent (re-sending
-      // "will likely execute multiple distributions"), so a timeout is
-      // INDETERMINATE: surface 502 and never auto-retry, or we risk paying out
-      // twice.
+      // Generous timeout — a GET in name only: upstream submits a sponsored
+      // on-chain userOp, legitimately slow and NOT idempotent, so a timeout
+      // is INDETERMINATE: surface 502 and never auto-retry, or we risk paying
+      // out twice.
       signal: AbortSignal.timeout(45_000),
     })
   } catch (err) {
@@ -262,7 +273,7 @@ export async function POST(req: NextRequest) {
     // bubbles to a bare 500 with no body — indistinguishable from the
     // missing-key 500 above and impossible to diagnose from logs.
     console.error(
-      `[distribute] upstream unreachable: ${err instanceof Error ? err.message : String(err)} | request: ${JSON.stringify(upstreamBody)}`,
+      `[distribute] upstream unreachable: ${err instanceof Error ? err.message : String(err)} | request: ${JSON.stringify(upstreamParams)}`,
     )
     // Detail is logged above, NOT returned — the raw message embeds the
     // inprocess URL/topology and reaches the client otherwise.
@@ -278,7 +289,7 @@ export async function POST(req: NextRequest) {
   // embeds upstream topology and must never reach the client (`1bf7b1b`).
   if (!res.ok) {
     console.error(
-      `[distribute] upstream ${res.status}: ${text.slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+      `[distribute] upstream ${res.status}: ${text.slice(0, 500)} | request: ${JSON.stringify(upstreamParams)}`,
     )
     const reason = upstreamReason(text)
     return NextResponse.json(
@@ -354,9 +365,10 @@ export async function POST(req: NextRequest) {
 
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
 
-/** The submitted tx hash from an inprocess 2xx body, or null. Accepts the
- *  three key spellings seen across their relay responses; a missing hash is
- *  NOT an error (see above) — the UI just omits the basescan link. */
+/** The submitted tx hash from an inprocess 2xx body, or null. `hash` is the
+ *  documented key (GET /splits returns { status: 'success', hash }); the
+ *  other spellings are tolerated defensively. A missing hash is NOT an error
+ *  (see above) — the UI just omits the basescan link. */
 function extractTxHash(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null
   const obj = data as Record<string, unknown>

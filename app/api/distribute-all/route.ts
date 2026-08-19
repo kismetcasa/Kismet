@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyMessage } from 'viem'
 import { isAddress } from '@/lib/address'
-import { INPROCESS_API } from '@/lib/inprocess'
+import { inprocessUrl } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { consumeUserQuota } from '@/lib/userQuota'
@@ -30,14 +30,14 @@ export const maxDuration = 300
 // "Distribute all": settle the caller's undistributed split balances in one
 // gesture. The caller signs ONCE; the server resolves the splits they're a
 // payee on, selects the DISTRIBUTE_ALL_CAP most-valuable (by their $ share),
-// and fans out to inprocess /distribute per split×currency. 40 moments → click
+// and fans out to inprocess distribute (GET /splits) per split×currency. 40 moments → click
 // once for the top 20, again for the next 20 (the drained ones drop out of the
 // balance>0 filter). Distribution is permissionless on 0xSplits (it can only
 // pay the split's fixed recipients, never redirect), so authorization here just
 // scopes the fan-out to the caller's own splits and bounds platform-sponsored
 // gas — via THREE independent limits: a per-artist single-flight lock (no
 // concurrent double-distribute of the same split by one artist — inprocess
-// /distribute is non-idempotent), the platform-wide in-flight governor (a burst
+// distribute is non-idempotent), the platform-wide in-flight governor (a burst
 // of artists queues instead of flooding the single relay), and the per-user
 // daily quota (consumed per call).
 
@@ -51,7 +51,7 @@ const perArtistLockKey = (addr: string) => `kismetart:distribute-all-lock:${addr
 // × 30s upstream timeout ≈ 400s). At the previous 90s the lock lapsed mid-run,
 // letting a second click overlap the first and fire duplicate sponsored txs at
 // still-funded splits — gas waste only (0xSplits can only pay its fixed
-// recipients), but inprocess /distribute is non-idempotent, so never invite it.
+// recipients), but inprocess distribute is non-idempotent, so never invite it.
 const LOCK_TTL_S = 600
 
 /**
@@ -67,25 +67,30 @@ async function distributeOne(
   currency: 'eth' | 'usdc',
 ): Promise<string | null> {
   try {
-    const res = await fetch(`${INPROCESS_API}/distribute`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
+    // GET /splits with query params — In Process deleted POST /distribute on
+    // 2026-08-18 (see the sibling comment in app/api/distribute/route.ts for
+    // the full migration note and response contract).
+    const res = await fetch(
+      inprocessUrl('/splits', {
         splitAddress,
         chainId: 8453,
         ...(currency === 'usdc' ? { tokenAddress: USDC_BASE } : {}),
       }),
-      // Per inprocess docs /distribute is NOT idempotent, so a timeout is
-      // INDETERMINATE — never auto-retry (the per-call balance-gate at plan
-      // time already ensures we only ask for funded splits, and a genuinely
-      // missed one is retried by the artist's next click, which re-reads
-      // balances). Bounded so one slow split can't pin the whole fan-out.
-      signal: AbortSignal.timeout(30_000),
-    })
+      {
+        method: 'GET',
+        headers: {
+          'x-api-key': apiKey,
+          Accept: 'application/json',
+        },
+        // A GET in name only — upstream submits a sponsored on-chain userOp,
+        // NOT idempotent, so a timeout is INDETERMINATE — never auto-retry
+        // (the per-call balance-gate at plan time already ensures we only ask
+        // for funded splits, and a genuinely missed one is retried by the
+        // artist's next click, which re-reads balances). Bounded so one slow
+        // split can't pin the whole fan-out.
+        signal: AbortSignal.timeout(30_000),
+      },
+    )
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.error(
