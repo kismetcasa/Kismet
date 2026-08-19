@@ -98,3 +98,70 @@ export function jobCurrencies(job: SplitJob): ('eth' | 'usdc')[] {
   if (job.usdcBase > 0n) out.push('usdc')
   return out
 }
+
+// ── on-chain payout targets ──────────────────────────────────────────────────
+// A Zora 1155 moment has TWO INDEPENDENT on-chain payout pointers, and a split
+// can sit behind either one:
+//
+//   1. `getCreatorRewardRecipient(tokenId)` — the TOKEN-level fundsRecipient
+//      (falling back to the collection's, then owner()). Zora's protocol
+//      creator rewards land here.
+//   2. the active sale strategy's `salesConfig.fundsRecipient` (FPSS for ETH,
+//      ERC20Minter for USDC) — where PAID MINT PROCEEDS land.
+//
+// Kismet's own mint flow sets both to the same 0xSplits wallet, which is why
+// every read here used to resolve (1) alone. In Process's moment-manage page
+// now lets an artist point a moment's fundsRecipient at a split AFTER mint, and
+// nothing guarantees it writes both pointers — so the two can diverge, leaving
+// real proceeds on a contract Kismet never looks at ("nothing to distribute" on
+// a funded split, or a distribute aimed at the wrong pot). Resolve BOTH
+// everywhere and let the balance filter decide which actually holds money.
+//
+// Pure + import-free like the rest of this module so scripts/verify-distribute
+// covers it without viem/redis.
+
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+/** One entry of a viem/wagmi multicall result set, narrowed to what we read. */
+export interface ContractRead {
+  status: 'success' | 'failure'
+  result?: unknown
+}
+
+/**
+ * Decode the three reads built by `payoutTargetCalls` (creator-reward
+ * recipient, FPSS sale row, ERC20Minter sale row) into the moment's DEDUPED
+ * payout targets, creator-reward recipient FIRST (the historical primary, so
+ * single-target moments keep their exact previous behaviour).
+ *
+ * Zero and malformed addresses drop out, as do failed reads — a moment with no
+ * sale row on a strategy decodes that strategy's tuple as all-zero, which is
+ * exactly the "not configured" signal. Deliberately does NOT filter on
+ * `saleEnd`: an ENDED sale still has a live fundsRecipient holding
+ * undistributed proceeds.
+ */
+export function decodePayoutTargets(results: readonly ContractRead[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (v: unknown): void => {
+    if (typeof v !== 'string') return
+    const a = v.toLowerCase()
+    if (!ADDRESS_RE.test(a) || a === ZERO_ADDRESS || seen.has(a)) return
+    seen.add(a)
+    out.push(a)
+  }
+
+  const reward = results[0]
+  if (reward?.status === 'success') push(reward.result)
+
+  // viem decodes a named-component tuple into an object; a positional decode
+  // (ABI drift, older viem) yields an array with fundsRecipient at index 4 on
+  // BOTH strategy tuples. Accept either rather than silently resolving nothing.
+  for (const r of [results[1], results[2]]) {
+    if (r?.status !== 'success' || !r.result || typeof r.result !== 'object') continue
+    if (Array.isArray(r.result)) push(r.result[4])
+    else push((r.result as { fundsRecipient?: unknown }).fundsRecipient)
+  }
+  return out
+}

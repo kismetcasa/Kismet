@@ -459,7 +459,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const {
     hasSplits,
     recipients: splitRecipients,
-    splitAddress,
+    splitAddresses,
     canDistribute,
     isRecipient,
     pendingFormatted,
@@ -474,7 +474,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     isCreator,
     isAdmin: isMomentAdmin,
     isPlatformAdmin: isAdmin,
-    currency,
   })
   // The platform admin sees distribute on any moment as a support override.
   // Flag the case where that's the *only* reason the controls show, so the
@@ -679,7 +678,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
 
   async function handleDistribute() {
     if (!detail) { toast.error('Artwork details still loading'); return }
-    await distribute(currency)
+    // The hook settles every funded (payout target × currency) pot itself —
+    // the moment's sale currency is no longer the selector, because a split
+    // can hold the other currency too and a moment has two payout pointers.
+    await distribute()
   }
 
   // In a Mini App, share = open the Farcaster cast composer prefilled with the
@@ -1998,7 +2000,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               Distributing pays every recipient at once (0xSplits is
               all-or-nothing), so the figures show the full pending balance
               plus the viewer's cut. */}
-          {canDistribute && (
+          {canDistribute && (hasSplits || hasPending) && (
             <div className="px-5 pb-4 flex flex-col gap-2">
               <p className="text-[10px] font-mono text-subtle uppercase tracking-wider">
                 distribute earnings
@@ -2014,12 +2016,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               )}
               <button
                 onClick={handleDistribute}
-                disabled={distributing || !splitAddress || !hasPending}
+                disabled={distributing || !hasPending}
                 className="text-xs font-mono px-3 py-2 border border-line text-muted hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
               >
                 {distributing
                   ? 'distributing…'
-                  : !splitAddress || pendingFormatted === undefined
+                  : splitAddresses === undefined || pendingFormatted === undefined
                     ? 'loading…'
                     : hasPending
                       ? 'distribute'

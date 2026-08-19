@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
 import { toast } from 'sonner'
-import { toastError } from '@/lib/toast'
+import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 
 // One-signature "distribute all" for the profile earnings card: fetch a nonce,
 // sign the batch message, POST to /api/distribute-all (which selects the
@@ -41,21 +41,38 @@ export function useDistributeAll(onDone?: () => void) {
         moments?: number
         distributed?: number
         failed?: number
+        reasons?: string[]
         remaining?: number
         error?: string
       }
       if (!res.ok) throw new Error(data.error ?? 'Distribution failed')
 
       const distributed = data.distributed ?? 0
+      const failed = data.failed ?? 0
       const remaining = data.remaining ?? 0
+      // Why each failure happened, straight from the server (already
+      // sanitized + deduped). Without it "(2 failed)" is a dead end for the
+      // artist AND for support — the only other signal was a server log line.
+      const description = Array.isArray(data.reasons) && data.reasons.length
+        ? data.reasons.join(' · ')
+        : undefined
       if (distributed === 0 && (data.moments ?? 0) === 0) {
         toast.success('Nothing to distribute', { id: 'distribute-all' })
+      } else if (distributed === 0 && failed > 0) {
+        // Nothing settled — an error toast, not a success one with a
+        // parenthetical. The old copy read "Distributed 0 payouts (2 failed)"
+        // under a success checkmark.
+        toast.error(`Could not distribute ${failed} payout${failed === 1 ? '' : 's'}`, {
+          id: 'distribute-all',
+          duration: TERMINAL_TOAST_DURATION_MS,
+          description,
+        })
       } else {
         const morePart = remaining > 0 ? ` · ${remaining} more — tap again` : ''
-        const failedPart = data.failed ? ` (${data.failed} failed)` : ''
+        const failedPart = failed ? ` (${failed} failed)` : ''
         toast.success(
           `Distributed ${distributed} payout${distributed === 1 ? '' : 's'}${failedPart}${morePart}`,
-          { id: 'distribute-all' },
+          { id: 'distribute-all', description },
         )
       }
       onDone?.()

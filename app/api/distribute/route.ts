@@ -5,9 +5,12 @@ import { INPROCESS_API, inprocessUrl } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { consumeNonce } from '@/lib/profile'
 import { getStoredSplits } from '@/lib/splits'
-import { ERC20_ABI, USDC_BASE, ZORA_CREATOR_REWARD_RECIPIENT_ABI } from '@/lib/zoraMint'
+import { decodePayoutTargets } from '@/lib/distributePlan'
+import { payoutTargetCalls, filterDistributableTargets } from '@/lib/payoutTargets'
+import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { errorResponse } from '@/lib/apiResponse'
+import { upstreamReason } from '@/lib/upstreamReason'
 import { consumeUserQuota } from '@/lib/userQuota'
 import { invalidatePendingCache } from '@/lib/pending'
 import { serverBaseClient } from '@/lib/rpc'
@@ -21,8 +24,19 @@ import { isPlatformPausedFor } from '@/lib/gate'
  * caller. Three gates:
  *   1. Signed message tying caller to the specific (collection, tokenId, split)
  *   2. Caller is creator OR admin of that moment (verified via inprocess)
- *   3. Token has a registered split flag (kismetart:splits:<addr>:<id>) — only
- *      tokens minted through our /api/mint route with multiple splits qualify
+ *   3. `splitAddress` is one of the token's own on-chain payout targets
+ *      (creator-reward recipient or a sale strategy's fundsRecipient) — so an
+ *      authorized caller can't have us sponsor an unrelated contract's payout
+ *
+ * A Kismet mint-time split record (kismetart:splits:<addr>:<id>) is NO LONGER
+ * required. It used to be gate 3, on the reasoning that only Kismet-minted
+ * splits should be distributable — but In Process's moment-manage page now
+ * lets an artist point a moment's fundsRecipient at a split AFTER mint, and
+ * those moments have no Kismet record, so the gate started 403-ing legitimate
+ * payouts. Everything it actually protected (never sponsoring a stranger's
+ * contract) is covered by the on-chain binding check plus the role check; the
+ * record is still read, for the recipient roster used by authorization and the
+ * payout notification fan-out.
  */
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
@@ -102,14 +116,11 @@ export async function POST(req: NextRequest) {
     return errorResponse(401, 'Invalid or expired nonce')
   }
 
-  // Token must have splits registered via our mint flow. Without this gate
-  // anyone could trigger distribute on arbitrary contract addresses. The
-  // stored recipient list is reused for authorization and the payout
-  // notification fan-out below.
+  // Kismet's mint-time recipient roster, when there is one. Optional (see the
+  // header): it authorizes payees and addresses the payout notifications, but
+  // a moment whose split was configured upstream simply has none, and the
+  // creator/admin role check below carries it.
   const stored = await getStoredSplits(collectionAddress, tokenId)
-  if (!stored.hasSplits) {
-    return errorResponse(403, 'No splits registered for this token')
-  }
 
   // Authorize the caller as creator, moment admin, recipient, OR the Kismet
   // platform admin. Distribution is permissionless on 0xSplits (it can only
@@ -157,20 +168,35 @@ export async function POST(req: NextRequest) {
     return errorResponse(403, 'Only the artwork creator, an admin, or a split recipient may distribute')
   }
 
-  // Bind splitAddress to the token: it must be the token's on-chain
-  // creator-reward-recipient. Without this, being authorized on *one* moment
-  // would let a caller pass any split contract's address and have the
-  // platform sponsor its distribution (no theft — 0xSplits only pays the
-  // fixed recipients — but gas griefing + bogus payout notifications).
+  // Bind splitAddress to the token: it must be one of the token's OWN on-chain
+  // payout targets. Without this, being authorized on *one* moment would let a
+  // caller pass any split contract's address and have the platform sponsor its
+  // distribution (no theft — 0xSplits only pays the fixed recipients — but gas
+  // griefing + bogus payout notifications).
+  //
+  // "Payout target" is deliberately plural: the token-level creator-reward
+  // recipient and the active sale strategy's fundsRecipient are independent
+  // pointers, and In Process's moment-manage page can move the latter alone.
+  // Checking only the former rejected a distribute aimed at the contract that
+  // actually holds the mint proceeds. See decodePayoutTargets.
   try {
-    const onchainSplit = await serverBaseClient().readContract({
-      address: collectionAddress as `0x${string}`,
-      abi: ZORA_CREATOR_REWARD_RECIPIENT_ABI,
-      functionName: 'getCreatorRewardRecipient',
-      args: [BigInt(tokenId)],
+    const reads = await serverBaseClient().multicall({
+      contracts: payoutTargetCalls(collectionAddress as `0x${string}`, BigInt(tokenId)) as never,
     })
-    if (onchainSplit.toLowerCase() !== splitAddress.toLowerCase()) {
-      return errorResponse(400, 'splitAddress does not match the token on-chain split')
+    const targets = await filterDistributableTargets(
+      serverBaseClient(),
+      decodePayoutTargets(reads as unknown as { status: 'success' | 'failure'; result?: unknown }[]),
+      // With a Kismet mint-time record the primary pointer IS the split, by
+      // construction. Without one, every candidate has to prove it's a 0xSplits
+      // wallet — otherwise "no record" would open distribute over a plain
+      // payout wallet, which is exactly what the old hasSplits gate prevented.
+      { trustPrimary: stored.hasSplits },
+    )
+    if (targets.length === 0) {
+      return errorResponse(403, 'No splits registered for this artwork')
+    }
+    if (!targets.includes(splitAddress.toLowerCase())) {
+      return errorResponse(400, 'splitAddress is not a payout recipient of this token')
     }
   } catch {
     return errorResponse(502, 'Could not verify split address')
@@ -244,34 +270,48 @@ export async function POST(req: NextRequest) {
   }
 
   const text = await res.text()
-  let data: unknown
-  try {
-    data = JSON.parse(text)
-  } catch {
+
+  // Non-2xx is the ONLY failure signal. Log the raw body (the actual inprocess
+  // error: bad request shape, key rejected, smart-wallet not admin, on-chain
+  // revert) and return a sanitized one-line reason — a bare "upstream error"
+  // toast left artists and support with nothing to act on, but the raw body
+  // embeds upstream topology and must never reach the client (`1bf7b1b`).
+  if (!res.ok) {
     console.error(
-      `[distribute] upstream non-JSON: status=${res.status} body=${text.slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+      `[distribute] upstream ${res.status}: ${text.slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
     )
+    const reason = upstreamReason(text)
     return NextResponse.json(
-      { error: 'upstream error', status: res.status, detail: text.slice(0, 200) },
+      {
+        error: reason
+          ? `Distribution rejected upstream: ${reason}`
+          : `Distribution rejected upstream (HTTP ${res.status})`,
+        upstreamStatus: res.status,
+      },
       { status: 502 },
     )
   }
 
-  // Log non-OK upstream responses so the actual inprocess error (bad request
-  // shape, key rejected, smart-wallet not admin, on-chain revert) is visible
-  // server-side — the only other signal is the client toast.
-  if (!res.ok) {
-    console.error(
-      `[distribute] upstream ${res.status}: ${JSON.stringify(data).slice(0, 500)} | request: ${JSON.stringify(upstreamBody)}`,
+  // 2xx = the distribution was submitted. The body is parsed ONLY for the tx
+  // hash: inprocess has returned empty and non-JSON 2xx bodies, and this call
+  // is NOT idempotent, so turning an unparseable success into a client error
+  // makes the artist click again and pay out twice. Log the oddity instead.
+  let data: unknown = null
+  try {
+    data = JSON.parse(text)
+  } catch {
+    console.warn(
+      `[distribute] upstream ${res.status} with non-JSON body (treated as success): ${text.slice(0, 200)}`,
     )
   }
+  const hash = extractTxHash(data)
 
   // Fan-out payout notifications on inprocess 2xx (best-effort). Reuses the
   // recipient list + moment meta already read for authorization, and stamps
   // each recipient's share of the pre-distribute balance so the notification
   // shows how much they received. writeNotification's self-check filters
   // caller-as-recipient.
-  if (res.ok && stored.recipients.length) {
+  if (stored.recipients.length) {
     after(async () => {
       try {
         await Promise.all(
@@ -306,5 +346,23 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  return NextResponse.json(data, { status: res.status })
+  // Normalized envelope — the client needs `hash` (basescan link) and nothing
+  // else; passing the upstream body straight through leaked its shape and made
+  // the client's success check depend on an undocumented field.
+  return NextResponse.json({ ok: true, ...(hash ? { hash } : {}) })
+}
+
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
+
+/** The submitted tx hash from an inprocess 2xx body, or null. Accepts the
+ *  three key spellings seen across their relay responses; a missing hash is
+ *  NOT an error (see above) — the UI just omits the basescan link. */
+function extractTxHash(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const obj = data as Record<string, unknown>
+  for (const key of ['hash', 'transactionHash', 'txHash']) {
+    const v = obj[key]
+    if (typeof v === 'string' && TX_HASH_RE.test(v)) return v
+  }
+  return null
 }

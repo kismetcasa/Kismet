@@ -13,6 +13,7 @@ import { getEthUsd } from '@/lib/ethPrice'
 import { acquireLock } from '@/lib/redisLock'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { errorResponse } from '@/lib/apiResponse'
+import { upstreamReason } from '@/lib/upstreamReason'
 import { isPlatformPausedFor } from '@/lib/gate'
 
 export const dynamic = 'force-dynamic'
@@ -53,11 +54,18 @@ const perArtistLockKey = (addr: string) => `kismetart:distribute-all-lock:${addr
 // recipients), but inprocess /distribute is non-idempotent, so never invite it.
 const LOCK_TTL_S = 600
 
+/**
+ * One sponsored distribute call. Returns null on success, or a short sanitized
+ * reason on failure — the fan-out surfaces those to the caller, because a bare
+ * "(2 failed)" toast is unactionable for the artist and gives support nothing
+ * to go on without pulling server logs. The raw body stays server-side only
+ * (it embeds upstream topology).
+ */
 async function distributeOne(
   apiKey: string,
   splitAddress: string,
   currency: 'eth' | 'usdc',
-): Promise<boolean> {
+): Promise<string | null> {
   try {
     const res = await fetch(`${INPROCESS_API}/distribute`, {
       method: 'POST',
@@ -83,14 +91,22 @@ async function distributeOne(
       console.error(
         `[distribute-all] upstream ${res.status} for ${splitAddress} (${currency}): ${body.slice(0, 200)}`,
       )
-      return false
+      return upstreamReason(body) || `rejected upstream (HTTP ${res.status})`
     }
-    return true
+    // A 2xx settles it. The body is not parsed at all here: inprocess has
+    // returned empty and non-JSON 2xx bodies, and /distribute is NOT
+    // idempotent, so a body-shape check could only ever manufacture a false
+    // failure and invite a duplicate payout on the next click.
+    return null
   } catch (err) {
     console.error(
       `[distribute-all] upstream error for ${splitAddress} (${currency}): ${err instanceof Error ? err.message : String(err)}`,
     )
-    return false
+    // A timeout is INDETERMINATE (the tx may have landed) — say so rather than
+    // implying nothing happened, since the artist's next click would re-fire.
+    return err instanceof Error && err.name === 'TimeoutError'
+      ? 'timed out — the payout may still have gone through'
+      : 'could not reach the payout relay'
   }
 }
 
@@ -191,6 +207,9 @@ export async function POST(req: NextRequest) {
     let failed = 0
     let quotaBlocked = 0
     let next = 0
+    // Distinct failure reasons, in first-seen order. A fan-out usually fails
+    // the same way for every unit, so this collapses to one line.
+    const reasons = new Set<string>()
     const worker = async (): Promise<void> => {
       while (next < units.length) {
         const u = units[next++]
@@ -201,9 +220,12 @@ export async function POST(req: NextRequest) {
           quotaBlocked++
           continue
         }
-        const ok = await distributeOne(apiKey, u.splitAddress, u.currency)
-        if (ok) distributed++
-        else failed++
+        const reason = await distributeOne(apiKey, u.splitAddress, u.currency)
+        if (reason === null) distributed++
+        else {
+          failed++
+          reasons.add(reason)
+        }
       }
     }
     await Promise.all(
@@ -234,6 +256,9 @@ export async function POST(req: NextRequest) {
       requested: units.length,
       distributed,
       failed,
+      // Sanitized, deduped — capped so a pathological fan-out can't return a
+      // wall of text. Empty when nothing failed.
+      reasons: [...reasons].slice(0, 3),
       quotaBlocked,
       // Funded splits beyond this invocation's cap — the artist clicks again to
       // settle them (the drained ones will have dropped out by then).

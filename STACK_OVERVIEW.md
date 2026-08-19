@@ -349,9 +349,16 @@ role authz, on-chain `splitAddress` match, gas quota — because the *platform*
 sponsors the tx); `verify-mint.ts` CI oracle pinning the math.
 
 **Risks.** inprocess `/distribute` is **non-idempotent** (a timeout is
-indeterminate → 502, never auto-retry, or it pays out twice); royalty decomposition
-only covers splits Kismet minted and stored; the Redis mirror can drift from chain
-(lazy self-heal, no bulk backfill).
+indeterminate → 502, never auto-retry, or it pays out twice — which is also why a
+2xx with an empty/unparseable body counts as SUCCESS: reporting a failure on a
+settled payout makes the artist click again); royalty decomposition only covers
+splits Kismet minted and stored; the Redis mirror can drift from chain (lazy
+self-heal, no bulk backfill). A moment carries **two independent payout
+pointers** — the token-level creator-reward recipient and the sale strategy's
+`fundsRecipient` — and In Process's moment-manage page can move one without the
+other, so every read resolves both (`decodePayoutTargets` / `payoutTargetCalls`);
+a target with no Kismet split record must prove it is a 0xSplits wallet
+(`splitMain()` probe) before it is offered for distribution.
 
 ### Layer C — External backend
 
