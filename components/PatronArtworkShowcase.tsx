@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useReadContract } from 'wagmi'
+import { useAccount, useReadContract } from 'wagmi'
 import { DEFAULT_COLLECT_COMMENT, type Moment } from '@/lib/inprocess'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
@@ -14,6 +14,7 @@ import { MomentImage } from './MomentImage'
 import { MomentVideo } from './MomentVideo'
 import { MaybeLazy } from './LazyMount'
 import { patronPassInfoFor } from '@/lib/patronCollection'
+import { GiftRecipientForm } from './GiftRecipientForm'
 
 // Pre-load guess until the thumbhash (then the loaded image) reports the real
 // shape — mirrors the Mint Pass Display so the box never letterboxes.
@@ -126,10 +127,25 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
  * goes through useDirectCollect, which re-reads the live sale on-chain and
  * refuses cleanly outside [saleStart, saleEnd] — the authoritative backstop, so
  * a stale label can never let a bad collect through.
+ *
+ * The adjacent "gift" affordance is the SAME collect with the mint pointed at
+ * someone else (useDirectCollect's `recipient`). It is scoped to this Patron
+ * surface first, deliberately: a Patron pass is the one piece whose recipient
+ * inherits mint access, so it is where the gate reasoning had to be settled
+ * before the flow generalizes. Nothing about the collect changes — a gift is
+ * one primary mint, never a mint plus a transfer, because a transfer of a
+ * Pass revokes the sender AND permanently taints the tokenId for every other
+ * holder of it (lib/gift.ts spells out the full argument).
  */
 function PatronCollectButton({ moment }: { moment: Moment }) {
   const { collect, status } = useDirectCollect()
   const ensureConnected = useEnsureConnected()
+  const [giftOpen, setGiftOpen] = useState(false)
+  // Signer for the self-gift nudge only. Read lazily off the same
+  // ensureConnected flow the collect uses, so opening the form never forces a
+  // wallet prompt — an unconnected user can type a recipient and connect at
+  // submit time, exactly like a plain collect.
+  const { address: signer } = useAccount()
 
   // Reads use the public RPC (no wallet needed), so the sold-out/closed state
   // resolves for signed-out visitors too.
@@ -158,7 +174,9 @@ function PatronCollectButton({ moment }: { moment: Moment }) {
 
   const unavailable = soldOut || saleClosed
 
-  async function handleCollect() {
+  // `recipient` undefined = collect for yourself; set = gift (the mint goes
+  // straight to them and the payer holds nothing).
+  async function handleCollect(recipient?: `0x${string}`) {
     if (unavailable || collecting) return
     // Host wallet inside a Mini App, RainbowKit picker on web; null = the user
     // didn't connect, so stay put (see useEnsureConnected).
@@ -167,34 +185,61 @@ function PatronCollectButton({ moment }: { moment: Moment }) {
     // No price passed — useDirectCollect reads the live sale on-chain. No share
     // offer: the Patron "creator" is the platform treasury, so a post-collect
     // "by @creator" mention would misattribute the real artist.
-    await collect({
+    const result = await collect({
       collectionAddress: moment.address as `0x${string}`,
       tokenId: moment.token_id,
       amount: 1,
       comment: DEFAULT_COLLECT_COMMENT,
+      ...(recipient ? { recipient } : {}),
     })
+    // Collapse the form only on a confirmed gift, so a rejected signature or a
+    // failed mint leaves the typed recipient in place to retry.
+    if (recipient && result) setGiftOpen(false)
   }
 
   return (
-    <button
-      onClick={handleCollect}
-      disabled={unavailable || collecting}
-      // Same collect treatment as the cards: gradient letters (on an inner
-      // span — see MomentCard.renderCollectButton for the Chromium
-      // background-clip:text seam this avoids), plain box, gradient fill on
-      // hover via accent-grad-hover.
-      className={`shrink-0 border px-3 py-1.5 text-xs font-mono uppercase tracking-widest transition-colors ${
-        unavailable
-          ? 'border-line text-muted cursor-not-allowed'
-          : collecting
-            ? 'border-line opacity-70 cursor-wait'
-            : 'accent-grad-hover border-line'
-      }`}
-    >
-      <span className={unavailable ? undefined : 'accent-grad'}>
-        {collecting ? 'collecting…' : unavailable ? 'sold out' : 'collect artwork'}
-      </span>
-    </button>
+    // basis-full lets the recipient form drop onto its own line inside the
+    // panel header's flex-wrap row instead of squeezing the heading.
+    <div className={`flex flex-wrap items-center justify-end gap-2 ${giftOpen ? 'basis-full' : 'shrink-0'}`}>
+      <button
+        onClick={() => void handleCollect()}
+        disabled={unavailable || collecting}
+        // Same collect treatment as the cards: gradient letters (on an inner
+        // span — see MomentCard.renderCollectButton for the Chromium
+        // background-clip:text seam this avoids), plain box, gradient fill on
+        // hover via accent-grad-hover.
+        className={`shrink-0 border px-3 py-1.5 text-xs font-mono uppercase tracking-widest transition-colors ${
+          unavailable
+            ? 'border-line text-muted cursor-not-allowed'
+            : collecting
+              ? 'border-line opacity-70 cursor-wait'
+              : 'accent-grad-hover border-line'
+        }`}
+      >
+        <span className={unavailable ? undefined : 'accent-grad'}>
+          {collecting ? 'collecting…' : unavailable ? 'sold out' : 'collect artwork'}
+        </span>
+      </button>
+      {/* Hidden once the piece can't be minted at all — a gift is the same
+          mint, so "sold out" or a closed window rules it out identically. */}
+      {!unavailable && !giftOpen && (
+        <button
+          onClick={() => setGiftOpen(true)}
+          disabled={collecting}
+          className="shrink-0 border border-line px-3 py-1.5 text-xs font-mono uppercase tracking-widest text-muted hover:text-ink transition-colors disabled:opacity-60"
+        >
+          gift
+        </button>
+      )}
+      {!unavailable && giftOpen && (
+        <GiftRecipientForm
+          signer={signer ?? null}
+          pending={collecting}
+          onGift={(recipient) => handleCollect(recipient)}
+          onCancel={() => setGiftOpen(false)}
+        />
+      )}
+    </div>
   )
 }
 

@@ -716,7 +716,17 @@ per-(recipient,tokenId) platform-tx flag (so a co-bundled transfer can't ride th
 flag to launder); dual-writer idempotent credit (synchronous direct-credit + async
 webhook backstop converge on one `SET NX` key — the direct path must win the race or
 the collector is stranded at `validBalance=0`); timing-safe HMAC webhook
-verification; fail-closed at credit time / fail-open on read.
+verification; fail-closed at credit time / fail-open on read. **Gifting a Pass**
+(§4.2) rides the mint arm rather than adding a path: it is a mint-to-recipient,
+so it introduces no transfer for the revoke/taint rules to act on.
+
+**Standing hazard.** Taint is per-`(collection, tokenId)` and `hasValidPass`
+excludes tainted ids from `liveTotal`, so on a MULTI-EDITION Pass drop (Patron
+token 3 is 100 editions) one holder's off-platform transfer taints the id for
+**every** holder of it and clamps them all to `validBalance 0`. The moment
+page's own `send` button (`MomentDetailView`, `safeTransferFrom`) is an in-app
+route to exactly that, un-gated on the Pass collection. Not introduced by
+gifting — and the reason gifting must never be built as mint-then-transfer.
 
 **Risks.** The webhook is single-point-critical for the *off-platform* half (no
 active replay/backfill — it only warns); taint is permanent and irreversible;
@@ -887,6 +897,29 @@ re-enters the same `/api/collect`. A **secondary buy** is a separate Seaport
 verification. _(Note: the collect path does **not** go through inprocess — that's the
 mint/create relay.)_
 
+**Collect-and-gift.** `useDirectCollect` takes an optional `recipient`, which
+becomes the `mintTo` inside `minterArguments` — the payer signs and pays, the
+edition is minted straight into someone else's wallet. It is deliberately **one
+primary mint, never a mint plus a transfer**: for the Pass collection a transfer
+would decrement the sender AND permanently taint the tokenId, and taint is
+collection-wide per id (`hasValidPass` drops tainted ids from `liveTotal`), so a
+single mistainted id would clamp *every* holder of that edition to
+`validBalance 0` — and the flag that prevents it can't be written before the
+webhook races in on the EIP-5792 path. A gift-mint emits only
+`TransferSingle(0x0 → recipient)`, the same genesis event an ordinary collect
+emits, so it needs no new credit path and gives the taint rule nothing to bite;
+the recipient earns validity through the mint arm exactly as an airdroppee does
+(the paid analogue of G3, and already "valid for minting" under the Mint Pass
+Ruleset). `/api/collect` therefore needs no gift-specific verification — it
+records the wallet the receipt proves the mint went to. `giftedBy` is
+**attribution only**, trusted solely when it matches the receipt payer or the
+SIWE session (never derived from `receipt.from`, which is the *bundler* on
+ERC-4337 collects) and dropped otherwise; a proved gifter is blacklist-gated,
+mirroring `/api/airdrop/notify` — a blocked wallet must not propagate creator
+access through its actions. Pure layer + regression oracle: `lib/gift.ts`,
+`scripts/verify-gift.ts`. Surfaced first on the Patron showcase only
+(`PatronArtworkShowcase` → `GiftRecipientForm`).
+
 ### 4.3 Agent Scout autonomous collect
 Eligibility gate (EIP-5792 capability / `eth_getCode`) → user signs **one** bounded
 Spend Permission to the scout spender (the only user-signed money-moving step) → the
@@ -912,7 +945,11 @@ backstop. Off-platform transfer → the Alchemy webhook (HMAC-verified) runs
 the (recipient,tokenId) pair was platform-flagged, and **permanently taints** the
 tokenId if the transfer wasn't platform-flagged and wasn't Kismet-listed. Enforcement
 (`hasValidPass`) reads `balanceOfBatch` excluding tainted ids and clamps the ledger
-down; the `usePassGate` client read is a UX hint only. The gate decision
+down; the `usePassGate` client read is a UX hint only. A **gift-mint**
+(`useDirectCollect`'s `recipient` → `mintTo`) enters this lifecycle at the same
+point an ordinary collect does — `from = 0x0`, credit the recipient — which is
+why it needs no branch here and cannot open a gap; the payer earns nothing,
+since validity follows the holder. The gate decision
 (`hasGateAccess`) runs over the caller's **identity union** — the signer plus its
 FC-verified sibling wallets (`expandToGateWallets`, capped, fail-degraded to
 signer-only) — so a Mini App user whose connected signer is the host wallet still

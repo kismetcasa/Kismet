@@ -11,6 +11,11 @@ export const ALL_NOTIFICATION_TYPES = [
   'listing_expired',
   'listing_created',
   'airdrop',
+  // Collect-and-gift: someone PAID to mint an edition straight into the
+  // recipient's wallet (app/api/collect + lib/gift). The paid analogue of
+  // 'airdrop', and treated the same way — for a Pass piece this notification
+  // is how the recipient learns they can now mint.
+  'gift',
   'payout',
   'authorized',
   'agent_collect',
@@ -30,6 +35,11 @@ export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
 export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
   'sale',
   'airdrop',
+  // Collect-and-gift: someone PAID to mint an edition straight into the
+  // recipient's wallet (app/api/collect + lib/gift). The paid analogue of
+  // 'airdrop', and treated the same way — for a Pass piece this notification
+  // is how the recipient learns they can now mint.
+  'gift',
   'payout',
   'raffle_win',
 ])
@@ -165,6 +175,7 @@ async function isPriority(
   if (type === 'mint') return true
   if (type === 'listing_expired') return true
   if (type === 'airdrop') return true
+  if (type === 'gift') return true
   if (type === 'payout') return true
   if (type === 'authorized') return true
   if (type === 'follow') return true

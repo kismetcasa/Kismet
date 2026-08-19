@@ -421,6 +421,20 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: momentUrl,
       }
     }
+    case 'gift': {
+      // Collect-and-gift recipient. Always has an actor (the payer, proved
+      // server-side before the notification is written), but fall back
+      // gracefully rather than pushing an awkward "undefined gifted you".
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      return {
+        title: truncate('Gift received', TITLE_MAX),
+        body: truncate(
+          actorName ? `${actorName} gifted you ${subject}` : `You were gifted ${subject}`,
+          BODY_MAX,
+        ),
+        targetUrl: momentUrl,
+      }
+    }
     case 'airdrop': {
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       // Airdropper's own confirmation (no actor) vs airdropee (actor set).

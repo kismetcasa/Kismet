@@ -12,6 +12,9 @@ import { errorResponse } from '@/lib/apiResponse'
 import { bestEffort } from '@/lib/bestEffort'
 import { recordPlatformTx, creditValidityOnce } from '@/lib/pass-validity'
 import { getGateConfig } from '@/lib/gate'
+import { verifyGiftClaim } from '@/lib/gift'
+import { isBlacklisted } from '@/lib/blacklist'
+import { getSessionAddress } from '@/lib/session'
 
 // All mint paths in this app emit ERC1155 TransferSingle: per-token
 // 1155.mint() (single + collect-all ETH legs) and ERC20Minter.mint()
@@ -34,24 +37,35 @@ const VERIFY_CACHE_TTL_SECONDS = 300
 const IDEMPOTENCY_TTL_SECONDS = 30 * 24 * 60 * 60
 
 // Confirm the on-chain receipt shows `account` minting `tokenId` from
-// `collection`. Fail-closed: any RPC, decode, or no-match path returns false.
+// `collection`, and return the tx's payer (`receipt.from`) so a gift claim can
+// be proved against it. Fail-closed: any RPC, decode, or no-match path returns
+// { ok: false }.
 async function verifyMintOnChain(
   txHash: Hex,
   collection: string,
   tokenId: string,
   account: string,
-): Promise<boolean> {
+): Promise<{ ok: false } | { ok: true; from: string }> {
+  // Cache the receipt's `from` alongside the verdict so the gift-claim proof
+  // below survives a cache hit. Legacy '1'/'0' entries written before this
+  // change still parse: '1' means verified with an unknown payer, which only
+  // costs an unproven gift claim its attribution (the collect itself, its
+  // credit, and its collected-list entry are unaffected).
   const cacheKey = `verify:collect:${txHash}:${collection}:${tokenId}:${account}`
-  const cached = await redis.get(cacheKey).catch(() => null)
-  if (cached === '1') return true
-  if (cached === '0') return false
+  const cached = await redis.get<string>(cacheKey).catch(() => null)
+  if (cached === '0') return { ok: false }
+  if (cached === '1') return { ok: true, from: '' }
+  if (typeof cached === 'string' && cached.startsWith('1:')) {
+    return { ok: true, from: cached.slice(2) }
+  }
 
   try {
     const receipt = await serverBaseClient().getTransactionReceipt({ hash: txHash })
     if (receipt.status !== 'success') {
       await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
-      return false
+      return { ok: false }
     }
+    const payer = receipt.from.toLowerCase()
 
     const expectedTokenId = BigInt(tokenId)
     for (const log of receipt.logs) {
@@ -75,16 +89,18 @@ async function verifyMintOnChain(
         to.toLowerCase() === account &&
         id === expectedTokenId
       ) {
-        await redis.set(cacheKey, '1', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
-        return true
+        await redis
+          .set(cacheKey, `1:${payer}`, { ex: VERIFY_CACHE_TTL_SECONDS })
+          .catch(() => {})
+        return { ok: true, from: payer }
       }
     }
 
     await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
-    return false
+    return { ok: false }
   } catch {
     // RPC failure: don't cache (transient).
-    return false
+    return { ok: false }
   }
 }
 
@@ -107,6 +123,11 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as {
     moment?: { collectionAddress?: string; tokenId?: string }
     account?: string
+    /** Collect-and-gift attribution: the wallet that PAID for a mint whose
+     *  recipient (`account`) is someone else. Untrusted — proved below
+     *  against the receipt's payer or the SIWE session, and dropped when
+     *  neither matches (see lib/gift.verifyGiftClaim). */
+    giftedBy?: string
     amount?: number
     comment?: string
     pricePerToken?: string
@@ -119,6 +140,7 @@ export async function POST(req: NextRequest) {
   const collectionAddress = body.moment?.collectionAddress
   const rawTokenId = body.moment?.tokenId
   const account = body.account?.toLowerCase()
+  const claimedGiftedBy = typeof body.giftedBy === 'string' ? body.giftedBy : null
   const amount = Number(body.amount ?? 1)
   // Validate comment shape + length before persisting it on the notification.
   // 1000 chars is far above any plausible human-written collect comment and
@@ -165,7 +187,7 @@ export async function POST(req: NextRequest) {
   const collectionLower = collectionAddress.toLowerCase()
 
   const verified = await verifyMintOnChain(txHash as Hex, collectionLower, tokenId, account)
-  if (!verified) {
+  if (!verified.ok) {
     // Loud trace for what was previously a silent 403. The client POSTs only
     // AFTER its own waitForTransactionReceipt, so a rejection here almost
     // always means the server's RPC hasn't indexed the tx yet (lag) — the
@@ -179,6 +201,38 @@ export async function POST(req: NextRequest) {
       account,
     })
     return errorResponse(403, 'Mint not verified on-chain')
+  }
+
+  // Collect-and-gift attribution. `account` above is already proved to be the
+  // wallet the edition was minted to; this only resolves WHO PAID, for the
+  // notifications. Accepted on either proof — the receipt's payer (plain EOA
+  // collects) or the SIWE session (smart-wallet / ERC-4337 paths, where
+  // receipt.from is the bundler) — and silently dropped otherwise, so a
+  // spoofed claim degrades to a plain collect rather than fabricating a
+  // notification from a wallet the caller doesn't control.
+  //
+  // NOTE the gift needs NO special handling below this point. A gift-mint is
+  // a mint: the credit, the collected list, and the taint rules all key off
+  // the recipient, which the receipt already proved. That is the whole
+  // safety argument for shipping gifting on Pass pieces (see lib/gift.ts).
+  const sessionAddress = claimedGiftedBy ? await getSessionAddress(req).catch(() => null) : null
+  const giftedBy = verifyGiftClaim({
+    claimed: claimedGiftedBy,
+    collector: account,
+    receiptFrom: verified.from,
+    sessionAddress,
+  })
+
+  // Blacklist gate on the GIFTER, mirroring /api/airdrop/notify: a
+  // blacklisted wallet must not be able to propagate creator access through
+  // its actions, and a paid gift-mint of the Pass is exactly that — it hands
+  // a fresh, fully-valid Pass to a wallet of the gifter's choosing. The mint
+  // is already on-chain (the user signs it from their own wallet, same as an
+  // airdrop), so this denies the platform-side record and credit, not the
+  // transfer of tokens. Only gifts are gated: collecting for yourself while
+  // blacklisted has always been allowed and is not a propagation vector.
+  if (giftedBy && (await isBlacklisted(giftedBy).catch(() => false))) {
+    return errorResponse(403, 'Address is blocked from gifting')
   }
 
   // Idempotency gate. SET NX returns 'OK' on first claim, null when the key
@@ -292,11 +346,34 @@ export async function POST(req: NextRequest) {
   after(async () => {
     try {
       const meta = await getMomentMeta(collectionLower, tokenId)
+
+      // Recipient ping for a gift — "<gifter> gifted you <artwork>". Sent even
+      // when the moment meta lookup misses (the copy falls back to "an
+      // artwork"): a recipient who was just handed a Pass needs to know it
+      // arrived, and unlike the creator notification there is no field here
+      // that requires meta. Mirrors the airdropee notification, which is the
+      // free analogue of this exact event.
+      if (giftedBy) {
+        await writeNotification({
+          type: 'gift',
+          recipient: account,
+          actor: giftedBy,
+          tokenAddress: collectionLower,
+          tokenId,
+          ...(meta?.name ? { tokenName: meta.name } : {}),
+          amount: safeAmount,
+        }).catch(() => {})
+      }
+
       if (!meta) return
       await writeNotification({
         type: 'collect',
         recipient: meta.creator,
-        actor: account,
+        // The PAYER is the collector from the creator's point of view — they
+        // are who bought the edition. On a plain collect this is `account`
+        // (giftedBy is null); on a gift it names the gifter rather than the
+        // recipient, who did nothing.
+        actor: giftedBy ?? account,
         tokenAddress: collectionLower,
         tokenId,
         tokenName: meta.name,
