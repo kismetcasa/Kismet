@@ -61,14 +61,20 @@ export function GiftRecipientForm({
         return
       }
       // Same planner the hook runs, so the form can reject a bad recipient
-      // before the user pays gas instead of after. A self-gift is caught here
-      // as a nudge — planMint itself treats it as an ordinary collect.
+      // before the user pays gas instead of after. Planned against the
+      // recipient itself when no wallet is connected yet — this surface lets
+      // you type a recipient and connect at submit time (ensureConnected runs
+      // inside the collect), and using the recipient as a stand-in signer
+      // would make EVERY input look like a self-gift and block the form. The
+      // self-gift nudge is therefore skipped until a signer is known; if it
+      // does turn out to be a self-gift, planMint collapses it to an ordinary
+      // collect rather than erroring.
       const plan = planMint(signer ?? resolved, resolved)
       if (plan.mode === 'invalid') {
         toast.error(giftRejectionMessage(plan.reason))
         return
       }
-      if (plan.mode === 'collect') {
+      if (signer && plan.mode === 'collect') {
         toast.error('That is your own wallet — use collect instead')
         return
       }

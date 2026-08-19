@@ -14,6 +14,7 @@ import { recordPlatformTx, creditValidityOnce } from '@/lib/pass-validity'
 import { getGateConfig } from '@/lib/gate'
 import { verifyGiftClaim } from '@/lib/gift'
 import { isBlacklisted } from '@/lib/blacklist'
+import { isPassBlacklisted } from '@/lib/pass-blacklist'
 import { getSessionAddress } from '@/lib/session'
 
 // All mint paths in this app emit ERC1155 TransferSingle: per-token
@@ -49,14 +50,22 @@ async function verifyMintOnChain(
   // Cache the receipt's `from` alongside the verdict so the gift-claim proof
   // below survives a cache hit. Legacy '1'/'0' entries written before this
   // change still parse: '1' means verified with an unknown payer, which only
-  // costs an unproven gift claim its attribution (the collect itself, its
-  // credit, and its collected-list entry are unaffected).
+  // costs an unproven gift claim its attribution for one TTL window (the
+  // collect itself, its credit, and its collected-list entry are unaffected).
+  //
+  // String() normalization is load-bearing, not defensive: Upstash SETs '1'
+  // unchanged but JSON-PARSES it back on GET as the NUMBER 1, so the previous
+  // `cached === '1'` never matched and this cache never hit — every verified
+  // collect re-fetched its receipt from RPC. Same trap lib/gateFlags.isFlagSet
+  // exists for (see scripts/verify-gate-flags.ts). The `1:<payer>` form below
+  // is non-numeric so it round-trips as a string either way.
   const cacheKey = `verify:collect:${txHash}:${collection}:${tokenId}:${account}`
-  const cached = await redis.get<string>(cacheKey).catch(() => null)
-  if (cached === '0') return { ok: false }
-  if (cached === '1') return { ok: true, from: '' }
-  if (typeof cached === 'string' && cached.startsWith('1:')) {
-    return { ok: true, from: cached.slice(2) }
+  const cached = await redis.get<string | number>(cacheKey).catch(() => null)
+  const cachedStr = cached == null ? null : String(cached)
+  if (cachedStr === '0') return { ok: false }
+  if (cachedStr === '1') return { ok: true, from: '' }
+  if (cachedStr?.startsWith('1:')) {
+    return { ok: true, from: cachedStr.slice(2) }
   }
 
   try {
@@ -223,16 +232,46 @@ export async function POST(req: NextRequest) {
     sessionAddress,
   })
 
-  // Blacklist gate on the GIFTER, mirroring /api/airdrop/notify: a
-  // blacklisted wallet must not be able to propagate creator access through
-  // its actions, and a paid gift-mint of the Pass is exactly that — it hands
-  // a fresh, fully-valid Pass to a wallet of the gifter's choosing. The mint
-  // is already on-chain (the user signs it from their own wallet, same as an
-  // airdrop), so this denies the platform-side record and credit, not the
-  // transfer of tokens. Only gifts are gated: collecting for yourself while
-  // blacklisted has always been allowed and is not a propagation vector.
-  if (giftedBy && (await isBlacklisted(giftedBy).catch(() => false))) {
-    return errorResponse(403, 'Address is blocked from gifting')
+  // Blacklist gate on the GIFTER, mirroring /api/airdrop/notify. A gift is not
+  // a collect: it hands a fresh, fully-valid credential to a wallet of the
+  // gifter's choosing, which is the propagation the moderation lists exist to
+  // stop. Collecting FOR YOURSELF while blacklisted stays allowed — that is
+  // lib/blacklist's documented policy and this narrows nothing about it.
+  //
+  // Two lists, each for the case it was written for:
+  //   - action blacklist — blocks creator actions incl. airdrop, the free
+  //     analogue of this exact event. Applies to any collection.
+  //   - PASS blacklist — "this identity must not have creator access". Buying
+  //     Passes and gifting them to fresh wallets is a direct route around it,
+  //     so it applies when the gift targets the Pass collection. Without this,
+  //     a moderated identity could re-credential itself for the mint price.
+  // The mint is already on-chain (the user signs it from their own wallet,
+  // exactly like an airdrop), so this denies the platform-side record and
+  // credit, not the movement of tokens — admin can still grant via
+  // POST /api/admin/pass-validity if a denial turns out to be wrong.
+  if (giftedBy) {
+    // getGateConfig never throws (last-known-good / cold-start fallback) and
+    // is in-process cached, so this is effectively free here.
+    const gate = await getGateConfig()
+    const isPassGift = !!gate.passCollection && gate.passCollection === collectionLower
+    const [actionBlocked, passBlocked] = await Promise.all([
+      isBlacklisted(giftedBy).catch(() => false),
+      isPassGift ? isPassBlacklisted(giftedBy).catch(() => false) : Promise.resolve(false),
+    ])
+    if (actionBlocked || passBlocked) {
+      // Loud: the payer already spent real money on-chain and the recipient
+      // now holds an uncredited edition. Needs to be reconcilable by hand.
+      console.warn('[collect] gift denied — blacklisted gifter', {
+        txHash,
+        collection: collectionLower,
+        tokenId,
+        gifter: giftedBy,
+        recipient: account,
+        actionBlocked,
+        passBlocked,
+      })
+      return errorResponse(403, 'Address is blocked from gifting')
+    }
   }
 
   // Idempotency gate. SET NX returns 'OK' on first claim, null when the key
