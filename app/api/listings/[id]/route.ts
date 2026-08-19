@@ -175,8 +175,9 @@ export async function PATCH(
 
   if (body.status === 'cancelled') {
     // Clear the Kismet-listed flag so processTransfer no longer shields this
-    // token from taint. The seller may sell elsewhere (off-platform) after
-    // cancelling; without this, the stale flag would prevent the taint that
+    // token's buyer from being recorded as an off-platform acquirer. The
+    // seller may sell elsewhere (off-platform) after cancelling; without this,
+    // the stale flag would suppress the off-platform mark that
     // protects the provenance chain until the TTL expires.
     after(() =>
       clearKismetListed(listing.collectionAddress, listing.tokenId, listing.seller).catch(
@@ -289,7 +290,7 @@ export async function PATCH(
     // more seconds. Without synchronous credit here, the webhook would
     // race and claim the creditValidityOnce key with no-credit (if the
     // platform flag wasn't set yet). The Kismet-listed flag set at
-    // listing-creation time prevents the webhook from false-tainting the
+    // listing-creation time prevents the webhook from falsely marking the
     // token, but we still credit synchronously so the buyer has access on
     // their very next mint attempt without waiting for the webhook.
     //

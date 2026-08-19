@@ -268,7 +268,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Credit each recipient SYNCHRONOUSLY — mirrors the fix in /api/collect/route.ts.
-    // Airdrops are mints (from = 0x0), so processTransfer cannot taint the tokenId,
+    // Airdrops are mints (from = 0x0), so processTransfer records no
+    // off-platform provenance against the recipient,
     // but the webhook still skips the credit when !platform. The race: Alchemy
     // delivers the TransferSingle events immediately after the tx mines; the sender's
     // client calls /api/airdrop/notify only after seeing the receipt, so the webhook

@@ -134,8 +134,8 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
  * inherits mint access, so it is where the gate reasoning had to be settled
  * before the flow generalizes. Nothing about the collect changes — a gift is
  * one primary mint, never a mint plus a transfer, because a transfer of a
- * Pass revokes the sender AND permanently taints the tokenId for every other
- * holder of it (lib/gift.ts spells out the full argument).
+ * Pass revokes the sender AND leaves the recipient holding a copy that proves
+ * nothing (lib/gift.ts spells out the full argument).
  */
 function PatronCollectButton({ moment }: { moment: Moment }) {
   const { collect, status } = useDirectCollect()

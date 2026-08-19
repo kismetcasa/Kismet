@@ -12,13 +12,15 @@
  * the Pass gate's whole threat model is about TRANSFERS. lib/pass-validity's
  * processTransfer decrements `from` on every non-mint Transfer and — unless
  * the (recipient, tokenId) pair was platform-flagged for that exact tx —
- * PERMANENTLY taints the tokenId. Taint is collection-wide per tokenId and
- * hasValidPass excludes tainted ids from `liveTotal`, so one mistainted id on
- * a 100-edition Patron drop clamps EVERY holder of that id to validBalance 0.
- * A bundled mint→transfer gift would have to win a race against the Alchemy
- * webhook to get its flag written, and the tx hash isn't even known before
- * signing on the EIP-5792 path — an unwinnable race with a mass-revocation
- * failure mode.
+ * records the moved units against the recipient as an off-platform
+ * acquisition, which hasValidPass then subtracts from what they can prove
+ * (lib/passTaint.ts). A bundled mint→transfer gift would have to win a race
+ * against the Alchemy webhook to get its flag written, and the tx hash isn't
+ * even known before signing on the EIP-5792 path. Losing that race would
+ * revoke the payer AND hand the recipient a copy that proves nothing — the
+ * precise outcome gifting exists to avoid. (Before the per-holder model it
+ * was worse still: the mis-flagged transfer tainted the tokenId
+ * collection-wide, clamping every holder of a 100-edition drop to zero.)
  *
  * A gift-mint has no transfer at all. Its on-chain footprint is a
  * `TransferSingle(from = 0x0, to = recipient)` — indistinguishable in shape
@@ -26,7 +28,7 @@
  * the genesis of a valid Pass (processTransfer's `isMint` arm credits `to`
  * unconditionally; /api/collect's verifyMintOnChain proves the same thing
  * synchronously). So gifting cannot open a gate gap: it introduces no new
- * event type, no new credit path, and nothing for the taint rule to bite.
+ * event type, no new credit path, and no provenance rule that applies.
  * It is the paid analogue of an airdrop, which the Mint Pass Ruleset already
  * lists as "valid for minting" (lib/patronCollection.PATRON_MINT_PASS_RULESET).
  *

@@ -144,7 +144,7 @@ Two helpers (`lib/redisRead.ts`) plus deliberate per-domain asymmetries:
 | `safeRead` → fallback | session verify, profile theme, unread count, listings visibility wrapper, smart-wallet batch | page renders logged-out/unthemed/empty rather than 500 |
 | `strictRead` / raw throw | hidden-moments, hidden-collections (content privacy) | error boundary; never reveal hidden content |
 | Fail-OPEN | rate limits (`ratelimit.ts:43`), user quotas (`userQuota.ts:144`), airdrop quota, pass-blacklist read, hidden-users, scout locks/killswitch read | availability over enforcement — an outage silently disables abuse ceilings (documented, accepted; wallet-balance backstop) |
-| Fail-CLOSED | pass-gate decision (`hasValidPass` → false on error), taint check at credit time (`isTokenTainted` → true), intent/auth nonce consumption (`.catch(()=>0)` → 401), admin sessions, platform-pause cold default (`paused:true`), earnings-visibility writes | money/moderation paths deny rather than over-permit |
+| Fail-CLOSED | pass-gate decision (`hasValidPass` → false on error), intent/auth nonce consumption (`.catch(()=>0)` → 401), admin sessions, platform-pause cold default (`paused:true`), earnings-visibility writes | money/moderation paths deny rather than over-permit |
 | Last-known-good | gate config (`gate.ts:65`) | a blip can't flap the kill switch |
 | Swallow + log | all notification writes, all `after()` side-effect writes, trending MULTI | side effects never break the parent operation |
 
@@ -342,7 +342,8 @@ This is the single largest bandwidth consumer per request in the app.
 | `kismetart:pass:valid-balance:{c}:{a}` | string int | ADJUST_BALANCE_LUA ±n (credit `pass-validity.ts:485`, webhook decrement `:379`); SET_VALIDITY_LUA admin; CAS clamp-down (`:564`) | GET per gate check (`:508`) + badge poll + admin | none | **C on gate** |
 | `kismetart:pass:admin-grant:{c}:{a}` | string | set/del inside Lua | GET in hasValidPass (`:515`) | none | O→reconcile |
 | `kismetart:pass:platform-tx:rcpt:{tx}` | set `addr:tid` | RECORD_PLATFORM_TX_LUA (N recipients = 1 cmd) from collect/mint/airdrop/fill after() with 4-try backoff | SISMEMBER per webhook transfer (`:180,366`) | 90d | throws after retries |
-| `kismetart:pass:tainted:{c}` | set tid | SADD webhook off-platform transfer (`:403`); SREM admin | SISMEMBER at credit — **C (true on error)** (`:290`); SMEMBERS in hasValidPass — **O (∅ on error)** (`:304`) | **permanent** | asymmetric by design |
+| `kismetart:pass:offplatform:{c}:{a}` | hash tid→units | HINCRBY webhook off-platform transfer (receiver); Lua release on every non-mint send (sender, clamped, HDEL at 0); HDEL admin | HGETALL in hasValidPass → `countableUnits` subtraction — **O (∅ on error)** | self-clearing (field dropped at 0) | fail-open: the ledger only increments on a proven acquisition, so a missed read cannot manufacture validity; failing closed would revoke the whole collection on a Redis blip |
+| ~~`kismetart:pass:tainted:{c}`~~ | ~~set tid~~ | **SUPERSEDED** — token-scoped taint revoked every holder of an EDITION and blocked future mints of a live sale. No read path remains; cleared via `reconcile-pass-validity.mjs --clear-legacy-taint` | — | — | see `lib/passTaint.ts` |
 | `kismetart:pass:kismet-listed:{c}:{t}:{s}` | string | SET EX=listing lifetime on Pass listing (`:198`); DEL fill/cancel/sweep | GET per webhook (false-taint guard) (`:393`) | listing lifetime | S |
 | `kismetart:pass:credited:{c}:{a}:{tx}:{t}` | string | **SET NX EX 90d** credit CAS (`:475`) — blacklist+taint checked BEFORE | — | 90d | C |
 | `kismetart:pass:processed:{tx}:{log}:{sub}` | string | **SET NX EX 30d** webhook event idempotency (`:351`) | — | 30d | C |

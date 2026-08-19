@@ -22,8 +22,8 @@
  * ZADD NX guards mean re-running (or racing the live webhook) never double-
  * credits. It never sets an admin-grant, so hasValidPass's live on-chain
  * reconciliation still clamps a credited balance down if the holder later moved
- * the Pass. Tainted tokenIds are respected (skipped) and reported with the
- * admin remedy, never silently laundered.
+ * the Pass — including subtracting any units they acquired off-platform, so a
+ * credit written here can never out-run the gate's own provenance check.
  *
  * Usage:
  *   node scripts/reconcile-pass-validity.mjs                       # dry-run, whole Pass collection
@@ -32,6 +32,24 @@
  *   node scripts/reconcile-pass-validity.mjs --address 0xabc... --commit
  *   node scripts/reconcile-pass-validity.mjs --no-collected        # validity only
  *   node scripts/reconcile-pass-validity.mjs --collection 0xdef... # override the Pass collection
+ *   node scripts/reconcile-pass-validity.mjs --clear-legacy-taint  # report the superseded taint set
+ *   node scripts/reconcile-pass-validity.mjs --clear-legacy-taint --commit   # and delete it
+ *
+ * MIGRATION NOTE (token-scoped taint -> per-holder off-platform units).
+ * Provenance used to be recorded as a per-COLLECTION set of "tainted"
+ * tokenIds, which on an EDITION revoked every holder of that id and made this
+ * very script skip their mints. It is now per (holder, tokenId) unit counts
+ * (lib/passTaint.ts). Consequences for this script:
+ *   - the taint skip is gone, so a run now repairs the buyers the old model
+ *     had collaterally blocked. That is the intended remediation: re-run it
+ *     with --commit after deploying the new model.
+ *   - the new off-platform ledger is intentionally NOT seeded from history.
+ *     It does not need to be: a wallet that acquired off-platform was never
+ *     credited, so its ledger is already 0 and the gate denies it on that
+ *     alone. The counts only ever REDUCE what a positive ledger may prove, and
+ *     a positive ledger can only come from a proven on-platform acquisition.
+ *     Seeding would therefore add no denial and risk over-marking legitimate
+ *     holders — the exact failure being retired.
  *
  * Env (same names the app reads):
  *   UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
@@ -50,6 +68,12 @@ const flagVal = (f) => {
   return i >= 0 ? argv[i + 1] : undefined
 }
 const COMMIT = hasFlag('--commit')
+// Migration: drop the superseded token-scoped taint set
+// (kismetart:pass:tainted:<collection>). Nothing in the request path reads it
+// since provenance moved to per-holder unit accounting (lib/passTaint.ts) — it
+// is cleared explicitly rather than silently so the operator sees, and records,
+// exactly what the old model had accumulated.
+const CLEAR_LEGACY_TAINT = hasFlag('--clear-legacy-taint')
 const DO_COLLECTED = !hasFlag('--no-collected')
 const ONLY_ADDRESS = (flagVal('--address') || '').toLowerCase() || null
 const COLLECTION_OVERRIDE = (flagVal('--collection') || '').toLowerCase() || null
@@ -211,7 +235,24 @@ async function main() {
   const blacklist = new Set(
     ((await redisCmd(['SMEMBERS', 'kismetart:pass-blacklist'])) || []).map((s) => String(s).toLowerCase()),
   )
-  const tainted = new Set(((await redisCmd(['SMEMBERS', kTainted(passCollection)])) || []).map(String))
+  // Legacy set — read for REPORTING only (and for --clear-legacy-taint). The
+  // gate no longer consults it; see the migration note in the header.
+  const legacyTainted = new Set(
+    ((await redisCmd(['SMEMBERS', kTainted(passCollection)])) || []).map(String),
+  )
+  if (legacyTainted.size > 0) {
+    console.log(`\nLEGACY TAINT — ${legacyTainted.size} tokenId(s) still in the superseded set:`)
+    console.log(`  ${Array.from(legacyTainted).sort().join(', ')}`)
+    console.log('  Not read by the gate any more. Clear with --clear-legacy-taint --commit.')
+  }
+  if (CLEAR_LEGACY_TAINT) {
+    if (COMMIT) {
+      await redisCmd(['DEL', kTainted(passCollection)])
+      console.log(`\n  ✓ legacy taint set DELETED (${legacyTainted.size} tokenId(s) cleared)`)
+    } else {
+      console.log(`\n  [dry-run] would DELETE ${kTainted(passCollection)}`)
+    }
+  }
 
   // ---- enumerate mints -----------------------------------------------------
   // Deep single-address repair: pull every mint TO that address across all
@@ -250,12 +291,17 @@ async function main() {
 
   // ---- validity gaps (Pass only) ------------------------------------------
   // A gap = an uncredited Pass mint. Batch the credited-key reads.
-  const eligible = passMints.filter((m) => {
-    if (blacklist.has(m.to)) return false
-    if (tainted.has(m.tokenId)) return false
-    return true
-  })
-  const taintBlocked = passMints.filter((m) => tainted.has(m.tokenId) && !blacklist.has(m.to))
+  // No provenance filter: a mint is the GENESIS of a copy, so it can never be
+  // an off-platform acquisition. The old token-scoped taint skip used to drop
+  // these mints — which is how legitimate buyers of a still-open sale ended up
+  // permanently uncredited once any other holder sold off-platform. The
+  // pass-blacklist skip stays: that is a deliberate per-wallet moderation call.
+  const eligible = passMints.filter((m) => !blacklist.has(m.to))
+  // Mints the superseded model would have skipped — reported so the operator
+  // can see exactly who this run is repairing.
+  const previouslyTaintBlocked = passMints.filter(
+    (m) => legacyTainted.has(m.tokenId) && !blacklist.has(m.to),
+  )
 
   const creditedFlags = await redisPipeline(
     eligible.map((m) => ['GET', kCredited(passCollection, m.to, m.txHash, m.tokenId)]),
@@ -277,10 +323,11 @@ async function main() {
     console.log(`  ${addr}  ledger=${bal ?? 0}  missing +${total}  (tokens: ${gs.map((g) => `#${g.tokenId}×${g.amount}`).join(', ')})`)
     for (const g of gs) console.log(`      tx ${g.txHash}`)
   }
-  if (taintBlocked.length > 0) {
-    console.log(`\n  ⚠ ${taintBlocked.length} mint(s) skipped — tokenId is TAINTED. If these are legitimate current`)
-    console.log('    holders, remedy is an admin override (setValidBalance) or removeTaint, not this script:')
-    for (const t of taintBlocked) console.log(`      ${t.to}  tokenId #${t.tokenId}  tx ${t.txHash}`)
+  if (previouslyTaintBlocked.length > 0) {
+    console.log(`\n  ℹ ${previouslyTaintBlocked.length} mint(s) were blocked by the SUPERSEDED token-scoped taint`)
+    console.log('    (tokenId in the legacy set). They are eligible again under per-holder provenance —')
+    console.log('    any of them listed as a gap above is repaired by this run:')
+    for (const t of previouslyTaintBlocked) console.log(`      ${t.to}  tokenId #${t.tokenId}  tx ${t.txHash}`)
   }
 
   // ---- collected gaps ------------------------------------------------------

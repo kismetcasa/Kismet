@@ -221,8 +221,8 @@ export async function POST(req: NextRequest) {
   // notification from a wallet the caller doesn't control.
   //
   // NOTE the gift needs NO special handling below this point. A gift-mint is
-  // a mint: the credit, the collected list, and the taint rules all key off
-  // the recipient, which the receipt already proved. That is the whole
+  // a mint: the credit, the collected list, and the provenance rules all key
+  // off the recipient, which the receipt already proved. That is the whole
   // safety argument for shipping gifting on Pass pieces (see lib/gift.ts).
   const sessionAddress = claimedGiftedBy ? await getSessionAddress(req).catch(() => null) : null
   const giftedBy = verifyGiftClaim({

@@ -710,28 +710,48 @@ earlier collapsed the per-recipient platform-tx flag writes into one Lua eval (a
 around the gate's blacklist/hidden-set reads (memo TTLs 5→15 min).
 
 **Key mechanisms.** Any-transfer-revokes invariant (unconditional `from` decrement
-on every non-mint transfer); permanent taint (a tainted tokenId can never confer
-validity again, even via a later Kismet sale, and is excluded from `liveTotal`);
+on every non-mint transfer); **per-holder off-platform unit accounting** (below);
 per-(recipient,tokenId) platform-tx flag (so a co-bundled transfer can't ride the
 flag to launder); dual-writer idempotent credit (synchronous direct-credit + async
 webhook backstop converge on one `SET NX` key — the direct path must win the race or
 the collector is stranded at `validBalance=0`); timing-safe HMAC webhook
-verification; fail-closed at credit time / fail-open on read. **Gifting a Pass**
+verification; fail-open on the provenance read (the ledger is the primary control
+and only ever increments on a proven acquisition). **Gifting a Pass**
 (§4.2) rides the mint arm rather than adding a path: it is a mint-to-recipient,
-so it introduces no transfer for the revoke/taint rules to act on.
+so it introduces no transfer for the revoke/provenance rules to act on.
 
-**Standing hazard.** Taint is per-`(collection, tokenId)` and `hasValidPass`
-excludes tainted ids from `liveTotal`, so on a MULTI-EDITION Pass drop (Patron
-token 3 is 100 editions) one holder's off-platform transfer taints the id for
-**every** holder of it and clamps them all to `validBalance 0`. The moment
-page's own `send` button (`MomentDetailView`, `safeTransferFrom`) is an in-app
-route to exactly that, un-gated on the Pass collection. Not introduced by
-gifting — and the reason gifting must never be built as mint-then-transfer.
+**Provenance is per (holder, tokenId), counted in units.** An off-platform transfer
+records the moved units against the RECEIVER (`kismetart:pass:offplatform:{c}:{a}`,
+a HASH of tokenId→units) and every non-mint send RELEASES them from the sender;
+`hasValidPass` subtracts a holder's units from the balance they may prove
+(`countableUnits`). Enforcement is that subtraction alone — `creditValidityOnce`
+carries no provenance check, because each of its callers has already proven an
+on-platform acquisition on-chain. Invariant:
+`ledger ≤ min(proven acquisitions, on-chain balance − off-platform units)`.
+
+_Replaced (2026-08) a per-COLLECTION set of "tainted" tokenIds._ That form was
+sound for a 1-of-1 and catastrophic for an edition — Patron drops are 19 and 100
+copies of ONE id, so a single holder's OpenSea sale ① excluded that id from every
+holder's `liveTotal`, CAS-clamping all of them to `validBalance 0`, and ② made
+`creditValidityOnce` refuse every future mint of a still-open sale, so new buyers
+paid and got nothing. It also handed anyone a revocation weapon: sending a pass to
+a legitimate holder tainted the id. Counting units (not a per-holder boolean)
+closes that last one too — an unsolicited copy is discounted while the holder's own
+copy still counts. Pure layer `lib/passTaint.ts`, oracle
+`scripts/verify-pass-taint.ts`, remediation `--clear-legacy-taint` +
+a re-run of `scripts/reconcile-pass-validity.mjs`.
+
+**Standing hazard (unchanged by the above).** The moment page's `send` button
+(`MomentDetailView`, `safeTransferFrom`) is un-gated on the Pass collection, so a
+holder can still revoke *themselves* with no warning — now correctly limited to
+their own wallet.
 
 **Risks.** The webhook is single-point-critical for the *off-platform* half (no
-active replay/backfill — it only warns); taint is permanent and irreversible;
-`creditValidityOnce` trusts its caller (correctness
-depends on every path flagging only on-chain-proven pairs).
+active replay/backfill — it only warns); `creditValidityOnce` trusts its caller
+(correctness depends on every path flagging only on-chain-proven pairs, and it is
+now the *only* provenance boundary at write time). Off-platform units are released
+on any send because ERC-1155 copies are fungible — the lenient direction, chosen
+so a mis-attribution can never falsely revoke a legitimate holder.
 
 #### G3. Airdrops (`airdrops`)
 **What.** Creators mint free copies directly to recipients via Zora `adminMint`
@@ -941,11 +961,13 @@ On-platform acquisition (collect / airdrop / Kismet fill) → the API handler
 webhook, which often arrives first and would skip the credit + burn its processed
 key, stranding the holder) and schedules `recordPlatformTx` as the convergence
 backstop. Off-platform transfer → the Alchemy webhook (HMAC-verified) runs
-`processTransfer`: **unconditionally** decrements the sender, credits `to` only if
-the (recipient,tokenId) pair was platform-flagged, and **permanently taints** the
-tokenId if the transfer wasn't platform-flagged and wasn't Kismet-listed. Enforcement
-(`hasValidPass`) reads `balanceOfBatch` excluding tainted ids and clamps the ledger
-down; the `usePassGate` client read is a UX hint only. A **gift-mint**
+`processTransfer`: **unconditionally** decrements the sender, releases the sender's
+off-platform units (they no longer hold the copies), credits `to` only if the
+(recipient,tokenId) pair was platform-flagged, and — when the transfer was neither
+platform-flagged nor Kismet-listed — records the moved units against **the
+receiver** as an off-platform acquisition. Enforcement
+(`hasValidPass`) reads `balanceOfBatch`, subtracts the holder's own off-platform
+units, and clamps the ledger down; the `usePassGate` client read is a UX hint only. A **gift-mint**
 (`useDirectCollect`'s `recipient` → `mintTo`) enters this lifecycle at the same
 point an ordinary collect does — `from = 0x0`, credit the recipient — which is
 why it needs no branch here and cannot open a gap; the payer earns nothing,

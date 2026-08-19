@@ -2,6 +2,11 @@ import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import { isPassBlacklisted } from './pass-blacklist'
 import { parseLedgerBalance } from './passUnion'
+import {
+  countableUnits,
+  parseUnitCount,
+  planTransferEffects,
+} from './passTaint'
 
 const PROCESSED_TTL = 30 * 24 * 60 * 60 // 30 days
 // Platform-tx flags live long enough to cover any plausible Alchemy
@@ -20,7 +25,8 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 // platform acquisitions in this tx (see platformTxMember), consulted by the
 // webhook via SISMEMBER. Per-(recipient, tokenId) — not tx-level — so a
 // transfer bundled into a platform-flagged tx (e.g. a smart-wallet batch)
-// can't inherit "platform-originated" to escape taint or get credited. New
+// can't inherit "platform-originated" to escape the off-platform mark or get
+// credited. New
 // `:rcpt:` namespace so it never collides with the pre-migration tx-level
 // string flag (which simply expires unread).
 const keyPlatformTx = (txHash: string) =>
@@ -42,19 +48,35 @@ const keyProcessed = (txHash: string, logIndex: number, subIndex: number) =>
 // rather than having the second claim blocked by the first's NX lock.
 const keyCredited = (collection: string, address: string, txHash: string, tokenId: string) =>
   `kismetart:pass:credited:${collection.toLowerCase()}:${address.toLowerCase()}:${txHash.toLowerCase()}:${tokenId}`
-// Tainted tokenIds: any tokenId that has ever left the sanctioned
-// provenance chain via an off-platform transfer (OpenSea sale, P2P send,
-// burn, direct Seaport fill). Once in this set, the tokenId is
-// permanently denied as a validity source — even if subsequently
-// resold through Kismet's marketplace. This is the Pass-purity
-// invariant per the user's "valid pass" definition: collected /
-// airdropped / bought-on-Kismet-secondary, with every link in the
-// chain on-platform. Admin can override via setValidBalance.
-const keyTainted = (collection: string) =>
+// Off-platform provenance, per HOLDER: a HASH of { tokenId -> units this
+// address acquired outside the sanctioned chain } (OpenSea sale, P2P send,
+// direct Seaport fill). hasValidPass subtracts these units from what the
+// holder's on-chain balance is allowed to prove, so an off-platform copy
+// confers nothing while every other holder of the same edition is untouched.
+// Fields are deleted as units are released, so the key disappears on its own
+// once a wallet is clean — no TTL needed and no unbounded growth.
+//
+// REPLACES `kismetart:pass:tainted:<collection>` (below), a per-COLLECTION set
+// of tokenIds. That form was correct for a 1-of-1 and catastrophic for an
+// edition: Patron drops are 19 and 100 copies of ONE id, so a single holder's
+// off-platform transfer excluded that id from EVERY holder's live balance and
+// made creditValidityOnce refuse every future mint of a still-open sale. The
+// full argument, and why units rather than a per-holder boolean, is in
+// lib/passTaint.ts; the rules are pinned by scripts/verify-pass-taint.ts.
+const keyOffPlatform = (collection: string, address: string) =>
+  `kismetart:pass:offplatform:${collection.toLowerCase()}:${address.toLowerCase()}`
+
+// The superseded token-scoped taint set. Nothing in the request path reads it
+// any more — it is kept addressable only so the migration can inspect and
+// clear it (listLegacyTaintedTokenIds / clearLegacyTaint, driven by
+// scripts/reconcile-pass-validity.mjs). Delete this and its two helpers once
+// production reports an empty set.
+const keyLegacyTainted = (collection: string) =>
   `kismetart:pass:tainted:${collection.toLowerCase()}`
 // Active Kismet listing marker: set at listing-creation time, cleared at
-// fill/cancel/expiry. processTransfer checks this before tainting so a
-// legitimate Kismet secondary sale is not falsely tainted when the
+// fill/cancel/expiry. processTransfer checks it before recording an
+// off-platform acquisition, so a legitimate Kismet secondary sale does not
+// falsely discount the BUYER's copy when the
 // webhook races ahead of the listing PATCH's recordPlatformTx write.
 // Keyed by seller so a concurrent holder selling the same tokenId
 // off-platform is not shielded by another holder's Kismet listing.
@@ -78,6 +100,23 @@ const SET_VALIDITY_LUA = `
 local safe = tonumber(ARGV[1])
 redis.call('SET', KEYS[1], tostring(safe))
 if safe > 0 then redis.call('SET', KEYS[2], '1') else redis.call('DEL', KEYS[2]) end
+return 1
+`
+
+// Release off-platform units from a sender, atomically and clamped at zero.
+// Read-modify-write in app code would race two concurrent transfers from the
+// same wallet and could leave a NEGATIVE count, which would then offset a
+// later genuine off-platform acquisition and silently launder it. Deleting
+// the field at zero (rather than storing 0) keeps the hash — and the key —
+// from accumulating dead entries for wallets that have gone clean.
+const RELEASE_OFFPLATFORM_LUA = `
+local cur = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0')
+local new = cur - tonumber(ARGV[2])
+if new <= 0 then
+  redis.call('HDEL', KEYS[1], ARGV[1])
+else
+  redis.call('HSET', KEYS[1], ARGV[1], new)
+end
 return 1
 `
 
@@ -123,7 +162,8 @@ return 1
 // (wallet, tokenId) pair a route proved on-chain. Per-(recipient, tokenId),
 // not per-recipient: otherwise a transfer of a DIFFERENT tokenId bundled into
 // the same tx as a legitimate acquisition by the same wallet would still ride
-// the recipient's flag (escape taint + take a redundant credit). tokenId is
+// the recipient's flag (escape the off-platform mark + take a redundant
+// credit). tokenId is
 // canonicalized (BigInt) so it matches the webhook's hexToBigIntString form
 // regardless of leading zeros. Returns null for an unparseable tokenId →
 // unflaggable, treated as not-platform.
@@ -140,10 +180,11 @@ function platformTxMember(recipient: string, tokenId: string): string | null {
  *  `txHash` (mint, collect, airdrop, or Kismet secondary fill) — all in ONE
  *  eval, so a many-recipient airdrop is a single Redis command. The webhook
  *  consults this set per-(recipient, tokenId) to decide whether a transfer's
- *  `to` earns validity for that tokenId and whether the tokenId escapes taint.
+ *  `to` earns validity for that tokenId and whether `to` escapes being recorded
+ *  as an off-platform acquirer of it.
  *  Callers MUST flag only pairs they proved on-chain — never the whole tx — so
  *  a transfer bundled into the same tx can't ride the flag to launder validity
- *  or skip taint.
+ *  or skip the off-platform mark.
  *
  *  Retries with backoff so a transient Redis flap doesn't silently drop the
  *  flag — a missing flag at webhook time silently denies the recipient pass
@@ -199,8 +240,9 @@ export async function markKismetListed(
     await redis.set(keyKismetListed(collection, tokenId, seller), '1', { ex: ttlSeconds })
   } catch {
     // Best-effort: a missed flag means processTransfer falls back to the
-    // normal taint path. The listing PATCH's synchronous creditValidityOnce
-    // is the primary credit path; this flag only prevents the false taint.
+    // normal off-platform path. The listing PATCH's synchronous
+    // creditValidityOnce is the primary credit path; this flag only prevents
+    // the buyer being falsely recorded as an off-platform acquirer.
   }
 }
 
@@ -250,7 +292,8 @@ export async function getValidBalances(
  *  pass a pre-planned list (lowercased, deduped, capped — lib/passUnion).
  *
  *  Cost shape: one MGET prefilter, then the full hasValidPass (blacklist +
- *  taint + live balanceOfBatch clamp) ONLY on wallets with a positive
+ *  off-platform subtraction + live balanceOfBatch clamp) ONLY on wallets with
+ *  a positive
  *  ledger — usually exactly one. The prefilter is exact, not heuristic:
  *  hasValidPass never reconciles the ledger UPWARD (on-chain holding without
  *  a platform-provenance credit never grants validity, and an admin grant
@@ -330,37 +373,71 @@ async function getKnownTokenIds(collection: string): Promise<string[]> {
   }
 }
 
-/** Single-tokenId taint check, used at credit-decision time. Fails CLOSED:
- *  a transient Redis error here should NOT silently grant validity to a
- *  potentially-tainted Pass — better to deny a legitimate credit (which
- *  the webhook backstop or admin grant will recover) than to launder
- *  validity through a downed Redis. */
-async function isTokenTainted(collection: string, tokenId: string): Promise<boolean> {
-  // Fail CLOSED on a missing tokenId: an empty id must never read as
-  // "not tainted" and let a credit through. Defense-in-depth — creditValidityOnce
-  // already rejects an empty tokenId before reaching here.
-  if (!tokenId) return true
-  try {
-    return !!(await redis.sismember(keyTainted(collection), tokenId))
-  } catch {
-    return true
-  }
+/** Attribute `units` of `tokenId` to `address` as an off-platform acquisition.
+ *  HINCRBY is atomic, so concurrent transfers to the same wallet accumulate
+ *  correctly. Best-effort by the caller: a missed mark means those units stay
+ *  countable until the next event for that wallet, which is the same
+ *  degradation the old best-effort taint had — and now confined to one wallet
+ *  instead of the whole edition. */
+async function markOffPlatformUnits(
+  collection: string,
+  address: string,
+  tokenId: string,
+  units: number,
+): Promise<void> {
+  if (!address || !tokenId || units <= 0) return
+  await redis.hincrby(keyOffPlatform(collection, address), tokenId, units)
 }
 
-/** Bulk taint lookup for hasValidPass's live reconciliation. Fails OPEN:
- *  the ledger is the authoritative credit record (creditValidityOnce
- *  rejected tainted tokens at write time), so a missing taint set here
- *  only matters for the rare drift case where the webhook missed a
- *  decrement. Worst case during outage: a stale-ledger holder briefly
- *  passes the gate; the credit-time fail-closed above prevents new
- *  laundering. */
-async function getTaintedTokenIds(collection: string): Promise<Set<string>> {
+/** Release `units` of `tokenId` from `address` — they no longer hold them.
+ *  Runs on EVERY non-mint send, platform or not: ERC-1155 copies are fungible
+ *  so we cannot know which copy moved, and releasing is the lenient direction
+ *  (see lib/passTaint's conservation note — over-marking would falsely revoke
+ *  a legitimate holder, the exact bug this model replaced). */
+async function releaseOffPlatformUnits(
+  collection: string,
+  address: string,
+  tokenId: string,
+  units: number,
+): Promise<void> {
+  if (!address || !tokenId || units <= 0) return
+  await redis.eval(
+    RELEASE_OFFPLATFORM_LUA,
+    [keyOffPlatform(collection, address)],
+    [tokenId, units],
+  )
+}
+
+/** One holder's off-platform units, by tokenId, for hasValidPass's live
+ *  reconciliation. One HGETALL — the same single command the collection-wide
+ *  taint SMEMBERS cost, so the gate's per-decision command count is unchanged.
+ *
+ *  Fails OPEN (no marks). The ledger is the primary control and it is capped
+ *  in the safe direction by construction: it only ever increments through a
+ *  proven on-platform acquisition (creditValidityOnce's callers each prove one
+ *  on-chain) and hasValidPass only ever clamps it DOWN. So a missing read here
+ *  cannot manufacture validity — it can only fail to catch the narrow drift
+ *  case where a webhook decrement was also missed. Failing CLOSED would mean a
+ *  Redis blip reads every holder as fully off-platform and revokes the entire
+ *  collection, which is the failure mode this whole change exists to remove. */
+async function getOffPlatformUnits(
+  collection: string,
+  address: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
   try {
-    const members = (await redis.smembers(keyTainted(collection))) as string[]
-    return new Set(Array.isArray(members) ? members : [])
+    const hash = await redis.hgetall<Record<string, string | number>>(
+      keyOffPlatform(collection, address),
+    )
+    if (!hash) return out
+    for (const [tokenId, raw] of Object.entries(hash)) {
+      const units = parseUnitCount(raw)
+      if (units > 0) out.set(tokenId, units)
+    }
   } catch {
-    return new Set()
+    // fail open — see above
   }
+  return out
 }
 
 /** Process a single Transfer event for the gate's Pass collection. Idempotent
@@ -368,8 +445,10 @@ async function getTaintedTokenIds(collection: string): Promise<Set<string>> {
  *  tokenIds in the collection — every Pass tokenId grants access. Auto-
  *  discovers tokenIds for later live-balance reconciliation.
  *
- *  Three rules, derived from the "valid pass" definition (acquired through
- *  mint / airdrop / Kismet secondary, with every link on-platform):
+ *  Four rules, derived from the "valid pass" definition (acquired through
+ *  mint / airdrop / Kismet secondary, with every link on-platform). The
+ *  arithmetic for 1, 3 and 4 lives in lib/passTaint.planTransferEffects so it
+ *  can be unit-pinned; this function does the I/O around it.
  *
  *  1. ANY non-mint transfer decrements `from` (revokes the sender's
  *     validity). Unconditional — applies to OpenSea, Seaport direct,
@@ -384,11 +463,21 @@ async function getTaintedTokenIds(collection: string): Promise<Set<string>> {
  *     per-(recipient, tokenId), so a transfer co-bundled into the tx — to an
  *     unflagged wallet, OR of a different tokenId to a flagged wallet — is NOT
  *     credited. Direct-credit paths converge through the same idempotency key.
- *  3. OFF-PLATFORM non-mint transfer permanently taints the tokenId.
- *     A tainted tokenId can never confer validity again, even via a
- *     subsequent Kismet sale — creditValidityOnce refuses credit for
- *     it, and hasValidPass excludes it from liveTotal so a webhook-
- *     missed decrement can't keep a tainted-only holder valid. */
+ *  3. An OFF-PLATFORM non-mint transfer records the moved units against the
+ *     RECEIVER (keyOffPlatform), and hasValidPass subtracts them from the
+ *     balance that receiver may prove. Per holder and per unit: it denies the
+ *     wallet that left the sanctioned chain without touching any other holder
+ *     of the same edition.
+ *  4. EVERY non-mint transfer releases the same units from the SENDER, whether
+ *     or not it was platform-flagged — they no longer hold the copies. This is
+ *     what keeps provenance attached to copies rather than branding a wallet
+ *     forever, and it is why an off-platform copy resold through Kismet comes
+ *     out clean for its buyer (the seller stays revoked by rule 1).
+ *
+ *  SUPERSEDED: rule 3 used to mark the tokenId itself, collection-wide. On an
+ *  edition that revoked every holder of the id and blocked every future mint
+ *  of a live sale, from one holder's sale. lib/passTaint.ts documents the
+ *  change in full; scripts/verify-pass-taint.ts pins it. */
 export async function processTransfer(params: {
   collection: string
   from: string
@@ -418,31 +507,18 @@ export async function processTransfer(params: {
   // Per-(recipient, tokenId): was THIS exact (to, tokenId) pair flagged as a
   // verified platform acquisition in this tx? A transfer whose (to, tokenId)
   // wasn't verified — including a different tokenId bundled into a tx that
-  // flagged `to` for some OTHER tokenId — reads false, so it taints + isn't
-  // credited.
+  // flagged `to` for some OTHER tokenId — reads false, so its units are
+  // recorded against the receiver as off-platform and it isn't credited.
   const platform = await isPlatformTx(txHash, to, tokenId)
   const isMint = from === ZERO_ADDRESS
-
-  // Any-transfer-revokes invariant: `from`'s decrement runs
-  // UNCONDITIONALLY for any non-mint Transfer event — OpenSea sale,
-  // direct Seaport fill, P2P safeTransferFrom (e.g. sending to a
-  // different wallet you own), burn, all the same. The platform-flag
-  // gate only affects whether `to` is credited, never whether `from`
-  // is decremented. Live reconciliation in hasValidPass is a second
-  // layer of protection: if this webhook event is missed, the
-  // ledger>on-chain clamp still revokes once the seller no longer
-  // holds the token.
-  if (!isMint) {
-    await adjustValidBalance(collection, from, -amount)
-  }
 
   // Race-condition guard: check whether `from` has an active Kismet listing
   // for this tokenId. If so, treat it as platform-originated even without
   // the platform-tx flag — the listing was created before the transfer,
   // proving a Kismet secondary sale was in flight. Without this, a webhook
   // that fires before the listing PATCH's after() callbacks set the
-  // platform-tx flag would falsely taint the tokenId, permanently blocking
-  // the buyer's validity even though the sale was fully on-platform.
+  // platform-tx flag would falsely mark the BUYER as an off-platform
+  // acquirer, denying validity for a sale that was fully on-platform.
   // Keyed on (collection, tokenId, from/seller) to avoid shielding a
   // concurrent off-platform sale by a different holder of the same tokenId.
   const listedOnKismet =
@@ -450,22 +526,59 @@ export async function processTransfer(params: {
       ? !!(await redis.get(keyKismetListed(collection, tokenId, from)).catch(() => null))
       : false
 
-  // Pass-purity invariant: any non-mint transfer that is NOT platform-flagged
-  // AND NOT a Kismet-listed transfer taints the tokenId permanently. The
-  // listedOnKismet guard above prevents a race-induced false taint on
-  // legitimate Kismet secondary sales; it does NOT bypass existing taint —
-  // creditValidityOnce still refuses credits for previously-tainted tokens.
-  if (!isMint && !platform && !listedOnKismet && tokenId) {
+  // The whole per-transfer decision, derived in one pure place so it can be
+  // unit-pinned (lib/passTaint + scripts/verify-pass-taint.ts) rather than
+  // re-read out of interleaved branches here.
+  const effects = planTransferEffects({
+    amount,
+    isMint,
+    isPlatform: platform,
+    isKismetListed: listedOnKismet,
+    toIsBurn: !to || to === ZERO_ADDRESS,
+  })
+
+  // Any-transfer-revokes invariant: `from`'s decrement runs UNCONDITIONALLY
+  // for any non-mint Transfer event — OpenSea sale, direct Seaport fill, P2P
+  // safeTransferFrom (e.g. sending to a different wallet you own), burn, all
+  // the same. The platform flag only affects whether `to` is credited, never
+  // whether `from` is decremented. Live reconciliation in hasValidPass is a
+  // second layer: if this webhook event is missed, the ledger>on-chain clamp
+  // still revokes once the seller no longer holds the token.
+  if (effects.decrementFrom > 0) {
+    await adjustValidBalance(collection, from, -effects.decrementFrom)
+  }
+
+  // Sender no longer holds these copies, so any off-platform units recorded
+  // against them are released. Runs on platform-flagged sends too — the copy
+  // leaves either way — which is what lets an off-platform copy be laundered
+  // clean by a Kismet secondary sale. That is the deliberate softening this
+  // model accepts in exchange for not punishing bystanders: the seller is
+  // still revoked, and the buyer paid on Kismet, which the Mint Pass Ruleset
+  // already calls a valid acquisition.
+  if (effects.releaseFrom > 0 && tokenId) {
     try {
-      await redis.sadd(keyTainted(collection), tokenId)
+      await releaseOffPlatformUnits(collection, from, tokenId, effects.releaseFrom)
     } catch {
-      // Best-effort. A missed taint here is the only way a tainted
-      // tokenId could later relaunder through Kismet — but hasValidPass's
-      // live reconciliation excludes tainted tokenIds from liveTotal, so
-      // even a missed taint is recovered if and when the taint set is
-      // ever populated for this tokenId by any subsequent off-platform
-      // event. Worst-case window: one Kismet-laundering credit between
-      // a transient Redis failure and the next off-platform event.
+      // Best-effort: a missed release leaves stale units against a wallet that
+      // no longer holds them, which can under-count a LATER legitimate
+      // acquisition by that same wallet. Self-heals on their next send of this
+      // tokenId, and admin can clear it via DELETE /api/admin/taint.
+    }
+  }
+
+  // Off-platform acquisition: attribute the units to the RECEIVER, and only
+  // the receiver. This is the whole fix — the superseded rule marked the
+  // tokenId, so one holder's OpenSea sale revoked every other holder of the
+  // edition and blocked every future mint of it (see lib/passTaint).
+  if (effects.markTo > 0 && tokenId) {
+    try {
+      await markOffPlatformUnits(collection, to, tokenId, effects.markTo)
+    } catch {
+      // Best-effort. A missed mark leaves this acquirer's units countable —
+      // but they still hold no ledger credit (an off-platform transfer is
+      // never credited below), so it grants nothing on its own. It only
+      // matters if that wallet later earns a legitimate credit, and the next
+      // off-platform event for them re-establishes the count.
     }
   }
   // Credit when the acquisition is a MINT or a platform-verified transfer.
@@ -484,8 +597,9 @@ export async function processTransfer(params: {
   // claimed its processed-key, and — with the old `if (platform)` — did
   // nothing, losing the credit forever). creditValidityOnce shares the same
   // keyCredited as /api/collect's synchronous credit, so the normal path
-  // (both fire) never double-credits; its taint check still refuses a mint of
-  // a previously-tainted tokenId, and its blacklist check still applies.
+  // (both fire) never double-credits, and its pass-blacklist check still
+  // applies. Provenance is NOT re-checked here: a mint is the genesis of a
+  // copy, so there is no prior owner to launder from (see creditValidityOnce).
   //
   // PLATFORM (non-mint): a Kismet collect / airdrop / secondary fill, proven
   // by the per-(recipient, tokenId) flag. listedOnKismet is intentionally
@@ -495,8 +609,9 @@ export async function processTransfer(params: {
   // platform flag. Allowing listedOnKismet to also trigger credit opened an
   // exploit: an attacker could list a Pass on Kismet (sets the flag) then
   // transfer it off-platform to an accomplice; the webhook would see
-  // listedOnKismet=true, skip taint, and credit the accomplice for free.
-  // The flag's sole remaining job is taint prevention during the race window.
+  // listedOnKismet=true, skip the off-platform mark, and credit the accomplice
+  // for free. The flag's sole remaining job is suppressing a false
+  // off-platform mark during the race window.
   if (platform || isMint) {
     await creditValidityOnce({ collection, address: to, txHash, tokenId, amount })
   }
@@ -517,6 +632,10 @@ export async function processTransfer(params: {
  * Pass-blacklist short-circuits BEFORE the CAS so a blacklisted address
  * doesn't burn the credited-key slot for a real future acquisition.
  *
+ * Provenance is enforced at READ time (hasValidPass subtracts off-platform
+ * units), not here — see the note in the body for why that is both safe and
+ * strictly more precise than the token-scoped refusal it replaced.
+ *
  * Caller responsibilities:
  *   - On-chain proof that `address` received `tokenId` of `collection`
  *     in `txHash` (collect: verifyMintOnChain; airdrop: verifyAirdropOnChain;
@@ -533,22 +652,44 @@ export async function creditValidityOnce(params: {
 }): Promise<void> {
   const { collection, address, txHash, tokenId } = params
   const amount = params.amount ?? 1
-  // Reject a missing tokenId outright: without it the taint check below is
-  // meaningless (a tainted Pass could be credited) and the credited-key/
-  // known-tokens writes are skipped. No caller passes an empty id today (all
-  // canonicalize via BigInt().toString()); this closes the latent footgun.
+  // Reject a missing tokenId outright. Without it (a) keyCredited loses its
+  // per-token dimension, so two different tokens acquired in the SAME tx share
+  // one idempotency slot and the second credit is silently dropped, and (b) the
+  // known-tokens SADD is skipped, leaving hasValidPass with nothing to
+  // reconcile against — `knownIds.length === 0` makes it trust the ledger
+  // blindly, with no live balance check and no off-platform subtraction. No
+  // caller passes an empty id today (all canonicalize via BigInt().toString());
+  // this closes the latent footgun.
   if (amount <= 0 || !address || !txHash || !tokenId) return
 
   if (await isPassBlacklisted(address)) return
 
-  // Pass-purity check: a tainted tokenId (one that has ever left the
-  // sanctioned chain through an off-platform transfer) cannot confer
-  // validity again, even via Kismet's own marketplace. This is the
-  // launder-prevention layer per the "valid pass" definition. Fails
-  // CLOSED — see isTokenTainted's docstring. Admin override (manual
-  // setValidBalance) is the only bypass.
-  if (await isTokenTainted(collection, tokenId)) return
-
+  // NO PROVENANCE CHECK HERE — deliberate, and the reasoning matters.
+  //
+  // This used to refuse any credit for a tokenId that had ever been moved
+  // off-platform by ANYONE. That check could not distinguish the wallet that
+  // left the platform from the 99 that didn't, so on an edition it denied
+  // every future buyer of a still-open sale. Removing it costs nothing,
+  // because every caller of this function has already PROVEN an on-platform
+  // acquisition on-chain before arriving:
+  //    /api/collect            verifyMintOnChain  (TransferSingle 0x0 -> account)
+  //    /api/airdrop/notify     verifyAirdropOnChain (operator===sender, from 0x0)
+  //    /api/listings/[id]      findFulfillmentInLogs + recipient===signer
+  //    lib/mint-proxy          the relayed mint it just executed
+  //    processTransfer         the mint arm (genesis) or the per-(recipient,
+  //                            tokenId) platform flag
+  // None of those is an off-platform acquisition, so the check never fired on
+  // a legitimate path — its only live effect was the collateral denial.
+  //
+  // Enforcement now has exactly ONE point instead of two that could disagree:
+  // hasValidPass subtracts a holder's off-platform units from the balance they
+  // are allowed to prove. That is strictly more precise than a boolean refusal
+  // and it is applied at gate-decision time, so there is no window between a
+  // credit and its enforcement. The resulting invariant is
+  //   ledger <= min(proven on-platform acquisitions, on-chain balance minus
+  //                 off-platform units)
+  // because the ledger only increments through the proven paths above and
+  // hasValidPass only ever clamps DOWN.
   const claimed = await redis.set(
     keyCredited(collection, address, txHash, tokenId),
     '1',
@@ -598,9 +739,11 @@ export async function hasValidPass(collection: string, address: string): Promise
   // No tokenIds known yet (empty collection or fresh setup) — the ledger is
   // authoritative. validBalance > 0 only happens after a webhook event, which
   // would have populated knownTokenIds, so this is rare.
-  const [knownIds, taintedIds] = await Promise.all([
+  // Two SMEMBERS-class reads in parallel — the same command count the
+  // collection-wide taint lookup cost, now scoped to THIS holder.
+  const [knownIds, offPlatform] = await Promise.all([
     getKnownTokenIds(collection),
-    getTaintedTokenIds(collection),
+    getOffPlatformUnits(collection, address),
   ])
   if (knownIds.length === 0) {
     return validBalance >= 1
@@ -617,15 +760,19 @@ export async function hasValidPass(collection: string, address: string): Promise
         knownIds.map((id) => BigInt(id)),
       ],
     })) as readonly bigint[]
-    // Exclude tainted tokenIds from liveTotal. Without this, a holder
-    // who only owns tainted Passes (e.g. legitimate ledger drifted
-    // because the webhook missed a decrement) would have
-    // live >= ledger → no clamp → keep validity from a tainted source.
-    // Including only untainted balances in liveTotal makes the clamp
-    // correctly revoke them.
+    // Count only what this holder acquired on-platform. Without the
+    // subtraction, a holder whose copies are all off-platform (e.g. a
+    // legitimate ledger that drifted because the webhook missed a decrement,
+    // then an OpenSea purchase) would have live >= ledger → no clamp → keep
+    // validity from an off-platform source.
+    //
+    // Per-holder and per-UNIT, which is the whole point: the superseded rule
+    // dropped the entire id for everyone, so one holder's sale revoked the
+    // edition — and a hostile party could revoke any patron just by SENDING
+    // them a pass. Here an unsolicited copy is discounted and the holder's own
+    // copy still counts. countableUnits + scripts/verify-pass-taint.ts pin it.
     for (let i = 0; i < balances.length; i++) {
-      if (taintedIds.has(knownIds[i])) continue
-      liveTotal += balances[i]
+      liveTotal += countableUnits(balances[i], offPlatform.get(knownIds[i]) ?? 0)
     }
   } catch {
     return false
@@ -652,25 +799,58 @@ export async function hasValidPass(collection: string, address: string): Promise
   return validBalance >= 1
 }
 
-/** List all tainted tokenIds for a collection. Used by the admin taint
- *  management endpoint to inspect and remediate incorrect taints. */
-export async function listTaintedTokenIds(collection: string): Promise<string[]> {
+/** One holder's off-platform units, for the admin inspection endpoint.
+ *  Returns `{ tokenId: units }`, empty when the wallet is clean. */
+export async function listOffPlatformUnits(
+  collection: string,
+  address: string,
+): Promise<Record<string, number>> {
+  const units = await getOffPlatformUnits(collection, address)
+  const out: Record<string, number> = {}
+  for (const tokenId of Array.from(units.keys()).sort()) {
+    out[tokenId] = units.get(tokenId) as number
+  }
+  return out
+}
+
+/** Clear a holder's off-platform units for one tokenId. Admin escape-hatch for
+ *  a false mark — e.g. a legitimate Kismet secondary sale whose keyKismetListed
+ *  flag was missing (Redis down at listing creation), which would otherwise
+ *  discount the buyer's copy.
+ *
+ *  Unlike the token-scoped remediation it replaces, this is usually sufficient
+ *  on its own: clearing the mark makes the holder's balance countable again on
+ *  the very next gate decision. It does NOT re-run a credit that was skipped
+ *  for some other reason (blacklist, a lost webhook) — those still need
+ *  setValidBalance. */
+export async function clearOffPlatformUnits(
+  collection: string,
+  address: string,
+  tokenId: string,
+): Promise<void> {
+  if (!collection || !address || !tokenId) return
+  await redis.hdel(keyOffPlatform(collection, address), tokenId)
+}
+
+/** MIGRATION ONLY — read the superseded token-scoped taint set so an operator
+ *  can see what the old model had accumulated before clearing it. Nothing in
+ *  the request path consults this any more. */
+export async function listLegacyTaintedTokenIds(collection: string): Promise<string[]> {
   try {
-    const members = (await redis.smembers(keyTainted(collection))) as string[]
+    const members = (await redis.smembers(keyLegacyTainted(collection))) as string[]
     return Array.isArray(members) ? members.sort() : []
   } catch {
     return []
   }
 }
 
-/** Remove a tokenId from the taint set. Admin escape-hatch for false taints:
- *  e.g. a legitimate Kismet secondary sale that was incorrectly tainted because
- *  the keyKismetListed flag was missing (Redis down at listing creation time).
- *
- *  Does NOT restore past credits — addresses that previously failed
- *  creditValidityOnce due to the taint must be granted via setValidBalance.
- *  Future acquisitions of the un-tainted tokenId will credit normally. */
-export async function removeTaint(collection: string, tokenId: string): Promise<void> {
-  if (!collection || !tokenId) return
-  await redis.srem(keyTainted(collection), tokenId)
+/** MIGRATION ONLY — drop the superseded token-scoped taint set. Safe once the
+ *  new model is deployed: no read path references it, and the denials it used
+ *  to provide for the wallets that actually left the platform are already
+ *  carried by their zeroed ledgers (an off-platform acquirer is never
+ *  credited). What it stops providing is the collateral denial of everyone
+ *  else — which is the point. */
+export async function clearLegacyTaint(collection: string): Promise<void> {
+  if (!collection) return
+  await redis.del(keyLegacyTainted(collection))
 }

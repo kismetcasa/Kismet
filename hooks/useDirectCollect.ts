@@ -67,11 +67,13 @@ export interface CollectArgs {
    * not an error; planMint collapses it to a plain collect.
    *
    * WHY mintTo AND NOT A POST-MINT TRANSFER: for the Pass collection a
-   * transfer would decrement the sender AND permanently taint the tokenId
-   * for every holder of it (lib/pass-validity.processTransfer). A gift-mint
-   * emits only TransferSingle(0x0 → recipient) — the same genesis event an
-   * ordinary collect emits — so the recipient earns validity through the
-   * normal mint path and nothing is left to taint. See lib/gift.ts.
+   * transfer would decrement the sender AND record the moved units against
+   * the recipient as an off-platform acquisition, so the payer loses their
+   * pass and the recipient's copy proves nothing
+   * (lib/pass-validity.processTransfer). A gift-mint emits only
+   * TransferSingle(0x0 → recipient) — the same genesis event an ordinary
+   * collect emits — so the recipient earns validity through the normal mint
+   * path and no provenance rule applies. See lib/gift.ts.
    */
   recipient?: Address
 }
