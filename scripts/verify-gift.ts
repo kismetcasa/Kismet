@@ -26,7 +26,12 @@
 //
 // Run: node --experimental-strip-types scripts/verify-gift.ts
 
-import { giftRejectionMessage, planMint, verifyGiftClaim } from '../lib/gift.ts'
+import {
+  giftRejectionMessage,
+  moderationSubject,
+  planMint,
+  verifyGiftClaim,
+} from '../lib/gift.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean): void => {
@@ -146,6 +151,44 @@ for (const bad of [undefined, null, '', '0x123', 'someone.eth']) {
     verifyGiftClaim({ claimed: bad, collector: OTHER, receiptFrom: SIGNER }) === null,
   )
 }
+
+console.log('\nmoderationSubject')
+
+// THE DODGE THIS CLOSES: the blacklist gate must not be opt-in. A hand-rolled
+// POST omits `giftedBy`; the receipt payer is the unforgeable fallback.
+check(
+  'proven claim wins over the payer',
+  moderationSubject({ provenGifter: SIGNER, collector: OTHER, receiptFrom: BUNDLER }) === SIGNER,
+)
+check(
+  'no claim + differing payer → the payer is the subject (dodge closed)',
+  moderationSubject({ provenGifter: null, collector: OTHER, receiptFrom: SIGNER }) === SIGNER,
+)
+check(
+  'self-collect (payer === collector) has no subject',
+  moderationSubject({ provenGifter: null, collector: OTHER, receiptFrom: OTHER }) === null,
+)
+check(
+  'payer match is case-insensitive',
+  moderationSubject({
+    provenGifter: null,
+    collector: OTHER,
+    receiptFrom: OTHER.toUpperCase().replace('0X', '0x'),
+  }) === null,
+)
+check(
+  'legacy cache (empty payer) yields no subject rather than a bogus one',
+  moderationSubject({ provenGifter: null, collector: OTHER, receiptFrom: '' }) === null &&
+    moderationSubject({ provenGifter: null, collector: OTHER, receiptFrom: null }) === null,
+)
+check(
+  'differing payer is returned lowercased',
+  moderationSubject({
+    provenGifter: null,
+    collector: OTHER,
+    receiptFrom: SIGNER.toUpperCase().replace('0X', '0x'),
+  }) === SIGNER,
+)
 
 console.log(failures === 0 ? '\nverify-gift: OK' : `\nverify-gift: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

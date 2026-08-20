@@ -96,6 +96,16 @@ export function GiftRecipientForm({
         setConfirming({ input: raw, address: resolved })
         return
       }
+      // The confirm press re-resolves, so the send must match what was SHOWN.
+      // If the name resolves differently now (record changed between presses,
+      // resolver flake), sending the fresh answer would mint to an address the
+      // user never saw — the exact failure this step exists to prevent.
+      // Re-arm with the new address instead of sending.
+      if (!typedAnAddress && confirming && confirming.address !== resolved) {
+        setConfirming({ input: raw, address: resolved })
+        toast.error('That name now resolves differently — confirm the new address')
+        return
+      }
       await onGift(resolved)
     } finally {
       setResolving(false)

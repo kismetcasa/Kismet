@@ -132,6 +132,36 @@ export function giftRejectionMessage(reason: GiftRejection): string {
  * and a client that labels one as a gift must not be able to manufacture a
  * phantom gifter (or ping the collector about their own purchase).
  */
+/**
+ * The wallet whose moderation status decides an acquisition: the proven gift
+ * claim when there is one, else the RECEIPT PAYER whenever it differs from the
+ * collector.
+ *
+ * The fallback is what keeps the moderation gate from being opt-in. `giftedBy`
+ * is a client claim — a blacklisted gifter with a hand-rolled POST simply
+ * omits it, and the receipt proves who RECEIVED, never who PAID. The payer off
+ * the receipt is unforgeable, and every legitimate self-collect has
+ * payer === collector (Multicall3 collect-all included — the user's own EOA
+ * sends the batch), so a differing payer means someone else funded the mint.
+ * On ERC-4337 paths the payer is the BUNDLER: never blacklisted, so the check
+ * no-ops there, and a smart-wallet gifter is only catchable via the claim —
+ * accepted, since a 4337 payer genuinely cannot be attributed without it.
+ *
+ * DENY-ONLY. Callers must never use this for attribution (notifications key on
+ * verifyGiftClaim's proven result), or a bundler would surface as a gift actor.
+ */
+export function moderationSubject(params: {
+  provenGifter: string | null
+  collector: string
+  receiptFrom?: string | null
+}): string | null {
+  if (params.provenGifter) return params.provenGifter
+  const payer = params.receiptFrom
+  if (!isHexAddress(payer)) return null
+  const lower = payer.toLowerCase()
+  return lower !== params.collector.toLowerCase() ? lower : null
+}
+
 export function verifyGiftClaim(params: {
   claimed: string | null | undefined
   collector: string

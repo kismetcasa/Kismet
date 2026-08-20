@@ -16,7 +16,7 @@ import {
   recordPlatformTx,
 } from '@/lib/pass-validity'
 import { getGateConfig } from '@/lib/gate'
-import { verifyGiftClaim } from '@/lib/gift'
+import { moderationSubject, verifyGiftClaim } from '@/lib/gift'
 import { isBlacklisted } from '@/lib/blacklist'
 import { isPassBlacklisted } from '@/lib/pass-blacklist'
 import { getSessionAddress } from '@/lib/session'
@@ -263,14 +263,26 @@ export async function POST(req: NextRequest) {
   // exactly like an airdrop), so this denies the platform-side record and
   // credit, not the movement of tokens — admin can still grant via
   // POST /api/admin/pass-validity if a denial turns out to be wrong.
-  if (giftedBy) {
+  // The wallet whose moderation status decides this acquisition: the proven
+  // claim, else the receipt payer when it differs from the recipient — the
+  // fallback that keeps this gate from being opt-in (a hand-rolled POST just
+  // omits `giftedBy`; the receipt proves who received, never who paid). Full
+  // reasoning and the 4337-bundler carve-out live on lib/gift.moderationSubject;
+  // deny-only — the notification below stays keyed on the PROVEN claim.
+  const subject = moderationSubject({
+    provenGifter: giftedBy,
+    collector: account,
+    receiptFrom: verified.from,
+  })
+
+  if (subject) {
     // getGateConfig never throws (last-known-good / cold-start fallback) and
     // is in-process cached, so this is effectively free here.
     const gate = await getGateConfig()
     const isPassGift = !!gate.passCollection && gate.passCollection === collectionLower
     const [actionBlocked, passBlocked] = await Promise.all([
-      isBlacklisted(giftedBy).catch(() => false),
-      isPassGift ? isPassBlacklisted(giftedBy).catch(() => false) : Promise.resolve(false),
+      isBlacklisted(subject).catch(() => false),
+      isPassGift ? isPassBlacklisted(subject).catch(() => false) : Promise.resolve(false),
     ])
     if (actionBlocked || passBlocked) {
       // Refusing to RECORD the gift does not deny it. processTransfer credits
@@ -295,7 +307,8 @@ export async function POST(req: NextRequest) {
         txHash,
         collection: collectionLower,
         tokenId,
-        gifter: giftedBy,
+        gifter: subject,
+        claimed: giftedBy ?? null,
         recipient: account,
         actionBlocked,
         passBlocked,
