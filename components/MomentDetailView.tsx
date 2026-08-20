@@ -12,6 +12,7 @@ import { normalize } from 'viem/ens'
 import { useQueryClient } from '@tanstack/react-query'
 import { resolveUri, formatPrice, shortAddress, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, getSaleWindow, parseRealSaleEnd, type MomentDetail } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
+import { GiftRecipientForm } from './GiftRecipientForm'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -277,6 +278,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // Edition holders sending multiples can use a wallet directly.
   const [sendOpen, setSendOpen] = useState(false)
   const [sendTo, setSendTo] = useState('')
+  // Pass pieces: sending is self-revocation (any-transfer-revokes — the gate
+  // decrements the sender and the recipient's copy proves nothing, see
+  // lib/pass-validity.processTransfer), and this button is the one in-app
+  // route to it with no warning. First confirm tap ARMS instead of sending —
+  // the endSaleArmed pattern — so the consequence is on screen before the
+  // irreversible tx. Trigger is the static Patron check, consistent with
+  // every other Patron special-case in this file; it tracks the configured
+  // gate collection's production value alongside those statics.
+  const isPassPiece = isPatronCollection(address)
+  const [sendArmed, setSendArmed] = useState(false)
+  // Collect-and-gift: same mint, `mintTo` pointed at someone else (see
+  // lib/gift.ts). Surfaced HERE and on the Patron showcase only — cards and
+  // the market swipe UI all link to this page, so gifting stays one tap away
+  // everywhere without adding a second CTA to the collect funnel.
+  const [giftOpen, setGiftOpen] = useState(false)
   // Resolved 0x for the recipient. For a raw address this matches the
   // input; for an ENS name this is the mainnet resolver's answer. We
   // gate the send button on this so users can't fire the tx until the
@@ -361,6 +377,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const sendToValid = !!resolvedSendTo && !isSelfSend && !resolvingSendTo
   const handleSend = async () => {
     if (!connectedAddress || !resolvedSendTo || !sendToValid || sending || !publicClient) return
+    // Pass piece: the first tap only arms. The warning line rendered by
+    // sendForm (keyed on sendArmed) states what the second tap will cost.
+    if (isPassPiece && !sendArmed) {
+      setSendArmed(true)
+      return
+    }
     try {
       toast.loading('Confirm in wallet…', { id: 'send' })
       const hash = await writeSend({
@@ -375,6 +397,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       toast.success('Sent', { id: 'send' })
       setSendOpen(false)
       setSendTo('')
+      setSendArmed(false)
       setResolvedSendTo(null)
       setSendToError(null)
       refetchOwnedBalance()
@@ -601,7 +624,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     }
   }
 
-  async function handleCollect() {
+  // `recipient` set = gift (mint straight to them, signer pays); unset = the
+  // ordinary collect every existing caller runs.
+  async function handleCollect(recipient?: `0x${string}`) {
     // No saleConfig gate — collect resolves price on-chain (see
     // useDirectCollect); gating on the display saleConfig would dead-end the
     // button. (Render-path saleConfig derefs stay guarded above.)
@@ -612,7 +637,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (!account) {
       // Picker is open — resume this collect once the user connects, so the
       // first tap carries through (see usePendingAction).
-      armPendingAction(() => { void handleCollect() })
+      armPendingAction(() => { void handleCollect(recipient) })
       return
     }
     // No price passed — the hook reads the live sale on-chain (authoritative).
@@ -621,15 +646,27 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       tokenId,
       amount: 1,
       comment: commentText.trim() || DEFAULT_COLLECT_COMMENT,
-      // Post-collect share prompt (Mini App only — the hook gates). creatorName
-      // is the display fallback; the share flow re-resolves the creator's raw
-      // FC username for a real @mention (see lib/collectShare).
+      ...(recipient ? { recipient } : {}),
+      // Post-collect share prompt (Mini App only — the hook gates; also
+      // ignored for gifts, whose toast names the recipient instead).
+      // creatorName is the display fallback; the share flow re-resolves the
+      // creator's raw FC username for a real @mention (see lib/collectShare).
       share: {
         momentName: detail.metadata?.name ?? null,
         creatorAddress: creatorAddress || null,
         creatorName,
       },
     })
+    if (result && recipient) {
+      // A gift is NOT a collect for the signer: they hold nothing, so the
+      // owned/collected state must not flip (setCollected would surface the
+      // owned-edition actions for an edition they don't have). Supply and
+      // activity did move on-chain, so those refresh as usual.
+      setGiftOpen(false)
+      setTimeout(() => setActivityRefreshNonce((n) => n + 1), 3000)
+      refetchTokenInfo().catch(() => {})
+      return
+    }
     if (result) {
       setCollected(true)
       setCommentText('')
@@ -1333,7 +1370,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       </button>
       {alreadyOwned && (
         <button
-          onClick={() => setSendOpen((v) => !v)}
+          onClick={() => { setSendOpen((v) => !v); setSendArmed(false) }}
           // order-first: on mobile (the "x sold" row) send leads — send → scan
           // → share. sm:order-none restores DOM order in the desktop controls
           // band, where it reads scan → share → send.
@@ -1371,7 +1408,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         <input
           type="text"
           value={sendTo}
-          onChange={(e) => setSendTo(e.target.value)}
+          onChange={(e) => { setSendTo(e.target.value); setSendArmed(false) }}
           placeholder="0x address or name.eth"
           autoComplete="off"
           autoCapitalize="off"
@@ -1381,11 +1418,25 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         <button
           onClick={handleSend}
           disabled={!sendToValid || sending}
-          className="flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border border-line text-muted accent-grad-hover transition-colors disabled:opacity-50"
+          className={`flex-none px-4 py-2 text-xs font-mono tracking-wider uppercase border transition-colors disabled:opacity-50 ${
+            sendArmed
+              ? 'border-red-400/60 text-red-400'
+              : 'border-line text-muted accent-grad-hover'
+          }`}
         >
-          {sending ? '…' : 'confirm'}
+          {sending ? '…' : sendArmed ? 'confirm send' : isPassPiece ? 'send…' : 'confirm'}
         </button>
       </div>
+      {/* Pass-piece consequence, in the Ruleset's own terms ("Transfer the
+          artwork to another wallet" is listed invalid). Always visible while
+          the form is open — armed state sharpens it to the second-tap ask. */}
+      {isPassPiece && (
+        <p className={`mt-1.5 text-[10px] font-mono leading-relaxed ${sendArmed ? 'text-red-400' : 'text-muted'}`}>
+          {sendArmed
+            ? 'press confirm to send — this pass will no longer be valid for minting, for you or the recipient'
+            : 'sending a pass invalidates it for minting — yours ends, and it does not transfer to the recipient'}
+        </p>
+      )}
       {trimmedSendTo && (
         <div className="mt-1.5 text-[10px] font-mono">
           {resolvingSendTo ? (
@@ -2087,7 +2138,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 MomentCard.renderCollectButton (Chromium seam with
                 background-clip:text on bordered flex boxes). */}
             <button
-              onClick={handleCollect}
+              // Explicit zero-arg call: handleCollect's optional param is the
+              // GIFT recipient, and a bare onClick={handleCollect} would feed
+              // it the MouseEvent.
+              onClick={() => void handleCollect()}
               disabled={collecting || mintedOut || !detail || saleNotStarted || saleEnded}
               className={`flex-1 py-2.5 text-xs font-mono tracking-wider uppercase border transition-colors ${collecting ? 'cursor-not-allowed' : ''} ${
                 soldOutUncollected
@@ -2097,7 +2151,32 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             >
               <span className="accent-grad">{collectLabel}</span>
             </button>
+            {/* Gift — the same mint aimed at someone else, so it shares the
+                collect button's exact availability gates: anything that rules
+                out a collect (minted out, window closed) rules out a gift
+                identically. Hidden rather than disabled when unavailable —
+                a dead "gift" button teaches nothing, unlike the collect
+                button whose label explains itself (sold out / not started). */}
+            {!mintedOut && !saleNotStarted && !saleEnded && detail && (
+              <button
+                onClick={() => setGiftOpen((v) => !v)}
+                disabled={collecting}
+                className="flex-none px-4 py-2.5 text-xs font-mono tracking-wider uppercase border border-line text-muted hover:text-ink transition-colors disabled:opacity-50"
+              >
+                {giftOpen ? 'cancel' : 'gift'}
+              </button>
+            )}
           </div>
+          {giftOpen && !mintedOut && !saleNotStarted && !saleEnded && (
+            <div className="px-5 pb-3">
+              <GiftRecipientForm
+                signer={connectedAddress ?? null}
+                pending={collecting}
+                onGift={(recipient) => handleCollect(recipient)}
+                onCancel={() => setGiftOpen(false)}
+              />
+            </div>
+          )}
 
           {/* Mobile / mini-app: sale-window date centered under the action row.
               Its own full-width centered line — the detail label (date + time +
