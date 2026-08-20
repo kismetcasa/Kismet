@@ -388,6 +388,56 @@ console.log('\nend-to-end lifecycle')
   check('E12 revoked seller costs no RPC', chainReads === 0)
 }
 
+// E13. UNSANCTIONED ACQUISITION (denyUnsanctionedAcquisition). A gift paid for
+// by a blacklisted wallet is a real mint, so processTransfer's mint arm credits
+// the recipient off the chain alone — before the route that would refuse it
+// even runs. Refusing at credit time is therefore theatre; the denial marks the
+// units instead, and hasValidPass subtracts them at decision time.
+//
+// The point of this scenario is the ORDERING: the credit lands FIRST, and the
+// denial still holds. If anyone ever re-implements this as a credit-time
+// refusal, the webhook wins the race and this fails.
+{
+  const w = world()
+  applyTransfer(w, { from: ZERO_ADDR, to: 'giftee', tokenId: T, amount: 1 })
+  check('E13 credit lands first (webhook beat the route)', gateVerdict(w, 'giftee', IDS))
+  // The route finally runs, finds a blacklisted payer, and denies the units.
+  setOff(w, 'giftee', T, offOf(w, 'giftee', T) + 1)
+  check('E13 denial holds even though the credit already landed', !gateVerdict(w, 'giftee', IDS))
+}
+
+// E14. The denial must not become a permanent brand on the wallet. A later
+// LEGITIMATE acquisition of the same tokenId still counts, because
+// countableUnits subtracts rather than blacklisting.
+{
+  const w = world()
+  applyTransfer(w, { from: ZERO_ADDR, to: 'giftee', tokenId: T, amount: 1 })
+  setOff(w, 'giftee', T, 1) // denied gift
+  check('E14 denied holder proves nothing', !gateVerdict(w, 'giftee', IDS))
+  applyTransfer(w, { from: ZERO_ADDR, to: 'giftee', tokenId: T, amount: 1 }) // buys their own
+  check('E14 their own later mint still counts', gateVerdict(w, 'giftee', IDS))
+}
+
+// E15. Denial is idempotent against the client's retry loop. /api/collect is
+// retried up to 3x, so an unguarded mark would stack to 3 units and suppress
+// two future legitimate acquisitions. The NX claim in
+// denyUnsanctionedAcquisition is what prevents that; modelled here as
+// "mark once, however many times the route runs".
+{
+  const w = world()
+  applyTransfer(w, { from: ZERO_ADDR, to: 'giftee', tokenId: T, amount: 1 })
+  let claimed = false
+  const denyOnce = () => {
+    if (claimed) return
+    claimed = true
+    setOff(w, 'giftee', T, offOf(w, 'giftee', T) + 1)
+  }
+  denyOnce(); denyOnce(); denyOnce()
+  check('E15 three retries mark exactly one unit', offOf(w, 'giftee', T) === 1)
+  applyTransfer(w, { from: ZERO_ADDR, to: 'giftee', tokenId: T, amount: 1 })
+  check('E15 a later legitimate mint is not suppressed by retries', gateVerdict(w, 'giftee', IDS))
+}
+
 console.log(
   failures === 0 ? '\nverify-pass-taint: OK' : `\nverify-pass-taint: ${failures} FAILURE(S)`,
 )

@@ -10,7 +10,11 @@ import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
 import { errorResponse } from '@/lib/apiResponse'
 import { bestEffort } from '@/lib/bestEffort'
-import { recordPlatformTx, creditValidityOnce } from '@/lib/pass-validity'
+import {
+  creditValidityOnce,
+  denyUnsanctionedAcquisition,
+  recordPlatformTx,
+} from '@/lib/pass-validity'
 import { getGateConfig } from '@/lib/gate'
 import { verifyGiftClaim } from '@/lib/gift'
 import { isBlacklisted } from '@/lib/blacklist'
@@ -46,7 +50,7 @@ async function verifyMintOnChain(
   collection: string,
   tokenId: string,
   account: string,
-): Promise<{ ok: false } | { ok: true; from: string }> {
+): Promise<{ ok: false } | { ok: true; from: string; units: number }> {
   // Cache the receipt's `from` alongside the verdict so the gift-claim proof
   // below survives a cache hit. Legacy '1'/'0' entries written before this
   // change still parse: '1' means verified with an unknown payer, which only
@@ -63,9 +67,13 @@ async function verifyMintOnChain(
   const cached = await redis.get<string | number>(cacheKey).catch(() => null)
   const cachedStr = cached == null ? null : String(cached)
   if (cachedStr === '0') return { ok: false }
-  if (cachedStr === '1') return { ok: true, from: '' }
+  // Legacy '1' — verified, payer and quantity unknown. Costs an unproven gift
+  // claim its attribution, and makes a denial mark the minimum 1 unit, for one
+  // 5-minute TTL window after deploy.
+  if (cachedStr === '1') return { ok: true, from: '', units: 1 }
   if (cachedStr?.startsWith('1:')) {
-    return { ok: true, from: cachedStr.slice(2) }
+    const [, payer = '', units = '1'] = cachedStr.split(':')
+    return { ok: true, from: payer, units: Math.max(1, parseInt(units, 10) || 1) }
   }
 
   try {
@@ -92,16 +100,22 @@ async function verifyMintOnChain(
       } catch {
         continue
       }
-      const { from, to, id } = decoded.args
+      const { from, to, id, value } = decoded.args
       if (
         from === '0x0000000000000000000000000000000000000000' &&
         to.toLowerCase() === account &&
         id === expectedTokenId
       ) {
+        // The ON-CHAIN quantity, not the client's `amount`. Used only to size a
+        // policy denial (denyUnsanctionedAcquisition), where a client-supplied
+        // number must never decide how many units get marked. Clamped to >= 1
+        // (a zero-value log can't match a real mint, and 0 would mark nothing)
+        // and bounded so a pathological value can't write an absurd count.
+        const units = value > 0n && value < 1_000_000n ? Number(value) : 1
         await redis
-          .set(cacheKey, `1:${payer}`, { ex: VERIFY_CACHE_TTL_SECONDS })
+          .set(cacheKey, `1:${payer}:${units}`, { ex: VERIFY_CACHE_TTL_SECONDS })
           .catch(() => {})
-        return { ok: true, from: payer }
+        return { ok: true, from: payer, units }
       }
     }
 
@@ -259,8 +273,24 @@ export async function POST(req: NextRequest) {
       isPassGift ? isPassBlacklisted(giftedBy).catch(() => false) : Promise.resolve(false),
     ])
     if (actionBlocked || passBlocked) {
-      // Loud: the payer already spent real money on-chain and the recipient
-      // now holds an uncredited edition. Needs to be reconcilable by hand.
+      // Refusing to RECORD the gift does not deny it. processTransfer credits
+      // `to` on any mint with no platform flag required, and the Alchemy
+      // webhook usually arrives before this request — so the recipient is
+      // already credited by the time we 403, and returning here would let a
+      // moderated wallet hand out working creator access for the mint price.
+      // Deny at READ time instead: mark the units against the recipient so
+      // hasValidPass subtracts them whenever the gate is next consulted.
+      // Ordering-independent, and reversible by admin via
+      // DELETE /api/admin/taint if the denial turns out to be wrong.
+      const denied = await denyUnsanctionedAcquisition({
+        collection: collectionLower,
+        address: account,
+        txHash,
+        tokenId,
+        units: verified.units,
+      })
+      // Loud: the payer spent real money and the recipient holds an edition
+      // that now proves nothing. An operator may still want to intervene.
       console.warn('[collect] gift denied — blacklisted gifter', {
         txHash,
         collection: collectionLower,
@@ -269,6 +299,7 @@ export async function POST(req: NextRequest) {
         recipient: account,
         actionBlocked,
         passBlocked,
+        unitsDenied: denied ? verified.units : 0,
       })
       return errorResponse(403, 'Address is blocked from gifting')
     }

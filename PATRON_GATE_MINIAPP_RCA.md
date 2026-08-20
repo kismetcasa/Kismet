@@ -129,7 +129,7 @@ Run from any machine with normal egress:
 # 1. The identity wallet's ledger state (what desktop sees):
 curl -s 'https://kismet.art/api/pass-validity?address=0x8425cb9db22f88bb38f6c64b39c4712e4ca8aa11'
 #    validBalance >= 1  → Scenario A confirmed.
-#    validBalance == 0  → Scenario B (check taint via /api/admin/taint, then
+#    validBalance == 0  → Scenario B (check provenance via /api/admin/taint?address=<wallet>, then
 #                         reconcile script or admin grant — see §7).
 
 # 2. Identify the Mini App signer: Farcaster app → Settings → Wallet

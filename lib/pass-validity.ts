@@ -854,6 +854,78 @@ export async function clearOffPlatformUnits(
   await redis.hdel(keyOffPlatform(collection, address), tokenId)
 }
 
+// Per-acquisition denial marker for an UNSANCTIONED acquisition — one whose
+// on-chain form is valid but whose platform policy is not (today: a gift paid
+// for by a blacklisted wallet). NX-claimed so the client's retry loop can call
+// the deny path repeatedly without stacking marks.
+const keyUnsanctioned = (collection: string, address: string, txHash: string, tokenId: string) =>
+  `kismetart:pass:unsanctioned:${collection.toLowerCase()}:${address.toLowerCase()}:${txHash.toLowerCase()}:${tokenId}`
+
+/**
+ * Deny an acquisition the platform will not sanction, and make the denial
+ * STICK against a credit that may already have landed.
+ *
+ * WHY THIS EXISTS. Refusing to record the acquisition is not enough to deny
+ * it. processTransfer credits `to` on ANY mint (`platform || isMint`) with no
+ * platform flag required, and the Alchemy webhook routinely arrives BEFORE the
+ * client's POST — the same race the synchronous direct-credits were added to
+ * win. So a route that 403s a policy violation stops the notification, the
+ * trending bump, the collected-list entry and the quota debit, but the
+ * validity credit lands anyway, seconds earlier, straight off the chain. A
+ * gate that only refuses at credit time is theatre.
+ *
+ * WHY IT WORKS. It denies at READ time instead, by recording the units against
+ * the holder in the same per-(holder, tokenId) ledger the off-platform model
+ * uses. hasValidPass subtracts them at gate-decision time, so it does not
+ * matter whether the credit landed first: the ledger may say 1, the units say
+ * 1, and `countableUnits` makes it prove 0. Ordering is irrelevant, which is
+ * what makes this race-free where a credit-time refusal cannot be.
+ *
+ * The semantics line up: the mark means "units this holder may not count", and
+ * an unsanctioned acquisition is exactly that. It inherits the model's good
+ * properties for free — it releases if they send the copy on, and it never
+ * touches a DIFFERENT copy they later acquire legitimately (countableUnits
+ * subtracts, it does not blacklist).
+ *
+ * `units` MUST be the on-chain transferred amount the caller verified, not a
+ * client claim. Under-marking leaves part of an unsanctioned acquisition
+ * countable; over-marking would suppress a later legitimate acquisition of the
+ * same tokenId by the same wallet — the false-revocation failure this whole
+ * model exists to avoid.
+ *
+ * Admin-reversible via DELETE /api/admin/taint { address, tokenId }.
+ */
+export async function denyUnsanctionedAcquisition(params: {
+  collection: string
+  address: string
+  txHash: string
+  tokenId: string
+  units: number
+}): Promise<boolean> {
+  const { collection, address, txHash, tokenId } = params
+  const units = Math.floor(params.units)
+  if (!collection || !address || !txHash || !tokenId || units <= 0) return false
+  try {
+    const claimed = await redis.set(
+      keyUnsanctioned(collection, address, txHash, tokenId),
+      '1',
+      { nx: true, ex: CREDITED_TTL },
+    )
+    // Already denied (the client retried) — the units are marked, don't stack.
+    if (!claimed) return false
+    // Same SADD creditValidityOnce performs: without the tokenId in
+    // knownTokenIds, hasValidPass has nothing to subtract against and would
+    // trust the ledger blindly.
+    void redis.sadd(keyKnownTokens(collection), tokenId).catch(() => {})
+    await markOffPlatformUnits(collection, address, tokenId, units)
+    return true
+  } catch {
+    // Best-effort. A failure here leaves the acquisition countable; the
+    // caller's 403 log is the admin's trigger to revoke by hand.
+    return false
+  }
+}
+
 /** MIGRATION ONLY — read the superseded token-scoped taint set so an operator
  *  can see what the old model had accumulated before clearing it. Nothing in
  *  the request path consults this any more. */

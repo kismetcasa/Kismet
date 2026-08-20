@@ -179,10 +179,26 @@ export async function POST(req: NextRequest) {
   // Action-blacklist gate: the on-chain airdrop already happened (Zora
   // adminMint is direct from the sender's wallet, not relayed through us),
   // but a blacklisted sender's airdrop is denied platform-side recording.
-  // No quota debit, no notifications, no recordPlatformTx — meaning
-  // recipients hold the Pass on-chain but earn no platform validity (admin
-  // would have to manually grant via /admin/pass). Matches the policy that
-  // blacklisted users can't propagate creator access through their actions.
+  // No quota debit, no notifications, no recordPlatformTx.
+  //
+  // KNOWN GAP — this does NOT deny the recipients' Pass validity, despite what
+  // this comment used to claim. That claim was true when the webhook credited
+  // only platform-flagged txs; the mint-arm fix (`platform || isMint` in
+  // processTransfer, 2026-07-24) made every mint credit its recipient straight
+  // from the chain, with no flag required — and the Alchemy webhook usually
+  // lands BEFORE this request. So a blacklisted artist's airdrop still confers
+  // working creator access, and refusing to record it does not change that.
+  //
+  // The fix is the same one /api/collect's gift path uses:
+  // denyUnsanctionedAcquisition, which marks the units against each recipient
+  // so hasValidPass subtracts them at gate-decision time — race-free precisely
+  // because it enforces on read rather than on credit. Applying it here needs
+  // one ordering change first: this gate runs BEFORE verifyAirdropOnChain, so
+  // at this point the recipient list is an unverified client claim, and
+  // marking from it would let anyone deny arbitrary wallets by POSTing a
+  // blacklisted sender plus victim addresses. The gate has to move below the
+  // verification and mark `finalRecipients`. Left as a deliberate, scoped
+  // follow-up rather than reordering a quota/idempotency-sensitive path here.
   if (await isBlacklisted(sender)) {
     return errorResponse(403, 'Address is blocked from airdropping')
   }

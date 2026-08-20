@@ -37,6 +37,15 @@ export function GiftRecipientForm({
 }) {
   const [value, setValue] = useState('')
   const [resolving, setResolving] = useState(false)
+  // A NAME that resolved, held for confirmation. A gift is paid and
+  // irreversible, and nothing else in the flow ever shows the user where their
+  // money is going: the wallet prompt can't decode `mintTo` out of Zora's
+  // minterArguments, so an ENS typo would be discovered only after the mint.
+  // Held only for names — a typed 0x address is already visible in the field,
+  // so confirming it twice would be friction with nothing to reveal.
+  const [confirming, setConfirming] = useState<{ input: string; address: `0x${string}` } | null>(
+    null,
+  )
   // Mainnet client for ENS. lib/wagmi already configures a mainnet transport
   // purely for ENS, so this reuses it rather than standing up a duplicate.
   const mainnetClient = usePublicClient({ chainId: mainnet.id })
@@ -78,6 +87,15 @@ export function GiftRecipientForm({
         toast.error('That is your own wallet — use collect instead')
         return
       }
+      // Name input: show what it resolved to and require a second press. The
+      // guard is keyed on the exact input, so editing the field after a
+      // resolution drops back to un-confirmed rather than sending to the
+      // previously resolved address.
+      const typedAnAddress = /^0x[0-9a-fA-F]{40}$/.test(raw)
+      if (!typedAnAddress && confirming?.input !== raw) {
+        setConfirming({ input: raw, address: resolved })
+        return
+      }
       await onGift(resolved)
     } finally {
       setResolving(false)
@@ -92,7 +110,10 @@ export function GiftRecipientForm({
           name="gift-recipient"
           type="text"
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value)
+            if (confirming) setConfirming(null)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault()
@@ -115,7 +136,13 @@ export function GiftRecipientForm({
           }`}
         >
           <span className={busy ? undefined : 'accent-grad'}>
-            {pending ? 'gifting…' : resolving ? 'resolving…' : 'send gift'}
+            {pending
+              ? 'gifting…'
+              : resolving
+                ? 'resolving…'
+                : confirming?.input === value.trim()
+                  ? 'confirm gift'
+                  : 'send gift'}
           </span>
         </button>
         <button
@@ -127,6 +154,12 @@ export function GiftRecipientForm({
           cancel
         </button>
       </div>
+      {confirming?.input === value.trim() && (
+        <p className="text-[10px] font-mono text-dim leading-relaxed break-all">
+          {confirming.input} → <span className="text-ink">{confirming.address}</span>
+          {' · press again to confirm'}
+        </p>
+      )}
       <p className="text-[10px] font-mono text-muted leading-relaxed">
         you pay · the artwork is minted straight to them · you do not receive a
         copy, and gifting a pass does not grant you mint access
