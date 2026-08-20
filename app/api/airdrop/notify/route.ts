@@ -9,7 +9,13 @@ import { recordCollected } from '@/lib/collected'
 import { MAX_AIRDROP_RECIPIENTS } from '@/lib/config'
 import { getGateConfig } from '@/lib/gate'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
-import { creditValidityOnce, recordPlatformTx } from '@/lib/pass-validity'
+import {
+  creditValidityOnce,
+  denyUnsanctionedAcquisition,
+  recordPlatformTx,
+} from '@/lib/pass-validity'
+import { isPassBlacklisted } from '@/lib/pass-blacklist'
+import { aggregateMintUnits } from '@/lib/passTaint'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
@@ -64,13 +70,31 @@ async function verifyAirdropOnChain(
   tokenId: string,
   sender: string,
   claimedRecipients: string[],
-): Promise<{ ok: true; verified: Set<string> } | { ok: false }> {
+): Promise<{ ok: true; verified: Map<string, number> } | { ok: false }> {
   const cacheKey = `verify:airdrop:${txHash}:${collection}:${tokenId}:${sender}`
-  const cached = await redis.get<string>(cacheKey).catch(() => null)
+  const cached = await redis.get<string | unknown[]>(cacheKey).catch(() => null)
   if (cached) {
     try {
-      const parsed = JSON.parse(cached) as string[]
-      return { ok: true, verified: new Set(parsed) }
+      // Current shape: [address, units] entry pairs. Legacy shape (pre-units):
+      // a flat address array — still honored as units=1 each for the 5-minute
+      // TTL window that spans a deploy, costing at most an under-sized denial
+      // of a multi-unit mint in that window.
+      //
+      // Accept BOTH the raw JSON string and an already-parsed array: Upstash's
+      // client JSON-parses GET results, so depending on how the write was
+      // serialized the readback can be either — the exact dual-representation
+      // trap that left verify:collect's cache dead (every hit re-fetched from
+      // RPC) until it was normalized. JSON.parse on an array would throw here
+      // and silently disable this cache the same way.
+      const parsed = (
+        typeof cached === 'string' ? JSON.parse(cached) : cached
+      ) as (string | [string, number])[]
+      const verified = new Map<string, number>()
+      for (const entry of parsed) {
+        if (typeof entry === 'string') verified.set(entry, 1)
+        else if (Array.isArray(entry)) verified.set(entry[0], Math.max(1, Math.floor(entry[1]) || 1))
+      }
+      if (verified.size > 0) return { ok: true, verified }
     } catch {
       // Fall through to fresh fetch on cache parse failure.
     }
@@ -81,7 +105,7 @@ async function verifyAirdropOnChain(
     if (receipt.status !== 'success') return { ok: false }
 
     const expectedTokenId = BigInt(tokenId)
-    const verified = new Set<string>()
+    const mintLogs: { to: string; value: bigint }[] = []
     for (const log of receipt.logs) {
       if (log.address.toLowerCase() !== collection) continue
       let decoded
@@ -94,15 +118,21 @@ async function verifyAirdropOnChain(
       } catch {
         continue
       }
-      const { operator, from, to, id } = decoded.args
+      const { operator, from, to, id, value } = decoded.args
       // Bind to the caller: only events where the claimed sender was
       // msg.sender of the adminMint call count. Without this an attacker
       // could repost someone else's airdrop tx and claim credit for it.
       if (operator.toLowerCase() !== sender) continue
       if (from !== ZERO_ADDRESS) continue
       if (id !== expectedTokenId) continue
-      verified.add(to.toLowerCase())
+      mintLogs.push({ to, value })
     }
+    // Per-recipient ON-CHAIN unit counts (lib/passTaint.aggregateMintUnits).
+    // The keys are the recipient set exactly as before; the values exist so a
+    // policy denial below is sized by what the chain moved, never by a client
+    // claim. Recipient-set semantics are unchanged: a matched log verifies its
+    // recipient regardless of value, as it always has.
+    const verified = aggregateMintUnits(mintLogs)
 
     // Every claimed recipient must have a matching TransferSingle log.
     // Reject any partial-claim: if the receipt only covers some of the
@@ -114,7 +144,9 @@ async function verifyAirdropOnChain(
     }
 
     await redis
-      .set(cacheKey, JSON.stringify(Array.from(verified)), { ex: VERIFY_CACHE_TTL_SECONDS })
+      .set(cacheKey, JSON.stringify(Array.from(verified.entries())), {
+        ex: VERIFY_CACHE_TTL_SECONDS,
+      })
       .catch(() => {})
     return { ok: true, verified }
   } catch {
@@ -176,32 +208,14 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'No valid recipients')
   }
 
-  // Action-blacklist gate: the on-chain airdrop already happened (Zora
-  // adminMint is direct from the sender's wallet, not relayed through us),
-  // but a blacklisted sender's airdrop is denied platform-side recording.
-  // No quota debit, no notifications, no recordPlatformTx.
-  //
-  // KNOWN GAP — this does NOT deny the recipients' Pass validity, despite what
-  // this comment used to claim. That claim was true when the webhook credited
-  // only platform-flagged txs; the mint-arm fix (`platform || isMint` in
-  // processTransfer, 2026-07-24) made every mint credit its recipient straight
-  // from the chain, with no flag required — and the Alchemy webhook usually
-  // lands BEFORE this request. So a blacklisted artist's airdrop still confers
-  // working creator access, and refusing to record it does not change that.
-  //
-  // The fix is the same one /api/collect's gift path uses:
-  // denyUnsanctionedAcquisition, which marks the units against each recipient
-  // so hasValidPass subtracts them at gate-decision time — race-free precisely
-  // because it enforces on read rather than on credit. Applying it here needs
-  // one ordering change first: this gate runs BEFORE verifyAirdropOnChain, so
-  // at this point the recipient list is an unverified client claim, and
-  // marking from it would let anyone deny arbitrary wallets by POSTing a
-  // blacklisted sender plus victim addresses. The gate has to move below the
-  // verification and mark `finalRecipients`. Left as a deliberate, scoped
-  // follow-up rather than reordering a quota/idempotency-sensitive path here.
-  if (await isBlacklisted(sender)) {
-    return errorResponse(403, 'Address is blocked from airdropping')
-  }
+  // NOTE: the sender blacklist gate runs BELOW verifyAirdropOnChain, not here.
+  // It must act on the receipt-proven recipient set: at this point
+  // `validRecipients` is an unverified client claim, and a denial keyed on it
+  // would let anyone revoke arbitrary wallets by POSTing a blacklisted sender
+  // plus victim addresses to this unsigned endpoint. The cost of the move is
+  // one receipt fetch (rate-limited, verify-cached) before a blacklisted
+  // sender's 403 — bought back as an enforceable denial instead of a bypassed
+  // one.
 
   // Verify the receipt contains TransferSingle events matching every
   // claimed recipient with operator === sender. This is the new gate:
@@ -227,7 +241,72 @@ export async function POST(req: NextRequest) {
   // notifications to the rest. By rebuilding from the receipt instead,
   // every actual on-chain recipient is recorded regardless of which body
   // arrives first.
-  const finalRecipients = Array.from(verifyResult.verified)
+  const finalRecipients = Array.from(verifyResult.verified.keys())
+
+  // Gate config, read once per request and reused by the quota scope below.
+  // Needed here first: the pass-blacklist arm and the validity denial only
+  // apply when this airdrop targets the configured Pass collection —
+  // elsewhere no validity credit exists anywhere (the webhook watches only
+  // the pass contract; the synchronous credit below is pass-scoped), so
+  // there is nothing to deny.
+  const gateConfig = await getGateConfig()
+  const isPassAirdrop =
+    !!gateConfig.passCollection && gateConfig.passCollection === collectionAddress
+
+  // Sender moderation gate — on the PROVEN recipient set, before the
+  // idempotency lock (a denied POST must 403 again on retry, not read as an
+  // idempotent success; denyUnsanctionedAcquisition is NX per (recipient, tx,
+  // tokenId), so re-running it never stacks marks).
+  //
+  // Two lists, mirroring /api/collect's gift gate: the action blacklist for
+  // any collection, and additionally the PASS blacklist when the airdrop
+  // targets the gate collection — an issuer whose own validity was revoked
+  // must not re-credential fresh wallets by airdrop.
+  //
+  // Refusing to record is NOT the denial. processTransfer credits every mint
+  // recipient straight off the chain (`platform || isMint` — the 2026-07-24
+  // mint-arm fix), and the Alchemy webhook usually lands before this request,
+  // so by the time this 403s the recipients are already credited. The denial
+  // is denyUnsanctionedAcquisition: it marks each recipient's ON-CHAIN unit
+  // count (verifyResult's values — never the client's claim) in the
+  // off-platform ledger, and hasValidPass subtracts those units at
+  // gate-decision time. Race-free because it enforces on read, not on credit.
+  // The fan-out is uncapped on purpose: it must cover every on-chain
+  // recipient (receipt-rebuilt, so it can exceed MAX_AIRDROP_RECIPIENTS),
+  // matches the credit loop's existing exposure, and block gas bounds a
+  // single tx to a few hundred mints. Reversible per recipient via
+  // DELETE /api/admin/taint.
+  const senderActionBlocked = await isBlacklisted(sender)
+  const senderPassBlocked =
+    !senderActionBlocked && isPassAirdrop
+      ? await isPassBlacklisted(sender).catch(() => false)
+      : false
+  if (senderActionBlocked || senderPassBlocked) {
+    if (isPassAirdrop) {
+      const denials = await Promise.all(
+        Array.from(verifyResult.verified.entries()).map(([recipient, units]) =>
+          denyUnsanctionedAcquisition({
+            collection: collectionAddress,
+            address: recipient,
+            txHash: txHash as string,
+            tokenId,
+            units,
+          }),
+        ),
+      )
+      console.warn('[airdrop-notify] denied — blacklisted sender', {
+        txHash,
+        collection: collectionAddress,
+        tokenId,
+        sender,
+        actionBlocked: senderActionBlocked,
+        passBlocked: senderPassBlocked,
+        recipients: finalRecipients.length,
+        newlyDenied: denials.filter(Boolean).length,
+      })
+    }
+    return errorResponse(403, 'Address is blocked from airdropping')
+  }
 
   // Idempotency lock on (txHash, collection, tokenId, sender). A real
   // airdrop posted twice (Promise.all retry, browser back-button, network
@@ -252,13 +331,9 @@ export async function POST(req: NextRequest) {
   // Quota debit is SCOPED to the configured Pass collection — the Season
   // 1 plan (1/day, 5/week per artist) is about throttling the rate Pass
   // NFTs are given away, not about constraining moments airdropped from
-  // any other collection. Read gate config per request so a mid-flight
-  // admin update (e.g. switching Pass collections between phases)
-  // immediately applies to subsequent airdrops.
-  const gateConfig = await getGateConfig()
-  const isPassAirdrop =
-    !!gateConfig.passCollection && gateConfig.passCollection === collectionAddress
-
+  // any other collection. isPassAirdrop was read fresh for this request
+  // above (the moderation gate), so a mid-flight admin update still applies
+  // no later than the next request, exactly as before.
   if (isPassAirdrop) {
     const quota = await consumeQuota(sender, finalRecipients.length)
     if (!quota.ok) {

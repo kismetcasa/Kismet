@@ -23,6 +23,7 @@
 // Run: node --experimental-strip-types scripts/verify-pass-taint.ts
 
 import {
+  aggregateMintUnits,
   countableUnits,
   parseUnitCount,
   planTransferEffects,
@@ -248,6 +249,30 @@ function gateVerdict(w: World, addr: string, knownIds: string[]): boolean {
 
 const IDS = ['1', '3']
 const T = '3' // the 100-edition Patron drop
+
+console.log('\naggregateMintUnits — sizing a multi-recipient denial')
+
+{
+  const A = '0xaaaa000000000000000000000000000000000001'
+  const B = '0xbbbb000000000000000000000000000000000002'
+  const m = aggregateMintUnits([
+    { to: A, value: 1n },
+    { to: B, value: 3n },
+    { to: A.toUpperCase().replace('0X', '0x'), value: 2n }, // same wallet, different case
+  ])
+  check('per-recipient sums from on-chain values', m.get(B) === 3)
+  check('case-insensitive merge (one wallet, one count)', m.get(A) === 3 && m.size === 2)
+  check(
+    'zero value clamps to 1 (a matched log is at least one credited unit)',
+    aggregateMintUnits([{ to: A, value: 0n }]).get(A) === 1,
+  )
+  check(
+    'pathological value clamps to 1, never an absurd denial',
+    aggregateMintUnits([{ to: A, value: 10_000_000_000n }]).get(A) === 1,
+  )
+  check('empty address dropped', aggregateMintUnits([{ to: '', value: 1n }]).size === 0)
+  check('empty input → empty map', aggregateMintUnits([]).size === 0)
+}
 
 console.log('\nend-to-end lifecycle')
 

@@ -125,6 +125,35 @@ export function releaseUnits(current: number, amount: number): number {
 }
 
 /**
+ * Sum per-recipient mint units from decoded TransferSingle logs — the sizing
+ * input for a policy denial (denyUnsanctionedAcquisition) over a multi-
+ * recipient tx. On-chain values only: a client-supplied count must never
+ * decide how many units get denied — over-marking suppresses a later
+ * legitimate acquisition, the false-revocation failure this model exists to
+ * end; under-marking leaves part of an unsanctioned acquisition countable.
+ *
+ * Each log's value is clamped to [1, 1M): a zero or pathological value reads
+ * as 1 (the log matched a real mint, so at least one unit moved as far as the
+ * credit paths are concerned — the route-side credit is a flat 1 per
+ * recipient, and the webhook credits the raw amount; denying the on-chain
+ * value covers whichever won the race, because countableUnits subtracts from
+ * the on-chain BALANCE, not the ledger). Addresses merge case-insensitively,
+ * matching every other per-holder key in the gate.
+ */
+export function aggregateMintUnits(
+  entries: { to: string; value: bigint }[],
+): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const e of entries) {
+    if (!e.to) continue
+    const to = e.to.toLowerCase()
+    const units = e.value > 0n && e.value < 1_000_000n ? Number(e.value) : 1
+    out.set(to, (out.get(to) ?? 0) + units)
+  }
+  return out
+}
+
+/**
  * Parse a stored unit count. Upstash SETs numbers as strings but JSON-parses
  * them back on GET, so a field written by HINCRBY can read as either `2` or
  * `'2'` — the same dual-representation trap lib/gateFlags and

@@ -770,8 +770,14 @@ framed it — the operator wallet is the admin-write path, not the mint executor
 Pass-validity credit and Redis command volume.
 
 **Key mechanisms.** On-chain proof before any side effect (decode `TransferSingle`,
-require `operator===sender, from===0x0`, rebuild the authoritative recipient set from
-the receipt); mandatory `txHash` + NX idempotency acquired before quota debit;
+require `operator===sender, from===0x0`, rebuild the authoritative recipient set —
+with per-recipient on-chain unit counts — from the receipt); the sender moderation
+gate runs AFTER that verification, on the proven set (before it, the recipient list
+is an unverified claim an attacker could weaponize into denials of arbitrary
+wallets), and a blacklisted sender's Pass airdrop is denied at READ time via
+`denyUnsanctionedAcquisition` per recipient — refusing to record is not a denial,
+since the webhook's mint arm credits recipients straight off the chain and usually
+lands first; mandatory `txHash` + NX idempotency acquired before quota debit;
 synchronous per-recipient `creditValidityOnce`; single-source `MAX_AIRDROP_RECIPIENTS`
 cap on client and server.
 

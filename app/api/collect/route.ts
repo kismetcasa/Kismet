@@ -294,13 +294,21 @@ export async function POST(req: NextRequest) {
       // hasValidPass subtracts them whenever the gate is next consulted.
       // Ordering-independent, and reversible by admin via
       // DELETE /api/admin/taint if the denial turns out to be wrong.
-      const denied = await denyUnsanctionedAcquisition({
-        collection: collectionLower,
-        address: account,
-        txHash,
-        tokenId,
-        units: verified.units,
-      })
+      //
+      // Pass collection only: elsewhere no validity credit exists anywhere
+      // (the webhook watches only the pass contract, and the synchronous
+      // credit below is pass-scoped), so there is nothing to deny and the
+      // marks would be dead writes. The 403 still blocks the recording for
+      // any collection, exactly as before.
+      const denied = isPassGift
+        ? await denyUnsanctionedAcquisition({
+            collection: collectionLower,
+            address: account,
+            txHash,
+            tokenId,
+            units: verified.units,
+          })
+        : false
       // Loud: the payer spent real money and the recipient holds an edition
       // that now proves nothing. An operator may still want to intervene.
       console.warn('[collect] gift denied — blacklisted gifter', {
