@@ -107,8 +107,17 @@ export function countableUnits(balance: bigint, offPlatform: number): bigint {
   return balance > off ? balance - off : 0n
 }
 
-/** Sender-side release, clamped at zero. Mirrors the Lua that performs it
- *  atomically in Redis, so the two can be compared and kept in step. */
+/** Sender-side release, clamped at zero.
+ *
+ *  Production performs this in Redis (RELEASE_OFFPLATFORM_LUA in
+ *  lib/pass-validity), which must be atomic — a read-modify-write in app code
+ *  would race two concurrent sends from the same wallet. This is that rule
+ *  written as an executable specification, and it is what the lifecycle model
+ *  in scripts/verify-pass-taint.ts runs on, so the model cannot quietly invent
+ *  release semantics of its own. Nothing compares the two automatically; the
+ *  reason a divergence stays harmless is parseUnitCount, which clamps whatever
+ *  is stored — so even a Lua that leaked a negative count would read as zero
+ *  off-platform units rather than offsetting a later genuine mark. */
 export function releaseUnits(current: number, amount: number): number {
   const cur = Number.isFinite(current) && current > 0 ? Math.floor(current) : 0
   const amt = Number.isFinite(amount) && amount > 0 ? Math.floor(amount) : 0

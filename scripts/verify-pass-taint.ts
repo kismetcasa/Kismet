@@ -167,7 +167,13 @@ interface Counts { [addr: string]: { [tokenId: string]: number } }
 interface World { ledger: Record<string, number>; off: Counts; chain: Chain }
 
 const world = (): World => ({ ledger: {}, off: {}, chain: {} })
-const bal = (w: World, a: string, t: string) => w.chain[a]?.[t] ?? 0n
+// Counts on-chain reads so the zero-ledger short-circuit can be asserted
+// rather than assumed: a denied non-holder must cost no balanceOfBatch.
+let chainReads = 0
+const bal = (w: World, a: string, t: string) => {
+  chainReads++
+  return w.chain[a]?.[t] ?? 0n
+}
 const offOf = (w: World, a: string, t: string) => w.off[a]?.[t] ?? 0
 const setBal = (w: World, a: string, t: string, v: bigint) => {
   ;(w.chain[a] ??= {})[t] = v < 0n ? 0n : v
@@ -227,6 +233,10 @@ function applyTransfer(
  *  (persisted, as the CAS does), verdict at >= 1. */
 function gateVerdict(w: World, addr: string, knownIds: string[]): boolean {
   let validBalance = Math.max(0, w.ledger[addr] ?? 0)
+  // Zero-ledger short-circuit: everything below only clamps DOWN, so a ledger
+  // under 1 is false either way. Mirrored here so the model proves the real
+  // function's early return costs nothing in correctness.
+  if (validBalance < 1) return false
   let liveTotal = 0n
   for (const t of knownIds) liveTotal += countableUnits(bal(w, addr, t), offOf(w, addr, t))
   if (liveTotal < BigInt(validBalance)) {
@@ -348,6 +358,34 @@ console.log('\nend-to-end lifecycle')
   applyTransfer(w, { from: 'alice', to: ZERO_ADDR, tokenId: T, amount: 1 })
   check('E10 burning revokes the burner', !gateVerdict(w, 'alice', IDS))
   check('E10 burn records nothing against 0x0', offOf(w, ZERO_ADDR, T) === 0)
+}
+
+// E11. THE DENIAL PATH IS FREE. hasValidPass short-circuits before the
+// adminGrant read, the known-tokens read, the off-platform read and the
+// balanceOfBatch RPC when the ledger is already below 1. That is the common
+// case — every gated mint attempt by someone with no Pass — and
+// hasValidPassForAny routes single-wallet callers straight into it. If someone
+// removes the early return, this fails.
+{
+  const w = world()
+  applyTransfer(w, { from: ZERO_ADDR, to: 'holder', tokenId: T, amount: 1 })
+  chainReads = 0
+  check('E11 a non-holder is denied', !gateVerdict(w, 'stranger', IDS))
+  check('E11 denial touches NO on-chain state', chainReads === 0)
+  chainReads = 0
+  check('E11 a real holder is still verified against chain', gateVerdict(w, 'holder', IDS))
+  check('E11 verification does read on-chain state', chainReads > 0)
+}
+
+// E12. A revoked seller becomes free to deny too — the ledger hits 0, so the
+// next gate decision for them short-circuits.
+{
+  const w = world()
+  applyTransfer(w, { from: ZERO_ADDR, to: 'alice', tokenId: T, amount: 1 })
+  applyTransfer(w, { from: 'alice', to: 'buyer', tokenId: T, amount: 1 })
+  chainReads = 0
+  check('E12 revoked seller denied', !gateVerdict(w, 'alice', IDS))
+  check('E12 revoked seller costs no RPC', chainReads === 0)
 }
 
 console.log(

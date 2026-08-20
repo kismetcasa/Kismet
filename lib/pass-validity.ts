@@ -728,6 +728,28 @@ export async function hasValidPass(collection: string, address: string): Promise
     return false
   }
 
+  // Zero-ledger short-circuit. Everything below can only ever clamp the ledger
+  // DOWN (the CAS fires on `liveTotal < validBalance`, and liveTotal is a sum
+  // of non-negative units), and the verdict is `validBalance >= 1` — so a
+  // ledger already below 1 is false whichever branch runs, including the
+  // admin-grant one (setValidBalance stores a positive balance whenever it
+  // sets the grant, and clears the grant at 0). Returning here is therefore
+  // exactly equivalent, and it drops the ENTIRE remainder of the function:
+  // one adminGrant GET, one knownTokens SMEMBERS, one off-platform HGETALL and
+  // — the expensive one — a balanceOfBatch RPC round-trip.
+  //
+  // This is the HOT path, not an edge case: it is every gated mint attempt by
+  // someone who holds no Pass, and hasValidPassForAny sends single-wallet
+  // callers (every non-Farcaster user) straight here, bypassing its own MGET
+  // prefilter. That prefilter already rests on this exact argument — see its
+  // docstring: "hasValidPass never reconciles the ledger UPWARD ... so
+  // ledger <= 0 implies hasValidPass is false and skipping it cannot change
+  // the verdict." This applies the same reasoning one level down.
+  //
+  // Pinned by the lifecycle model in scripts/verify-pass-taint.ts, which fails
+  // if a zero-ledger verdict ever touches on-chain state.
+  if (validBalance < 1) return false
+
   // Admin-granted validity bypasses on-chain check — see setValidBalance.
   try {
     const granted = await redis.get(keyAdminGrant(collection, address))
@@ -807,8 +829,8 @@ export async function listOffPlatformUnits(
 ): Promise<Record<string, number>> {
   const units = await getOffPlatformUnits(collection, address)
   const out: Record<string, number> = {}
-  for (const tokenId of Array.from(units.keys()).sort()) {
-    out[tokenId] = units.get(tokenId) as number
+  for (const [tokenId, count] of Array.from(units).sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    out[tokenId] = count
   }
   return out
 }
