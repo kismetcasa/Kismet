@@ -349,9 +349,24 @@ role authz, on-chain `splitAddress` match, gas quota — because the *platform*
 sponsors the tx); `verify-mint.ts` CI oracle pinning the math.
 
 **Risks.** inprocess `/distribute` is **non-idempotent** (a timeout is
-indeterminate → 502, never auto-retry, or it pays out twice); royalty decomposition
-only covers splits Kismet minted and stored; the Redis mirror can drift from chain
-(lazy self-heal, no bulk backfill).
+indeterminate → 502, never auto-retry, or it pays out twice — which is also why a
+2xx with an empty/unparseable body counts as SUCCESS: reporting a failure on a
+settled payout makes the artist click again); royalty decomposition only covers
+splits Kismet minted and stored; the Redis mirror can drift from chain (lazy
+self-heal, no bulk backfill). A moment carries **two independent payout
+pointers** — the token-level creator-reward recipient and the sale strategy's
+`fundsRecipient` — and In Process's moment-manage page can move one without the
+other, so every read resolves both (`decodePayoutTargets` / `payoutTargetCalls`);
+a target with no Kismet split record must prove it is an In Process split
+contract before it is offered for distribution — the same bytecode-equality
+gate In Process's own distribute endpoint enforces, mirrored byte-for-byte
+(`INPROCESS_SPLIT_BYTECODE`, lib/payoutTargets.ts). Note the splits are
+**0xSplits v2 PullSplits** (deployed via their `SplitV2Client`), not v1
+SplitMain as older notes here say — a v1-style probe rejects every real
+In Process split. Distribution also moved upstream on 2026-08-18:
+`POST /distribute` was DELETED in favor of
+`GET /splits?splitAddress&chainId[&tokenAddress]` (in_process_api `6fc5967`);
+both Kismet routes call the new form.
 
 ### Layer C — External backend
 
@@ -359,7 +374,8 @@ only covers splits Kismet minted and stored; the Redis mirror can drift from cha
 **What.** Kismet's entire backend — a Zora-on-Base indexer + ERC-4337 relay reached
 at `https://api.inprocess.world/api`. **Reads** (`/timeline`, `/moment`,
 `/collection(s)`, `/comments`, `/payments`, `/transfers`, `/smartwallet`) are
-keyless with 8 s timeouts (10 s for `/smartwallet`); **writes** (`/moment/create[/writing]`, `/distribute`,
+keyless with 8 s timeouts (10 s for `/smartwallet`); **writes** (`/moment/create[/writing]`,
+`GET /splits` (distribute — a GET that fires a sponsored userOp; replaced `POST /distribute` 2026-08-18),
 `PATCH /moment`) carry `x-api-key: INPROCESS_API_KEY` and execute a gas-sponsored
 userOp as the caller's per-creator smart wallet (45–60 s timeouts).
 
