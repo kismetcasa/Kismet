@@ -48,6 +48,9 @@ const EXCLUDED = new Map<string, string>([
   ['/admin/pass', 'operator-only'],
   ['/admin/blacklist', 'operator-only'],
   ['/admin/airdrop-quota', 'operator-only'],
+  // Added on main by #666 without its exclusion row — every /admin page is
+  // operator-only by the same reasoning as the entries above.
+  ['/admin/broadcast', 'operator-only'],
   ['/permissions', 'per-wallet dashboard; noindex (empty without a wallet)'],
 ])
 
