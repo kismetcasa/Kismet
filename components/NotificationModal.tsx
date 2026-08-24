@@ -38,6 +38,7 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   listing_expired: 'Your listings expire',
   listing_created: 'New listings from people you follow',
   airdrop: 'Airdrops you receive',
+  gift: 'Artworks gifted to you',
   payout: 'Splits and payouts',
   authorized: 'Creator authorizations',
   agent_collect: 'Agent Collect',

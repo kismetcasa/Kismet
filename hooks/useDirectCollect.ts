@@ -7,6 +7,7 @@ import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { getAddress, type Address, type Hash } from 'viem'
 import { isValidTokenId } from '@/lib/address'
+import { giftRejectionMessage, planMint } from '@/lib/gift'
 import { trackFunnel } from '@/lib/funnel'
 import { reportClientError } from '@/lib/clientError'
 import { resolveOnchainSale } from '@/lib/saleConfig'
@@ -56,6 +57,25 @@ export interface CollectArgs {
   amount?: number
   comment?: string
   share?: CollectShareOffer
+  /**
+   * Collect-and-gift: mint straight to this address instead of the signer.
+   * The signer still pays (price + Zora fee + gas); the edition is created
+   * in the recipient's wallet and never touches the payer's.
+   *
+   * Must already be a 0x address — resolve ENS before calling (see
+   * lib/address.resolveAddressOrEns). Passing the signer's own address is
+   * not an error; planMint collapses it to a plain collect.
+   *
+   * WHY mintTo AND NOT A POST-MINT TRANSFER: for the Pass collection a
+   * transfer would decrement the sender AND record the moved units against
+   * the recipient as an off-platform acquisition, so the payer loses their
+   * pass and the recipient's copy proves nothing
+   * (lib/pass-validity.processTransfer). A gift-mint emits only
+   * TransferSingle(0x0 → recipient) — the same genesis event an ordinary
+   * collect emits — so the recipient earns validity through the normal mint
+   * path and no provenance rule applies. See lib/gift.ts.
+   */
+  recipient?: Address
 }
 
 interface UseDirectCollectReturn {
@@ -143,6 +163,18 @@ export function useDirectCollect(): UseDirectCollectReturn {
         toast.error('Invalid token id')
         return null
       }
+      // Who the edition is minted to. `collect` = the signer (every existing
+      // caller); `gift` = a third party the signer pays for. A recipient that
+      // IS the signer collapses to `collect` — minting to yourself is a
+      // collect, not an error worth surfacing. See lib/gift.ts for why a gift
+      // is a mint-to-recipient and never a post-mint transfer.
+      const plan = planMint(account, args.recipient)
+      if (plan.mode === 'invalid') {
+        toast.error(giftRejectionMessage(plan.reason))
+        return null
+      }
+      const mintTo = plan.mintTo as Address
+      const isGift = plan.mode === 'gift'
       if (inFlightRef.current) return null
       inFlightRef.current = true
 
@@ -211,7 +243,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             address: collectionAddress,
             ...buildEthMintCall({
               tokenId: tokenIdBn,
-              mintTo: account,
+              mintTo,
               quantity,
               mintFee,
               pricePerToken,
@@ -260,7 +292,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
             ...buildUsdcMintCall({
               collection: collectionAddress,
               tokenId: tokenIdBn,
-              mintTo: account,
+              mintTo,
               quantity,
               pricePerToken,
               comment,
@@ -304,9 +336,19 @@ export function useDirectCollect(): UseDirectCollectReturn {
         // reconciliation script are the last-resort backstops for Pass validity
         // if the record is lost entirely.
         setStatus('recording')
+        // `account` here is the COLLECTOR — the wallet the edition was minted
+        // to, which for a gift is the recipient, not the signer. That is what
+        // /api/collect verifies against the receipt's TransferSingle(0x0 → to)
+        // and what it credits: the Pass-validity ledger, the collected list,
+        // and the "Valid Pass" badge all follow the holder. The payer gets no
+        // credit for a gift, by design (lib/gift.ts).
+        // `giftedBy` is attribution only — the server drops it unless it can
+        // prove the claim (receipt `from` or SIWE session), so a spoofed value
+        // can never fabricate a notification from someone else.
         const collectBody = JSON.stringify({
           moment: { collectionAddress, tokenId, chainId: base.id },
-          account,
+          account: mintTo,
+          ...(isGift ? { giftedBy: account } : {}),
           amount: Number(quantity),
           comment,
           pricePerToken: pricePerToken.toString(),
@@ -341,7 +383,8 @@ export function useDirectCollect(): UseDirectCollectReturn {
             tokenId,
             collectionAddress,
             txHash: hash,
-            account,
+            account: mintTo,
+            ...(isGift ? { giftedBy: account } : {}),
           })
         }
 
@@ -351,7 +394,15 @@ export function useDirectCollect(): UseDirectCollectReturn {
         // doubles as the share-to-feed prompt: 8s (matching the Add Kismet
         // prompt) so the user has time to act, with a Share action that opens
         // the host cast composer prefilled for /kismet.
-        if (args.share && isInMiniApp) {
+        // A gift never offers the "share what you collected" prompt — the
+        // signer doesn't hold the piece, so the composer copy ("collected
+        // …") would be false. Its own toast names the recipient instead.
+        if (isGift) {
+          toast.success('Gifted!', {
+            id: TOAST_ID,
+            description: `Minted to ${mintTo.slice(0, 6)}…${mintTo.slice(-4)}`,
+          })
+        } else if (args.share && isInMiniApp) {
           toast.success('Collected!', {
             id: TOAST_ID,
             description: 'Share it to /kismet?',

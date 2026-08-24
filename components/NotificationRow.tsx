@@ -34,6 +34,7 @@ function notificationHref(n: Notification): string {
     case 'listing_expired':
     case 'listing_created':
     case 'airdrop':
+    case 'gift':
     case 'payout':
     case 'raffle_win':
     case 'raffle_ended':
@@ -113,6 +114,19 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.tokenName ?? 'untitled'}{n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''} · {time}
           </p>
+        </>
+      )
+    case 'gift':
+      // Collect-and-gift recipient. Single-branch (unlike 'airdrop'): only
+      // the recipient is notified as a gift — the payer's side of the event
+      // is the creator's 'collect' notification, which already names them as
+      // the collector, so a second self-addressed row would be a duplicate.
+      return (
+        <>
+          <p className="text-xs font-mono text-ink truncate">
+            {actorLabel ?? 'someone'} gifted you {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
     case 'airdrop':

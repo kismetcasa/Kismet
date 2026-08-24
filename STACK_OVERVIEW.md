@@ -726,18 +726,48 @@ earlier collapsed the per-recipient platform-tx flag writes into one Lua eval (a
 around the gate's blacklist/hidden-set reads (memo TTLs 5→15 min).
 
 **Key mechanisms.** Any-transfer-revokes invariant (unconditional `from` decrement
-on every non-mint transfer); permanent taint (a tainted tokenId can never confer
-validity again, even via a later Kismet sale, and is excluded from `liveTotal`);
+on every non-mint transfer); **per-holder off-platform unit accounting** (below);
 per-(recipient,tokenId) platform-tx flag (so a co-bundled transfer can't ride the
 flag to launder); dual-writer idempotent credit (synchronous direct-credit + async
 webhook backstop converge on one `SET NX` key — the direct path must win the race or
 the collector is stranded at `validBalance=0`); timing-safe HMAC webhook
-verification; fail-closed at credit time / fail-open on read.
+verification; fail-open on the provenance read (the ledger is the primary control
+and only ever increments on a proven acquisition). **Gifting a Pass**
+(§4.2) rides the mint arm rather than adding a path: it is a mint-to-recipient,
+so it introduces no transfer for the revoke/provenance rules to act on.
+
+**Provenance is per (holder, tokenId), counted in units.** An off-platform transfer
+records the moved units against the RECEIVER (`kismetart:pass:offplatform:{c}:{a}`,
+a HASH of tokenId→units) and every non-mint send RELEASES them from the sender;
+`hasValidPass` subtracts a holder's units from the balance they may prove
+(`countableUnits`). Enforcement is that subtraction alone — `creditValidityOnce`
+carries no provenance check, because each of its callers has already proven an
+on-platform acquisition on-chain. Invariant:
+`ledger ≤ min(proven acquisitions, on-chain balance − off-platform units)`.
+
+_Replaced (2026-08) a per-COLLECTION set of "tainted" tokenIds._ That form was
+sound for a 1-of-1 and catastrophic for an edition — Patron drops are 19 and 100
+copies of ONE id, so a single holder's OpenSea sale ① excluded that id from every
+holder's `liveTotal`, CAS-clamping all of them to `validBalance 0`, and ② made
+`creditValidityOnce` refuse every future mint of a still-open sale, so new buyers
+paid and got nothing. It also handed anyone a revocation weapon: sending a pass to
+a legitimate holder tainted the id. Counting units (not a per-holder boolean)
+closes that last one too — an unsolicited copy is discounted while the holder's own
+copy still counts. Pure layer `lib/passTaint.ts`, oracle
+`scripts/verify-pass-taint.ts`, remediation `--clear-legacy-taint` +
+a re-run of `scripts/reconcile-pass-validity.mjs`.
+
+**Standing hazard (unchanged by the above).** The moment page's `send` button
+(`MomentDetailView`, `safeTransferFrom`) is un-gated on the Pass collection, so a
+holder can still revoke *themselves* with no warning — now correctly limited to
+their own wallet.
 
 **Risks.** The webhook is single-point-critical for the *off-platform* half (no
-active replay/backfill — it only warns); taint is permanent and irreversible;
-`creditValidityOnce` trusts its caller (correctness
-depends on every path flagging only on-chain-proven pairs).
+active replay/backfill — it only warns); `creditValidityOnce` trusts its caller
+(correctness depends on every path flagging only on-chain-proven pairs, and it is
+now the *only* provenance boundary at write time). Off-platform units are released
+on any send because ERC-1155 copies are fungible — the lenient direction, chosen
+so a mis-attribution can never falsely revoke a legitimate holder.
 
 #### G3. Airdrops (`airdrops`)
 **What.** Creators mint free copies directly to recipients via Zora `adminMint`
@@ -756,8 +786,14 @@ framed it — the operator wallet is the admin-write path, not the mint executor
 Pass-validity credit and Redis command volume.
 
 **Key mechanisms.** On-chain proof before any side effect (decode `TransferSingle`,
-require `operator===sender, from===0x0`, rebuild the authoritative recipient set from
-the receipt); mandatory `txHash` + NX idempotency acquired before quota debit;
+require `operator===sender, from===0x0`, rebuild the authoritative recipient set —
+with per-recipient on-chain unit counts — from the receipt); the sender moderation
+gate runs AFTER that verification, on the proven set (before it, the recipient list
+is an unverified claim an attacker could weaponize into denials of arbitrary
+wallets), and a blacklisted sender's Pass airdrop is denied at READ time via
+`denyUnsanctionedAcquisition` per recipient — refusing to record is not a denial,
+since the webhook's mint arm credits recipients straight off the chain and usually
+lands first; mandatory `txHash` + NX idempotency acquired before quota debit;
 synchronous per-recipient `creditValidityOnce`; single-source `MAX_AIRDROP_RECIPIENTS`
 cap on client and server.
 
@@ -903,6 +939,29 @@ re-enters the same `/api/collect`. A **secondary buy** is a separate Seaport
 verification. _(Note: the collect path does **not** go through inprocess — that's the
 mint/create relay.)_
 
+**Collect-and-gift.** `useDirectCollect` takes an optional `recipient`, which
+becomes the `mintTo` inside `minterArguments` — the payer signs and pays, the
+edition is minted straight into someone else's wallet. It is deliberately **one
+primary mint, never a mint plus a transfer**: for the Pass collection a transfer
+would decrement the sender AND permanently taint the tokenId, and taint is
+collection-wide per id (`hasValidPass` drops tainted ids from `liveTotal`), so a
+single mistainted id would clamp *every* holder of that edition to
+`validBalance 0` — and the flag that prevents it can't be written before the
+webhook races in on the EIP-5792 path. A gift-mint emits only
+`TransferSingle(0x0 → recipient)`, the same genesis event an ordinary collect
+emits, so it needs no new credit path and gives the taint rule nothing to bite;
+the recipient earns validity through the mint arm exactly as an airdroppee does
+(the paid analogue of G3, and already "valid for minting" under the Mint Pass
+Ruleset). `/api/collect` therefore needs no gift-specific verification — it
+records the wallet the receipt proves the mint went to. `giftedBy` is
+**attribution only**, trusted solely when it matches the receipt payer or the
+SIWE session (never derived from `receipt.from`, which is the *bundler* on
+ERC-4337 collects) and dropped otherwise; a proved gifter is blacklist-gated,
+mirroring `/api/airdrop/notify` — a blocked wallet must not propagate creator
+access through its actions. Pure layer + regression oracle: `lib/gift.ts`,
+`scripts/verify-gift.ts`. Surfaced first on the Patron showcase only
+(`PatronArtworkShowcase` → `GiftRecipientForm`).
+
 ### 4.3 Agent Scout autonomous collect
 Eligibility gate (EIP-5792 capability / `eth_getCode`) → user signs **one** bounded
 Spend Permission to the scout spender (the only user-signed money-moving step) → the
@@ -924,11 +983,17 @@ On-platform acquisition (collect / airdrop / Kismet fill) → the API handler
 webhook, which often arrives first and would skip the credit + burn its processed
 key, stranding the holder) and schedules `recordPlatformTx` as the convergence
 backstop. Off-platform transfer → the Alchemy webhook (HMAC-verified) runs
-`processTransfer`: **unconditionally** decrements the sender, credits `to` only if
-the (recipient,tokenId) pair was platform-flagged, and **permanently taints** the
-tokenId if the transfer wasn't platform-flagged and wasn't Kismet-listed. Enforcement
-(`hasValidPass`) reads `balanceOfBatch` excluding tainted ids and clamps the ledger
-down; the `usePassGate` client read is a UX hint only. The gate decision
+`processTransfer`: **unconditionally** decrements the sender, releases the sender's
+off-platform units (they no longer hold the copies), credits `to` only if the
+(recipient,tokenId) pair was platform-flagged, and — when the transfer was neither
+platform-flagged nor Kismet-listed — records the moved units against **the
+receiver** as an off-platform acquisition. Enforcement
+(`hasValidPass`) reads `balanceOfBatch`, subtracts the holder's own off-platform
+units, and clamps the ledger down; the `usePassGate` client read is a UX hint only. A **gift-mint**
+(`useDirectCollect`'s `recipient` → `mintTo`) enters this lifecycle at the same
+point an ordinary collect does — `from = 0x0`, credit the recipient — which is
+why it needs no branch here and cannot open a gap; the payer earns nothing,
+since validity follows the holder. The gate decision
 (`hasGateAccess`) runs over the caller's **identity union** — the signer plus its
 FC-verified sibling wallets (`expandToGateWallets`, capped, fail-degraded to
 signer-only) — so a Mini App user whose connected signer is the host wallet still

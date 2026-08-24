@@ -26,7 +26,10 @@ const getBlacklistSet = memoize(_getBlacklistSet, 15 * 60_000)
  * airdrop.
  *
  * POLICY: this is intentionally narrow. The following are NOT blocked:
- *   - Collecting (a banned user can still buy others' content)
+ *   - Collecting FOR YOURSELF (a banned user can still buy others' content).
+ *     Collect-and-GIFT is blocked, though — see the wiring list below: a gift
+ *     mints a fresh credential into a wallet of the banned user's choosing,
+ *     which is propagation, not consumption.
  *   - Following / being followed
  *   - Sending or receiving notifications
  * The rationale is asymmetric harm: creator actions produce content
@@ -35,7 +38,9 @@ const getBlacklistSet = memoize(_getBlacklistSet, 15 * 60_000)
  * banned user's own experience or are mutually-consensual, so they
  * don't justify a hard block. If product later wants "full isolation,"
  * the additional enforcement points would be:
- *   - app/api/collect/route.ts POST          (recordCollected gate)
+ *   - app/api/collect/route.ts POST          (recordCollected gate — note
+ *     the GIFT half of that route is already gated, see below; this would
+ *     extend it to plain self-collects)
  *   - app/api/follow/[address]/route.ts POST (follow gate)
  *   - lib/notifications.ts → writeNotification (recipient + actor gate)
  *
@@ -47,6 +52,10 @@ const getBlacklistSet = memoize(_getBlacklistSet, 15 * 60_000)
  *   - lib/mint-proxy.ts                  → /api/mint, /api/write
  *   - app/api/listings/route.ts POST     → secondary listing creation
  *   - app/api/airdrop/notify/route.ts    → airdrop platform-recording
+ *   - app/api/collect/route.ts POST      → collect-and-GIFT only (a proved
+ *     `giftedBy`); plain self-collects stay ungated per the policy above.
+ *     Pass-collection gifts additionally consult lib/pass-blacklist, since
+ *     buying Passes for fresh wallets would otherwise route around it.
  *
  * Admin is hardcoded-exempt at both read and write so an accidental
  * self-blacklist can't lock the admin out of their own dashboard. Fails
