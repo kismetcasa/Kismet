@@ -9,13 +9,24 @@ pragma solidity ^0.8.24;
 ///         the same primary-mint genesis event an ordinary collect emits, so
 ///         the platform's provenance gate credits it with no special handling.
 ///
-///         DESIGN: no deadlines, no admin, no custody beyond the pool itself.
-///         A contribution is withdrawable by its sender AT ANY TIME until the
-///         instant of execution — self-service exit IS the refund mechanism,
-///         so there is no expiry machinery and no stranded-funds state:
+///         ONE COLLECTION, MANY TOKENS. The collection this pool mints from is
+///         fixed at deployment and can never change — every Kismet Patron drop
+///         is a distinct tokenId under a single 1155 contract, so one immutable
+///         address covers all current and future drops. This is the safety
+///         keystone: execute() sends the pooled ETH into `collection.mint`, and
+///         if `collection` were caller-supplied a pool could be pointed at an
+///         attacker contract that simply keeps the money. Fixing it means
+///         patrons' funds can only ever flow into a real, vetted Zora mint that
+///         pays the artist — there is no address a pool creator can substitute.
+///
+///         DESIGN: no owner, no admin, no upgrade path, no custody beyond the
+///         pool itself. A contribution is withdrawable by its sender AT ANY
+///         TIME until the instant of execution — self-service exit IS the
+///         refund mechanism, so there is no expiry machinery and no
+///         stranded-funds state:
 ///         * pool fills → executed → funds became the mint payment;
 ///         * pool stalls → every patron withdraws whenever they choose;
-///         * the underlying sale ends, sells out, or its price is edited →
+///         * the underlying sale ends, sells out, or its price/fee is edited →
 ///           execute() reverts forever (the strategy's own strict checks) and
 ///           withdrawals remain live — fail-safe by structure.
 ///         The at-goal ordering race (a withdrawal and an execution both in
@@ -26,16 +37,15 @@ pragma solidity ^0.8.24;
 ///
 ///         The goal is READ FROM CHAIN at creation (fixed-price sale +
 ///         collection mint fee) and frozen: nobody supplies a number, and a
-///         later price edit can only make execution revert, never mis-spend.
-///         Contributions are clamped to the remaining need, so overshoot is
-///         impossible and the final contributor pays the exact remainder —
-///         which is also how the artist "closes at any time": fillAndExecute
-///         tops up whatever is missing and mints in one transaction.
+///         later price or fee edit can only make execution revert, never
+///         mis-spend. Contributions are clamped to the remaining need, so
+///         overshoot is impossible and the final contributor pays the exact
+///         remainder — which is also how the artist "closes at any time":
+///         fillAndExecute tops up whatever is missing and mints in one tx.
 contract KismetGiftPool {
     // ---------------------------------------------------------------- types
 
     struct Pool {
-        address collection;
         uint256 tokenId;
         address recipient;
         uint256 goal; // pricePerToken + mintFee, frozen at create
@@ -54,6 +64,11 @@ contract KismetGiftPool {
     /// @notice Zora mint-referral recipient for executed gifts (the
     ///         platform's referral address, as on every platform mint).
     address public immutable mintReferral;
+
+    /// @notice The ONLY 1155 collection this contract will ever mint from.
+    ///         Fixed at deploy; the safety keystone (see the contract notice).
+    ///         Every Patron drop is a tokenId under this one address.
+    address public immutable collection;
 
     uint256 public nextPoolId;
     mapping(uint256 => Pool) public pools;
@@ -75,9 +90,8 @@ contract KismetGiftPool {
 
     event PoolCreated(
         uint256 indexed poolId,
-        address indexed collection,
         uint256 indexed tokenId,
-        address recipient,
+        address indexed recipient,
         address creator,
         uint256 goal
     );
@@ -95,6 +109,8 @@ contract KismetGiftPool {
     error PoolFull();
     error ZeroRecipient();
     error SaleNotConfigured();
+    error SaleEnded();
+    error ZeroGoal();
     error GoalTooLarge();
     error RefundFailed();
     error WithdrawFailed();
@@ -115,49 +131,54 @@ contract KismetGiftPool {
 
     // ---------------------------------------------------------------- init
 
-    constructor(address fixedPriceStrategy_, address mintReferral_) {
+    constructor(address fixedPriceStrategy_, address mintReferral_, address collection_) {
         fixedPriceStrategy = fixedPriceStrategy_;
         mintReferral = mintReferral_;
+        collection = collection_;
     }
 
     /// @dev Stray ETH is refused: every wei in this contract must belong to a
     ///      pool, so the invariant `balance == Σ active raised` stays checkable.
+    ///      (A determined griefer can still force ETH in via selfdestruct; that
+    ///      only over-funds the invariant — it is never attributed to a pool
+    ///      and never affects a withdrawal, which pays from the mapping.)
     receive() external payable {
         revert NoStrayEth();
     }
 
     // -------------------------------------------------------------- create
 
-    /// @notice Open a gift group for `recipient` on an artwork with a live
-    ///         ETH fixed-price sale. The goal is read from chain and frozen —
-    ///         no caller-supplied amounts. Anyone may create; the recipient
-    ///         creating their own pool ("help me get my pass") is the
+    /// @notice Open a gift group for `recipient` on a token in THIS contract's
+    ///         collection with a live ETH fixed-price sale. The goal is read
+    ///         from chain and frozen — no caller-supplied amounts, and no
+    ///         caller-supplied collection. Anyone may create; the recipient
+    ///         creating their own pool ("help me mint my pass") is the
     ///         expected primary use.
-    function create(address collection, uint256 tokenId, address recipient)
-        external
-        returns (uint256 poolId)
-    {
+    function create(uint256 tokenId, address recipient) external returns (uint256 poolId) {
         if (recipient == address(0)) revert ZeroRecipient();
 
         IFixedPriceSaleStrategy.SalesConfig memory saleConfig =
             IFixedPriceSaleStrategy(fixedPriceStrategy).sale(collection, tokenId);
         // saleEnd == 0 is Zora's "no sale row" shape (matches the platform's
-        // own resolveOnchainSale semantics).
+        // own resolveOnchainSale semantics); a saleEnd already in the past is
+        // a closed mint — a pool for it could never execute, so refuse to open
+        // one rather than let patrons fund a pool that can only be withdrawn.
         if (saleConfig.saleEnd == 0) revert SaleNotConfigured();
+        if (saleConfig.saleEnd <= block.timestamp) revert SaleEnded();
 
         uint256 goal = uint256(saleConfig.pricePerToken) + IZora1155(collection).mintFee();
-        if (goal == 0 || goal > MAX_GOAL) revert GoalTooLarge();
+        if (goal == 0) revert ZeroGoal();
+        if (goal > MAX_GOAL) revert GoalTooLarge();
 
         poolId = nextPoolId++;
         pools[poolId] = Pool({
-            collection: collection,
             tokenId: tokenId,
             recipient: recipient,
             goal: goal,
             raised: 0,
             executed: false
         });
-        emit PoolCreated(poolId, collection, tokenId, recipient, msg.sender, goal);
+        emit PoolCreated(poolId, tokenId, recipient, msg.sender, goal);
     }
 
     // ---------------------------------------------------------- contribute
@@ -250,7 +271,7 @@ contract KismetGiftPool {
 
         address[] memory rewards = new address[](1);
         rewards[0] = mintReferral;
-        IZora1155(pool.collection).mint{value: pool.goal}(
+        IZora1155(collection).mint{value: pool.goal}(
             fixedPriceStrategy,
             pool.tokenId,
             1,

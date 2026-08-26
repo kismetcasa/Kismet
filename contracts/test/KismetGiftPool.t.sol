@@ -159,7 +159,7 @@ contract KismetGiftPoolTest is Test {
     function setUp() public {
         fpss = new MockFPSS();
         collection = new Mock1155(FEE);
-        pool = new KismetGiftPool(address(fpss), REFERRAL);
+        pool = new KismetGiftPool(address(fpss), REFERRAL, address(collection));
 
         fpss.set(address(collection), TOKEN_ID, PRICE, uint64(block.timestamp + 30 days));
         collection.setExpectedValue(GOAL);
@@ -172,24 +172,22 @@ contract KismetGiftPoolTest is Test {
 
     function _createPool() internal returns (uint256 poolId) {
         vm.prank(artist);
-        poolId = pool.create(address(collection), TOKEN_ID, artist);
+        poolId = pool.create(TOKEN_ID, artist);
     }
 
     function _raised(uint256 poolId) internal view returns (uint256 raised) {
-        (,,,, raised,) = pool.pools(poolId);
+        (,,, raised,) = pool.pools(poolId);
     }
 
     function _executed(uint256 poolId) internal view returns (bool executed) {
-        (,,,,, executed) = pool.pools(poolId);
+        (,,,, executed) = pool.pools(poolId);
     }
 
     // ------------------------------------------------------------- create
 
     function test_create_derivesGoalFromChain() public {
         uint256 poolId = _createPool();
-        (address c, uint256 t, address r, uint256 goal, uint256 raised, bool executed) =
-            pool.pools(poolId);
-        assertEq(c, address(collection));
+        (uint256 t, address r, uint256 goal, uint256 raised, bool executed) = pool.pools(poolId);
         assertEq(t, TOKEN_ID);
         assertEq(r, artist);
         assertEq(goal, GOAL);
@@ -198,28 +196,62 @@ contract KismetGiftPoolTest is Test {
         assertEq(pool.nextPoolId(), 1);
     }
 
+    function test_collection_isImmutable() public view {
+        // The safety keystone: the pool mints only from the address baked in
+        // at deploy — there is no per-pool or caller-supplied collection.
+        assertEq(pool.collection(), address(collection));
+    }
+
     function test_create_revertsOnZeroRecipient() public {
         vm.expectRevert(KismetGiftPool.ZeroRecipient.selector);
-        pool.create(address(collection), TOKEN_ID, address(0));
+        pool.create(TOKEN_ID, address(0));
     }
 
     function test_create_revertsWhenNoSaleRow() public {
         // tokenId 99 was never configured → saleEnd == 0
         vm.expectRevert(KismetGiftPool.SaleNotConfigured.selector);
-        pool.create(address(collection), 99, artist);
+        pool.create(99, artist);
+    }
+
+    function test_create_revertsWhenSaleAlreadyEnded() public {
+        // Warp past a configured sale's end: a closed mint can never execute,
+        // so opening a pool for it is refused (no fundable-but-dead pools).
+        fpss.set(address(collection), 5, PRICE, uint64(block.timestamp + 1 days));
+        vm.warp(block.timestamp + 2 days);
+        vm.expectRevert(KismetGiftPool.SaleEnded.selector);
+        pool.create(5, artist);
     }
 
     function test_create_revertsWhenGoalExceedsCeiling() public {
         fpss.set(address(collection), 8, 6 ether, uint64(block.timestamp + 1 days));
         vm.expectRevert(KismetGiftPool.GoalTooLarge.selector);
-        pool.create(address(collection), 8, artist);
+        pool.create(8, artist);
     }
 
     function test_create_revertsOnZeroGoal() public {
+        // A free mint (price 0, fee 0) on the pool's own collection.
         Mock1155 freeCollection = new Mock1155(0);
+        KismetGiftPool freePool =
+            new KismetGiftPool(address(fpss), REFERRAL, address(freeCollection));
         fpss.set(address(freeCollection), 1, 0, uint64(block.timestamp + 1 days));
-        vm.expectRevert(KismetGiftPool.GoalTooLarge.selector);
-        pool.create(address(freeCollection), 1, artist);
+        vm.expectRevert(KismetGiftPool.ZeroGoal.selector);
+        freePool.create(1, artist);
+    }
+
+    function test_create_ignoresSaleOnAnotherCollection() public {
+        // An attacker registers a sale for their OWN contract on the shared
+        // FPSS and tries to have this pool mint from it. There is no collection
+        // parameter — create only ever reads THIS pool's immutable collection,
+        // which has no sale row for the attacker's chosen tokenId shape. The
+        // attacker's registration is unreachable: funds can never be routed
+        // into a contract the pool's deployer didn't vet.
+        Mock1155 evil = new Mock1155(0);
+        fpss.set(address(evil), 1234, PRICE, uint64(block.timestamp + 1 days));
+        // tokenId 1234 has no sale on the real (immutable) collection.
+        vm.expectRevert(KismetGiftPool.SaleNotConfigured.selector);
+        pool.create(1234, artist);
+        // And the evil collection never receives a mint from this pool.
+        assertEq(evil.mintCount(), 0);
     }
 
     // --------------------------------------------------------- contribute
@@ -585,7 +617,7 @@ contract KismetGiftPoolTest is Test {
     function test_balanceEqualsActiveRaised_acrossPools() public {
         uint256 a = _createPool();
         vm.prank(artist);
-        uint256 b = pool.create(address(collection), TOKEN_ID, patronB);
+        uint256 b = pool.create(TOKEN_ID, patronB);
 
         vm.prank(patronA);
         pool.contribute{value: 0.01 ether}(a);
