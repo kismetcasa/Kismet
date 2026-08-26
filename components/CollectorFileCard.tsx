@@ -8,7 +8,7 @@ import { ArrowDownToLine, Link as LinkIcon } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
-import type { CfilePublic } from '@/lib/collectorFileTypes'
+import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
 
 /**
  * The collector-download card on the artwork page
@@ -41,12 +41,6 @@ interface Props {
   justCollected: boolean
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 const TOAST_ID = 'cfile-download'
 
 export function CollectorFileCard({ collection, tokenId, initial, hasCollected, soldOut, justCollected }: Props) {
@@ -59,6 +53,14 @@ export function CollectorFileCard({ collection, tokenId, initial, hasCollected, 
   const fetchedRef = useRef(false)
 
   const qs = `collection=${collection}&tokenId=${tokenId}`
+
+  // Adopt parent updates: the manage panel reflects attach/replace/rollback/
+  // detach into MomentDetailView's cfile state, which arrives here as a new
+  // `initial` — without this sync the card would keep its mount-time copy and
+  // an artist's just-attached file would never appear until a reload.
+  useEffect(() => {
+    setFile(initial)
+  }, [initial])
 
   // One status read per mount: refreshes the descriptor (SSR data can be a
   // version behind after an edit) and, for a signed-in viewer, their last
@@ -147,16 +149,35 @@ export function CollectorFileCard({ collection, tokenId, initial, hasCollected, 
   const handleCopyLink = useCallback(async () => {
     if (busy || !file) return
     setBusy(true)
+    // Safari/WKWebView (this button is Mini-App-only, i.e. iOS-heavy) revokes
+    // the transient user activation during any awaited network hop, so a
+    // plain writeText AFTER minting the ticket rejects with NotAllowedError
+    // every time. ClipboardItem accepts a PROMISE created synchronously in
+    // the activation window — the sanctioned pattern for copy-after-fetch.
+    let gateRefused = false
+    const ticketPromise = mintTicket(true).then((t) => {
+      if (!t) gateRefused = true
+      return t
+    })
     try {
-      const ticket = await mintTicket(true)
-      if (!ticket) return
-      await navigator.clipboard.writeText(ticket.url)
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        const blobPromise = ticketPromise.then((t) => {
+          if (!t) throw new Error('ticket unavailable')
+          return new Blob([t.url], { type: 'text/plain' })
+        })
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blobPromise })])
+      } else {
+        const t = await ticketPromise
+        if (!t) return
+        await navigator.clipboard.writeText(t.url)
+      }
       toast.success('Download link copied', {
         id: TOAST_ID,
         description: 'Valid for 30 minutes, single use — open it on any device.',
       })
     } catch {
-      toast.error('Could not copy the link', { id: TOAST_ID })
+      // mintTicket already toasted the gate refusal — don't paper over it.
+      if (!gateRefused) toast.error('Could not copy the link', { id: TOAST_ID })
     } finally {
       setBusy(false)
     }
@@ -166,7 +187,7 @@ export function CollectorFileCard({ collection, tokenId, initial, hasCollected, 
 
   const updateAvailable = downloadedV !== null && file.v > downloadedV
   const updated = new Date(file.updatedAt)
-  const metaLine = `${file.name} · ${formatSize(file.size)} · v${file.v}`
+  const metaLine = `${file.name} · ${formatCfileSize(file.size)} · v${file.v}`
 
   return (
     <div className="px-5 pb-3">

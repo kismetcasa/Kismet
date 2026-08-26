@@ -106,8 +106,12 @@ export async function notifyCollectorsOfUpdate(input: {
             // Bound in-flight push HTTP to the batch: each awaited dispatch
             // holds ≤10s (SEND_TIMEOUT_MS) and ≤FANOUT_BATCH run at once.
             _awaitPush: true,
-          }).then(() => {
-            delivered++
+          }).then((wrote) => {
+            // writeNotification never throws — it REPORTS whether the bell
+            // entry landed. Counting resolutions instead of writes would make
+            // the delivered===0 cooldown release below dead code and burn the
+            // artist's one notify/day on a total Redis write failure.
+            if (wrote) delivered++
           }),
         ),
       )

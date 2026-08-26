@@ -365,7 +365,11 @@ correction: the actual precedents for spending Turbo credit (`/api/upload`)
 and for artist edits (`update-uri`) both run without one, and the on-chain
 ADMIN|METADATA requirement is already a stronger artist-authorization than
 pass validity (`uploadServer`'s header parenthetical describes its MCP
-caller's gating, not a universal contract) → `consumeUserQuota('cfile-upload')`
+caller's gating, not a universal contract) → bounded body read + zip magic →
+`acquireLock('cfile-lock:…')` and a **strict** record read + identical-bytes
+dedup — the lock and dedup come BEFORE the meters, so a racing co-admin's 409
+and a nervous double-upload burn nothing, and a degraded record read can never
+be written back over (both review findings) → `consumeUserQuota('cfile-upload')`
 + `consumeUserQuota('cfile-bytes')` (**own kinds** — the draft's plan to debit
 `upload-bytes` would let 15 zip iterations lock an artist out of minting
 metadata for the day) → **a fail-closed platform day-ceiling**: a plain

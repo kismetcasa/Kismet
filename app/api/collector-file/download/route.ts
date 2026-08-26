@@ -31,9 +31,12 @@ export const runtime = 'nodejs'
  *
  * Buffer-then-send, not streaming: GCM must not release unauthenticated
  * plaintext, so ciphertext and plaintext are briefly co-resident (~2× file
- * size, capped 16 MiB, MAX_CONCURRENT 2 ⇒ ≤64 MB against the 6 GB container
- * limit — Buffers are off-heap). Authorization reads are strictRead/fail-
- * closed; a Redis or RPC outage answers 503, never bytes.
+ * size, capped 16 MiB). MAX_CONCURRENT 2 bounds concurrent DECRYPT work
+ * (≤64 MB of working buffers); response bodies additionally live until each
+ * client drains them, which the per-IP rate limit and per-identity quota
+ * bound. All against the 6 GB container limit — Buffers are off-heap.
+ * Authorization reads are strictRead/fail-closed; a Redis or RPC outage
+ * answers 503, never bytes.
  */
 
 const MAX_CONCURRENT_DOWNLOADS = 2
@@ -53,6 +56,16 @@ export async function GET(req: NextRequest) {
   } catch {
     return errorResponse(500, 'Collector files are not configured on this deployment')
   }
+
+  // Busy check FIRST — before the single-use ticket is consumed or a quota
+  // unit debited. The review caught the original ordering burning a ticket
+  // on a 503 'Busy' (the retry then 403s as expired and costs a re-mint).
+  // Check + increment with no await between (the /api/img discipline);
+  // everything below runs inside the slot.
+  if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+    return errorResponse(503, 'Busy — try again in a moment')
+  }
+  activeDownloads++
 
   // Resolve WHO is downloading — ticket first (the normal client path).
   const ticketToken = req.nextUrl.searchParams.get('ticket')
@@ -83,44 +96,36 @@ export async function GET(req: NextRequest) {
     const current = record?.current
     if (!current) return errorResponse(404, 'No file attached to this artwork')
 
-    if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
-      return errorResponse(503, 'Busy — try again in a moment')
-    }
-    activeDownloads++
+    const sealed = await fetchSealedCfile(current.uri)
+    let plaintext: Buffer
     try {
-      const sealed = await fetchSealedCfile(current.uri)
-      let plaintext: Buffer
-      try {
-        plaintext = openCfile(masterKey, current.keyId, sealed)
-      } catch (err) {
-        // Tag failure = the stored pointer and the bytes disagree — a data
-        // problem, never something to serve.
-        return upstreamError(500, 'File integrity check failed', err, 'cfile-dl')
-      }
-      if (sha256Hex(plaintext) !== current.sha256) {
-        return errorResponse(500, 'File integrity check failed')
-      }
-
-      // First successful serve clears a pending (propagation-unverified) flag.
-      if (current.pending) {
-        void markCfileVersionServed(params.collection, params.tokenId, current.keyId).catch(() => {})
-      }
-      void recordCfileDownload(params.collection, params.tokenId, downloader, current.v).catch(() => {})
-
-      return new NextResponse(new Uint8Array(plaintext), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/zip',
-          'Content-Length': String(plaintext.length),
-          // name is server-normalized ASCII (normalizeCfileName) — quote-safe.
-          'Content-Disposition': `attachment; filename="${current.name}"`,
-          'Cache-Control': 'private, no-store',
-          'X-Content-Type-Options': 'nosniff',
-        },
-      })
-    } finally {
-      activeDownloads--
+      plaintext = openCfile(masterKey, current.keyId, sealed)
+    } catch (err) {
+      // Tag failure = the stored pointer and the bytes disagree — a data
+      // problem, never something to serve.
+      return upstreamError(500, 'File integrity check failed', err, 'cfile-dl')
     }
+    if (sha256Hex(plaintext) !== current.sha256) {
+      return errorResponse(500, 'File integrity check failed')
+    }
+
+    // First successful serve clears a pending (propagation-unverified) flag.
+    if (current.pending) {
+      void markCfileVersionServed(params.collection, params.tokenId, current.keyId).catch(() => {})
+    }
+    void recordCfileDownload(params.collection, params.tokenId, downloader, current.v).catch(() => {})
+
+    return new NextResponse(new Uint8Array(plaintext), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': String(plaintext.length),
+        // name is server-normalized ASCII (normalizeCfileName) — quote-safe.
+        'Content-Disposition': `attachment; filename="${current.name}"`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    })
   } catch (err) {
     if (err instanceof CfileFetchError) {
       return err.transient
@@ -129,5 +134,11 @@ export async function GET(req: NextRequest) {
     }
     // strictRead throw (Redis outage on a gated read) and anything else.
     return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-dl')
+  } finally {
+    // Frees the DECRYPT slot; the response body is a materialized buffer
+    // that lives until the client drains it, so this cap bounds concurrent
+    // decrypt work, not total egress residency — that is what the per-IP
+    // rate limit and per-identity download quota bound.
+    activeDownloads--
   }
 }

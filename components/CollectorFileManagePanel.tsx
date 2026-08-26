@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { X } from 'lucide-react'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import type { CfileManageView, CfilePublic } from '@/lib/collectorFileTypes'
+import { formatCfileSize, type CfileManageView, type CfilePublic } from '@/lib/collectorFileTypes'
 
 /**
  * Artist-side manage panel for an artwork's collector file — an inline panel
@@ -23,12 +23,6 @@ interface Props {
   onClose: () => void
   /** Reflects attach/replace/rollback/detach into the page card. */
   onFileChange: (file: CfilePublic | null) => void
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange }: Props) {
@@ -56,6 +50,8 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       const data = (await res.json()) as CfileManageView
       setView(data)
       onFileChange(data.file)
+    } catch {
+      toast.error('Could not load file details', { description: 'Network error — try again' })
     } finally {
       setLoading(false)
     }
@@ -86,12 +82,23 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       await ensureSession()
       const params = new URLSearchParams({ collection, tokenId })
       if (note.trim()) params.set('note', note.trim().slice(0, 140))
-      if (notify && view?.file) params.set('notify', '1') // replace → offer fanout; first attach has nobody stale to tell
+      // The EFFECTIVE notify mirrors exactly what the checkbox renders:
+      // under cooldown or over the ceiling it shows disabled-unchecked, so
+      // the request must not carry notify=1 (and the toast must not claim
+      // collectors were notified) just because the state variable is true.
+      const effectiveNotify =
+        notify &&
+        !!view?.file &&
+        (view?.notifyCooldownSecs ?? 0) === 0 &&
+        (view?.audience ?? 0) <= (view?.fanoutCeiling ?? Infinity)
+      if (effectiveNotify) params.set('notify', '1') // replace → offer fanout; first attach has nobody stale to tell
       const res = await fetch(`/api/collector-file?${params.toString()}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/zip',
-          'x-file-name': picked.name,
+          // Header values must be Latin-1 — a raw CJK/emoji filename makes
+          // fetch() throw before any request. The server decodes + normalizes.
+          'x-file-name': encodeURIComponent(picked.name),
         },
         body: picked,
       })
@@ -106,14 +113,19 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
         toast('No change', { description: 'That file is identical to the current version.' })
       } else {
         toast.success(view?.file ? 'File replaced' : 'File attached', {
-          description:
-            notify && view?.file ? 'Collectors are being notified.' : undefined,
+          description: effectiveNotify ? 'Collectors are being notified.' : undefined,
         })
       }
       setPicked(null)
       setNote('')
       if (inputRef.current) inputRef.current.value = ''
       await refresh()
+    } catch (err) {
+      // Network failure (or a client-side fetch throw) — without this catch
+      // the rejection escapes the void call and the button just looks dead.
+      toast.error('Upload failed', {
+        description: err instanceof Error ? err.message : 'Network error — try again',
+      })
     } finally {
       setSaving(false)
     }
@@ -136,6 +148,10 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       }
       toast.success(`Rolled back to v${v}`)
       await refresh()
+    } catch (err) {
+      toast.error('Rollback failed', {
+        description: err instanceof Error ? err.message : 'Network error — try again',
+      })
     } finally {
       setSaving(false)
     }
@@ -159,6 +175,10 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       toast.success('File removed', { description: 'Collectors can no longer download it.' })
       setDetachArmed(false)
       await refresh()
+    } catch (err) {
+      toast.error('Could not remove the file', {
+        description: err instanceof Error ? err.message : 'Network error — try again',
+      })
     } finally {
       setSaving(false)
     }
@@ -183,7 +203,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
           {view?.file ? (
             <div className="text-[10px] font-mono text-muted flex flex-col gap-0.5">
               <p className="text-ink truncate">
-                {view.file.name} · {formatSize(view.file.size)} · v{view.file.v}
+                {view.file.name} · {formatCfileSize(view.file.size)} · v{view.file.v}
                 {view.file.pending ? ' · propagating…' : ''}
               </p>
               <p>
@@ -211,7 +231,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
             disabled={saving}
             className="py-2 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors disabled:opacity-50"
           >
-            {picked ? `${picked.name} · ${formatSize(picked.size)}` : view?.file ? 'choose replacement zip' : 'choose zip'}
+            {picked ? `${picked.name} · ${formatCfileSize(picked.size)}` : view?.file ? 'choose replacement zip' : 'choose zip'}
           </button>
 
           {picked && (
@@ -256,7 +276,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
               {view!.history.slice(0, 5).map((h) => (
                 <div key={h.v} className="flex items-center justify-between text-[10px] font-mono text-muted">
                   <span className="truncate">
-                    v{h.v} · {formatSize(h.size)} · {new Date(h.updatedAt).toLocaleDateString()}
+                    v{h.v} · {formatCfileSize(h.size)} · {new Date(h.updatedAt).toLocaleDateString()}
                     {h.note ? ` · “${h.note}”` : ''}
                   </span>
                   <button

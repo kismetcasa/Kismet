@@ -217,14 +217,20 @@ async function isPriority(
   return following || isKnown
 }
 
-export async function writeNotification(input: NotificationInput): Promise<void> {
+/**
+ * Returns true iff the bell entry was actually WRITTEN (false on suppression
+ * — self-action, mute, dedup — and on any failure). Callers historically
+ * ignore the result; the collector-file fanout counts it so its 24h cooldown
+ * is only consumed when at least one notification really landed.
+ */
+export async function writeNotification(input: NotificationInput): Promise<boolean> {
   try {
-    if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return
+    if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return false
 
     // Per-type mute — financial types bypass (see NON_MUTEABLE_TYPES).
     if (!NON_MUTEABLE_TYPES.has(input.type)) {
       try {
-        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return
+        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return false
       } catch {}
     }
 
@@ -241,7 +247,7 @@ export async function writeNotification(input: NotificationInput): Promise<void>
           return false
         }
       })
-      if (dup) return
+      if (dup) return false
     }
 
     // Atomic SET NX lock keyed by (type, recipient, actor, tokenAddress).
@@ -253,7 +259,7 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       try {
         acquired = (await redis.set(lockKey, '1', { nx: true, ex: BURST_DEDUP_WINDOW_SECS })) === 'OK'
       } catch {}
-      if (!acquired) return
+      if (!acquired) return false
     }
 
     const id = crypto.randomUUID()
@@ -300,8 +306,10 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       .then(({ dispatchFarcasterPush }) => dispatchFarcasterPush({ ...stored, read: false }))
       .catch(() => {})
     if (_awaitPush) await dispatch
+    return true
   } catch {
     // Notifications are non-critical — never let them break the parent operation
+    return false
   }
 }
 

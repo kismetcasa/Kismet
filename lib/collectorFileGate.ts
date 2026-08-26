@@ -1,7 +1,7 @@
 import 'server-only'
 import { type NextRequest, NextResponse } from 'next/server'
 import { type Address } from 'viem'
-import { isAddress } from './address'
+import { isAddress, isValidTokenId } from './address'
 import { errorResponse } from './apiResponse'
 import { getSessionAddress } from './session'
 import { serverBaseClient } from './rpc'
@@ -166,12 +166,15 @@ export interface CfileParams {
 }
 
 /** Parse + canonicalize ?collection=&tokenId= — minimal-decimal tokenId so
- *  "01" can't fork a second record or slip a per-artwork lock. */
+ *  "01" can't fork a second record or slip a per-artwork lock.
+ *  isValidTokenId (not an inline regex) also uint256-bounds the id at this
+ *  trust boundary, so an out-of-range value gets a clean 400 instead of
+ *  reaching readPermissions and masquerading as an RPC-outage 503. */
 export function parseCfileParams(req: NextRequest): CfileParams | null {
   const collection = req.nextUrl.searchParams.get('collection')?.toLowerCase()
   const rawTokenId = req.nextUrl.searchParams.get('tokenId')
   if (!collection || !isAddress(collection)) return null
-  if (!rawTokenId || !/^\d+$/.test(rawTokenId)) return null
+  if (!rawTokenId || !isValidTokenId(rawTokenId)) return null
   return { collection, tokenId: BigInt(rawTokenId).toString() }
 }
 

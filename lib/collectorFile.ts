@@ -1,6 +1,7 @@
 import 'server-only'
 import { redis } from './redis'
 import { strictRead, safeRead } from './redisRead'
+import { acquireLock } from './redisLock'
 import { randomHex } from './random'
 import { readBodyBounded } from './boundedBody'
 import { gatewayUrls } from './arweave/gateways'
@@ -106,25 +107,36 @@ export function toPublicDescriptor(record: CfileRecord | null): CfilePublic | nu
   }
 }
 
-/** Clear a version's `pending` flag once a gateway has served it. */
+/** Clear a version's `pending` flag once a gateway has served it. Takes the
+ *  same per-artwork lock the PUT/PATCH/DELETE writers hold — an unlocked
+ *  read-modify-write here could clobber a concurrent replace (losing the paid
+ *  new version AND regressing nextKeySeq into keyId reuse). Best-effort: if
+ *  the lock is busy or the read fails, skip — the flag clears on a later
+ *  serve. */
 export async function markCfileVersionServed(collection: string, tokenId: string, keyId: string): Promise<void> {
-  const record = await getCfileRecord(collection, tokenId)
-  if (!record) return
-  let changed = false
-  const clear = (v: CfileVersion): CfileVersion => {
-    if (v.keyId === keyId && v.pending) {
-      changed = true
-      const { pending: _p, ...rest } = v
-      return rest
+  const lock = await acquireLock(cfileLockKey(cfileRef(collection, tokenId)), 30)
+  if (!lock.acquired) return
+  try {
+    const record = await getCfileRecord(collection, tokenId)
+    if (!record) return
+    let changed = false
+    const clear = (v: CfileVersion): CfileVersion => {
+      if (v.keyId === keyId && v.pending) {
+        changed = true
+        const { pending: _p, ...rest } = v
+        return rest
+      }
+      return v
     }
-    return v
+    const next: CfileRecord = {
+      ...record,
+      current: record.current ? clear(record.current) : null,
+      history: record.history.map(clear),
+    }
+    if (changed) await setCfileRecord(collection, tokenId, next)
+  } finally {
+    await lock.release()
   }
-  const next: CfileRecord = {
-    ...record,
-    current: record.current ? clear(record.current) : null,
-    history: record.history.map(clear),
-  }
-  if (changed) await setCfileRecord(collection, tokenId, next)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +176,11 @@ export async function getCfileAudience(collection: string, tokenId: string): Pro
   return Array.from(new Set<string>([...collectors.map((a) => a.toLowerCase()), ...downloaders.map((a) => a.toLowerCase())]))
 }
 
+/** Audience size for pre-checks and the manage view — the SAME union the
+ *  fanout gates on, so a near-ceiling edition can't pass a ZCARD-only
+ *  pre-check and then be silently refused inside after(). */
 export async function getCfileAudienceCount(collection: string, tokenId: string): Promise<number> {
-  const ref = cfileRef(collection, tokenId)
-  return (await redis.zcard(keyCollectors(ref))) ?? 0
+  return (await getCfileAudience(collection, tokenId)).length
 }
 
 /**
@@ -185,13 +199,19 @@ export async function eraseCfileAddressData(address: string, collectedMembers: s
     // Redis blip — proceed with what the collected list gave us; the admin
     // can re-run the erase (the route's documented recovery for every purge).
   }
-  await Promise.all([
-    ...[...refs].flatMap((ref) => [
-      redis.zrem(keyCollectors(ref), addr).catch(() => {}),
-      redis.hdel(keyDl(ref), addr).catch(() => {}),
+  // Per-ref removals FIRST; the refs key — the only way a re-run can find
+  // these memberships — is deleted only when every removal succeeded.
+  // Deleting it alongside a failed zrem would strand the erased address in
+  // an audience set forever, unreachable by the documented re-run recovery.
+  const results = await Promise.allSettled(
+    [...refs].flatMap((ref) => [
+      redis.zrem(keyCollectors(ref), addr),
+      redis.hdel(keyDl(ref), addr),
     ]),
-    redis.del(keyRefs(addr)).catch(() => {}),
-  ])
+  )
+  if (results.every((r) => r.status === 'fulfilled')) {
+    await redis.del(keyRefs(addr)).catch(() => {})
+  }
 }
 
 // ---------------------------------------------------------------------------

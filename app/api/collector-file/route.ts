@@ -28,6 +28,7 @@ import {
   getCfileAudienceCount,
   getCfileMasterKey,
   getCfileRecord,
+  getCfileRecordStrict,
   getDownloaderCount,
   setCfileRecord,
   toPublicDescriptor,
@@ -61,6 +62,13 @@ const MAX_CONCURRENT_PUTS = 1
 let activePuts = 0
 
 export async function GET(req: NextRequest) {
+  // Metered like its siblings: the manager gate below costs up to two
+  // readPermissions chains (4 RPC retries each) BEFORE the 403, so an
+  // unmetered loop would be free RPC load.
+  const ip = getClientIp(req)
+  if (!(await checkRateLimit(`cfile-manage:${ip}`, 30, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
   const params = parseCfileParams(req)
   if (!params) return errorResponse(400, 'Invalid collection or tokenId')
   const auth = await requireCfileManager(req, params)
@@ -129,7 +137,17 @@ export async function PUT(req: NextRequest) {
   }
   if (!req.body) return errorResponse(400, 'Missing body')
 
-  const name = normalizeCfileName(req.headers.get('x-file-name'))
+  // The client URI-encodes the filename (header values must be Latin-1 —
+  // a raw CJK/emoji name makes fetch() itself throw client-side). Decode
+  // best-effort; normalize strips anything non-ASCII either way.
+  const rawName = req.headers.get('x-file-name')
+  let decodedName = rawName
+  try {
+    decodedName = rawName ? decodeURIComponent(rawName) : rawName
+  } catch {
+    // Malformed percent-encoding — normalize the raw value instead.
+  }
+  const name = normalizeCfileName(decodedName)
   const rawNote = req.nextUrl.searchParams.get('note') ?? ''
   const note = rawNote.trim().slice(0, 140) || undefined
   const wantNotify = req.nextUrl.searchParams.get('notify') === '1'
@@ -149,33 +167,45 @@ export async function PUT(req: NextRequest) {
       return errorResponse(415, 'That does not look like a zip file')
     }
 
-    // Per-identity meters (fail open by platform convention)…
-    if (!(await consumeUserQuota('cfile-upload', caller, 1))) {
-      return errorResponse(429, 'Daily file-upload limit reached — try again tomorrow')
-    }
-    if (!(await consumeUserQuota('cfile-bytes', caller, plaintext.length))) {
-      return errorResponse(429, 'Daily file-upload size limit reached — try again tomorrow')
-    }
-    // …and the fail-CLOSED platform ceiling: the only backstop on permanent
-    // Arweave spend, so a Redis failure denies here (inverse of the above).
-    if (!(await consumeCfilePlatformBytes(plaintext.length))) {
-      return errorResponse(503, 'Upload capacity reached for today — try again tomorrow')
-    }
-
-    // Per-artwork mutual exclusion, acquired BEFORE the paid upload so a
-    // racing co-admin 409s instead of paying for an orphaned permanent
-    // ciphertext (rev-1's lost-update bug). TTL bounds a crashed holder.
+    // Per-artwork mutual exclusion, acquired BEFORE the meters and the paid
+    // upload: a racing co-admin 409s without spending anything, and the
+    // identical-bytes dedup below runs before any quota debits so the
+    // nervous double-upload genuinely burns nothing (rev-1's lost-update
+    // bug + the review's meters-before-dedup finding). TTL bounds a
+    // crashed holder.
     const lock = await acquireLock(cfileLockKey(cfileRef(params.collection, params.tokenId)), 180)
     if (!lock.acquired) {
       return errorResponse(409, 'Someone else is updating this file — try again in a moment')
     }
     try {
-      const record = await getCfileRecord(params.collection, params.tokenId)
+      // STRICT read: this record's history and nextKeySeq are the only thing
+      // standing between a Redis blip and re-minting an already-used keyId
+      // over a fresh record (permanent, unrepairable — the degrading read
+      // here was the review's top finding). A throw answers 503 below.
+      let record
+      try {
+        record = await getCfileRecordStrict(params.collection, params.tokenId)
+      } catch (err) {
+        return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-put')
+      }
       const sha256 = sha256Hex(plaintext)
       if (record?.current && record.current.sha256 === sha256) {
-        // Identical bytes: burn nothing (no version, no Turbo spend, no
-        // cooldown) — the nervous double-upload case.
+        // Identical bytes: burn nothing (no version, no meters, no Turbo
+        // spend, no cooldown) — the nervous double-upload case.
         return NextResponse.json({ file: toPublicDescriptor(record), unchanged: true })
+      }
+
+      // Per-identity meters (fail open by platform convention)…
+      if (!(await consumeUserQuota('cfile-upload', caller, 1))) {
+        return errorResponse(429, 'Daily file-upload limit reached — try again tomorrow')
+      }
+      if (!(await consumeUserQuota('cfile-bytes', caller, plaintext.length))) {
+        return errorResponse(429, 'Daily file-upload size limit reached — try again tomorrow')
+      }
+      // …and the fail-CLOSED platform ceiling: the only backstop on permanent
+      // Arweave spend, so a Redis failure denies here (inverse of the above).
+      if (!(await consumeCfilePlatformBytes(plaintext.length))) {
+        return errorResponse(503, 'Upload capacity reached for today — try again tomorrow')
       }
 
       const keyId = cfileKeyId(params.collection, params.tokenId, record?.nextKeySeq ?? 1)
@@ -268,7 +298,14 @@ export async function PATCH(req: NextRequest) {
   const lock = await acquireLock(cfileLockKey(cfileRef(params.collection, params.tokenId)), 60)
   if (!lock.acquired) return errorResponse(409, 'Someone else is updating this file — try again')
   try {
-    const record = await getCfileRecord(params.collection, params.tokenId)
+    // Strict read, same rationale as PUT: a degraded null here would 404 a
+    // real record (harmless) but must never be written back over.
+    let record
+    try {
+      record = await getCfileRecordStrict(params.collection, params.tokenId)
+    } catch (err) {
+      return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-patch')
+    }
     if (!record) return errorResponse(404, 'No file attached')
     // Rollback re-activates the old ciphertext under its ORIGINAL keyId —
     // decryptable by construction, no re-upload, no new spend (§4.2).
@@ -294,7 +331,14 @@ export async function DELETE(req: NextRequest) {
   const lock = await acquireLock(cfileLockKey(cfileRef(params.collection, params.tokenId)), 60)
   if (!lock.acquired) return errorResponse(409, 'Someone else is updating this file — try again')
   try {
-    const record = await getCfileRecord(params.collection, params.tokenId)
+    // Strict read: a degraded null would make this DELETE silently no-op OR,
+    // worse, a later code change could write over a blip-nulled record.
+    let record
+    try {
+      record = await getCfileRecordStrict(params.collection, params.tokenId)
+    } catch (err) {
+      return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-delete')
+    }
     if (!record?.current) return NextResponse.json({ file: null })
     // Tombstone serving, keep history (the artist can roll back to re-attach;
     // the permanent ciphertext is unreachable without the server key either
