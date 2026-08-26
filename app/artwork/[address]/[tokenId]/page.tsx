@@ -405,6 +405,9 @@ export default async function MomentPage({ params }: Props) {
         // the preload target instead of emitting a doomed direct fetch.
         ssrWebKit={webKitOnly}
         initialCfile={initialCfile}
+        // Same React-cached listing the embed button + Offer schema use —
+        // zero extra reads; drives the collector-file card's sold-out state.
+        initialListing={activeListing ? { price: activeListing.price, currency: activeListing.currency } : null}
       />
     </>
   )

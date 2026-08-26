@@ -119,12 +119,17 @@ interface Props {
   // handles it, so it leaves this false.
   ssrWebKit?: boolean
   // SSR-hydrated collector-file descriptor (public facts only — never the
-  // storage pointer). The card refreshes it client-side; the overlay path
-  // mounts without it and the card's own status fetch fills in.
+  // storage pointer). undefined = unknown (overlay mount) and the card
+  // fetches its own status; null = known-absent, which lets the card skip
+  // that fetch entirely on the hot anonymous path.
   initialCfile?: CfilePublic | null
+  // This token's live secondary listing (the page's React-cached
+  // getActiveListing) — informs the card's sold-out state. undefined =
+  // unknown (overlay), null = none listed.
+  initialListing?: { price: string; currency: 'eth' | 'usdc' } | null
 }
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay, ssrWebKit, initialCfile }: Props) {
+export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay, ssrWebKit, initialCfile, initialListing }: Props) {
   const router = useRouter()
   const { address: connectedAddress } = useAccount()
 
@@ -2237,9 +2242,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             collection={address}
             tokenId={tokenId}
             initial={cfile}
+            descriptorKnown={initialCfile !== undefined}
             hasCollected={hasCollected}
             soldOut={mintedOut}
             justCollected={collected}
+            listing={initialListing}
           />
 
           {/* Mobile / mini-app: sale-window date centered under the action row.

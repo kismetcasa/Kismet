@@ -354,6 +354,8 @@ export default function BroadcastAdminPage() {
             : 'send broadcast'}
       </button>
 
+      <NotifNudgeSection />
+
       {result && (
         <div className="border border-line px-3 py-3 text-[11px] font-mono text-dim leading-relaxed">
           <div className="text-xs text-ink uppercase tracking-wider mb-1">last run — {result.notificationId}</div>
@@ -365,6 +367,80 @@ export default function BroadcastAdminPage() {
             </div>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Notification nudge campaign — one-tap admin control over lib/notifNudge.
+// Distinct from the broadcast above: a broadcast reaches users who ALREADY
+// have push; this campaign prompts the ones who DON'T (not-added -> the
+// sanctioned addMiniApp sheet; added-with-notifications-off -> host-menu
+// instructions), once per device per campaign, on their next Mini App open.
+// ---------------------------------------------------------------------------
+function NotifNudgeSection() {
+  const [stamp, setStamp] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/admin/notif-nudge')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { notifNudgeAt?: number | null } | null) => {
+        if (d) setStamp(d.notifNudgeAt ?? null)
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true))
+  }, [])
+
+  async function run(method: 'POST' | 'DELETE') {
+    if (busy) return
+    setBusy(true)
+    try {
+      const res = await fetch('/api/admin/notif-nudge', { method })
+      const d = (await res.json().catch(() => null)) as { notifNudgeAt?: number | null; error?: string } | null
+      if (!res.ok) {
+        toast.error('Nudge update failed', { description: d?.error })
+        return
+      }
+      setStamp(d?.notifNudgeAt ?? null)
+      toast.success(method === 'POST' ? 'Nudge campaign started' : 'Nudge campaign stopped', {
+        description:
+          method === 'POST'
+            ? 'Mini App users without push get one prompt on their next open.'
+            : undefined,
+      })
+    } catch (err) {
+      toastError('Nudge', err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="border border-line px-3 py-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-mono text-dim uppercase tracking-wider">notification nudge</span>
+        <button
+          onClick={() => void run(stamp ? 'DELETE' : 'POST')}
+          disabled={busy || !loaded}
+          className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest border border-line hover:border-muted transition-colors disabled:opacity-50"
+        >
+          {busy ? '\u2026' : stamp ? 'stop campaign' : 'start campaign'}
+        </button>
+      </div>
+      <p className="text-[10px] font-mono text-muted leading-relaxed">
+        Prompts every Mini App user WITHOUT push \u2014 once each, on their next
+        open \u2014 to turn notifications on: the add-Kismet sheet for users who
+        never added (adding enables notifications), menu instructions for users
+        who added with notifications off. Users who already have push see
+        nothing. Starting again later re-prompts everyone once.
+      </p>
+      {stamp && (
+        <p className="text-[10px] font-mono text-dim">
+          running since {new Date(stamp).toLocaleString()}
+        </p>
       )}
     </div>
   )

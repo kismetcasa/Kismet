@@ -9,6 +9,7 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
 import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
+import { formatPrice } from '@/lib/inprocess'
 
 /**
  * The collector-download card on the artwork page
@@ -33,17 +34,25 @@ interface Props {
   collection: string
   tokenId: string
   initial: CfilePublic | null
+  /** True when SSR resolved the descriptor (even to "none") — lets the card
+   *  skip its status fetch entirely on the hot anonymous path. False only on
+   *  the client-mounted overlay, where the fetch fills in. */
+  descriptorKnown: boolean
   /** Optimistic ∨ on-chain "viewer holds this" — the MDV hasCollected flag. */
   hasCollected: boolean
   /** True when the edition is minted out (drives the market pointer state). */
   soldOut: boolean
   /** Set right after this session's collect succeeds — flips the ready copy. */
   justCollected: boolean
+  /** This token's live secondary listing (page-cached getActiveListing):
+   *  object = listed (price shown), null = none listed, undefined = unknown
+   *  (overlay) → generic market pointer. */
+  listing?: { price: string; currency: 'eth' | 'usdc' } | null
 }
 
 const TOAST_ID = 'cfile-download'
 
-export function CollectorFileCard({ collection, tokenId, initial, hasCollected, soldOut, justCollected }: Props) {
+export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing }: Props) {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp } = useFarcaster()
@@ -62,11 +71,19 @@ export function CollectorFileCard({ collection, tokenId, initial, hasCollected, 
     setFile(initial)
   }, [initial])
 
-  // One status read per mount: refreshes the descriptor (SSR data can be a
-  // version behind after an edit) and, for a signed-in viewer, their last
-  // downloaded version — which powers the update badge (§6.4's passive floor).
+  // At most ONE status read, and only when it buys something (the Redis cost
+  // audit: an unconditional mount fetch was 1 HTTP request + 1-2 commands on
+  // EVERY artwork view, overwhelmingly for artworks with no file and viewers
+  // with no holdings). Needed exactly when:
+  //   • the descriptor is unknown (client-mounted overlay — SSR passed
+  //     nothing), or
+  //   • a file exists and the viewer holds the edition (their last-downloaded
+  //     version powers the update badge, §6.4's passive floor).
+  // Anonymous browsing of a descriptor-known page costs zero requests.
   useEffect(() => {
-    if (fetchedRef.current) return
+    const needDescriptor = !descriptorKnown
+    const needViewerState = !!file && hasCollected
+    if (fetchedRef.current || (!needDescriptor && !needViewerState)) return
     fetchedRef.current = true
     fetch(`/api/collector-file/status?${qs}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -76,7 +93,7 @@ export function CollectorFileCard({ collection, tokenId, initial, hasCollected, 
         if (typeof data.downloadedV === 'number') setDownloadedV(data.downloadedV)
       })
       .catch(() => {})
-  }, [qs])
+  }, [qs, descriptorKnown, file, hasCollected])
 
   /** Mint a ticket — session first, signed wallet proof on 401/403. */
   const mintTicket = useCallback(
@@ -207,12 +224,24 @@ export function CollectorFileCard({ collection, tokenId, initial, hasCollected, 
                 <>updated {updated.toLocaleDateString()} · yours with the edition</>
               )
             ) : soldOut ? (
-              <>
-                sold out — find it on the{' '}
-                <Link href="/market" className="underline hover:text-dim">
-                  market
-                </Link>
-              </>
+              listing ? (
+                <>
+                  sold out — listed at {formatPrice(listing.price, listing.currency)} ·{' '}
+                  <Link href="/market" className="underline hover:text-dim">
+                    view market
+                  </Link>
+                </>
+              ) : listing === null ? (
+                // Known no-listing: say so honestly instead of a dead-end link.
+                <>sold out — none listed right now</>
+              ) : (
+                <>
+                  sold out — find it on the{' '}
+                  <Link href="/market" className="underline hover:text-dim">
+                    market
+                  </Link>
+                </>
+              )
             ) : (
               'collect to download'
             )}
