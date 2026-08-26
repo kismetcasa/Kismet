@@ -46,6 +46,9 @@ export interface GiftFundCampaign {
   raisedWei: string
   backers: number
   note: string
+  /** Artwork title snapshot for share copy and notifications — best-effort
+   *  at open (meta can lag); empty string when unknown. */
+  tokenName: string
   openedAtMs: number
   closesAtMs: number
 }
@@ -64,6 +67,13 @@ export async function openCampaign(c: GiftFundCampaign): Promise<boolean> {
   return true
 }
 
+/** Organizer's early close: stop accepting new transfers NOW (the claim
+ *  grace still honors transfers that landed before this moment — the two
+ *  clocks in lib/giftFund are unchanged, only the window end moves). */
+export async function closeCampaign(giftTx: string, nowMs: number): Promise<void> {
+  await redis.hset(keyCampaign(giftTx), { closesAtMs: nowMs })
+}
+
 export async function getCampaign(giftTx: string): Promise<GiftFundCampaign | null> {
   const h = await redis.hgetall<Record<string, string | number>>(keyCampaign(giftTx))
   if (!h || !h.giftTx) return null
@@ -77,6 +87,7 @@ export async function getCampaign(giftTx: string): Promise<GiftFundCampaign | nu
     raisedWei: parseWei(h.raisedWei).toString(),
     backers: Number(h.backers ?? 0) || 0,
     note: typeof h.note === 'string' ? h.note : '',
+    tokenName: typeof h.tokenName === 'string' ? h.tokenName : '',
     openedAtMs: Number(h.openedAtMs ?? 0) || 0,
     closesAtMs: Number(h.closesAtMs ?? 0) || 0,
   }

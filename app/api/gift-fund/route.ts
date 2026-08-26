@@ -11,6 +11,7 @@ import {
   progressPercent,
 } from '@/lib/giftFund'
 import {
+  closeCampaign,
   getActiveCampaignId,
   getCampaign,
   listContributions,
@@ -20,6 +21,7 @@ import {
 import { isAddress } from '@/lib/address'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
+import { getMomentMeta } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
 import { readMintFeeWithBound } from '@/lib/zoraMint'
@@ -183,6 +185,9 @@ export async function POST(req: NextRequest) {
     return errorResponse(502, 'Could not read mint fee')
   }
 
+  // Title snapshot for share copy — best-effort, the campaign works unnamed.
+  const meta = await getMomentMeta(mint.collection, mint.tokenId).catch(() => null)
+
   const openedAtMs = Date.now()
   const opened = await openCampaign({
     giftTx: giftTx.toLowerCase(),
@@ -194,12 +199,45 @@ export async function POST(req: NextRequest) {
     raisedWei: '0',
     backers: 0,
     note,
+    tokenName: meta?.name ?? '',
     openedAtMs,
     closesAtMs: openedAtMs + durationDays * 24 * 60 * 60 * 1000,
   })
   if (!opened) return errorResponse(409, 'This artwork already has an active fund')
 
   return NextResponse.json({ ok: true, campaignId: giftTx.toLowerCase() })
+}
+
+/** PATCH — organizer's early close. Session-gated as the organizer (the
+ *  same identity rule as open); benign by construction: it only moves the
+ *  window's end to now, so no funds move, in-window transfers stay claimable
+ *  through the grace, and the panel flips to its closed state. */
+export async function PATCH(req: NextRequest) {
+  const ip = getClientIp(req)
+  const allowed = await checkRateLimit(`gift-fund-close:${ip}`, 10, 60)
+  if (!allowed) return errorResponse(429, 'Too many requests')
+
+  const body = (await req.json().catch(() => null)) as {
+    campaignId?: string
+    action?: string
+  } | null
+  if (!body || body.action !== 'close') return errorResponse(400, 'Invalid body')
+  const { campaignId } = body
+  if (!campaignId || !/^0x[0-9a-fA-F]{64}$/.test(campaignId)) {
+    return errorResponse(400, 'Invalid campaignId')
+  }
+
+  const campaign = await getCampaign(campaignId)
+  if (!campaign) return errorResponse(404, 'No such campaign')
+  const session = await getSessionAddress(req).catch(() => null)
+  if (!session || session.toLowerCase() !== campaign.organizer.toLowerCase()) {
+    return errorResponse(401, 'Only the organizer can close the fund')
+  }
+  if (Date.now() > campaign.closesAtMs) {
+    return NextResponse.json({ ok: true, idempotent: true })
+  }
+  await closeCampaign(campaignId, Date.now())
+  return NextResponse.json({ ok: true })
 }
 
 export async function GET(req: NextRequest) {

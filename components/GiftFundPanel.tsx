@@ -9,6 +9,8 @@ import { shortAddress } from '@/lib/inprocess'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { MIN_CONTRIBUTION_WEI } from '@/lib/giftFund'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+import Link from 'next/link'
 
 /**
  * The Gift Fund panel — an active campaign's progress bar and backing flow
@@ -38,6 +40,7 @@ interface Campaign {
   raisedWei: string
   backers: number
   note: string
+  tokenName: string
   closesAtMs: number
   status: 'open' | 'funded' | 'expired'
   progressPercent: number
@@ -66,9 +69,12 @@ export function GiftFundPanel({
   const ensureBase = useEnsureBase()
   const ensureConnected = useEnsureConnected()
 
+  const { isInMiniApp } = useFarcaster()
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [amount, setAmount] = useState('')
   const [backing, setBacking] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [closing, setClosing] = useState(false)
 
   const refetch = useCallback(() => {
     let cancelled = false
@@ -167,17 +173,88 @@ export function GiftFundPanel({
     }
   }
 
+  // Differentiated share, the ProfileStats pattern: Mini App → cast composer
+  // into /kismet with the artwork embedded; share-capable browsers → native
+  // sheet; otherwise → copy link. The campaign's growth loop lives here.
+  const share = async () => {
+    if (!campaign) return
+    const url = `${window.location.origin}/artwork/${collection}/${tokenId}`
+    const subject = campaign.tokenName ? `“${campaign.tokenName}”` : 'a gifted artwork'
+    const text = `back the gift fund for ${subject} — ${campaign.progressPercent}% funded on kismet`
+    if (isInMiniApp) {
+      try {
+        const { sdk } = await import('@farcaster/miniapp-sdk')
+        await sdk.actions.composeCast({ text, embeds: [url], channelKey: 'kismet' })
+        return
+      } catch {}
+    }
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({ title: 'Kismet', text, url })
+      } catch {}
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {}
+  }
+
+  // Organizer's early close. Benign by construction (the server only moves
+  // the window end to now; in-window transfers stay claimable through the
+  // grace), so a single tap suffices — no arm step.
+  const closeFund = async () => {
+    if (closing || !campaign) return
+    setClosing(true)
+    try {
+      const res = await fetch('/api/gift-fund', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: campaign.giftTx, action: 'close' }),
+      })
+      if (res.ok) {
+        toast.success('Fund closed')
+        refetch()
+      } else {
+        const d = (await res.json().catch(() => null)) as { error?: string } | null
+        toast.error(d?.error ?? 'Could not close the fund')
+      }
+    } catch {
+      toast.error('Could not close the fund')
+    } finally {
+      setClosing(false)
+    }
+  }
+
   return (
     <div className="border border-line p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-xs font-mono text-muted uppercase tracking-widest">gift fund</h3>
-        <span className="text-[10px] font-mono text-muted">
-          {campaign.status === 'funded'
-            ? 'funded'
-            : campaign.status === 'expired'
-              ? 'closed'
-              : `ends ${new Date(campaign.closesAtMs).toLocaleDateString()}`}
-        </span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => void share()}
+            className="text-[10px] font-mono text-muted hover:text-dim transition-colors"
+          >
+            {copied ? 'copied' : 'share'}
+          </button>
+          {open && isOrganizer && (
+            <button
+              onClick={() => void closeFund()}
+              disabled={closing}
+              className="text-[10px] font-mono text-muted hover:text-dim transition-colors disabled:opacity-60"
+            >
+              {closing ? 'closing…' : 'close fund'}
+            </button>
+          )}
+          <span className="text-[10px] font-mono text-muted">
+            {campaign.status === 'funded'
+              ? 'funded'
+              : campaign.status === 'expired'
+                ? 'closed'
+                : `ends ${new Date(campaign.closesAtMs).toLocaleDateString()}`}
+          </span>
+        </div>
       </div>
       <p className="text-[11px] font-mono text-dim leading-relaxed">
         {shortAddress(campaign.organizer)} gifted this artwork to {shortAddress(campaign.recipient)}
@@ -231,7 +308,12 @@ export function GiftFundPanel({
         <div className="flex flex-col gap-1">
           {campaign.contributions.slice(0, 5).map((c) => (
             <div key={c.contribTx} className="flex justify-between text-[10px] font-mono text-muted">
-              <span>{shortAddress(c.backer)}</span>
+              <Link
+                href={`/profile/${c.backer}`}
+                className="hover:text-dim transition-colors"
+              >
+                {shortAddress(c.backer)}
+              </Link>
               <span>{fmtEth(c.amountWei)}</span>
             </div>
           ))}
