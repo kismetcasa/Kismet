@@ -16,11 +16,6 @@ export const ALL_NOTIFICATION_TYPES = [
   // 'airdrop', and treated the same way — for a Pass piece this notification
   // is how the recipient learns they can now mint.
   'gift',
-  // Gift Fund backing: someone sent the organizer ETH toward reimbursing a
-  // gift (app/api/gift-fund/claim). Muteable, unlike 'gift': it is frequent
-  // small income during an active campaign, and an organizer who mutes it
-  // still sees every contribution on the campaign panel itself.
-  'contribution',
   'payout',
   'authorized',
   'agent_collect',
@@ -45,9 +40,6 @@ export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
   // 'airdrop', and treated the same way — for a Pass piece this notification
   // is how the recipient learns they can now mint.
   'gift',
-  // 'contribution' is deliberately NOT here — it is muteable, unlike 'gift':
-  // frequent small income during an active campaign, and an organizer who
-  // mutes it still sees every contribution on the campaign panel itself.
   'payout',
   'raffle_win',
 ])
@@ -108,9 +100,6 @@ const BURST_DEDUP_WINDOW_SECS = 60
 const BURST_DEDUP_TYPES: ReadonlySet<NotificationType> = new Set([
   'collect',
   'listing_created',
-  // A campaign share can land a wave of backers in one minute; the panel is
-  // the full roll, the bell gets one coalesced ping.
-  'contribution',
 ])
 const READ_IDS_TTL_SECS = 30 * 24 * 60 * 60  // 30 days
 const MUTED_TTL_SECS = 365 * 24 * 60 * 60     // 1 year
@@ -187,8 +176,6 @@ async function isPriority(
   if (type === 'listing_expired') return true
   if (type === 'airdrop') return true
   if (type === 'gift') return true
-  // Money arriving for the organizer — bell-worthy like payout, but muteable.
-  if (type === 'contribution') return true
   if (type === 'payout') return true
   if (type === 'authorized') return true
   if (type === 'follow') return true

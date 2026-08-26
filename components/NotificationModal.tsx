@@ -23,7 +23,6 @@ const TYPE_LABELS: Record<string, string> = {
   listing_created: 'Listings by people you follow',
   authorized: 'Creator authorizations',
   agent_collect: 'Agent Collect',
-  contribution: 'Gift fund backing',
   // raffle_win is non-muteable (never listed here); only the closure notice is.
   raffle_ended: 'Raffle results',
 }
@@ -40,7 +39,6 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   listing_created: 'New listings from people you follow',
   airdrop: 'Airdrops you receive',
   gift: 'Artworks gifted to you',
-  contribution: 'Gift fund backing',
   payout: 'Splits and payouts',
   authorized: 'Creator authorizations',
   agent_collect: 'Agent Collect',
