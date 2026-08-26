@@ -356,13 +356,17 @@ New route family `app/api/collector-file/` (no existing route can be reused:
 
 **The PUT guard ladder, in order** (each item exists today except the last):
 `checkRateLimit('cfile-put:<ip>', 5, 60)` → session → `canEditMomentMetadata`
-(RPC throw ⇒ 503; permission false ⇒ 403) → `hasGateAccess` (the pass gate —
-the `uploadServer` header contract, and consistent with every artist-creation
-surface) → `isPlatformPausedFor` (per `update-uri:116` — note update-uri has
-*only* the pause check; the blacklist check is borrowed from the collect
-route's pattern, `app/api/collect/route.ts:284-285`, accepting its documented
-15-min memo staleness and fail-open) → `consumeUserQuota('cfile-upload')` +
-`consumeUserQuota('cfile-bytes')` (**own kinds** — the draft's plan to debit
+(RPC throw ⇒ 503; permission false ⇒ 403) → `isPlatformPausedFor` (per
+`update-uri:116` — note update-uri has *only* the pause check; the blacklist
+check is borrowed from the collect route's pattern,
+`app/api/collect/route.ts:284-285`, accepting its documented 15-min memo
+staleness and fail-open) — **no pass gate**, an implementation-time
+correction: the actual precedents for spending Turbo credit (`/api/upload`)
+and for artist edits (`update-uri`) both run without one, and the on-chain
+ADMIN|METADATA requirement is already a stronger artist-authorization than
+pass validity (`uploadServer`'s header parenthetical describes its MCP
+caller's gating, not a universal contract) → `consumeUserQuota('cfile-upload')`
++ `consumeUserQuota('cfile-bytes')` (**own kinds** — the draft's plan to debit
 `upload-bytes` would let 15 zip iterations lock an artist out of minting
 metadata for the day) → **a fail-closed platform day-ceiling**: a plain
 `INCRBY`-and-compare day key whose Redis *failure denies* — deliberately
@@ -1048,6 +1052,25 @@ relocated the card to the one clean seam in the action column
 image corners are taken), and separated the manage panel from the metadata
 save path (which drags a propagation wait, a second signature, and a chain
 write). The residual-gaps ledger in §8.2 is that round's honest remainder.
+
+**Implementation delta (shipped on this branch).** Track B is implemented as
+designed with four evidence-earned refinements: (1) no pass gate on PUT (see
+§5 — `/api/upload` and `update-uri` are the precedents, and on-chain
+ADMIN|METADATA is the stronger check); (2) downloads are **ticket-first on
+every surface** — one client code path mints a single-use capability URL and
+web navigates to it while a Mini App hands it to `sdk.actions.openUrl` (the
+download route still honors a plain cookie navigation as a fallback);
+(3) a small `GET /api/collector-file/status` read powers the card + update
+badge (public descriptor + the viewer's last-downloaded version); (4) the
+`notifiedAt` display field was dropped — the `SET NX EX 86400` notify-lock IS
+the cooldown state and the manage view reads its TTL, so there is no second
+copy to drift. The `file_update` push type ships seeded ON for new
+registrations per §6.3's recommendation (a one-line revert if product
+disagrees). Every §13 blocker fix is pinned by
+`scripts/verify-collector-file.ts` (wired into `verify:flows`), whose first
+assertion is the key-derivation known-answer test; the reference
+`Pixel Art Gallery - Sylvester.zip` round-trips seal→open byte-identically
+with 28 bytes of overhead.
 
 **Net verdict.** The architecture is optimal *for this stack today* in the
 precise sense that every layer reuses a pattern that has already survived

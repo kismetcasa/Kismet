@@ -4,6 +4,7 @@ import { errorResponse } from '@/lib/apiResponse'
 import { getGateConfig } from '@/lib/gate'
 import { processTransfer } from '@/lib/pass-validity'
 import { recordCollected } from '@/lib/collected'
+import { recordCollectorAudience } from '@/lib/collectorFile'
 
 export const runtime = 'nodejs'
 
@@ -166,6 +167,10 @@ export async function POST(req: NextRequest) {
       // the member's score. Best-effort — a failure here never fails the webhook.
       if (from === ZERO_ADDRESS && to) {
         await recordCollected(to, passContract, t.tokenId).catch(() => {})
+        // Collector-file audience mirror (COLLECTOR_DOWNLOADS_DESIGN.md §6.1
+        // site 4 — Pass-collection artworks only; this webhook is hardcoded
+        // to passContract, so ordinary artworks rely on the other sites).
+        await recordCollectorAudience(to, passContract, t.tokenId).catch(() => {})
       }
     }
   }

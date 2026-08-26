@@ -857,3 +857,25 @@ call site in the 57 importing modules is attributed above with `file:line`.
 External pricing/limit claims were verified against upstash.com and the
 canonical `upstash/docs` GitHub sources on 2026-07-13; per-plan throughput
 throttles could not be verified from primary sources and are flagged._
+
+---
+
+## Addendum (2026-08-26) — collector-file feature budget delta
+
+New keyspace (`kismetart:cfile*`, `kismetart:collectors:*` — see
+`COLLECTOR_DOWNLOADS_DESIGN.md` §4) and its command budget against the $20
+hard-stop cap this review established:
+
+| Path | Commands | Notes |
+|---|---|---|
+| Collect/airdrop/listing-fill mirror writes | +3/collect (ZADD NX + SADD refs + grace SET) | Rides existing write sites; at current collect volume this is noise. |
+| Artwork-page status read | +1–2/view (GET record, HGET dl) | `private, no-store`; only on pages with a file attached. |
+| Download (ticket mint + redeem) | ~8/download | Gate reads + ticket SET/GETDEL + HSET; quota-bounded per identity. |
+| **file_update fanout** | **~10–12 × recipients, ceiling-refused at 2,000 (≈ ≤24K ≈ ~4% of current monthly volume)** | One per artwork per 24h (SET NX lock). Raising `CFILE_FANOUT_CEILING` (lib/collectorFileFanout.ts) is an ops decision that must arrive WITH a raised budget cap. |
+
+Two new per-artwork unbounded-membership structures (`collectors` ZSET,
+`cfile-dl` HASH) are the same shape as the follower/raffle/collected sets —
+consistent with current practice, and added to §B3's eventual-Postgres
+migration list by reference. The `cfile-global-bytes` day key is the one
+deliberately fail-CLOSED consumer in the codebase (denies on Redis failure):
+it backstops permanent Arweave spend, where fail-open is the wrong default.

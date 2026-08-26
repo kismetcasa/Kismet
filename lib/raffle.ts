@@ -1,6 +1,6 @@
 import 'server-only'
 import { redis, RAFFLE_ENABLED_KEY } from './redis'
-import { serverBaseClient } from './rpc'
+import { holdsEditionBatch } from './ownership'
 
 /**
  * Off-chain raffle store. A raffle is identified by (collection, tokenId) — the
@@ -125,95 +125,10 @@ export interface RaffleEntrant {
   enteredAt: number | null
 }
 
-const BALANCE_OF_ABI = [
-  {
-    inputs: [{ type: 'address' }, { type: 'uint256' }],
-    name: 'balanceOf',
-    outputs: [{ type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-] as const
-
-const BALANCE_OF_BATCH_ABI = [
-  {
-    inputs: [{ type: 'address[]' }, { type: 'uint256[]' }],
-    name: 'balanceOfBatch',
-    outputs: [{ type: 'uint256[]' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-] as const
-
-/** Live on-chain check: does `address` hold ≥1 of (collection, tokenId)?
- *  Provenance-agnostic (raw balanceOf, NOT hasValidPass) — the raffle only
- *  cares that you own the edition, however you acquired it. Fails closed. */
-export async function holdsEdition(
-  collection: string,
-  tokenId: string,
-  address: string,
-): Promise<boolean> {
-  try {
-    const bal = (await serverBaseClient().readContract({
-      address: collection as `0x${string}`,
-      abi: BALANCE_OF_ABI,
-      functionName: 'balanceOf',
-      args: [address as `0x${string}`, BigInt(tokenId)],
-    })) as bigint
-    return bal > 0n
-  } catch {
-    return false
-  }
-}
-
-// balanceOfBatch chunk size. Entrant count is bounded only by real holders, so
-// a popular open edition can exceed what one eth_call comfortably carries;
-// 200 addresses ≈ 200 SLOADs + a ~13KB calldata payload per call — far inside
-// node limits — and chunks fan out concurrently.
-const HOLDS_BATCH_CHUNK = 200
-
-/** Chunked balanceOfBatch for the eligibility draw (getEligibleEntrants).
- *  Maps lowercased address -> currently-holds. Fails closed (ALL false) if ANY
- *  chunk fails — deliberately all-or-nothing: a partial result would silently
- *  exclude one chunk's real holders and draw a "winner" from the remainder,
- *  which is worse than aborting the draw (the route 400s on zero eligible and
- *  the artist just retries). Module-private: only the eligibility filter needs it. */
-async function holdsEditionBatch(
-  collection: string,
-  tokenId: string,
-  addresses: string[],
-): Promise<Record<string, boolean>> {
-  if (addresses.length === 0) return {}
-  const chunks: string[][] = []
-  for (let i = 0; i < addresses.length; i += HOLDS_BATCH_CHUNK) {
-    chunks.push(addresses.slice(i, i + HOLDS_BATCH_CHUNK))
-  }
-  try {
-    const perChunk = await Promise.all(
-      chunks.map(
-        (chunk) =>
-          serverBaseClient().readContract({
-            address: collection as `0x${string}`,
-            abi: BALANCE_OF_BATCH_ABI,
-            functionName: 'balanceOfBatch',
-            args: [
-              chunk.map((a) => a as `0x${string}`),
-              chunk.map(() => BigInt(tokenId)),
-            ],
-          }) as Promise<readonly bigint[]>,
-      ),
-    )
-    const out: Record<string, boolean> = {}
-    chunks.forEach((chunk, ci) => {
-      chunk.forEach((a, i) => {
-        out[norm(a)] = (perChunk[ci][i] ?? 0n) > 0n
-      })
-    })
-    return out
-  } catch {
-    return Object.fromEntries(addresses.map((a) => [norm(a), false]))
-  }
-}
+// Ownership reads (holdsEdition / holdsEditionBatch) moved to lib/ownership
+// so the collector-file gate shares them; re-exported below because the
+// raffle-enter route imports holdsEdition from this module.
+export { holdsEdition } from './ownership'
 
 export async function getRaffleState(
   collection: string,
@@ -360,6 +275,12 @@ export async function getEligibleEntrants(
     tokenId,
     entrants.map((e) => e.address),
   )
+  // A batch failure (null) reads as nobody-eligible — deliberately
+  // all-or-nothing, preserved from the pre-lift semantics: a partial result
+  // would draw a "winner" from the surviving chunks while silently excluding
+  // real holders; the manage route 400s on zero eligible and the artist
+  // retries the draw.
+  if (holding === null) return []
   return entrants.filter((e) => holding[norm(e.address)])
 }
 

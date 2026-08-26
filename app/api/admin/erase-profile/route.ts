@@ -10,7 +10,8 @@ import { getHiddenIdentityClosure } from '@/lib/addressUnion'
 import { deleteProfileRow, deleteFidProfile, getFidProfile } from '@/lib/profile'
 import { clearProfileTheme } from '@/lib/profileTheme'
 import { clearAllPins } from '@/lib/showcase'
-import { deleteCollected } from '@/lib/collected'
+import { deleteCollected, getCollectedMembers } from '@/lib/collected'
+import { eraseCfileAddressData } from '@/lib/collectorFile'
 import { deleteNotificationData } from '@/lib/notifications'
 import { clearEarningsVisibility } from '@/lib/earningsVisibility'
 import { purgeFollowEdges } from '@/lib/follows'
@@ -138,6 +139,19 @@ export async function POST(req: NextRequest) {
   }
 
   const addresses = [...wallets]
+
+  // Collector-file index purge FIRST, while the collected ZSET still exists:
+  // the per-artwork collectors/downloads structures are address-VALUED inside
+  // per-artwork keys, so locating them needs the per-address refs — the
+  // cfile-refs reverse set plus this wallet's collected members, read BEFORE
+  // deleteCollected below destroys the latter (COLLECTOR_DOWNLOADS_DESIGN.md
+  // §4.3). Best-effort + idempotent like every other purge op.
+  await Promise.all(
+    addresses.map(async (addr) => {
+      const members = await getCollectedMembers(addr) // [] on error, by contract
+      await eraseCfileAddressData(addr, members).catch(() => {})
+    }),
+  )
 
   // Per-wallet purge. Everything is best-effort so a single subsystem hiccup
   // can't half-erase and 500; the admin can safely re-run (every op is an

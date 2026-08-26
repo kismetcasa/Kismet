@@ -38,6 +38,7 @@ function notificationHref(n: Notification): string {
     case 'payout':
     case 'raffle_win':
     case 'raffle_ended':
+    case 'file_update':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
@@ -222,6 +223,23 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
             {actorLabel ?? 'someone'} has won the physical edition of{' '}
             {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'an artwork'}!
           </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
+        </>
+      )
+    case 'file_update':
+      // Collector-file replaced (the download the recipient owns changed).
+      // The artist's release note rides on its own line, like a collect
+      // comment; the row links to the artwork page where the download card
+      // shows the update badge.
+      return (
+        <>
+          <p className="text-xs font-mono text-ink truncate">
+            {actorLabel ?? 'the artist'} updated the download for{' '}
+            {n.tokenName ? `"${n.tokenName}"` : 'an artwork you collected'}
+          </p>
+          {n.note && (
+            <p className="text-[10px] font-mono text-dim mt-0.5 truncate">&ldquo;{n.note}&rdquo;</p>
+          )}
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
         </>
       )
