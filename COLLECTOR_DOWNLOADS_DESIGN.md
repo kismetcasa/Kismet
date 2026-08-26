@@ -451,11 +451,31 @@ check the blacklist — moderation gates *artist* actions and, when needed, the
 per-artwork kill-switch; a collector who paid keeps what they bought unless
 the file itself is pulled.
 
+**Path 4 (Mini App delivery ticket — added by the UX validation round):** the
+gate above authenticates the *request*, but on the primary mobile surface it
+cannot deliver the *file*: the Quick-Auth JWT is attached by a patched
+`fetch` only (`providers/FarcasterProvider.tsx:64-109`), so an `<a href>`
+navigation to the download URL inside the host webview carries **no
+credentials at all** (the `__Host-` cookie exists only where the user SIWE'd);
+a fetch-received blob has no reliable save path out of an RN WebView
+(`lib/miniAppEnv.ts:33` — the mobile host is React Native, not a browser tab);
+and the repo contains **zero** file-save precedent and **zero**
+`sdk.actions.openUrl` calls today (verified: the only `sdk.actions.*` uses are
+`addMiniApp`, `ready`, `composeCast`). Therefore, in Mini App context the
+Download button does: authenticated `fetch` →
+`POST /api/collector-file/ticket` (runs the same gate, returns a **single-use,
+~5-minute, artwork+address-bound opaque ticket URL**) →
+`sdk.actions.openUrl(ticketUrl)` → the device's real browser downloads it, the
+ticket being the entire auth. Tickets are `SET NX EX 300` keys consumed on
+first use; the same endpoint powers an optional "get this on my desktop"
+copy-link with a slightly longer TTL. On web, the plain cookie-carrying
+navigation remains the path and no ticket is minted.
+
 Guardrails: `checkRateLimit('cfile-dl:<ip>', 20, 60)` +
 `consumeUserQuota('cfile-download', identity)` (both fail open by platform
 convention — acceptable here because they guard cost, not authorization; the
 authorization path is fail-closed end to end: `strictRead`, `holdsEdition`,
-kill-switch).
+kill-switch, single-use tickets).
 
 ---
 
@@ -639,28 +659,178 @@ cat). Play is a page affordance, not a new media kind; nothing in
 
 ---
 
-## 8. UX summary
+## 8. The exact experience — validated surface by surface
 
-- **Artwork page, everyone:** under the collect box —
-  `⬇ Includes a collector download · Sylvester.zip · 357 KB · v2 · updated Aug 25`.
-  Advertising the perk to non-holders is the point (Bandcamp's "includes
-  high-quality download" line).
-- **After collect:** the existing success state (optimistic `collected` +
-  `refetchOwnedBalance`, `components/MomentDetailView.tsx:669-681`) gains a
-  "Your download is ready" row — backed by the §5.1 grace marker so the first
-  click actually succeeds during RPC lag.
-- **Holder:** Download button (+ sha256 shown small), "Update available" badge
-  when stale, one line of copy: "the download travels with the token — selling
-  your last edition releases it."
-- **Creator:** manage panel in the existing edit surface
-  (`useMomentEditPermission` client-gates it): attach/replace (drag-drop,
-  `.zip`, 16 MiB), release note, "Notify collectors" with live reach estimate
-  (and the over-ceiling message), version history with rollback,
-  **unique-downloader count** (HLEN — it counts people, not downloads; label
-  it honestly).
-- **Attach-at-mint** stays out of v1: the tokenId doesn't exist until after
-  mint, and the artwork-page panel covers new and already-minted work alike
-  (including Sylvester's, if it predates the feature).
+A second validation round traced every moment of this experience against the
+real render paths (`MomentDetailView`'s action column, the collect success
+path, the notification surfaces, the collected tab, the Mini App affordances).
+What follows is what the design as specified actually produces, with the
+render evidence, followed by the honest ledger of what remains to be desired
+(§8.2).
+
+### 8.1 Step by step
+
+**Non-holder on the artwork page (web or Mini App).** The page is unchanged
+above the fold: cover art (the framed cat), title, creator, description, then
+the action row `[price|supply] [collect] [gift]`
+(`MomentDetailView.tsx:2124-2171`). The download card renders as a new
+full-width row in the one clean seam the column has — between the gift form
+(`:2181`) and the mobile sale-window line (`:2183`); validation ruled out
+"under the collect box" (that space is occupied, and the desktop utility row
+below it centers the sale date with an invisible width-strut copy of the
+price box, `:2236-2239`, that a new column would break). Card copy:
+`⬇ collector download · Sylvester.zip · 357 KB · v2 · updated aug 25` with
+the state line `collect to download`. Advertising the perk to non-holders is
+the point (Bandcamp's "includes high-quality download" line). On a sold-out
+edition the card's state line becomes `available with the edition — see
+market` when a live listing exists.
+
+**The collect moment.** Today's entire success feedback is a bottom-center
+toast (`Collected!`, plus a `Share it to /kismet?` action in the Mini App —
+`hooks/useDirectCollect.ts:405-421`) and the collect button relabelling to
+`collect+`; there is no success panel, no confetti anywhere in the repo, and
+no haptic on collect (haptics fire for mint, follow, raffle entry and share —
+not collect). So the design does not "add a row to the success state" (rev 1's
+phrasing — there is no such state); instead **the download card itself is the
+success moment**: it flips to `your download is ready ⬇` keyed on the
+**optimistic `hasCollected` flag** (`:683`), NOT on `alreadyOwned` — the
+owned-edition UI (`CollectedActions`, `×N own`, the comment box) waits for the
+on-chain `balanceOf` refetch (`:267-275`), which is the client-side mirror of
+the RPC lag the §5.1 grace marker absorbs server-side. Gift path: the gifter's
+toast stays as-is; the recipient arrives later via their `gift` notification,
+whose target is this artwork page — where the card already shows them the
+download (they hold the token). Both notification copies gain one clause
+naming the included file.
+
+**Downloading — web, signed in:** one click. The `__Host-` session cookie
+rides the same-site navigation; the server verifies, decrypts, sends;
+Sylvester's 357 KB arrives sub-second (a 16 MiB worst case takes a few
+seconds of gateway fetch + decrypt).
+
+**Downloading — web, signed out:** exactly one wallet interaction, matching
+the product's DNA: every transactional collector surface today avoids
+sessions (raffle entry, follow, listing, buy, comments all use raw signatures
+or receipts — validated), so the default is the §5.1 path-2 signed message
+(`sign to verify ownership`, the raffle toast pattern,
+`RaffleButton.tsx:110-123`); the `SignInPrompt` component (`sign in to
+download`) is the alternative for users who'd rather establish the 7-day
+session.
+
+**Downloading — Mini App (the primary surface):** the button does
+fetch-ticket → `sdk.actions.openUrl(ticketUrl)` → the device browser saves
+the zip (§5.1 path 4). This is one tap plus a host-browser hop — the best
+available on a surface where in-webview saving does not exist. The card's
+subtext in-app says `opens in your browser`. This is the feature's weakest
+moment and §8.2 owns it.
+
+**The update moment.** The artist replaces the file with a note ("added
+music!") and checks *notify collectors*. What each collector actually
+receives, in reach order:
+1. **The page badge (everyone, eventually):** `update available — v3` on the
+   card whenever `cfile.v > HGET cfile-dl <addr>` — the guaranteed floor.
+2. **The bell (signed-in visitors):** an unread row — accent left-border +
+   dot, actor avatar, `@andreaboi updated the download for "Pixel Art Gallery
+   – Sylvester"` (`NotificationRow` pattern, `:283-301`) — landing on the
+   artwork page; the badge polls in within ≤120 s while the app is open
+   (`NotificationBell.tsx:20,64-74`). Note the bell itself sign-in-gates its
+   feed (`NotificationFeed.tsx:345-353`).
+3. **Native push (opt-in Mini App users only):** `Download updated` →
+   artwork page (the push vocabulary has no other destination for
+   token-typed events, `farcasterNotifications.ts:361-362`). Reach is
+   structurally a minority: the push **master toggle defaults off**
+   (`NotificationModal.tsx:79`), per-type opt-in defaults off, and tokens
+   exist only for users who added the Mini App — §8.2.
+Re-download is the same one click; the badge clears when `cfile-dl` records
+the new version.
+
+**Finding it again later.** The only route to one's holdings today is
+`/profile/<address>` → the Collected grid (`ProfileView.tsx:1070-1076`; the
+nav has exactly three destinations plus the avatar, `Nav.tsx:29-31`). The
+update pip on collected-tab cards rides the card *footer* row — validation
+found all four image corners are already spoken for (admin star, hidden
+badge, pass badge, pin — `MomentCard.tsx:586-616`).
+
+**The artist, end to end.** Enter via the existing pencil-`edit` affordance
+(`:1625-1634`, gated by `useMomentEditPermission`). The manage-download
+section renders **adjacent to, not inside,** the metadata panel's save path —
+the metadata save drags Arweave propagation waits, a second wallet signature,
+and an on-chain write behind it (`:1207,:1245,:1248`); attaching a zip is
+session-only and must not inherit that pipeline. Attach = drag-drop, `.zip`,
+≤16 MiB, ~seconds for real files; a concurrent co-admin upload gets a clean
+409 `someone else is updating this file`. Replace shows the version history
+(with one-click rollback, §4.2), the release-note field, *notify collectors*
+with a live reach estimate — or the over-ceiling message (`this edition is
+too large for direct notification; collectors will see the update badge`) —
+and the **unique-downloader count** (HLEN counts people, not downloads; the
+label says so). Attach-at-mint stays out of v1: the tokenId doesn't exist
+until after mint, and the artwork-page panel covers new and already-minted
+work alike (including Sylvester's, if it predates the feature).
+
+### 8.2 What remains to be desired — the validated ledger
+
+Ordered by how much experience is lost, with the evidence for why each gap is
+real and what would close it.
+
+1. **The primary surface delivers the perk worst.** Kismet's distribution is
+   the Farcaster/Base Mini App; the ticket flow (§5.1 path 4) makes downloads
+   *possible* there, but the honest journey is tap → host browser → a zip in
+   a phone's Files app — for an artifact whose real destinations are a
+   desktop, a flashcart, an Anbernic handheld. There is no email channel to
+   send it (validated: none exists), and no "send to my desktop" affordance
+   beyond the ticket copy-link. *Closers:* the copy-link/QR ticket variant
+   ships with v1; an email channel is a separate infra decision; and
+   **in-browser play (Track A) is the one form of the work that is
+   first-class on mobile** — the strongest argument that play matters
+   specifically for the Mini App audience, independent of marketing.
+2. **The perk is invisible where discovery happens.** Feed cards and cast
+   embeds have no slot for it: `MomentCard`'s four image corners are taken,
+   compact cards have no meta row, and a cast embed renders a fixed image.
+   The Bandcamp-style advertisement exists only on the artwork page.
+   *Closer:* a one-line `⬇ includes download` footer on non-compact cards is
+   cheap; embeds are unfixable (host-rendered).
+3. **"Notification when the file is updated" is delivered as *eventually*,
+   not *immediately*, for most collectors.** Push reaches only Mini App users
+   who added the app AND flipped the master toggle (default off) AND the
+   type toggle; the bell reaches signed-in users who open the app; the badge
+   reaches everyone but only on their next visit. The artist's mental model
+   (Bandcamp emails everyone) is not what ships. *Closers:* seed the type on
+   for new registrations (§11 Q2), a one-time prompt to enable push after a
+   first download (the `maybePromptCollectNotifs` precedent exists on the
+   mint path), and — the real answer at scale — an email channel, which is a
+   platform decision bigger than this feature.
+4. **No "my downloads" destination.** A collector with five downloads has no
+   page listing them; they revisit artworks one by one (push and bell both
+   land on artwork pages; profile → Collected is the only aggregate view).
+   *Closer:* a `downloads` filter chip on the own-profile Collected section —
+   small, additive, not in v1.
+5. **The collect moment stays thin.** The card flip is real feedback, but the
+   celebratory beat is still a 3-second toast; no haptic fires on collect
+   (it fires for mint, follow, raffle, share — the gap predates this
+   feature). *Closer:* one `hapticNotifySuccess()` call and a toast
+   description naming the download; two lines, worth doing with v1.
+6. **Sold-out + secondary is a dead end in the card.** A non-holder on a
+   sold-out edition is told the download exists but the card doesn't route
+   them to the live secondary listing when one exists (the data is on the
+   page already). *Closer:* the `see market` state line above — v1 copy, not
+   new machinery.
+7. **Off-platform holders of ordinary collections get badge-only treatment.**
+   The transfer webhook is hardcoded to the Pass collection, so a
+   wallet-to-wallet recipient of Sylvester is invisible to the collectors
+   index until they touch the platform; they can always download (live
+   balance) but are never pushed. *Closer:* an Alchemy webhook per tracked
+   collection is real new surface — deliberately deferred; the badge is the
+   designed fallback.
+8. **Editions above the 2,000-collector ceiling get no direct fanout** —
+   refusal by design (§6.2), badge-only, until ops raises the Upstash budget
+   with the cap. The artist-facing message says exactly this.
+9. **The gate can ask a real holder to sign.** Path 2 exists precisely
+   because the FC-verification union can miss a holding wallet; for that
+   collector the experience is one extra signature with no explanation of
+   why their ownership wasn't instant. *Closer:* copy that says `verify the
+   wallet that holds this edition` — honesty, not machinery.
+10. **Play is absent from Track B entirely.** Until Andrea answers §11 Q1,
+    the "or playing live with online emu" half of the request — and the only
+    mobile-first-class form of the work (see #1) — has no ship date.
 
 ---
 
@@ -859,6 +1029,25 @@ affordances, yielding the two-path gate.
    the emulator don't hold here (full-page route, single-threaded build);
    filename header injection, kill-switch, and the over-broad sunset promise
    (§10.2).
+
+**Round 2 — UX validation (added after rev 2).** A dedicated pass traced the
+experience against the real render paths (`MomentDetailView`'s action column
+and edit surface, the collect success path, `NotificationModal`/`Row`/`Bell`,
+`ProfileView`'s Collected tab, the Mini App affordances and sign-in surfaces)
+plus the Mini-App auth/delivery mechanics. It produced §8.1/§8.2 and two
+design changes: **the delivery ticket** (§5.1 path 4 — the JWT is
+fetch-patched only, navigations carry no credentials in-app, RN WebViews
+can't save blobs, and the repo has zero `sdk.actions.openUrl` or file-save
+precedent, so without a ticket the primary surface simply could not receive
+the file), and **the success-moment correction** (there is no collect success
+surface to extend — feedback today is a toast plus a button relabel — so the
+download card itself carries the moment, keyed on the optimistic
+`hasCollected` flag rather than the RPC-lagged `alreadyOwned`). It also
+relocated the card to the one clean seam in the action column
+(`:2181/:2183`), moved the collected-tab pip to the card footer (all four
+image corners are taken), and separated the manage panel from the metadata
+save path (which drags a propagation wait, a second signature, and a chain
+write). The residual-gaps ledger in §8.2 is that round's honest remainder.
 
 **Net verdict.** The architecture is optimal *for this stack today* in the
 precise sense that every layer reuses a pattern that has already survived
