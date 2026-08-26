@@ -21,12 +21,13 @@ const USER_OPERATION_EVENT_ABI = parseAbi([
   'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
 ])
 
-/** All UserOperationEvent senders in a receipt's logs, lowercased. Empty for
- *  any non-4337 transaction. */
-export function userOpSendersFromLogs(
-  logs: readonly { address: string; data: Hex; topics: readonly Hex[] }[],
-): string[] {
-  const out: string[] = []
+/** All UserOperationEvents in a receipt's logs, with each event's logIndex —
+ *  the ordering the shared-bundle attribution rule (lib/giftFund.payerForMint)
+ *  runs on. Empty for any non-4337 transaction. */
+export function userOpEventsFromLogs(
+  logs: readonly { address: string; data: Hex; topics: readonly Hex[]; logIndex: number }[],
+): { sender: string; logIndex: number }[] {
+  const out: { sender: string; logIndex: number }[] = []
   for (const log of logs) {
     if (!ENTRYPOINTS.has(log.address.toLowerCase())) continue
     try {
@@ -35,10 +36,19 @@ export function userOpSendersFromLogs(
         data: log.data,
         topics: log.topics as [Hex, ...Hex[]],
       })
-      out.push(decoded.args.sender.toLowerCase())
+      out.push({ sender: decoded.args.sender.toLowerCase(), logIndex: log.logIndex })
     } catch {
       continue
     }
   }
   return out
+}
+
+/** Just the senders (deduped by the caller if needed) — the claim route's
+ *  trace-tier binding, where WHICH op sent value is answered by the trace
+ *  frames themselves, not by log order. */
+export function userOpSendersFromLogs(
+  logs: readonly { address: string; data: Hex; topics: readonly Hex[]; logIndex: number }[],
+): string[] {
+  return userOpEventsFromLogs(logs).map((e) => e.sender)
 }

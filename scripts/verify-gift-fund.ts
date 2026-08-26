@@ -25,6 +25,7 @@
 
 import {
   campaignStatus,
+  payerForMint,
   claimWindowOpen,
   CLAIM_GRACE_MS,
   evaluateReceiptTransfer,
@@ -234,6 +235,42 @@ check(
 check(
   'zero goal can never read funded (malformed campaign fails safe)',
   campaignStatus({ raisedWei: 5n, goalWei: 0n, closesAtMs, nowMs: 1_500_000 }) === 'open',
+)
+
+console.log('\npayerForMint — shared-bundle attribution by log order')
+
+// The EntryPoint emits each op's UserOperationEvent AFTER that op's logs, so
+// the mint's payer is the first event past the mint log — never an earlier
+// op's sender, never a guess.
+check(
+  'sole op: its sender is the payer',
+  payerForMint({ userOpEvents: [{ sender: BACKER, logIndex: 9 }], mintLogIndex: 4 }) === BACKER,
+)
+check(
+  'shared bundle: the FIRST event after the mint wins, not the closest-overall',
+  payerForMint({
+    userOpEvents: [
+      { sender: OTHER, logIndex: 2 }, // earlier op — its event precedes the mint
+      { sender: BACKER, logIndex: 9 }, // the mint op's own event
+      { sender: SEAPORT, logIndex: 15 }, // a later op
+    ],
+    mintLogIndex: 4,
+  }) === BACKER,
+)
+check(
+  'an event BEFORE the mint can never be the payer',
+  payerForMint({ userOpEvents: [{ sender: OTHER, logIndex: 2 }], mintLogIndex: 4 }) === null,
+)
+check(
+  'no events → null (caller refuses, never guesses)',
+  payerForMint({ userOpEvents: [], mintLogIndex: 4 }) === null,
+)
+check(
+  'payer is lowercased',
+  payerForMint({
+    userOpEvents: [{ sender: BACKER.toUpperCase().replace('0X', '0x'), logIndex: 9 }],
+    mintLogIndex: 4,
+  }) === BACKER,
 )
 
 console.log('\nparseWei / progressPercent — storage round-trip and the bar')

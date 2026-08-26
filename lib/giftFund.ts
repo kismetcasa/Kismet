@@ -161,6 +161,31 @@ export function evaluateTracedTransfer(params: {
 }
 
 /**
+ * Which userOp paid for a mint, in a possibly-SHARED bundler transaction.
+ *
+ * A smart-wallet gift submitted through a public bundler can land in one tx
+ * with strangers' operations — refusing every multi-op receipt as ambiguous
+ * would make such gifts un-fundable through no fault of the gifter. The
+ * EntryPoint executes ops in order and emits each op's UserOperationEvent
+ * AFTER that op's own logs, so log order is the attribution: the mint's
+ * payer is the sender of the FIRST UserOperationEvent whose logIndex is
+ * greater than the mint log's. No event after the mint (malformed receipt)
+ * → null, and the caller refuses rather than guesses.
+ */
+export function payerForMint(params: {
+  userOpEvents: { sender: string; logIndex: number }[]
+  mintLogIndex: number
+}): string | null {
+  let best: { sender: string; logIndex: number } | null = null
+  for (const ev of params.userOpEvents) {
+    if (!isHexAddress(ev.sender)) continue
+    if (ev.logIndex <= params.mintLogIndex) continue
+    if (!best || ev.logIndex < best.logIndex) best = ev
+  }
+  return best ? best.sender.toLowerCase() : null
+}
+
+/**
  * Parse a decimal wei string from storage. Same dual-representation caution
  * as every other Upstash-backed number in this codebase (gateFlags,
  * passUnion, passTaint): accept string or number, read garbage as 0n so a

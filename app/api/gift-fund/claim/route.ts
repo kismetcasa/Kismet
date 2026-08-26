@@ -6,6 +6,7 @@ import {
   claimWindowOpen,
   evaluateReceiptTransfer,
   evaluateTracedTransfer,
+  MIN_CONTRIBUTION_WEI,
   parseWei,
   progressPercent,
   transferWithinWindow,
@@ -41,15 +42,24 @@ import { userOpSendersFromLogs } from '@/lib/userOps'
 
 // callTracer frame: nested calls, hex value. Only the fields we read.
 interface TraceFrame {
+  type?: string
   from?: string
   to?: string
   value?: string
   calls?: TraceFrame[]
 }
 
+// ONLY type CALL moves ETH. DELEGATECALL and CALLCODE execute foreign code in
+// the caller's context and can carry an inherited `value` field while
+// transferring NOTHING — a smart account delegatecalling the organizer's EOA
+// address would produce a frame {from: account, to: organizer, value: X} with
+// no ETH moved, i.e. a free fake contribution if counted. SELFDESTRUCT can
+// move real value but its `from` is the destructed contract, never a userOp
+// sender, so excluding it only under-credits (the safe direction). The root
+// frame of any tx is type CALL, so the EOA-shaped case is unaffected.
 function flattenValueCalls(frame: TraceFrame, out: TracedCall[]): TracedCall[] {
   const value = frame.value ? BigInt(frame.value) : 0n
-  if (frame.from && frame.to && value > 0n) {
+  if (frame.type === 'CALL' && frame.from && frame.to && value > 0n) {
     out.push({ from: frame.from, to: frame.to, valueWei: value })
   }
   for (const sub of frame.calls ?? []) flattenValueCalls(sub, out)
@@ -102,6 +112,19 @@ export async function POST(req: NextRequest) {
     valueWei: tx.value,
     organizer: campaign.organizer,
   })
+
+  // Distinct dust verdict: a real plain send below the minimum must not fall
+  // through to the trace tier and come back as "does not pay the organizer" —
+  // the money DID arrive; only the credit is refused, and the message says so.
+  if (
+    !verified &&
+    tx.to &&
+    tx.to.toLowerCase() === campaign.organizer.toLowerCase() &&
+    tx.value > 0n &&
+    tx.value < MIN_CONTRIBUTION_WEI
+  ) {
+    return errorResponse(422, 'Below the minimum contribution (0.0001 ETH)')
+  }
 
   // Tier 2: smart-wallet internal calls, gated on the userOp-sender binding.
   if (!verified) {

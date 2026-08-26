@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { decodeEventLog, parseAbi, type Address, type Hex } from 'viem'
-import { userOpSendersFromLogs } from '@/lib/userOps'
+import { userOpEventsFromLogs } from '@/lib/userOps'
 import { errorResponse } from '@/lib/apiResponse'
 import { isBlacklisted } from '@/lib/blacklist'
 import {
   campaignStatus,
   CLAIM_GRACE_MS,
   parseWei,
+  payerForMint,
   progressPercent,
 } from '@/lib/giftFund'
 import {
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
   // The single mint this gift performed. More than one distinct
   // (collection, tokenId, recipient) mint in the tx is ambiguous — refuse
   // rather than guess which one the fund is for.
-  const mints: { collection: string; tokenId: string; recipient: string }[] = []
+  const mints: { collection: string; tokenId: string; recipient: string; logIndex: number }[] = []
   for (const log of receipt.logs) {
     try {
       const decoded = decodeEventLog({
@@ -101,6 +102,7 @@ export async function POST(req: NextRequest) {
         collection: log.address.toLowerCase(),
         tokenId: id.toString(),
         recipient: to.toLowerCase(),
+        logIndex: log.logIndex,
       })
     } catch {
       continue
@@ -111,14 +113,22 @@ export async function POST(req: NextRequest) {
   if (unique.size > 1) return errorResponse(400, 'Ambiguous transaction (multiple mints)')
   const mint = mints[0]
 
-  // Organizer, chain-derived. 4337 gift → the sole userOp sender; plain EOA
-  // gift → the tx signer. Multiple userOp senders = shared bundle = refuse
-  // (organizership must be unambiguous — it is where the money goes).
-  const senders = Array.from(new Set(userOpSendersFromLogs(receipt.logs)))
+  // Organizer, chain-derived. Plain EOA gift → the tx signer. 4337 gift —
+  // including one a public bundler batched with STRANGERS' operations — →
+  // the sender of the mint's OWN userOp, attributed by log order
+  // (lib/giftFund.payerForMint: the EntryPoint emits each op's
+  // UserOperationEvent after that op's logs, so the first event past the
+  // mint log is its payer). A 4337 receipt whose event ordering doesn't
+  // resolve is refused, never guessed at.
+  const userOpEvents = userOpEventsFromLogs(receipt.logs)
   let organizer: string
-  if (senders.length === 1) organizer = senders[0]
-  else if (senders.length === 0) organizer = receipt.from.toLowerCase()
-  else return errorResponse(400, 'Ambiguous transaction (multiple operations)')
+  if (userOpEvents.length === 0) {
+    organizer = receipt.from.toLowerCase()
+  } else {
+    const payer = payerForMint({ userOpEvents, mintLogIndex: mint.logIndex })
+    if (!payer) return errorResponse(400, 'Could not attribute the mint to a payer')
+    organizer = payer
+  }
 
   // A self-gift can't reach here (planMint collapses it to a collect and the
   // gift is a mint TO the recipient), but the invariant is cheap to hold:
@@ -206,7 +216,13 @@ export async function GET(req: NextRequest) {
   const id = await getActiveCampaignId(collection, tokenId)
   if (!id) return NextResponse.json({ campaign: null })
   const campaign = await getCampaign(id)
-  if (!campaign) return NextResponse.json({ campaign: null })
+  if (!campaign) {
+    // Zombie slot: the NX claim landed but the campaign hash write failed
+    // (openCampaign is two writes). Self-heal here — the slot's only job is
+    // pointing at a campaign that exists.
+    await releaseMomentSlot(collection, tokenId)
+    return NextResponse.json({ campaign: null })
+  }
 
   // Lazy resolution (the notification-TTL sweep pattern): once a campaign is
   // past its claim grace nothing more can change it — stop displaying it and
@@ -226,7 +242,9 @@ export async function GET(req: NextRequest) {
     closesAtMs: campaign.closesAtMs,
     nowMs: Date.now(),
   })
-  const contributions = await listContributions(id)
+  // Panel renders 5 rows; each row costs an HGETALL, and this route runs per
+  // Patron artwork view — fetch exactly what renders.
+  const contributions = await listContributions(id, 5)
   return NextResponse.json({
     campaign: {
       ...campaign,

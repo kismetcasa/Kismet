@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { shortAddress } from '@/lib/inprocess'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { MIN_CONTRIBUTION_WEI } from '@/lib/giftFund'
 
 /**
  * The Gift Fund panel — an active campaign's progress bar and backing flow
@@ -100,6 +101,14 @@ export function GiftFundPanel({
     }
     if (valueWei <= 0n) {
       toast.error('Enter an ETH amount')
+      return
+    }
+    // Server-mirrored minimum, checked BEFORE money moves: a below-minimum
+    // send would arrive at the organizer but be refused credit — the one
+    // failure where the backer loses something, so it must be impossible to
+    // reach from this form.
+    if (valueWei < MIN_CONTRIBUTION_WEI) {
+      toast.error('Minimum contribution is 0.0001 ETH')
       return
     }
     const account = await ensureConnected()
