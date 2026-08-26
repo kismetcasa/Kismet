@@ -6,14 +6,16 @@ import {
   claimWindowOpen,
   evaluateReceiptTransfer,
   evaluateTracedTransfer,
+  flattenValueCalls,
   MIN_CONTRIBUTION_WEI,
   parseWei,
   progressPercent,
   transferWithinWindow,
-  type TracedCall,
+  type TraceFrame,
 } from '@/lib/giftFund'
 import {
   claimContributionTx,
+  contributionRecorded,
   getCampaign,
   recordContribution,
 } from '@/lib/giftFundStore'
@@ -39,32 +41,6 @@ import { userOpSendersFromLogs } from '@/lib/userOps'
  *      the configured RPC; when the plan doesn't expose it, the claim fails
  *      with a distinct message rather than silently rejecting the backer.
  */
-
-// callTracer frame: nested calls, hex value. Only the fields we read.
-interface TraceFrame {
-  type?: string
-  from?: string
-  to?: string
-  value?: string
-  calls?: TraceFrame[]
-}
-
-// ONLY type CALL moves ETH. DELEGATECALL and CALLCODE execute foreign code in
-// the caller's context and can carry an inherited `value` field while
-// transferring NOTHING — a smart account delegatecalling the organizer's EOA
-// address would produce a frame {from: account, to: organizer, value: X} with
-// no ETH moved, i.e. a free fake contribution if counted. SELFDESTRUCT can
-// move real value but its `from` is the destructed contract, never a userOp
-// sender, so excluding it only under-credits (the safe direction). The root
-// frame of any tx is type CALL, so the EOA-shaped case is unaffected.
-function flattenValueCalls(frame: TraceFrame, out: TracedCall[]): TracedCall[] {
-  const value = frame.value ? BigInt(frame.value) : 0n
-  if (frame.type === 'CALL' && frame.from && frame.to && value > 0n) {
-    out.push({ from: frame.from, to: frame.to, valueWei: value })
-  }
-  for (const sub of frame.calls ?? []) flattenValueCalls(sub, out)
-  return out
-}
 
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
@@ -173,9 +149,16 @@ export async function POST(req: NextRequest) {
 
   // Global one-tx-one-campaign claim — AFTER verification (an invalid claim
   // must not burn the slot for the real one), NX so a client retry or a
-  // concurrent duplicate resolves to one credit.
-  const claimed = await claimContributionTx(txHash)
-  if (!claimed) return NextResponse.json({ ok: true, idempotent: true })
+  // concurrent duplicate resolves to one credit. The claim stores WHICH
+  // campaign took the tx, so a retry after a crash between claim and record
+  // can tell "recorded elsewhere" (stop) from "ours but the record write
+  // died" (finish it) — without that, a transient store failure would leave
+  // the tx claimed-but-uncredited forever.
+  const claim = await claimContributionTx(txHash, campaignId)
+  if (claim === 'other') return NextResponse.json({ ok: true, idempotent: true })
+  if (claim === 'ours' && (await contributionRecorded(campaignId, txHash))) {
+    return NextResponse.json({ ok: true, idempotent: true })
+  }
 
   await recordContribution({
     giftTx: campaignId,

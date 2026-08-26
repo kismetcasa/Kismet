@@ -30,10 +30,12 @@ import {
   CLAIM_GRACE_MS,
   evaluateReceiptTransfer,
   evaluateTracedTransfer,
+  flattenValueCalls,
   MIN_CONTRIBUTION_WEI,
   parseWei,
   progressPercent,
   transferWithinWindow,
+  TRANSFER_LANDING_GRACE_MS,
 } from '../lib/giftFund.ts'
 
 let failures = 0
@@ -184,6 +186,91 @@ check(
   }) !== null,
 )
 
+console.log('\nflattenValueCalls — what a callTracer tree actually moved')
+
+// The delegatecall hole: an inherited `value` on a DELEGATECALL frame moves
+// NOTHING — counting it would be a free fake contribution.
+check(
+  'DELEGATECALL frames are never counted, whatever value they carry',
+  flattenValueCalls(
+    {
+      type: 'CALL',
+      from: BACKER,
+      to: OTHER,
+      value: '0xde0b6b3a7640000',
+      calls: [{ type: 'DELEGATECALL', from: BACKER, to: ORGANIZER, value: '0xde0b6b3a7640000' }],
+    },
+    [],
+  ).every((c) => c.to.toLowerCase() !== ORGANIZER),
+)
+check(
+  'nested CALL frames are collected with their values',
+  (() => {
+    const calls = flattenValueCalls(
+      {
+        type: 'CALL',
+        from: BACKER,
+        to: OTHER,
+        value: '0x0',
+        calls: [{ type: 'CALL', from: OTHER, to: ORGANIZER, value: '0x64' }],
+      },
+      [],
+    )
+    return calls.length === 1 && calls[0].valueWei === 100n && calls[0].from === OTHER
+  })(),
+)
+// The revert hole: a frame carrying `error` rolled back its WHOLE subtree —
+// including child CALLs that succeeded locally before the parent reverted
+// (they carry no error of their own). Send-then-revert-and-catch must not
+// be creditable.
+check(
+  'REVERTED SUBTREES MOVED NOTHING (send-then-revert-and-catch yields no calls)',
+  flattenValueCalls(
+    {
+      type: 'CALL',
+      from: BACKER,
+      to: BACKER,
+      value: '0x0',
+      calls: [
+        {
+          type: 'CALL',
+          from: BACKER,
+          to: OTHER,
+          value: '0x0',
+          error: 'execution reverted',
+          // The inner send SUCCEEDED locally — no error on this frame — but
+          // its parent's revert rolled it back.
+          calls: [{ type: 'CALL', from: OTHER, to: ORGANIZER, value: '0xde0b6b3a7640000' }],
+        },
+      ],
+    },
+    [],
+  ).length === 0,
+)
+check(
+  'a sibling of a reverted frame still counts (only the reverted subtree is pruned)',
+  (() => {
+    const calls = flattenValueCalls(
+      {
+        type: 'CALL',
+        from: BACKER,
+        to: BACKER,
+        value: '0x0',
+        calls: [
+          { type: 'CALL', from: BACKER, to: OTHER, value: '0x64', error: 'execution reverted' },
+          { type: 'CALL', from: BACKER, to: ORGANIZER, value: '0xc8' },
+        ],
+      },
+      [],
+    )
+    return calls.length === 1 && calls[0].to === ORGANIZER && calls[0].valueWei === 200n
+  })(),
+)
+check(
+  'zero-value frames are not collected',
+  flattenValueCalls({ type: 'CALL', from: BACKER, to: ORGANIZER, value: '0x0' }, []).length === 0,
+)
+
 console.log('\ntwo clocks — transfer window vs claim window')
 
 const openedAtMs = 1_000_000
@@ -197,8 +284,24 @@ check(
   !transferWithinWindow({ blockTimestampMs: 999_999, openedAtMs, closesAtMs }),
 )
 check(
-  'post-close transfer does not count',
-  !transferWithinWindow({ blockTimestampMs: 2_000_001, openedAtMs, closesAtMs }),
+  'a send in flight at close still lands within the landing grace',
+  transferWithinWindow({
+    blockTimestampMs: closesAtMs + TRANSFER_LANDING_GRACE_MS,
+    openedAtMs,
+    closesAtMs,
+  }),
+)
+check(
+  'past the landing grace the transfer does not count',
+  !transferWithinWindow({
+    blockTimestampMs: closesAtMs + TRANSFER_LANDING_GRACE_MS + 1,
+    openedAtMs,
+    closesAtMs,
+  }),
+)
+check(
+  'the landing grace is bounded well under the claim grace',
+  TRANSFER_LANDING_GRACE_MS < CLAIM_GRACE_MS,
 )
 check(
   'boundary timestamps count (inclusive window)',

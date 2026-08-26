@@ -44,6 +44,15 @@ export const MIN_CONTRIBUTION_WEI = 100_000_000_000_000n
  *  get one week. */
 export const CLAIM_GRACE_MS = 7 * 24 * 60 * 60 * 1000
 
+/** Landing slack on the transfer clock itself. A send fired moments before
+ *  the window closed (or before the organizer's early close) lands with a
+ *  block timestamp AFTER it — the chain can't say when it was SENT, only
+ *  when it landed. Rejecting those loses real money that reached the
+ *  organizer, the one failure shape the design treats as unacceptable, so
+ *  transfers landing within this slack of the close still count. Bounded
+ *  well under CLAIM_GRACE_MS, so the claim clock is unaffected. */
+export const TRANSFER_LANDING_GRACE_MS = 15 * 60 * 1000
+
 export type CampaignStatus = 'open' | 'funded' | 'expired'
 
 /**
@@ -65,7 +74,9 @@ export function campaignStatus(params: {
 
 /** May a claim still be POSTed, and may the transfer it names count?
  *  Two separate clocks: the TRANSFER must have landed inside the campaign
- *  window; the CLAIM may arrive up to CLAIM_GRACE_MS later. */
+ *  window (plus the landing slack — a send can't land before it was sent,
+ *  but it can land after the window shut on it mid-flight); the CLAIM may
+ *  arrive up to CLAIM_GRACE_MS later. */
 export function transferWithinWindow(params: {
   blockTimestampMs: number
   openedAtMs: number
@@ -73,7 +84,7 @@ export function transferWithinWindow(params: {
 }): boolean {
   return (
     params.blockTimestampMs >= params.openedAtMs &&
-    params.blockTimestampMs <= params.closesAtMs
+    params.blockTimestampMs <= params.closesAtMs + TRANSFER_LANDING_GRACE_MS
   )
 }
 
@@ -115,6 +126,49 @@ export interface TracedCall {
   from: string
   to: string
   valueWei: bigint
+}
+
+/** A geth callTracer frame — nested calls, hex value. Only the fields the
+ *  flattening rules read. */
+export interface TraceFrame {
+  type?: string
+  from?: string
+  to?: string
+  /** Hex wei string. */
+  value?: string
+  /** Set when this frame reverted (e.g. "execution reverted"). */
+  error?: string
+  calls?: TraceFrame[]
+}
+
+/**
+ * Flatten a callTracer tree to the calls that ACTUALLY MOVED ETH. Two rules,
+ * each closing a way to fabricate a contribution from a trace:
+ *
+ *   - ONLY type CALL moves ETH. DELEGATECALL and CALLCODE execute foreign
+ *     code in the caller's context and can carry an inherited `value` field
+ *     while transferring NOTHING — a smart account delegatecalling the
+ *     organizer's EOA address would produce a frame {from: account, to:
+ *     organizer, value: X} with no ETH moved, i.e. a free fake contribution
+ *     if counted. SELFDESTRUCT can move real value but its `from` is the
+ *     destructed contract, never a userOp sender, so excluding it only
+ *     under-credits (the safe direction). The root frame of any tx is type
+ *     CALL, so the EOA-shaped case is unaffected.
+ *   - A REVERTED SUBTREE moved nothing. A frame carrying `error` reverted,
+ *     and the revert rolled back every transfer beneath it — including child
+ *     CALLs that succeeded locally before the parent reverted (those child
+ *     frames carry no error of their own). A wallet that sends the organizer
+ *     ETH inside a helper, reverts the helper, and catches the revert would
+ *     otherwise be credited for money that never left it.
+ */
+export function flattenValueCalls(frame: TraceFrame, out: TracedCall[]): TracedCall[] {
+  if (frame.error) return out
+  const value = frame.value ? BigInt(frame.value) : 0n
+  if (frame.type === 'CALL' && frame.from && frame.to && value > 0n) {
+    out.push({ from: frame.from, to: frame.to, valueWei: value })
+  }
+  for (const sub of frame.calls ?? []) flattenValueCalls(sub, out)
+  return out
 }
 
 /**

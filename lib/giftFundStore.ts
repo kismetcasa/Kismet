@@ -63,7 +63,15 @@ export async function openCampaign(c: GiftFundCampaign): Promise<boolean> {
     nx: true,
   })
   if (slot !== 'OK') return false
-  await redis.hset(keyCampaign(c.giftTx), { ...c })
+  // Wei fields are stored JSON-QUOTED (see ADD_WEI_LUA's note): a bare digit
+  // string round-trips through Upstash's read-side JSON.parse as a NUMBER,
+  // and wei amounts exceed float precision — the quoted form comes back as
+  // the exact string.
+  await redis.hset(keyCampaign(c.giftTx), {
+    ...c,
+    goalWei: JSON.stringify(c.goalWei),
+    raisedWei: JSON.stringify(c.raisedWei),
+  })
   return true
 }
 
@@ -111,10 +119,30 @@ export async function releaseMomentSlot(collection: string, tokenId: string): Pr
 /** Claim a contribution tx globally — one tx backs one campaign, ever.
  *  NX AFTER verification succeeds (mirror of creditValidityOnce's ordering):
  *  claiming before verifying would let an invalid claim burn the slot for
- *  the real one. Returns false when already claimed. */
-export async function claimContributionTx(contribTx: string): Promise<boolean> {
-  const claimed = await redis.set(keyClaimed(contribTx), '1', { nx: true, ex: CLAIMED_TTL })
-  return claimed === 'OK'
+ *  the real one. The key's VALUE is the claiming campaign, so a caller that
+ *  lost the NX race can tell whether the tx belongs to ITS campaign
+ *  ('ours' — check the row and finish a half-done record) or to another
+ *  ('other' — a hard stop; recording would double-spend the tx). */
+export async function claimContributionTx(
+  contribTx: string,
+  campaignId: string,
+): Promise<'claimed' | 'ours' | 'other'> {
+  const key = keyClaimed(contribTx)
+  const id = campaignId.toLowerCase()
+  const claimed = await redis.set(key, id, { nx: true, ex: CLAIMED_TTL })
+  if (claimed === 'OK') return 'claimed'
+  const owner = await redis.get<string>(key)
+  return typeof owner === 'string' && owner.toLowerCase() === id ? 'ours' : 'other'
+}
+
+/** Does the durable contribution row exist? The recovery probe for a claim
+ *  that returned 'ours': rows are written FIRST in recordContribution, so a
+ *  missing row means the record never started and re-running it is safe. */
+export async function contributionRecorded(
+  giftTx: string,
+  contribTx: string,
+): Promise<boolean> {
+  return (await redis.exists(keyContrib(giftTx, contribTx))) === 1
 }
 
 // Atomic wei accumulation. raisedWei is a decimal string that can exceed
@@ -124,8 +152,13 @@ export async function claimContributionTx(contribTx: string): Promise<boolean> {
 // from the display. Lua string-add of two decimal wei values keeps the
 // accumulate atomic without a numeric ceiling. Redis Lua has 53-bit-safe
 // number semantics at most, so the addition is done digit-wise on strings.
+// The stored form is JSON-QUOTED ("123"): Upstash's read side JSON.parses
+// hash fields, and a bare digit string would come back as a precision-lossy
+// float (wei exceeds 2^53) — quoted, it comes back as the exact string. The
+// script strips quotes on read and re-quotes on write.
 const ADD_WEI_LUA = `
 local cur = redis.call('HGET', KEYS[1], ARGV[1])
+if cur then cur = string.gsub(cur, '"', '') end
 if not cur or not string.match(cur, '^%d+$') then cur = '0' end
 local a, b = cur, ARGV[2]
 local ra, rb = a:reverse(), b:reverse()
@@ -139,7 +172,7 @@ for i = 1, math.max(#ra, #rb) do
 end
 if carry > 0 then out[#out + 1] = tostring(carry) end
 local res = table.concat(out):reverse():gsub('^0+(%d)', '%1')
-redis.call('HSET', KEYS[1], ARGV[1], res)
+redis.call('HSET', KEYS[1], ARGV[1], '"' .. res .. '"')
 return res
 `
 
@@ -159,7 +192,8 @@ export async function recordContribution(params: {
   const { giftTx, contribTx, backer, amountWei, blockTimestampMs } = params
   await redis.hset(keyContrib(giftTx, contribTx), {
     backer: backer.toLowerCase(),
-    amountWei: amountWei.toString(),
+    // Quoted for the same precision reason as the campaign's wei fields.
+    amountWei: JSON.stringify(amountWei.toString()),
   })
   await redis.zadd(keyContribs(giftTx), {
     score: blockTimestampMs,
@@ -172,19 +206,24 @@ export async function recordContribution(params: {
   }
 }
 
-/** Newest-first contribution rows for the panel's backer roll. */
+/** Newest-first contribution rows for the panel's backer roll. Row reads go
+ *  out concurrently — each is its own REST round trip, and serializing them
+ *  would stack that latency on a per-artwork-view route. */
 export async function listContributions(
   giftTx: string,
   limit = 50,
 ): Promise<{ contribTx: string; backer: string; amountWei: string }[]> {
   const txs = (await redis.zrange(keyContribs(giftTx), 0, limit - 1, { rev: true })) as string[]
   if (!Array.isArray(txs)) return []
+  const rows = await Promise.all(
+    txs.map((tx) => redis.hgetall<Record<string, string | number>>(keyContrib(giftTx, tx))),
+  )
   const out: { contribTx: string; backer: string; amountWei: string }[] = []
-  for (const tx of txs) {
-    const h = await redis.hgetall<Record<string, string | number>>(keyContrib(giftTx, tx))
+  for (let i = 0; i < txs.length; i++) {
+    const h = rows[i]
     if (!h) continue
     out.push({
-      contribTx: tx,
+      contribTx: txs[i],
       backer: String(h.backer ?? ''),
       amountWei: parseWei(h.amountWei).toString(),
     })

@@ -5,6 +5,7 @@ import { verifyAdminSession } from '@/lib/curator'
 import { parseWei } from '@/lib/giftFund'
 import {
   claimContributionTx,
+  contributionRecorded,
   getCampaign,
   recordContribution,
 } from '@/lib/giftFundStore'
@@ -63,8 +64,20 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'Organizer cannot be credited as a backer')
   }
 
-  const claimed = await claimContributionTx(txHash)
-  if (!claimed) return NextResponse.json({ ok: true, idempotent: true })
+  // Tri-state claim (see claimContributionTx): 'other' is a hard stop the
+  // admin should SEE — crediting a tx that already backs a different
+  // campaign would double-spend it, and a silent ok would read as success.
+  // 'ours' with the row present is the true idempotent case; 'ours' with the
+  // row MISSING is a half-committed automatic claim (claimed, then the
+  // record write died) — the exact stranded shape this remediation route
+  // exists for, so it records.
+  const claim = await claimContributionTx(txHash, campaignId)
+  if (claim === 'other') {
+    return errorResponse(409, 'Transaction already backs another campaign')
+  }
+  if (claim === 'ours' && (await contributionRecorded(campaignId, txHash))) {
+    return NextResponse.json({ ok: true, idempotent: true })
+  }
 
   await recordContribution({
     giftTx: campaignId,

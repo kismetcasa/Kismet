@@ -234,7 +234,8 @@ export function GiftFundPanel({
 
   // Organizer's early close. Benign by construction (the server only moves
   // the window end to now; in-window transfers stay claimable through the
-  // grace), so a single tap suffices — no arm step.
+  // claim grace, and a send already in flight still lands within the
+  // transfer landing grace), so a single tap suffices — no arm step.
   const closeFund = async () => {
     if (closing || !campaign) return
     setClosing(true)

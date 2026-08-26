@@ -45,11 +45,9 @@ export const NON_MUTEABLE_TYPES: ReadonlySet<NotificationType> = new Set([
   // 'airdrop', and treated the same way — for a Pass piece this notification
   // is how the recipient learns they can now mint.
   'gift',
-  // Gift Fund backing: someone sent the organizer ETH toward reimbursing a
-  // gift (app/api/gift-fund/claim). Muteable, unlike 'gift': it is frequent
-  // small income during an active campaign, and an organizer who mutes it
-  // still sees every contribution on the campaign panel itself.
-  'contribution',
+  // 'contribution' is deliberately NOT here — it is muteable, unlike 'gift':
+  // frequent small income during an active campaign, and an organizer who
+  // mutes it still sees every contribution on the campaign panel itself.
   'payout',
   'raffle_win',
 ])

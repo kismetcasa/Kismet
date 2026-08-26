@@ -171,7 +171,14 @@ export async function POST(req: NextRequest) {
     BigInt(mint.tokenId),
     'eth',
   )
-  if (price === null) return errorResponse(400, 'No ETH sale for this artwork')
+  // readSalePricePerToken returns the row's pricePerToken — which is 0n for
+  // an ABSENT sale row (FPSS returns a zeroed struct), null only on RPC
+  // failure. Both shapes refuse: without a live priced ETH sale the goal
+  // would collapse to the mint fee and the bar would be meaningless. Same
+  // guard as KismetGiftPool.create (saleEnd == 0 / goal == 0 revert).
+  if (price === null || price <= 0n) {
+    return errorResponse(400, 'No ETH sale for this artwork')
+  }
   let mintFee: bigint
   try {
     // serverBaseClient() is concretely typed to Base while readMintFeeWithBound
@@ -211,7 +218,9 @@ export async function POST(req: NextRequest) {
 /** PATCH — organizer's early close. Session-gated as the organizer (the
  *  same identity rule as open); benign by construction: it only moves the
  *  window's end to now, so no funds move, in-window transfers stay claimable
- *  through the grace, and the panel flips to its closed state. */
+ *  through the claim grace, a send already in flight still lands within the
+ *  transfer landing grace (lib/giftFund.TRANSFER_LANDING_GRACE_MS), and the
+ *  panel flips to its closed state. */
 export async function PATCH(req: NextRequest) {
   const ip = getClientIp(req)
   const allowed = await checkRateLimit(`gift-fund-close:${ip}`, 10, 60)
