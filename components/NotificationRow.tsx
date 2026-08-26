@@ -35,6 +35,7 @@ function notificationHref(n: Notification): string {
     case 'listing_created':
     case 'airdrop':
     case 'gift':
+    case 'contribution':
     case 'payout':
     case 'raffle_win':
     case 'raffle_ended':
@@ -127,6 +128,19 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
             {actorLabel ?? 'someone'} gifted you {n.tokenName ? `"${n.tokenName}"` : 'an artwork'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
+        </>
+      )
+    case 'contribution':
+      // Gift Fund backing — actor is the backer, price is the wei amount.
+      return (
+        <>
+          <p className="text-xs font-mono text-ink truncate">
+            {actorLabel ?? 'someone'} backed your gift fund
+            {n.price ? ` · ${formatPrice(n.price, n.currency ?? 'eth')}` : ''}
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            {n.tokenName ?? 'untitled'} · {time}
+          </p>
         </>
       )
     case 'airdrop':

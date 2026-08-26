@@ -13,6 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { resolveUri, formatPrice, shortAddress, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, getSaleWindow, parseRealSaleEnd, type MomentDetail } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { GiftRecipientForm } from './GiftRecipientForm'
+import { GiftFundPanel } from './GiftFundPanel'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { resolveMomentCreator } from '@/lib/statsMath'
 import { fetchCollectionChip } from '@/lib/collectionCache'
@@ -293,6 +294,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // the market swipe UI all link to this page, so gifting stays one tap away
   // everywhere without adding a second CTA to the collect funnel.
   const [giftOpen, setGiftOpen] = useState(false)
+  // Gift Fund (lib/giftFund): after a successful Patron gift, the payer is
+  // offered "start a gift fund" — a reimbursement campaign bound to that
+  // gift's tx. Held as the hash so the offer survives the toast; cleared on
+  // open or dismiss. refresh nonce re-fetches the panel after an open.
+  const [giftFundOffer, setGiftFundOffer] = useState<`0x${string}` | null>(null)
+  const [giftFundNonce, setGiftFundNonce] = useState(0)
+  const [openingFund, setOpeningFund] = useState(false)
   // Resolved 0x for the recipient. For a raw address this matches the
   // input; for an ENS name this is the mainnet resolver's answer. We
   // gate the send button on this so users can't fire the tx until the
@@ -662,6 +670,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // owned-edition actions for an edition they don't have). Supply and
       // activity did move on-chain, so those refresh as usual.
       setGiftOpen(false)
+      // Pass pieces: offer to open a reimbursement fund for the gift just
+      // made. Patron-scoped like the panel — the group-gift v1 target.
+      if (isPassPiece) setGiftFundOffer(result.hash)
       setTimeout(() => setActivityRefreshNonce((n) => n + 1), 3000)
       refetchTokenInfo().catch(() => {})
       return
@@ -2176,6 +2187,61 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 pending={collecting}
                 onGift={(recipient) => handleCollect(recipient)}
                 onCancel={() => setGiftOpen(false)}
+              />
+            </div>
+          )}
+          {/* Post-gift fund offer — the campaign opens from the gift's OWN
+              verified tx (the server derives organizer, artwork, recipient and
+              goal from its receipt; the body is just the hash). */}
+          {giftFundOffer && (
+            <div className="px-5 pb-3 flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => {
+                  if (openingFund) return
+                  setOpeningFund(true)
+                  fetch('/api/gift-fund', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ giftTx: giftFundOffer }),
+                  })
+                    .then(async (res) => {
+                      if (res.ok) {
+                        toast.success('Gift fund opened')
+                        setGiftFundOffer(null)
+                        setGiftFundNonce((n) => n + 1)
+                      } else {
+                        const d = (await res.json().catch(() => null)) as { error?: string } | null
+                        toast.error(d?.error ?? 'Could not open a fund')
+                      }
+                    })
+                    .catch(() => toast.error('Could not open a fund'))
+                    .finally(() => setOpeningFund(false))
+                }}
+                disabled={openingFund}
+                className="border border-line px-3 py-1.5 text-xs font-mono uppercase tracking-widest text-muted hover:text-ink transition-colors disabled:opacity-60"
+              >
+                {openingFund ? 'opening…' : 'start a gift fund'}
+              </button>
+              <button
+                onClick={() => setGiftFundOffer(null)}
+                className="text-[10px] font-mono text-muted hover:text-dim"
+              >
+                dismiss
+              </button>
+              <p className="basis-full text-[10px] font-mono text-muted leading-relaxed">
+                let the community chip in to reimburse this gift — backers send
+                ETH straight to your wallet
+              </p>
+            </div>
+          )}
+          {/* Active campaign panel — renders nothing when no fund exists, so
+              the only always-on cost is one GET per Patron artwork view. */}
+          {isPassPiece && (
+            <div className="px-5 pb-3">
+              <GiftFundPanel
+                collection={address}
+                tokenId={tokenId}
+                refreshNonce={giftFundNonce}
               />
             </div>
           )}

@@ -962,6 +962,25 @@ access through its actions. Pure layer + regression oracle: `lib/gift.ts`,
 `scripts/verify-gift.ts`. Surfaced first on the Patron showcase only
 (`PatronArtworkShowcase` → `GiftRecipientForm`).
 
+**Gift Fund (community-backed gifts).** Reimbursement, not escrow: the organizer
+executes the gift FIRST (the shipped mint-to-recipient flow), then a campaign
+bound to that gift's txHash collects plain-ETH sends to the organizer's wallet —
+the universal wallet primitive, no approvals, no custody, nothing to refund. All
+campaign facts are chain-derived: artwork/recipient from the gift receipt's mint
+log, the ORGANIZER from `receipt.from` or the receipt's sole `UserOperationEvent`
+sender (lib/userOps — a 4337 gift's top-level `from` is the bundler), and the
+goal frozen at open from the live ETH sale price + mint fee (prices are editable,
+so a re-read would move the bar). The claim route is UNAUTHENTICATED: the backer
+is derived from the transfer's proven sender, so there is no field to spoof —
+receipt tier for EOA sends (`tx.to == organizer`), trace tier for smart wallets
+crediting only direct value-calls FROM a userOp sender (a Seaport fill's value
+arrives from the conduit and yields nothing — the laundering rule). One tx backs
+one campaign ever (global NX, claimed only after verification); acceptance is by
+TRANSFER time with a claim grace after close. Pure rules + oracle:
+`lib/giftFund.ts`, `scripts/verify-gift-fund.ts`. Store `lib/giftFundStore.ts`
+(atomic string-Lua wei accumulation — amounts exceed HINCRBY's integer range);
+surfaces Patron-scoped v1 (`GiftFundPanel`, post-gift offer in MomentDetailView).
+
 ### 4.3 Agent Scout autonomous collect
 Eligibility gate (EIP-5792 capability / `eth_getCode`) → user signs **one** bounded
 Spend Permission to the scout spender (the only user-signed money-moving step) → the

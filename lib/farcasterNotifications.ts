@@ -435,6 +435,20 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: momentUrl,
       }
     }
+    case 'contribution': {
+      // Gift Fund backing. Amount formatting is left to the in-app row (push
+      // copy stays short); actor always exists but degrade gracefully.
+      return {
+        title: truncate('Gift fund backed', TITLE_MAX),
+        body: truncate(
+          actorName
+            ? `${actorName} backed your gift fund${tokenName ? ` for "${tokenName}"` : ''}`
+            : 'Your gift fund was backed',
+          BODY_MAX,
+        ),
+        targetUrl: momentUrl,
+      }
+    }
     case 'airdrop': {
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       // Airdropper's own confirmation (no actor) vs airdropee (actor set).
