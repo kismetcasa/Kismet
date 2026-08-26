@@ -11,6 +11,7 @@ import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { MIN_CONTRIBUTION_WEI } from '@/lib/giftFund'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import Link from 'next/link'
+import { ProfileAvatar } from './ProfileAvatar'
 
 /**
  * The Gift Fund panel — an active campaign's progress bar and backing flow
@@ -75,6 +76,11 @@ export function GiftFundPanel({
   const [backing, setBacking] = useState(false)
   const [copied, setCopied] = useState(false)
   const [closing, setClosing] = useState(false)
+  // address(lowercased) → avatarUrl, resolved in one batch via /api/profiles
+  // (the batch resolver built for exactly this N+1) whenever the campaign's
+  // contribution roll changes. Missing entries fall back to ProfileAvatar's
+  // deterministic gradient — the facepile never blocks on resolution.
+  const [avatars, setAvatars] = useState<Record<string, string | undefined>>({})
 
   const refetch = useCallback(() => {
     let cancelled = false
@@ -90,6 +96,31 @@ export function GiftFundPanel({
   }, [collection, tokenId])
 
   useEffect(() => refetch(), [refetch, refreshNonce])
+
+  // Distinct backers, newest-first (roll order), capped at the facepile size.
+  // Map keyed by backer keeps the first (newest) occurrence per wallet.
+  const faceBackers = campaign
+    ? Array.from(new Map(campaign.contributions.map((c) => [c.backer.toLowerCase(), true])).keys()).slice(0, 5)
+    : []
+  const faceKey = faceBackers.join(',')
+  useEffect(() => {
+    if (!faceKey) return
+    let cancelled = false
+    fetch(`/api/profiles?addresses=${faceKey}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { profiles?: Record<string, { avatarUrl?: string }> } | null) => {
+        if (cancelled || !d?.profiles) return
+        const next: Record<string, string | undefined> = {}
+        for (const [addr, p] of Object.entries(d.profiles)) {
+          next[addr.toLowerCase()] = p.avatarUrl
+        }
+        setAvatars(next)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [faceKey])
 
   if (!campaign) return null
 
@@ -270,14 +301,56 @@ export function GiftFundPanel({
             style={{ width: `${campaign.progressPercent}%`, background: 'var(--accent-grad)' }}
           />
         </div>
-        <div className="mt-1.5 flex justify-between text-[10px] font-mono text-muted">
+        <div className="mt-1.5 flex justify-between items-center text-[10px] font-mono text-muted">
           <span>
             {fmtEth(campaign.raisedWei)} of {fmtEth(campaign.goalWei)}
           </span>
-          <span>
-            {campaign.backers} backer{campaign.backers === 1 ? '' : 's'}
+          <span className="flex items-center gap-1.5">
+            {/* Facepile: newest backer leftmost and on top (natural stacking
+                via descending zIndex), each ringed in the page background so
+                the overlap reads as separate faces. Unresolved pfps show
+                ProfileAvatar's address-gradient — no layout shift, no wait. */}
+            {faceBackers.length > 0 && (
+              <span className="flex items-center" aria-hidden>
+                {faceBackers.map((b, i) => (
+                  <span
+                    key={b}
+                    style={{
+                      marginLeft: i === 0 ? 0 : -6,
+                      zIndex: faceBackers.length - i,
+                      borderRadius: '50%',
+                      boxShadow: '0 0 0 2px #0d0d0d',
+                      display: 'inline-flex',
+                    }}
+                  >
+                    <ProfileAvatar address={b} avatarUrl={avatars[b]} size={18} />
+                  </span>
+                ))}
+                {campaign.backers > faceBackers.length && (
+                  <span
+                    style={{ marginLeft: -6, zIndex: 0, boxShadow: '0 0 0 2px #0d0d0d' }}
+                    className="inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-raised text-[8px] font-mono text-muted"
+                  >
+                    +{campaign.backers - faceBackers.length}
+                  </span>
+                )}
+              </span>
+            )}
+            <span>
+              {campaign.backers} backer{campaign.backers === 1 ? '' : 's'}
+            </span>
           </span>
         </div>
+        {/* Under-goal close: in the reimbursement model the organizer already
+            paid everything at minute zero, so a fund that closes short simply
+            means they absorbed the difference — say so, since it answers the
+            question every viewer of a 60% bar has. */}
+        {campaign.status !== 'open' &&
+          BigInt(campaign.raisedWei || '0') < BigInt(campaign.goalWei || '1') && (
+            <p className="mt-1 text-[10px] font-mono text-muted">
+              the organizer covered the rest
+            </p>
+          )}
       </div>
       {open && !isOrganizer && (
         <div className="flex flex-wrap items-center gap-2">
