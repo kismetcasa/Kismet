@@ -1878,6 +1878,34 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     />
                   </div>
                 </div>
+
+                {/* Discoverability cross-link: artists reach for the pencil to
+                    "edit the artwork", so the collector download is offered
+                    HERE too — but as a hand-off to its own panel, never as a
+                    field of this form: this form's save takes an Arweave
+                    propagation wait + a second wallet signature + an on-chain
+                    write, none of which a zip attach needs (or should appear
+                    to need). Swapping panels is safe — the file panel doesn't
+                    touch this draft's title/description state. */}
+                <div className="flex items-center justify-between gap-3 border border-line px-3 py-2">
+                  <p className="text-[10px] font-mono text-muted min-w-0 truncate">
+                    {cfile
+                      ? `collector download · ${cfile.name} · v${cfile.v}`
+                      : 'collector download · none attached'}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={savingMeta}
+                    onClick={() => {
+                      setEditing(false)
+                      setManagingFile(true)
+                    }}
+                    className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim transition-colors disabled:opacity-50"
+                  >
+                    {cfile ? 'manage' : 'attach'}
+                  </button>
+                </div>
+
                 <div className="flex gap-2">
                   <button
                     onClick={handleSaveMetadata}
