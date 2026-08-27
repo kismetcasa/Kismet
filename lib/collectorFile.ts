@@ -1,4 +1,5 @@
 import 'server-only'
+import { Redis } from '@upstash/redis'
 import { redis } from './redis'
 import { strictRead, safeRead } from './redisRead'
 import { randomHex } from './random'
@@ -137,12 +138,32 @@ export class CfileDataError extends Error {
 }
 
 /**
- * Write a version's chunks. SEQUENTIAL awaits on purpose, one command per
- * REST call: auto-pipelining batches same-tick commands into one request,
- * and two ~5.4 MB chunk SETs in one request breach Upstash's 10 MB cap.
- * Chunks land with a short TTL; the commit MULTI PERSISTs them together
- * with the record write, so a crash between the two leaves only
- * self-expiring orphans — never a record pointing at missing bytes.
+ * Dedicated client for chunk I/O, auto-pipelining OFF. The shared client's
+ * auto-pipeline is CLIENT-GLOBAL with a two-microtask flush window (SDK
+ * AutoPipelineExecutor; `get`/`set` are not in its EXCLUDE list), so two
+ * CONCURRENT requests' chunk commands landing in the same tick would be
+ * batched into ONE REST call — two ~5.4 MB replies in one response breaches
+ * Upstash's 10 MB cap. A non-pipelining client sends one HTTP request per
+ * command unconditionally, which also makes parallel chunk I/O safe (each
+ * request/response carries a single chunk). automaticDeserialization is off
+ * too: chunks come back as raw strings, no JSON.parse pass at all (the 'b'
+ * prefix stays as defense-in-depth for anything else that reads these keys).
+ */
+const blobRedis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL ?? 'https://placeholder.upstash.io',
+  token: process.env.UPSTASH_REDIS_REST_TOKEN ?? 'placeholder',
+  enableAutoPipelining: false,
+  automaticDeserialization: false,
+  // lib/redis.ts's bounded-retry rationale applies unchanged.
+  retry: { retries: 2, backoff: (n) => 2 ** n * 50 + Math.floor(Math.random() * 50) },
+})
+
+/**
+ * Write a version's chunks (parallel — one bounded HTTP request each on the
+ * dedicated client). Chunks land with a short TTL; the commit MULTI
+ * PERSISTs them together with the record write, so a crash between the two
+ * leaves only self-expiring orphans — never a record pointing at missing
+ * bytes.
  */
 export async function writeCfileBlobChunks(
   collection: string,
@@ -151,13 +172,15 @@ export async function writeCfileBlobChunks(
   chunks: string[],
 ): Promise<void> {
   const ref = cfileRef(collection, tokenId)
-  for (let i = 0; i < chunks.length; i++) {
-    await redis.set(keyBlob(ref, blobSeq, i), chunks[i], { ex: CFILE_BLOB_ORPHAN_TTL_SECS })
-  }
+  await Promise.all(
+    chunks.map((chunk, i) =>
+      blobRedis.set(keyBlob(ref, blobSeq, i), chunk, { ex: CFILE_BLOB_ORPHAN_TTL_SECS }),
+    ),
+  )
 }
 
-/** Read + reassemble a version's bytes. Sequential for the same 10 MB-cap
- *  reason as the writer. strictRead per chunk (outage → throw → 503);
+/** Read + reassemble a version's bytes (parallel single-chunk requests on
+ *  the dedicated client). strictRead per chunk (outage → throw → 503);
  *  a missing or malformed chunk is a CfileDataError (→ 500). */
 export async function readCfileBlob(
   collection: string,
@@ -165,15 +188,21 @@ export async function readCfileBlob(
   version: { blobSeq: number; chunks: number; size: number },
 ): Promise<Buffer> {
   const ref = cfileRef(collection, tokenId)
-  const chunks: string[] = []
-  for (let i = 0; i < version.chunks; i++) {
-    const raw = await strictRead('cfile-blob', () => redis.get<string>(keyBlob(ref, version.blobSeq, i)))
-    if (typeof raw !== 'string') throw new CfileDataError(`chunk ${i} of blob ${version.blobSeq} missing`)
-    chunks.push(raw)
-  }
+  const chunks = await Promise.all(
+    Array.from({ length: version.chunks }, (_, i) =>
+      strictRead('cfile-blob', () => blobRedis.get<string>(keyBlob(ref, version.blobSeq, i))),
+    ),
+  )
   try {
-    return decodeCfileChunks(chunks, version.size)
+    return decodeCfileChunks(
+      chunks.map((raw, i) => {
+        if (typeof raw !== 'string') throw new CfileDataError(`chunk ${i} of blob ${version.blobSeq} missing`)
+        return raw
+      }),
+      version.size,
+    )
   } catch (err) {
+    if (err instanceof CfileDataError) throw err
     throw new CfileDataError(err instanceof Error ? err.message : 'chunk decode failed')
   }
 }

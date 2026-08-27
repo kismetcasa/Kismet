@@ -897,10 +897,12 @@ review's budget model:
   by a hard platform meter — accepted knowingly on the low-adoption
   premise. At real adoption this line is the first thing to re-examine
   (R2 is the flagged next home; the design doc records the trade).
-- **The 10 MB request/reply cap now binds a hot path**: chunk reads/writes
-  are one command per REST call BY DESIGN (`lib/collectorFile.ts`) — a
-  same-tick `Promise.all` over chunks would be auto-pipelined into one
-  over-cap request. Do not "optimize" this into a batch.
+- **The 10 MB request/reply cap now binds a hot path**: chunk I/O runs on a
+  DEDICATED non-auto-pipelining client (`lib/collectorFile.ts`) so every
+  chunk travels as its own bounded HTTP request. The shared client cannot
+  be used here: its auto-pipeline is client-global, so two CONCURRENT
+  requests' chunk GETs in the same tick would batch into one over-cap
+  reply. Do not "optimize" chunk I/O onto the shared client or into MGET.
 - Commands: +`chunks` (≤4) per upload/download — noise at any plausible
   volume. The previous `cfile-global-bytes` day meter is deleted; the
   fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.

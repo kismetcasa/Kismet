@@ -28,8 +28,8 @@ when a new version lands — and "playing live with online emu"._
 > re-examine at real adoption, where R2 remains the flagged next home), and
 > version history keeps **bytes for only the last 3 versions**
 > (`CFILE_BYTES_RETENTION`; older rows stay as metadata). New mechanics:
-> 4 MiB chunk keys under Upstash's 10 MB request cap (sequential I/O — see
-> §4), a fail-closed **global storage ceiling** (`CFILE_STORAGE_CEILING_BYTES`,
+> 4 MiB chunk keys under Upstash's 10 MB request cap (dedicated
+> non-pipelining client — see §4), a fail-closed **global storage ceiling** (`CFILE_STORAGE_CEILING_BYTES`,
 > default 512 MiB, ledger hash `cfile-bytes`), and crash-safe commits
 > (chunks land with a 1 h TTL, PERSISTed atomically with the record write).
 > §3's encryption rationale and §10.1's Arweave cost numbers are HISTORICAL
@@ -314,11 +314,15 @@ History bounds: metadata rows are ~250 bytes; keep the last 20 (~5 KB JSON
 worst case). BYTES are kept only for the last **3 distinct versions**
 (`CFILE_BYTES_RETENTION` — current + 2 rollbackable): resident Redis storage
 is a recurring cost, so older rows stay as record while their chunk keys are
-deleted in the same commit that supersedes them. Chunk I/O is one command
-per REST call on purpose — auto-pipelining (`lib/redis.ts`) batches
-same-tick commands into a single request, and two ~5.4 MB chunks in one
-request breach Upstash's 10 MB cap; the `'b'` prefix keeps a chunk from ever
-being JSON-parseable by the SDK's auto-deserialization.
+deleted in the same commit that supersedes them. Chunk I/O runs on a
+DEDICATED non-auto-pipelining client (`lib/collectorFile.ts`) — the shared
+client's auto-pipeline is client-global with a microtask flush window, so
+two CONCURRENT requests' chunk commands landing in the same tick would be
+batched into one REST call, and two ~5.4 MB chunks in one request/reply
+breach Upstash's 10 MB cap. On the dedicated client every chunk travels as
+its own bounded HTTP request, which also makes parallel chunk I/O safe; the
+`'b'` prefix keeps a chunk from ever being JSON-parseable by the shared
+SDK's auto-deserialization.
 
 Reads of `kismetart:cfile:*` on the gated path go through `strictRead`
 (`lib/redisRead.ts:42-66`) — the fail-closed posture `hiddenMoments` uses

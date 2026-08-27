@@ -263,10 +263,17 @@ export async function PUT(req: NextRequest) {
       } catch (err) {
         return upstreamError(504, 'Storage write timed out — try again', err, 'cfile-put')
       }
-      await commitCfileMutation(params.collection, params.tokenId, planned.record, {
-        persistBlob: { blobSeq: planned.version.blobSeq, chunks: planned.version.chunks },
-        prune: planned.prune,
-      })
+      try {
+        await commitCfileMutation(params.collection, params.tokenId, planned.record, {
+          persistBlob: { blobSeq: planned.version.blobSeq, chunks: planned.version.chunks },
+          prune: planned.prune,
+        })
+      } catch (err) {
+        // The MULTI is atomic server-side; a network throw leaves state
+        // unknown but every retry is safe — applied: the re-PUT dedups to
+        // `unchanged`; not applied: the orphan TTL cleans the chunks.
+        return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-put')
+      }
 
       if (wantNotify) {
         after(() =>
@@ -329,7 +336,11 @@ export async function PATCH(req: NextRequest) {
     // already exist, no re-upload; provably prunes nothing (§4.2).
     const next = planRollback(record, body.v, auth.address, Date.now())
     if (!next) return errorResponse(409, "That version's file is no longer stored — upload it again instead")
-    await commitCfileMutation(params.collection, params.tokenId, next.record, { prune: next.prune })
+    try {
+      await commitCfileMutation(params.collection, params.tokenId, next.record, { prune: next.prune })
+    } catch (err) {
+      return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-patch')
+    }
     return NextResponse.json({ file: toPublicDescriptor(next.record) })
   } finally {
     await lock.release()
@@ -362,9 +373,13 @@ export async function DELETE(req: NextRequest) {
     // freed in the same commit, storage returns to the ledger, and history
     // rows remain as the artist's record (all non-restorable).
     const planned = planDetach(record)
-    await commitCfileMutation(params.collection, params.tokenId, planned.record, {
-      prune: planned.prune,
-    })
+    try {
+      await commitCfileMutation(params.collection, params.tokenId, planned.record, {
+        prune: planned.prune,
+      })
+    } catch (err) {
+      return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-delete')
+    }
     return NextResponse.json({ file: null })
   } finally {
     await lock.release()

@@ -13,12 +13,14 @@ import { CFILE_MAX_BYTES } from './collectorFileTypes.ts'
  * the collect-gate is enforced entirely at serve time and no encryption
  * layer exists. Two Upstash facts shape everything here:
  *   - 10 MB per-request/reply cap (REDIS_IMPLEMENTATION_REVIEW.md §4):
- *     chunks are 4 MiB of plaintext (≤ ~5.4 MB encoded) and MUST be read/
- *     written one await per command — auto-pipelining batches same-tick
- *     commands into ONE REST call, which would blow the cap.
- *   - the SDK JSON-parses GET replies: every chunk is prefixed 'b' so no
- *     base64 value can ever parse as JSON (a pure-digit chunk would come
- *     back as a number).
+ *     chunks are 4 MiB of plaintext (≤ ~5.4 MB encoded) and travel ONE
+ *     command per HTTP request — the model layer does chunk I/O on a
+ *     dedicated non-auto-pipelining client, because the shared client's
+ *     pipeline is client-global and would batch CONCURRENT requests' chunk
+ *     commands into one over-cap REST call.
+ *   - the shared SDK client JSON-parses GET replies: every chunk is
+ *     prefixed 'b' so no base64 value can ever parse as JSON (a pure-digit
+ *     chunk would come back as a number).
  */
 
 export const CFILE_CHUNK_BYTES = 4 * 1024 * 1024
