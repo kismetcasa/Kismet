@@ -12,7 +12,7 @@ import { PLATFORM_COLLECTION } from '@/lib/config'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { isWebKitOnlyUA } from '@/lib/serverDevice'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
-import { getCfileRecord, toPublicDescriptor } from '@/lib/collectorFile'
+import { getCfileRecordForSSR, toPublicDescriptor } from '@/lib/collectorFile'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { entriesOpen, isRaffleEnabled } from '@/lib/raffle'
@@ -267,11 +267,12 @@ export default async function MomentPage({ params }: Props) {
     getKvCreatorAddress(address, tokenId),
     isWebKitOnlyUA(),
     // Collector-file descriptor for first-paint (public facts only — the
-    // helper never returns the storage pointer). safeRead inside: a Redis
-    // blip degrades to "no card", refreshed by the card's own status fetch.
-    getCfileRecord(address, tokenId).catch(() => null),
+    // helper never returns the storage pointer). undefined-vs-null matters:
+    // a Redis blip must NOT read as "no file" (descriptorKnown) or the card
+    // would skip the client status fetch that recovers it.
+    getCfileRecordForSSR(address, tokenId),
   ])
-  const initialCfile = toPublicDescriptor(cfileRecord)
+  const initialCfile = cfileRecord === undefined ? undefined : toPublicDescriptor(cfileRecord)
 
   // Prefer KV moment-meta (the EOA mint-proxy wrote at mint time) so
   // Kismet-minted moments resolve to the actual creator EOA. Inprocess

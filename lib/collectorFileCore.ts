@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto'
+import { CFILE_MAX_BYTES } from './collectorFileTypes.ts'
 
 /**
  * Pure core of the collector-file feature (COLLECTOR_DOWNLOADS_DESIGN.md):
@@ -95,11 +96,13 @@ export function sha256Hex(data: Buffer): string {
 // Upload hygiene
 // ---------------------------------------------------------------------------
 
-/** Plaintext size ceiling per version. 2× the MBC5 format ceiling (8 MiB ROM)
- *  and 45× the reference bundle; each version is a PERMANENT Turbo spend
- *  (~$0.51 worst case at retail) and a buffered decrypt, so the cap is a
- *  cost + memory dial, not a format need (design §3.2/§10.1). */
-export const CFILE_MAX_BYTES = 16 * 1024 * 1024
+// Plaintext size ceiling per version: defined once in lib/collectorFileTypes
+// (client-safe — the pickers pre-check it) and re-exported here for the
+// server + verify-script callers. 2× the MBC5 format ceiling (8 MiB ROM) and
+// 45× the reference bundle; each version is a PERMANENT Turbo spend (~$0.51
+// worst case at retail) and a buffered decrypt, so the cap is a cost +
+// memory dial, not a format need (design §3.2/§10.1).
+export { CFILE_MAX_BYTES }
 
 /** Local-file zips start `PK\x03\x04`. A typo filter, not a content control
  *  (JAR/DOCX share the magic; readers parse from the end-of-central-directory)
@@ -167,8 +170,6 @@ export interface CfileRecord {
    *  capped, so deriving this from what's visible would eventually re-mint
    *  an old keyId for new bytes. */
   nextKeySeq: number
-  /** Display-only; the SET NX notify-lock is the enforced cooldown. */
-  notifiedAt?: number
   createdAt: number
 }
 
@@ -209,7 +210,6 @@ export function planAttach(
       current: version,
       history: history.slice(0, CFILE_HISTORY_CAP),
       nextKeySeq: seq + 1,
-      ...(record?.notifiedAt ? { notifiedAt: record.notifiedAt } : {}),
       createdAt: record?.createdAt ?? input.now,
     },
     version,

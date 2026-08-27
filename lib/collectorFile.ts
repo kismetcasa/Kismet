@@ -29,7 +29,7 @@ import type { CfilePublic } from './collectorFileTypes'
  *   collectors:<ref>         ZSET addr, score=first-seen ms  (no TTL)
  *   cfile-refs:<addr>        SET  "<ref>"                    (no TTL; erasure index)
  *   cfile-grace:<ref>:<addr> STR '1'                         (EX 900)
- *   cfile-ticket:<token>     STR JSON {ref,addr,v,name}      (EX 300/1800, single-use)
+ *   cfile-ticket:<token>     STR JSON {ref,addr,v,name,share?} (EX 300/1800, single-use)
  *   cfile-lock:<ref>         SET NX (lib/redisLock)          (EX 180)
  *   cfile-notify-lock:<ref>  SET NX — IS the 24h cooldown    (EX 86400)
  *   cfile-blocked            SET  "<ref>" — admin kill-switch, checked on DOWNLOAD
@@ -82,6 +82,20 @@ export async function getCfileRecordStrict(collection: string, tokenId: string):
 export async function getCfileRecord(collection: string, tokenId: string): Promise<CfileRecord | null> {
   const ref = cfileRef(collection, tokenId)
   return parseRecord(await safeRead('cfile-record', () => redis.get<string | CfileRecord>(keyRecord(ref)), null))
+}
+
+/** SSR read that keeps "no file" and "Redis blip" DISTINGUISHABLE:
+ *  null = known-absent (the card can skip its status fetch entirely),
+ *  undefined = unknown (the card's own fetch recovers). Collapsing a blip
+ *  into null would make an attached file's card silently vanish for that
+ *  page view with no client-side recovery. */
+export async function getCfileRecordForSSR(collection: string, tokenId: string): Promise<CfileRecord | null | undefined> {
+  try {
+    const ref = cfileRef(collection, tokenId)
+    return parseRecord(await strictRead('cfile-record-ssr', () => redis.get<string | CfileRecord>(keyRecord(ref))))
+  } catch {
+    return undefined
+  }
 }
 
 export async function setCfileRecord(collection: string, tokenId: string, record: CfileRecord): Promise<void> {
@@ -169,10 +183,16 @@ export async function recordCollectorAudience(
  *  (catches holders the event-sourced index missed once they've interacted). */
 export async function getCfileAudience(collection: string, tokenId: string): Promise<string[]> {
   const ref = cfileRef(collection, tokenId)
-  const [collectors, downloaders] = await Promise.all([
-    redis.zrange(keyCollectors(ref), 0, -1) as Promise<string[]>,
-    redis.hkeys(keyDl(ref)) as Promise<string[]>,
-  ])
+  // strictRead: callers are the artist-facing manage/notify routes (which map
+  // a throw to their 503 convention) and the fanout (whose catch aborts
+  // without consuming the cooldown) — a silently-empty audience would read
+  // as "nobody to notify" and burn the artist's day.
+  const [collectors, downloaders] = await strictRead('cfile-audience', () =>
+    Promise.all([
+      redis.zrange(keyCollectors(ref), 0, -1) as Promise<string[]>,
+      redis.hkeys(keyDl(ref)) as Promise<string[]>,
+    ]),
+  )
   return Array.from(new Set<string>([...collectors.map((a) => a.toLowerCase()), ...downloaders.map((a) => a.toLowerCase())]))
 }
 
@@ -262,6 +282,10 @@ export interface CfileTicket {
   addr: string
   v: number
   name: string
+  /** Copy-link variant: the download route answers its bare GET with a
+   *  confirmation page instead of bytes, so unfurl bots and URL-bar
+   *  prefetchers can't redeem it (design §5.1). */
+  share?: true
 }
 
 /**
@@ -280,11 +304,35 @@ export async function mintCfileTicket(
   opts: { share?: boolean } = {},
 ): Promise<string> {
   const token = randomHex(32)
-  const ticket: CfileTicket = { ref: cfileRef(collection, tokenId), addr: address.toLowerCase(), v, name }
+  const ticket: CfileTicket = {
+    ref: cfileRef(collection, tokenId),
+    addr: address.toLowerCase(),
+    v,
+    name,
+    ...(opts.share ? { share: true as const } : {}),
+  }
   await redis.set(keyTicket(token), JSON.stringify(ticket), {
     ex: opts.share ? CFILE_SHARE_TICKET_TTL_SECS : CFILE_TICKET_TTL_SECS,
   })
   return token
+}
+
+function parseTicket(raw: unknown): CfileTicket | null {
+  if (!raw) return null
+  try {
+    return typeof raw === 'string' ? (JSON.parse(raw) as CfileTicket) : (raw as CfileTicket)
+  } catch {
+    return null
+  }
+}
+
+/** Validate a ticket WITHOUT consuming it. The download route peeks first and
+ *  consumes only after the bytes are fetched and decrypted, so a transient
+ *  gateway failure (or a busy 503) never burns the single-use ticket — the
+ *  same URL simply works on retry. */
+export async function peekCfileTicket(token: string): Promise<CfileTicket | null> {
+  if (!/^[0-9a-f]{64}$/.test(token)) return null
+  return parseTicket(await strictRead('cfile-ticket-peek', () => redis.get(keyTicket(token))))
 }
 
 // GET+DEL in one script so two concurrent redemptions can't both pass —
@@ -301,12 +349,7 @@ export async function consumeCfileTicket(token: string): Promise<CfileTicket | n
   const raw = await strictRead('cfile-ticket', () =>
     redis.eval(CONSUME_TICKET_LUA, [keyTicket(token)], []),
   )
-  if (!raw) return null
-  try {
-    return typeof raw === 'string' ? (JSON.parse(raw) as CfileTicket) : (raw as CfileTicket)
-  } catch {
-    return null
-  }
+  return parseTicket(raw)
 }
 
 /** Admin kill-switch, checked on DOWNLOAD (not just attach) so moderation can

@@ -74,12 +74,21 @@ export async function GET(req: NextRequest) {
   const auth = await requireCfileManager(req, params)
   if (auth instanceof NextResponse) return auth
 
-  const [record, downloaders, audience, cooldownTtl] = await Promise.all([
-    getCfileRecord(params.collection, params.tokenId),
-    getDownloaderCount(params.collection, params.tokenId),
-    getCfileAudienceCount(params.collection, params.tokenId),
-    redis.ttl(cfileNotifyLockKey(cfileRef(params.collection, params.tokenId))).catch(() => -2),
-  ])
+  let record, downloaders, audience, cooldownTtl
+  try {
+    ;[record, downloaders, audience, cooldownTtl] = await Promise.all([
+      getCfileRecord(params.collection, params.tokenId),
+      getDownloaderCount(params.collection, params.tokenId),
+      getCfileAudienceCount(params.collection, params.tokenId),
+      redis.ttl(cfileNotifyLockKey(cfileRef(params.collection, params.tokenId))).catch(() => -2),
+    ])
+  } catch (err) {
+    // getCfileAudience is strictRead (a silently-empty audience would lie to
+    // the notify pre-check) — map its throw to the feature's 503 shape
+    // instead of a bare 500.
+    console.error('[cfile-manage] read failed', err instanceof Error ? err.message : err)
+    return errorResponse(503, 'Temporarily unavailable — try again shortly')
+  }
   return NextResponse.json({
     file: toPublicDescriptor(record),
     history: (record?.history ?? []).map((h) => ({

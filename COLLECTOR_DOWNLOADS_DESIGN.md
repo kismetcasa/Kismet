@@ -316,8 +316,9 @@ descriptor-in-page-payload above already does. Dropped entirely.
 - Rollback = re-activate an old history record as `v+1` **carrying its
   original `keyId` and `iv` verbatim** — decryptable by construction (§3.2).
   No re-upload, no new spend.
-- Old versions stay downloadable by the artist from the manage panel;
-  collectors only ever see current.
+- The manage panel lists old versions (name, size, date) with one-click
+  rollback; the only *download* anyone gets — artist included — is the
+  current version. Collectors only ever see current.
 
 ### 4.3 Erasure (validation finding — the draft missed this entirely)
 
@@ -414,16 +415,18 @@ re-read per collector click.
 ```ts
 const address = await getSessionAddress(req)                  // lib/session.ts:72
 if (!address) → offer path 2
-const wallets = planUnionCheck(address,
-                  await expandToFidSiblings(address)).wallets // BOUNDED ≤10 (passUnion.ts:21)
+const wallets = await expandToGateWallets(address)            // BOUNDED union (addressUnion.ts)
 const holds = await holdsAny(collection, tokenId, wallets)    // balanceOfBatch, fails closed
 ```
 
 - `expandToFidSiblings` alone is **uncapped** (validation caught the draft
-  claiming otherwise) — the bound comes from reusing `planUnionCheck`, the
-  same pure helper the pass gate's union uses. `expandToGateWallets` itself
-  stays unused here: it is pass-shaped (smart-wallet exclusion is right for
-  validity credits, wrong for "who holds this token").
+  claiming otherwise) — the bound comes from the union helper's own
+  `MAX_UNION_WALLETS` cap. The shipped gate (`lib/collectorFileGate.ts`)
+  uses `expandToGateWallets` directly: despite the pass-flavored name it is
+  exactly the bounded caller-first FC-sibling union, deduped/lowercased and
+  failing degraded to `[caller]` — the pass-specific blacklist logic lives
+  in `hasGateAccess`, not in the union helper, so nothing pass-shaped leaks
+  into "who holds this token".
 - Cache the **expanded union** per address (~5 min), not just the verdict —
   the sibling expansion is the 4–6 sequential dependent reads
   `REDIS_IMPLEMENTATION_REVIEW.md:227-232` calls the latency floor.
@@ -544,21 +547,26 @@ Therefore:
   projected per-fanout command delta gets a row in
   `REDIS_IMPLEMENTATION_REVIEW.md`'s budget table **before** ship.
 - **Holder filter with sane failure semantics.** Filter the audience through
-  the exported `holdsEditionBatch` (chunks of 200) so ex-holders aren't pinged
-  about a file they can no longer download. Its raffle contract is
-  all-or-nothing-false on any chunk failure (`lib/raffle.ts:208-212`) — fine
-  for a draw, catastrophic here (one flaky chunk ⇒ zero notified ⇒ cooldown
-  burned). The lifted variant returns `null` on failure, and the fanout
-  **aborts without consuming the cooldown lock**; the cooldown is released
-  (DEL) whenever delivery count is zero.
-- **Paced delivery, push awaited.** Batches of 50 (`FANOUT_BATCH` precedent)
-  with a small inter-batch delay, `_forcePriority` to skip the 2-reads-per-
-  recipient priority probe, and the push dispatch **awaited through a small
-  semaphore** within each batch (the broadcast machinery's
-  `BROADCAST_SEND_CONCURRENCY = 4` + `runBounded` pattern,
-  `lib/farcasterNotifications.ts:1023`) instead of the pipeline's default
-  fire-and-forget. Scheduled via `after()`; resumable via a cursor in the
-  cooldown record if the process dies mid-fanout.
+  the exported `holdsEditionBatch`, applied per delivery batch of 50 so a
+  filter failure stops delivery exactly where it stands, and ex-holders
+  aren't pinged about a file they can no longer download. Its raffle
+  contract is all-or-nothing-false on any chunk failure
+  (`lib/raffle.ts:208-212`) — fine for a draw, catastrophic here (one flaky
+  chunk ⇒ zero notified ⇒ cooldown burned). The lifted variant returns
+  `null` on failure, and the fanout **stops at the persisted cursor**; the
+  cooldown is released (DEL) only when a fresh run delivered nothing.
+- **Paced delivery, push awaited.** Batches of 50 (`FANOUT_BATCH`),
+  `_forcePriority` to skip the 2-reads-per-recipient priority probe, and
+  the push dispatch **awaited per recipient** (`_awaitPush`) — each awaited
+  send holds ≤10 s (`SEND_TIMEOUT_MS`) and at most one batch is in flight,
+  so in-flight push HTTP is bounded to 50 (the detached fire-and-forget
+  shape is the OOM-incident shape). Scheduled via `after()`. **The
+  notify-lock's VALUE is the run's progress cursor** — a
+  `{cursor,total,done,startedAt}` record advanced after every delivered
+  batch with `SET … keepTtl` (the 24 h window never extends). A process
+  death mid-fanout leaves `done:false`; the notify route reads that and
+  queues a **resume from the cursor** over the same deterministically
+  sorted audience instead of answering 409.
 - **The 24 h per-artwork cooldown IS the dedup.** `file_update` deliberately
   stays **out of `BURST_DEDUP_TYPES`** — validation caught that its lock key
   is `(type, recipient, actor, tokenAddress)` with **no tokenId**
@@ -1058,7 +1066,7 @@ save path (which drags a propagation wait, a second signature, and a chain
 write). The residual-gaps ledger in §8.2 is that round's honest remainder.
 
 **Implementation delta (shipped on this branch).** Track B is implemented as
-designed with four evidence-earned refinements: (1) no pass gate on PUT (see
+designed with these evidence-earned refinements: (1) no pass gate on PUT (see
 §5 — `/api/upload` and `update-uri` are the precedents, and on-chain
 ADMIN|METADATA is the stronger check); (2) downloads are **ticket-first on
 every surface** — one client code path mints a single-use capability URL and
@@ -1068,7 +1076,19 @@ download route still honors a plain cookie navigation as a fallback);
 badge (public descriptor + the viewer's last-downloaded version); (4) the
 `notifiedAt` display field was dropped — the `SET NX EX 86400` notify-lock IS
 the cooldown state and the manage view reads its TTL, so there is no second
-copy to drift. The `file_update` push type ships seeded ON for new
+copy to drift; (5) tickets are **peeked** up front and **consumed only after
+a successful decrypt** — a busy slot, an Arweave blip, or a mid-transfer
+failure never burns the single use, and the losing racer of a double-redeem
+gets the 403; (6) share tickets (30-min TTL, marked `share` in the ticket
+record) land on an HTML **confirm page** unless `go=1` is present, so
+link-unfurl bots in chat apps can't redeem them, and `Sec-Purpose`/`Purpose`
+prefetch requests get a body-less 204; (7) the crash-resume cursor of §6.2
+lives in the notify-lock's value, written per delivered batch; (8) the §10.2
+kill-switch has an admin route (`/api/admin/cfile-block`, GET/POST) that
+audits every block/unblock through `recordAdminAction`; (9) the artwork
+page reads the record via `getCfileRecordForSSR` — strictRead with a
+tri-state result, so a Redis blip renders as "descriptor unknown" (the card
+fetches status itself) rather than as "no file attached". The `file_update` push type ships seeded ON for new
 registrations per §6.3's recommendation (a one-line revert if product
 disagrees). Every §13 blocker fix is pinned by
 `scripts/verify-collector-file.ts` (wired into `verify:flows`), whose first

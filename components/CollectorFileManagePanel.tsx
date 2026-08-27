@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { X } from 'lucide-react'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { formatCfileSize, type CfileManageView, type CfilePublic } from '@/lib/collectorFileTypes'
+import { CFILE_MAX_BYTES, formatCfileSize, type CfileManageView, type CfilePublic } from '@/lib/collectorFileTypes'
 
 /**
  * Artist-side manage panel for an artwork's collector file — an inline panel
@@ -14,8 +14,6 @@ import { formatCfileSize, type CfileManageView, type CfilePublic } from '@/lib/c
  * wait, a second wallet signature and an on-chain write — attaching a zip is
  * a session-only Kismet-side action and must not inherit any of it.
  */
-
-const MAX_BYTES = 16 * 1024 * 1024
 
 interface Props {
   collection: string
@@ -64,7 +62,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
 
   function handlePick(f: File | null) {
     if (!f) return
-    if (f.size > MAX_BYTES) {
+    if (f.size > CFILE_MAX_BYTES) {
       toast.error('File too large', { description: 'The limit is 16 MB per version' })
       return
     }

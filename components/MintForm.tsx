@@ -39,6 +39,7 @@ import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError, toastChainStalled, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
+import { CFILE_MAX_BYTES, formatCfileSize } from '@/lib/collectorFileTypes'
 import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -355,7 +356,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // on an attach failure the artwork page's `file` panel is the recovery path.
   const [cfileFile, setCfileFile] = useState<File | null>(null)
   const cfileInputRef = useRef<HTMLInputElement>(null)
-  const CFILE_MAX_BYTES = 16 * 1024 * 1024
 
   // Post-mint attach of the staged zip. Best-effort by design: the mint has
   // already succeeded, so a failure here must never look like a mint failure —
@@ -2246,7 +2246,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </label>
           <p className="text-xs text-muted font-mono mt-1 truncate">
             {cfileFile
-              ? `${cfileFile.name} \u00b7 ${cfileFile.size < 1024 * 1024 ? `${Math.round(cfileFile.size / 1024)} KB` : `${(cfileFile.size / (1024 * 1024)).toFixed(1)} MB`}`
+              ? `${cfileFile.name} \u00b7 ${formatCfileSize(cfileFile.size)}`
               : 'optional zip \u2014 only collectors can download it'}
           </p>
         </div>

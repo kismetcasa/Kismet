@@ -9,7 +9,11 @@ import {
   getCfileRecord,
 } from '@/lib/collectorFile'
 import { parseCfileParams, requireCfileManager } from '@/lib/collectorFileGate'
-import { CFILE_FANOUT_CEILING, notifyCollectorsOfUpdate } from '@/lib/collectorFileFanout'
+import {
+  CFILE_FANOUT_CEILING,
+  notifyCollectorsOfUpdate,
+  parseNotifyProgress,
+} from '@/lib/collectorFileFanout'
 
 export const runtime = 'nodejs'
 
@@ -36,17 +40,46 @@ export async function POST(req: NextRequest) {
   const record = await getCfileRecord(params.collection, params.tokenId)
   if (!record?.current) return errorResponse(404, 'No file attached to this artwork')
 
-  const cooldownTtl = await redis
-    .ttl(cfileNotifyLockKey(cfileRef(params.collection, params.tokenId)))
-    .catch(() => -2)
+  const lockKey = cfileNotifyLockKey(cfileRef(params.collection, params.tokenId))
+  const [cooldownTtl, rawProgress] = await Promise.all([
+    redis.ttl(lockKey).catch(() => -2),
+    redis.get(lockKey).catch(() => null),
+  ])
   if (cooldownTtl > 0) {
+    // A crash/deploy mid-fanout leaves the lock's progress value at
+    // done:false — that is a RESUME, not a refusal: the fanout continues
+    // from its persisted cursor over the same sorted audience.
+    const progress = parseNotifyProgress(rawProgress)
+    if (progress && !progress.done) {
+      after(() =>
+        notifyCollectorsOfUpdate({
+          collection: params.collection,
+          tokenId: params.tokenId,
+          actor: auth.address,
+          note: note ?? record.current?.note,
+          resume: true,
+        }).catch(() => {}),
+      )
+      return NextResponse.json({
+        queued: true,
+        resumed: true,
+        cursor: progress.cursor,
+        total: progress.total,
+      })
+    }
     return NextResponse.json(
       { error: 'Collectors were already notified recently', retryInSecs: cooldownTtl },
       { status: 409 },
     )
   }
 
-  const audience = await getCfileAudienceCount(params.collection, params.tokenId)
+  let audience: number
+  try {
+    audience = await getCfileAudienceCount(params.collection, params.tokenId)
+  } catch (err) {
+    console.error('[cfile-notify] audience read failed', err instanceof Error ? err.message : err)
+    return errorResponse(503, 'Temporarily unavailable — try again shortly')
+  }
   if (audience > CFILE_FANOUT_CEILING) {
     // Refusal, not truncation (design §6.2): the passive update badge is the
     // path for editions this size until ops raises the ceiling with the

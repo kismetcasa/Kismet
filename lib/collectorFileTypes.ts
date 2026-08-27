@@ -2,7 +2,13 @@
 // the server model (lib/collectorFile) is 'server-only', so the shapes the
 // UI consumes live here. No imports.
 
-/** One shared B/KB/MB formatter for the card + manage panel. */
+/** Plaintext size ceiling per version — the ONE definition every picker and
+ *  the server enforce (a "dial" per the design; changing it here changes it
+ *  everywhere). Client-safe so the mint form and manage panel can pre-check
+ *  without importing server code. */
+export const CFILE_MAX_BYTES = 16 * 1024 * 1024
+
+/** One shared B/KB/MB formatter for the card + manage panel + mint form. */
 export function formatCfileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`

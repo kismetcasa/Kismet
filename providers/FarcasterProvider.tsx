@@ -254,6 +254,10 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   // resolved (bootstrap imported it), so the dynamic import in onClick is
   // instant.
   const showAddKismetPrompt = useCallback((message: string) => {
+    // One add-prompt per session, enforced HERE (the choke point) — with
+    // both the 2nd-open trigger and the nudge campaign able to fire in the
+    // same bootstrap, a call-site-only guard would let them stack.
+    if (addPromptShownRef.current) return
     addPromptShownRef.current = true
     toast(message, {
       duration: 8000,
@@ -627,11 +631,6 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           }).catch(() => {})
         }
 
-        // Admin notification-nudge campaign (lib/notifNudge): once per
-        // campaign stamp per device, prompt users WITHOUT push to enable it.
-        // Runs after eligibility above so it sees this open's add-state.
-        maybeRunNotifNudge(notifNudgeAt)
-
         // Host capability probe — post-paint, so the round-trip costs
         // nothing visible. Bounded like the other bridge awaits; a timeout
         // or rejection (hosts predating getCapabilities) reads as unknown
@@ -651,13 +650,21 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           canAddMiniAppRef.current = capabilities.includes('actions.addMiniApp')
         }
 
+        // Admin notification-nudge campaign (lib/notifNudge): once per
+        // campaign stamp per device, prompt users WITHOUT push to enable it.
+        // Deliberately AFTER the capability probe — the not-added branch
+        // shows the addMiniApp sheet, which must not be offered on a host
+        // whose capability list excludes it (a dead action would still have
+        // consumed the device's one nudge for this campaign).
+        maybeRunNotifNudge(notifNudgeAt)
+
         // Count only opens where the prompt could actually have been
         // offered: eligibility confirmed (a null ctx is "unknown", not
         // "not added") on a host that can open the consent sheet.
         // Otherwise a flaky bridge or an addMiniApp-less host would
         // silently consume open #2 and the prompt would never fire
         // anywhere.
-        if (ctx && canAddMiniAppRef.current && !added && !notificationsEnabled) {
+        if (ctx && canAddMiniAppRef.current && !added && !notificationsEnabled && !addPromptShownRef.current) {
           const opens = bumpAndReadOpenCount()
           if (opens === PROMPT_TARGET_OPEN) {
             showAddKismetPrompt('Get pinged about collects, follows and more!')
