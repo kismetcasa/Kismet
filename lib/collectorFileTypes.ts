@@ -15,7 +15,7 @@ export function formatCfileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** The public descriptor: display facts only — never uri/iv/keyId. */
+/** The public descriptor: display facts only — never storage internals. */
 export interface CfilePublic {
   name: string
   size: number
@@ -23,12 +23,21 @@ export interface CfilePublic {
   v: number
   updatedAt: number
   note?: string
-  pending?: boolean
 }
 
 export interface CfileManageView {
   file: CfilePublic | null
-  history: { v: number; name: string; size: number; sha256: string; updatedAt: number; note?: string }[]
+  history: {
+    v: number
+    name: string
+    size: number
+    sha256: string
+    updatedAt: number
+    note?: string
+    /** Bytes still stored → rollback offered. Older versions keep their row
+     *  but fall out of the retention window (re-upload to bring one back). */
+    restorable: boolean
+  }[]
   downloaders: number
   audience: number
   fanoutCeiling: number

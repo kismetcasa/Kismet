@@ -1,30 +1,32 @@
 import 'server-only'
 import { redis } from './redis'
 import { strictRead, safeRead } from './redisRead'
-import { acquireLock } from './redisLock'
 import { randomHex } from './random'
-import { readBodyBounded } from './boundedBody'
-import { gatewayUrls } from './arweave/gateways'
 import {
-  CFILE_MAX_BYTES,
-  CFILE_TAG_BYTES,
-  CFILE_IV_BYTES,
   cfileRef,
+  decodeCfileChunks,
+  recordStoredBytes,
+  type CfileBlobRef,
   type CfileRecord,
-  type CfileVersion,
 } from './collectorFileCore'
 import type { CfilePublic } from './collectorFileTypes'
 
 /**
- * Redis model + gate plumbing for collector files (COLLECTOR_DOWNLOADS_DESIGN.md).
- * The pure crypto/planning core lives in lib/collectorFileCore (verify-pinned);
- * this module owns the keys, the fail-closed reads on the gated path, the
+ * Redis model + gate plumbing for collector files (COLLECTOR_DOWNLOADS_DESIGN.md,
+ * "Storage pivot"). The pure chunk-codec/planning core lives in
+ * lib/collectorFileCore (verify-pinned); this module owns the keys, the
+ * fail-closed reads on the gated path, the chunked blob store, the
  * audience/erasure indexes, tickets, grace markers, the kill-switch, and the
- * hardened ciphertext fetch. Routes own auth, rate limits, and concurrency.
+ * global storage ceiling. Routes own auth, rate limits, and concurrency.
  *
  * Key inventory (all kismetart:, all per-artwork keys canonicalized via
  * cfileRef — lowercased collection + minimal-decimal tokenId):
  *   cfile:<ref>              STR JSON CfileRecord            (no TTL)
+ *   cfile-blob:<ref>:<seq>:<i> STR 'b'+base64 chunk — written EX 3600,
+ *                            PERSISTed by the commit MULTI (a crashed PUT
+ *                            self-heals: unreferenced chunks expire)
+ *   cfile-bytes              HASH ref → resident stored bytes (absolute,
+ *                            rewritten per mutation — the ceiling's ledger)
  *   cfile-dl:<ref>           HASH addr → last downloaded v   (no TTL)
  *   collectors:<ref>         ZSET addr, score=first-seen ms  (no TTL)
  *   cfile-refs:<addr>        SET  "<ref>"                    (no TTL; erasure index)
@@ -33,10 +35,11 @@ import type { CfilePublic } from './collectorFileTypes'
  *   cfile-lock:<ref>         SET NX (lib/redisLock)          (EX 180)
  *   cfile-notify-lock:<ref>  SET NX — IS the 24h cooldown    (EX 86400)
  *   cfile-blocked            SET  "<ref>" — admin kill-switch, checked on DOWNLOAD
- *   cfile-global-bytes:<day> STR  INCRBY meter — fail-CLOSED platform ceiling
  */
 
 const keyRecord = (ref: string) => `kismetart:cfile:${ref}`
+const keyBlob = (ref: string, seq: number, i: number) => `kismetart:cfile-blob:${ref}:${seq}:${i}`
+const KEY_BYTES = 'kismetart:cfile-bytes'
 const keyDl = (ref: string) => `kismetart:cfile-dl:${ref}`
 const keyCollectors = (ref: string) => `kismetart:collectors:${ref}`
 const keyRefs = (addr: string) => `kismetart:cfile-refs:${addr.toLowerCase()}`
@@ -45,18 +48,21 @@ const keyTicket = (token: string) => `kismetart:cfile-ticket:${token}`
 export const cfileLockKey = (ref: string) => `kismetart:cfile-lock:${ref}`
 export const cfileNotifyLockKey = (ref: string) => `kismetart:cfile-notify-lock:${ref}`
 const KEY_BLOCKED = 'kismetart:cfile-blocked'
-const keyGlobalBytes = (day: string) => `kismetart:cfile-global-bytes:${day}`
 
 export const CFILE_GRACE_TTL_SECS = 15 * 60
 export const CFILE_TICKET_TTL_SECS = 5 * 60
 export const CFILE_SHARE_TICKET_TTL_SECS = 30 * 60
 export const CFILE_NOTIFY_COOLDOWN_SECS = 24 * 60 * 60
+const CFILE_BLOB_ORPHAN_TTL_SECS = 60 * 60
 
-export function getCfileMasterKey(): string {
-  const key = process.env.COLLECTOR_FILE_MASTER_KEY
-  if (!key) throw new Error('COLLECTOR_FILE_MASTER_KEY not configured')
-  return key
-}
+/** Global resident-bytes ceiling across every artwork's stored versions.
+ *  Keeps the whole feature (worst case) comfortably inside Upstash's first
+ *  free storage GB next to the ~sub-MB rest of the database; ops raises it
+ *  by env when adoption asks (storage past 1 GB bills $0.25/GB-mo — a cost
+ *  dial, not a cliff). */
+export const CFILE_STORAGE_CEILING_BYTES = Number(
+  process.env.CFILE_STORAGE_CEILING_BYTES ?? 512 * 1024 * 1024,
+)
 
 // ---------------------------------------------------------------------------
 // Record CRUD
@@ -98,11 +104,7 @@ export async function getCfileRecordForSSR(collection: string, tokenId: string):
   }
 }
 
-export async function setCfileRecord(collection: string, tokenId: string, record: CfileRecord): Promise<void> {
-  await redis.set(keyRecord(cfileRef(collection, tokenId)), JSON.stringify(record))
-}
-
-// What everyone may see: existence + display facts, never uri/iv/keyId.
+// What everyone may see: existence + display facts, never storage internals.
 // Declared in lib/collectorFileTypes (client-safe) — this module is
 // server-only and the UI needs the shape.
 export type { CfilePublic } from './collectorFileTypes'
@@ -117,40 +119,104 @@ export function toPublicDescriptor(record: CfileRecord | null): CfilePublic | nu
     v: c.v,
     updatedAt: c.updatedAt,
     ...(c.note ? { note: c.note } : {}),
-    ...(c.pending ? { pending: true } : {}),
   }
 }
 
-/** Clear a version's `pending` flag once a gateway has served it. Takes the
- *  same per-artwork lock the PUT/PATCH/DELETE writers hold — an unlocked
- *  read-modify-write here could clobber a concurrent replace (losing the paid
- *  new version AND regressing nextKeySeq into keyId reuse). Best-effort: if
- *  the lock is busy or the read fails, skip — the flag clears on a later
- *  serve. */
-export async function markCfileVersionServed(collection: string, tokenId: string, keyId: string): Promise<void> {
-  const lock = await acquireLock(cfileLockKey(cfileRef(collection, tokenId)), 30)
-  if (!lock.acquired) return
-  try {
-    const record = await getCfileRecord(collection, tokenId)
-    if (!record) return
-    let changed = false
-    const clear = (v: CfileVersion): CfileVersion => {
-      if (v.keyId === keyId && v.pending) {
-        changed = true
-        const { pending: _p, ...rest } = v
-        return rest
-      }
-      return v
-    }
-    const next: CfileRecord = {
-      ...record,
-      current: record.current ? clear(record.current) : null,
-      history: record.history.map(clear),
-    }
-    if (changed) await setCfileRecord(collection, tokenId, next)
-  } finally {
-    await lock.release()
+// ---------------------------------------------------------------------------
+// Chunked blob store (the byte path)
+// ---------------------------------------------------------------------------
+
+/** Data problem inside the store (missing/malformed chunk, size mismatch) —
+ *  routes answer 500, never bytes. A strictRead throw (Redis outage) stays
+ *  its own error and maps to 503. */
+export class CfileDataError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CfileDataError'
   }
+}
+
+/**
+ * Write a version's chunks. SEQUENTIAL awaits on purpose, one command per
+ * REST call: auto-pipelining batches same-tick commands into one request,
+ * and two ~5.4 MB chunk SETs in one request breach Upstash's 10 MB cap.
+ * Chunks land with a short TTL; the commit MULTI PERSISTs them together
+ * with the record write, so a crash between the two leaves only
+ * self-expiring orphans — never a record pointing at missing bytes.
+ */
+export async function writeCfileBlobChunks(
+  collection: string,
+  tokenId: string,
+  blobSeq: number,
+  chunks: string[],
+): Promise<void> {
+  const ref = cfileRef(collection, tokenId)
+  for (let i = 0; i < chunks.length; i++) {
+    await redis.set(keyBlob(ref, blobSeq, i), chunks[i], { ex: CFILE_BLOB_ORPHAN_TTL_SECS })
+  }
+}
+
+/** Read + reassemble a version's bytes. Sequential for the same 10 MB-cap
+ *  reason as the writer. strictRead per chunk (outage → throw → 503);
+ *  a missing or malformed chunk is a CfileDataError (→ 500). */
+export async function readCfileBlob(
+  collection: string,
+  tokenId: string,
+  version: { blobSeq: number; chunks: number; size: number },
+): Promise<Buffer> {
+  const ref = cfileRef(collection, tokenId)
+  const chunks: string[] = []
+  for (let i = 0; i < version.chunks; i++) {
+    const raw = await strictRead('cfile-blob', () => redis.get<string>(keyBlob(ref, version.blobSeq, i)))
+    if (typeof raw !== 'string') throw new CfileDataError(`chunk ${i} of blob ${version.blobSeq} missing`)
+    chunks.push(raw)
+  }
+  try {
+    return decodeCfileChunks(chunks, version.size)
+  } catch (err) {
+    throw new CfileDataError(err instanceof Error ? err.message : 'chunk decode failed')
+  }
+}
+
+/**
+ * Commit a planned mutation atomically: PERSIST the new version's chunks
+ * (clearing their orphan TTL), write the record, rewrite this artwork's
+ * absolute entry in the storage ledger, and delete pruned blobs' keys — one
+ * MULTI, so no interleaving of these ever leaves the ledger or the flags
+ * disagreeing with the keys. Callers hold the per-artwork lock.
+ */
+export async function commitCfileMutation(
+  collection: string,
+  tokenId: string,
+  record: CfileRecord,
+  opts: { persistBlob?: CfileBlobRef; prune?: CfileBlobRef[] } = {},
+): Promise<void> {
+  const ref = cfileRef(collection, tokenId)
+  const bytes = recordStoredBytes(record)
+  const tx = redis.multi()
+  if (opts.persistBlob) {
+    for (let i = 0; i < opts.persistBlob.chunks; i++) tx.persist(keyBlob(ref, opts.persistBlob.blobSeq, i))
+  }
+  tx.set(keyRecord(ref), JSON.stringify(record))
+  if (bytes > 0) tx.hset(KEY_BYTES, { [ref]: bytes })
+  else tx.hdel(KEY_BYTES, ref)
+  for (const p of opts.prune ?? []) {
+    for (let i = 0; i < p.chunks; i++) tx.del(keyBlob(ref, p.blobSeq, i))
+  }
+  await tx.exec()
+}
+
+/** The storage ledger, ref → resident bytes. strictRead: the PUT ceiling
+ *  check is the only backstop on resident growth, so a Redis blip refuses
+ *  (503) rather than waving an upload through unmetered. */
+export async function getCfileStoredBytesMap(): Promise<Record<string, number>> {
+  const raw = await strictRead('cfile-bytes', () => redis.hgetall<Record<string, number | string>>(KEY_BYTES))
+  const out: Record<string, number> = {}
+  for (const [ref, v] of Object.entries(raw ?? {})) {
+    const n = Number(v)
+    if (Number.isFinite(n)) out[ref] = n
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -327,9 +393,9 @@ function parseTicket(raw: unknown): CfileTicket | null {
 }
 
 /** Validate a ticket WITHOUT consuming it. The download route peeks first and
- *  consumes only after the bytes are fetched and decrypted, so a transient
- *  gateway failure (or a busy 503) never burns the single-use ticket — the
- *  same URL simply works on retry. */
+ *  consumes only after the bytes are read and integrity-checked, so a Redis
+ *  blip (or a busy 503) never burns the single-use ticket — the same URL
+ *  simply works on retry. */
 export async function peekCfileTicket(token: string): Promise<CfileTicket | null> {
   if (!/^[0-9a-f]{64}$/.test(token)) return null
   return parseTicket(await strictRead('cfile-ticket-peek', () => redis.get(keyTicket(token))))
@@ -366,109 +432,3 @@ export async function setCfileBlocked(collection: string, tokenId: string, block
   else await redis.srem(KEY_BLOCKED, ref)
 }
 
-// ---------------------------------------------------------------------------
-// Fail-CLOSED platform spend ceiling
-// ---------------------------------------------------------------------------
-
-/** Default 512 MiB/day of PLAINTEXT bytes across all identities. */
-const PLATFORM_DAILY_BYTES = Number(process.env.CFILE_PLATFORM_DAILY_BYTES ?? 512 * 1024 * 1024)
-
-const CEILING_LUA = `
-local cur = tonumber(redis.call('GET', KEYS[1]) or '0')
-local n = tonumber(ARGV[1])
-if cur + n > tonumber(ARGV[2]) then return 0 end
-local new = redis.call('INCRBY', KEYS[1], n)
-if new == n then redis.call('EXPIRE', KEYS[1], ARGV[3]) end
-return 1
-`
-
-/**
- * Platform-wide day ceiling on ciphertext uploads — deliberately the INVERSE
- * failure posture of consumeUserQuota: this is the only backstop on permanent
- * Arweave spend (PLATFORM_SIGN_DAILY_CAP never covered the server-JWK path,
- * and the per-identity quota both fails open and Sybil-multiplies), so a
- * Redis failure DENIES. Precedent for a platform-wide cap on this upload
- * helper's caller: PLATFORM_MINT_DAILY_CAP in app/api/agent/prepare-mint.
- */
-export async function consumeCfilePlatformBytes(bytes: number): Promise<boolean> {
-  const day = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-  try {
-    const raw = await redis.eval(
-      CEILING_LUA,
-      [keyGlobalBytes(day)],
-      [bytes, PLATFORM_DAILY_BYTES, 25 * 60 * 60],
-    )
-    return raw === 1 || raw === '1'
-  } catch {
-    return false
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Hardened ciphertext fetch (the /api/img discipline, scoped down)
-// ---------------------------------------------------------------------------
-
-// Sealed size ceiling: plaintext cap + IV + tag (GCM adds no other overhead).
-const SEALED_MAX_BYTES = CFILE_MAX_BYTES + CFILE_IV_BYTES + CFILE_TAG_BYTES
-
-const FETCH_TIMEOUT_MS = 30_000
-
-// Failed-read memo per URI: an arweave.net edge dying mid-body must cost one
-// probe per minute, not one ~sealed-size re-read per collector click
-// (app/api/img's doomed-asset memo, scoped to this route's only upstream).
-const FAILED_FETCH_MEMO_MS = 60_000
-const failedFetch = new Map<string, number>()
-
-function memoFailed(uri: string): void {
-  failedFetch.set(uri, Date.now())
-  // Bound the memo — this is a tiny hot-set cache, not a registry.
-  if (failedFetch.size > 200) {
-    const oldest = [...failedFetch.entries()].sort((a, b) => a[1] - b[1])[0]
-    if (oldest) failedFetch.delete(oldest[0])
-  }
-}
-
-export class CfileFetchError extends Error {
-  constructor(
-    message: string,
-    /** true → 503-shaped (upstream/transient); false → data problem (500). */
-    readonly transient: boolean,
-  ) {
-    super(message)
-    this.name = 'CfileFetchError'
-  }
-}
-
-/** Fetch the sealed bytes for `uri` (ar://…), bounded on actual bytes. */
-export async function fetchSealedCfile(uri: string): Promise<Buffer> {
-  const memo = failedFetch.get(uri)
-  if (memo && Date.now() - memo < FAILED_FETCH_MEMO_MS) {
-    throw new CfileFetchError('upstream recently failed for this file', true)
-  }
-  const urls = gatewayUrls(uri)
-  if (urls.length === 0) throw new CfileFetchError('no gateway for uri', false)
-  let res: Response
-  try {
-    res = await fetch(urls[0], { cache: 'no-store', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-  } catch (err) {
-    memoFailed(uri)
-    throw new CfileFetchError(err instanceof Error ? err.message : 'gateway unreachable', true)
-  }
-  if (!res.ok || !res.body) {
-    // 404 during the propagation window is transient; other statuses too —
-    // the memo keeps repeats cheap either way.
-    memoFailed(uri)
-    throw new CfileFetchError(`gateway ${res.status}`, true)
-  }
-  const declared = Number(res.headers.get('content-length') ?? 0)
-  if (declared > SEALED_MAX_BYTES) {
-    res.body.cancel().catch(() => {})
-    throw new CfileFetchError('sealed payload exceeds cap', false)
-  }
-  const read = await readBodyBounded(res.body, SEALED_MAX_BYTES)
-  if (read.kind === 'overflow') {
-    read.reader.cancel().catch(() => {})
-    throw new CfileFetchError('sealed payload exceeds cap (actual bytes)', false)
-  }
-  return read.buffer
-}

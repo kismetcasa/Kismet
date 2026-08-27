@@ -202,7 +202,6 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
             <div className="text-[10px] font-mono text-muted flex flex-col gap-0.5">
               <p className="text-ink truncate">
                 {view.file.name} · {formatCfileSize(view.file.size)} · v{view.file.v}
-                {view.file.pending ? ' · propagating…' : ''}
               </p>
               <p>
                 {view.downloaders} unique downloader{view.downloaders === 1 ? '' : 's'} ·{' '}
@@ -277,13 +276,21 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
                     v{h.v} · {formatCfileSize(h.size)} · {new Date(h.updatedAt).toLocaleDateString()}
                     {h.note ? ` · “${h.note}”` : ''}
                   </span>
-                  <button
-                    onClick={() => void handleRollback(h.v)}
-                    disabled={saving}
-                    className="ml-2 flex-shrink-0 uppercase tracking-widest text-subtle hover:text-dim transition-colors disabled:opacity-50"
-                  >
-                    restore
-                  </button>
+                  {h.restorable ? (
+                    <button
+                      onClick={() => void handleRollback(h.v)}
+                      disabled={saving}
+                      className="ml-2 flex-shrink-0 uppercase tracking-widest text-subtle hover:text-dim transition-colors disabled:opacity-50"
+                    >
+                      restore
+                    </button>
+                  ) : (
+                    // Bytes left the retention window (last 3 versions) — the
+                    // row stays as record; restoring means re-uploading.
+                    <span className="ml-2 flex-shrink-0 uppercase tracking-widest text-subtle/50">
+                      not stored
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

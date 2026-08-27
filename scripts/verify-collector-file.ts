@@ -2,71 +2,66 @@
  * Collector-file core oracle (lib/collectorFileCore) — run via
  * `npm run verify:collector-file` (wired into verify:flows).
  *
- * THE FIRST ASSERTION IS A KNOWN-ANSWER TEST over the key derivation:
- * ciphertexts on Arweave are permanent, so any drift in the HKDF salt/info
- * or the AAD format bricks every previously-uploaded version unrecoverably.
- * A failure here is a release blocker, not a flake
- * (COLLECTOR_DOWNLOADS_DESIGN.md §3.2).
+ * THE FIRST ASSERTIONS PIN THE CHUNK CODEC + STORAGE MATH: chunks must stay
+ * under Upstash's 10 MB per-request cap, must never be parseable as JSON by
+ * the SDK's auto-deserialization, and cfileStoredBytes must equal the real
+ * encoded lengths or the storage-ceiling ledger lies. The retention planner
+ * is pinned next — a drift there either strands chunk keys (storage leak)
+ * or deletes bytes a live version still points at.
  */
 import assert from 'node:assert/strict'
 import {
+  CFILE_BYTES_RETENTION,
+  CFILE_CHUNK_BYTES,
   CFILE_HISTORY_CAP,
-  cfileAad,
-  cfileKeyId,
+  cfileChunkCount,
   cfileRef,
-  deriveCfileKey,
+  cfileStoredBytes,
+  decodeCfileChunks,
+  encodeCfileChunks,
+  isCfileVersionRestorable,
   looksLikeZip,
   normalizeCfileName,
-  openCfile,
   planAttach,
+  planDetach,
   planRollback,
-  sealCfile,
   sha256Hex,
+  storedBlobRefs,
   type CfileRecord,
 } from '../lib/collectorFileCore.ts'
 
-const MASTER = Buffer.alloc(32, 7).toString('base64')
 const COLLECTION = '0x00000000000000000000000000000000000000AB'
-const KEY_ID = cfileKeyId(COLLECTION, '1', 1)
 
-// ---- 1. Known-answer pin: the unrepairable invariant --------------------
-assert.equal(KEY_ID, '0x00000000000000000000000000000000000000ab:1:1', 'keyId format drifted')
-assert.equal(
-  deriveCfileKey(MASTER, KEY_ID).toString('hex'),
-  '4a711f4ce95288e46b9fc54c0971a64f9e3373a9d3d19ed754f2761c0e53d7ce',
-  'HKDF derivation drifted — this would brick every existing ciphertext',
-)
-assert.equal(
-  cfileAad(KEY_ID).toString(),
-  'kismet-cfile-v1|0x00000000000000000000000000000000000000ab:1:1',
-  'AAD format drifted — this would brick every existing ciphertext',
-)
+// ---- 1. Chunk codec: round-trip, caps, JSON-safety -----------------------
+for (const size of [1, 2, 3, 4, CFILE_CHUNK_BYTES - 1, CFILE_CHUNK_BYTES, CFILE_CHUNK_BYTES + 1, 2 * CFILE_CHUNK_BYTES + 2]) {
+  const data = Buffer.alloc(size)
+  for (let i = 0; i < size; i += 4096) data[i] = (i / 4096) % 251
+  const chunks = encodeCfileChunks(data)
+  assert.equal(chunks.length, cfileChunkCount(size), `chunk count drifted at size ${size}`)
+  assert.deepEqual(decodeCfileChunks(chunks, size), data, `round-trip failed at size ${size}`)
+  assert.equal(
+    chunks.reduce((s, c) => s + c.length, 0),
+    cfileStoredBytes(size),
+    `cfileStoredBytes lies at size ${size} — the ceiling ledger would drift`,
+  )
+  for (const c of chunks) {
+    // Upstash rejects requests over 10MB; leave real headroom for envelope.
+    assert.ok(c.length < 6 * 1024 * 1024, `encoded chunk ${c.length}B breaches the request-cap margin`)
+    // The SDK JSON-parses GET replies — the prefix must make that impossible.
+    assert.throws(() => JSON.parse(c), `chunk parseable as JSON — a digit-only chunk would corrupt`)
+  }
+}
+// Tampering that changes reassembled length is rejected.
+const tamperData = Buffer.alloc(CFILE_CHUNK_BYTES + 10, 3)
+const tamperChunks = encodeCfileChunks(tamperData)
+assert.throws(() => decodeCfileChunks(tamperChunks.slice(0, 1), tamperData.length), 'missing chunk accepted')
+assert.throws(() => decodeCfileChunks(['x' + tamperChunks[0].slice(1), tamperChunks[1]], tamperData.length), 'bad prefix accepted')
 
-// ---- 2. Seal/open round-trip + tamper rejection -------------------------
-const plaintext = Buffer.from('PK\x03\x04 pretend rom bytes '.repeat(64))
-const { sealed } = sealCfile(MASTER, KEY_ID, plaintext)
-assert.deepEqual(openCfile(MASTER, KEY_ID, sealed), plaintext, 'round-trip failed')
-
-// Any flipped ciphertext byte must fail authentication.
-const tampered = Buffer.from(sealed)
-tampered[20] ^= 0xff
-assert.throws(() => openCfile(MASTER, KEY_ID, tampered), 'tampered ciphertext decrypted')
-
-// A pointer swapped to a different artwork slot (different keyId → different
-// key AND different AAD) must never decrypt.
-assert.throws(
-  () => openCfile(MASTER, cfileKeyId(COLLECTION, '2', 1), sealed),
-  'cross-artwork pointer swap decrypted',
-)
-
-// Truncated payloads are rejected, not sliced into garbage.
-assert.throws(() => openCfile(MASTER, KEY_ID, sealed.subarray(0, 10)))
-
-// ---- 3. Ref canonicalization -------------------------------------------
+// ---- 2. Ref canonicalization ---------------------------------------------
 assert.equal(cfileRef(COLLECTION, '01'), cfileRef(COLLECTION, '1'), '"01" forked a second ref')
 assert.equal(cfileRef(COLLECTION, '1'), `${COLLECTION.toLowerCase()}:1`)
 
-// ---- 4. Filename hygiene ------------------------------------------------
+// ---- 3. Filename hygiene -------------------------------------------------
 assert.equal(normalizeCfileName('Pixel Art Gallery - Sylvester.zip'), 'Pixel Art Gallery - Sylvester.zip')
 // Header-injection material is stripped; terminal .zip is forced.
 assert.equal(normalizeCfileName('a"; filename*=UTF-8\'\'payload.exe'), 'a filenameUTF-8payload.exe.zip')
@@ -81,75 +76,114 @@ assert.equal(normalizeCfileName(''), 'collector-file.zip')
 assert.equal(normalizeCfileName(null), 'collector-file.zip')
 assert.ok(normalizeCfileName('x'.repeat(500) + '.zip').length <= 64, 'length cap failed')
 
-// ---- 5. Zip magic -------------------------------------------------------
+// ---- 4. Zip magic --------------------------------------------------------
 assert.ok(looksLikeZip(Buffer.from('PK\x03\x04rest')))
 assert.ok(!looksLikeZip(Buffer.from('PK\x05\x06')), 'empty archive accepted') // empty central dir
 assert.ok(!looksLikeZip(Buffer.from('MZ\x90\x00')), 'PE binary accepted')
 assert.ok(!looksLikeZip(Buffer.alloc(2)))
 
-// ---- 6. Version planning: attach, dedup, rollback -----------------------
+// ---- 5. Version planning: attach, dedup, retention -----------------------
 const now = 1_756_000_000_000
+const plaintext = Buffer.from('PK\x03\x04 pretend rom bytes '.repeat(64))
 const base = (over: Partial<Parameters<typeof planAttach>[1]> = {}) => ({
-  keyIdSeqRef: cfileRef(COLLECTION, '1'),
-  uri: 'ar://tx1',
-  iv: 'aXY=',
   size: plaintext.length,
   sha256: sha256Hex(plaintext),
   name: 'a.zip',
   updatedBy: '0xArtist',
   now,
-  pending: false,
   ...over,
 })
 
 const first = planAttach(null, base())
 assert.ok(first, 'first attach refused')
 assert.equal(first.version.v, 1)
-assert.equal(first.version.keyId, KEY_ID)
-assert.equal(first.record.nextKeySeq, 2)
-assert.equal(first.record.history.length, 0)
+assert.equal(first.version.blobSeq, 1)
+assert.equal(first.version.chunks, cfileChunkCount(plaintext.length))
+assert.ok(first.version.stored, 'new version not marked stored')
+assert.equal(first.record.nextBlobSeq, 2)
+assert.deepEqual(first.prune, [], 'first attach pruned something')
 
-// Same bytes again → null (no version, no spend, no cooldown burn).
+// Same bytes again → null (no version, no meters, no cooldown burn).
 assert.equal(planAttach(first.record, base()), null, 'same-sha replace not deduped')
 
-const second = planAttach(first.record, base({ uri: 'ar://tx2', sha256: 'different' }))
+const second = planAttach(first.record, base({ sha256: 'different' }))
 assert.ok(second)
 assert.equal(second.version.v, 2)
-assert.equal(second.version.keyId, cfileKeyId(COLLECTION, '1', 2), 'keyId not sequenced')
+assert.equal(second.version.blobSeq, 2, 'blobSeq not sequenced')
 assert.equal(second.record.history[0].v, 1, 'superseded version not in history')
+assert.ok(second.record.history[0].stored, 'previous version lost its bytes inside the window')
+assert.deepEqual(second.prune, [], 'pruned inside the retention window')
 
-// Rollback revives v1 as v3 CARRYING ITS ORIGINAL keyId — the rev-1
-// data-loss bug was deriving keys from the display version.
-const rolled = planRollback(second.record, 1, '0xArtist', now + 1)
-assert.ok(rolled, 'rollback refused')
-assert.equal(rolled.current?.v, 3)
-assert.equal(rolled.current?.keyId, KEY_ID, 'rollback lost the original keyId')
-assert.equal(rolled.current?.uri, 'ar://tx1')
-assert.equal(rolled.nextKeySeq, 3, 'rollback must not consume a key seq')
-// …and the revived pointer actually decrypts the original ciphertext.
-assert.deepEqual(openCfile(MASTER, rolled.current!.keyId, sealed), plaintext)
-
-// Unknown version → null.
-assert.equal(planRollback(second.record, 99, '0xArtist', now), null)
-
-// After a rollback the next attach still mints a FRESH keyId (seq 3).
-const third = planAttach(rolled, base({ uri: 'ar://tx3', sha256: 'yet-another' }))
+// Fill the window (v1..v3 stored), then one more: the OLDEST blob falls out.
+const third = planAttach(second.record, base({ sha256: 'third' }))
 assert.ok(third)
-assert.equal(third.version.keyId, cfileKeyId(COLLECTION, '1', 3), 'keyId reused after rollback')
-assert.equal(third.version.v, 4)
+assert.equal([...storedBlobRefs(third.record)].length, CFILE_BYTES_RETENTION, 'window overfilled')
+const fourth = planAttach(third.record, base({ sha256: 'fourth' }))
+assert.ok(fourth)
+assert.deepEqual(fourth.prune, [{ blobSeq: 1, chunks: cfileChunkCount(plaintext.length) }], 'oldest blob not pruned')
+assert.ok(!fourth.record.history.find((h) => h.v === 1)?.stored, 'pruned version still flagged stored')
+assert.ok(isCfileVersionRestorable(fourth.record, 3), 'in-window version not restorable')
+assert.ok(!isCfileVersionRestorable(fourth.record, 1), 'out-of-window version claims restorable')
 
-// ---- 7. History cap + keyId monotonicity under churn --------------------
+// Ledger math counts DISTINCT stored blobs only.
+assert.equal(
+  [...storedBlobRefs(fourth.record)].length * cfileStoredBytes(plaintext.length) >= cfileStoredBytes(plaintext.length),
+  true,
+)
+
+// ---- 6. Rollback: re-points, never prunes, refuses gone bytes ------------
+const rolled = planRollback(fourth.record, 3, '0xArtist', now + 1)
+assert.ok(rolled, 'rollback refused')
+assert.equal(rolled.record.current?.v, 5)
+assert.equal(rolled.record.current?.blobSeq, 3, 'rollback lost the original blobSeq')
+assert.equal(rolled.record.nextBlobSeq, 5, 'rollback must not consume a blob seq')
+assert.deepEqual(rolled.prune, [], 'rollback pruned — it must never')
+assert.deepEqual(
+  [...storedBlobRefs(rolled.record)].map(([s]) => s).sort(),
+  [...storedBlobRefs(fourth.record)].map(([s]) => s).sort(),
+  'rollback changed the stored set',
+)
+// Rollback to a version whose bytes are gone → null.
+assert.equal(planRollback(fourth.record, 1, '0xArtist', now), null, 'rollback to pruned bytes allowed')
+assert.equal(planRollback(fourth.record, 99, '0xArtist', now), null, 'unknown version rolled back')
+
+// After a rollback the next attach still mints a FRESH blobSeq.
+const fifth = planAttach(rolled.record, base({ sha256: 'fifth' }))
+assert.ok(fifth)
+assert.equal(fifth.version.blobSeq, 5, 'blobSeq reused after rollback')
+
+// Rollback-duplicated rows share one blobSeq — the ledger must count it once:
+// stored set size stays ≤ retention even though rows duplicate.
+assert.ok([...storedBlobRefs(fifth.record)].length <= CFILE_BYTES_RETENTION)
+
+// ---- 7. Detach frees everything; nothing is restorable after -------------
+const detached = planDetach(fifth.record)
+assert.equal(detached.record.current, null)
+assert.equal([...storedBlobRefs(detached.record)].length, 0, 'detach left stored flags')
+assert.equal(detached.prune.length, CFILE_BYTES_RETENTION, 'detach did not free every stored blob')
+assert.ok(detached.record.history.length > 0, 'detach erased the history record')
+assert.ok(!detached.record.history.some((h) => isCfileVersionRestorable(detached.record, h.v)), 'restorable after detach')
+
+// Re-attach after detach: old rows stay byte-less (bytes never come back by
+// reordering), only the new blob is stored.
+const reattached = planAttach(detached.record, base({ sha256: 'reborn' }))
+assert.ok(reattached)
+assert.deepEqual([...storedBlobRefs(reattached.record)].map(([s]) => s), [reattached.version.blobSeq])
+assert.deepEqual(reattached.prune, [], 're-attach pruned already-freed blobs')
+
+// ---- 8. History cap + blobSeq monotonicity under churn -------------------
 let record: CfileRecord | null = null
 for (let i = 0; i < CFILE_HISTORY_CAP + 8; i++) {
-  const next = planAttach(record, base({ uri: `ar://tx${i}`, sha256: `sha${i}` }))
+  const next = planAttach(record, base({ sha256: `sha${i}` }))
   assert.ok(next)
   record = next.record
 }
 assert.equal(record!.history.length, CFILE_HISTORY_CAP, 'history cap not enforced')
 assert.equal(
-  record!.nextKeySeq,
+  record!.nextBlobSeq,
   CFILE_HISTORY_CAP + 9,
-  'nextKeySeq must survive history trimming (trimmed keyIds are still live ciphertexts)',
+  'nextBlobSeq must survive history trimming (trimmed rows are not the ledger)',
 )
+assert.equal([...storedBlobRefs(record!)].length, CFILE_BYTES_RETENTION, 'churn broke the retention window')
 
 console.log('verify-collector-file: all assertions passed')

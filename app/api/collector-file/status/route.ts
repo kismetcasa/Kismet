@@ -13,7 +13,7 @@ export const runtime = 'nodejs'
 
 /**
  * Public-descriptor + viewer-state read for the artwork-page card: the file's
- * display facts (never uri/iv/keyId) plus, for a signed-in viewer, the last
+ * display facts (never storage internals) plus, for a signed-in viewer, the last
  * version they downloaded — which powers the "update available" badge
  * (COLLECTOR_DOWNLOADS_DESIGN.md §6.4, the passive floor that reaches
  * everyone push and the bell miss). Ownership is NOT decided here — the

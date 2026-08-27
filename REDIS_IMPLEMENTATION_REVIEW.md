@@ -876,6 +876,31 @@ hard-stop cap this review established:
 Two new per-artwork unbounded-membership structures (`collectors` ZSET,
 `cfile-dl` HASH) are the same shape as the follower/raffle/collected sets —
 consistent with current practice, and added to §B3's eventual-Postgres
-migration list by reference. The `cfile-global-bytes` day key is the one
-deliberately fail-CLOSED consumer in the codebase (denies on Redis failure):
-it backstops permanent Arweave spend, where fail-open is the wrong default.
+migration list by reference.
+
+### Addendum update (2026-08-27) — storage pivot: file BYTES now live here
+
+The team moved the file bytes themselves into this database (design doc
+"Storage pivot"; premise: low artist adoption). What that changes for THIS
+review's budget model:
+
+- **Storage**: `kismetart:cfile-blob:*` chunk keys (4 MiB plaintext each,
+  'b'+base64 ≈ ×1.33) are the first multi-MB values in the database. Total
+  resident bytes are ledgered absolutely in the `kismetart:cfile-bytes`
+  hash and fail-closed capped at `CFILE_STORAGE_CEILING_BYTES` (default
+  512 MiB — inside the first free storage GB next to today's ~336 KB;
+  past 1 GB bills $0.25/GB-mo). Retention keeps bytes for 3 versions per
+  artwork; detach genuinely frees them.
+- **Bandwidth is the new open-ended axis**: each download ships ~1.33× the
+  file size out of Upstash (free ≤200 GB/mo, then $0.03/GB), bounded by the
+  per-identity `cfile-download` quota (100/day) and per-IP rate limits, NOT
+  by a hard platform meter — accepted knowingly on the low-adoption
+  premise. At real adoption this line is the first thing to re-examine
+  (R2 is the flagged next home; the design doc records the trade).
+- **The 10 MB request/reply cap now binds a hot path**: chunk reads/writes
+  are one command per REST call BY DESIGN (`lib/collectorFile.ts`) — a
+  same-tick `Promise.all` over chunks would be auto-pipelined into one
+  over-cap request. Do not "optimize" this into a batch.
+- Commands: +`chunks` (≤4) per upload/download — noise at any plausible
+  volume. The previous `cfile-global-bytes` day meter is deleted; the
+  fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.

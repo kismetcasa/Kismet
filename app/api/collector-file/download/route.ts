@@ -3,17 +3,15 @@ import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { consumeUserQuota } from '@/lib/userQuota'
-import { openCfile, cfileRef, sha256Hex } from '@/lib/collectorFileCore'
+import { cfileRef, sha256Hex } from '@/lib/collectorFileCore'
 import { formatCfileSize } from '@/lib/collectorFileTypes'
 import {
-  CfileFetchError,
+  CfileDataError,
   consumeCfileTicket,
-  fetchSealedCfile,
-  getCfileMasterKey,
   getCfileRecordStrict,
   isCfileBlocked,
-  markCfileVersionServed,
   peekCfileTicket,
+  readCfileBlob,
   recordCfileDownload,
   type CfileTicket,
 } from '@/lib/collectorFile'
@@ -34,24 +32,24 @@ export const runtime = 'nodejs'
  *
  * Single-use is enforced at the LAST safe moment, not the first: the ticket
  * is peeked (validated without deletion) up front and consumed only after
- * the sealed bytes are fetched and decrypted — so a busy 503, a transient
- * gateway failure, or a link-preview bot's probe never burns it and the
- * same URL simply works on retry. Copy-link (share) tickets additionally
+ * the stored bytes are read and integrity-checked — so a busy 503, a Redis
+ * blip, or a link-preview bot's probe never burns it and the same URL
+ * simply works on retry. Copy-link (share) tickets additionally
  * answer their bare GET with a tiny confirmation page: messenger unfurlers
  * and URL-bar prefetchers GET links without clicking, and a direct-download
  * answer would let them redeem (and receive) the file before the human can.
  * Explicit prefetch requests (Sec-Purpose/Purpose headers) get 204 for the
  * same reason.
  *
- * Buffer-then-send, not streaming: GCM must not release unauthenticated
- * plaintext, so ciphertext and plaintext are briefly co-resident (~2× file
- * size, capped 16 MiB). MAX_CONCURRENT 2 bounds concurrent DECRYPT work
- * (≤64 MB of working buffers) and brackets ONLY the fetch/decrypt section —
- * auth/gate reads run outside the slot so a slow RPC can't starve it.
- * Response bodies additionally live until each client drains them, which
- * the per-IP rate limit and per-identity quota bound. All against the 6 GB
- * container limit — Buffers are off-heap. Authorization reads are
- * strictRead/fail-closed; a Redis or RPC outage answers 503, never bytes.
+ * Buffer-then-send: chunk strings and the reassembled file are briefly
+ * co-resident (~2.3× file size, capped 16 MiB). MAX_CONCURRENT 2 bounds
+ * concurrent reassembly work (≤75 MB of working memory) and brackets ONLY
+ * the chunk-read/reassemble section — auth/gate reads run outside the slot
+ * so a slow RPC can't starve it. Response bodies additionally live until
+ * each client drains them, which the per-IP rate limit and per-identity
+ * quota bound. All against the 6 GB container limit. Authorization reads
+ * are strictRead/fail-closed; a Redis or RPC outage answers 503, never
+ * bytes.
  */
 
 const MAX_CONCURRENT_DOWNLOADS = 2
@@ -84,13 +82,6 @@ export async function GET(req: NextRequest) {
   const params = parseCfileParams(req)
   if (!params) return errorResponse(400, 'Invalid collection or tokenId')
 
-  let masterKey: string
-  try {
-    masterKey = getCfileMasterKey()
-  } catch {
-    return errorResponse(500, 'Collector files are not configured on this deployment')
-  }
-
   // Speculative loads must never redeem a capability URL. 204 keeps
   // prefetchers quiet without consuming anything; the real navigation
   // follows without these headers.
@@ -99,7 +90,7 @@ export async function GET(req: NextRequest) {
   const ticketToken = req.nextUrl.searchParams.get('ticket')
   try {
     // ---- Resolve WHO is downloading — everything here runs OUTSIDE the
-    // decrypt slot (a slow FC/RPC gate must not starve other downloads),
+    // reassembly slot (a slow FC/RPC gate must not starve other downloads),
     // and nothing here consumes the ticket yet.
     let ticket: CfileTicket | null = null
     let downloader: string
@@ -134,7 +125,7 @@ export async function GET(req: NextRequest) {
       return confirmPage(req, current.name, current.size)
     }
 
-    // ---- The decrypt slot: fetch + decrypt only.
+    // ---- The reassembly slot: chunk reads + join only.
     if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
       // Nothing consumed above, so this 503 costs the user a retry, not a
       // ticket or a quota unit.
@@ -143,14 +134,7 @@ export async function GET(req: NextRequest) {
     activeDownloads++
     let plaintext: Buffer
     try {
-      const sealed = await fetchSealedCfile(current.uri)
-      try {
-        plaintext = openCfile(masterKey, current.keyId, sealed)
-      } catch (err) {
-        // Tag failure = the stored pointer and the bytes disagree — a data
-        // problem, never something to serve.
-        return upstreamError(500, 'File integrity check failed', err, 'cfile-dl')
-      }
+      plaintext = await readCfileBlob(params.collection, params.tokenId, current)
     } finally {
       activeDownloads--
     }
@@ -168,10 +152,6 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // First successful serve clears a pending (propagation-unverified) flag.
-    if (current.pending) {
-      void markCfileVersionServed(params.collection, params.tokenId, current.keyId).catch(() => {})
-    }
     void recordCfileDownload(params.collection, params.tokenId, downloader, current.v).catch(() => {})
 
     return new NextResponse(new Uint8Array(plaintext), {
@@ -186,15 +166,13 @@ export async function GET(req: NextRequest) {
       },
     })
   } catch (err) {
-    if (err instanceof CfileFetchError) {
-      // Transient upstream: the ticket was NOT consumed, so the same URL
-      // retries cleanly once the gateway recovers (the failed-fetch memo
-      // just keeps repeats cheap in the meantime).
-      return err.transient
-        ? errorResponse(503, 'File storage is temporarily unreachable — try again shortly')
-        : upstreamError(500, 'File could not be retrieved', err, 'cfile-dl')
+    if (err instanceof CfileDataError) {
+      // The record and the stored chunks disagree — a data problem, never
+      // something to serve. The ticket was NOT consumed either way.
+      return upstreamError(500, 'File could not be retrieved', err, 'cfile-dl')
     }
-    // strictRead throw (Redis outage on a gated read) and anything else.
+    // strictRead throw (Redis outage on a gated read) and anything else —
+    // transient: the unconsumed ticket retries cleanly.
     return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-dl')
   }
 }

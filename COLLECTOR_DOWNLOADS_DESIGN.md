@@ -15,6 +15,29 @@ when a new version lands — and "playing live with online emu"._
 > decision was demoted from "decided" to "Andrea's call". §13 is the full
 > validation record. Every correction is folded into the body below.
 
+> **STORAGE PIVOT (2026-08-27) — bytes now live in Redis, not Arweave.**
+> Decided by the team after a validated Redis-vs-Arweave head-to-head, on
+> the premise of low expected artist adoption. What that buys: the store is
+> **private**, so the entire encryption layer is deleted (no
+> `COLLECTOR_FILE_MASTER_KEY`, no HKDF/keyId machinery, no key-loss risk —
+> the feature now needs ZERO configuration); uploads are **instantly
+> servable** (no propagation `pending` state); artist detach and DMCA
+> takedowns are **real deletions**. What it costs, accepted knowingly:
+> download bytes flow through the budget-capped Upstash account (mitigated
+> by the per-identity download quota, per-IP rate limits, and the premise —
+> re-examine at real adoption, where R2 remains the flagged next home), and
+> version history keeps **bytes for only the last 3 versions**
+> (`CFILE_BYTES_RETENTION`; older rows stay as metadata). New mechanics:
+> 4 MiB chunk keys under Upstash's 10 MB request cap (sequential I/O — see
+> §4), a fail-closed **global storage ceiling** (`CFILE_STORAGE_CEILING_BYTES`,
+> default 512 MiB, ledger hash `cfile-bytes`), and crash-safe commits
+> (chunks land with a 1 h TTL, PERSISTed atomically with the record write).
+> §3's encryption rationale and §10.1's Arweave cost numbers are HISTORICAL
+> from here — kept as the record of why the previous design looked the way
+> it did. §4 (data model), §4.2 (versioning) and the implementation delta
+> reflect the shipped Redis design; the gate (§5), notifications (§6), and
+> the UX (§8) are storage-agnostic and unchanged.
+
 ---
 
 ## 0. What the artist actually asked for
@@ -143,7 +166,7 @@ to non-moderated content; §10.2).
 
 ---
 
-## 3. Storage: encrypted at rest on Arweave, pointer in Redis
+## 3. Storage: encrypted at rest on Arweave, pointer in Redis _(HISTORICAL — superseded by the Storage pivot; bytes now live chunked in Redis with no encryption layer, see the pivot note and §4)_
 
 **Decision: ciphertext on Arweave via the existing server Turbo path; AES-256-GCM;
 per-ciphertext keys derived from one env master key; version history in one
@@ -246,19 +269,31 @@ bundles, and `scripts/verify-bundle.ts` would read as a size check.
 ```
 kismetart:cfile:<collection>:<tokenId>             STRING (JSON), no TTL
   {
-    v: 3,                              // display version, monotonically increasing
-    keyId: "…:<n>",                    // key-derivation id of the ACTIVE ciphertext (§3.2)
-    name: "Pixel Art Gallery - Sylvester.zip",   // normalized (§10.2)
-    size: 365396,                      // plaintext bytes
-    sha256: "79919fea…",               // plaintext hash — shown to collectors
-    uri: "ar://<txid-of-ciphertext>",  // NEVER surfaced to clients
-    iv: "<base64 12B>",
-    note: "added music!",              // optional artist release note, ≤140 chars
-    updatedAt, updatedBy,
-    playable: null | { romEntry: <index>, access: "collectors"|"public",
-                       publicRomUri?: "ar://…" },  // §7; entry INDEX, not path
-    history: [ {v, keyId, uri, iv, size, sha256, note, updatedAt, updatedBy}, … ]
+    current: {                         // null when detached
+      v: 3,                            // display version, monotonically increasing
+      blobSeq: <n>,                    // immutable storage id → chunk keys (pivot)
+      chunks: <count>,                 // chunk-key count for blobSeq
+      name: "Pixel Art Gallery - Sylvester.zip",   // normalized (§10.2)
+      size: 365396,                    // plaintext bytes
+      sha256: "79919fea…",             // plaintext hash — shown to collectors
+      note: "added music!",            // optional artist release note, ≤140 chars
+      updatedAt, updatedBy,
+      stored: true                     // bytes exist (retention window)
+    },
+    history: [ {v, blobSeq, chunks, size, sha256, name, note?, updatedAt,
+                updatedBy, stored?}, … ],           // ≤20 metadata rows
+    nextBlobSeq, createdAt
   }
+
+kismetart:cfile-blob:<collection>:<tokenId>:<seq>:<i>  STR 'b'+base64 chunk (4 MiB
+                                                   // plaintext each). Written EX 3600,
+                                                   // PERSISTed by the commit MULTI —
+                                                   // a crashed PUT leaves only
+                                                   // self-expiring orphans.
+
+kismetart:cfile-bytes                              HASH ref → resident stored bytes
+                                                   // the storage-ceiling ledger,
+                                                   // rewritten absolutely per mutation
 
 kismetart:cfile-dl:<collection>:<tokenId>          HASH  addr → version last downloaded
                                                    // "update available" badge; HLEN =
@@ -275,17 +310,23 @@ kismetart:cfile-notify-lock:<collection>:<tokenId> SET NX EX 86400 — the 24h c
 kismetart:cfile-blocked                            SET — admin kill-switch, checked on DOWNLOAD
 ```
 
-History bounds: pointer records are ~300 bytes; keep the last 20 (~6 KB JSON
-worst case — trivially inside Upstash limits, and read once per artwork-page
-assembly alongside the reads the page already does).
+History bounds: metadata rows are ~250 bytes; keep the last 20 (~5 KB JSON
+worst case). BYTES are kept only for the last **3 distinct versions**
+(`CFILE_BYTES_RETENTION` — current + 2 rollbackable): resident Redis storage
+is a recurring cost, so older rows stay as record while their chunk keys are
+deleted in the same commit that supersedes them. Chunk I/O is one command
+per REST call on purpose — auto-pipelining (`lib/redis.ts`) batches
+same-tick commands into a single request, and two ~5.4 MB chunks in one
+request breach Upstash's 10 MB cap; the `'b'` prefix keeps a chunk from ever
+being JSON-parseable by the SDK's auto-deserialization.
 
 Reads of `kismetart:cfile:*` on the gated path go through `strictRead`
 (`lib/redisRead.ts:42-66`) — the fail-closed posture `hiddenMoments` uses
 (`lib/hiddenMoments.ts:55`), so a Redis outage can't leak or corrupt gated
 state. The public descriptor (existence, name, size, version, updatedAt —
-**not** `uri`/`iv`/`keyId`) is assembled into the artwork page payload next to
+never storage internals) is assembled into the artwork page payload next to
 the other Kismet augmentations in
-`app/artwork/[address]/[tokenId]/page.tsx:262-268`'s `Promise.all`.
+`app/artwork/[address]/[tokenId]/page.tsx`'s `Promise.all`.
 
 ### 4.1 Why not in the token metadata JSON?
 
@@ -311,14 +352,19 @@ descriptor-in-page-payload above already does. Dropped entirely.
 
 ### 4.2 Version semantics
 
-- Replace = new record, `v+1`, fresh `keyId`. Same-bytes replace (identical
-  sha256) is a no-op with a toast.
+- Replace = new record, `v+1`, fresh `blobSeq`. Same-bytes replace
+  (identical sha256) is a no-op with a toast.
 - Rollback = re-activate an old history record as `v+1` **carrying its
-  original `keyId` and `iv` verbatim** — decryptable by construction (§3.2).
-  No re-upload, no new spend.
+  original `blobSeq` verbatim** — the bytes already exist, no re-upload.
+  Only versions inside the 3-version bytes-retention window are rollback
+  targets (`restorable` in the manage view); older rows keep their metadata
+  but restoring one means re-uploading it. Rollback provably never prunes.
 - The manage panel lists old versions (name, size, date) with one-click
-  rollback; the only *download* anyone gets — artist included — is the
-  current version. Collectors only ever see current.
+  rollback where restorable; the only *download* anyone gets — artist
+  included — is the current version. Collectors only ever see current.
+- Detach (DELETE) **frees the stored bytes in the same commit** — real
+  deletion is a deliberate property of the Redis pivot; history rows remain
+  as the artist's record, all non-restorable.
 
 ### 4.3 Erasure (validation finding — the draft missed this entirely)
 
@@ -1077,24 +1123,35 @@ badge (public descriptor + the viewer's last-downloaded version); (4) the
 `notifiedAt` display field was dropped — the `SET NX EX 86400` notify-lock IS
 the cooldown state and the manage view reads its TTL, so there is no second
 copy to drift; (5) tickets are **peeked** up front and **consumed only after
-a successful decrypt** — a busy slot, an Arweave blip, or a mid-transfer
-failure never burns the single use, and the losing racer of a double-redeem
-gets the 403; (6) share tickets (30-min TTL, marked `share` in the ticket
-record) land on an HTML **confirm page** unless `go=1` is present, so
-link-unfurl bots in chat apps can't redeem them, and `Sec-Purpose`/`Purpose`
-prefetch requests get a body-less 204; (7) the crash-resume cursor of §6.2
-lives in the notify-lock's value, written per delivered batch; (8) the §10.2
-kill-switch has an admin route (`/api/admin/cfile-block`, GET/POST) that
-audits every block/unblock through `recordAdminAction`; (9) the artwork
-page reads the record via `getCfileRecordForSSR` — strictRead with a
-tri-state result, so a Redis blip renders as "descriptor unknown" (the card
-fetches status itself) rather than as "no file attached". The `file_update` push type ships seeded ON for new
-registrations per §6.3's recommendation (a one-line revert if product
-disagrees). Every §13 blocker fix is pinned by
-`scripts/verify-collector-file.ts` (wired into `verify:flows`), whose first
-assertion is the key-derivation known-answer test; the reference
-`Pixel Art Gallery - Sylvester.zip` round-trips seal→open byte-identically
-with 28 bytes of overhead.
+the bytes are read and integrity-checked** — a busy slot, a Redis blip, or
+a mid-transfer failure never burns the single use, and the losing racer of
+a double-redeem gets the 403; (6) share tickets (30-min TTL, marked `share`
+in the ticket record) land on an HTML **confirm page** unless `go=1` is
+present, so link-unfurl bots in chat apps can't redeem them, and
+`Sec-Purpose`/`Purpose` prefetch requests get a body-less 204; (7) the
+crash-resume cursor of §6.2 lives in the notify-lock's value, written per
+delivered batch; (8) the §10.2 kill-switch has an admin route
+(`/api/admin/cfile-block`, GET/POST) that audits every block/unblock
+through `recordAdminAction`; (9) the artwork page reads the record via
+`getCfileRecordForSSR` — strictRead with a tri-state result, so a Redis
+blip renders as "descriptor unknown" (the card fetches status itself)
+rather than as "no file attached". The `file_update` push type ships seeded
+ON for new registrations per §6.3's recommendation (a one-line revert if
+product disagrees).
+
+**Storage-pivot delta (see the pivot note at the top).** On top of the
+above: the byte path is `lib/collectorFile.ts`'s chunked blob store
+(`writeCfileBlobChunks`/`readCfileBlob`/`commitCfileMutation`) with
+sequential per-chunk commands and 'b'-prefixed base64 values; `planAttach`/
+`planRollback`/`planDetach` in the pure core own the 3-version retention
+window via explicit `stored` flags (position can't tell you bytes exist —
+detach frees bytes while keeping rows) and emit the exact chunk keys each
+commit must delete; the PUT ceiling checks the `cfile-bytes` ledger
+fail-closed; rollback is offered only for `restorable` rows.
+`scripts/verify-collector-file.ts` (wired into `verify:flows`) now pins the
+chunk codec round-trip, the request-cap margin, JSON-unparseability of
+chunks, the storage math the ceiling ledger relies on, and the retention
+planner's prune/never-prune/detach invariants.
 
 **Net verdict.** The architecture is optimal *for this stack today* in the
 precise sense that every layer reuses a pattern that has already survived

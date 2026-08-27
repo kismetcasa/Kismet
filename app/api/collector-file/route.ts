@@ -7,31 +7,31 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { acquireLock } from '@/lib/redisLock'
 import { redis } from '@/lib/redis'
 import { readBodyBounded } from '@/lib/boundedBody'
-import { uploadBytesToArweave } from '@/lib/arweave/uploadServer'
-import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import {
-  CFILE_HISTORY_CAP,
   CFILE_MAX_BYTES,
-  cfileKeyId,
   cfileRef,
+  encodeCfileChunks,
+  isCfileVersionRestorable,
   looksLikeZip,
   normalizeCfileName,
   planAttach,
+  planDetach,
   planRollback,
-  sealCfile,
+  recordStoredBytes,
   sha256Hex,
 } from '@/lib/collectorFileCore'
 import {
+  CFILE_STORAGE_CEILING_BYTES,
   cfileLockKey,
   cfileNotifyLockKey,
-  consumeCfilePlatformBytes,
+  commitCfileMutation,
   getCfileAudienceCount,
-  getCfileMasterKey,
   getCfileRecord,
   getCfileRecordStrict,
+  getCfileStoredBytesMap,
   getDownloaderCount,
-  setCfileRecord,
   toPublicDescriptor,
+  writeCfileBlobChunks,
 } from '@/lib/collectorFile'
 import { parseCfileParams, requireCfileManager } from '@/lib/collectorFileGate'
 import { notifyCollectorsOfUpdate, CFILE_FANOUT_CEILING } from '@/lib/collectorFileFanout'
@@ -55,8 +55,8 @@ export const runtime = 'nodejs'
  * readPermissions outage answers 503, never a misleading 403.
  */
 
-// One PUT at a time platform-wide: each holds ~64 MB peak (body + sealed +
-// Turbo's signed data item). The transcode-gif MAX_CONCURRENT=1 pattern,
+// One PUT at a time platform-wide: each holds ~38 MB peak (body buffer +
+// base64 chunk strings). The transcode-gif MAX_CONCURRENT=1 pattern,
 // check-then-increment with no await between (app/api/img discipline).
 const MAX_CONCURRENT_PUTS = 1
 let activePuts = 0
@@ -98,6 +98,8 @@ export async function GET(req: NextRequest) {
       sha256: h.sha256,
       updatedAt: h.updatedAt,
       ...(h.note ? { note: h.note } : {}),
+      // Bytes retained → rollback offered; older rows are record only.
+      restorable: !!h.stored,
     })),
     downloaders,
     audience,
@@ -114,13 +116,6 @@ export async function PUT(req: NextRequest) {
   }
   const params = parseCfileParams(req)
   if (!params) return errorResponse(400, 'Invalid collection or tokenId')
-
-  let masterKey: string
-  try {
-    masterKey = getCfileMasterKey()
-  } catch {
-    return errorResponse(500, 'Collector files are not configured on this deployment')
-  }
 
   const auth = await requireCfileManager(req, params)
   if (auth instanceof NextResponse) return auth
@@ -176,9 +171,9 @@ export async function PUT(req: NextRequest) {
       return errorResponse(415, 'That does not look like a zip file')
     }
 
-    // Per-artwork mutual exclusion, acquired BEFORE the meters and the paid
-    // upload: a racing co-admin 409s without spending anything, and the
-    // identical-bytes dedup below runs before any quota debits so the
+    // Per-artwork mutual exclusion, acquired BEFORE the meters and the
+    // chunk writes: a racing co-admin 409s without spending anything, and
+    // the identical-bytes dedup below runs before any quota debits so the
     // nervous double-upload genuinely burns nothing (rev-1's lost-update
     // bug + the review's meters-before-dedup finding). TTL bounds a
     // crashed holder.
@@ -187,10 +182,11 @@ export async function PUT(req: NextRequest) {
       return errorResponse(409, 'Someone else is updating this file — try again in a moment')
     }
     try {
-      // STRICT read: this record's history and nextKeySeq are the only thing
-      // standing between a Redis blip and re-minting an already-used keyId
-      // over a fresh record (permanent, unrepairable — the degrading read
-      // here was the review's top finding). A throw answers 503 below.
+      // STRICT read: this record's history and nextBlobSeq are the only
+      // thing standing between a Redis blip and re-minting a live version's
+      // blobSeq — new chunks written over bytes an older stored version
+      // still points at (the degrading read here was the review's top
+      // finding). A throw answers 503 below.
       let record
       try {
         record = await getCfileRecordStrict(params.collection, params.tokenId)
@@ -199,8 +195,8 @@ export async function PUT(req: NextRequest) {
       }
       const sha256 = sha256Hex(plaintext)
       if (record?.current && record.current.sha256 === sha256) {
-        // Identical bytes: burn nothing (no version, no meters, no Turbo
-        // spend, no cooldown) — the nervous double-upload case.
+        // Identical bytes: burn nothing (no version, no meters, no storage,
+        // no cooldown) — the nervous double-upload case.
         return NextResponse.json({ file: toPublicDescriptor(record), unchanged: true })
       }
 
@@ -211,61 +207,66 @@ export async function PUT(req: NextRequest) {
       if (!(await consumeUserQuota('cfile-bytes', caller, plaintext.length))) {
         return errorResponse(429, 'Daily file-upload size limit reached — try again tomorrow')
       }
-      // …and the fail-CLOSED platform ceiling: the only backstop on permanent
-      // Arweave spend, so a Redis failure denies here (inverse of the above).
-      if (!(await consumeCfilePlatformBytes(plaintext.length))) {
-        return errorResponse(503, 'Upload capacity reached for today — try again tomorrow')
-      }
-
-      const keyId = cfileKeyId(params.collection, params.tokenId, record?.nextKeySeq ?? 1)
-      const { sealed, iv } = sealCfile(masterKey, keyId, plaintext)
-
-      // uploadBytesToArweave retries internally but has no wall-clock bound;
-      // race a timeout so a stalled Turbo can't pin the buffers + the PUT
-      // slot indefinitely (route maxDuration is a no-op self-hosted,
-      // OPS_RUNBOOK.md). On timeout the SDK call may still land — the txid
-      // is then orphaned (paid, unreferenced); logged, accepted.
-      let uri: string
-      try {
-        uri = await Promise.race([
-          uploadBytesToArweave(sealed, 'application/octet-stream'),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('upload timeout')), 90_000),
-          ),
-        ])
-      } catch (err) {
-        return upstreamError(504, 'Storage upload timed out — try again', err, 'cfile-put')
-      }
-
-      // Propagation check before activation: stricter use than the mint
-      // flow's best-effort wait — a miss stores the version as `pending`
-      // (downloads answer 503-propagating, and the first successful serve
-      // clears the flag) instead of pointing collectors at a 404.
-      const available = await verifyArweaveAvailable(uri, 20_000, 'cfile')
 
       const planned = planAttach(record, {
-        keyIdSeqRef: cfileRef(params.collection, params.tokenId),
-        uri,
-        iv,
         size: plaintext.length,
         sha256,
         name,
         note,
         updatedBy: caller,
         now: Date.now(),
-        pending: !available,
       })
       if (!planned) {
         // Only reachable if current changed under us — the lock makes this
         // effectively dead code, kept as the pure-layer guard.
         return NextResponse.json({ file: toPublicDescriptor(record), unchanged: true })
       }
-      if (planned.version.keyId !== keyId) {
-        // Seq drifted between read and plan — impossible under the lock;
-        // refuse rather than store bytes sealed under a different keyId.
-        return errorResponse(500, 'Internal version conflict — try again')
+
+      // …and the fail-CLOSED global storage ceiling: resident bytes are the
+      // one open-ended cost axis of Redis-stored files, so a ledger-read
+      // failure refuses (503) rather than waving the write through. The
+      // ledger rewrite in the commit below is absolute per artwork, so two
+      // racing PUTs on DIFFERENT artworks can overshoot by at most one file
+      // — accepted (the per-artwork lock serializes the rest).
+      let storedMap: Record<string, number>
+      try {
+        storedMap = await getCfileStoredBytesMap()
+      } catch (err) {
+        return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-put')
       }
-      await setCfileRecord(params.collection, params.tokenId, planned.record)
+      const ref = cfileRef(params.collection, params.tokenId)
+      const othersBytes = Object.entries(storedMap).reduce(
+        (sum, [r, b]) => (r === ref ? sum : sum + b),
+        0,
+      )
+      if (othersBytes + recordStoredBytes(planned.record) > CFILE_STORAGE_CEILING_BYTES) {
+        return errorResponse(507, 'Platform download storage is full — contact Kismet to raise it')
+      }
+
+      // Chunks land with a self-expiring TTL; the commit MULTI persists them
+      // with the record write, so a crash here leaves only orphans that
+      // expire — never a live record pointing at half-written bytes. Race a
+      // wall-clock bound so a stalled write can't pin the PUT slot (route
+      // maxDuration is a no-op self-hosted, OPS_RUNBOOK.md).
+      try {
+        await Promise.race([
+          writeCfileBlobChunks(
+            params.collection,
+            params.tokenId,
+            planned.version.blobSeq,
+            encodeCfileChunks(plaintext),
+          ),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('chunk write timeout')), 60_000),
+          ),
+        ])
+      } catch (err) {
+        return upstreamError(504, 'Storage write timed out — try again', err, 'cfile-put')
+      }
+      await commitCfileMutation(params.collection, params.tokenId, planned.record, {
+        persistBlob: { blobSeq: planned.version.blobSeq, chunks: planned.version.chunks },
+        prune: planned.prune,
+      })
 
       if (wantNotify) {
         after(() =>
@@ -316,12 +317,20 @@ export async function PATCH(req: NextRequest) {
       return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-patch')
     }
     if (!record) return errorResponse(404, 'No file attached')
-    // Rollback re-activates the old ciphertext under its ORIGINAL keyId —
-    // decryptable by construction, no re-upload, no new spend (§4.2).
+    if (!record.history.some((h) => h.v === body.v)) {
+      return errorResponse(404, 'That version is not in the history')
+    }
+    if (!isCfileVersionRestorable(record, body.v)) {
+      // The row exists but its bytes left the retention window (or a detach
+      // freed them) — an honest refusal beats a silent 404.
+      return errorResponse(409, "That version's file is no longer stored — upload it again instead")
+    }
+    // Rollback re-points at the version's ORIGINAL blobSeq — the bytes
+    // already exist, no re-upload; provably prunes nothing (§4.2).
     const next = planRollback(record, body.v, auth.address, Date.now())
-    if (!next) return errorResponse(404, 'That version is not in the history')
-    await setCfileRecord(params.collection, params.tokenId, next)
-    return NextResponse.json({ file: toPublicDescriptor(next) })
+    if (!next) return errorResponse(409, "That version's file is no longer stored — upload it again instead")
+    await commitCfileMutation(params.collection, params.tokenId, next.record, { prune: next.prune })
+    return NextResponse.json({ file: toPublicDescriptor(next.record) })
   } finally {
     await lock.release()
   }
@@ -349,13 +358,12 @@ export async function DELETE(req: NextRequest) {
       return upstreamError(503, 'Temporarily unavailable — try again shortly', err, 'cfile-delete')
     }
     if (!record?.current) return NextResponse.json({ file: null })
-    // Tombstone serving, keep history (the artist can roll back to re-attach;
-    // the permanent ciphertext is unreachable without the server key either
-    // way — that key never leaving the server IS the takedown mechanism).
-    await setCfileRecord(params.collection, params.tokenId, {
-      ...record,
-      current: null,
-      history: [record.current, ...record.history].slice(0, CFILE_HISTORY_CAP),
+    // Real deletion — the point of the Redis pivot: the chunk keys are
+    // freed in the same commit, storage returns to the ledger, and history
+    // rows remain as the artist's record (all non-restorable).
+    const planned = planDetach(record)
+    await commitCfileMutation(params.collection, params.tokenId, planned.record, {
+      prune: planned.prune,
     })
     return NextResponse.json({ file: null })
   } finally {

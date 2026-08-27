@@ -9,9 +9,8 @@ import { isCfileBlocked, setCfileBlocked } from '@/lib/collectorFile'
 // Admin kill-switch for a collector file (COLLECTOR_DOWNLOADS_DESIGN.md
 // §10.2): blocking stops DOWNLOADS of an already-attached file immediately
 // (the download + ticket routes check the blocked set on every request) —
-// the moderation path a DMCA/abuse incident needs, distinct from the
-// artist's own DELETE. The ciphertext on Arweave is permanent either way;
-// the key never leaving the server is what makes blocking effective.
+// the reversible moderation hold a DMCA/abuse incident needs, distinct
+// from the artist's own DELETE, which permanently frees the stored bytes.
 //
 // GET  ?collection=&tokenId=            → { blocked }
 // POST { collection, tokenId, blocked } → set + audit, returns { blocked }
